@@ -9,7 +9,7 @@ docs/wasm-contract.md describes the verified current subset; update it as
 features land.
 
 ## Acceptance check (the only truth)
-`bash spec/wasm-acceptance.sh` -- exit 0 = done.
+`bash spec/wasm-corpus-acceptance.sh` -- exit 0 = done (48/48 corpus + probes + suite).
 It requires: cargo build + FULL cargo suite green (native backends must not
 regress!), and every probe in tests/wasm-probes/ compiling with
 `--backend wasm` and matching its .expect byte-for-byte via

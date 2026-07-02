@@ -1,11 +1,15 @@
 {
   "project": "kryos-lang",
-  "goal": "WASM round 2: enums land on wasm. Gate: bash spec/wasm-acceptance.sh (now 9 probes incl. p7 enums, p8 Option/Result; p1-p6+p9 already pass).",
-  "ordering": "Top-to-bottom. Bank a win per iteration. Never regress native backends, the cargo suite, or already-passing probes. NEVER edit probes/.expect files.",
+  "goal": "WASM round 3: the FULL 48-probe corpus (tests/harden-probes/) green on wasm. Gate: bash spec/wasm-corpus-acceptance.sh. Currently 20/48. The gate prints per-probe FAIL lines with the blocking construct.",
+  "ordering": "CORRECTNESS FIRST: the 5 FAIL(run) probes are MISCOMPILES in the new slot encoding (wrong output, worse than a gate) -- fix before adding features. Then top-to-bottom. JIT output is the oracle. NEVER weaken a probe, .expect, the cargo suite, or spec/.",
   "features": [
-    { "id": "enums", "status": "passing", "acceptance_test": "probe p7_enum_basic",
-      "contract": "Lower enums for wasm as tagged slot records reusing the struct slot-encoding that landed last night (tag word + payload slots, like the native i64-slot layout). Cover: variant construction (bare Circle(2) and qualified Shape.Empty), match with payload binding (Circle(r) => ...), multi-field payloads (Rect(w,h)), nullary variants. The match-on-tag lowering can reuse the scalar Switch lowering from last night." },
-    { "id": "option-result", "status": "passing", "acceptance_test": "probe p8_option_result",
-      "contract": "Make std Option/Result work on wasm: generic enum instantiation (Option___i64 / Result___i64_str monomorphs arrive in MIR like normal enums -- if 'enums' above is general this may be nearly free), Some/Ok/Err/None construction through fn returns, match with payload binding incl. str payloads (err arm concatenates 'err ' + e). Also exercises early return." }
+    { "id": "runfails", "status": "pending", "acceptance_test": "probes 22,31,35,43,47 agree with JIT",
+      "contract": "Fix the 5 semantic divergences: probe_22_nested_struct_methods, probe_31_f64_struct_fields, probe_35_while_let_option_custom, probe_43_nested_pos_size_rect, probe_47_span_struct_overlap. Likely slot-encoding bugs: f64 bit-reinterpretation in struct slots, nested struct layout/aliasing, method self passing, enum-in-loop binding. Diff wasm output vs `kryos run` per probe, minimize, fix in kryos-codegen-wasm." },
+    { "id": "closures-hof", "status": "pending", "acceptance_test": "probes 15,20,21 + others build+agree",
+      "contract": "Closures capturing structs, currying, higher-order fns (filter/fold) on wasm. The native uniform i64 closure ABI maps naturally onto wasm i64 slots + indirect calls (call_indirect with a function table)." },
+    { "id": "maps", "status": "pending", "acceptance_test": "probes 4,17 + map probes build+agree",
+      "contract": "map<K,V> on wasm via host-backed handles mirroring the array helpers (map_new/get/set/len/iter). Cover aggregate values + iteration + mutation." },
+    { "id": "tuples-qmark-misc", "status": "pending", "acceptance_test": "probes 11,19,23 + remaining corpus",
+      "contract": "Tuple construction/matching, the ? operator (desugars over Result -- may be nearly free once enums are solid), string ops probe (std string fns), aggregate array-element mutation (probe 14), recursion with aggregate accumulators (probe 5), fold over struct arrays (probe 9). Work through whatever the gate still prints." }
   ]
 }
