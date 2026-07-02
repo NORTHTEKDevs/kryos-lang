@@ -91,5 +91,14 @@ A: The runtime static library wasn't found. This happens if you copied just the 
 **Q: Linker error mentioning `libssl` / `libsqlite3` on Linux.**
 A: Install the system dev headers: `sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config`.
 
+**Q: Windows Defender (or another AV) flags `kryos.exe`.**
+A: A false positive. New, unsigned compiler binaries occasionally trip
+machine-learning AV heuristics (compilers JIT-emit and execute code, which
+looks suspicious to a model). Verify your download against the SHA-256
+checksums published on the release page before trusting it, then restore the
+file from quarantine or add an exclusion for your Kryos install directory.
+If you hit this on an official release binary, please open an issue — we
+submit false positives to the AV vendor for reclassification.
+
 **Q: Where is the package manager? REPL? doc generator?**
 A: All built into `kryos`: try `kryos pkg --help`, `kryos repl`, `kryos doc <file.kry>`. Full list with `kryos --help`.

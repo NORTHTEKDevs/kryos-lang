@@ -117,3 +117,28 @@ pub extern "C" fn kryos_exception_report_uncaught_if_pending() {
     }
     std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
 }
+
+/// If an exception is pending, take it and return its message (clearing the
+/// pending flag). Returns None when no exception is pending. Used by the
+/// test harness: a `throw` that unwinds out of a `@test` fn must FAIL the
+/// test, not leak into the next one.
+pub fn take_pending_exception_message() -> Option<String> {
+    if !HAS_EXCEPTION.with(|h| h.get()) {
+        return None;
+    }
+    let value = kryos_exception_take();
+    if value != 0 {
+        let s = value as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                if let Ok(text) = std::str::from_utf8(slice) {
+                    return Some(format!("uncaught exception: {text}"));
+                }
+            }
+        }
+    }
+    Some(format!("uncaught exception (value: {value})"))
+}

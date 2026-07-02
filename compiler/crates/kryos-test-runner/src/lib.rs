@@ -947,8 +947,17 @@ fn run_annotated_tests_internal(
                 // because Cranelift JIT frames lack OS unwind info on Windows,
                 // so panics cannot propagate through JIT-compiled code.
                 let _ = kryos_rt::take_test_failure(); // clear
+                // Also clear any exception leaked by a previous test so it
+                // cannot poison this one.
+                let _ = kryos_rt::exception::take_pending_exception_message();
                 f();
                 let failure = kryos_rt::take_test_failure();
+                // A `throw` that unwinds out of the test body is a FAILURE:
+                // the exception thread-local is separate from the assert
+                // flag and was previously never inspected, so a throwing
+                // test reported PASS and leaked its exception into the next.
+                let thrown = kryos_rt::exception::take_pending_exception_message();
+                let failure = failure.or(thrown);
                 let duration = test_start.elapsed();
                 if let Some(msg) = failure {
                     failed += 1;
