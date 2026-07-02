@@ -179,6 +179,9 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         // encoding as structs: slot 0 = tag (variant index), slots 1..n = payload
         // fields. This reuses all the struct infrastructure already in place.
         MirType::Enum(_) => ValType::I64,
+        // Tuples are represented as i64 array handles (same as structs):
+        // slot i holds element i of the tuple.
+        MirType::Tuple(_) => ValType::I64,
         MirType::Void => {
             // Caller should special-case void; this is a placeholder.
             return Err(WasmCodegenError::new(
@@ -1047,6 +1050,9 @@ impl<'a> FnEmitter<'a> {
                 if is_while {
                     // Header instructions + branch all run inside the loop body.
                     self.emit_simple_while(block_id, &cond, then_block, else_block)?;
+                } else if self.is_inverted_while_header(block_id, then_block, else_block) {
+                    // Inverted-while: `if exit_cond { exit } tail_call_back_to_header`
+                    self.emit_inverted_while(block_id, &cond, then_block, else_block)?;
                 } else {
                     self.emit_if_else(&cond, then_block, else_block)?;
                 }
@@ -1071,6 +1077,9 @@ impl<'a> FnEmitter<'a> {
     /// Also detects the `while true { match ... { Pat => body, _ => break } }`
     /// pattern where `body` terminates in a Switch whose at least one arm
     /// eventually loops back to `header` (via a Goto chain).
+    ///
+    /// Also detects `while cond { if inner { push } i++ }` where the body
+    /// block ends in a Branch (inner if) whose arms eventually reach `header`.
     fn is_simple_while_header(&self, header: BlockId, body: BlockId, _exit: BlockId) -> bool {
         let body_idx = match self.id_to_index.get(&body.0) {
             Some(&i) => i,
@@ -1092,7 +1101,23 @@ impl<'a> FnEmitter<'a> {
                 }
             }
         }
+        // While-with-inner-if: body ends in Branch where at least one arm
+        // eventually reaches header (while loop with an if inside the body).
+        if let Terminator::Branch { then_block, else_block, .. } = &self.func.blocks[body_idx].terminator {
+            if self.goto_chain_reaches(*then_block, header) || self.goto_chain_reaches(*else_block, header) {
+                return true;
+            }
+        }
         false
+    }
+
+    /// Detect: `if exit_cond { return/exit } loop_body_that_Goto_header` — the
+    /// "inverted while" produced by tail-call optimization: the ELSE arm (not the
+    /// THEN arm) loops back to the function entry. Example:
+    ///   `if n <= 0 { return base } return f(n-1, acc)` where `return f(...)` is
+    ///   lowered as a Goto-chain back to the function header.
+    fn is_inverted_while_header(&self, header: BlockId, _then_block: BlockId, else_block: BlockId) -> bool {
+        self.goto_chain_reaches(else_block, header)
     }
 
     /// Detect: Switch from `header` where one of the arms ends in Goto(header).
@@ -1763,28 +1788,41 @@ impl<'a> FnEmitter<'a> {
             // WASM v0.4: Struct field read — `obj.field`
             // -----------------------------------------------------------------
             RValue::Field { object, field } => {
-                let struct_name = match self.operand_ty(object) {
-                    Some(MirType::Struct(n)) => n,
+                match self.operand_ty(object) {
+                    Some(MirType::Tuple(elem_types)) => {
+                        // Tuple field access: field name is "0", "1", ... (numeric index as string).
+                        let idx = field.parse::<i32>().unwrap_or(0);
+                        let field_ty = elem_types.get(idx as usize).cloned().unwrap_or(MirType::I64);
+                        let array_get_idx = self.cg.array_get_idx;
+                        self.emit_operand(object)?;
+                        self.wfunc.instruction(&W::I32Const(idx));
+                        self.wfunc.instruction(&W::Call(array_get_idx));
+                        if matches!(field_ty, MirType::F64) {
+                            self.wfunc.instruction(&W::F64ReinterpretI64);
+                        }
+                    }
+                    Some(MirType::Struct(struct_name)) => {
+                        let field_name = field.clone();
+                        let (field_idx, field_ty) = self.cg.struct_defs
+                            .get(&struct_name)
+                            .and_then(|fs| {
+                                fs.iter().enumerate()
+                                    .find(|(_, (n, _))| n == &field_name)
+                                    .map(|(i, (_, t))| (i as i32, t.clone()))
+                            })
+                            .unwrap_or((0, MirType::I64));
+                        let array_get_idx = self.cg.array_get_idx;
+                        self.emit_operand(object)?;
+                        self.wfunc.instruction(&W::I32Const(field_idx));
+                        self.wfunc.instruction(&W::Call(array_get_idx));
+                        // f64 fields are stored as their i64 bit-pattern; reinterpret on read.
+                        if matches!(field_ty, MirType::F64) {
+                            self.wfunc.instruction(&W::F64ReinterpretI64);
+                        }
+                    }
                     _ => return Err(WasmCodegenError::unsupported(&format!(
-                        "field access `{field}` on non-struct operand"
+                        "field access `{field}` on non-struct/tuple operand"
                     ))),
-                };
-                let field_name = field.clone();
-                let (field_idx, field_ty) = self.cg.struct_defs
-                    .get(&struct_name)
-                    .and_then(|fs| {
-                        fs.iter().enumerate()
-                            .find(|(_, (n, _))| n == &field_name)
-                            .map(|(i, (_, t))| (i as i32, t.clone()))
-                    })
-                    .unwrap_or((0, MirType::I64));
-                let array_get_idx = self.cg.array_get_idx;
-                self.emit_operand(object)?;
-                self.wfunc.instruction(&W::I32Const(field_idx));
-                self.wfunc.instruction(&W::Call(array_get_idx));
-                // f64 fields are stored as their i64 bit-pattern; reinterpret on read.
-                if matches!(field_ty, MirType::F64) {
-                    self.wfunc.instruction(&W::F64ReinterpretI64);
                 }
             }
             // -----------------------------------------------------------------
@@ -1829,6 +1867,24 @@ impl<'a> FnEmitter<'a> {
                 self.emit_operand(operand)?;
                 self.wfunc.instruction(&W::I32Const((*field_idx + 1) as i32));
                 self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
+            }
+            // -----------------------------------------------------------------
+            // WASM v2.5: Tuple construction — `(a, b, c)`
+            // Identical to array/struct: allocate N slots, fill each, leave handle.
+            // -----------------------------------------------------------------
+            RValue::Tuple(elems) => {
+                self.wfunc.instruction(&W::I32Const(elems.len() as i32));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                let array_set_idx = self.cg.array_set_idx;
+                for (i, elem) in elems.iter().enumerate() {
+                    self.wfunc.instruction(&W::LocalGet(scratch));
+                    self.wfunc.instruction(&W::I32Const(i as i32));
+                    self.emit_operand(elem)?;
+                    self.wfunc.instruction(&W::Call(array_set_idx));
+                }
+                self.wfunc.instruction(&W::LocalGet(scratch));
             }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(
