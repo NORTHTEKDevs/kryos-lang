@@ -1,6 +1,5 @@
 // kryos-base64-pkg — ergonomic base64 wrappers.
-
-use std::base64::{base64_encode, base64_decode}
+// base64_encode / base64_decode are global builtins; no import needed.
 
 /// Encode a string to standard-alphabet base64 (RFC 4648).
 pub fn encode(s: str) -> str {

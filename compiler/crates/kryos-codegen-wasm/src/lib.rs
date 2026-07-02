@@ -1067,15 +1067,32 @@ impl<'a> FnEmitter<'a> {
 
     /// Detect: branch from `header` -> (body, exit) where `body` ends in
     /// Goto(header). That's a simple while loop.
+    ///
+    /// Also detects the `while true { match ... { Pat => body, _ => break } }`
+    /// pattern where `body` terminates in a Switch whose at least one arm
+    /// eventually loops back to `header` (via a Goto chain).
     fn is_simple_while_header(&self, header: BlockId, body: BlockId, _exit: BlockId) -> bool {
         let body_idx = match self.id_to_index.get(&body.0) {
             Some(&i) => i,
             None => return false,
         };
-        matches!(
+        // Simple case: body directly Goto's header.
+        if matches!(
             self.func.blocks[body_idx].terminator,
             Terminator::Goto(b) if b == header
-        )
+        ) {
+            return true;
+        }
+        // While-true-with-match pattern: body ends in a Switch where at least
+        // one arm eventually reaches `header` via a Goto chain.
+        if let Terminator::Switch { targets, .. } = &self.func.blocks[body_idx].terminator {
+            for (_, bid) in targets {
+                if self.goto_chain_reaches(*bid, header) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Detect: Switch from `header` where one of the arms ends in Goto(header).
@@ -1244,16 +1261,24 @@ impl<'a> FnEmitter<'a> {
             self.emit_instruction(inst)?;
         }
         // body should terminate in Goto(header) — that's the loop edge.
-        match &body_block.terminator {
-            Terminator::Goto(b) if *b == header => {
+        // Also handle Switch (while-true with inner match, e.g. `while let`).
+        match body_block.terminator.clone() {
+            Terminator::Goto(b) if b == header => {
                 self.wfunc.instruction(&W::Br(0)); // continue
             }
             Terminator::Return(value) => {
                 // Early return inside loop body.
-                if let Some(op) = value {
+                if let Some(op) = &value {
                     self.emit_operand(op)?;
                 }
                 self.wfunc.instruction(&W::Return);
+            }
+            Terminator::Switch { value, targets, default } => {
+                // `while true { match expr { Pat => body, _ => break } }` pattern.
+                // We're inside: block(outer) { loop { ... [body instrs] [here] } }
+                // Emit each matching arm as an `if`; arm back-edge = br 1 (loop),
+                // fall-through default = br 1 (outer block = exit).
+                self.emit_while_body_switch(&value, &targets, default, header, exit)?;
             }
             _ => {
                 return Err(WasmCodegenError::unsupported(
@@ -1267,6 +1292,116 @@ impl<'a> FnEmitter<'a> {
 
         // Continue with the exit block.
         self.emit_block(exit)?;
+        Ok(())
+    }
+
+    /// Emit the body of a `while true { match expr { Pat => ..., _ => break } }` loop.
+    ///
+    /// Called from `emit_simple_while` when the body block terminates in a Switch.
+    /// We are already inside:
+    ///   block(outer)  ; br 1 from loop body = exit
+    ///     loop        ; br 0 from loop body = continue
+    ///       [header instructions already emitted]
+    ///       [condition check already emitted]
+    ///       [body_bb instructions already emitted]
+    ///       [we are HERE — body terminated in Switch]
+    ///
+    /// For each matching arm we emit `if (tag == val) { arm_instrs; br 1 } end`
+    /// where inside the if: br 0 exits the if, br 1 continues the loop, br 2 exits.
+    /// After all ifs, we emit `br 1` (exit outer block = break the loop).
+    fn emit_while_body_switch(
+        &mut self,
+        value: &Operand,
+        targets: &[(i64, BlockId)],
+        default: BlockId,
+        loop_header: BlockId,
+        loop_exit: BlockId,
+    ) -> Result<(), WasmCodegenError> {
+        // Group targets by arm block (or-patterns share one block).
+        let mut seen_bids: Vec<u32> = Vec::new();
+        let mut bid_vals: HashMap<u32, (BlockId, Vec<i64>)> = HashMap::new();
+        for (val, bid) in targets {
+            if let Some(entry) = bid_vals.get_mut(&bid.0) {
+                entry.1.push(*val);
+            } else {
+                seen_bids.push(bid.0);
+                bid_vals.insert(bid.0, (*bid, vec![*val]));
+            }
+        }
+
+        // Emit one `if` per unique arm.
+        for &bid_u32 in &seen_bids {
+            let (bid, vals) = &bid_vals[&bid_u32];
+            self.emit_switch_cond(value, vals)?;
+            self.wfunc.instruction(&W::If(BlockType::Empty));
+            // Inside the if: depth 0=if, 1=loop, 2=outer block.
+
+            let arm_idx = self.block_index(*bid)?;
+            if !self.visited[arm_idx] {
+                self.visited[arm_idx] = true;
+                let instrs: Vec<_> = self.func.blocks[arm_idx].instructions.clone();
+                for inst in &instrs {
+                    self.emit_instruction(inst)?;
+                }
+                let arm_term = self.func.blocks[arm_idx].terminator.clone();
+                match arm_term {
+                    Terminator::Goto(b) if b == loop_header => {
+                        self.wfunc.instruction(&W::Br(1)); // continue loop
+                    }
+                    Terminator::Goto(b) if b == loop_exit => {
+                        self.wfunc.instruction(&W::Br(2)); // exit loop
+                    }
+                    Terminator::Goto(b) if self.goto_chain_reaches(b, loop_header) => {
+                        // Multi-block arm that eventually loops back; inline chain.
+                        let mut cur = b;
+                        loop {
+                            let ci = self.block_index(cur)?;
+                            if self.visited[ci] {
+                                self.wfunc.instruction(&W::Br(1));
+                                break;
+                            }
+                            self.visited[ci] = true;
+                            let ci_instrs: Vec<_> = self.func.blocks[ci].instructions.clone();
+                            for inst in &ci_instrs { self.emit_instruction(inst)?; }
+                            match self.func.blocks[ci].terminator.clone() {
+                                Terminator::Goto(n) if n == loop_header => {
+                                    self.wfunc.instruction(&W::Br(1)); // continue
+                                    break;
+                                }
+                                Terminator::Goto(n) => { cur = n; }
+                                Terminator::Return(ref v) => {
+                                    if let Some(op) = v.as_ref() { self.emit_operand(op)?; }
+                                    self.wfunc.instruction(&W::Return);
+                                    break;
+                                }
+                                _ => { self.wfunc.instruction(&W::Unreachable); break; }
+                            }
+                        }
+                    }
+                    Terminator::Return(ref v) => {
+                        if let Some(op) = v.as_ref() { self.emit_operand(op)?; }
+                        self.wfunc.instruction(&W::Return);
+                    }
+                    _ => { self.wfunc.instruction(&W::Unreachable); }
+                }
+            }
+            self.wfunc.instruction(&W::End); // end if
+        }
+
+        // Default arm (break/fallthrough): mark visited, emit its instructions.
+        let default_idx = self.block_index(default)?;
+        if !self.visited[default_idx] {
+            self.visited[default_idx] = true;
+            let def_instrs: Vec<_> = self.func.blocks[default_idx].instructions.clone();
+            for inst in &def_instrs { self.emit_instruction(inst)?; }
+            // Terminator of default is typically Goto(loop_exit) = break.
+            // We DON'T emit it; the `br 1` below handles the exit.
+        }
+
+        // Fall-through after all ifs = no arm matched = break the loop.
+        // At body depth (inside loop, outside any if): br 1 = exit outer block.
+        self.wfunc.instruction(&W::Br(1));
+
         Ok(())
     }
 
@@ -1409,6 +1544,16 @@ impl<'a> FnEmitter<'a> {
             Instruction::StoreField { object, field, value } => {
                 let struct_name = match self.operand_ty(object) {
                     Some(MirType::Struct(n)) => n,
+                    // Array element stores: MIR lowers `arr[i].field = v` as
+                    // StoreField { object: Ptr(Struct(name)), ... } so the LLVM
+                    // backend can emit an inttoptr GEP. In WASM, Ptr is an i64
+                    // handle; extract the struct name and treat the same way.
+                    Some(MirType::Ptr(inner)) => match inner.as_ref() {
+                        MirType::Struct(n) => n.clone(),
+                        _ => return Err(WasmCodegenError::unsupported(
+                            "StoreField on non-struct pointer",
+                        )),
+                    },
                     _ => return Err(WasmCodegenError::unsupported(
                         "StoreField on non-struct operand",
                     )),
@@ -1500,8 +1645,30 @@ impl<'a> FnEmitter<'a> {
                 self.emit_string_concat(parts)?;
             }
             RValue::UnOp { op, operand } => {
-                self.emit_operand(operand)?;
-                self.emit_unop(*op)?;
+                match op {
+                    MirUnOp::Neg => {
+                        let ty = self.operand_ty(operand).unwrap_or(MirType::I64);
+                        if matches!(ty, MirType::F64 | MirType::F32) {
+                            self.emit_operand(operand)?;
+                            if matches!(ty, MirType::F32) {
+                                self.wfunc.instruction(&W::F64PromoteF32);
+                            }
+                            self.wfunc.instruction(&W::F64Neg);
+                        } else {
+                            // Integer negate: 0 - x; use scratch local to preserve stack order.
+                            self.emit_operand(operand)?;
+                            let scratch = self.cg_scratch_local();
+                            self.wfunc.instruction(&W::LocalSet(scratch));
+                            self.wfunc.instruction(&W::I64Const(0));
+                            self.wfunc.instruction(&W::LocalGet(scratch));
+                            self.wfunc.instruction(&W::I64Sub);
+                        }
+                    }
+                    _ => {
+                        self.emit_operand(operand)?;
+                        self.emit_unop(*op)?;
+                    }
+                }
             }
             RValue::Call { func, args } => {
                 self.emit_call(func, args)?;
@@ -1750,24 +1917,9 @@ impl<'a> FnEmitter<'a> {
     fn emit_unop(&mut self, op: MirUnOp) -> Result<(), WasmCodegenError> {
         match op {
             MirUnOp::Neg => {
-                // i64 negate: 0 - x
-                self.wfunc.instruction(&W::I64Const(0));
-                // x is currently on top — swap conceptually by using sub with
-                // a fresh temp. WASM doesn't have swap, so we use a trick:
-                // store to a temp local. For simplicity we just emit:
-                //   (i64.const 0) (local.set tmp) (i64.const 0) (... x ...) (i64.sub)
-                // which we can't easily do here without a tmp. Instead emit:
-                //   x is on stack. Push 0. We want 0 - x but stack is [x, 0].
-                //   Use i64.sub which is (a - b) where stack is [..., a, b].
-                //   So we need x as `a` and 0 as `b`? No, we want 0 - x.
-                // Easier: we already pushed 0 on top of x.
-                //   stack: [x, 0]
-                //   i64.sub computes x - 0 = x. Wrong.
-                // Correct: we should push 0 BEFORE x. But the operand is
-                // already on the stack from the rvalue lowering. Use a tmp:
-                return Err(WasmCodegenError::unsupported(
-                    "unary negation (use 0 - x for v0.1)",
-                ));
+                // Handled in emit_rvalue UnOp arm (needs type info + scratch local).
+                // This path should not be reached.
+                unreachable!("MirUnOp::Neg must be handled in emit_rvalue");
             }
             MirUnOp::Not => {
                 // logical not: x == 0
@@ -2016,6 +2168,20 @@ impl<'a> FnEmitter<'a> {
                     self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
                 }
             }
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: parse_int(s) / parse_float(s) — string -> number
+        // -------------------------------------------------------------
+        if func == "parse_int" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::Call(self.cg.string_parse_int_idx));
+            return Ok(());
+        }
+        if func == "parse_float" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::Call(self.cg.string_parse_float_idx));
             return Ok(());
         }
 

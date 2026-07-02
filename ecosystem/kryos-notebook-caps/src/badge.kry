@@ -14,7 +14,7 @@
 // escapes only at their boundaries, so substring anchoring is unaffected.
 // ============================================================
 
-use std::string::{find, split_lines, join, trim}
+use std::string::{find, split_lines, starts_with, join, trim, trim_start}
 use program
 
 struct CapHit {

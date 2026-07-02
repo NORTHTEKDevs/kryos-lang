@@ -98,8 +98,9 @@ fn validate_and_track(raw_json: str, schema: Schema, source: str) -> Result<Trac
 ///
 /// Throws (unwinds) on transport failure or HTTP error (from std::llm::chat).
 ///
-/// @capabilities(net) -- the chat() call is the only I/O.
-@capabilities(net)
+/// @capabilities(net, compute) -- net for chat(); compute propagated from
+/// validate_and_track (parse + schema validation, no additional I/O).
+@capabilities(net, compute)
 @budget(tokens = 4096, calls = 1)
 fn governed_chat(cfg: LlmConfig, messages: [Message], schema: Schema) -> Result<Tracked<str>, [str]> {
     let response = chat(cfg, messages)

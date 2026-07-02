@@ -8,7 +8,7 @@
 // which capabilities that cell's code is allowed to touch.
 // ============================================================
 
-use std::string::{join}
+use std::string::{split_lines, starts_with, join, trim, trim_start}
 use cells
 
 struct RenderCell {
