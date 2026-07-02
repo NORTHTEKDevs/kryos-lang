@@ -84,6 +84,12 @@ the dependency chain. Each `NN` links to `projects/NN-*.md`.
   `std.probable` so confidence becomes a *measured* quantity (independent).
 
 ### Flagship libraries (the wedge made real)
+- **kryos-embed** (BUILT, checked green) -- deploy a governed Kryos agent
+  INSIDE software written in other languages: C-ABI DLL + WASM with a
+  compiler-backed authority manifest (`agent.caps.json`); Python/Go/Node
+  hosts read the manifest and refuse over-privileged agents before binding;
+  budget refusal before spend; private data never leaves the host process.
+  `bash ecosystem/kryos-embed/check.sh` = PASS 4/0 (C# recipe-only).
 - **03 kryos-agent-loop** (M, today, dep 02) -- governed multi-turn tool-use:
   every LLM call + tool dispatch logged with cost/latency as the default.
 - **04 kryos-rag** (M, today, dep 02,03) -- RAG where every answer's citations

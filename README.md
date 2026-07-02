@@ -31,6 +31,7 @@ kryos run hello.kry
 - **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical bootstrap fixed point — stage-2 == stage-3 == stage-4, SHA-256-verified — with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) currently passes 11/16 modules; codegen is flaky on the rest. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 61 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
+- **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is deny-what-you-don't-declare authority the compiler verifies (`E05xx` on violation), `@budget` refuses before spending, `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
 
 > **Status:** Kryos is **1.0.0-beta.1** — a feature-complete beta with one primary author, not yet externally stress-tested. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are frozen for 1.x backwards compatibility. See [STABILITY.md](STABILITY.md) for the contract.
 
@@ -44,6 +45,8 @@ kryos run hello.kry
 | Learn the language (the manual) | [docs/learn/](docs/learn/README.md) |
 | Browse the full docs | [docs/README.md](docs/README.md) |
 | Build an MCP server in 60 seconds | [kryos-mcp-template](https://github.com/NORTHTEKDevs/kryos-mcp-template) |
+| Embed a governed agent in your Python/Go/Node app | [ecosystem/kryos-embed](ecosystem/kryos-embed/README.md) |
+| See what's verified working (apps, demos, probes) | [SHOWCASE.md](SHOWCASE.md) |
 | See real benchmark numbers | [BENCHMARKS.md](BENCHMARKS.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Understand the design philosophy | [docs/WHY_KRYOS.md](docs/WHY_KRYOS.md) |
