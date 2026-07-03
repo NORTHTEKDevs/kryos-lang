@@ -1561,6 +1561,63 @@ impl<'a> FnEmitter<'a> {
         else_block: BlockId,
         loop_header: BlockId,
     ) -> Result<(), WasmCodegenError> {
+        // Fast path: diamond join pattern — both arms directly Goto the same non-header block.
+        // Emits: if { then_exclusive } [else { else_exclusive }] join_chain; br 0
+        // This avoids the then-arm swallowing the shared join block and starving the else path.
+        let diamond_join: Option<BlockId> = {
+            let ti = self.id_to_index.get(&then_block.0).copied();
+            let ei = self.id_to_index.get(&else_block.0).copied();
+            match (ti, ei) {
+                (Some(ti), Some(ei)) => {
+                    match (&self.func.blocks[ti].terminator, &self.func.blocks[ei].terminator) {
+                        (Terminator::Goto(j1), Terminator::Goto(j2))
+                            if j1 == j2 && *j1 != loop_header => Some(*j1),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        };
+        if let Some(join) = diamond_join {
+            self.emit_operand(cond)?;
+            self.wfunc.instruction(&W::I32WrapI64);
+            self.wfunc.instruction(&W::If(BlockType::Empty));
+            self.emit_arm(then_block, Some(join))?;
+            if else_block != join {
+                self.wfunc.instruction(&W::Else);
+                self.emit_arm(else_block, Some(join))?;
+            }
+            self.wfunc.instruction(&W::End);
+            // Emit join chain until loop_header or Return, then br 0 (continue).
+            let mut current = join;
+            loop {
+                let curr_idx = self.block_index(current)?;
+                if self.visited[curr_idx] {
+                    self.wfunc.instruction(&W::Br(0));
+                    return Ok(());
+                }
+                self.visited[curr_idx] = true;
+                let instrs = self.func.blocks[curr_idx].instructions.clone();
+                for inst in &instrs { self.emit_instruction(inst)?; }
+                match self.func.blocks[curr_idx].terminator.clone() {
+                    Terminator::Goto(b) if b == loop_header => {
+                        self.wfunc.instruction(&W::Br(0));
+                        return Ok(());
+                    }
+                    Terminator::Goto(next) => { current = next; }
+                    Terminator::Return(val) => {
+                        if let Some(op) = &val { self.emit_operand(op)?; }
+                        self.wfunc.instruction(&W::Return);
+                        return Ok(());
+                    }
+                    _ => {
+                        self.wfunc.instruction(&W::Br(0));
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
         let then_has_return = self.chain_has_return(then_block);
         let else_has_return = self.chain_has_return(else_block);
         let then_reaches_else = self.goto_chain_reaches(then_block, else_block);
@@ -2616,7 +2673,14 @@ impl<'a> FnEmitter<'a> {
                     self.wfunc.instruction(&W::Return);
                 }
                 Terminator::Goto(j) if Some(j) == join => { /* fall through */ }
-                _ => { self.wfunc.instruction(&W::Unreachable); }
+                Terminator::Goto(j) => { self.emit_block(j)?; }
+                Terminator::Branch { ref cond, then_block, else_block } => {
+                    self.emit_if_else(cond, then_block, else_block)?;
+                }
+                Terminator::Switch { value, targets, default: def } => {
+                    self.emit_switch(value, targets, def)?;
+                }
+                Terminator::Unreachable => { self.wfunc.instruction(&W::Unreachable); }
             }
         }
 
@@ -2643,7 +2707,17 @@ impl<'a> FnEmitter<'a> {
                 // Break out of: if (depth 0) + wrapper block (depth 1).
                 self.wfunc.instruction(&W::Br(1));
             }
-            _ => { self.wfunc.instruction(&W::Unreachable); }
+            Terminator::Goto(j) => {
+                // Arm continues into a nested block (e.g. match arm with inner if).
+                self.emit_block(*j)?;
+            }
+            Terminator::Branch { ref cond, then_block, else_block } => {
+                self.emit_if_else(cond, *then_block, *else_block)?;
+            }
+            Terminator::Switch { value, targets, default } => {
+                self.emit_switch(value.clone(), targets.clone(), *default)?;
+            }
+            Terminator::Unreachable => { self.wfunc.instruction(&W::Unreachable); }
         }
         Ok(())
     }

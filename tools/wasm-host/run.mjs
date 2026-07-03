@@ -91,11 +91,13 @@ const env = {
   kryos_string_trim: (off, len) => writeStr(readStr(off, len).trim()),
   kryos_string_index_of: (ho, hl, no, nl) =>
     BigInt(readStr(ho, hl).indexOf(readStr(no, nl))),
-  kryos_string_parse_int: (off, len) => {
+  kryos_string_parse_int: (packed) => {
+    const [off, len] = unpack(packed);
     const n = parseInt(readStr(off, len), 10);
     return BigInt(Number.isFinite(n) ? n : 0);
   },
-  kryos_string_parse_float: (off, len) => {
+  kryos_string_parse_float: (packed) => {
+    const [off, len] = unpack(packed);
     const n = parseFloat(readStr(off, len));
     return Number.isFinite(n) ? n : 0;
   },
