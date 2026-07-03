@@ -1148,6 +1148,24 @@ impl<'a> FnEmitter<'a> {
         }
     }
 
+    /// Returns true if following the linear Goto chain from `start` reaches a Return terminator.
+    fn chain_has_return(&self, start: BlockId) -> bool {
+        let mut current = start;
+        let mut steps = 0usize;
+        loop {
+            let idx = match self.id_to_index.get(&current.0) { Some(&i) => i, None => return false };
+            match &self.func.blocks[idx].terminator {
+                Terminator::Return(_) => return true,
+                Terminator::Goto(next) => {
+                    if steps > 32 { return false; }
+                    steps += 1;
+                    current = *next;
+                }
+                _ => return false,
+            }
+        }
+    }
+
     /// Emit a Switch-based while loop (e.g. `while let Some(v) = expr`).
     /// Structure: header has Switch terminator; one arm is the body (ends in Goto(header));
     /// the default arm is the exit path.
@@ -1305,6 +1323,12 @@ impl<'a> FnEmitter<'a> {
                 // fall-through default = br 1 (outer block = exit).
                 self.emit_while_body_switch(&value, &targets, default, header, exit)?;
             }
+            Terminator::Branch { cond: inner_cond, then_block, else_block } => {
+                // `while cond { if inner { A } B; i++ }` pattern.
+                // The body ends in an inner Branch; one arm is short (Return or back-edge),
+                // the other is the through path to the loop header.
+                self.emit_while_body_inner_branch(&inner_cond, then_block, else_block, header)?;
+            }
             _ => {
                 return Err(WasmCodegenError::unsupported(
                     "while-loop body must end in Goto(header) or Return",
@@ -1317,6 +1341,94 @@ impl<'a> FnEmitter<'a> {
 
         // Continue with the exit block.
         self.emit_block(exit)?;
+        Ok(())
+    }
+
+    /// Emit an "inverted while" where the THEN arm exits and the ELSE arm loops back.
+    ///
+    /// Pattern produced by tail-call optimisation on recursive functions:
+    ///   `if exit_cond { return base }  // then_block (exit)`
+    ///   `// else: body that Goto(header) // else_block chain`
+    ///
+    /// WASM structure:
+    ///   block(outer)     ; br 1 = exit
+    ///     loop           ; br 0 = continue
+    ///       [header instrs]
+    ///       [exit_cond]
+    ///       i32.wrap_i64
+    ///       br_if 1      ; exit when cond is true
+    ///       [else_block body chain]
+    ///       br 0         ; continue
+    ///     end loop
+    ///   end block
+    ///   [then_block = exit continuation]
+    fn emit_inverted_while(
+        &mut self,
+        header: BlockId,
+        cond: &Operand,
+        then_block: BlockId,
+        else_block: BlockId,
+    ) -> Result<(), WasmCodegenError> {
+        let body_idx = self.block_index(else_block)?;
+        if self.visited[body_idx] {
+            return Err(WasmCodegenError::unsupported(
+                "inverted-while body already visited (irreducible CFG)",
+            ));
+        }
+
+        self.wfunc.instruction(&W::Block(BlockType::Empty));
+        self.wfunc.instruction(&W::Loop(BlockType::Empty));
+
+        let header_idx = self.block_index(header)?;
+        for inst in self.func.blocks[header_idx].instructions.clone() {
+            self.emit_instruction(&inst)?;
+        }
+
+        // Exit when the condition is true (no negation — contrast with emit_simple_while).
+        self.emit_operand(cond)?;
+        self.wfunc.instruction(&W::I32WrapI64);
+        self.wfunc.instruction(&W::BrIf(1));
+
+        // Body: follow the else_block chain until Goto(header) or Return.
+        let mut current_body = else_block;
+        loop {
+            let curr_idx = self.block_index(current_body)?;
+            if self.visited[curr_idx] {
+                return Err(WasmCodegenError::unsupported("inverted-while body block already visited"));
+            }
+            self.visited[curr_idx] = true;
+            let instrs = self.func.blocks[curr_idx].instructions.clone();
+            for inst in &instrs {
+                self.emit_instruction(inst)?;
+            }
+            let term = self.func.blocks[curr_idx].terminator.clone();
+            match term {
+                Terminator::Goto(b) if b == header => {
+                    self.wfunc.instruction(&W::Br(0));
+                    break;
+                }
+                Terminator::Goto(next) => {
+                    current_body = next;
+                }
+                Terminator::Return(value) => {
+                    if let Some(op) = &value {
+                        self.emit_operand(op)?;
+                    }
+                    self.wfunc.instruction(&W::Return);
+                    break;
+                }
+                _ => {
+                    return Err(WasmCodegenError::unsupported(
+                        "inverted-while body must end in Goto(header) or Return",
+                    ));
+                }
+            }
+        }
+
+        self.wfunc.instruction(&W::End); // end loop
+        self.wfunc.instruction(&W::End); // end outer block
+
+        self.emit_block(then_block)?;
         Ok(())
     }
 
@@ -1428,6 +1540,109 @@ impl<'a> FnEmitter<'a> {
         self.wfunc.instruction(&W::Br(1));
 
         Ok(())
+    }
+
+    /// Emit `while cond { if inner { A } B; i++ }` — an inner Branch inside a while-loop body.
+    ///
+    /// We are already inside:
+    ///   block(outer)  ; br 1 = exit loop
+    ///     loop        ; br 0 = continue loop
+    ///       [header instrs + exit check done]
+    ///       [body instrs done]
+    ///       [HERE: body terminated in Branch(inner_cond, then_block, else_block)]
+    ///
+    /// Strategy: one arm is "short" (ends in Return or loops back to header),
+    /// the other is the "through" arm (merge path that eventually reaches header).
+    /// Emit: if [cond] { short_arm } through_arm_chain; br 0
+    fn emit_while_body_inner_branch(
+        &mut self,
+        cond: &Operand,
+        then_block: BlockId,
+        else_block: BlockId,
+        loop_header: BlockId,
+    ) -> Result<(), WasmCodegenError> {
+        let then_has_return = self.chain_has_return(then_block);
+        let else_has_return = self.chain_has_return(else_block);
+        let then_reaches_else = self.goto_chain_reaches(then_block, else_block);
+        let then_reaches_header = self.goto_chain_reaches(then_block, loop_header);
+
+        // If else arm is the short arm, invert the condition.
+        let invert = !then_has_return && !then_reaches_else && !then_reaches_header && else_has_return;
+
+        if !then_has_return && !then_reaches_else && !then_reaches_header && !else_has_return {
+            return Err(WasmCodegenError::unsupported(
+                "while body inner-if: cannot determine short vs through arm",
+            ));
+        }
+
+        let (if_arm, through_arm) = if invert { (else_block, then_block) } else { (then_block, else_block) };
+
+        self.emit_operand(cond)?;
+        self.wfunc.instruction(&W::I32WrapI64);
+        if invert { self.wfunc.instruction(&W::I32Eqz); }
+        self.wfunc.instruction(&W::If(BlockType::Empty));
+
+        // Emit the if_arm chain: Return / Goto(header) / Goto(through_arm) → fall through.
+        let mut current = if_arm;
+        loop {
+            let curr_idx = self.block_index(current)?;
+            if self.visited[curr_idx] {
+                break; // reached through_arm already visited — fall through
+            }
+            self.visited[curr_idx] = true;
+            let instrs = self.func.blocks[curr_idx].instructions.clone();
+            for inst in &instrs { self.emit_instruction(inst)?; }
+            let term = self.func.blocks[curr_idx].terminator.clone();
+            match term {
+                Terminator::Return(val) => {
+                    if let Some(op) = &val { self.emit_operand(op)?; }
+                    self.wfunc.instruction(&W::Return);
+                    break;
+                }
+                Terminator::Goto(b) if b == loop_header => {
+                    self.wfunc.instruction(&W::Br(1)); // inside if: br 1 = loop
+                    break;
+                }
+                Terminator::Goto(b) if b == through_arm => {
+                    break; // fall through to through_arm after end-if
+                }
+                Terminator::Goto(next) => { current = next; }
+                _ => return Err(WasmCodegenError::unsupported(
+                    "while body inner-if arm: unsupported terminator",
+                )),
+            }
+        }
+
+        self.wfunc.instruction(&W::End); // end inner if
+
+        // Emit the through_arm chain until Goto(loop_header) or Return.
+        let mut current = through_arm;
+        loop {
+            let curr_idx = self.block_index(current)?;
+            if self.visited[curr_idx] {
+                self.wfunc.instruction(&W::Br(0));
+                return Ok(());
+            }
+            self.visited[curr_idx] = true;
+            let instrs = self.func.blocks[curr_idx].instructions.clone();
+            for inst in &instrs { self.emit_instruction(inst)?; }
+            let term = self.func.blocks[curr_idx].terminator.clone();
+            match term {
+                Terminator::Goto(b) if b == loop_header => {
+                    self.wfunc.instruction(&W::Br(0));
+                    return Ok(());
+                }
+                Terminator::Goto(next) => { current = next; }
+                Terminator::Return(val) => {
+                    if let Some(op) = &val { self.emit_operand(op)?; }
+                    self.wfunc.instruction(&W::Return);
+                    return Ok(());
+                }
+                _ => return Err(WasmCodegenError::unsupported(
+                    "while body through-arm: unsupported terminator",
+                )),
+            }
+        }
     }
 
     /// Emit an if/else: detect the join point (the first block both arms
