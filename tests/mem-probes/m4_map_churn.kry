@@ -1,0 +1,13 @@
+fn main() {
+    let mut r = 0
+    while r < 8 {
+        let mut m: map<str, i64> = {}
+        let mut i = 0
+        while i < 30000 {
+            m["k" + to_string(i)] = i
+            i = i + 1
+        }
+        println("r{r} {len(m)}")
+        r = r + 1
+    }
+}

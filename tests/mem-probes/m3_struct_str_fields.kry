@@ -1,0 +1,15 @@
+struct User { name: str, tag: str, id: i64 }
+fn main() {
+    let mut r = 0
+    while r < 8 {
+        let mut i = 0
+        let mut acc = 0
+        while i < 80000 {
+            let u = User { name: "user-" + to_string(i), tag: "t" + to_string(r), id: i }
+            acc = acc + len(u.name) + u.id
+            i = i + 1
+        }
+        println("r{r} {acc}")
+        r = r + 1
+    }
+}

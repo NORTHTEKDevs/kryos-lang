@@ -1,0 +1,14 @@
+fn main() {
+    let mut r = 0
+    while r < 8 {
+        let mut i = 0
+        let mut acc = 0
+        while i < 150000 {
+            let s = "payload-" + to_string(i) + "-x"
+            acc = acc + len(s)
+            i = i + 1
+        }
+        println("r{r} {acc}")
+        r = r + 1
+    }
+}
