@@ -103,6 +103,13 @@ jobs:
         # cast sext, string ordering by pointer).
         run: bash tests/conformance/run_conformance.sh
 
+      - name: Ecosystem + packages typecheck sweep
+        # Typechecks all 255 ecosystem/ + packages/ .kry sources from their
+        # package roots (a 2026-07-02 sweep found 7 shipped sources that no
+        # test executed and that did not typecheck). Negative capability
+        # fixtures are excluded by explicit list inside the script.
+        run: bash tests/ecosystem_check.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM
