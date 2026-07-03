@@ -22,6 +22,7 @@ running a probe program on this commit.
 | `match` on scalars | or-patterns (`1 \| 2 \| 3`), default arm, str-returning arms (2026-07-02) |
 | Structs | literals + field access via slot encoding in linear memory (2026-07-02) |
 | Governed-agent embed | the whole `demo/wasm` + `ecosystem/kryos-embed` Node host runs on this subset |
+| All `examples/wasm_*.kry` | all 9 build and run via the node host (verified 2026-07-03) |
 
 The wasm expansion gate lives at `spec/wasm-acceptance.sh`
 (6 probe programs with exact-output `.expect` files + the full cargo suite);
