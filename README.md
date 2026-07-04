@@ -28,7 +28,7 @@ kryos run hello.kry
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model — simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~14 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O — anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
-- **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical bootstrap fixed point — stage-2 == stage-3 == stage-4, SHA-256-verified — with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules (verified stable across 4 consecutive runs, 2026-07-01). See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
+- **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical bootstrap fixed point — stage-2 == stage-3 == stage-4, SHA-256-verified. The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 61 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
 - **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is deny-what-you-don't-declare authority the compiler verifies (`E05xx` on violation), `@budget` refuses before spending, `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
@@ -229,7 +229,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 The full toolchain. Not a roadmap — actually built and tested:
 
 - **Compiler** — three backends (Cranelift / LLVM / WASM), zero cargo warnings, 295+ workspace tests passing
-- **Self-host** — bootstrap reaches a byte-identical fixed point (stage-2 == stage-3 == stage-4, with the ownership/type checkers disabled on the self-host source); the per-module standalone compile check passes 11/16 modules (codegen flaky on the rest). See [docs/20-self-hosting.md](docs/20-self-hosting.md)
+- **Self-host** — bootstrap reaches a byte-identical fixed point (stage-2 == stage-3 == stage-4); the self-host source type-checks and ownership-checks clean, and the per-module standalone compile check passes 16/16 modules. See [docs/20-self-hosting.md](docs/20-self-hosting.md)
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 61 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
@@ -275,7 +275,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v1.0.0-beta.1**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical, reached with the ownership/type checkers disabled on the self-host source via `--skip-ownership` / `KRYOS_SKIP_TYPES=1`).
+Kryos is **v1.0.0-beta.2**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-2 == stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver
@@ -312,11 +312,11 @@ Kryos is **v1.0.0-beta.1**. Feature-complete language and toolchain + self-hosti
 - Workspace lib tests: **295+ passing**
 - MIR lib tests: **79/79**
 - Build warnings: **0**
-- Self-host bootstrap: byte-identical fixed point (stage-2 == stage-3 == stage-4, SHA-256); standalone per-module compile check passes **11/16 modules** (codegen flaky on the rest)
+- Self-host bootstrap: byte-identical fixed point (stage-2 == stage-3 == stage-4, SHA-256); standalone per-module compile check passes **16/16 modules**
 
 ### Self-host status
 
-The Kryos compiler is written in Kryos. Stage-0 is the Rust-implemented `kryos.exe`. Stage-1 is the Kryos-compiled compiler that stage-0 produces from `compiler/self-host/*.kry` (34,342 lines of Kryos source). Because stage-1 is built by the Cranelift backend (a different backend), it is **not** byte-identical to later stages. The canonical bootstrap criterion is the **fixed point**: stage-2 == stage-3 == stage-4, SHA-256-verified, reached with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`). The 16 modules are `token`, `lexer`, `ast`, `parser`, `types`, `mir`, `lower`, `optimize`, `regalloc`, `x86`, `codegen`, `elf`, `coff`, `linker`, `runtime`, `main`; the standalone per-module compile check (`test_bootstrap.sh`) currently passes 11/16 (codegen is flaky on the rest).
+The Kryos compiler is written in Kryos. Stage-0 is the Rust-implemented `kryos.exe`. Stage-1 is the Kryos-compiled compiler that stage-0 produces from `compiler/self-host/*.kry` (34,342 lines of Kryos source). Because stage-1 is built by the Cranelift backend (a different backend), it is **not** byte-identical to later stages. The canonical bootstrap criterion is the **fixed point**: stage-2 == stage-3 == stage-4, SHA-256-verified. The self-host source type-checks clean and ownership-checks with zero errors; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (not because ownership checking fails). The 16 modules are `token`, `lexer`, `ast`, `parser`, `types`, `mir`, `lower`, `optimize`, `regalloc`, `x86`, `codegen`, `elf`, `coff`, `linker`, `runtime`, `main`; the standalone per-module compile check (`test_bootstrap.sh`) passes 16/16.
 
 Verify yourself:
 
@@ -326,7 +326,7 @@ cargo build --release -j 2
 # Byte-identical fixed point (the canonical criterion):
 bash self-host/bootstrap-win.sh    # → stage-2 == stage-3 == stage-4 (SHA-256)
 # Per-module standalone compile check:
-bash self-host/test_bootstrap.sh   # → PASS: 11 / 16 (codegen flaky on the rest)
+bash self-host/test_bootstrap.sh   # → PASS: 16 / 16
 ```
 
 ---
