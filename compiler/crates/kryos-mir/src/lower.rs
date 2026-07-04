@@ -1803,6 +1803,11 @@ fn drop_unescaped_str_temps(
     block_mark: u32,
     locals_mark: usize,
 ) {
+    // Diagnostic kill-switch (KRYOS_NO_TEMP_DROPS=1) for bisecting runtime
+    // faults to this pass without a rebuild.
+    if std::env::var_os("KRYOS_NO_TEMP_DROPS").is_some() {
+        return;
+    }
     if ctx.next_block != block_mark {
         return; // statement created blocks: temps may not dominate this point
     }

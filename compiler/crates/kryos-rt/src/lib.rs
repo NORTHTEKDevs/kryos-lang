@@ -43,14 +43,15 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Global allocator for every Kryos program (the runtime is linked into all
-/// AOT binaries and the JIT host). The Windows system heap RETAINS freed
-/// blocks under small-allocation churn: a string workload with perfectly
-/// balanced alloc/free (live ~1MB by our own memstats) still grew RSS past
-/// 2GB through fragmentation. mimalloc returns memory to the OS and handles
-/// churn; the same workload plateaus.
-#[global_allocator]
-static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// Allocator note (2026-07-04): mimalloc as #[global_allocator] halves the
+// Windows system heap's freed-block retention under string churn (peak
+// 2.6GB -> 1.5GB on the mem-probe workload; alloc/free COUNTS balance
+// either way -- see memstats). It is NOT enabled because the Cranelift JIT
+// host miscompiles/crashes with it (tests/smoke/test_ffi2 segfaults at the
+// first allocation after an if-heavy FFI sequence; AOT is unaffected).
+// The dependency stays in Cargo.toml for a future AOT-only integration
+// (separate allocator staticlib on the AOT link line, never in the JIT
+// host). Until then, retention behavior is the platform allocator's.
 
 /// When true, runtime functions (assert) store failure info in a thread-local
 /// instead of aborting — used by the `@test` annotation runner.
