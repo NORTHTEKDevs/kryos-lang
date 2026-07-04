@@ -110,6 +110,13 @@ jobs:
         # fixtures are excluded by explicit list inside the script.
         run: bash tests/ecosystem_check.sh
 
+      - name: Memory-plateau gate
+        # A heavy string+array churn workload must keep peak RSS under a hard
+        # ceiling. The pre-fix build grew to ~10.7GB on this workload
+        # (2026-07-04); the fixed build plateaus near 4MB. Guards against
+        # reintroduced unbounded leaks (Linux GNU time -v).
+        run: bash tests/mem_plateau_check.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM
