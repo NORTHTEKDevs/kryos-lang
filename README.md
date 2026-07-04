@@ -143,23 +143,32 @@ fn main() {
 }
 ```
 
-### Async/await (grammar only)
+### Async/await (cooperative executor)
 
 ```kryos
-async fn fetch_and_sum(urls: [str]) -> i64 {
-    let mut total = 0
-    for url in urls {
-        let body = await http_get(url)   // runs synchronously today
-        total = total + len(body)
+async fn worker(name: str, n: i64) {
+    let mut i = 0
+    while i < n {
+        coop_record(name + to_string(i))
+        await 0                 // yields to the scheduler
+        i = i + 1
     }
-    total
+}
+
+fn main() {
+    coop_spawn(worker("A", 3))
+    coop_spawn(worker("B", 3))
+    coop_run()                  // → A0 B0 A1 B1 A2 B2 (genuinely interleaved)
 }
 ```
 
-> **Status:** `async`/`await` are parsed and type-checked, but `await expr`
-> currently lowers to a direct synchronous call — there is no non-blocking
-> executor behind it yet. For real concurrency today, use `spawn` + channels
-> (above) or actors. A non-blocking I/O runtime is planned, not shipped.
+> **Status:** `await` is a real cooperative suspension point — it hands control
+> to the scheduler so another ready task runs, and tasks genuinely interleave
+> under `coop_run()` (verified on both backends). What is **not** yet shipped
+> is a non-blocking *I/O* runtime: `await http_get(url)` yields cooperatively
+> but the underlying socket read is still blocking. So `async`/`await` gives
+> you cooperative concurrency today, not async I/O. See
+> [docs/09-concurrency.md](docs/09-concurrency.md).
 
 ### Capability-typed effects (compile-time enforcement)
 
@@ -224,7 +233,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 61 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Concurrency** — `spawn` + channels + actors, all working today (async/await are grammar-only; no executor yet)
+- **Concurrency** — `spawn` + channels + actors, plus a cooperative `async`/`await` executor that genuinely interleaves tasks (a non-blocking I/O runtime behind `await` is still planned)
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
