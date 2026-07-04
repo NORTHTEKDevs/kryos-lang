@@ -427,16 +427,19 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if new_rc > 0 {
         return;
     }
-    // Last reference — deallocate the data buffer; mark header freed.
+    // Last reference — deallocate the data buffer AND the header.
     let cap = (*arr).cap as usize;
     if !(*arr).data.is_null() && cap > 0 {
         crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
-        crate::memstats::note_arr_free((cap * ELEM_SIZE) as i64);
     }
-    (*arr).data = ptr::null_mut();
-    (*arr).cap = 0;
-    (*arr).len = 0;
-    // ref_count is now 0; leak the header so over-free sees sentinel.
+    // The old "leak the header as an over-free sentinel" pattern traded
+    // latent double-free crashes for an UNBOUNDED 40-bytes-per-array leak
+    // (headers were never reclaimed for the life of the process). Double-
+    // frees are bugs the suite/cross-backend corpus must catch, not a
+    // reason to leak every header. Stack-promoted arrays never reach this
+    // line (their rc sentinel keeps new_rc > 0 above).
+    crate::memstats::note_arr_free((cap * ELEM_SIZE + 40) as i64);
+    crate::alloc::pool_free(arr as *mut u8, std::mem::size_of::<KryosArray>());
 }
 
 // ---------------------------------------------------------------------------

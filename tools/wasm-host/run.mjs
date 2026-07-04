@@ -72,6 +72,11 @@ const out = (line) => process.stdout.write(line + "\n");
 const jsonTable = new Map();
 let nextJsonId = 1n;
 
+// Character interning: ensures kryos_string_char_at returns the same packed
+// handle for the same byte value, so packed-i64 equality (used for string
+// char comparison in split/contains) works correctly.
+const charHandles = new Map();
+
 const env = {
   // ---- printing ----
   kryos_print_i64: (v) => out(typeof v === "bigint" ? v.toString() : String(v)),
@@ -82,9 +87,29 @@ const env = {
   kryos_string_concat: (o1, l1, o2, l2) =>
     writeStr(readStr(o1, l1) + readStr(o2, l2)),
   kryos_string_length: (packed) => unpack(packed)[1],
-  kryos_string_slice: (off, len, start, end) => {
+  kryos_string_slice: (packed, start, end) => {
+    const [off, len] = unpack(packed);
     const s = readStr(off, len);
     return writeStr(s.slice(asNum(start), asNum(end)));
+  },
+  kryos_string_char_at: (packed, idx) => {
+    const [off, len] = unpack(packed);
+    const i = asNum(idx);
+    if (i < 0 || i >= len) return writeStr("");
+    const byte = new Uint8Array(memory.buffer)[off + i];
+    if (!charHandles.has(byte)) {
+      charHandles.set(byte, writeStr(String.fromCharCode(byte)));
+    }
+    return charHandles.get(byte);
+  },
+  kryos_string_retain: (packed) => packed,
+  kryos_string_char_code: (packed) => {
+    const [off, len] = unpack(packed);
+    if (len === 0) return 0n;
+    return BigInt(new Uint8Array(memory.buffer)[off]);
+  },
+  kryos_string_contains: (hay, needle) => {
+    return readPacked(hay).includes(readPacked(needle)) ? 1n : 0n;
   },
   kryos_string_to_upper: (off, len) => writeStr(readStr(off, len).toUpperCase()),
   kryos_string_to_lower: (off, len) => writeStr(readStr(off, len).toLowerCase()),

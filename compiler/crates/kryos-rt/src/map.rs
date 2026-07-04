@@ -557,9 +557,13 @@ pub extern "C" fn kryos_map_free(map: i64) {
         }
         let capacity = (*header).capacity as usize;
         free_entries((*header).entries, capacity);
-        (*header).entries = std::ptr::null_mut();
-        (*header).capacity = 0;
-        (*header).len = 0;
+        // Free the header itself (symmetric with kryos_map_new's
+        // alloc_zeroed). The leak-the-header-as-sentinel pattern was an
+        // unbounded per-map leak; double-frees are bugs to catch, not
+        // absorb.
+        let layout =
+            Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
+        std::alloc::dealloc(header as *mut u8, layout);
     }
 }
 

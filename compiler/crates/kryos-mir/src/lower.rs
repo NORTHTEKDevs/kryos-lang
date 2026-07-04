@@ -1832,6 +1832,9 @@ fn drop_unescaped_str_temps(
         "char_code",
         "parse_int",
         "parse_float",
+        // Reads both operands, returns a fresh allocation; never stores or
+        // frees its inputs (the binary `+` runtime path).
+        "kryos_string_concat",
     ];
     // Whole-window guard: only instruction shapes we fully model.
     for inst in &ctx.current_instructions[inst_mark..] {
@@ -1859,7 +1862,14 @@ fn drop_unescaped_str_temps(
                 // `parts[0]` through the array -- split_join regression).
                 owns = match value {
                     RValue::StringConcat(_) => true,
-                    RValue::Call { func, .. } => func == "to_string",
+                    // Binary `+` on strings is MIR BinOp::Add with Str
+                    // operands (the backend expands it to concat calls);
+                    // candidates are pre-filtered to Str-typed temps, so an
+                    // Add-defined one is a fresh concat allocation it owns.
+                    RValue::BinOp { op: MirBinOp::Add, .. } => true,
+                    RValue::Call { func, .. } => {
+                        func == "to_string" || func == "kryos_string_concat"
+                    }
                     _ => false,
                 };
                 continue; // its own definition consumes other values, not itself

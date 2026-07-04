@@ -321,11 +321,15 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     let cap = (*s).cap as usize;
     if !(*s).data.is_null() && cap > 0 {
         dealloc((*s).data, KryosString::layout(cap));
-        crate::memstats::note_str_free((cap + 1) as i64);
     }
-    (*s).data = ptr::null_mut();
-    (*s).cap = 0;
-    (*s).len = 0;
+    // Free the HEADER too. The old "null the fields and leak the header as
+    // an over-free sentinel" pattern converted latent double-frees into an
+    // UNBOUNDED leak: 32 bytes per string ever created (~6GB on a 64M-string
+    // churn soak; the data buffers were freed, the headers never were).
+    // Double-frees are real bugs -- the suite and cross-backend corpus are
+    // the net for them now, not a permanent leak.
+    crate::memstats::note_str_free((cap + 1 + 32) as i64);
+    dealloc(s as *mut u8, Layout::new::<KryosString>());
 }
 
 // ---------------------------------------------------------------------------
