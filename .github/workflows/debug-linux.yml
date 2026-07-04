@@ -1,0 +1,30 @@
+name: debug-linux-csv
+on: workflow_dispatch
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install LLVM + valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang valgrind
+      - name: Build (release)
+        working-directory: compiler
+        run: cargo build --release -j 2
+      - name: Repro test_csv on both backends + valgrind
+        shell: bash
+        run: |
+          set -x
+          export KRYOS_STDLIB_DIR="$PWD/compiler/stdlib"
+          K="$PWD/compiler/target/release/kryos"
+          echo "==== JIT ===="
+          "$K" run tests/smoke/test_csv.kry; echo "jit rc=$?"
+          echo "==== AOT build ===="
+          "$K" build --release tests/smoke/test_csv.kry -o /tmp/csv.bin && echo "built"
+          echo "==== AOT run (raw) ===="
+          /tmp/csv.bin; echo "aot rc=$?"
+          echo "==== AOT under valgrind ===="
+          valgrind --error-exitcode=0 --leak-check=no --track-origins=yes /tmp/csv.bin 2>&1 | tail -40 || true
