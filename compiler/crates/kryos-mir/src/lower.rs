@@ -2109,53 +2109,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     consume_call_args(ctx, local, func, args);
                 }
                 // Reassignment release for MUTABLE heap lets (leak fix): a
-                // `let mut xs = [..]` inside a loop body re-stores this alloca
-                // slot every iteration; the previous iteration's value must be
-                // freed. The slot is zero-initialized at function entry, so
-                // the first pass releases null (no-op). Non-mut lets are pure
-                // SSA (snapshot would be use-before-def) and are already
-                // covered by block-end drops. Borrowed/shared bindings never
-                // own their value.
-                let let_release = if *mutable && !mark_non_owning && !is_shared {
-                    let f = match ctx.locals.iter().find(|l| l.id == local).map(|l| &l.ty) {
-                        Some(MirType::Str) => Some(("kryos_string_release_if_ne", MirType::Str)),
-                        Some(MirType::Array(e, s)) => {
-                            Some(("kryos_array_release_if_ne", MirType::Array(e.clone(), *s)))
-                        }
-                        Some(MirType::Map { key, value }) => Some((
-                            "kryos_map_release_if_ne",
-                            MirType::Map {
-                                key: key.clone(),
-                                value: value.clone(),
-                            },
-                        )),
-                        _ => None,
-                    };
-                    f.map(|(fname, ty)| {
-                        let t = ctx.alloc_temp(ty);
-                        ctx.emit(Instruction::Assign {
-                            dest: t,
-                            value: RValue::Use(Operand::Local(local)),
-                        });
-                        (fname, t)
-                    })
-                } else {
-                    None
-                };
+                // NOTE: a `let` binding does NOT snapshot-and-release its
+                // slot. A `let mut x = ..` inside a loop reuses the same MIR
+                // slot each iteration, but the previous iteration's value was
+                // already freed by the block's scope-end drop -- snapshotting
+                // and releasing here freed that same (dangling) pointer a
+                // second time (double-free; test_csv's `let mut quoted` in a
+                // loop, Linux glibc). Loop-body heap lets are the drop
+                // machinery's job, not this site's.
                 ctx.emit(Instruction::Assign {
                     dest: local,
                     value: rvalue,
                 });
-                if let Some((fname, old)) = let_release {
-                    let sink = ctx.alloc_temp(MirType::I64);
-                    ctx.emit(Instruction::Assign {
-                        dest: sink,
-                        value: RValue::Call {
-                            func: fname.to_string(),
-                            args: vec![Operand::Local(old), Operand::Local(local)],
-                        },
-                    });
-                }
                 if is_shared {
                     ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
