@@ -129,6 +129,18 @@ impl JitCompiler {
             kryos_rt::string::kryos_string_free as *const u8,
         );
         jit_builder.symbol(
+            "kryos_string_release_if_ne",
+            kryos_rt::string::kryos_string_release_if_ne as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_array_release_if_ne",
+            kryos_rt::array::kryos_array_release_if_ne as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_map_release_if_ne",
+            kryos_rt::map::kryos_map_release_if_ne as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_string_clone",
             kryos_rt::string::kryos_string_clone as *const u8,
         );

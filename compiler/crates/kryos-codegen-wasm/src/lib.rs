@@ -299,6 +299,14 @@ struct WasmCodegen {
     to_string_i64_idx: u32,
     /// `kryos_to_string_f64(v: f64) -> packed_str` — converts f64 to its decimal string.
     to_string_f64_idx: u32,
+    /// `kryos_string_char_at(packed: i64, idx: i64) -> packed_str` — single-char substring.
+    string_char_at_idx: u32,
+    /// `kryos_string_retain(packed: i64) -> i64` — ARC retain; no-op in WASM.
+    string_retain_idx: u32,
+    /// `kryos_string_char_code(packed: i64) -> i64` — byte value of first char.
+    string_char_code_idx: u32,
+    /// `kryos_string_contains(haystack: i64, needle: i64) -> i64` — 1 if needle in haystack.
+    string_contains_idx: u32,
 
     /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
     /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
@@ -360,6 +368,10 @@ impl WasmCodegen {
             http_fetch_idx: 0,
             to_string_i64_idx: 0,
             to_string_f64_idx: 0,
+            string_char_at_idx: 0,
+            string_retain_idx: 0,
+            string_char_code_idx: 0,
+            string_contains_idx: 0,
             struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
@@ -750,6 +762,34 @@ impl WasmCodegen {
         self.imports.import(env_module, "kryos_to_string_f64",
             wasm_encoder::EntityType::Function(self.type_count));
         self.to_string_f64_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_char_at(packed: i64, idx: i64) -> packed_str  — single-char substring at idx
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_char_at",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_char_at_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_retain(packed: i64) -> i64  — ARC retain; no-op in WASM (returns same handle)
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_retain",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_retain_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_char_code(packed: i64) -> i64  — byte value of first char
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_char_code",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_char_code_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_contains(haystack: i64, needle: i64) -> i64  — 1 if needle found in haystack
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_contains",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_contains_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
     }
 
@@ -2520,6 +2560,78 @@ impl<'a> FnEmitter<'a> {
             self.emit_operand(&args[0])?; // packed array i64
             self.emit_operand(&args[1])?; // value i64
             self.wfunc.instruction(&W::Call(self.cg.array_push_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: substr(s, start, end) — byte-indexed substring
+        // Lowered to kryos_string_slice(packed, start_i32, end_i32).
+        // -------------------------------------------------------------
+        if func == "substr" && args.len() == 3 {
+            self.emit_operand(&args[0])?;           // packed str i64
+            self.emit_operand(&args[1])?;           // start i64
+            self.wfunc.instruction(&W::I32WrapI64); // -> i32
+            self.emit_operand(&args[2])?;           // end i64
+            self.wfunc.instruction(&W::I32WrapI64); // -> i32
+            self.wfunc.instruction(&W::Call(self.cg.string_slice_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: char_code(s) -> i64 — byte value of first character
+        // -------------------------------------------------------------
+        if func == "char_code" && args.len() == 1 {
+            self.emit_operand(&args[0])?; // packed str i64
+            self.wfunc.instruction(&W::Call(self.cg.string_char_code_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Built-in: contains(haystack, needle) -> bool (for str args)
+        // -------------------------------------------------------------
+        if func == "contains" && args.len() == 2 {
+            let ty = self.operand_ty(&args[0]).unwrap_or(MirType::I64);
+            if matches!(ty, MirType::Str) {
+                self.emit_operand(&args[0])?; // packed haystack i64
+                self.emit_operand(&args[1])?; // packed needle i64
+                self.wfunc.instruction(&W::Call(self.cg.string_contains_idx));
+                return Ok(());
+            }
+        }
+
+        // -------------------------------------------------------------
+        // Runtime ARC: kryos_string_retain(packed) -> packed (no-op in WASM)
+        // -------------------------------------------------------------
+        if func == "kryos_string_retain" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            self.wfunc.instruction(&W::Call(self.cg.string_retain_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Runtime: kryos_string_char_at(packed, idx) -> packed single-char str
+        // -------------------------------------------------------------
+        if func == "kryos_string_char_at" && args.len() == 2 {
+            self.emit_operand(&args[0])?; // packed str i64
+            self.emit_operand(&args[1])?; // idx i64
+            self.wfunc.instruction(&W::Call(self.cg.string_char_at_idx));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Reassignment releases (native leak fix): wasm memory is host-
+        // managed, so these are no-ops here -- evaluate to 0 like the
+        // native helpers' i64 return. Wasm-side reclamation is tracked
+        // separately in docs/wasm-contract.md.
+        // -------------------------------------------------------------
+        if matches!(
+            func,
+            "kryos_string_release_if_ne"
+                | "kryos_array_release_if_ne"
+                | "kryos_map_release_if_ne"
+        ) && args.len() == 2
+        {
+            self.wfunc.instruction(&W::I64Const(0));
             return Ok(());
         }
 

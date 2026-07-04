@@ -337,8 +337,15 @@ fn test_string_constants_emitted_as_globals() {
 
     // Should emit a global constant with the string + null terminator.
     assert!(ir.contains("@.str.0 = private unnamed_addr constant [12 x i8] c\"hello world\\00\""));
-    // The function body should reference it via GEP.
-    assert!(ir.contains("getelementptr [12 x i8], ptr @.str.0"));
+    // ...plus its static immortal KryosString header (literal interning: no
+    // per-evaluation kryos_string_new heap copy; negative rc = free no-ops).
+    assert!(ir.contains(
+        "@.str.0.hdr = private global { i64, i64, ptr, i64 } { i64 11, i64 11, ptr @.str.0, i64 -4611686018427387904 }"
+    ));
+    // The function body references the interned header directly and must NOT
+    // heap-allocate for the literal.
+    assert!(ir.contains("@.str.0.hdr"));
+    assert!(!ir.contains("call ptr @kryos_string_new(ptr"));
 }
 
 // ---------------------------------------------------------------------------

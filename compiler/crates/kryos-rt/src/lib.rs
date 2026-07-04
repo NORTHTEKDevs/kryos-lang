@@ -43,6 +43,15 @@
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Global allocator for every Kryos program (the runtime is linked into all
+/// AOT binaries and the JIT host). The Windows system heap RETAINS freed
+/// blocks under small-allocation churn: a string workload with perfectly
+/// balanced alloc/free (live ~1MB by our own memstats) still grew RSS past
+/// 2GB through fragmentation. mimalloc returns memory to the OS and handles
+/// churn; the same workload plateaus.
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// When true, runtime functions (assert) store failure info in a thread-local
 /// instead of aborting — used by the `@test` annotation runner.
 static TEST_MODE: AtomicBool = AtomicBool::new(false);

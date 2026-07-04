@@ -438,6 +438,22 @@ pub unsafe extern "C" fn kryos_string_replace(
 
 // Note: kryos_string_char_at is defined in builtins.rs
 
+/// Reassignment release: free `old` unless it is the SAME handle as `new`.
+/// Emitted by the compiler before storing a new value into a mutable str
+/// local. The pointer-equality guard makes in-place mutation patterns safe
+/// (a runtime fn that mutated and returned the same handle must not have its
+/// input freed). Null-safe; immortal (rc<=0) strings no-op inside free.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_release_if_ne(
+    old: *mut KryosString,
+    new: *mut KryosString,
+) -> i64 {
+    if !old.is_null() && old != new {
+        kryos_string_free(old);
+    }
+    0
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

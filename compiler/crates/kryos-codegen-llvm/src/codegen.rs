@@ -632,6 +632,17 @@ impl LlvmCodegen {
             self.emit_line(&format!(
                 "{name} = private unnamed_addr constant [{len} x i8] c\"{escaped}\\00\""
             ));
+            // Static IMMORTAL KryosString header for this literal (leak fix):
+            // previously every use of a string literal called kryos_string_new
+            // (a fresh heap copy per evaluation -- literals in hot loops leaked
+            // gigabytes). Layout matches #[repr(C)] KryosString
+            // { len, cap, data, ref_count }. ref_count is a huge NEGATIVE
+            // sentinel: kryos_string_free no-ops on rc <= 0, and unconditional
+            // retains can increment for eons without ever reaching 0.
+            let byte_len = content.len();
+            self.emit_line(&format!(
+                "{name}.hdr = private global {{ i64, i64, ptr, i64 }} {{ i64 {byte_len}, i64 {byte_len}, ptr {name}, i64 -4611686018427387904 }}"
+            ));
         }
         self.emit_blank();
     }
@@ -650,6 +661,11 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_release(ptr)");
         self.emit_line("declare void @kryos_arc_set_drop(ptr, ptr)");
         self.emit_line("declare i64 @kryos_arc_alloc_i64(i64)");
+        // Reassignment releases (leak fix): free the OLD value of a mutable
+        // heap local when a new, DIFFERENT handle is stored over it.
+        self.emit_line("declare i64 @kryos_string_release_if_ne(ptr, ptr)");
+        self.emit_line("declare i64 @kryos_array_release_if_ne(ptr, ptr)");
+        self.emit_line("declare i64 @kryos_map_release_if_ne(i64, i64)");
         self.emit_blank();
         // Saturating float->int cast intrinsics. Older clang auto-declared
         // known intrinsics when parsing textual IR; LLVM 22+ rejects a call
@@ -2870,6 +2886,24 @@ impl LlvmCodegen {
                 let ty = self.local_type(local.id);
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
+                    // Zero-init mutable HEAP-typed locals so the reassignment
+                    // release helpers (kryos_*_release_if_ne) see null/0 on
+                    // the first store instead of alloca garbage.
+                    match &local.ty {
+                        MirType::Str | MirType::Array(..) => {
+                            self.emit_line(&format!(
+                                "  store {ty} null, ptr %_{}.addr",
+                                local.id.0
+                            ));
+                        }
+                        MirType::Map { .. } => {
+                            self.emit_line(&format!(
+                                "  store i64 0, ptr %_{}.addr",
+                                local.id.0
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -5379,22 +5413,17 @@ impl LlvmCodegen {
                     .get(s)
                     .cloned()
                     .unwrap_or_else(|| self.intern_string(s));
-                let byte_len = s.len();
-                let arr_len = byte_len + 1;
-                // Create a KryosString handle from the raw data section bytes.
-                let gep_tmp = self.next_temp();
-                self.emit_line(&format!(
-                    "  {gep_tmp} = getelementptr [{arr_len} x i8], ptr {global_name}, i64 0, i64 0"
-                ));
+                // Literals are STATIC immortal KryosStrings ({name}.hdr, see
+                // emit_string_constants): no allocation per evaluation, and
+                // frees on them no-op via the negative ref_count sentinel.
                 if is_mutable {
-                    let handle = self.next_temp();
                     self.emit_line(&format!(
-                        "  {handle} = call ptr @kryos_string_new(ptr {gep_tmp}, i64 {byte_len})"
+                        "  store ptr {global_name}.hdr, ptr %_{}.addr",
+                        dest.0
                     ));
-                    self.emit_line(&format!("  store ptr {handle}, ptr %_{}.addr", dest.0));
                 } else {
                     self.emit_line(&format!(
-                        "  %_{} = call ptr @kryos_string_new(ptr {gep_tmp}, i64 {byte_len})",
+                        "  %_{} = getelementptr i8, ptr {global_name}.hdr, i64 0",
                         dest.0
                     ));
                 }
@@ -7565,18 +7594,11 @@ impl LlvmCodegen {
                 format!("%_{}", id.0)
             }
             Operand::Constant(Constant::Str(s)) => {
-                // String constants: get raw data pointer then wrap in KryosString.
+                // String constants reference the static immortal KryosString
+                // header directly (leak fix -- was a fresh kryos_string_new
+                // heap copy per evaluation; literals in loops leaked GBs).
                 if let Some(global_name) = self.string_constants.get(s.as_str()) {
-                    let byte_len = s.len();
-                    let arr_len = byte_len + 1;
-                    let gep = format!(
-                        "getelementptr ([{arr_len} x i8], ptr {global_name}, i64 0, i64 0)"
-                    );
-                    let tmp = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {tmp} = call ptr @kryos_string_new(ptr {gep}, i64 {byte_len})"
-                    ));
-                    tmp
+                    format!("{global_name}.hdr")
                 } else {
                     "null".into()
                 }

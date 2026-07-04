@@ -103,9 +103,13 @@ pub fn note_str_new(bytes: i64) {
     if !on() {
         return;
     }
-    STR_NEW.fetch_add(1, Ordering::Relaxed);
+    let c = STR_NEW.fetch_add(1, Ordering::Relaxed) + 1;
     STR_B.fetch_add(bytes as u64, Ordering::Relaxed);
     add_bytes(bytes);
+    // Periodic dump on string-heavy workloads (arrays already had one).
+    if c % 500_000 == 0 {
+        dump();
+    }
 }
 
 #[inline]

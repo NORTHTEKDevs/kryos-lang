@@ -10,3 +10,6 @@ crate-type = ["staticlib", "rlib"]
 # Debug-only hang-trap watchdog in kryos_array_get (env KRYOS_HANG_TRAP).
 # Off by default so release array reads pay no per-element atomic load.
 hang-trap = []
+
+[dependencies]
+mimalloc = { version = "0.1", default-features = false }

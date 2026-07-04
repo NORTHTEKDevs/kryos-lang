@@ -563,6 +563,17 @@ pub extern "C" fn kryos_map_free(map: i64) {
     }
 }
 
+/// Reassignment release: free `old` unless it is the SAME handle as `new`.
+/// Map handles are i64; 0 = uninitialized. Emitted by the compiler before
+/// storing a new value into a mutable map local.
+#[no_mangle]
+pub extern "C" fn kryos_map_release_if_ne(old: i64, new: i64) -> i64 {
+    if old != 0 && old != new {
+        kryos_map_free(old);
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

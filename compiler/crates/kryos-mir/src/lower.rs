@@ -1771,6 +1771,170 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
 }
 
 fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
+    let inst_mark = ctx.current_instructions.len();
+    let block_mark = ctx.next_block;
+    let locals_mark = ctx.locals.len();
+    lower_stmt_inner(ctx, stmt);
+    drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark);
+}
+
+/// Statement-end cleanup for string expression TEMPORARIES (leak fix).
+///
+/// Named locals get scope-end drops, but subexpression temps (the result of
+/// `to_string(i)` feeding a concat, the heap string a literal allocates, the
+/// intermediate of `a + b + c`) had NO drop path at all: a simple string
+/// churn loop grew 218MB -> 1020MB over 10 rounds. This emits `Drop` for
+/// Str-typed unnamed temps created during one straight-line statement whose
+/// every use is a provably borrowing operation.
+///
+/// Conservative by construction:
+/// - Bails when the statement created control flow (SSA dominance) — so
+///   if/while/match/return statements are untouched.
+/// - Bails when the window contains ANY instruction other than
+///   Assign/Drop/Nop/DebugLine (an instruction shape we don't model could
+///   hide an escape).
+/// - A temp is dropped only if its uses are exclusively: StringConcat or
+///   BinOp operands, or arguments to builtins known to borrow. Appearing
+///   anywhere else (Use into another slot, aggregate init, user call,
+///   store, ...) disqualifies it.
+fn drop_unescaped_str_temps(
+    ctx: &mut LoweringContext,
+    inst_mark: usize,
+    block_mark: u32,
+    locals_mark: usize,
+) {
+    if ctx.next_block != block_mark {
+        return; // statement created blocks: temps may not dominate this point
+    }
+    let candidates: Vec<LocalId> = ctx.locals[locals_mark..]
+        .iter()
+        .filter(|l| l.name.is_none() && l.ty == MirType::Str && !l.mutable)
+        .map(|l| l.id)
+        .collect();
+    if candidates.is_empty() {
+        return;
+    }
+    // Builtins that read their string argument and neither store nor free it.
+    const BORROWING_BUILTINS: &[&str] = &[
+        "len",
+        "to_string",
+        "println",
+        "print",
+        "eprintln",
+        "eprint",
+        "contains",
+        "substr",
+        "char_code",
+        "parse_int",
+        "parse_float",
+    ];
+    // Whole-window guard: only instruction shapes we fully model.
+    for inst in &ctx.current_instructions[inst_mark..] {
+        match inst {
+            Instruction::Assign { .. }
+            | Instruction::Drop { .. }
+            | Instruction::Nop
+            | Instruction::DebugLine(_) => {}
+            _ => return,
+        }
+    }
+    let mentions = |op: &Operand, id: LocalId| matches!(op, Operand::Local(l) if *l == id);
+    let mut to_drop: Vec<LocalId> = Vec::new();
+    'cand: for id in candidates {
+        let mut owns = false;
+        for inst in &ctx.current_instructions[inst_mark..] {
+            let (dest, value) = match inst {
+                Instruction::Assign { dest, value } => (dest, value),
+                _ => continue,
+            };
+            if *dest == id {
+                // Only temps whose DEFINITION allocates a fresh owned string
+                // may be dropped. Index/Field reads are BORROWED views of an
+                // element that the container still owns (dropping one freed
+                // `parts[0]` through the array -- split_join regression).
+                owns = match value {
+                    RValue::StringConcat(_) => true,
+                    RValue::Call { func, .. } => func == "to_string",
+                    _ => false,
+                };
+                continue; // its own definition consumes other values, not itself
+            }
+            let used_here: bool = match value {
+                RValue::StringConcat(parts) => parts.iter().any(|p| mentions(p, id)),
+                RValue::BinOp { left, right, .. } => mentions(left, id) || mentions(right, id),
+                RValue::Call { func, args } => {
+                    if args.iter().any(|a| mentions(a, id)) {
+                        if BORROWING_BUILTINS.contains(&func.as_str()) {
+                            true
+                        } else {
+                            continue 'cand; // unknown callee may take ownership
+                        }
+                    } else {
+                        false
+                    }
+                }
+                // Any other rvalue shape touching this temp is a potential
+                // escape (Use copies the pointer, aggregate inits store it...).
+                other => {
+                    if rvalue_mentions_local(other, id) {
+                        continue 'cand;
+                    }
+                    false
+                }
+            };
+            let _ = used_here;
+        }
+        if owns {
+            to_drop.push(id);
+        }
+    }
+    for id in to_drop {
+        ctx.emit(Instruction::Drop { local: id });
+    }
+}
+
+/// Does this rvalue reference the given local anywhere in its operands?
+/// Conservative helper for the temp-drop pass; must cover every operand-
+/// carrying variant (unknown shapes are handled by the caller's whole-window
+/// guard, which only admits Assign instructions in the first place).
+fn rvalue_mentions_local(rv: &RValue, id: LocalId) -> bool {
+    let m = |op: &Operand| matches!(op, Operand::Local(l) if *l == id);
+    match rv {
+        RValue::Use(op)
+        | RValue::UnOp { operand: op, .. }
+        | RValue::ArcAlloc { inner: op, .. }
+        | RValue::Cast { operand: op, .. }
+        | RValue::EnumTag { operand: op }
+        | RValue::EnumPayload { operand: op, .. }
+        | RValue::Deref { operand: op, .. }
+        | RValue::MakeTraitObject { value: op, .. } => m(op),
+        RValue::BinOp { left, right, .. } => m(left) || m(right),
+        RValue::StringConcat(parts) | RValue::EnumVariant { fields: parts, .. } => {
+            parts.iter().any(m)
+        }
+        RValue::Array(parts) | RValue::Tuple(parts) => parts.iter().any(m),
+        RValue::Call { args, .. } => args.iter().any(m),
+        RValue::CallIndirect { callee, args, .. } => m(callee) || args.iter().any(m),
+        RValue::VtableCall { object, args, .. } => m(object) || args.iter().any(m),
+        RValue::Struct { fields, .. } => fields.iter().any(|(_, op)| m(op)),
+        RValue::Field { object, .. } => m(object),
+        RValue::Index { object, index, .. } => m(object) || m(index),
+        RValue::Map(entries) => entries.iter().any(|(k, v)| m(k) || m(v)),
+        RValue::Closure { captures, .. } => captures.iter().any(m),
+        RValue::Range { start, end, .. } => {
+            start.as_ref().is_some_and(m) || end.as_ref().is_some_and(m)
+        }
+        RValue::AddrOf { local, .. } => *local == id,
+        RValue::Comptime(inner) => rvalue_mentions_local(inner, id),
+        RValue::ConstInt(_)
+        | RValue::ConstFloat(_)
+        | RValue::ConstBool(_)
+        | RValue::ConstString(_)
+        | RValue::ConstNone => false,
+    }
+}
+
+fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     // Debug-line instrumentation: when the DAP debugger is driving this
     // compilation, mark each statement with its source line so the backend can
     // emit a `kryos_dbg_line` hook before it. No-op (and zero cost) for normal
@@ -1929,10 +2093,54 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 if let RValue::Call { ref func, ref args } = rvalue {
                     consume_call_args(ctx, local, func, args);
                 }
+                // Reassignment release for MUTABLE heap lets (leak fix): a
+                // `let mut xs = [..]` inside a loop body re-stores this alloca
+                // slot every iteration; the previous iteration's value must be
+                // freed. The slot is zero-initialized at function entry, so
+                // the first pass releases null (no-op). Non-mut lets are pure
+                // SSA (snapshot would be use-before-def) and are already
+                // covered by block-end drops. Borrowed/shared bindings never
+                // own their value.
+                let let_release = if *mutable && !mark_non_owning && !is_shared {
+                    let f = match ctx.locals.iter().find(|l| l.id == local).map(|l| &l.ty) {
+                        Some(MirType::Str) => Some(("kryos_string_release_if_ne", MirType::Str)),
+                        Some(MirType::Array(e, s)) => {
+                            Some(("kryos_array_release_if_ne", MirType::Array(e.clone(), *s)))
+                        }
+                        Some(MirType::Map { key, value }) => Some((
+                            "kryos_map_release_if_ne",
+                            MirType::Map {
+                                key: key.clone(),
+                                value: value.clone(),
+                            },
+                        )),
+                        _ => None,
+                    };
+                    f.map(|(fname, ty)| {
+                        let t = ctx.alloc_temp(ty);
+                        ctx.emit(Instruction::Assign {
+                            dest: t,
+                            value: RValue::Use(Operand::Local(local)),
+                        });
+                        (fname, t)
+                    })
+                } else {
+                    None
+                };
                 ctx.emit(Instruction::Assign {
                     dest: local,
                     value: rvalue,
                 });
+                if let Some((fname, old)) = let_release {
+                    let sink = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: sink,
+                        value: RValue::Call {
+                            func: fname.to_string(),
+                            args: vec![Operand::Local(old), Operand::Local(local)],
+                        },
+                    });
+                }
                 if is_shared {
                     ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
@@ -2041,6 +2249,35 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             }
                             let dest = find_local_by_name(ctx, name)
                                 .expect("internal: assign target local not found");
+                            // Reassignment release (leak fix): a mutable heap
+                            // local being overwritten must free its previous
+                            // value -- guarded by pointer inequality at runtime
+                            // so in-place mutators (push returns the same
+                            // handle) stay safe. Skipped when the old value's
+                            // ownership was moved out (dropped_locals) -- it is
+                            // no longer ours to free.
+                            let dest_ty = ctx
+                                .locals
+                                .iter()
+                                .find(|l| l.id == dest)
+                                .map(|l| l.ty.clone());
+                            let release_fn = match &dest_ty {
+                                Some(MirType::Str) => Some("kryos_string_release_if_ne"),
+                                Some(MirType::Array(..)) => Some("kryos_array_release_if_ne"),
+                                Some(MirType::Map { .. }) => Some("kryos_map_release_if_ne"),
+                                _ => None,
+                            };
+                            let old_snapshot = match (release_fn, &dest_ty) {
+                                (Some(_), Some(ty)) if !ctx.dropped_locals.contains(&dest.0) => {
+                                    let t = ctx.alloc_temp(ty.clone());
+                                    ctx.emit(Instruction::Assign {
+                                        dest: t,
+                                        value: RValue::Use(Operand::Local(dest)),
+                                    });
+                                    Some(t)
+                                }
+                                _ => None,
+                            };
                             let rvalue = lower_expr_to_rvalue(ctx, value);
                             if let RValue::Use(Operand::Local(src)) = &rvalue {
                                 let src_ty = ctx
@@ -2067,6 +2304,24 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 dest,
                                 value: rvalue,
                             });
+                            // Emit the guarded release AFTER the store: the RHS
+                            // (which may read the old value, e.g. s = s + "x")
+                            // has fully evaluated by now.
+                            if let (Some(f), Some(old)) = (release_fn, old_snapshot) {
+                                let sink = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: sink,
+                                    value: RValue::Call {
+                                        func: f.to_string(),
+                                        args: vec![
+                                            Operand::Local(old),
+                                            Operand::Local(dest),
+                                        ],
+                                    },
+                                });
+                            }
+                            // The local now holds a fresh owned value.
+                            ctx.dropped_locals.remove(&dest.0);
                         } else if let ast::Expr::IndexAccess { object, index, .. } = target {
                             // Map/array index assignment: m["key"] = value → kryos_map_insert_str(m, key, value)
                             let obj_ty = infer_expr_type(ctx, object);

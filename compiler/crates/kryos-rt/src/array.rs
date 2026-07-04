@@ -443,6 +443,19 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Reassignment release: free `old` unless it is the SAME handle as `new`.
+/// Emitted by the compiler before storing a new value into a mutable array
+/// local; the pointer-equality guard keeps in-place mutators (push grows in
+/// place and returns the same handle) safe. Null-safe; the free itself
+/// no-ops on already-freed sentinels.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_release_if_ne(old: *mut KryosArray, new: *mut KryosArray) -> i64 {
+    if !old.is_null() && old != new {
+        kryos_array_free(old);
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
