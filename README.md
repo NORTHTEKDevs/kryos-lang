@@ -47,6 +47,7 @@ kryos run hello.kry
 | Build an MCP server in 60 seconds | [kryos-mcp-template](https://github.com/NORTHTEKDevs/kryos-mcp-template) |
 | Embed a governed agent in your Python/Go/Node app | [ecosystem/kryos-embed](ecosystem/kryos-embed/README.md) |
 | See what's verified working (apps, demos, probes) | [SHOWCASE.md](SHOWCASE.md) |
+| Understand how it was built (and verified) | [docs/HOW_THIS_WAS_BUILT.md](docs/HOW_THIS_WAS_BUILT.md) |
 | See real benchmark numbers | [BENCHMARKS.md](BENCHMARKS.md) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | Understand the design philosophy | [docs/WHY_KRYOS.md](docs/WHY_KRYOS.md) |

@@ -83,6 +83,7 @@ fn main() {
     print_help()
 }
 
+@capabilities(fs:read)
 fn load_or_empty() -> str {
     if file_exists("todo.txt") == 1 {
         return file_read("todo.txt")

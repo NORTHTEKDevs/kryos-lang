@@ -1,3 +1,4 @@
+@capabilities(net)
 fn main() {
     let conn_str = "postgresql://kryos:kryos@127.0.0.1:5432/kryostest?sslmode=disable"
     let h = pg_connect(conn_str)

@@ -321,6 +321,7 @@ fn build_nav(manifest: i64) -> str {
   return nav
 }
 
+@capabilities(fs:read, fs:write)
 fn build_site(manifest: i64) {
   let site_title: str = json_to_str(json_get(manifest, "title"))
   let out_dir: str = json_to_str(json_get(manifest, "out_dir"))
@@ -351,6 +352,7 @@ fn build_site(manifest: i64) {
 // Demo (writes sources, manifest, then builds site)
 // ======================================================================
 
+@capabilities(fs:write)
 fn write_demo_sources(dir: str) {
   let mut idx: str = ""
   idx = idx + "# Welcome to kryos-ssg\n\n"
@@ -394,6 +396,7 @@ fn write_demo_sources(dir: str) {
 // Portable temp dir resolver. Mirrors std::os::temp_dir() priority order
 // (TMPDIR/TEMP/TMP/-> /tmp). Inlined to avoid pulling stdlib FFI helpers
 // that the module resolver can't currently follow transitively.
+@capabilities(process)
 fn portable_temp_dir() -> str {
   let temp: str = env_get("TEMP")
   if len(temp) > 0 { return temp }
@@ -404,12 +407,14 @@ fn portable_temp_dir() -> str {
   return "/tmp"
 }
 
+@capabilities(process)
 fn portable_path_sep() -> str {
   let windir: str = env_get("WINDIR")
   if len(windir) > 0 { return "\\" }
   return "/"
 }
 
+@capabilities(fs:read, fs:write, process)
 fn main() {
   let args: [str] = args()
   let mut manifest_path: str = ""

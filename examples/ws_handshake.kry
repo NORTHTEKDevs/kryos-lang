@@ -3,6 +3,7 @@
 //   Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
 //   Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 
+@capabilities(net)
 fn main() {
     let key = "dGhlIHNhbXBsZSBub25jZQ=="
     let accept = ws_accept_key(key)

@@ -106,6 +106,7 @@ fn is_doc(line: str) -> i64 {
   return 0
 }
 
+@capabilities(fs:read)
 fn process_file(path: str) -> i64 {
   if file_exists(path) == 0 {
     println("kdoc: skipped (missing): " + path)
@@ -160,6 +161,7 @@ fn process_file(path: str) -> i64 {
   return emitted
 }
 
+@capabilities(fs:read)
 fn main() {
   let argv: [str] = args()
   let n: i64 = len(argv)

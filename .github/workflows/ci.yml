@@ -110,6 +110,13 @@ jobs:
         # fixtures are excluded by explicit list inside the script.
         run: bash tests/ecosystem_check.sh
 
+      - name: Strict-capabilities gate (examples are exemplary)
+        # Every public example/showcase program must pass
+        # `kryos check --strict-capabilities` with least-privilege
+        # @capabilities declarations. Keeps the language's central pitch
+        # (compile-time capability safety) enforced on its own demos.
+        run: bash tests/strict_caps_examples.sh
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload

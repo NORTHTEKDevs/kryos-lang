@@ -102,6 +102,7 @@ fn all_todos_json() -> i64 {
 
 // --- HTTP helpers --------------------------------------------------------
 
+@capabilities(net:tcp)
 fn send_response(client: i64, status_line: str, content_type: str, body: str) {
   let mut hdr: str = "HTTP/1.0 "
   hdr = hdr + status_line
@@ -114,11 +115,13 @@ fn send_response(client: i64, status_line: str, content_type: str, body: str) {
   tcp_send(client, body)
 }
 
+@capabilities(net:tcp)
 fn send_json(client: i64, status_line: str, node: i64) {
   let body: str = json_stringify(node)
   send_response(client, status_line, "application/json", body)
 }
 
+@capabilities(net:tcp)
 fn send_text(client: i64, status_line: str, body: str) {
   send_response(client, status_line, "text/plain", body)
 }
@@ -185,6 +188,7 @@ fn extract_id(path: str) -> i64 {
 
 // --- Router --------------------------------------------------------------
 
+@capabilities(net:tcp)
 fn handle(client: i64, req: str) {
   let parsed: [str] = parse_request_line(req)
   let method: str = parsed[0]
@@ -248,6 +252,7 @@ fn handle(client: i64, req: str) {
   send_text(client, "404 Not Found", "route not found\n")
 }
 
+@capabilities(net:tcp)
 fn main() {
   // Seed
   store_add("write kryos")

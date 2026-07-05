@@ -32,6 +32,7 @@ fn match_line(haystack: str, needle: str, case_insensitive: bool) -> bool {
     return contains(haystack, needle)
 }
 
+@capabilities(fs:read)
 fn main() {
     // Banner line — keeps the run-expect annotation happy even when no
     // CLI args are provided.

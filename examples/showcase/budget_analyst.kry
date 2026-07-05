@@ -79,6 +79,7 @@ fn tool_defs() -> [ToolDef] {
 // the COMPILER+RUNTIME around every model call inside this function, at
 // any depth. A bug that made this loop infinite would throw on call 26.
 
+@capabilities(net)
 @budget(tokens = 60000, calls = 25)
 fn analyze(cfg: LlmConfig, question: str) -> Tracked<str> {
     let mut audit = tracked_source(question, "user", "question as asked")
@@ -129,6 +130,7 @@ fn offline_demo(question: str) {
     println(explain(audit))
 }
 
+@capabilities(net, process)
 fn main() {
     let argv = args()
     let mut question = "What is 17% of 2,340? Use the calc tool."

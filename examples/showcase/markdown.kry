@@ -420,6 +420,7 @@ fn demo_input() -> str {
   return s
 }
 
+@capabilities(fs:read)
 fn main() {
   let args: [str] = args()
   let mut src: str = ""

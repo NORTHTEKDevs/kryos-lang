@@ -25,11 +25,13 @@ fn ws_accept_key(key: str) -> str {
     return sha1_base64(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")
 }
 
+@capabilities(crypto)
 fn ws_make_key() -> str {
     let hex = random_bytes(16)
     return base64_encode(substr(hex, 0, 16))
 }
 
+@capabilities(crypto, net:tcp)
 fn ws_send_frame(fd: i64, opcode: i64, payload: str) -> i64 {
     let plen = len(payload)
     let mut frame = chr(128 + opcode)
@@ -72,10 +74,12 @@ fn ws_send_frame(fd: i64, opcode: i64, payload: str) -> i64 {
     return tcp_send(fd, frame)
 }
 
+@capabilities(crypto, net:tcp)
 fn ws_send_text(fd: i64, payload: str) -> i64 {
     return ws_send_frame(fd, 1, payload)
 }
 
+@capabilities(net:tcp)
 fn ws_recv_text(fd: i64) -> str {
     let hdr = tcp_recv(fd, 2)
     if len(hdr) < 2 {
@@ -128,6 +132,7 @@ fn cdp_navigate_string(url: str, id: i64) -> str {
 
 // Send a CDP command as a JSON-RPC request and return the response body.
 // id is a per-session monotonic counter; in real usage callers track it.
+@capabilities(crypto, net:tcp)
 fn cdp_call(fd: i64, id: i64, method: str, params_json: str) -> str {
     let q = chr(34)  // double-quote
     let ob = chr(123)
@@ -138,6 +143,7 @@ fn cdp_call(fd: i64, id: i64, method: str, params_json: str) -> str {
 }
 
 // Navigate the page to a URL.
+@capabilities(crypto, net:tcp)
 fn cdp_navigate(fd: i64, id: i64, url: str) -> str {
     let q = chr(34)
     let ob = chr(123)
@@ -147,6 +153,7 @@ fn cdp_navigate(fd: i64, id: i64, url: str) -> str {
 }
 
 // Evaluate JavaScript in the page context. Returns the response (JSON).
+@capabilities(crypto, net:tcp)
 fn cdp_eval(fd: i64, id: i64, expr: str) -> str {
     let q = chr(34)
     let ob = chr(123)
@@ -156,6 +163,7 @@ fn cdp_eval(fd: i64, id: i64, expr: str) -> str {
 }
 
 // Capture a screenshot as base64 PNG.
+@capabilities(crypto, net:tcp)
 fn cdp_screenshot(fd: i64, id: i64) -> str {
     let empty = chr(123) + chr(125)
     return cdp_call(fd, id, "Page.captureScreenshot", empty)
@@ -164,6 +172,7 @@ fn cdp_screenshot(fd: i64, id: i64) -> str {
 // ---------- Discovery via HTTP -------------------------------------------
 
 // Hits http://host:port/json and returns the raw body. Caller parses JSON.
+@capabilities(net:tcp)
 fn cdp_list_targets(host: str, port: i64) -> str {
     let fd = tcp_connect(host, port)
     if fd <= 0 {
@@ -217,6 +226,7 @@ fn http_body(resp: str) -> str {
 
 // ---------- Demo ---------------------------------------------------------
 
+@capabilities(crypto, net:tcp)
 fn main() {
     println("=== Kryos CDP bot demo ===")
 

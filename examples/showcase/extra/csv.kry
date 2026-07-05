@@ -53,6 +53,7 @@ fn parse_int(s: str) -> i64 {
   return v
 }
 
+@capabilities(fs:read, fs:write)
 fn main() {
   // Write a sample CSV.
   let csv: str = "name,department,salary\nalice,eng,120000\nbob,sales,90000\ncarol,eng,140000\ndave,sales,85000\neve,eng,135000\n"

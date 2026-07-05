@@ -144,6 +144,7 @@ fn tool_add(args_node: i64) -> i64 {
   return text_content(to_string(a + b))
 }
 
+@capabilities(fs:read)
 fn tool_read_file(args_node: i64) -> i64 {
   let path_n: i64 = json_get(args_node, "path")
   if path_n <= 0 {
@@ -156,6 +157,7 @@ fn tool_read_file(args_node: i64) -> i64 {
   return text_content(file_read(path))
 }
 
+@capabilities(fs:write)
 fn tool_write_file(args_node: i64) -> i64 {
   let path_n: i64 = json_get(args_node, "path")
   let content_n: i64 = json_get(args_node, "content")
@@ -185,6 +187,7 @@ fn tool_http_get(args_node: i64) -> i64 {
   return text_content(json_to_str(body_n))
 }
 
+@capabilities(fs:read, fs:write)
 fn call_tool(name: str, args_node: i64) -> i64 {
   if name == "echo" { return tool_echo(args_node) }
   if name == "now" { return tool_now() }
@@ -197,6 +200,7 @@ fn call_tool(name: str, args_node: i64) -> i64 {
 
 // ----- dispatch ---------------------------------------------------------
 
+@capabilities(fs:read, fs:write)
 fn handle_message(line: str) -> str {
   let req: i64 = json_parse(line)
   if req <= 0 {
@@ -269,6 +273,7 @@ fn handle_message(line: str) -> str {
 
 // ----- main loop --------------------------------------------------------
 
+@capabilities(fs:read, fs:write)
 fn main() {
   while SHUTDOWN == 0 {
     let line: str = read_line()

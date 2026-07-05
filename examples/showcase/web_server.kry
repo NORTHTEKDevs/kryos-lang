@@ -135,6 +135,7 @@ fn route(request: str, count: i64) -> str {
 
 // Service exactly one client connection: read up to RECV_BUF
 // bytes, build a response, write it, close.
+@capabilities(net:tcp)
 fn handle_one(client_fd: i64, count: i64) {
     let raw = tcp_recv(client_fd, RECV_BUF)
     if len(raw) == 0 {
@@ -148,6 +149,7 @@ fn handle_one(client_fd: i64, count: i64) {
 
 // ---- Main ---------------------------------------------------
 
+@capabilities(net:tcp)
 fn main() {
     let argv = args()
     let mut max_requests = MAX_REQUESTS_DEFAULT

@@ -83,6 +83,7 @@ fn build_tools() -> i64 {
 
 // ----- tool dispatch ----------------------------------------------------
 
+@capabilities(fs:read, net:http)
 fn exec_tool(name: str, args_node: i64) -> str {
   if name == "now" {
     return to_string(time_now_secs())
@@ -127,6 +128,7 @@ fn exec_tool(name: str, args_node: i64) -> str {
 
 // ----- model call -------------------------------------------------------
 
+@capabilities(net:http)
 fn call_model(base_url: str, api_key: str, model: str, messages_node: i64, tools_node: i64) -> i64 {
   let body_node: i64 = json_object(
     ["model", "messages", "tools", "tool_choice"],
@@ -140,6 +142,7 @@ fn call_model(base_url: str, api_key: str, model: str, messages_node: i64, tools
 
 // ----- agent loop -------------------------------------------------------
 
+@capabilities(fs:read, net:http)
 fn run_agent(base_url: str, api_key: str, model: str, task: str) {
   let history: [i64] = [
     msg("system", "You are a helpful agent. Use tools when they help answer the user. When you have the final answer, reply in plain text."),
@@ -211,6 +214,7 @@ fn run_agent(base_url: str, api_key: str, model: str, task: str) {
 
 // ----- offline demo (no API key) ----------------------------------------
 
+@capabilities(fs:read, net:http)
 fn offline_demo(task: str) {
   println("OPENAI_API_KEY not set -- running offline demo.")
   println("")
@@ -249,6 +253,7 @@ fn offline_demo(task: str) {
   println("  add(17, 25)       = " + exec_tool("add", add_args))
 }
 
+@capabilities(process, fs:read, net:http)
 fn main() {
   let api_key: str = env_get("OPENAI_API_KEY")
   let mut base_url: str = env_get("OPENAI_BASE_URL")

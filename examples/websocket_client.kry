@@ -20,6 +20,7 @@
 // ---------- handshake helpers -------------------------------------------
 
 // Build a Sec-WebSocket-Key (16 ASCII random bytes, base64-encoded).
+@capabilities(crypto)
 fn ws_make_key() -> str {
     let hex = random_bytes(16)
     // Use the first 16 chars of the hex string as the raw key bytes; the
@@ -28,12 +29,14 @@ fn ws_make_key() -> str {
 }
 
 // Compute the server's expected Sec-WebSocket-Accept value for a given key.
+@capabilities(net, crypto)
 fn ws_accept_key(key: str) -> str {
     let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
     return sha1_base64(key + guid)
 }
 
 // Perform a WebSocket client handshake on a connected TCP fd.
+@capabilities(net, crypto)
 fn ws_client_handshake(fd: i64, host: str, path: str) -> bool {
     let key = ws_make_key()
     let req = "GET " + path + " HTTP/1.1\r\nHost: " + host
@@ -56,20 +59,24 @@ fn ws_client_handshake(fd: i64, host: str, path: str) -> bool {
 
 // ---------- frame encoding ---------------------------------------------
 
+@capabilities(net:tcp, crypto)
 fn ws_send_text(fd: i64, payload: str) -> i64 {
     return ws_send_frame(fd, 1, payload, true)
 }
 
+@capabilities(net:tcp, crypto)
 fn ws_send_ping(fd: i64, payload: str) -> i64 {
     return ws_send_frame(fd, 9, payload, true)
 }
 
+@capabilities(net:tcp, crypto)
 fn ws_send_close(fd: i64) -> i64 {
     // 16-bit big-endian status code 1000 = 0x03 0xe8
     let payload = chr(3) + chr(232)
     return ws_send_frame(fd, 8, payload, true)
 }
 
+@capabilities(net:tcp, crypto)
 fn ws_send_frame(fd: i64, opcode: i64, payload: str, mask: bool) -> i64 {
     let plen = len(payload)
     let mut frame = chr(128 + opcode)
@@ -129,6 +136,7 @@ fn ws_send_frame(fd: i64, opcode: i64, payload: str, mask: bool) -> i64 {
 
 // Reads one frame and returns the payload string. The opcode is discarded
 // in this minimal version; production code would return (opcode, payload).
+@capabilities(net:tcp)
 fn ws_recv_frame(fd: i64) -> str {
     let hdr = tcp_recv(fd, 2)
     if len(hdr) < 2 {
@@ -171,6 +179,7 @@ fn ws_recv_frame(fd: i64) -> str {
 
 // ---------- demo: offline handshake validation -------------------------
 
+@capabilities(net, crypto)
 fn main() {
     println("=== Kryos WebSocket client demo ===")
 

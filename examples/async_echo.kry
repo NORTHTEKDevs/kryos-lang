@@ -2,6 +2,7 @@
 // async primitives. Demonstrates tcp_set_nonblocking, tcp_try_accept,
 // tcp_try_recv, and sleep_ms for cooperative event-loop pacing.
 
+@capabilities(net:tcp)
 fn main() {
     let listener = tcp_listen("127.0.0.1", 9876)
     println("[server] listening on 127.0.0.1:9876")

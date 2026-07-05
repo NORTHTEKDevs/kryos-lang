@@ -1,6 +1,7 @@
 // HTTP/2 Demo — exercises http2_get, http2_post, http2_request builtins.
 // Uses reqwest ALPN negotiation: h2 when server supports it, HTTP/1.1 fallback.
 
+@capabilities(net:http)
 fn main() {
     println("=== HTTP/2 Demo ===")
 

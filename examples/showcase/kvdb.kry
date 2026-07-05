@@ -18,6 +18,7 @@
 // Uses the env_get builtin to resolve a writable temp directory across
 // Linux, macOS, and Windows. Same priority order as std::os::temp_dir().
 
+@capabilities(process)
 fn portable_temp_dir() -> str {
   // Windows: TEMP or TMP
   let temp: str = env_get("TEMP")
@@ -30,6 +31,7 @@ fn portable_temp_dir() -> str {
   return "/tmp"
 }
 
+@capabilities(process)
 fn portable_path_sep() -> str {
   // WINDIR is only set on Windows.
   let windir: str = env_get("WINDIR")
@@ -133,6 +135,7 @@ fn split_tabs(s: str) -> [str] {
   return parts
 }
 
+@capabilities(fs:read, fs:write)
 fn append_line(path: str, line: str) {
   let mut prev: str = ""
   if file_exists(path) == 1 {
@@ -159,6 +162,7 @@ fn find_idx(key: str) -> i64 {
   return -1
 }
 
+@capabilities(fs:read)
 fn replay() {
   // Reset in-memory view, then read the log start to end.
   KEYS = []
@@ -222,6 +226,7 @@ fn live_len() -> i64 {
   return m
 }
 
+@capabilities(fs:read, fs:write)
 fn db_set(key: str, val: str) {
   let line: str = "SET\t" + pct_encode(key) + "\t" + pct_encode(val)
   append_line(DB_PATH, line)
@@ -246,6 +251,7 @@ fn db_has(key: str) -> bool {
   return find_idx(key) >= 0
 }
 
+@capabilities(fs:read, fs:write)
 fn db_del(key: str) -> bool {
   let idx: i64 = find_idx(key)
   if idx < 0 {
@@ -266,6 +272,7 @@ fn db_del(key: str) -> bool {
 }
 
 // Rewrite log keeping only one SET per live key.
+@capabilities(fs:read, fs:write)
 fn db_compact() {
   let mut buf: str = ""
   let n: i64 = len(KEYS)
@@ -293,6 +300,7 @@ fn db_list() {
 
 // ----- demo --------------------------------------------------------------
 
+@capabilities(process, fs:read, fs:write)
 fn main() {
   // Fresh store every run for reproducibility.
   if file_exists(DB_PATH) == 1 {
