@@ -678,6 +678,11 @@ fn dump_ast(filename: str) {
 // Main entry point
 // -------------------------------------------------------------------
 
+// The self-host compiler's full authority, declared at the boundary: it reads
+// source files (fs:read), writes object/exe output (fs:write), and shells out
+// to the system linker / reads env for toolchain paths (process). Interior
+// passes (lex, parse, typecheck, codegen) need no annotation -- inferred.
+@capabilities(fs:read, fs:write, process)
 fn main() {
     let cli_args = args()
 
