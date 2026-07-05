@@ -1329,14 +1329,31 @@ pub fn check_project_with_options(
     cap_mode: CapabilityMode,
 ) -> (Vec<Diagnostic>, SourceMap) {
     let manifest_path = dir.join("kryos.toml");
-    if let Err(e) = kryos_package::Manifest::from_file(&manifest_path) {
-        return (
-            vec![Diagnostic::error(format!(
-                "failed to load project manifest: {e}"
-            ))],
-            SourceMap::default(),
-        );
-    }
+    let manifest = match kryos_package::Manifest::from_file(&manifest_path) {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                vec![Diagnostic::error(format!(
+                    "failed to load project manifest: {e}"
+                ))],
+                SourceMap::default(),
+            );
+        }
+    };
+
+    // Effective mode: an explicit CLI mode (anything but the Permissive
+    // default) wins; otherwise the project's `[capabilities] mode` in
+    // kryos.toml applies; otherwise the compiler default (Permissive).
+    let cap_mode = if matches!(cap_mode, CapabilityMode::Permissive) {
+        manifest
+            .capabilities
+            .mode
+            .as_deref()
+            .and_then(CapabilityMode::from_str)
+            .unwrap_or(CapabilityMode::Permissive)
+    } else {
+        cap_mode
+    };
 
     let src_dir = dir.join("src");
     if !src_dir.is_dir() {

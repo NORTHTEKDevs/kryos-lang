@@ -39,7 +39,7 @@ pub fn execute(
     // Effective LTO: explicit flag wins; otherwise release implies LTO.
     let effective_lto = lto || release;
 
-    let config = BuildConfig {
+    let mut config = BuildConfig {
         input: path.to_string(),
         output: output.map(|s| s.to_string()),
         mode,
@@ -148,6 +148,21 @@ pub fn execute(
                 "no kryos.toml found in `{}` -- run `kryos pkg init` to create one",
                 p.display()
             ));
+        }
+        // Honour the project's `[capabilities] mode` unless the CLI already
+        // asked for strict. (An explicit CLI mode is not yet plumbed into
+        // build; strict-capabilities remains the flag override.)
+        if !config.strict_capabilities {
+            if let Ok(m) = kryos_package::Manifest::from_file(&manifest_path) {
+                if let Some(mode) = m
+                    .capabilities
+                    .mode
+                    .as_deref()
+                    .and_then(kryos_driver::CapabilityMode::from_str)
+                {
+                    config.capability_mode = mode;
+                }
+            }
         }
         kryos_driver::compile_project_with_backend(p, &config, Some(backend.as_ref()))
     } else {

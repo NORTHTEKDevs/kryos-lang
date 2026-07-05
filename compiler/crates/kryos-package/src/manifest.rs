@@ -202,6 +202,11 @@ pub fn parse_dep_string(s: &str) -> Result<DepSpec, String> {
 pub struct CapabilitiesConfig {
     #[serde(default)]
     pub allowed: Vec<String>,
+    /// Enforcement mode for this project: `"permissive"`, `"inferred"`, or
+    /// `"strict"`. Absent means the compiler's built-in default. `kryos new`
+    /// scaffolds `mode = "inferred"` so new projects are deny-by-default.
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 /// `[build]` section.

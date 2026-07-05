@@ -98,11 +98,15 @@ fn render_toml(name: &str, template: &str) -> String {
     format!(
         "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n\
          [dependencies]\n\n\
-         # Capabilities this project's code is allowed to use. Mirrors the\n\
-         # @capabilities(...) annotations in src/. Run\n\
-         # `kryos check --strict-capabilities` to reject any function that uses a\n\
-         # gated builtin (net/io/process/...) without declaring it.\n\
-         [capabilities]\nallowed = [{allowed}]\n"
+         # Capability enforcement for this project.\n\
+         #   mode = \"inferred\"   deny-by-default at the boundary: `main` (and any\n\
+         #                       annotated fn) must declare every capability its\n\
+         #                       code transitively uses; interior helpers are\n\
+         #                       inferred. This is the recommended default.\n\
+         #   mode = \"strict\"     every function must declare its own caps.\n\
+         #   mode = \"permissive\" caps are advisory (only annotated fns checked).\n\
+         # `allowed` documents the caps this project's code is expected to use.\n\
+         [capabilities]\nmode = \"inferred\"\nallowed = [{allowed}]\n"
     )
 }
 
