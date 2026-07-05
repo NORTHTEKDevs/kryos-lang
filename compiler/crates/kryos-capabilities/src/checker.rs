@@ -105,6 +105,13 @@ struct CapabilityChecker {
     /// each *unannotated* function's inferred set, so a caller is checked
     /// against what its callee transitively requires.
     fn_capabilities: HashMap<String, CapabilitySet>,
+    /// Names of every user-defined function/method in the module (top-level +
+    /// impl/trait methods, including merged stdlib). A call/reference to one of
+    /// these is NOT the gated runtime builtin of the same name -- the user
+    /// function shadows it -- so its authority is taken from the function's own
+    /// (inferred/declared) caps, not the builtin table. This removes the false
+    /// positive where a method named e.g. `write_file` was force-gated.
+    user_fns: std::collections::HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -115,6 +122,7 @@ impl CapabilityChecker {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
+            user_fns: std::collections::HashSet::new(),
             mode,
         }
     }
@@ -123,6 +131,18 @@ impl CapabilityChecker {
     /// unannotated function is treated as declaring the empty set.
     fn strict_mode(&self) -> bool {
         matches!(self.mode, CapabilityMode::Strict)
+    }
+
+    /// The capability a bare name requires *as a runtime builtin* -- unless a
+    /// user function/method shadows that name, in which case it is not the
+    /// builtin and contributes no builtin cap (its real caps flow through the
+    /// function-propagation / inference path instead).
+    fn builtin_cap(&self, name: &str) -> Option<Capability> {
+        if self.user_fns.contains(name) {
+            None
+        } else {
+            required_capability_for_builtin(name)
+        }
     }
 
     /// Get the current (innermost) capability scope, if any.
@@ -170,10 +190,10 @@ impl CapabilityChecker {
     /// `fn(...)` argument) delegates that builtin's authority. Used by interior
     /// inference so the requirement propagates to the boundary; the enforcement
     /// counterpart is `check_builtin_value_ref`.
-    fn builtin_value_caps(expr: &Expr) -> CapabilitySet {
+    fn builtin_value_caps(&self, expr: &Expr) -> CapabilitySet {
         let mut set = CapabilitySet::empty();
         if let Expr::Identifier { name, .. } = expr {
-            if let Some(cap) = required_capability_for_builtin(name) {
+            if let Some(cap) = self.builtin_cap(name) {
                 set.insert(cap);
             }
         }
@@ -359,7 +379,7 @@ impl CapabilityChecker {
                     acc.insert(cap);
                 }
                 if segments.len() == 1 {
-                    if let Some(cap) = required_capability_for_builtin(&segments[0]) {
+                    if let Some(cap) = self.builtin_cap(&segments[0]) {
                         acc.insert(cap);
                     }
                     if let Some(caps) = working.get(&segments[0]) {
@@ -368,7 +388,6 @@ impl CapabilityChecker {
                 }
                 e(callee, &mut acc);
                 for arg in args {
-                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
@@ -384,7 +403,6 @@ impl CapabilityChecker {
                 }
                 e(object, &mut acc);
                 for arg in args {
-                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
@@ -393,7 +411,6 @@ impl CapabilityChecker {
                     acc = acc.union(caps);
                 }
                 for arg in args {
-                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
@@ -473,18 +490,30 @@ impl CapabilityChecker {
                     }
                 }
             }
+            // A gated builtin used as a VALUE (bound to a `let`, returned,
+            // stored in an array/struct, piped, ...) delegates its authority.
+            // This single arm covers every non-call value position.
+            Expr::Identifier { .. } => acc = acc.union(&self.builtin_value_caps(expr)),
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
             | Expr::CharLiteral { .. }
             | Expr::BoolLiteral { .. }
-            | Expr::NoneLiteral { .. }
-            | Expr::Identifier { .. } => {}
+            | Expr::NoneLiteral { .. } => {}
         }
         acc
     }
 
     fn check_module(&mut self, module: &Module) {
+        // Pass 0: record every user-defined function/method name so calls and
+        // value-references to a shadowed builtin name resolve to the user
+        // function, not the gated runtime builtin.
+        {
+            let mut fns: Vec<(String, &kryos_ast::Block)> = Vec::new();
+            Self::collect_functions(&module.declarations, &mut fns);
+            self.user_fns = fns.into_iter().map(|(n, _)| n).collect();
+        }
+
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
         self.build_fn_capability_map(&module.declarations);
@@ -825,11 +854,14 @@ impl CapabilityChecker {
                 // Check for prohibited self-heal escalation calls.
                 self.check_escalation(callee, *span);
 
-                // Recurse into callee and arguments; flag any gated builtin
-                // handed in as a first-class value.
-                self.check_expr(callee);
+                // Recurse into arguments (the Identifier arm flags any gated
+                // builtin used as a value). Do NOT recurse into a bare-name
+                // callee: its capability is already enforced by
+                // check_callee_capabilities, and recursing would double-report.
+                if !matches!(callee.as_ref(), Expr::Identifier { .. }) {
+                    self.check_expr(callee);
+                }
                 for arg in args {
-                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
@@ -860,7 +892,6 @@ impl CapabilityChecker {
 
                 self.check_expr(object);
                 for arg in args {
-                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
@@ -870,7 +901,6 @@ impl CapabilityChecker {
                 // Same call-site propagation for `Type::method()` static dispatch.
                 self.enforce_callee_name(method, *span);
                 for arg in args {
-                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
@@ -967,14 +997,21 @@ impl CapabilityChecker {
                     }
                 }
             }
-            // Literals and identifiers — no capability concerns.
+            // A bare identifier that names a gated builtin, evaluated as a
+            // VALUE (let/assign/return/array/struct/pipe/arg — anywhere that is
+            // not the direct callee of a call), delegates that builtin's
+            // authority and must be declared. The FnCall arm deliberately does
+            // not recurse into a bare-name callee, so this never double-fires.
+            Expr::Identifier { span, .. } => {
+                self.check_builtin_value_ref(expr, *span);
+            }
+            // Literals — no capability concerns.
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
             | Expr::CharLiteral { .. }
             | Expr::BoolLiteral { .. }
-            | Expr::NoneLiteral { .. }
-            | Expr::Identifier { .. } => {}
+            | Expr::NoneLiteral { .. } => {}
         }
     }
 
@@ -1033,7 +1070,7 @@ impl CapabilityChecker {
             return;
         }
 
-        if let Some(required_cap) = required_capability_for_builtin(name) {
+        if let Some(required_cap) = self.builtin_cap(name) {
             if let Some(caps) = self.current_caps() {
                 if !caps.satisfies_required(&required_cap) {
                     self.diagnostics.push(
@@ -1087,7 +1124,7 @@ impl CapabilityChecker {
             if !(self.strict_mode() || self.has_annotated_scope()) {
                 return;
             }
-            if let Some(required_cap) = required_capability_for_builtin(name) {
+            if let Some(required_cap) = self.builtin_cap(name) {
                 if let Some(caps) = self.current_caps() {
                     if !caps.satisfies_required(&required_cap) {
                         self.diagnostics.push(
@@ -1789,6 +1826,95 @@ mod tests {
         let main = fn_decl("main", vec!["fs:write"], vec![method_call("s", "write")]);
         let diags = infer(vec![imp, main]);
         assert!(diags.is_empty(), "declared main must pass, got {diags:?}");
+    }
+
+    fn let_stmt(name: &str, value: Expr) -> Stmt {
+        Stmt::Let {
+            name: name.into(),
+            ty: None,
+            value: Some(value),
+            pattern: None,
+            mutable: false,
+            span: span(),
+        }
+    }
+
+    fn ident(name: &str) -> Expr {
+        Expr::Identifier {
+            name: name.into(),
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn inferred_builtin_let_bound_is_caught() {
+        // fn main() { let f = file_write }  -- binding a gated builtin to a
+        // variable delegates its authority; unannotated main must be rejected.
+        // (Non-argument value position -- the second-pass leak.)
+        let main = fn_decl("main", vec![], vec![let_stmt("f", ident("file_write"))]);
+        let diags = infer(vec![main]);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0505")),
+            "let-bound gated builtin must require its cap, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_builtin_returned_is_caught() {
+        // fn get() { return file_write }  -- returning a gated builtin exposes
+        // its authority. get's inferred set must include fs:write and propagate.
+        let get = Decl::Function {
+            name: "get".into(),
+            generics: vec![],
+            params: vec![],
+            ret_ty: None,
+            body: Some(Block {
+                stmts: vec![Stmt::Return {
+                    value: Some(ident("file_write")),
+                    span: span(),
+                }],
+                span: span(),
+            }),
+            public: false,
+            is_async: false,
+            annotations: vec![],
+            doc_comments: vec![],
+            span: span(),
+        };
+        let main = fn_decl("main", vec![], vec![call("get")]);
+        let diags = infer(vec![get, main]);
+        assert!(
+            diags.iter().any(|d| d.is_error()),
+            "returned gated builtin must propagate to the boundary, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_user_fn_shadowing_builtin_no_false_positive() {
+        // A user function named `file_write` with an innocent body is NOT the
+        // gated builtin; calling it from an unannotated main must PASS.
+        let shadow = fn_decl("file_write", vec![], vec![call("some_noop")]);
+        let noop = fn_decl("some_noop", vec![], vec![]);
+        let main = fn_decl("main", vec![], vec![call("file_write")]);
+        let diags = infer(vec![shadow, noop, main]);
+        assert!(
+            diags.is_empty(),
+            "user fn shadowing a builtin name must not be force-gated, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_user_method_shadowing_builtin_no_false_positive() {
+        // A method named `write_file` (collides with a gated builtin name) is a
+        // user method, not the builtin -- calling it must not force fs:write.
+        let m = fn_decl("write_file", vec![], vec![]);
+        let imp = impl_with_method("Doc", m);
+        let main = fn_decl("main", vec![], vec![method_call("d", "write_file")]);
+        let diags = infer(vec![imp, main]);
+        assert!(
+            diags.is_empty(),
+            "user method colliding with a builtin name must not be gated, got {diags:?}"
+        );
     }
 
     #[test]
