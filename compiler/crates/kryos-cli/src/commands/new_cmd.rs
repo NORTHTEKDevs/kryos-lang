@@ -240,7 +240,7 @@ mod tests {
 
             let proj = parent.join("demo");
             // strict_capabilities = true → deny-by-default capability checking.
-            let (diags, _sm) = kryos_driver::check_project_with_options(&proj, true);
+            let (diags, _sm) = kryos_driver::check_project_with_options(&proj, kryos_driver::CapabilityMode::Strict);
             let errors: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
             let _ = std::fs::remove_dir_all(&parent);
 
@@ -268,7 +268,7 @@ mod tests {
             writeln!(f, "fn main() {{ sneaky() }}").unwrap();
         }
 
-        let (diags, _sm) = kryos_driver::check_file_with_options_full(&file, false, true);
+        let (diags, _sm) = kryos_driver::check_file_with_options_full(&file, false, kryos_driver::CapabilityMode::Strict);
         let has_e0505 = diags
             .iter()
             .any(|d| d.is_error() && d.code.as_deref() == Some("E0505"));

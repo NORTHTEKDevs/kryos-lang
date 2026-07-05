@@ -151,6 +151,9 @@ fn do_uninstall(target: str) -> i64 {
     return 0
 }
 
+// Deny-by-default: `main` declares the program's entire authority. Interior
+// helpers (ensure_parent_dir, do_install, do_uninstall) are inferred.
+@capabilities(fs:read, fs:write)
 fn main() {
     let argv = args()
     let argc = len(argv)

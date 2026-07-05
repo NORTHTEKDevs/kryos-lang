@@ -55,7 +55,11 @@ fn read_mtime(path: &Path) -> Option<SystemTime> {
 
 fn invoke(path: &Path, action: &str) {
     let result = match action {
-        "check" => super::check::execute(&path.to_string_lossy(), false, false),
+        "check" => super::check::execute(
+            &path.to_string_lossy(),
+            false,
+            kryos_driver::CapabilityMode::Permissive,
+        ),
         _ => super::run::execute(&path.to_string_lossy(), &[]),
     };
     match result {

@@ -186,6 +186,9 @@ fn build_index(titles: [str], slugs: [str]) -> str {
     return body
 }
 
+// Deny-by-default: `main` declares the program's entire authority; the
+// interior helpers that read templates and write output are inferred.
+@capabilities(fs:read, fs:write)
 fn main() {
     let argv = args()
     let argc = len(argv)

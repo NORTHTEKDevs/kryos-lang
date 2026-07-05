@@ -129,6 +129,13 @@ enum Commands {
         /// See `kryos build --help` for the full description.
         #[arg(long)]
         strict_capabilities: bool,
+
+        /// Capability enforcement mode: `permissive` (only annotated functions
+        /// enforce), `inferred` (deny-by-default at the boundary; helpers are
+        /// inferred), or `strict` (every function must declare). Overrides
+        /// `--strict-capabilities`. Defaults to `permissive`.
+        #[arg(long, value_name = "MODE")]
+        capabilities_mode: Option<String>,
     },
 
     /// Evaluate a one-liner expression (wraps in fn main and runs)
@@ -657,11 +664,27 @@ fn main() {
             skip_ownership,
             watch,
             strict_capabilities,
+            capabilities_mode,
         } => {
+            // Resolve the enforcement mode: explicit --capabilities-mode wins,
+            // then --strict-capabilities, else the default (permissive for now).
+            let cap_mode = match capabilities_mode.as_deref() {
+                Some(s) => match kryos_driver::CapabilityMode::from_str(s) {
+                    Some(m) => m,
+                    None => {
+                        eprintln!(
+                            "error: unknown --capabilities-mode `{s}` (expected permissive | inferred | strict)"
+                        );
+                        std::process::exit(2);
+                    }
+                },
+                None if strict_capabilities => kryos_driver::CapabilityMode::Strict,
+                None => kryos_driver::CapabilityMode::Permissive,
+            };
             if watch {
-                commands::check::execute_watch(&path, skip_ownership, strict_capabilities)
+                commands::check::execute_watch(&path, skip_ownership, cap_mode)
             } else {
-                commands::check::execute(&path, skip_ownership, strict_capabilities)
+                commands::check::execute(&path, skip_ownership, cap_mode)
             }
         }
 

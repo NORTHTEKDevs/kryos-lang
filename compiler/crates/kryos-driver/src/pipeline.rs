@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use kryos_capabilities::check_capabilities;
+use kryos_capabilities::{check_capabilities, check_capabilities_mode, CapabilityMode};
 use kryos_errors::{Diagnostic, SourceMap};
 use kryos_lexer::Lexer;
 use kryos_mir::MirModule;
@@ -1199,18 +1199,15 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
 ///
 /// Returns `(diagnostics, source_map)`.
 pub fn check_file_with_options(path: &Path, skip_ownership: bool) -> (Vec<Diagnostic>, SourceMap) {
-    check_file_with_options_full(path, skip_ownership, false)
+    check_file_with_options_full(path, skip_ownership, CapabilityMode::Permissive)
 }
 
-/// Check a single file with the full option set, including capability strict
-/// mode. The `strict_capabilities` flag corresponds to the CLI
-/// `--strict-capabilities`: when true, every function is checked as if it had
-/// an explicit `@capabilities(...)` annotation (the empty set unless declared),
-/// so unannotated functions cannot silently call capability-gated builtins.
+/// Check a single file with the full option set, including the capability
+/// enforcement [`CapabilityMode`] (`Permissive` / `Inferred` / `Strict`).
 pub fn check_file_with_options_full(
     path: &Path,
     skip_ownership: bool,
-    strict_capabilities: bool,
+    cap_mode: CapabilityMode,
 ) -> (Vec<Diagnostic>, SourceMap) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
@@ -1273,8 +1270,8 @@ pub fn check_file_with_options_full(
         diagnostics.extend(ownership.errors);
     }
 
-    // Capabilities (strict mode opt-in via `--strict-capabilities`).
-    diagnostics.extend(check_capabilities(&module, strict_capabilities));
+    // Capabilities in the selected mode (permissive / inferred / strict).
+    diagnostics.extend(check_capabilities_mode(&module, cap_mode));
 
     (diagnostics, source_map)
 }
@@ -1320,14 +1317,13 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
 
 /// Check a project directory without producing output.
 pub fn check_project(dir: &Path) -> (Vec<Diagnostic>, SourceMap) {
-    check_project_with_options(dir, false)
+    check_project_with_options(dir, CapabilityMode::Permissive)
 }
 
-/// Check a project directory with options. `strict_capabilities` corresponds
-/// to the CLI `--strict-capabilities` flag.
+/// Check a project directory with the given capability [`CapabilityMode`].
 pub fn check_project_with_options(
     dir: &Path,
-    strict_capabilities: bool,
+    cap_mode: CapabilityMode,
 ) -> (Vec<Diagnostic>, SourceMap) {
     let manifest_path = dir.join("kryos.toml");
     if let Err(e) = kryos_package::Manifest::from_file(&manifest_path) {
@@ -1365,10 +1361,9 @@ pub fn check_project_with_options(
     let combined_source_map = SourceMap::default();
 
     for file_path in &source_files {
-        // Honour strict mode at the per-file pass so each file in the
+        // Honour the capability mode at the per-file pass so each file in the
         // project sees the same deny-by-default policy.
-        let (diags, _sm) =
-            check_file_with_options_full(file_path, false, strict_capabilities);
+        let (diags, _sm) = check_file_with_options_full(file_path, false, cap_mode);
         all_diagnostics.extend(diags);
     }
 

@@ -204,7 +204,7 @@ fn json_array_literal(items: [str]) -> str {
 // Example: json_object_literal(["name","age"], [json_string_literal("Bob"), json_number_literal(25)])
 //          -> '{"name":"Bob","age":25}'
 fn json_object_literal(keys: [str], values: [str]) -> str {
-    let mut out: str = "{"
+    let mut out: str = "{{"
     let n: i64 = len(keys)
     let mut i: i64 = 0
     while i < n {
@@ -214,5 +214,5 @@ fn json_object_literal(keys: [str], values: [str]) -> str {
         out = out + json_string_literal(keys[i]) + ":" + values[i]
         i = i + 1
     }
-    return out + "}"
+    return out + "}}"
 }

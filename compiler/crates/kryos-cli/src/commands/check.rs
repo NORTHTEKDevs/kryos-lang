@@ -3,11 +3,12 @@
 use std::path::Path;
 use std::time::Duration;
 
+use kryos_driver::CapabilityMode;
 use kryos_errors::render_diagnostic;
 
 /// Execute the check command, polling for mtime changes every 300ms.
 /// Loops forever (Ctrl-C to exit).
-pub fn execute_watch(path: &str, skip_ownership: bool, strict_capabilities: bool) -> Result<(), String> {
+pub fn execute_watch(path: &str, skip_ownership: bool, cap_mode: CapabilityMode) -> Result<(), String> {
     let p = Path::new(path);
     if !p.exists() {
         return Err(format!("kryos check: '{}' does not exist", path));
@@ -18,7 +19,7 @@ pub fn execute_watch(path: &str, skip_ownership: bool, strict_capabilities: bool
         p.display()
     );
     eprintln!();
-    let _ = execute(path, skip_ownership, strict_capabilities);
+    let _ = execute(path, skip_ownership, cap_mode);
     loop {
         std::thread::sleep(Duration::from_millis(300));
         let cur = std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -26,17 +27,17 @@ pub fn execute_watch(path: &str, skip_ownership: bool, strict_capabilities: bool
             last_mtime = cur;
             eprintln!();
             eprintln!("\x1b[33mwatch:\x1b[0m change detected, re-checking…");
-            let _ = execute(path, skip_ownership, strict_capabilities);
+            let _ = execute(path, skip_ownership, cap_mode);
         }
     }
 }
 
 /// Execute the check command.
-pub fn execute(path: &str, skip_ownership: bool, strict_capabilities: bool) -> Result<(), String> {
+pub fn execute(path: &str, skip_ownership: bool, cap_mode: CapabilityMode) -> Result<(), String> {
     let p = Path::new(path);
 
     let (diagnostics, source_map) = if p.is_file() {
-        kryos_driver::check_file_with_options_full(p, skip_ownership, strict_capabilities)
+        kryos_driver::check_file_with_options_full(p, skip_ownership, cap_mode)
     } else if p.is_dir() {
         let manifest_path = p.join("kryos.toml");
         if !manifest_path.exists() {
@@ -45,7 +46,7 @@ pub fn execute(path: &str, skip_ownership: bool, strict_capabilities: bool) -> R
                 p.display()
             ));
         }
-        kryos_driver::check_project_with_options(p, strict_capabilities)
+        kryos_driver::check_project_with_options(p, cap_mode)
     } else {
         return Err(format!("`{}` is not a file or directory", p.display()));
     };

@@ -16,21 +16,68 @@ use crate::model::{
     Capability, CapabilitySet, Sandbox,
 };
 
-/// Run the capability checking pass over a module.
+/// How strictly capabilities are enforced. The three modes form a hierarchy
+/// `Permissive < Inferred < Strict`:
 ///
-/// Returns a list of diagnostics (errors/warnings) for any violations found.
+/// - **Permissive** — the historical default. Only functions that carry an
+///   explicit `@capabilities(...)` annotation are checked (plus attenuation
+///   between annotated scopes). An unannotated function may call any gated
+///   builtin. Capabilities are advisory.
 ///
-/// When `strict` is true, every function is treated as having an explicit
-/// capability annotation — unannotated functions are checked as if declared
-/// with the empty capability set. This is the `--strict-capabilities` mode:
-/// it shifts the system from opt-in documentation to opt-in exemption. Any
-/// call to a capability-gated builtin from an unannotated function becomes
-/// a compile error (E0505) unless the function explicitly declares the
-/// capability via `@capabilities(...)`.
-pub fn check_capabilities(module: &Module, strict: bool) -> Vec<Diagnostic> {
-    let mut checker = CapabilityChecker::new(strict);
+/// - **Inferred** — deny-by-default at the *boundary*, with interior
+///   inference. Every function's effective capability set is computed: an
+///   annotated function's set is its declaration (a ceiling); an unannotated
+///   interior function's set is *inferred* as the union of what it and its
+///   callees require (no annotation needed on helpers). Enforcement then
+///   requires that `main` — and any explicitly annotated function — actually
+///   holds every capability its body transitively uses. So an unannotated
+///   `main` that (directly or through helpers) writes a file is rejected:
+///   the program must declare `@capabilities(fs:write)` on `main`. Reading
+///   `main`'s annotation tells you the program's entire authority.
+///
+/// - **Strict** — every function is treated as annotated with exactly its
+///   declaration (empty if unannotated). Every gated builtin call from an
+///   unannotated function is an error. This is `--strict-capabilities`:
+///   maximally explicit, every function auditable in isolation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapabilityMode {
+    Permissive,
+    Inferred,
+    Strict,
+}
+
+impl CapabilityMode {
+    /// Parse a mode name (from `kryos.toml` / `--capabilities-mode`).
+    pub fn from_str(s: &str) -> Option<CapabilityMode> {
+        match s {
+            "permissive" => Some(CapabilityMode::Permissive),
+            "inferred" => Some(CapabilityMode::Inferred),
+            "strict" => Some(CapabilityMode::Strict),
+            _ => None,
+        }
+    }
+}
+
+/// Run the capability checking pass over a module in the given [`CapabilityMode`].
+pub fn check_capabilities_mode(module: &Module, mode: CapabilityMode) -> Vec<Diagnostic> {
+    let mut checker = CapabilityChecker::new(mode);
     checker.check_module(module);
     checker.diagnostics
+}
+
+/// Run the capability checking pass over a module.
+///
+/// Back-compat shim over [`check_capabilities_mode`]: `strict == true` maps to
+/// [`CapabilityMode::Strict`], `false` to [`CapabilityMode::Permissive`]. New
+/// callers should use `check_capabilities_mode` directly to opt into
+/// [`CapabilityMode::Inferred`].
+pub fn check_capabilities(module: &Module, strict: bool) -> Vec<Diagnostic> {
+    let mode = if strict {
+        CapabilityMode::Strict
+    } else {
+        CapabilityMode::Permissive
+    };
+    check_capabilities_mode(module, mode)
 }
 
 /// A capability scope entry on the stack.
@@ -52,25 +99,30 @@ struct CapabilityChecker {
     scope_stack: Vec<CapabilityScope>,
     /// Accumulated diagnostics.
     diagnostics: Vec<Diagnostic>,
-    /// Map from function name to its declared capability set.
-    /// Only populated for functions that have `@capabilities(...)` annotations.
-    /// Used for cross-function propagation checks.
+    /// Map from function name to the capability set used for cross-function
+    /// propagation checks. In every mode this holds each *annotated* function's
+    /// declared set (its ceiling). In [`CapabilityMode::Inferred`] it also holds
+    /// each *unannotated* function's inferred set, so a caller is checked
+    /// against what its callee transitively requires.
     fn_capabilities: HashMap<String, CapabilitySet>,
-    /// Deny-by-default mode. When true, unannotated functions are treated as
-    /// `@capabilities()` — the empty set — so any capability-gated builtin
-    /// call inside them is a compile error (E0505) unless the function adds
-    /// an explicit annotation.
-    strict_mode: bool,
+    /// The active enforcement mode.
+    mode: CapabilityMode,
 }
 
 impl CapabilityChecker {
-    fn new(strict_mode: bool) -> Self {
+    fn new(mode: CapabilityMode) -> Self {
         Self {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
-            strict_mode,
+            mode,
         }
+    }
+
+    /// True only in the maximally-explicit [`CapabilityMode::Strict`], where an
+    /// unannotated function is treated as declaring the empty set.
+    fn strict_mode(&self) -> bool {
+        matches!(self.mode, CapabilityMode::Strict)
     }
 
     /// Get the current (innermost) capability scope, if any.
@@ -113,11 +165,315 @@ impl CapabilityChecker {
         annotations.iter().any(|a| a.name == "capabilities")
     }
 
+    /// Gather every function (top-level and impl/trait method) that has a body,
+    /// as `(name, body)` pairs, for interior capability inference.
+    fn collect_functions<'a>(decls: &'a [Decl], out: &mut Vec<(String, &'a kryos_ast::Block)>) {
+        for d in decls {
+            match d {
+                Decl::Function {
+                    name,
+                    body: Some(b),
+                    ..
+                } => out.push((name.clone(), b)),
+                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                    Self::collect_functions(methods, out)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Compute each UNANNOTATED function's inferred capability set: the fixpoint
+    /// union of the capabilities its body requires directly (gated builtins /
+    /// stdlib paths) and the sets of the functions it calls. Terminating: the
+    /// lattice is the finite powerset of the capability enum and each step only
+    /// adds capabilities (monotone union), so the result is the least set that
+    /// covers all direct uses — an *over*-approximation, never an under one.
+    ///
+    /// Soundness note: an unresolved single-segment call (not a gated builtin,
+    /// not a known function) contributes nothing. That is sound under Kryos's
+    /// whole-program compilation because every user/stdlib function body is
+    /// merged into this module (so real callees resolve), constructors and
+    /// closure-variable calls carry no authority, and the only way to reach a
+    /// raw native `extern` is through an `extern` block, which already requires
+    /// the `ffi` capability.
+    fn compute_inferred_capabilities(
+        &self,
+        declarations: &[Decl],
+    ) -> HashMap<String, CapabilitySet> {
+        let mut fns: Vec<(String, &kryos_ast::Block)> = Vec::new();
+        Self::collect_functions(declarations, &mut fns);
+
+        // Seed the working map with annotated functions' declared ceilings.
+        let mut working: HashMap<String, CapabilitySet> = self.fn_capabilities.clone();
+        let annotated: std::collections::HashSet<String> =
+            self.fn_capabilities.keys().cloned().collect();
+
+        loop {
+            let mut changed = false;
+            for (name, body) in &fns {
+                if annotated.contains(name) {
+                    continue; // annotation is the ceiling; never widened by inference
+                }
+                let collected = self.collect_caps_block(body, &working);
+                let cur = working
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(CapabilitySet::empty);
+                let merged = cur.union(&collected);
+                // union only grows, so a length change means a new capability.
+                if merged.len() != cur.len() {
+                    working.insert(name.clone(), merged);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        working
+            .into_iter()
+            .filter(|(n, _)| !annotated.contains(n))
+            .collect()
+    }
+
+    /// Read-only union of the capabilities required by every call in a block.
+    fn collect_caps_block(
+        &self,
+        block: &kryos_ast::Block,
+        working: &HashMap<String, CapabilitySet>,
+    ) -> CapabilitySet {
+        let mut acc = CapabilitySet::empty();
+        for stmt in &block.stmts {
+            acc = acc.union(&self.collect_caps_stmt(stmt, working));
+        }
+        acc
+    }
+
+    fn collect_caps_stmt(
+        &self,
+        stmt: &Stmt,
+        working: &HashMap<String, CapabilitySet>,
+    ) -> CapabilitySet {
+        let mut acc = CapabilitySet::empty();
+        let e = |ex: &Expr, a: &mut CapabilitySet| *a = a.union(&self.collect_caps_expr(ex, working));
+        let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
+            *a = a.union(&self.collect_caps_block(bl, working))
+        };
+        match stmt {
+            Stmt::Let { value, .. } => {
+                if let Some(expr) = value {
+                    e(expr, &mut acc);
+                }
+            }
+            Stmt::Assign { value, target, .. } => {
+                e(target, &mut acc);
+                e(value, &mut acc);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(expr) = value {
+                    e(expr, &mut acc);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                e(condition, &mut acc);
+                b(then_block, &mut acc);
+                for (cond, block) in elif_clauses {
+                    e(cond, &mut acc);
+                    b(block, &mut acc);
+                }
+                if let Some(block) = else_block {
+                    b(block, &mut acc);
+                }
+            }
+            Stmt::For { iterable, body, .. } => {
+                e(iterable, &mut acc);
+                b(body, &mut acc);
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                e(condition, &mut acc);
+                b(body, &mut acc);
+            }
+            Stmt::Expr { expr, .. } => e(expr, &mut acc),
+            Stmt::Spawn { expr, .. } => e(expr, &mut acc),
+            Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
+                b(try_block, &mut acc);
+                b(catch_block, &mut acc);
+            }
+            Stmt::Throw { expr, .. } => e(expr, &mut acc),
+            Stmt::Select { branches, .. } => {
+                for branch in branches {
+                    e(&branch.channel, &mut acc);
+                    b(&branch.body, &mut acc);
+                }
+            }
+            Stmt::DenyBlock { body, .. } => b(body, &mut acc),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+        acc
+    }
+
+    fn collect_caps_expr(
+        &self,
+        expr: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+    ) -> CapabilitySet {
+        let mut acc = CapabilitySet::empty();
+        let e = |ex: &Expr, a: &mut CapabilitySet| *a = a.union(&self.collect_caps_expr(ex, working));
+        let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
+            *a = a.union(&self.collect_caps_block(bl, working))
+        };
+        match expr {
+            Expr::FnCall { callee, args, span: _ } => {
+                // The capability contribution of THIS call.
+                let segments = self.resolve_path(callee);
+                if let Some(cap) = required_capability_for_path(&segments) {
+                    acc.insert(cap);
+                }
+                if segments.len() == 1 {
+                    if let Some(cap) = required_capability_for_builtin(&segments[0]) {
+                        acc.insert(cap);
+                    }
+                    if let Some(caps) = working.get(&segments[0]) {
+                        acc = acc.union(caps);
+                    }
+                }
+                e(callee, &mut acc);
+                for arg in args {
+                    e(arg, &mut acc);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                e(object, &mut acc);
+                for arg in args {
+                    e(arg, &mut acc);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for arg in args {
+                    e(arg, &mut acc);
+                }
+            }
+            Expr::FieldAccess { object, .. } => e(object, &mut acc),
+            Expr::IndexAccess { object, index, .. } => {
+                e(object, &mut acc);
+                e(index, &mut acc);
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                e(left, &mut acc);
+                e(right, &mut acc);
+            }
+            Expr::UnaryOp { operand, .. } => e(operand, &mut acc),
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for elem in elements {
+                    e(elem, &mut acc);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    e(k, &mut acc);
+                    e(v, &mut acc);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, ex) in fields {
+                    e(ex, &mut acc);
+                }
+            }
+            Expr::Lambda { body, .. } => e(body, &mut acc),
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                e(condition, &mut acc);
+                b(then_branch, &mut acc);
+                if let Some(block) = else_branch {
+                    b(block, &mut acc);
+                }
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                e(subject, &mut acc);
+                for arm in arms {
+                    e(&arm.body, &mut acc);
+                    if let Some(guard) = &arm.guard {
+                        e(guard, &mut acc);
+                    }
+                }
+            }
+            Expr::PipeExpr { left, right, .. } => {
+                e(left, &mut acc);
+                e(right, &mut acc);
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => e(inner, &mut acc),
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => b(body, &mut acc),
+            Expr::Cast { expr, .. } => e(expr, &mut acc),
+            Expr::Block { block, .. } => b(block, &mut acc),
+            Expr::Await { value, .. } => e(value, &mut acc),
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(s) = start {
+                    e(s, &mut acc);
+                }
+                if let Some(en) = end {
+                    e(en, &mut acc);
+                }
+            }
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    if let kryos_ast::StringPart::Expr(ex) = part {
+                        e(ex, &mut acc);
+                    }
+                }
+            }
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::Identifier { .. } => {}
+        }
+        acc
+    }
+
     fn check_module(&mut self, module: &Module) {
-        // First pass: build the function-to-capabilities map for cross-function checks.
+        // Pass 1: seed the propagation map with every ANNOTATED function's
+        // declared set (its ceiling).
         self.build_fn_capability_map(&module.declarations);
 
-        // Second pass: walk the AST and enforce capability rules.
+        // Pass 1b (Inferred mode only): compute each UNANNOTATED function's
+        // capability set as the fixpoint union of what it and its callees
+        // require, and merge those into the propagation map. This is what lets
+        // interior helpers stay annotation-free while their requirements still
+        // reach the boundary. Annotated functions are left at their declared
+        // ceiling (a function that under-declares is caught when its own body
+        // is checked, not by widening it here).
+        if matches!(self.mode, CapabilityMode::Inferred) {
+            let inferred = self.compute_inferred_capabilities(&module.declarations);
+            for (name, caps) in inferred {
+                self.fn_capabilities.entry(name).or_insert(caps);
+            }
+        }
+
+        // Pass 2: walk the AST and enforce capability rules.
         for decl in &module.declarations {
             self.check_decl(decl);
         }
@@ -212,12 +568,36 @@ impl CapabilityChecker {
             }
         }
 
-        // Push this function's scope and check its body.
-        // In strict mode, treat unannotated functions as annotated with the
-        // empty set so builtin and propagation checks fire against them.
+        // Choose the effective capability set this function's body is checked
+        // against, and whether the per-call guards fire (`annotated`):
+        //
+        // - Permissive: unchanged — only explicitly annotated functions enforce.
+        // - Strict: every function enforces against its declaration (empty if
+        //   unannotated), so every gated builtin call must be declared.
+        // - Inferred: `main` and annotated functions are BOUNDARIES — they
+        //   enforce against their DECLARATION (empty `main` => deny-by-default,
+        //   annotation => ceiling). Every other (interior) function enforces
+        //   against its INFERRED set, so helpers need no annotation yet their
+        //   requirements still propagate up to the boundary.
+        let (effective_caps, effective_annotated) = match self.mode {
+            CapabilityMode::Permissive => (caps, annotated),
+            CapabilityMode::Strict => (caps, true),
+            CapabilityMode::Inferred => {
+                if annotated || name == "main" {
+                    (caps, true)
+                } else {
+                    let inferred = self
+                        .fn_capabilities
+                        .get(name)
+                        .cloned()
+                        .unwrap_or_else(CapabilitySet::empty);
+                    (inferred, true)
+                }
+            }
+        };
         let scope = CapabilityScope {
-            capabilities: caps,
-            annotated: annotated || self.strict_mode,
+            capabilities: effective_caps,
+            annotated: effective_annotated,
         };
         self.scope_stack.push(scope);
         if let Some(block) = body {
@@ -257,12 +637,13 @@ impl CapabilityChecker {
             }
         }
 
-        // Check each handler under the actor's capability scope.
-        // In strict mode, treat unannotated actors as annotated with the
-        // empty set so builtin and propagation checks fire against them.
+        // Check each handler under the actor's capability scope. Both Strict
+        // and Inferred enforce against the actor's declaration (empty if
+        // unannotated): actors are message-passing boundaries, so their
+        // authority must be declared, not inferred from handler bodies.
         let scope = CapabilityScope {
             capabilities: caps,
-            annotated: annotated || self.strict_mode,
+            annotated: annotated || !matches!(self.mode, CapabilityMode::Permissive),
         };
         self.scope_stack.push(scope);
         for handler in handlers {
@@ -589,7 +970,7 @@ impl CapabilityChecker {
         //    unannotated callers are also checked against the empty set.
         if segments.len() == 1 {
             if let Some(required_cap) = required_capability_for_builtin(&segments[0]) {
-                if self.strict_mode || self.has_annotated_scope() {
+                if self.strict_mode() || self.has_annotated_scope() {
                     if let Some(caps) = self.current_caps() {
                         if !caps.satisfies_required(&required_cap) {
                             self.diagnostics.push(
@@ -619,7 +1000,7 @@ impl CapabilityChecker {
         //    them is an error unless they declare their own annotation.
         if segments.len() == 1 {
             if let Some(callee_caps) = self.fn_capabilities.get(&segments[0]).cloned() {
-                if self.strict_mode || self.has_annotated_scope() {
+                if self.strict_mode() || self.has_annotated_scope() {
                     if let Some(caller_caps) = self.current_caps() {
                         if !callee_caps.is_subset_of(caller_caps) {
                             let excess = callee_caps.excess_over(caller_caps);
@@ -1159,5 +1540,124 @@ mod tests {
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("banana"));
         assert_eq!(diags[0].code.as_deref(), Some("W-CAP-UNKNOWN"));
+    }
+
+    // -----------------------------------------------------------------
+    // Inferred mode (--capabilities-mode=inferred / deny-by-default with
+    // interior inference). These prove: helpers need no annotation, the
+    // boundary (main / annotated fns) is where deny-by-default bites, and
+    // authority cannot leak past an unannotated boundary.
+    // -----------------------------------------------------------------
+
+    fn call(name: &str) -> Stmt {
+        Stmt::Expr {
+            expr: builtin_call(name),
+            span: span(),
+        }
+    }
+
+    fn infer(decls: Vec<Decl>) -> Vec<Diagnostic> {
+        let module = Module {
+            name: "test".into(),
+            declarations: decls,
+            span: span(),
+        };
+        check_capabilities_mode(&module, CapabilityMode::Inferred)
+    }
+
+    #[test]
+    fn inferred_helper_needs_no_annotation() {
+        // main @capabilities(fs:write) { helper() }   fn helper() { file_write() }
+        // helper is unannotated; inference covers it. Zero errors.
+        let helper = fn_decl("helper", vec![], vec![call("file_write")]);
+        let main = fn_decl("main", vec!["fs:write"], vec![call("helper")]);
+        let diags = infer(vec![main, helper]);
+        assert!(diags.is_empty(), "expected clean, got {diags:?}");
+    }
+
+    #[test]
+    fn inferred_unannotated_main_transitive_write_is_error() {
+        // fn main() { helper() }   fn helper() { file_write() }
+        // main declares nothing -> deny-by-default: the transitively-required
+        // fs:write must be declared on main. Error names the missing cap.
+        let helper = fn_decl("helper", vec![], vec![call("file_write")]);
+        let main = fn_decl("main", vec![], vec![call("helper")]);
+        let diags = infer(vec![main, helper]);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0507")),
+            "expected E0507 at the boundary, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_unannotated_main_direct_builtin_is_error() {
+        // fn main() { file_write() }  -> E0505 at the boundary.
+        let main = fn_decl("main", vec![], vec![call("file_write")]);
+        let diags = infer(vec![main]);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0505")),
+            "expected E0505, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_annotated_main_covers_direct_builtin() {
+        let main = fn_decl("main", vec!["fs:write"], vec![call("file_write")]);
+        assert!(infer(vec![main]).is_empty());
+    }
+
+    #[test]
+    fn inferred_pure_helper_is_authority_free() {
+        // fn main() { pure() }  fn pure() { println-like/no builtins }  -> clean.
+        // A helper that touches no capability provably requires none, so an
+        // unannotated main calling it is fine.
+        let pure = fn_decl("pure", vec![], vec![call("some_local_fn")]);
+        let leaf = fn_decl("some_local_fn", vec![], vec![]);
+        let main = fn_decl("main", vec![], vec![call("pure")]);
+        assert!(infer(vec![main, pure, leaf]).is_empty());
+    }
+
+    #[test]
+    fn inferred_chain_depth_three_propagates() {
+        // a @capabilities(fs:write) -> b -> c -> file_write ; b,c unannotated.
+        let c = fn_decl("c", vec![], vec![call("file_write")]);
+        let b = fn_decl("b", vec![], vec![call("c")]);
+        let a = fn_decl("a", vec!["fs:write"], vec![call("b")]);
+        // `a` is the boundary; give it a main caller so nothing dangles.
+        let main = fn_decl("main", vec!["fs:write"], vec![call("a")]);
+        let diags = infer(vec![main, a, b, c]);
+        assert!(diags.is_empty(), "expected clean chain, got {diags:?}");
+    }
+
+    #[test]
+    fn inferred_annotation_ceiling_is_enforced() {
+        // fn helper @capabilities(fs:read) { file_write() } -> fs:write not
+        // covered by the declared fs:read ceiling. E0505.
+        let helper = fn_decl("helper", vec!["fs:read"], vec![call("file_write")]);
+        let main = fn_decl("main", vec!["fs:read"], vec![call("helper")]);
+        let diags = infer(vec![main, helper]);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0505")),
+            "expected E0505 ceiling violation, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_ambient_builtins_never_blocked() {
+        // fn main() { exit(); sleep(); }  -> ambient, no annotation needed.
+        let main = fn_decl("main", vec![], vec![call("exit"), call("sleep")]);
+        assert!(infer(vec![main]).is_empty());
+    }
+
+    #[test]
+    fn permissive_default_unchanged_by_inference() {
+        // The same unannotated-main-writes-file program is clean in Permissive.
+        let main = fn_decl("main", vec![], vec![call("file_write")]);
+        let module = Module {
+            name: "test".into(),
+            declarations: vec![main],
+            span: span(),
+        };
+        assert!(check_capabilities_mode(&module, CapabilityMode::Permissive).is_empty());
     }
 }
