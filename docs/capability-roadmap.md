@@ -47,24 +47,32 @@ first-class values.
 The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny — every
 function auditable in isolation. 81/81 examples pass it in CI.
 
-## Remaining gap: the bare-compiler default
+## The global default is now `inferred`
 
-The one thing not yet flipped: the **bare-compiler default** — a single-file
-`kryos run foo.kry` with no `kryos.toml` — is still `permissive`. This is
-deliberate for this beta: flipping the global default would force the self-host
-bootstrap and the whole `ecosystem/` corpus to migrate in one step. The staged
-plan:
+As of v1.0.0-beta.3 the **bare-compiler default** is `inferred`: a loose
+`kryos run foo.kry` / `kryos check` / `kryos build` with no flag and no
+`kryos.toml` is deny-by-default. A program that reads a file, hits the network,
+or reads the environment from an unannotated `main` is rejected at compile time.
+`--capabilities-mode=permissive` (on `check` and `build`) or
+`[capabilities] mode = "permissive"` opts out.
 
-1. **Examples exemplary** — done. 81/81 strict; 106/106 pass `inferred`.
+Staged plan, done in order:
+
+1. **Examples exemplary** — done. 81/81 strict; 106/106 `inferred`.
 2. **New projects deny-by-default** — done. `kryos new` → `mode = "inferred"`.
-3. **Self-host + ecosystem boundaries annotated**, then
-4. **Flip the global default to `inferred`** in a signposted release, with
-   `--capabilities-mode=permissive` / `[capabilities] mode = "permissive"` as
-   the opt-out.
+3. **Self-host + stdlib capability-clean** — done. The self-host compiler is
+   inferred-clean with a single boundary annotation on `main`; the stdlib
+   authority wrappers are annotated so their capabilities propagate.
+4. **Flip the global default to `inferred`** — done (beta.3).
 
-Until step 4, a bare `kryos run` of a loose file is permissive; anything created
-with `kryos new`, or any project whose `kryos.toml` sets the mode, is
-deny-by-default. That is the honest state, stated rather than glossed.
+### The one remaining migration
+
+The `ecosystem/` packages (~132 entry points) are still checked under
+`permissive` by the ecosystem type-check gate — that gate verifies they
+*compile*, and migrating every package's `main` to declare its capabilities is
+tracked as follow-up work, not a blocker for the default. Everything a new user
+touches — the compiler, `kryos new` projects, the examples, the docs' runnable
+snippets — is deny-by-default today.
 
 ## Migrating a program
 
