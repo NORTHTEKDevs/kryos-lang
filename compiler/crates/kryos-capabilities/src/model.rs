@@ -313,8 +313,16 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         "file_write" | "write_file" | "create_dir" | "remove_file" | "remove_dir"
         | "copy_file" | "rename_file" => Some(Capability::FsWrite),
 
-        // Process
-        "env_get" | "env_set" | "exit" | "exec" | "spawn_process" => Some(Capability::Process),
+        // Process — running OTHER programs (exec/spawn) and reading/writing the
+        // environment (which can exfiltrate secrets) are real authority.
+        "env_get" | "env_set" | "exec" | "spawn_process" => Some(Capability::Process),
+
+        // `exit` / `abort` terminate the CURRENT process. That is control flow,
+        // not authority: it cannot read data, reach other systems, or escalate
+        // -- it just stops. Gating it made strict-capabilities impractical
+        // (every test assert-helper and CLI error path calls exit). Ambient,
+        // like Rust's process::exit and WASI's proc_exit.
+        "exit" | "abort" => None,
 
         // Network — HTTP(S) client/server (net:http)
         "http_get" | "http_post" | "http2_get" | "http2_post" | "http2_request" => {
@@ -340,8 +348,13 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         // Crypto
         "sha256" | "sha512" | "random_bytes" | "hmac_sha256" => Some(Capability::Crypto),
 
-        // Time
-        "time_now" | "time_millis" | "sleep" => Some(Capability::Time),
+        // Time — reading the wall clock and pausing your OWN execution are
+        // self-scoped: they cannot read your data, reach other systems, or
+        // take unauthorized action, so they are ambient (not gated). An
+        // agent that stalls is bounded by `@budget`, not a compile-time cap.
+        // The `Capability::Time` variant is kept for a future deterministic-
+        // execution / reproducible-clock mode, where it would re-gate these.
+        "time_now" | "time_millis" | "sleep" => None,
 
         // println, print, eprintln, to_string, len, push, etc. — NO capability needed
         _ => None,
@@ -686,10 +699,10 @@ mod tests {
             required_capability_for_builtin("env_set"),
             Some(Capability::Process)
         );
-        assert_eq!(
-            required_capability_for_builtin("exit"),
-            Some(Capability::Process)
-        );
+        // exit/abort terminate the current process only -- ambient control
+        // flow, not a gated authority (see required_capability_for_builtin).
+        assert_eq!(required_capability_for_builtin("exit"), None);
+        assert_eq!(required_capability_for_builtin("abort"), None);
         assert_eq!(
             required_capability_for_builtin("exec"),
             Some(Capability::Process)
@@ -737,19 +750,13 @@ mod tests {
     }
 
     #[test]
-    fn builtin_time_functions_require_time() {
-        assert_eq!(
-            required_capability_for_builtin("time_now"),
-            Some(Capability::Time)
-        );
-        assert_eq!(
-            required_capability_for_builtin("time_millis"),
-            Some(Capability::Time)
-        );
-        assert_eq!(
-            required_capability_for_builtin("sleep"),
-            Some(Capability::Time)
-        );
+    fn builtin_time_functions_are_ambient() {
+        // Clock reads and self-pause are self-scoped -> ambient (see the
+        // Time arm in required_capability_for_builtin). The Time variant is
+        // retained for a future deterministic-clock mode.
+        assert_eq!(required_capability_for_builtin("time_now"), None);
+        assert_eq!(required_capability_for_builtin("time_millis"), None);
+        assert_eq!(required_capability_for_builtin("sleep"), None);
     }
 
     #[test]

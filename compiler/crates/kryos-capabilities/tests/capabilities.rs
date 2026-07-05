@@ -857,7 +857,9 @@ fn builtin_all_capability_allows_all_builtins() {
 
 #[test]
 fn multiple_builtin_violations_reported() {
-    // @capabilities(net) but calls file_write, sha256, sleep
+    // @capabilities(net) but calls file_write (fs:write), sha256 (crypto),
+    // env_get (process). NB: `sleep` is intentionally NOT used -- it is now
+    // ambient (self-scoped), so it would not count as a violation.
     let module = module_with(vec![fn_decl(
         "bad_mix",
         vec![ann("capabilities", vec!["net"])],
@@ -871,7 +873,7 @@ fn multiple_builtin_violations_reported() {
                 span: span(),
             },
             Stmt::Expr {
-                expr: bare_call("sleep", vec![]),
+                expr: bare_call("env_get", vec![string_arg("PATH")]),
                 span: span(),
             },
         ],
