@@ -1,6 +1,7 @@
 use std::os::{name, arch, is_linux, home_dir, temp_dir, path_sep}
 
-@capabilities(env)
+// os platform helpers read env vars (-> process) and probe paths (-> fs:read).
+@capabilities(process, fs:read)
 fn main() {
     println("os=" + name())
     println("arch=" + arch())
