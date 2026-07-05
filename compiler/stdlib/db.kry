@@ -212,16 +212,19 @@ fn step(cursor: Cursor) -> bool {
 }
 
 // Return the number of columns in the cursor result set.
+@capabilities(db)
 fn col_count(cursor: Cursor) -> i32 {
     return kryos_db_col_count(cursor.handle)
 }
 
 // Read an integer (or real) column from the current row.
+@capabilities(db)
 fn col_int(cursor: Cursor, col: i32) -> i64 {
     return kryos_db_col_int(cursor.handle, col)
 }
 
 // Read a text column from the current row.
+@capabilities(db)
 fn col_text(cursor: Cursor, col: i32) -> str {
     let n = kryos_db_col_text_len(cursor.handle, col)
     if n <= 0 {
@@ -236,6 +239,7 @@ fn col_text(cursor: Cursor, col: i32) -> str {
 }
 
 // Free a cursor and release its memory.
+@capabilities(db)
 fn finalize(cursor: Cursor) {
     kryos_db_finalize(cursor.handle)
 }

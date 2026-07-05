@@ -22,7 +22,7 @@ extern {
 // --- Terminal size ----------------------------------------------------------
 
 // Returns the terminal width in columns.
-@capabilities(io)
+@capabilities(term)
 fn width() -> i32 {
     let w = kryos_term_width()
     if w < 0 {
@@ -32,7 +32,7 @@ fn width() -> i32 {
 }
 
 // Returns the terminal height in rows.
-@capabilities(io)
+@capabilities(term)
 fn height() -> i32 {
     let h = kryos_term_height()
     if h < 0 {
@@ -42,7 +42,7 @@ fn height() -> i32 {
 }
 
 // Returns [width, height] as an array.
-@capabilities(io)
+@capabilities(term)
 fn size() -> [i32] {
     return [width(), height()]
 }
@@ -50,7 +50,7 @@ fn size() -> [i32] {
 // --- Raw mode ---------------------------------------------------------------
 
 // Enable raw mode (disables line buffering and echo).
-@capabilities(io)
+@capabilities(term)
 fn raw_enable() -> bool {
     let result = kryos_term_raw_enable()
     if result < 0 {
@@ -60,7 +60,7 @@ fn raw_enable() -> bool {
 }
 
 // Disable raw mode (restore normal terminal behavior).
-@capabilities(io)
+@capabilities(term)
 fn raw_disable() -> bool {
     let result = kryos_term_raw_disable()
     if result < 0 {
@@ -71,7 +71,7 @@ fn raw_disable() -> bool {
 
 // Execute a function with raw mode enabled, then restore on exit.
 // The callback receives no arguments and returns a value of any type.
-@capabilities(io)
+@capabilities(term)
 fn with_raw_mode(callback: fn() -> str) -> str {
     raw_enable()
     let mut result = ""
@@ -88,7 +88,7 @@ fn with_raw_mode(callback: fn() -> str) -> str {
 // --- Screen clearing --------------------------------------------------------
 
 // Clear the entire screen.
-@capabilities(io)
+@capabilities(term)
 fn clear() -> bool {
     let result = kryos_term_clear(0)
     if result < 0 {
@@ -98,7 +98,7 @@ fn clear() -> bool {
 }
 
 // Clear the current line.
-@capabilities(io)
+@capabilities(term)
 fn clear_line() -> bool {
     let result = kryos_term_clear(1)
     if result < 0 {
@@ -108,7 +108,7 @@ fn clear_line() -> bool {
 }
 
 // Clear from the cursor to the end of the screen.
-@capabilities(io)
+@capabilities(term)
 fn clear_below() -> bool {
     let result = kryos_term_clear(2)
     if result < 0 {
@@ -120,7 +120,7 @@ fn clear_below() -> bool {
 // --- Cursor movement --------------------------------------------------------
 
 // Move the cursor to (col, row), both 0-indexed.
-@capabilities(io)
+@capabilities(term)
 fn cursor_move(col: i32, row: i32) -> bool {
     let result = kryos_term_cursor_move(col, row)
     if result < 0 {
@@ -130,13 +130,13 @@ fn cursor_move(col: i32, row: i32) -> bool {
 }
 
 // Move the cursor to the top-left corner (0, 0).
-@capabilities(io)
+@capabilities(term)
 fn cursor_home() -> bool {
     return cursor_move(0, 0)
 }
 
 // Hide the cursor using ANSI escape.
-@capabilities(io)
+@capabilities(term)
 fn cursor_hide() -> bool {
     let seq = "\x1b[?25l"
     kryos_stdout_write(str_to_ptr(seq), len(seq))
@@ -144,7 +144,7 @@ fn cursor_hide() -> bool {
 }
 
 // Show the cursor using ANSI escape.
-@capabilities(io)
+@capabilities(term)
 fn cursor_show() -> bool {
     let seq = "\x1b[?25h"
     kryos_stdout_write(str_to_ptr(seq), len(seq))
@@ -152,7 +152,7 @@ fn cursor_show() -> bool {
 }
 
 // Save the cursor position using ANSI escape.
-@capabilities(io)
+@capabilities(term)
 fn cursor_save() -> bool {
     let seq = "\x1b[s"
     kryos_stdout_write(str_to_ptr(seq), len(seq))
@@ -160,7 +160,7 @@ fn cursor_save() -> bool {
 }
 
 // Restore the cursor position using ANSI escape.
-@capabilities(io)
+@capabilities(term)
 fn cursor_restore() -> bool {
     let seq = "\x1b[u"
     kryos_stdout_write(str_to_ptr(seq), len(seq))
@@ -320,7 +320,7 @@ struct KeyEvent {
 }
 
 // Read a single key press from stdin (requires raw mode).
-@capabilities(io)
+@capabilities(term)
 fn read_key() -> KeyEvent {
     let buf = alloc(8)
     let n = kryos_stdin_read(buf, 8)
@@ -396,7 +396,7 @@ fn read_key() -> KeyEvent {
 // --- Terminal write helpers -------------------------------------------------
 
 // Write a string at a specific position.
-@capabilities(io)
+@capabilities(term)
 fn write_at(col: i32, row: i32, text: str) -> bool {
     cursor_move(col, row)
     kryos_stdout_write(str_to_ptr(text), len(text))
@@ -404,7 +404,7 @@ fn write_at(col: i32, row: i32, text: str) -> bool {
 }
 
 // Draw a horizontal line of a given character and length.
-@capabilities(io)
+@capabilities(term)
 fn draw_hline(col: i32, row: i32, ch: str, length: i32) -> bool {
     cursor_move(col, row)
     let mut line = ""
@@ -418,7 +418,7 @@ fn draw_hline(col: i32, row: i32, ch: str, length: i32) -> bool {
 }
 
 // Draw a vertical line of a given character and height.
-@capabilities(io)
+@capabilities(term)
 fn draw_vline(col: i32, row: i32, ch: str, height: i32) -> bool {
     let mut i = 0
     while i < height {
@@ -430,7 +430,7 @@ fn draw_vline(col: i32, row: i32, ch: str, height: i32) -> bool {
 }
 
 // Draw a box border (single-line Unicode characters).
-@capabilities(io)
+@capabilities(term)
 fn draw_box(col: i32, row: i32, w: i32, h: i32) -> bool {
     // Top edge
     let mut top = "\u250c"

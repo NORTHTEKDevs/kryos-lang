@@ -22,6 +22,7 @@ extern {
 // --- Environment variables --------------------------------------------------
 
 // Get an environment variable.  Returns the value or throws if not found.
+@capabilities(process)
 fn env_get(key: str) -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -42,6 +43,7 @@ fn env_get(key: str) -> str {
 }
 
 // Get an environment variable with a default fallback.
+@capabilities(process)
 fn env_get_or(key: str, default: str) -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -61,6 +63,7 @@ fn env_get_or(key: str, default: str) -> str {
 }
 
 // Check if an environment variable is set.
+@capabilities(process)
 fn env_has(key: str) -> bool {
     let buf = alloc(1)
     let val_len = kryos_env_get(str_to_ptr(key), len(key), buf, 1)
@@ -287,6 +290,7 @@ impl Command {
     }
 
     // Execute the command and capture stdout/stderr.
+    @capabilities(process)
     fn run(self: Command) -> CommandResult {
         // self.arguments is a [str]; the native exec wants (args_ptr,
         // args_count) where args_ptr is the ELEMENT buffer of i64
@@ -316,6 +320,7 @@ impl Command {
     }
 
     // Execute the command with inherited I/O (prints to terminal).
+    @capabilities(process)
     fn run_simple(self: Command) -> i64 {
         let cmd_str = self.to_string()
         return kryos_process_exec_simple(str_to_ptr(cmd_str), len(cmd_str))

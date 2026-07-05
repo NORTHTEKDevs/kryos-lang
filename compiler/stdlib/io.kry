@@ -45,6 +45,7 @@ enum FileError {
 impl File {
     // Read up to `n` bytes from the file.  Returns the data read as a string.
     // Throws on error or if the file is already closed.
+    @capabilities(fs:read)
     fn read(self: File, n: i64) -> str {
         if self.closed {
             throw "io error: read on closed file " + self.path
@@ -58,6 +59,7 @@ impl File {
     }
 
     // Read the entire file contents as a string.
+    @capabilities(fs:read)
     fn read_all(self: File) -> str {
         if self.closed {
             throw "io error: read_all on closed file " + self.path
@@ -81,6 +83,7 @@ impl File {
     }
 
     // Write a string to the file.  Returns the number of bytes written.
+    @capabilities(fs:write)
     fn write(self: File, data: str) -> i64 {
         if self.closed {
             throw "io error: write on closed file " + self.path
@@ -95,6 +98,7 @@ impl File {
     }
 
     // Write all data to the file, retrying until everything is written.
+    @capabilities(fs:write)
     fn write_all(self: File, data: str) -> i64 {
         if self.closed {
             throw "io error: write_all on closed file " + self.path
@@ -134,6 +138,7 @@ impl File {
 // --- File open helpers ------------------------------------------------------
 
 // Open a file for reading.
+@capabilities(fs:read)
 fn open(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_READ)
     if fd < 0 {
@@ -143,6 +148,7 @@ fn open(path: str) -> File {
 }
 
 // Open a file for writing (creates or truncates).
+@capabilities(fs:write)
 fn create(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_WRITE)
     if fd < 0 {
@@ -152,6 +158,7 @@ fn create(path: str) -> File {
 }
 
 // Open a file for appending (creates if it does not exist).
+@capabilities(fs:write)
 fn open_append(path: str) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_APPEND)
     if fd < 0 {
@@ -161,6 +168,7 @@ fn open_append(path: str) -> File {
 }
 
 // Open a file with an explicit mode (0=read, 1=write, 2=append).
+@capabilities(fs:read, fs:write)
 fn open_with_mode(path: str, mode: i32) -> File {
     let fd = kryos_file_open(str_to_ptr(path), len(path), mode)
     if fd < 0 {
@@ -257,6 +265,7 @@ struct BufReader {
 
 impl BufReader {
     // Fill the internal buffer from the underlying file.
+    @capabilities(fs:read)
     fn fill(self: BufReader) -> BufReader {
         if self.eof {
             return self
@@ -282,6 +291,7 @@ impl BufReader {
 
     // Read a single line from the buffered reader.
     // Returns the line without the trailing newline.
+    @capabilities(fs:read)
     fn read_line(self: BufReader) -> str {
         let mut reader = self
         // Keep filling until we find a newline or reach EOF
@@ -375,6 +385,7 @@ struct BufWriter {
 
 impl BufWriter {
     // Write data to the internal buffer.  Flushes automatically when full.
+    @capabilities(fs:write)
     fn write(self: BufWriter, data: str) -> BufWriter {
         let new_buf = self.buffer + data
         if len(new_buf) >= self.buf_size {
@@ -393,6 +404,7 @@ impl BufWriter {
     }
 
     // Flush any remaining data in the buffer to the underlying file.
+    @capabilities(fs:write)
     fn flush(self: BufWriter) -> BufWriter {
         if len(self.buffer) > 0 {
             self.file.write_all(self.buffer)
@@ -405,6 +417,7 @@ impl BufWriter {
     }
 
     // Flush and close the underlying file.
+    @capabilities(fs:write)
     fn close(self: BufWriter) -> BufWriter {
         let flushed = self.flush()
         let closed_file = flushed.file.close()

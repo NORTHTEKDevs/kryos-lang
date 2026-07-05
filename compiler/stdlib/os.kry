@@ -17,6 +17,7 @@ extern {
 // --- Internal helpers -------------------------------------------------------
 
 // Read an environment variable or return "" if not set.
+@capabilities(process)
 fn _env_or_empty(key: str) -> str {
     let buf_size = 4096
     let buf = alloc(buf_size)
@@ -30,6 +31,7 @@ fn _env_or_empty(key: str) -> str {
     return ""
 }
 
+@capabilities(fs:read)
 fn _path_exists(path: str) -> bool {
     let result = kryos_path_exists(str_to_ptr(path), len(path))
     return result == 1
@@ -38,6 +40,7 @@ fn _path_exists(path: str) -> bool {
 // --- OS detection -----------------------------------------------------------
 
 // Returns the operating system name: "windows", "linux", "macos", or "unknown".
+@capabilities(process, fs:read)
 fn name() -> str {
     // Windows sets WINDIR and OS
     let windir = _env_or_empty("WINDIR")
@@ -73,6 +76,7 @@ fn name() -> str {
 }
 
 // Returns the CPU architecture: "x86_64", "aarch64", or "unknown".
+@capabilities(process)
 fn arch() -> str {
     let processor = _env_or_empty("PROCESSOR_ARCHITECTURE")
     if len(processor) > 0 {
@@ -104,6 +108,7 @@ fn arch() -> str {
 }
 
 // Returns the OS family: "unix" or "windows".
+@capabilities(process, fs:read)
 fn family() -> str {
     let os = name()
     if os == "windows" {
@@ -114,18 +119,22 @@ fn family() -> str {
 
 // --- Boolean OS checks ------------------------------------------------------
 
+@capabilities(process, fs:read)
 fn is_windows() -> bool {
     return name() == "windows"
 }
 
+@capabilities(process, fs:read)
 fn is_linux() -> bool {
     return name() == "linux"
 }
 
+@capabilities(process, fs:read)
 fn is_macos() -> bool {
     return name() == "macos"
 }
 
+@capabilities(process, fs:read)
 fn is_unix() -> bool {
     return family() == "unix"
 }
@@ -133,6 +142,7 @@ fn is_unix() -> bool {
 // --- Standard directories ---------------------------------------------------
 
 // Returns the user's home directory.
+@capabilities(process)
 fn home_dir() -> str {
     // Windows: USERPROFILE or HOMEDRIVE + HOMEPATH
     let userprofile = _env_or_empty("USERPROFILE")
@@ -156,6 +166,7 @@ fn home_dir() -> str {
 }
 
 // Returns the system temporary directory.
+@capabilities(process, fs:read)
 fn temp_dir() -> str {
     // Windows: TEMP or TMP
     let temp = _env_or_empty("TEMP")
@@ -182,6 +193,7 @@ fn temp_dir() -> str {
 }
 
 // Returns the current working directory.
+@capabilities(process)
 fn current_dir() -> str {
     // PWD is set by most shells on Unix
     let pwd = _env_or_empty("PWD")
@@ -201,6 +213,7 @@ fn current_dir() -> str {
 // --- Path separator ---------------------------------------------------------
 
 // Returns the platform path separator ("/" on Unix, "\\" on Windows).
+@capabilities(process, fs:read)
 fn path_sep() -> str {
     if is_windows() {
         return "\\"
@@ -209,6 +222,7 @@ fn path_sep() -> str {
 }
 
 // Returns the platform path list separator (":" on Unix, ";" on Windows).
+@capabilities(process, fs:read)
 fn path_list_sep() -> str {
     if is_windows() {
         return ";"
@@ -217,6 +231,7 @@ fn path_list_sep() -> str {
 }
 
 // Returns the platform line ending ("\r\n" on Windows, "\n" on Unix).
+@capabilities(process, fs:read)
 fn line_ending() -> str {
     if is_windows() {
         return "\r\n"
@@ -227,6 +242,7 @@ fn line_ending() -> str {
 // --- User info --------------------------------------------------------------
 
 // Returns the current user's username.
+@capabilities(process)
 fn username() -> str {
     // Windows: USERNAME
     let username = _env_or_empty("USERNAME")
@@ -249,6 +265,7 @@ fn username() -> str {
 }
 
 // Returns the hostname (machine name).
+@capabilities(process)
 fn hostname() -> str {
     let computername = _env_or_empty("COMPUTERNAME")
     if len(computername) > 0 {
@@ -267,6 +284,7 @@ fn hostname() -> str {
 
 // Returns the user's config directory.
 // Windows: APPDATA, macOS: ~/Library/Application Support, Linux: ~/.config
+@capabilities(process, fs:read)
 fn config_dir() -> str {
     let appdata = _env_or_empty("APPDATA")
     if len(appdata) > 0 {
@@ -291,6 +309,7 @@ fn config_dir() -> str {
 
 // Returns the user's data directory.
 // Windows: LOCALAPPDATA, macOS: ~/Library/Application Support, Linux: ~/.local/share
+@capabilities(process, fs:read)
 fn data_dir() -> str {
     let localappdata = _env_or_empty("LOCALAPPDATA")
     if len(localappdata) > 0 {
@@ -314,6 +333,7 @@ fn data_dir() -> str {
 
 // Returns the user's cache directory.
 // Windows: LOCALAPPDATA\Temp, macOS: ~/Library/Caches, Linux: ~/.cache
+@capabilities(process, fs:read)
 fn cache_dir() -> str {
     let os = name()
 
