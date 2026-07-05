@@ -165,6 +165,21 @@ impl CapabilityChecker {
         annotations.iter().any(|a| a.name == "capabilities")
     }
 
+    /// The capability contributed by an expression used as a first-class VALUE:
+    /// a bare identifier naming a gated builtin (`file_write` passed as a
+    /// `fn(...)` argument) delegates that builtin's authority. Used by interior
+    /// inference so the requirement propagates to the boundary; the enforcement
+    /// counterpart is `check_builtin_value_ref`.
+    fn builtin_value_caps(expr: &Expr) -> CapabilitySet {
+        let mut set = CapabilitySet::empty();
+        if let Expr::Identifier { name, .. } = expr {
+            if let Some(cap) = required_capability_for_builtin(name) {
+                set.insert(cap);
+            }
+        }
+        set
+    }
+
     /// Gather every function (top-level and impl/trait method) that has a body,
     /// as `(name, body)` pairs, for interior capability inference.
     fn collect_functions<'a>(decls: &'a [Decl], out: &mut Vec<(String, &'a kryos_ast::Block)>) {
@@ -353,17 +368,32 @@ impl CapabilityChecker {
                 }
                 e(callee, &mut acc);
                 for arg in args {
+                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
-            Expr::MethodCall { object, args, .. } => {
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                ..
+            } => {
+                // The method's own (declared or inferred) requirement.
+                if let Some(caps) = working.get(method) {
+                    acc = acc.union(caps);
+                }
                 e(object, &mut acc);
                 for arg in args {
+                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
-            Expr::StaticMethodCall { args, .. } => {
+            Expr::StaticMethodCall { method, args, .. } => {
+                if let Some(caps) = working.get(method) {
+                    acc = acc.union(caps);
+                }
                 for arg in args {
+                    acc = acc.union(&Self::builtin_value_caps(arg));
                     e(arg, &mut acc);
                 }
             }
@@ -795,9 +825,11 @@ impl CapabilityChecker {
                 // Check for prohibited self-heal escalation calls.
                 self.check_escalation(callee, *span);
 
-                // Recurse into callee and arguments.
+                // Recurse into callee and arguments; flag any gated builtin
+                // handed in as a first-class value.
                 self.check_expr(callee);
                 for arg in args {
+                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
@@ -822,13 +854,23 @@ impl CapabilityChecker {
                     );
                 }
 
+                // Propagate the method's capability requirement to the caller
+                // (the previously-missing call-site check for method dispatch).
+                self.enforce_callee_name(method, *span);
+
                 self.check_expr(object);
                 for arg in args {
+                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
-            Expr::StaticMethodCall { args, .. } => {
+            Expr::StaticMethodCall {
+                method, args, span, ..
+            } => {
+                // Same call-site propagation for `Type::method()` static dispatch.
+                self.enforce_callee_name(method, *span);
                 for arg in args {
+                    self.check_builtin_value_ref(arg, *span);
                     self.check_expr(arg);
                 }
             }
@@ -964,68 +1006,101 @@ impl CapabilityChecker {
             }
         }
 
-        // 2. Check bare builtin function calls (e.g. file_write, http_get).
-        //    Normally only enforced inside explicitly annotated @capabilities
-        //    scopes; in strict mode every scope is treated as annotated, so
-        //    unannotated callers are also checked against the empty set.
+        // 2+3. Bare builtin requirement + cross-function propagation, keyed on
+        //      the single-segment callee name. Shared with method / static
+        //      dispatch (see `enforce_callee_name`).
         if segments.len() == 1 {
-            if let Some(required_cap) = required_capability_for_builtin(&segments[0]) {
-                if self.strict_mode() || self.has_annotated_scope() {
-                    if let Some(caps) = self.current_caps() {
-                        if !caps.satisfies_required(&required_cap) {
-                            self.diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "builtin `{}` requires `{required_cap}` capability",
-                                    segments[0]
-                                ))
-                                .with_label(
-                                    call_span,
-                                    format!("requires `{required_cap}`"),
-                                )
-                                .with_note(format!(
-                                    "add `@capabilities({required_cap})` to the enclosing function or actor"
-                                ))
-                                .with_code(kryos_errors::codes::E0505),
-                            );
-                        }
-                    }
+            self.enforce_callee_name(&segments[0], call_span);
+        }
+    }
+
+    /// Enforce the capability requirements of a call to `name` — a bare
+    /// function name (`FnCall`) or a method name (`MethodCall` /
+    /// `StaticMethodCall`). Two checks, both gated on the caller being an
+    /// enforcing scope (strict mode, or any annotated/inferred scope):
+    ///
+    /// - **E0505** if `name` is a capability-gated builtin the caller does not
+    ///   hold; and
+    /// - **E0507** if `name` is a known function/method (annotated ceiling or
+    ///   inferred set) whose capabilities exceed the caller's.
+    ///
+    /// Routing method dispatch through here is what closes the soundness hole
+    /// where `obj.method()` / `Type::method()` could exercise authority the
+    /// caller never declared (the call-site propagation was previously only
+    /// wired for free-function `FnCall`s).
+    fn enforce_callee_name(&mut self, name: &str, call_span: Span) {
+        if !(self.strict_mode() || self.has_annotated_scope()) {
+            return;
+        }
+
+        if let Some(required_cap) = required_capability_for_builtin(name) {
+            if let Some(caps) = self.current_caps() {
+                if !caps.satisfies_required(&required_cap) {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "builtin `{name}` requires `{required_cap}` capability"
+                        ))
+                        .with_label(call_span, format!("requires `{required_cap}`"))
+                        .with_note(format!(
+                            "add `@capabilities({required_cap})` to the enclosing function or actor"
+                        ))
+                        .with_code(kryos_errors::codes::E0505),
+                    );
                 }
             }
         }
 
-        // 3. Cross-function propagation: if calling a known annotated function,
-        //    the caller's capabilities must be a superset of the callee's.
-        //    In strict mode unannotated callers are checked too — they hold
-        //    the empty set, so calling any capability-bearing function from
-        //    them is an error unless they declare their own annotation.
-        if segments.len() == 1 {
-            if let Some(callee_caps) = self.fn_capabilities.get(&segments[0]).cloned() {
-                if self.strict_mode() || self.has_annotated_scope() {
-                    if let Some(caller_caps) = self.current_caps() {
-                        if !callee_caps.is_subset_of(caller_caps) {
-                            let excess = callee_caps.excess_over(caller_caps);
-                            let excess_names: Vec<String> =
-                                excess.iter().map(|c| c.to_string()).collect();
-                            self.diagnostics.push(
-                                Diagnostic::error(format!(
-                                    "call to `{}` requires capabilities [{}] not granted to caller",
-                                    segments[0],
-                                    excess_names.join(", ")
-                                ))
-                                .with_label(call_span, "callee requires more capabilities")
-                                .with_note(format!(
-                                    "function `{}` has @capabilities({}) but caller lacks [{}]",
-                                    segments[0],
-                                    callee_caps
-                                        .iter()
-                                        .map(|c| c.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    excess_names.join(", ")
-                                ))
-                                .with_code(kryos_errors::codes::E0507),
-                            );
-                        }
+        if let Some(callee_caps) = self.fn_capabilities.get(name).cloned() {
+            if let Some(caller_caps) = self.current_caps() {
+                if !callee_caps.is_subset_of(caller_caps) {
+                    let excess = callee_caps.excess_over(caller_caps);
+                    let excess_names: Vec<String> =
+                        excess.iter().map(|c| c.to_string()).collect();
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "call to `{name}` requires capabilities [{}] not granted to caller",
+                            excess_names.join(", ")
+                        ))
+                        .with_label(call_span, "callee requires more capabilities")
+                        .with_note(format!(
+                            "function `{name}` has @capabilities({}) but caller lacks [{}]",
+                            callee_caps
+                                .iter()
+                                .map(|c| c.to_string())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            excess_names.join(", ")
+                        ))
+                        .with_code(kryos_errors::codes::E0507),
+                    );
+                }
+            }
+        }
+    }
+
+    /// A gated builtin used as a first-class VALUE (passed as a `fn(...)`
+    /// argument, or bound to a variable) hands out its authority just as much
+    /// as calling it. Require the capability at the reference site so
+    /// `apply(file_write, ...)` cannot smuggle `fs:write` past the boundary.
+    fn check_builtin_value_ref(&mut self, expr: &Expr, span: Span) {
+        if let Expr::Identifier { name, .. } = expr {
+            if !(self.strict_mode() || self.has_annotated_scope()) {
+                return;
+            }
+            if let Some(required_cap) = required_capability_for_builtin(name) {
+                if let Some(caps) = self.current_caps() {
+                    if !caps.satisfies_required(&required_cap) {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "builtin `{name}` used as a value requires `{required_cap}` capability"
+                            ))
+                            .with_label(span, format!("requires `{required_cap}`"))
+                            .with_note(format!(
+                                "passing `{name}` as a function value delegates its authority; \
+                                 add `@capabilities({required_cap})` to the enclosing function"
+                            ))
+                            .with_code(kryos_errors::codes::E0505),
+                        );
                     }
                 }
             }
@@ -1659,5 +1734,86 @@ mod tests {
             span: span(),
         };
         assert!(check_capabilities_mode(&module, CapabilityMode::Permissive).is_empty());
+    }
+
+    // --- Soundness: authority must not leak through method / static dispatch
+    // or through gated builtins passed as first-class values (regression tests
+    // for holes found by adversarial review). ---
+
+    fn method_call(recv: &str, method: &str) -> Stmt {
+        Stmt::Expr {
+            expr: Expr::MethodCall {
+                object: Box::new(Expr::Identifier {
+                    name: recv.into(),
+                    span: span(),
+                }),
+                method: method.into(),
+                args: vec![],
+                span: span(),
+            },
+            span: span(),
+        }
+    }
+
+    fn impl_with_method(target: &str, method: Decl) -> Decl {
+        Decl::Impl {
+            target: target.into(),
+            trait_name: None,
+            generics: vec![],
+            methods: vec![method],
+            doc_comments: vec![],
+            span: span(),
+        }
+    }
+
+    #[test]
+    fn inferred_method_call_authority_is_caught() {
+        // impl Sink { fn write(self) { file_write(...) } }  (unannotated method)
+        // fn main() { s.write() }  (unannotated) -> deny-by-default at boundary.
+        // Before the fix, MethodCall never propagated and this LEAKED.
+        let write = fn_decl("write", vec![], vec![call("file_write")]);
+        let imp = impl_with_method("Sink", write);
+        let main = fn_decl("main", vec![], vec![method_call("s", "write")]);
+        let diags = infer(vec![imp, main]);
+        assert!(
+            diags.iter().any(|d| d.is_error()),
+            "method-dispatch authority must be caught at the boundary, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn inferred_method_call_authority_ok_when_declared() {
+        // Same, but main declares fs:write -> inference threads it, no error.
+        let write = fn_decl("write", vec![], vec![call("file_write")]);
+        let imp = impl_with_method("Sink", write);
+        let main = fn_decl("main", vec!["fs:write"], vec![method_call("s", "write")]);
+        let diags = infer(vec![imp, main]);
+        assert!(diags.is_empty(), "declared main must pass, got {diags:?}");
+    }
+
+    #[test]
+    fn inferred_builtin_passed_as_value_is_caught() {
+        // fn main() { apply(file_write, ...) }  -- passing a gated builtin as a
+        // fn value delegates its authority; unannotated main must be rejected.
+        let call_apply = Stmt::Expr {
+            expr: Expr::FnCall {
+                callee: Box::new(Expr::Identifier {
+                    name: "apply".into(),
+                    span: span(),
+                }),
+                args: vec![Expr::Identifier {
+                    name: "file_write".into(),
+                    span: span(),
+                }],
+                span: span(),
+            },
+            span: span(),
+        };
+        let main = fn_decl("main", vec![], vec![call_apply]);
+        let diags = infer(vec![main]);
+        assert!(
+            diags.iter().any(|d| d.code.as_deref() == Some("E0505")),
+            "gated builtin passed as a value must require its cap, got {diags:?}"
+        );
     }
 }

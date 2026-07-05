@@ -58,6 +58,7 @@ fn compile_valid_source_succeeds() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);
@@ -98,6 +99,7 @@ fn compile_syntax_error_fails() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);
@@ -131,6 +133,7 @@ fn compile_type_error_fails() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);
@@ -257,6 +260,7 @@ fn compile_source_valid() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -284,6 +288,7 @@ fn compile_source_with_binary_output_no_backend() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_source(VALID_SOURCE, "inline.kry", &config);
@@ -335,6 +340,7 @@ fn build_config_derive_output_path() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let derived = config.derive_output_path();
@@ -357,6 +363,7 @@ fn build_config_derive_output_mir() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let derived = config.derive_output_path();
@@ -379,6 +386,7 @@ fn build_config_explicit_output_overrides_derived() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let derived = config.derive_output_path();
@@ -430,6 +438,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -494,6 +503,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -556,6 +566,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -638,6 +649,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -748,6 +760,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -812,6 +825,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -869,6 +883,7 @@ fn main() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -1029,6 +1044,7 @@ fn compile_file_with_std_import() {
     use_cache: false,
     split_async_awaits: true,
     strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&main_path, &config);
@@ -1094,6 +1110,7 @@ fn async_function_flagged_as_async_in_mir() {
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);
@@ -1151,6 +1168,7 @@ fn async_function_compiles_end_to_end() {
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);
@@ -1185,6 +1203,7 @@ fn main() { let _ = bad(1) }
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let result = compile_file(&path, &config);

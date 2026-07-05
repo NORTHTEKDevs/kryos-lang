@@ -640,6 +640,7 @@ fn bench_pipeline(c: &mut Criterion) {
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     let mut group = c.benchmark_group("pipeline");
