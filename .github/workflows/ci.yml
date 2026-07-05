@@ -117,6 +117,14 @@ jobs:
         # (compile-time capability safety) enforced on its own demos.
         run: bash tests/strict_caps_examples.sh
 
+      - name: Inferred-mode soundness gate (deny-by-default cannot leak)
+        # Asserts that authority reaches the boundary through every path
+        # (direct calls, method/static dispatch, builtin-as-value, and
+        # annotated stdlib wrappers) and is REJECTED from an unannotated
+        # `main`, while safe/declared code is accepted. Locks in the leaks
+        # closed by adversarial review so a refactor cannot silently reopen one.
+        run: bash tests/inferred_soundness.sh
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload
