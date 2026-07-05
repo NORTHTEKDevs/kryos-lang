@@ -465,13 +465,22 @@ fn main() {
 }
 ```
 
-`async`/`await` are parsed and type-checked, but **not yet backed by a
-non-blocking executor**: `await expr` currently lowers to a direct
-synchronous call (it runs `expr` immediately on the calling thread).
-Use `spawn` + channels or actors for real concurrency today; a
-non-blocking I/O runtime is planned.
+`async`/`await` run on a **cooperative executor** (`coop_spawn` /
+`coop_run`): `await` suspends the current task and hands control to the
+next ready task, so tasks genuinely interleave (verified on both backends:
+`coop_spawn(task_a()) + coop_spawn(task_b()) + coop_run()` prints
+`A0 B0 A1 B1 A2 B2`, not `A0 A1 A2 B0 B1 B2`). What is **not** yet shipped
+is a non-blocking I/O runtime behind `await` -- an `await` on a blocking
+syscall still blocks its OS thread. For CPU-bound parallelism use
+`spawn` + channels.
 
-### 9.4 Actors
+### 9.4 Actors (preview)
+
+> **Preview:** actor syntax parses, type-checks, and has MIR/codegen
+> lowering, but the type checker does not yet register the actor name as a
+> callable type, so `Counter()` is rejected (`error[E0102]`). Actors are
+> not usable from user code today; the example below describes the intended
+> design. Use `spawn` + channels for message-passing now.
 
 ```kryos
 actor Counter {
@@ -583,8 +592,8 @@ What "implemented" means in 1.0.0-beta.2:
 | Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
-| `async` / `await`           | Grammar only (sync) |
-| Actors                      | Implemented         |
+| `async` / `await`           | Cooperative executor (tasks interleave; no non-blocking I/O yet) |
+| Actors                      | Preview (parses + lowers; constructor not yet callable) |
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |
 | Cross-compile (LLVM)        | Implemented         |

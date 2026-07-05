@@ -234,7 +234,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Concurrency** — `spawn` + channels + actors, plus a cooperative `async`/`await` executor that genuinely interleaves tasks (a non-blocking I/O runtime behind `await` is still planned)
+- **Concurrency** — `spawn` (OS threads) + channels (`chan<T>` MPMC, `select`) + a cooperative `async`/`await` executor that genuinely interleaves tasks (verified on both backends; a non-blocking I/O runtime behind `await` is still planned). `actor` message-passing is **preview** — it parses and has codegen lowering, but constructors are not yet callable from user code
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
@@ -249,7 +249,7 @@ Detailed release notes: [CHANGELOG.md](CHANGELOG.md).
 
 Kryos is built on a thesis: **memory safety without lifetime annotations is achievable**, and the "complexity tax" Rust imposes for safety is mostly avoidable if you accept ARC + move-semantics over borrow-checking. The trade is small: a tiny ARC overhead in exchange for code that looks closer to Go or Python than to Rust.
 
-Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, concurrency (spawn/channels/actors), HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
+Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, concurrency (spawn/channels/async), HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
 
 The third thesis is **capability typing as a first-class compile-time check**. `@pure` and `@capabilities(io, net)` aren't lint hints — they're enforced. A function annotated `@pure` that secretly calls `file_read` is a compile error, not a runtime surprise. This is the foundation for trustworthy plugin systems, sandboxed execution, and auditability.
 
@@ -295,8 +295,8 @@ Kryos is **v1.0.0-beta.2**. Feature-complete language and toolchain + self-hosti
 | Traits with `Self` type | Complete |
 | Pattern matching + enums | Complete |
 | Closures (ARC-captured) | Complete |
-| Channels + `spawn` | Complete |
-| `spawn` / channels / actors | Complete |
+| Channels + `spawn` + `select` | Complete |
+| Actors (message-passing) | Preview — parses + lowers; constructor not yet callable |
 | Async / await (cooperative executor) | Complete — tasks interleave under `coop_run()`; non-blocking I/O runtime not yet shipped |
 | Capability enforcement (`@pure`, `@capabilities`) | Complete |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |
