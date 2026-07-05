@@ -84,8 +84,11 @@ fn run_native_test_inner(test: &NativeTest, release: bool) -> Result<(), String>
     };
     let exe_path = out_dir.join(&exe_name);
 
-    // Compile .kry to native executable.
-    let mut args: Vec<&std::ffi::OsStr> = vec!["build".as_ref()];
+    // Compile .kry to native executable. These fixtures verify codegen and
+    // runtime output (fs/net/env round-trips), not capability hygiene, so they
+    // build under permissive rather than the inferred default.
+    let mut args: Vec<&std::ffi::OsStr> =
+        vec!["build".as_ref(), "--capabilities-mode=permissive".as_ref()];
     if release {
         args.push("--release".as_ref());
     }

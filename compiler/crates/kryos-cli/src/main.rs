@@ -95,6 +95,13 @@ enum Commands {
         /// `http_get` call. Equivalent to deny-by-default.
         #[arg(long)]
         strict_capabilities: bool,
+
+        /// Capability enforcement mode: `permissive` | `inferred` | `strict`.
+        /// Overrides the default (inferred) and `--strict-capabilities`. A
+        /// project's `kryos.toml` `[capabilities] mode` is honoured when this
+        /// is unset.
+        #[arg(long, value_name = "MODE")]
+        capabilities_mode: Option<String>,
     },
 
     /// Compile and run a Kryos file
@@ -625,6 +632,7 @@ fn main() {
             cache,
             no_cache,
             strict_capabilities,
+            capabilities_mode,
         } => {
             // --no-lto wins over both --lto and the release-implied LTO default.
             let effective_lto = if no_lto { false } else { lto };
@@ -634,6 +642,18 @@ fn main() {
                 .map(|v| matches!(v.as_str(), "1" | "true" | "yes" | "on"))
                 .unwrap_or(false);
             let effective_cache = if no_cache { false } else { cache || env_opt_in };
+            let cap_mode = match capabilities_mode.as_deref() {
+                Some(s) => match kryos_driver::CapabilityMode::from_str(s) {
+                    Some(m) => Some(m),
+                    None => {
+                        eprintln!(
+                            "error: unknown --capabilities-mode `{s}` (expected permissive | inferred | strict)"
+                        );
+                        std::process::exit(2);
+                    }
+                },
+                None => None,
+            };
             commands::build::execute(
                 &path,
                 release,
@@ -648,6 +668,7 @@ fn main() {
                 debug_info,
                 effective_cache,
                 strict_capabilities,
+                cap_mode,
             )
         }
 
@@ -679,7 +700,10 @@ fn main() {
                     }
                 },
                 None if strict_capabilities => kryos_driver::CapabilityMode::Strict,
-                None => kryos_driver::CapabilityMode::Permissive,
+                // Deny-by-default: the bare-compiler default is now Inferred.
+                // (A project's kryos.toml `[capabilities] mode` is honoured for
+                // `kryos check <dir>`; `--capabilities-mode=permissive` opts out.)
+                None => kryos_driver::CapabilityMode::Inferred,
             };
             if watch {
                 commands::check::execute_watch(&path, skip_ownership, cap_mode)

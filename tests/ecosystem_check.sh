@@ -33,7 +33,12 @@ for pkg in ecosystem/*/ packages/*/; do
     rel="${f#"$pkg"}"
     is_excluded "$f" && continue
     total=$((total+1))
-    if ! ( cd "$pkg" && timeout 25 "$KRYOS" check "$rel" >/dev/null 2>/tmp/eco_ck.txt ); then
+    # This gate verifies the ecosystem packages TYPE-CHECK (compile), not their
+    # capability hygiene, so it pins --capabilities-mode=permissive rather than
+    # the compiler default (now inferred). Migrating the ~132 package entry
+    # points to declare their capabilities is tracked separately in
+    # docs/capability-roadmap.md.
+    if ! ( cd "$pkg" && timeout 25 "$KRYOS" check --capabilities-mode=permissive "$rel" >/dev/null 2>/tmp/eco_ck.txt ); then
       echo "  FAIL  $f"
       grep -m1 "error" /tmp/eco_ck.txt | head -c 160; echo ""
       failed=$((failed+1))

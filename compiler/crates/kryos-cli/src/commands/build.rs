@@ -21,6 +21,7 @@ pub fn execute(
     debug_info: bool,
     use_cache: bool,
     strict_capabilities: bool,
+    capabilities_mode: Option<kryos_driver::CapabilityMode>,
 ) -> Result<(), String> {
     let mode = if release {
         BuildMode::Release
@@ -53,7 +54,7 @@ pub fn execute(
         use_cache,
         split_async_awaits: BuildConfig::_split_async_awaits_default(),
         strict_capabilities,
-        capability_mode: kryos_driver::CapabilityMode::Permissive,
+        capability_mode: capabilities_mode.unwrap_or(kryos_driver::CapabilityMode::Inferred),
     };
 
     if verbose {
@@ -150,9 +151,8 @@ pub fn execute(
             ));
         }
         // Honour the project's `[capabilities] mode` unless the CLI already
-        // asked for strict. (An explicit CLI mode is not yet plumbed into
-        // build; strict-capabilities remains the flag override.)
-        if !config.strict_capabilities {
+        // set an explicit mode (`--capabilities-mode` / `--strict-capabilities`).
+        if !config.strict_capabilities && capabilities_mode.is_none() {
             if let Ok(m) = kryos_package::Manifest::from_file(&manifest_path) {
                 if let Some(mode) = m
                     .capabilities

@@ -249,6 +249,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
 
     let start = Instant::now();
     let mut config = BuildConfig::for_file(test.source_path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
     // Non-run tests only need type checking, not binary output.
     if !matches!(test.expectation, Expectation::RunOutput(_)) {
         config.output_type = OutputType::Mir; // skip codegen + linking
@@ -751,6 +752,7 @@ pub fn discover_annotated_tests_in_file(path: &Path) -> Vec<(PathBuf, Vec<String
             return results;
         }
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
         // Stop at MIR — we only need attributes to discover @test fns. This
         // also avoids the "no main function" error when the file only contains
         // tests.
@@ -792,6 +794,7 @@ fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<Stri
                     continue;
                 }
                 let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
                 // Stop at MIR — we only need attributes to discover @test fns,
                 // and the test file may not have a `main()` entry point.
                 config.output_type = OutputType::Mir;
@@ -865,6 +868,7 @@ fn run_annotated_tests_internal(
         // resolve correctly. Stop at MIR — we then hand the MIR module to
         // the JIT directly, and the file may not have a `main()` entry point.
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
         config.output_type = OutputType::Mir;
         let result = compile_file(path, &config);
         if !result.success {

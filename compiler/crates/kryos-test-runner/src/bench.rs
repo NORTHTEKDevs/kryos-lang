@@ -104,6 +104,7 @@ fn discover_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<String>)>) {
             continue;
         }
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
         config.output_type = OutputType::Mir;
         let result = compile_file(&path, &config);
         if !result.success {
@@ -139,6 +140,7 @@ pub fn run_benches(
 
     for (path, fn_names) in discovered {
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
+        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
         config.output_type = OutputType::Mir;
         let compile = compile_file(&path, &config);
         if !compile.success {

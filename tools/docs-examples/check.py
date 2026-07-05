@@ -103,8 +103,13 @@ def main() -> int:
                         src = "fn main() {\n" + body + "\n}\n"
                 tmp = Path(td) / "ex.kry"
                 tmp.write_text(src, encoding="utf-8")
+                # Illustrative doc fragments are checked for TYPE correctness,
+                # not capability hygiene, so pin permissive rather than the
+                # compiler default (now inferred). A snippet showing `http_get`
+                # should not have to carry an `@capabilities` annotation to make
+                # its teaching point.
                 r = subprocess.run(
-                    [str(KRYOS), "check", str(tmp)],
+                    [str(KRYOS), "check", "--capabilities-mode=permissive", str(tmp)],
                     capture_output=True,
                     text=True,
                     timeout=120,

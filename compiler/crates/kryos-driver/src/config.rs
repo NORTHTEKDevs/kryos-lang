@@ -102,7 +102,7 @@ impl BuildConfig {
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
             strict_capabilities: false,
-            capability_mode: CapabilityMode::Permissive,
+            capability_mode: CapabilityMode::Inferred,
         }
     }
 
@@ -122,7 +122,7 @@ impl BuildConfig {
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
             strict_capabilities: false,
-            capability_mode: CapabilityMode::Permissive,
+            capability_mode: CapabilityMode::Inferred,
         }
     }
 
