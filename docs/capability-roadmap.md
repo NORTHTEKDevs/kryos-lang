@@ -26,50 +26,56 @@ is **on by default**, where it is **opt-in**, and the plan for closing that gap.
   program's annotations produces violations — the checker genuinely enforces,
   it is not decorative.
 
-## The honest gap
+## Deny-by-default is here for new projects
 
-By **default** (`kryos check` / `kryos build` without `--strict-capabilities`),
-an *unannotated* function is unconstrained: the compiler infers and reports its
-capabilities but does not *reject* it for failing to declare them. Enforcement
-is therefore **opt-in** today. That is the single most important thing to know
-about the current security posture, and it is why this page exists rather than
-a claim that "Kryos is capability-safe" full stop.
+There are now three enforcement modes (`permissive` < `inferred` < `strict`),
+selectable with `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`.
+**`kryos new` scaffolds `mode = "inferred"`, so a fresh project is
+deny-by-default from the first line of code** — both `kryos check` and
+`kryos build` reject an unannotated `main` that (directly or transitively) uses
+a gated builtin.
 
-**Use `--strict-capabilities` whenever it matters** — code that handles
-untrusted input, embeds an agent, or runs third-party plugins. In that mode the
-guarantee is real. The [`kryos-embed`](../ecosystem/kryos-embed/) SDK and the
-governed-agent demos run under it.
+`inferred` mode is what makes deny-by-default *ergonomic*: you declare authority
+once at the boundary (`main`, or a `pub` API function), and the compiler infers
+every interior helper's capability set from its call graph. A ~15k-line program
+needs one annotation on `main`, not one per function (the self-host compiler
+itself is inferred-clean with a single `@capabilities(fs:read, fs:write,
+process)` on `main`). Enforcement is sound across every path authority can take:
+direct builtin calls, method/static dispatch, and gated builtins passed as
+first-class values.
 
-## Roadmap to deny-by-default
+The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny — every
+function auditable in isolation. 81/81 examples pass it in CI.
 
-Making strict checking the **standard** mode is a breaking change: every
-existing unannotated program would need capability declarations. It is being
-done deliberately, in order, rather than flipped in a point release:
+## Remaining gap: the bare-compiler default
 
-1. **Examples exemplary** — done. 81/81 pass strict mode with least-privilege
-   declarations, gated in CI.
-2. **Standard library clean** — in progress (63/66 modules pass; the remaining
-   three are internal fs/crypto/net wrappers pending correct propagation
-   annotations).
-3. **Ecosystem clean** — the `ecosystem/` packages annotated and gated.
-4. **Flip the default in a signposted release** (targeted for a future beta),
-   with `--no-strict-capabilities` as an opt-out for gradual migration and a
-   one-command migration helper (`kryos check` already *reports* the exact
-   capabilities a function needs, so annotating is mechanical).
+The one thing not yet flipped: the **bare-compiler default** — a single-file
+`kryos run foo.kry` with no `kryos.toml` — is still `permissive`. This is
+deliberate for this beta: flipping the global default would force the self-host
+bootstrap and the whole `ecosystem/` corpus to migrate in one step. The staged
+plan:
 
-Until step 4 lands, treat capability safety as **opt-in and reliable** rather
-than **default and reliable**. Both are honest; only the second is the end
-state, and it is not claimed before it is true.
+1. **Examples exemplary** — done. 81/81 strict; 106/106 pass `inferred`.
+2. **New projects deny-by-default** — done. `kryos new` → `mode = "inferred"`.
+3. **Self-host + ecosystem boundaries annotated**, then
+4. **Flip the global default to `inferred`** in a signposted release, with
+   `--capabilities-mode=permissive` / `[capabilities] mode = "permissive"` as
+   the opt-out.
 
-## Migrating a program to strict mode
+Until step 4, a bare `kryos run` of a loose file is permissive; anything created
+with `kryos new`, or any project whose `kryos.toml` sets the mode, is
+deny-by-default. That is the honest state, stated rather than glossed.
+
+## Migrating a program
 
 ```bash
-kryos check --strict-capabilities src/main.kry
+kryos check --capabilities-mode=inferred src/main.kry   # deny-by-default
+kryos check --strict-capabilities src/main.kry          # every fn must declare
 ```
 
-Each error names the builtin and the capability it needs. Add an
-`@capabilities(...)` annotation to the function (least privilege — declare the
-precise sub-capabilities the errors name, not a coarse `all`), and re-check.
-Because capabilities propagate, annotate helpers that call gated builtins and
-declare the union on their callers. See
-[docs/10-capabilities.md](10-capabilities.md) for the full model.
+Each error names the builtin and the capability it needs. In `inferred` mode you
+usually only annotate `main` — the error names the exact (transitive) set, e.g.
+`call to `do_install` requires capabilities [fs:read, fs:write]`. Add
+`@capabilities(fs:read, fs:write)` to `main` and re-check; interior helpers need
+nothing. In `strict` mode, annotate each function that calls a gated builtin.
+See [docs/10-capabilities.md](10-capabilities.md) for the full model.

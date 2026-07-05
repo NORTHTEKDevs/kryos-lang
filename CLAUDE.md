@@ -186,9 +186,14 @@ fn main() {
 
 ## Capabilities (Kryos's defining feature)
 
-Every function has a capability set inferred from the builtins it calls. If your function calls `file_write`, it needs the `io` capability. If you `spawn` a process, you need `process`. If you read from the network, you need `net`. The compiler tracks these through the call graph and surfaces them at the function signature.
+Every function has a capability set inferred from the builtins it calls. If your function calls `file_write`, it needs `fs:write`. If you `spawn`/`exec` a process **or read the environment** (`env_get`/`env_set` — reading env can exfiltrate secrets), you need `process`. Network needs `net:http` / `net:tcp`. `crypto` for `sha256`/`hmac`. `exit`/`abort`, clock reads, and `sleep` are ambient (not gated). The compiler tracks these through the call graph.
 
-For now: just call what you need. The compiler will require a `// capabilities: io, net` annotation on the entry point if you turn on strict mode. See `docs/10-capabilities.md` for the details.
+Three enforcement modes, via `--capabilities-mode=<mode>` or `[capabilities] mode` in `kryos.toml`:
+- **`inferred`** (recommended; the `kryos new` default): deny-by-default at the boundary. Declare `@capabilities(...)` on `main` (and any `pub` fn); interior helpers are inferred. An unannotated `main` that transitively uses a gated builtin is rejected — the error names the exact set to add.
+- **`strict`** (`--strict-capabilities`): every function must declare its own caps.
+- **`permissive`**: only annotated functions are checked (the bare-compiler default for a loose single file this beta).
+
+When writing Kryos for a `kryos new` project, put `@capabilities(...)` on `main` listing what the program needs; leave helpers unannotated. See `docs/10-capabilities.md` for the full model.
 
 ### Sub-capabilities (least-privilege)
 

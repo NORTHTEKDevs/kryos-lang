@@ -1,20 +1,42 @@
 # Capabilities
 
-> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. `--strict-capabilities` on `kryos check` is implemented and enforced (unannotated functions are denied capability-gated builtins). Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented**.
+> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound across free-function calls, method/static dispatch, and gated builtins used as first-class values. Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient.
 
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, process spawning, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
 This is the opposite of how most languages work. In JavaScript or Go, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.
 
-## The model: opt-in enforcement with a strict mode
+## The model: three enforcement modes
 
-**Default behavior:** enforcement is opt-in per function. A function that carries a `@capabilities(...)` annotation is checked against it: it may only use builtins or stdlib modules whose required capability is in its declared set, and any function it calls may not exceed its set (attenuation). A function with no annotation is not constrained in the default mode.
+Enforcement has three modes, selected with `--capabilities-mode=<mode>` on
+`kryos check` / `kryos build`, or per project via `[capabilities] mode` in
+`kryos.toml`. `kryos new` scaffolds `mode = "inferred"`, so **new projects are
+deny-by-default from day one.**
 
-**Strict mode (`--strict-capabilities`):** passing this flag to `kryos check` or `kryos build` enables deny-by-default. Under strict mode, an unannotated function that calls any capability-gated builtin is a compile error. This is the intended production default; it is opt-in today via the flag.
+| Mode | What it does | When |
+|---|---|---|
+| `permissive` | Only functions carrying a `@capabilities(...)` annotation are checked. An unannotated function is unconstrained. Capabilities are advisory. | The bare-compiler default this beta (single-file `kryos run foo.kry`); legacy code. |
+| `inferred` | **Deny-by-default at the boundary, with interior inference.** `main` — and any annotated function — must actually hold every capability its code *transitively* uses. Interior helpers need no annotation: the compiler infers each one's capability set as the union of what it and its callees require. So an unannotated `main` that (directly or through helpers) writes a file is rejected: declare `@capabilities(fs:write)` on `main`. **Recommended, and the `kryos new` default.** | New projects; production code. |
+| `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every gated builtin call from an unannotated function is an error — every function is auditable in isolation. This is `--strict-capabilities`. | Maximum scrutiny; security-critical libraries. |
+
+The key property of `inferred` mode: **reading `main`'s annotation tells you the
+program's entire authority.** You annotate the boundary once; the compiler
+proves nothing inside exceeds it. Authority reaches the boundary through every
+path — direct builtin calls, method/static dispatch (`obj.write()`), and gated
+builtins passed as first-class values (`apply(file_write, ...)`) — all are
+accounted for.
 
 ```bash
-kryos check --strict-capabilities src/main.kry
-kryos build --release --strict-capabilities src/main.kry
+kryos check --capabilities-mode=inferred src/main.kry   # deny-by-default
+kryos check --strict-capabilities src/main.kry          # every fn must declare
+kryos build --release --capabilities-mode=inferred src/main.kry
+```
+
+In a project, set it once in `kryos.toml` (a fresh `kryos new` already does):
+
+```toml
+[capabilities]
+mode = "inferred"
 ```
 
 Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:
