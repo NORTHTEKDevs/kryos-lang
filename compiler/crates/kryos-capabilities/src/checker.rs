@@ -105,13 +105,6 @@ struct CapabilityChecker {
     /// each *unannotated* function's inferred set, so a caller is checked
     /// against what its callee transitively requires.
     fn_capabilities: HashMap<String, CapabilitySet>,
-    /// Names of every user-defined function/method in the module (top-level +
-    /// impl/trait methods, including merged stdlib). A call/reference to one of
-    /// these is NOT the gated runtime builtin of the same name -- the user
-    /// function shadows it -- so its authority is taken from the function's own
-    /// (inferred/declared) caps, not the builtin table. This removes the false
-    /// positive where a method named e.g. `write_file` was force-gated.
-    user_fns: std::collections::HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -122,7 +115,6 @@ impl CapabilityChecker {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
-            user_fns: std::collections::HashSet::new(),
             mode,
         }
     }
@@ -131,18 +123,6 @@ impl CapabilityChecker {
     /// unannotated function is treated as declaring the empty set.
     fn strict_mode(&self) -> bool {
         matches!(self.mode, CapabilityMode::Strict)
-    }
-
-    /// The capability a bare name requires *as a runtime builtin* -- unless a
-    /// user function/method shadows that name, in which case it is not the
-    /// builtin and contributes no builtin cap (its real caps flow through the
-    /// function-propagation / inference path instead).
-    fn builtin_cap(&self, name: &str) -> Option<Capability> {
-        if self.user_fns.contains(name) {
-            None
-        } else {
-            required_capability_for_builtin(name)
-        }
     }
 
     /// Get the current (innermost) capability scope, if any.
@@ -190,10 +170,10 @@ impl CapabilityChecker {
     /// `fn(...)` argument) delegates that builtin's authority. Used by interior
     /// inference so the requirement propagates to the boundary; the enforcement
     /// counterpart is `check_builtin_value_ref`.
-    fn builtin_value_caps(&self, expr: &Expr) -> CapabilitySet {
+    fn builtin_value_caps(expr: &Expr) -> CapabilitySet {
         let mut set = CapabilitySet::empty();
         if let Expr::Identifier { name, .. } = expr {
-            if let Some(cap) = self.builtin_cap(name) {
+            if let Some(cap) = required_capability_for_builtin(name) {
                 set.insert(cap);
             }
         }
@@ -379,7 +359,7 @@ impl CapabilityChecker {
                     acc.insert(cap);
                 }
                 if segments.len() == 1 {
-                    if let Some(cap) = self.builtin_cap(&segments[0]) {
+                    if let Some(cap) = required_capability_for_builtin(&segments[0]) {
                         acc.insert(cap);
                     }
                     if let Some(caps) = working.get(&segments[0]) {
@@ -493,7 +473,7 @@ impl CapabilityChecker {
             // A gated builtin used as a VALUE (bound to a `let`, returned,
             // stored in an array/struct, piped, ...) delegates its authority.
             // This single arm covers every non-call value position.
-            Expr::Identifier { .. } => acc = acc.union(&self.builtin_value_caps(expr)),
+            Expr::Identifier { .. } => acc = acc.union(&Self::builtin_value_caps(expr)),
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
@@ -505,15 +485,6 @@ impl CapabilityChecker {
     }
 
     fn check_module(&mut self, module: &Module) {
-        // Pass 0: record every user-defined function/method name so calls and
-        // value-references to a shadowed builtin name resolve to the user
-        // function, not the gated runtime builtin.
-        {
-            let mut fns: Vec<(String, &kryos_ast::Block)> = Vec::new();
-            Self::collect_functions(&module.declarations, &mut fns);
-            self.user_fns = fns.into_iter().map(|(n, _)| n).collect();
-        }
-
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
         self.build_fn_capability_map(&module.declarations);
@@ -888,7 +859,7 @@ impl CapabilityChecker {
 
                 // Propagate the method's capability requirement to the caller
                 // (the previously-missing call-site check for method dispatch).
-                self.enforce_callee_name(method, *span);
+                self.enforce_callee_name(method, *span, false);
 
                 self.check_expr(object);
                 for arg in args {
@@ -899,7 +870,7 @@ impl CapabilityChecker {
                 method, args, span, ..
             } => {
                 // Same call-site propagation for `Type::method()` static dispatch.
-                self.enforce_callee_name(method, *span);
+                self.enforce_callee_name(method, *span, false);
                 for arg in args {
                     self.check_expr(arg);
                 }
@@ -1047,7 +1018,7 @@ impl CapabilityChecker {
         //      the single-segment callee name. Shared with method / static
         //      dispatch (see `enforce_callee_name`).
         if segments.len() == 1 {
-            self.enforce_callee_name(&segments[0], call_span);
+            self.enforce_callee_name(&segments[0], call_span, true);
         }
     }
 
@@ -1065,24 +1036,32 @@ impl CapabilityChecker {
     /// where `obj.method()` / `Type::method()` could exercise authority the
     /// caller never declared (the call-site propagation was previously only
     /// wired for free-function `FnCall`s).
-    fn enforce_callee_name(&mut self, name: &str, call_span: Span) {
+    ///
+    /// `is_builtin_name`: whether `name` may denote a gated runtime builtin.
+    /// True for free-function calls (`file_write(...)`), FALSE for method /
+    /// static dispatch -- a method is never a runtime builtin, so a method
+    /// merely NAMED like one (e.g. `doc.write_file()`) must NOT be force-gated
+    /// by the builtin table; it is gated only by its own propagated caps.
+    fn enforce_callee_name(&mut self, name: &str, call_span: Span, is_builtin_name: bool) {
         if !(self.strict_mode() || self.has_annotated_scope()) {
             return;
         }
 
-        if let Some(required_cap) = self.builtin_cap(name) {
-            if let Some(caps) = self.current_caps() {
-                if !caps.satisfies_required(&required_cap) {
-                    self.diagnostics.push(
-                        Diagnostic::error(format!(
-                            "builtin `{name}` requires `{required_cap}` capability"
-                        ))
-                        .with_label(call_span, format!("requires `{required_cap}`"))
-                        .with_note(format!(
-                            "add `@capabilities({required_cap})` to the enclosing function or actor"
-                        ))
-                        .with_code(kryos_errors::codes::E0505),
-                    );
+        if is_builtin_name {
+            if let Some(required_cap) = required_capability_for_builtin(name) {
+                if let Some(caps) = self.current_caps() {
+                    if !caps.satisfies_required(&required_cap) {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "builtin `{name}` requires `{required_cap}` capability"
+                            ))
+                            .with_label(call_span, format!("requires `{required_cap}`"))
+                            .with_note(format!(
+                                "add `@capabilities({required_cap})` to the enclosing function or actor"
+                            ))
+                            .with_code(kryos_errors::codes::E0505),
+                        );
+                    }
                 }
             }
         }
@@ -1124,7 +1103,7 @@ impl CapabilityChecker {
             if !(self.strict_mode() || self.has_annotated_scope()) {
                 return;
             }
-            if let Some(required_cap) = self.builtin_cap(name) {
+            if let Some(required_cap) = required_capability_for_builtin(name) {
                 if let Some(caps) = self.current_caps() {
                     if !caps.satisfies_required(&required_cap) {
                         self.diagnostics.push(
@@ -1890,23 +1869,29 @@ mod tests {
     }
 
     #[test]
-    fn inferred_user_fn_shadowing_builtin_no_false_positive() {
-        // A user function named `file_write` with an innocent body is NOT the
-        // gated builtin; calling it from an unannotated main must PASS.
+    fn inferred_free_fn_named_like_builtin_is_conservatively_gated() {
+        // A FREE function named `file_write` is indistinguishable at a call site
+        // from the gated builtin / stdlib wrapper of the same name (they merge
+        // into one module), so it is conservatively gated. A safe
+        // over-approximation, not a leak -- the alternative (global name
+        // shadowing) unsoundly UN-gates the stdlib wrappers (env_get, http_get,
+        // write_file, ...) that deliberately share builtin names.
         let shadow = fn_decl("file_write", vec![], vec![call("some_noop")]);
         let noop = fn_decl("some_noop", vec![], vec![]);
         let main = fn_decl("main", vec![], vec![call("file_write")]);
         let diags = infer(vec![shadow, noop, main]);
         assert!(
-            diags.is_empty(),
-            "user fn shadowing a builtin name must not be force-gated, got {diags:?}"
+            diags.iter().any(|d| d.is_error()),
+            "free fn colliding with a builtin name is conservatively gated, got {diags:?}"
         );
     }
 
     #[test]
-    fn inferred_user_method_shadowing_builtin_no_false_positive() {
-        // A method named `write_file` (collides with a gated builtin name) is a
-        // user method, not the builtin -- calling it must not force fs:write.
+    fn inferred_user_method_named_like_builtin_not_gated() {
+        // A METHOD named `write_file` is never a runtime builtin, so method
+        // dispatch must NOT force fs:write -- it is gated only by the method's
+        // own (here empty) caps. This is the realistic false positive the sound
+        // design fixes: methods skip the builtin table entirely.
         let m = fn_decl("write_file", vec![], vec![]);
         let imp = impl_with_method("Doc", m);
         let main = fn_decl("main", vec![], vec![method_call("d", "write_file")]);
