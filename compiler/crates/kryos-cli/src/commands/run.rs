@@ -65,6 +65,7 @@ fn execute_inner(file: &str, args: &[String], time: bool) -> Result<(), String> 
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     // Compile first, then execute.

@@ -1,5 +1,6 @@
 //! Build configuration for the Kryos compiler driver.
 
+use kryos_capabilities::CapabilityMode;
 use std::path::PathBuf;
 
 /// Which compilation backend / optimization level to use.
@@ -77,6 +78,11 @@ pub struct BuildConfig {
     /// projects depend on opt-in behaviour, so this MUST remain off for any
     /// default config the compiler itself produces.
     pub strict_capabilities: bool,
+    /// Capability enforcement mode used when `strict_capabilities` is not set.
+    /// `Permissive` = only annotated functions enforce (historical default);
+    /// `Inferred` = deny-by-default at the boundary with interior inference.
+    /// `--strict-capabilities` upgrades whatever this is to `Strict`.
+    pub capability_mode: CapabilityMode,
 }
 
 impl BuildConfig {
@@ -96,6 +102,7 @@ impl BuildConfig {
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
             strict_capabilities: false,
+            capability_mode: CapabilityMode::Permissive,
         }
     }
 
@@ -115,6 +122,7 @@ impl BuildConfig {
             use_cache: false,
             split_async_awaits: default_split_async_awaits(),
             strict_capabilities: false,
+            capability_mode: CapabilityMode::Permissive,
         }
     }
 

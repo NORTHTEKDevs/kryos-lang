@@ -490,11 +490,14 @@ fn compile_module_impl(
         has_errors
     };
 
-    // 7. Capability checking
-    //    In strict (deny-by-default) mode, unannotated functions are treated
-    //    as having `@capabilities()` — the empty set — so any gated builtin
-    //    call surfaces E0505. Opt-in via `--strict-capabilities`.
-    let cap_diags = check_capabilities(&module, config.strict_capabilities);
+    // 7. Capability checking, in the configured mode. `--strict-capabilities`
+    //    upgrades whatever the config's default mode is to full Strict.
+    let cap_mode = if config.strict_capabilities {
+        CapabilityMode::Strict
+    } else {
+        config.capability_mode
+    };
+    let cap_diags = check_capabilities_mode(&module, cap_mode);
     let has_cap_errors = cap_diags.iter().any(|d| d.is_error());
     diagnostics.extend(cap_diags);
 

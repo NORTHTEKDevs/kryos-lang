@@ -404,6 +404,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
                 use_cache: false,
                 split_async_awaits: true,
                 strict_capabilities: false,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
             };
 
             let backend = CraneliftBackend::new();

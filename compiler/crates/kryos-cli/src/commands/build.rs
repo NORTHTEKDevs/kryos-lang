@@ -53,6 +53,7 @@ pub fn execute(
         use_cache,
         split_async_awaits: BuildConfig::_split_async_awaits_default(),
         strict_capabilities,
+        capability_mode: kryos_driver::CapabilityMode::Permissive,
     };
 
     if verbose {
