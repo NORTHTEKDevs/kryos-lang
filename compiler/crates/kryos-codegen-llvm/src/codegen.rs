@@ -5110,7 +5110,10 @@ impl LlvmCodegen {
                                 "time_now_secs" => "kryos_time_now_secs",
                                 "time_now_millis" => "kryos_time_now_millis",
                                 "sleep_ms" => "kryos_sleep_ms",
-                                "sleep" => "kryos_sleep",
+                                // sleep(ms: i64) -> kryos_sleep_ms (i64 millis).
+                                // The old kryos_sleep reinterpreted the i64 as
+                                // f64-seconds bits, so sleep(100) slept ~0ms.
+                                "sleep" => "kryos_sleep_ms",
                                 // Cooperative async executor (await/yield interleaving)
                                 "coop_yield" => "kryos_coop_yield",
                                 "coop_run" => "kryos_coop_run",

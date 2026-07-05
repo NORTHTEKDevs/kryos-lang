@@ -3517,15 +3517,14 @@ fn translate_rvalue<M: Module>(
 
             // Handle sleep() specially: convert f64 arg to bits (i64).
             if func == "sleep" && args.len() == 1 {
-                let mut val = translate_operand(&args[0], builder, translator, module)?;
-                let val_ty = builder.func.dfg.value_type(val);
-                // If the operand is a float, bitcast to i64.
-                if is_float_type(val_ty) {
-                    val = builder.ins().bitcast(types::I64, MemFlags::new(), val);
-                }
-                // If it's already an integer (e.g. from a variable), assume it holds f64 bits.
+                // `sleep(ms: i64)` -- the type checker declares an i64
+                // millisecond argument (floats are rejected). Route to
+                // kryos_sleep_ms directly. (The old path sent the i64 to
+                // kryos_sleep, which reinterpreted the bits as f64 SECONDS,
+                // so sleep(100) slept ~0ms -- a real footgun.)
+                let val = translate_operand(&args[0], builder, translator, module)?;
                 let sleep_ref =
-                    ensure_func_ref_with_args("kryos_sleep", builder, translator, module, 1)?;
+                    ensure_func_ref_with_args("kryos_sleep_ms", builder, translator, module, 1)?;
                 builder.ins().call(sleep_ref, &[val]);
                 return Ok(None);
             }
