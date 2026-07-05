@@ -14,6 +14,7 @@
 use token
 use lexer
 
+@capabilities(fs:read)
 fn main() {
     let src = file_read("compiler/self-host/lexer.kry")
     let src_len = len(src)

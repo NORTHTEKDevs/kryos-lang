@@ -35,6 +35,7 @@ fn serve_two(listen_fd: i64) {
     tcp_close(c2)
 }
 
+@capabilities(net)
 fn main() {
     let listen_fd = tcp_listen("127.0.0.1", PORT)
     if listen_fd < 0 {

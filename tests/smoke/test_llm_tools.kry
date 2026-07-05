@@ -67,6 +67,7 @@ fn fake_weather(args_json: str) -> str {
     return "weather(" + city + ") = -2C snowing"
 }
 
+@capabilities(net)
 fn main() {
     let listen_fd = tcp_listen("127.0.0.1", PORT)
     if listen_fd < 0 {

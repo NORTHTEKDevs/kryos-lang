@@ -49,6 +49,7 @@ fn tiny_token_agent(base: str) -> str {
     }
 }
 
+@capabilities(net)
 fn main() {
     let listen_fd = tcp_listen("127.0.0.1", PORT)
     if listen_fd < 0 {

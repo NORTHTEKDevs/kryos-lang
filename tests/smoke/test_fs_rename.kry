@@ -20,6 +20,7 @@ fn tmpdir() -> str {
     return "/tmp"
 }
 
+@capabilities(fs:read, fs:write, process)
 fn main() {
     let dir = tmpdir()
     let src = dir + "/kryos_rename_smoke_src.txt"

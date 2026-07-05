@@ -8,6 +8,7 @@ use std::slice_ops::{is_sorted, bsearch}
 use std::fuzzy::{jaro_winkler, levenshtein}
 use std::crypto::{uuid_v4, uuid_parse}
 
+@capabilities(crypto)
 fn main() {
     // random_f64: bounded, varies, deterministic per seed
     let r = new_rng(42)
