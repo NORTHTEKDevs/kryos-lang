@@ -236,8 +236,8 @@ for x in collection { ... }      // any Iter<T>
 ### 4.4 `loop`
 
 `loop { ... }` is an unconditional infinite loop, exited via `break`,
-`return`, or an exception. Reserved keyword; currently parses but with
-limited semantics in v0.3 — prefer `while true`.
+`return`, or an exception. It desugars to `while true` and works fully
+on both backends.
 
 ### 4.5 `match`
 
@@ -544,23 +544,31 @@ use math.* { sin, cos, tan }       // group import
 ## 12. Runtime panics
 
 A panic is an unrecoverable error that prints a message + stack trace
-and exits with status 134. Causes:
+and exits with **status 98**. An uncaught `throw` or explicit `panic()`
+exits with **status 101**. Causes:
 
-- Array index out of bounds.
-- Division by zero.
+- Array index out of bounds (exit 98).
+- Division by zero (exit 98).
 - `checked_*` overflow.
-- Stack overflow (caught by the SIGSEGV handler).
-- Explicit `panic("message")`.
+- Stack overflow — see note below.
+- Explicit `panic("message")` (exit 101).
 
-Each panic frame includes the source file and line. See
+Each panic frame includes the source file and line.
+
+**Stack overflow:** On the Cranelift (`kryos run`) backend, deeply
+recursive programs currently trigger a Cranelift verifier error (a
+compiler bug, not a clean runtime handler) rather than a graceful panic.
+On the LLVM AOT backend the behaviour is OS-defined (SIGSEGV/stack
+guard). A clean cross-backend stack-overflow handler is not yet
+implemented. See
 [docs/17-unsafe-audit.md §5](17-unsafe-audit.md#5-signal-handler-stack_guardrs)
-for the stack-overflow handler details.
+for details.
 
 ---
 
 ## 13. Conformance checklist
 
-What "implemented" means in 1.0.0-beta.1:
+What "implemented" means in 1.0.0-beta.2:
 
 | Feature                     | Status              |
 | --------------------------- | ------------------- |
@@ -572,7 +580,7 @@ What "implemented" means in 1.0.0-beta.1:
 | Borrow checking (basic)     | Implemented         |
 | Drop order                  | Reverse declaration |
 | Integer overflow builtins   | Implemented         |
-| Stack overflow detection    | Implemented (SIGSEGV) |
+| Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
 | `async` / `await`           | Grammar only (sync) |
@@ -580,7 +588,7 @@ What "implemented" means in 1.0.0-beta.1:
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |
 | Cross-compile (LLVM)        | Implemented         |
-| `--explain` for errors      | 20 codes documented |
+| `--explain` for errors      | 32 codes documented |
 | Bounded channels            | Not yet             |
 | Explicit lifetimes          | Not yet (inferred)  |
 | Closures with explicit capture | Not yet          |

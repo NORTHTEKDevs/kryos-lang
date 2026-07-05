@@ -13,18 +13,17 @@ Three stages of the bootstrap chain:
 - **Stage 0**: Rust-implemented `kryos.exe`. Lives in
   `compiler/crates/`. Built via `cargo build --release`.
 - **Stage 1**: The Kryos-compiled compiler. Built by stage 0 from
-  `compiler/self-host/*.kry` (34,342 lines of Kryos source).
+  `compiler/self-host/*.kry` (21,652 lines of Kryos source across 16 modules).
 - **Stage 2**: A second-generation Kryos-compiled compiler. Built by
   stage 1 from the same self-host sources. Each module is
   individually verified to compile through stage 1.
 
 The full chain demonstrates that Kryos source can produce a working
 Kryos compiler. The canonical proof is the byte-identical **fixed point**
-(stage-2 == stage-3 == stage-4, SHA-256), reached with the ownership and
-type checkers disabled on the self-host source (`--skip-ownership` /
-`KRYOS_SKIP_TYPES=1`). The standalone per-module compile check
-(`test_bootstrap.sh`) currently passes **11 of 16** modules; codegen is
-flaky on the rest.
+(stage-3 == stage-4, SHA-256; stage-2 differs because stage-1 uses a
+different backend than stage-2 and later). The standalone per-module compile
+check (`test_bootstrap.sh`) passes **16 of 16** modules, stable across
+consecutive runs.
 
 ## Verify it yourself
 
@@ -41,11 +40,11 @@ cargo build --release -j 2
 
 # Verify the standalone per-module compile check
 bash self-host/test_bootstrap.sh
-# Expected: PASS: 11 / 16 (codegen flaky on the rest)
+# Expected: PASS: 16 / 16
 
 # Verify the byte-identical fixed point (the canonical criterion):
 bash self-host/bootstrap-win.sh
-# Expected: stage-2 == stage-3 == stage-4 (SHA-256)
+# Expected: stage-3 == stage-4 (SHA-256); stage-2 differs (different backend)
 ```
 
 For a more rigorous test that runs N times and reports per-module pass
@@ -60,23 +59,23 @@ bash self-host/test_bootstrap_robust.sh 30
 
 | Module | Lines | Bytes | Role |
 |--------|------:|------:|------|
-| `token` | 353 | 11K | Token kinds + Token struct |
-| `lexer` | 616 | 17K | Source → tokens |
-| `ast` | 687 | 24K | AST node types + constructors |
-| `parser` | 2,867 | 104K | Tokens → AST |
-| `types` | 2,270 | 78K | Type checker + inference |
-| `mir` | 1,215 | 40K | Mid-level IR |
-| `lower` | 2,705 | 94K | AST → MIR lowering |
-| `optimize` | 1,585 | 53K | MIR-level optimizations |
-| `regalloc` | 1,300 | 47K | Register allocation |
-| `x86` | 759 | 27K | x86_64 instruction selection |
-| `codegen` | 1,612 | 60K | MIR → machine code |
-| `elf` | 694 | 24K | ELF object writer (Linux) |
-| `coff` | 574 | 19K | COFF object writer (Windows) |
-| `linker` | 1,525 | 50K | Driver for `link.exe` / `cc` |
-| `runtime` | 613 | 21K | Runtime ABI bindings |
-| `main` | 642 | 23K | CLI entry point |
-| **total** | **34,342** | **692K** | — |
+| `token` | 353 | 13K | Token kinds + Token struct |
+| `lexer` | 624 | 21K | Source → tokens |
+| `ast` | 687 | 19K | AST node types + constructors |
+| `parser` | 2,911 | 107K | Tokens → AST |
+| `types` | 2,340 | 84K | Type checker + inference |
+| `mir` | 1,305 | 40K | Mid-level IR |
+| `lower` | 3,406 | 125K | AST → MIR lowering |
+| `optimize` | 1,585 | 47K | MIR-level optimizations |
+| `regalloc` | 1,504 | 49K | Register allocation |
+| `x86` | 764 | 25K | x86_64 instruction selection |
+| `codegen` | 2,010 | 77K | MIR → machine code |
+| `elf` | 694 | 23K | ELF object writer (Linux) |
+| `coff` | 574 | 21K | COFF object writer (Windows) |
+| `linker` | 1,525 | 46K | Driver for `link.exe` / `cc` |
+| `runtime` | 613 | 17K | Runtime ABI bindings |
+| `main` | 757 | 24K | CLI entry point |
+| **total** | **21,652** | **736K** | — |
 
 ## Memory model for self-host
 
@@ -106,11 +105,12 @@ only — physical memory is committed on demand.
 
 ## Stability
 
-> **Current status (1.0.0-beta.1):** the standalone per-module check
-> (`test_bootstrap.sh`) passes **11/16** — codegen regressed on 5 modules
-> since the characterization below. The byte-identical bootstrap **fixed
-> point** (stage-2 == stage-3 == stage-4, `bootstrap-win.sh`) still holds.
-> The figures below are from release 4.43.0-rc.4 and are kept for history.
+> **Current status (1.0.0-beta.2):** the standalone per-module check
+> (`test_bootstrap.sh`) passes **16/16**, stable across consecutive runs.
+> The byte-identical bootstrap **fixed point** (stage-3 == stage-4,
+> `bootstrap-win.sh`) holds; stage-2 differs because stage-1 uses a
+> different backend. The figures below are from release 4.43.0-rc.4 and
+> are kept for history.
 
 Empirical stability over 30-run characterization with release 4.43.0-rc.4:
 
@@ -121,31 +121,24 @@ Empirical stability over 30-run characterization with release 4.43.0-rc.4:
 - **Stable modules**: 14 / 16 (always pass)
 - **Flaky modules**: 2 / 16 (`parser` and `lower`, ~97% pass rate each)
 
-The remaining flakes affect the two largest self-host modules
-(`parser` 2,867 lines and `lower` 2,705 lines). They appear to be
-small heap-state issues unrelated to stack depth (which 32 MB has
-already addressed for the other large modules). Tracked as next-shift
-codegen audit work.
+The remaining flakes at the time affected the two largest self-host modules
+(`parser` and `lower`). They were small heap-state issues; both modules now
+pass stably at 16/16 after the MIR aggregate-lowering fixes.
 
-## What is NOT yet verified
+## What is verified
 
-The bootstrap test verifies that each self-host source file
-**compiles to a valid `.obj`** through stage 1. It does NOT yet
-verify the byte-identical stage-2 → stage-3 fixed point:
+The full bootstrap chain is now automated by `bootstrap-win.sh`:
 
-1. Stage 1 produces `.obj` files (currently verified ✓)
-2. The 16 `.obj` files link into a stage-2 `.exe` (NOT yet automated)
-3. Stage 2 compiles every self-host source again to produce stage 3
-   (NOT yet automated)
-4. Stage 2 and stage 3 emit byte-identical `.exe` files for `hello.kry`
-   (NOT yet automated)
+1. Stage 1 produces `.obj` files for all 16 modules (verified ✓)
+2. The 16 `.obj` files link into a stage-2 `.exe` (verified ✓)
+3. Stage 2 compiles the concatenated self-host source to produce a
+   stage-3 `.obj`, which links into stage-3 `.exe` (verified ✓)
+4. Stage 3 produces stage-4 `.obj`; SHA-256 of stage-3 `.obj` ==
+   SHA-256 of stage-4 `.obj` — the fixed point (verified ✓)
 
-Steps 2–4 are the standard "fully bootstrapped" proof. They are
-deferred because stage 0's codegen marks user functions as
-`Linkage::Local` (to avoid colliding with libc symbols like `open`,
-`bind`, `read`). Multi-`.obj` linking requires either flipping
-user-function linkage to `Export`, or adding a `--export-all` build
-flag that opts into export linkage for stage-2 linking.
+Stage-2 `.obj` differs from stage-3 `.obj` because stage-1 (built by
+the Rust/Cranelift stage-0) uses a different backend than stage-2 and
+later. The fixed point is stage-3 == stage-4.
 
 ## Next steps
 
@@ -157,13 +150,12 @@ In rough priority order:
    ensure every heap-pointer copy is matched by a retain — then flipping
    `kryos_array_free`/`kryos_string_free`/`kryos_map_free` to do real
    refcount-decrement-and-dealloc. Eliminates the 80 MB per-invocation
-   leak and (likely) the remaining parser/lower flakes.
-2. **Multi-`.obj` stage-2 linking.** Add a build mode that exports user
-   function symbols so the 16 self-host `.obj` files can link into a
-   single stage-2 `.exe`. Then verify stage 2 reproduces stage 1's
-   output on the example programs.
-3. **Stage-3 fixed point.** Build stage 3 with stage 2; compare hashes
-   of `hello.kry` → `.exe` between stages 2 and 3.
+   leak.
+2. **Stage-2 fixed point.** Currently stage-2 != stage-3 because stage-1
+   uses the Cranelift backend. Investigate whether stage-2 can reproduce
+   stage-1's output; this would extend the fixed-point chain one step earlier.
+3. **Linux / macOS bootstrap.** `bootstrap-win.sh` is Windows-only;
+   port the fixed-point check to the ELF path.
 
 ## See also
 

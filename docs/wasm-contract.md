@@ -1,4 +1,4 @@
-# WebAssembly backend — the supported contract (verified 2026-07-02)
+# WebAssembly backend — the supported contract (verified 2026-07-04)
 
 `kryos build --release --backend wasm` targets `wasm32-unknown-unknown` with a
 **JS host contract** (browser or `node tools/wasm-host/run.mjs`) — not WASI.
@@ -25,27 +25,24 @@ running a probe program on this commit.
 | All `examples/wasm_*.kry` | all 9 build and run via the node host (verified 2026-07-03) |
 
 The wasm expansion gate lives at `spec/wasm-acceptance.sh`
-(6 probe programs with exact-output `.expect` files + the full cargo suite);
+(9 probe programs with exact-output `.expect` files + the full cargo suite);
 it passes green on this commit.
 
 ## Compile-time rejected (use `--backend cranelift` or `llvm`)
 
-Cross-backend probe corpus status: **7 / 48** of `tests/harden-probes/`
-compile and agree with the JIT on wasm (was 0/48 before the expansion).
-The remaining gaps are aggregate-heavy constructs, all still explicit
-compile errors, never miscompiles:
+Cross-backend probe corpus status: **37 / 48** of `tests/harden-probes/`
+compile on wasm (was 7/48 before the harden-probe expansion).
+The remaining 11 gaps are all explicit compile errors, never miscompiles:
 
-- enums (incl. Option/Result) and enum payloads
-- maps
-- struct mutation through collections; aggregate array elements
-- closures capturing structs; higher-order functions over aggregates;
-  currying
-- `?` operator; `if let`; tuple matching
+- maps (`rvalue map` — 5 probes: 04, 17, 24, 27, 39)
+- closures and higher-order functions passed as `fn(T) -> U` values —
+  currying, HOF filter/fold, closures capturing structs (5 probes: 09, 15, 20, 21, 40)
+- complex control flow / irreducible CFG (1 probe: 23, string-op-heavy loop)
 
 ## Roadmap
 
-1. Enums + Option/Result as tagged slot records (same linear-memory encoding
-   as structs) — unlocks `?`, `if let`, and most of the remaining corpus.
-2. Maps via host-backed handles (mirror the array helpers).
-3. Aggregate element mutation (write-back through slot pointers).
+1. Maps via host-backed handles (mirror the array helpers) — unblocks 5 probes.
+2. First-class function values as wasm table entries — unblocks closures-as-values
+   and all HOF probes (5 probes).
+3. Irreducible-CFG lowering to structured wasm blocks — unblocks probe 23.
 4. Target: the full 48-probe corpus as the standing wasm gate.

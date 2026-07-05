@@ -24,11 +24,13 @@ Expected time on a typical laptop: **1–2 minutes** cold. Bump `-j` up to your 
 
 When `cargo build` finishes you should see three artifacts:
 
-- `target/release/kryos` — the compiler binary
-- `target/release/libkryos_rt.a` — the runtime static library
-- `target/release/libkryos_stdlib_native.a` — the native stdlib static library
+- `target/release/kryos` (or `kryos.exe` on Windows) — the compiler binary
+- `target/release/libkryos_rt.a` (Linux/macOS) / `kryos_rt.lib` (Windows MSVC) — the runtime static library
+- `target/release/libkryos_stdlib_native.a` (Linux/macOS) / `kryos_stdlib_native.lib` (Windows MSVC) — the native stdlib static library
 
-The compiler binary locates the two static libraries automatically when it links final user binaries. If you move `kryos` around, either set `KRYOS_RT_LIB` / `KRYOS_STDLIB_NATIVE_LIB` to the absolute paths, or use the conventional layout `<prefix>/bin/kryos` + `<prefix>/lib/libkryos_rt.a`.
+> **Windows MSVC note:** The Windows libraries use the MSVC `.lib` extension with no `lib` prefix: `kryos_rt.lib` and `kryos_stdlib_native.lib`, not `libkryos_rt.a`. The env vars `KRYOS_RT_LIB` and `KRYOS_STDLIB_NATIVE_LIB` accept either form.
+
+The compiler binary locates the two static libraries automatically when it links final user binaries. If you move `kryos` around, either set `KRYOS_RT_LIB` / `KRYOS_STDLIB_NATIVE_LIB` to the absolute paths, or use the conventional layout `<prefix>/bin/kryos` + `<prefix>/lib/libkryos_rt.a` (Unix) / `<prefix>/lib/kryos_rt.lib` (Windows).
 
 ## 2. Run your first program
 
@@ -69,7 +71,7 @@ cd editors/vscode && npm install && npm run package
 
 ## 5. Where to next
 
-The **[Learn Kryos](docs/learn/README.md)** track is the recommended path from here: a 30-minute tour of the language followed by 6 runnable cookbook recipes (CLI tools, HTTP servers, JSON pipelines, worker pools, async fetch, libraries).
+The **[Learn Kryos](docs/learn/README.md)** track is the recommended path from here: a 30-minute tour of the language followed by 27 runnable cookbook recipes (CLI tools, HTTP servers, JSON pipelines, worker pools, async fetch, libraries, dates, regex, encoding, structured logs, sorting, hashes, dedup, CSV, env config, retry, input validation, subprocesses, number formatting, path manipulation, random numbers, fuzzy search, resilience patterns, priority tasks, caching, and LLM chat).
 
 For deeper reference:
 
@@ -78,7 +80,7 @@ For deeper reference:
 - [docs/grammar.md](docs/grammar.md) — formal grammar
 - [docs/06-ownership.md](docs/06-ownership.md) — ARC + move semantics without lifetimes
 - [docs/10-capabilities.md](docs/10-capabilities.md) — `@capabilities` / `@pure` annotations
-- [CHANGELOG.md](CHANGELOG.md) — what's new in v2.3.0
+- [CHANGELOG.md](CHANGELOG.md) — what's new in v1.0.0-beta.2
 
 ## Troubleshooting
 
@@ -86,7 +88,7 @@ For deeper reference:
 A: Drop parallelism: `cargo build --release -j 1`. The single heaviest rustc invocation (compiling `cranelift-codegen`) needs ~1.5 GB and ~30 seconds; everything else is lighter.
 
 **Q: `kryos run foo.kry` fails with `undefined reference to kryos_rt_init`.**
-A: The runtime static library wasn't found. This happens if you copied just the `kryos` binary somewhere else. Either move `libkryos_rt.a` and `libkryos_stdlib_native.a` to the same directory as `kryos`, or set `KRYOS_RT_LIB=/abs/path/libkryos_rt.a` and `KRYOS_STDLIB_NATIVE_LIB=/abs/path/libkryos_stdlib_native.a`.
+A: The runtime static library wasn't found. This happens if you copied just the `kryos` binary somewhere else. Either move the runtime libraries to the same directory as `kryos`, or set `KRYOS_RT_LIB` and `KRYOS_STDLIB_NATIVE_LIB` to their absolute paths. On Linux/macOS: `libkryos_rt.a` and `libkryos_stdlib_native.a`. On Windows MSVC: `kryos_rt.lib` and `kryos_stdlib_native.lib`.
 
 **Q: Linker error mentioning `libssl` / `libsqlite3` on Linux.**
 A: Install the system dev headers: `sudo apt-get install -y libsqlite3-dev libssl-dev pkg-config`.

@@ -1,63 +1,70 @@
 # Capabilities
 
-> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is implemented. It enforces: functions must declare capabilities matching the stdlib modules they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require FFI capability. The actual capability variants are: `net`, `io`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Features described below that are **not yet implemented**: sub-capabilities (e.g. `filesystem:read`), runtime enforcement (`CapabilityEnforcer`), audit logging, license tiers, sandboxing, and `kryos check` CLI command.
+> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. `--strict-capabilities` on `kryos check` is implemented and enforced (unannotated functions are denied capability-gated builtins). Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented**.
 
-Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, GPU compute, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
+Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, process spawning, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
 This is the opposite of how most languages work. In JavaScript or Go, any function can open a file, make a network request, or call `eval`. You only find out about unauthorized access when something goes wrong in production. Kryos inverts that: you see every capability a program uses before you run it.
 
-## The model: opt-in enforcement (deny-by-default is planned)
+## The model: opt-in enforcement with a strict mode
 
-> **Current behavior, stated honestly:** enforcement is **opt-in per
-> function**. A function that *carries* a `@capabilities(...)` annotation is
-> checked against it: it may only use builtins/stdlib whose required
-> capability is in its declared set, and a function it calls may not exceed
-> its set (attenuation). A function with **no** annotation is **not**
-> constrained today -- it may call `file_read`, `http_get`, or `exec`
-> without error. The "deny-by-default" end state below (where an *un*annotated
-> function is restricted to pure computation) requires a strict mode
-> (`--strict-capabilities`) that is **not yet implemented**.
+**Default behavior:** enforcement is opt-in per function. A function that carries a `@capabilities(...)` annotation is checked against it: it may only use builtins or stdlib modules whose required capability is in its declared set, and any function it calls may not exceed its set (attenuation). A function with no annotation is not constrained in the default mode.
 
-The intended end state is deny-by-default: a function with no `@capabilities`
-annotation would have access to pure computation and nothing else -- math,
-string manipulation, data structures, other pure functions -- and could not
-touch the filesystem, the network, the GPU, or anything outside the program's
-memory unless it declared the capability.
+**Strict mode (`--strict-capabilities`):** passing this flag to `kryos check` or `kryos build` enables deny-by-default. Under strict mode, an unannotated function that calls any capability-gated builtin is a compile error. This is the intended production default; it is opt-in today via the flag.
+
+```bash
+kryos check --strict-capabilities src/main.kry
+kryos build --release --strict-capabilities src/main.kry
+```
+
+Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:
 
 ```
-// Under strict mode (planned): this function would be pure-computation only.
-fn square(x: i32) -> i32 {
+fn square(x: i64) -> i64 {
     return x * x
 }
 ```
 
-`println` is classified as pure output and needs no capability. Under strict
-mode, `file_read`, `http_get`, `exec` would each require an explicit
-declaration on the calling function; today they require one only if the
-function is already annotated.
+But calling `file_read` in an unannotated function is a compile error:
+
+```
+fn bad_function() -> str {
+    return file_read("secret.txt")
+}
+```
+
+Error output:
+
+```
+error[E0505]: builtin `file_read` requires `fs:read` capability
+ --> src/main.kry:2:12
+  2 |     return file_read("secret.txt")
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ requires `fs:read`
+  = note: add `@capabilities(fs:read)` to the enclosing function or actor
+```
 
 ## Declaring Capabilities
 
 Use the `@capabilities(...)` attribute on a function:
 
 ```
-@capabilities(compute)
-fn process(x: i32) -> i32 {
-    return x * 2
+@capabilities(fs:read)
+fn load_config(path: str) -> str {
+    return file_read(path)
 }
 ```
 
-The `compute` capability is always implicitly available, so `@capabilities(compute)` is technically redundant. But it serves as documentation: this function is intentionally pure.
+For pure computation -- math, string manipulation, data structures -- no annotation is needed. `println` and `print` are also ambient (no capability required).
 
 For real I/O, declare what you need:
 
 ```
-@capabilities(network)
+@capabilities(net:http)
 fn fetch_data(url: str) -> str {
-    return http_get(url)
+    return https_get(url)   // https_get; not http_get (does not exist as a builtin)
 }
 
-@capabilities(filesystem)
+@capabilities(fs:read)
 fn read_config(path: str) -> str {
     return file_read(path)
 }
@@ -68,342 +75,233 @@ fn read_config(path: str) -> str {
 A function can declare multiple capabilities:
 
 ```
-@capabilities(network, filesystem)
+@capabilities(net:http, fs:write)
 fn download_to_file(url: str, path: str) {
-    let data = http_get(url)
+    let data = https_get(url)
     file_write(path, data)
 }
 ```
 
 ## All Capability Types
 
-Kryos organizes capabilities into a tree. Parent capabilities grant access to all their children.
+### net (coarse)
 
-### compute
+Grants all network sub-capabilities: `net:http` and `net:tcp`. Use the narrowest sub-cap that fits.
 
-Pure computation. Always available. Math, string manipulation, data structure operations, control flow.
+### net:http
 
-No declaration needed, but `@capabilities(compute)` is valid for documentation.
-
-### network
-
-Network access -- TCP, UDP, HTTP connections.
+HTTP(S) client and server operations.
 
 ```
-@capabilities(network)
-fn connect() -> str {
-    return http_get("https://api.example.com/status")
+@capabilities(net:http)
+fn fetch(url: str) -> str {
+    return https_get(url)
 }
 ```
 
-Sub-capabilities:
-- `network:http` -- HTTP client and server operations
-- `network:raw_socket` -- Raw socket access (requires Pro license)
+### net:tcp
 
-Declaring `network` grants both `network:http` and `network:raw_socket` (if your license allows it). Declaring `network:http` only grants HTTP, not raw sockets. Use the narrowest capability that fits.
-
-### filesystem
-
-File system read and write access.
+Raw TCP connections, TLS, and unix-domain sockets.
 
 ```
-@capabilities(filesystem)
+@capabilities(net:tcp)
+fn connect(host: str, port: i64) {
+    tcp_connect(host, port)
+}
+```
+
+### io / fs (coarse)
+
+File I/O -- grants both `fs:read` and `fs:write`. `io` and `fs` are aliases for the same coarse capability (back-compat: `io` is the legacy spelling). Use the narrower sub-cap when possible.
+
+### fs:read
+
+Read-only file access.
+
+```
+@capabilities(fs:read)
+fn load(path: str) -> str {
+    return file_read(path)
+}
+```
+
+### fs:write
+
+Write, create, and mutate files and directories.
+
+```
+@capabilities(fs:write)
 fn save(path: str, data: str) {
     file_write(path, data)
 }
 ```
 
-Sub-capabilities:
-- `filesystem:read` -- Read-only file access
-- `filesystem:write` -- Write file access
+### process
 
-If your function only reads files, declare `filesystem:read` instead of the full `filesystem`. This is the principle of least privilege -- ask for only what you need.
+Process spawning and environment variable access. Environment variables are gated here because they can contain secrets. The top-level `env_get` builtin requires this capability. Process spawning (`exec`, `spawn_process`) and `env_set` are modeled under this capability and surface through the `std::process` stdlib module.
 
 ```
-@capabilities(filesystem:read)
-fn load_config(path: str) -> str {
-    return file_read(path)
+@capabilities(process)
+fn get_home() -> str {
+    return env_get("HOME")
 }
 ```
 
-### gpu
+Note: `exit` and `abort` terminate the current process only and are **ambient** -- no capability required (same philosophy as Rust's `process::exit`).
 
-GPU compute access for parallel computation.
+### env
 
-```
-@capabilities(gpu)
-fn train_model(data: [f64]) {
-    gpu_dispatch(data)
-}
-```
-
-Sub-capabilities:
-- `gpu:compute` -- Basic GPU compute dispatch
-- `gpu:optimize` -- Optimizing GPU codegen with kernel fusion and auto-tiling (requires Pro license)
-
-### memory
-
-Memory management operations.
-
-Sub-capabilities:
-- `memory:raw` -- Raw/unsafe memory access including pointer arithmetic (requires Enterprise license)
+Reserved for future use as a narrower environment-variable-only split from `process`. Currently `env_get` / `env_set` map to `process`.
 
 ### ffi
 
-Foreign function interface -- calling code written in other languages.
+Foreign function interface -- calling code written in other languages. Required on `extern` blocks.
 
 ```
 @capabilities(ffi)
-fn call_native() {
-    ffi_call_c("libsodium", "crypto_hash", data)
+extern {
+    fn my_c_function(x: i64) -> i64
 }
 ```
 
-Sub-capabilities:
-- `ffi:native` -- Call C/C++ functions via native FFI (requires Pro license)
+### compute
 
-### quantum
-
-Quantum computing primitives. Requires Enterprise license.
-
-Sub-capabilities:
-- `quantum:simulate` -- Quantum circuit simulation
-- `quantum:hardware` -- Target real quantum processors (IBM Q, IonQ, Azure Quantum)
-
-### syscall
-
-Direct system calls. Requires Enterprise license.
-
-Sub-capabilities:
-- `syscall:direct` -- Direct syscall execution
+Heavy computation including GPU dispatch and SIMD intrinsics. Pure arithmetic, string manipulation, and data structure operations are ambient and do not require `compute`.
 
 ### crypto
 
-Cryptographic primitives.
+Cryptographic operations: hashing, signing, encrypting.
 
-Sub-capabilities:
-- `crypto:fips` -- FIPS-certified cryptography (requires Enterprise license)
+```
+@capabilities(crypto)
+fn hash_data(data: str) -> str {
+    return sha256(data)
+}
+```
 
-### agent
+### term
 
-Agent runtime primitives. Requires Pro license.
+Terminal control -- raw mode, cursor positioning, terminal size queries. The `term` capability type is recognized in `@capabilities(...)` and enforced on `use std::term::*` imports. Top-level `term_*` builtins are defined in the model but surface through the `std::term` stdlib module rather than as standalone builtins.
 
-Sub-capabilities:
-- `agent:autonomous` -- Autonomous agent execution
+### db
 
-### self_modify
+Database access -- queries and transactions via the db stdlib module.
 
-Self-modifying code. Requires Enterprise license. Sandboxed and fully audited.
+### time
 
-### formal_verify
+System clock access. Currently the `time` variant is reserved for a future deterministic-execution mode. `time_now` and `sleep` are **ambient** today -- no capability required. (`time_millis` is defined in the model for future use but is not currently a top-level builtin; use `time_now` instead.)
 
-Formal verification passes. Enterprise license.
+### all
 
-### real_time
-
-Real-time deadline enforcement. Enterprise license.
+Grants every capability. Use only in top-level entry points or trusted shells. Auditable: declaring `all` is visible in every code review and capability audit.
 
 ## The Capability Hierarchy
 
-Capabilities narrow downward -- they never elevate. If a function has `@capabilities(filesystem:read)`, any function it calls can have `filesystem:read` or less. It cannot call a function that requires `filesystem:write`.
+Capabilities narrow downward -- they never elevate. If a function has `@capabilities(fs:read)`, any function it calls can have `fs:read` or less. It cannot call a function that requires `fs:write`.
 
 ```
-@capabilities(filesystem:read)
+@capabilities(fs:read)
 fn safe_load(path: str) -> str {
     return file_read(path)
 }
 
-@capabilities(filesystem)
-fn unsafe_save(path: str, data: str) {
+@capabilities(fs:write)
+fn save(path: str, data: str) {
     file_write(path, data)
 }
 
-@capabilities(filesystem:read)
+@capabilities(fs:read)
 fn process_config(path: str) {
     let data = safe_load(path)        // OK -- same capability
-    // unsafe_save(path, data)        // COMPILE ERROR -- would elevate
+    // save(path, data)               // COMPILE ERROR -- would elevate
 }
 ```
 
-This is fundamental to the security model. A sandboxed function cannot grant itself more power by calling another function. The capability boundary is enforced transitively through the entire call chain.
+Coarse caps satisfy their sub-caps (back-compat). A function declaring `@capabilities(net)` may call both `https_get` (needs `net:http`) and `tcp_connect` (needs `net:tcp`). The reverse does not hold: `net:http` does not grant `net:tcp`.
 
 ## Compile-Time Enforcement
 
-The `CapabilityAnalyzer` runs as a static analysis pass before the program executes. It walks every function declaration and every function call, building a complete map of what capabilities are declared and what capabilities are actually used.
+The capability checker runs as a static analysis pass before codegen. Violations are errors, not warnings.
 
-Violations are **errors**, not warnings:
+Example: calling `file_read` inside a function that declared only `net`:
 
 ```
-fn bad_function() {
-    file_read("secret.txt")    // COMPILE ERROR: 'file_read()' requires
-                               // capability 'filesystem' but 'bad_function'
-                               // only has ['compute']
+@capabilities(net)
+fn bad_function() -> str {
+    return file_read("secret.txt")
 }
 ```
 
-The error message tells you exactly what is missing:
+Actual error output:
 
 ```
-CAPABILITY VIOLATION in 'bad_function': requires 'filesystem'
-but only has ['compute']
+error[E0505]: builtin `file_read` requires `fs:read` capability
+ --> src/main.kry:3:12
+  3 |     return file_read("secret.txt")
+   |            ^^^^^^^^^^^^^^^^^^^^^^^^ requires `fs:read`
+  = note: add `@capabilities(fs:read)` to the enclosing function or actor
 ```
 
-## Runtime Enforcement
+The error code `E0505` means "builtin requires a capability not in the declared set." Propagation errors (calling a function that has more capabilities than the caller) use `E0507`. All capability error codes (`E0501`-`E0507`) are explainable via `kryos explain <code>`.
 
-Even after passing compile-time checks, Kryos has a second layer: the `CapabilityEnforcer` runs at execution time. This is defense in depth. If the static analyzer has a bug, the runtime enforcer catches it.
+## Builtin Function Capability Requirements
 
-The runtime enforcer maintains a scope stack. When execution enters a function, it pushes the function's capabilities. When execution leaves, it pops. Every capability-requiring operation checks the current scope.
+**Ambient (no capability required):**
+`println`, `print`, `eprintln`, `len`, `range`, `to_string`, `abs`, `type_of`, `parse_int`, `parse_float`, `str`, `sqrt`, `sin`, `cos`, `tan`, `log`, `pow`, `floor`, `ceil`, `min`, `max`, `assert`, `push`, `pop`, `substr`, `contains`, `char_code`, `exit`, `abort`, `time_now`, `sleep`, `file_exists`
 
-If a runtime violation occurs (which should never happen if the analyzer is correct), it raises a `CapabilityViolation` exception that **cannot be caught** by user code. It always propagates to the top level. You cannot `try/catch` your way past a capability violation.
+**fs:read** (or coarse `io`/`fs`):
+`file_read`, `read_file`
 
-Attempting to elevate capabilities at runtime raises a `SandboxEscapeAttempt` -- also uncatchable, always fatal.
+**fs:write** (or coarse `io`/`fs`):
+`file_write`, `write_file`, `create_dir`, `remove_file`, `remove_dir`, `copy_file`, `rename_file`
 
-## Auditing
+**net:http** (or coarse `net`):
+`https_get`, `http2_get`, `http2_post`, `http2_request`
 
-Every capability check -- allowed or blocked -- is logged to an append-only audit log. This log cannot be modified or cleared by user code.
+**net:tcp** (or coarse `net`):
+`tcp_connect`, `tcp_listen`, `tcp_accept`, `tcp_send`, `tcp_recv`, `tls_server_config`, `tls_accept`, `tls_send`, `tls_recv`, `tls_close`, `uds_connect`, `uds_bind`, `uds_accept`, `uds_send`, `uds_recv`, `uds_close`
 
-```
-@capabilities(network)
-fn api_call() -> str {
-    return http_get("https://api.example.com")
-}
-```
+**net** (coarse only -- straddles connect + protocol):
+`pg_connect`, `pg_exec`, `pg_query`, `pg_close`, `ws_accept_key`, `ws_encode_text`, `ws_encode_binary`, `ws_encode_close`, `ws_encode_ping`, `ws_encode_pong`, `ws_unmask`, `ws_read_frame`
 
-After the program runs, the audit log contains entries like:
+**process**:
+`env_get` (top-level builtin); `env_set`, `exec`, `spawn_process` are recognized by the capability checker but surface through the `std::process` stdlib module rather than as standalone builtins
 
-```json
-{
-    "timestamp": 1711929600.0,
-    "function": "api_call",
-    "capability": "network",
-    "declared": ["compute", "network"],
-    "action": "allowed"
-}
-```
+**term** (via `std::term` module -- not standalone builtins):
+`term_clear`, `term_raw_mode`, `term_size`
 
-Blocked attempts are also logged:
-
-```json
-{
-    "action": "blocked",
-    "function": "sneaky_function",
-    "capability": "filesystem",
-    "declared": ["compute"],
-    "details": ""
-}
-```
-
-And escalation attempts are recorded as critical events:
-
-```json
-{
-    "action": "sandbox_escape_attempt",
-    "details": "'child_fn' tried to elevate capability 'network' beyond parent 'sandbox'"
-}
-```
-
-The audit log supports:
-- `summary()` -- human-readable summary with counts of allowed, blocked, and escape attempts
-- `to_json()` -- full JSON export for ingestion by external security tooling
-- `freeze()` -- lock the log so no more entries can be added (useful for creating snapshots)
-
-## Sandboxing
-
-The `CapabilityEnforcer` can create child sandboxes. A sandbox starts with **zero capabilities** unless the parent explicitly grants a subset of its own.
-
-```
-// Parent has filesystem + network
-// Create a sandbox with only filesystem:read
-@capabilities(filesystem, network)
-fn parent_fn() {
-    // Sandbox code can only read files -- no network, no writes
-}
-```
-
-Sandboxes enforce strict isolation:
-- A sandbox cannot acquire capabilities the parent does not have
-- A sandbox cannot modify the parent's capability set
-- Attempting to create a sandbox with elevated capabilities raises `SandboxEscapeAttempt`
-
-This is how Kryos runs untrusted code safely. FFI calls, dynamic code loading, plugin systems -- all run inside sandboxes with explicitly granted capabilities.
-
-## License Tiers
-
-Some capabilities require a paid license. The tier system:
-
-| Capability | Community (free) | Pro | Enterprise |
-|------------|:-:|:-:|:-:|
-| compute | yes | yes | yes |
-| network | yes | yes | yes |
-| network:raw_socket | -- | yes | yes |
-| filesystem | yes | yes | yes |
-| gpu | yes | yes | yes |
-| gpu:optimize | -- | yes | yes |
-| ffi:native | -- | yes | yes |
-| agent | -- | yes | yes |
-| memory:raw | -- | -- | yes |
-| quantum | -- | -- | yes |
-| syscall | -- | -- | yes |
-| self_modify | -- | -- | yes |
-| formal_verify | -- | -- | yes |
-| real_time | -- | -- | yes |
-| crypto:fips | -- | -- | yes |
-
-Using a capability above your license tier is a compile error. The error tells you which tier is required.
-
-## Built-in Function Requirements
-
-Every built-in function has a defined set of required capabilities. Here are the key ones:
-
-**No capabilities needed (always available):**
-`println`, `print`, `len`, `range`, `to_string`, `abs`, `type_of`, `int`, `float`, `str`, `sqrt`, `sin`, `cos`, `tan`, `log`, `pow`, `floor`, `ceil`, `min`, `max`, `assert`, `push`, `pop`
-
-**Filesystem:**
-`file_read` (filesystem, filesystem:read), `file_write` (filesystem, filesystem:write), `file_delete` (filesystem, filesystem:write), `input` (filesystem)
-
-**Network:**
-`http_get` (network, network:http), `http_post` (network, network:http), `tcp_connect` (network), `tcp_listen` (network), `raw_socket` (network, network:raw_socket)
-
-**GPU:**
-`gpu_dispatch` (gpu, gpu:compute), `gpu_kernel` (gpu, gpu:compute), `gpu_optimize` (gpu, gpu:optimize)
-
-**Syscall:**
-`exec` (syscall, syscall:direct), `spawn_process` (syscall)
-
-**Memory:**
-`alloc` (memory), `dealloc` (memory), `raw_ptr` (memory, memory:raw)
-
-**FFI:**
-`ffi_call_c` (ffi, ffi:native)
+**crypto**:
+`sha256`, `sha512`, `random_bytes`, `hmac_sha256`
 
 ## Real-World Patterns
 
 ### Web server with minimal privileges
 
 ```
-@capabilities(network, filesystem:read)
-fn serve(port: i32) {
+@capabilities(net:tcp, fs:read)
+fn serve(port: i64) {
     let config = file_read("config.toml")
-    tcp_listen(port)
-    // Can read files for config, can accept connections
-    // Cannot write files, cannot call system commands
+    tcp_listen("0.0.0.0", port)
+    // Can read files for config, can accept connections.
+    // Cannot write files, cannot spawn processes.
 }
 ```
 
 ### Data pipeline with read-only input
 
 ```
-@capabilities(filesystem:read)
+@capabilities(fs:read)
 fn load_data(path: str) -> [str] {
-    return file_read(path).split("\n")
+    let raw = file_read(path)
+    return raw.split("\n")
 }
 
-@capabilities(filesystem:write)
+@capabilities(fs:write)
 fn save_results(path: str, results: [str]) {
     file_write(path, join("\n", results))
 }
 
-@capabilities(filesystem)
+@capabilities(io)
 fn pipeline(input: str, output: str) {
     let data = load_data(input)
     // ... process data ...
@@ -413,15 +311,16 @@ fn pipeline(input: str, output: str) {
 
 The `load_data` function cannot accidentally write to disk. The `save_results` function cannot read arbitrary files. Each function has exactly the access it needs.
 
-### Plugin sandbox
+### Pure computation (no annotation needed)
 
 ```
-@capabilities(compute)
-fn run_plugin(code: str) {
-    // Plugin runs in a pure compute sandbox
-    // No filesystem, no network, no FFI
-    // Even if the plugin code tries to call file_read(),
-    // it is blocked at compile time
+fn transform(xs: [i64]) -> [i64] {
+    // No annotation needed -- only uses ambient builtins.
+    let mut out: [i64] = []
+    for x in xs {
+        out = push(out, x * 2)
+    }
+    return out
 }
 ```
 
@@ -431,4 +330,4 @@ Most security vulnerabilities come from code doing something it was never intend
 
 Capabilities make these violations impossible. When you look at a function's `@capabilities` declaration, you know exactly what it can do. When you audit a program, you get a complete map of every capability used by every function.
 
-This is not just defense -- it is documentation. Reading `@capabilities(filesystem:read)` tells you more about a function's behavior than reading its entire implementation.
+This is not just defense -- it is documentation. Reading `@capabilities(fs:read)` tells you more about a function's behavior than reading its entire implementation.

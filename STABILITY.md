@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-05-16 (v2.3.0).
+Last updated: 2026-07-04 (v1.0.0-beta.2).
 
 ---
 
@@ -42,8 +42,7 @@ in this repo; out-of-tree consumers should pin both.
 breakages on this platform may slip a release but will be fixed promptly
 when reported.
 
-At v3.0 the LLVM release path is **tier-1 alongside Cranelift JIT** —
-both backends are required to pass the full smoke suite on all three
+Both backends are required to pass the full smoke suite on all three
 tier-1 platforms before any tag is cut. See `AUDIT-llvm-parity.md` for
 the parity-matrix definition of done.
 
@@ -66,27 +65,27 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v3.0.0)
+## 4. Current pass rates (v1.0.0-beta.2)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
   `native_build_release_tests` suite.
-- Parity matrix (`tests/parity/run_parity.sh`): **34 / 34
+- Parity matrix (`tests/parity/run_parity.sh`): **47 / 47
   both_pass on Cranelift + LLVM** across the smoke suite.
 - Compiler build warnings: **zero**.
 
 The v2.1 "known limitations" (escaping closures, `dyn Trait` dispatch)
-were closed in v2.2 and remain green. The v2.8 known-failures
-(`test_generics`, `test_process`, `test_match_return`, `test_tuple_mut`,
-plus the full B/B' string-vs-ptr class on LLVM) all closed in v3.0
+were closed in v2.2 and remain green. All previously-known parity
+failures (`test_generics`, `test_process`, `test_match_return`,
+`test_tuple_mut`, plus the B/B' string-vs-ptr class on LLVM) are closed
 — see `AUDIT-llvm-parity.md` for the per-test fix breakdown.
 
 ---
 
-## 5. Known limitations (v2.3.0)
+## 5. Known limitations (v1.0.0-beta.2)
 
 There are no architectural failures in the release-gating sweep at
-v2.3.0. The v2.1 "known limitations" listed below were all closed in
+v1.0.0-beta.2. The v2.1 "known limitations" listed below were all closed in
 v2.2 and are kept here as historical context.
 
 ### 5.1 (Closed in v2.2) Closures that escape their defining scope
@@ -133,8 +132,6 @@ them so users do not file bugs against them.
   expose `str_upper`/`str_lower` and `regex` (PCRE-style); full
   normalization is delegated to FFI.
 - **iOS / Android / embedded** targets.
-- **Windows-tested** release pipeline (the code compiles, but is not
-  part of the release gate).
 
 ---
 

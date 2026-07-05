@@ -45,7 +45,7 @@ kryos build --release -g hello.kry -o hello  # with debug info (.pdb on Windows,
 
 | Type        | Notes                                                              |
 | ----------- | ------------------------------------------------------------------ |
-| `i64`       | Default integer. Overflow is checked in debug, wraps in release.   |
+| `i64`       | Default integer. Overflow wraps modulo 2^64 on both backends.      |
 | `f64`       | Default float. IEEE 754.                                           |
 | `bool`      | `true` / `false`. No truthy coercion.                              |
 | `str`       | UTF-8 owned string. `+` concatenates. `len(s)` returns byte count. |
@@ -224,9 +224,9 @@ You do not need to `use` these — they're in the global namespace:
 
 ## Standard library
 
-Imported with `use std::<module>::{symbol1, symbol2}`. Available modules:
+Imported with `use std::<module>::{symbol1, symbol2}`. The stdlib ships 66 `.kry` modules. Commonly used ones:
 
-`agent`, `chan`, `collections`, `cost`, `crypto`, `datetime`, `db`, `ffi`, `fmt`, `fs`, `http`, `io`, `iter`, `json`, `math`, `net`, `option`, `os`, `path`, `probable`, `process`, `re`, `result`, `stream`, `string`, `sync`, `tensor`, `term`, `test`, `tracked`, `wasm`.
+`agent`, `agent_bridge`, `backoff`, `bloom`, `bytes`, `chan`, `circuit`, `collections`, `cost`, `crypto`, `csv`, `datetime`, `db`, `deque`, `diff_ops`, `duration`, `ffi`, `fmt`, `fs`, `fuzzy`, `hash`, `heap`, `histogram`, `http`, `interval`, `io`, `iter`, `json`, `jwt`, `llm`, `log`, `lru`, `math`, `mathx`, `matrix`, `net`, `numfmt`, `option`, `os`, `path`, `pathext`, `probable`, `process`, `queue`, `random`, `ratelimit`, `re`, `result`, `semaphore`, `semver`, `set`, `slice_ops`, `smtp`, `stack`, `stat`, `stream`, `strext`, `string`, `sync`, `tensor`, `term`, `test`, `tracked`, `trie`, `utf8`, `wasm`.
 
 Line splitting is `use std::string::{split_lines}` (`split_lines(s) -> [str]`, handles `\n` and `\r\n`) — it is a `std::string` function, not a global builtin, so it needs the import.
 
@@ -297,7 +297,9 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 | `kryos doc`                   | Generate HTML from `///` doc comments.                         |
 | `kryos pkg add <name>`        | Resolve and install a registry package.                        |
 | `kryos lsp`                   | Language server (stdio).                                       |
-| `kryos explain <code>`        | rustc-style long-form error explanation. e.g. `kryos explain E0300`. |
+| `kryos explain <code>`        | rustc-style long-form error explanation. e.g. `kryos explain E0300`. 32 codes documented. |
+| `kryos dap`                   | Start the source-level debugger (Debug Adapter Protocol, stdio). |
+| `kryos audit [path]`          | Audit capability usage, extern surface, and secret patterns.   |
 | `kryos bindgen <header.h>`    | Generate Kryos `extern` declarations from a C header.          |
 
 ## Common error codes
@@ -322,7 +324,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 8. **Top-level `let mut x = some_call()`** is allowed for pure builtins (`env_get`, `args`) but not for arbitrary user functions — move that into `main`.
 9. **Glob imports `use std::os::*` work** — they import all public symbols of the module (equivalent to a bare `use std::os`).
 10. **The default `kryos run` uses Cranelift, which does not support every codegen path the LLVM backend does** — if `run` fails but `build --release` works, that's the gap. Prefer `build --release` when you hit one.
-11. **Closures use bar syntax, not arrows.** `|x| x + 1`, `|x: i64| x + 1`, or `fn(x: i64) -> i64 { ... }`. There is **no** `(x) => expr` form (`=>` is match-arm-only). Closures capture surrounding variables by value (`let n = 10; let f = |x| x + n`), can be passed as `fn(i64) -> i64` params, returned from named functions (`fn mk(n: i64) -> fn(i64) -> i64 { return |x| x + n }`), and stored in variables — all on both backends. Direct currying works too: `let make = |n| |x| x + n; let add10 = make(10); add10(5)` returns a closure from a closure on both backends.
+11. **Closures use bar syntax, not arrows.** `|x| x + 1`, `|x: i64| x + 1`, or `fn(x: i64) -> i64 { ... }`. There is **no** `(x) => expr` form (`=>` is match-arm-only). Closures capture surrounding variables by **reference** when the captured binding is not mutated inside the closure body (mutations to the variable after the closure is created ARE visible to it); when the closure mutates the captured variable, it captures by move. Closures can be passed as `fn(i64) -> i64` params, returned from named functions (`fn mk(n: i64) -> fn(i64) -> i64 { return |x| x + n }`), and stored in variables — all on both backends. Direct currying (nested lambda literals) works: `let make = |n| |x| x + n; let add10 = make(10); add10(5)` returns 15 on both backends.
 12. **`?` operator works on both backends** (Cranelift JIT and LLVM AOT). `let v = parse(s)?` returns early with the `Err` on failure. Use `Result<T, E>` (e.g. `Result<i64, str>`) return types.
 13. **`Result<T,E>`/`Option<T>` payloads keep their real type when matched** — `match r { Result.Err(e) => println(e) }` binds `e` as `str` (for `Result<i64,str>`) and prints it correctly; `Ok(v)`/`Some(v)` bind their real type too. The match-payload binding now uses the monomorphized enum type (e.g. `Result___i64_str`) rather than the i64-erased generic stub, so direct use (bare `println(e)`, `==`, arithmetic) dispatches on the right type on both backends. **Always annotate `Result<T,E>`/`Option<T>` on signatures** — a *bare* `Result`/`Option` (no `<...>`) still erases its payload to i64.
 14. **Or-patterns work in match arms:** `match n { 1 | 2 | 3 => "low", _ => "high" }` and `match c { Red | Green => "warm", Blue => "cool" }`. Alternatives must be non-binding (literals or bare enum variants).
@@ -356,7 +358,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 
 - **Don't use semicolons.** This is the #1 mistake.
 - **Don't use `else if`.** Use `elif`.
-- **Closures are `|x|` / `|x: i64|`, never `(x) => ...`.** Don't directly nest lambda literals (`|n| |x| ...`); use a named outer function.
+- **Closures are `|x|` / `|x: i64|`, never `(x) => ...`.** Nested lambda literals (currying via `|n| |x| x + n`) work on both backends.
 - **Annotate `Result<T, E>` and `Option<T>` on function signatures** so non-`i64` payloads keep their type when used directly.
 - **Don't use struct-style enum variants** (`A { x: i64 }`); use tuple variants (`A(i64)`).
 - **Don't fabricate stdlib functions.** If you're not sure a function exists, write a thin wrapper around the builtins in the table above.

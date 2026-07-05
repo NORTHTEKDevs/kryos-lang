@@ -27,7 +27,7 @@ declaring the capability **fails to compile** (`E0505`/`E0507` under
 agent whose authority manifest exceeds the host's allow-set — before a single
 symbol is bound.
 
-## Real programs (examples/showcase/, all JIT-green)
+## Real programs (examples/showcase/ and examples/showcase/extra/, all JIT-green)
 
 Interpreters & tools: `bytecode_vm` `brainfuck` `rpn_calc` `calc` `parser`
 `regex` `template` · Apps: `todo_app` `kvdb` `tiny_kv` `ssg` (static-site
@@ -35,6 +35,9 @@ generator) `markdown` `kdoc` · Data: `stats_pipeline` `word_frequency` `csv`
 `regression` `budget_analyst` · Systems: `worker_pool` `dir_walker`
 `agent_runtime` `cli_tool` · Servers (compile + bind; skipped in CI as they
 block): `web_server` `rest_api` `tcp_echo` `mcp_server`.
+
+(`brainfuck`, `calc`, `csv`, `life`, `regex`, `regression`, `template`, `api_client` live in `examples/showcase/extra/`;
+the remaining 22 are in `examples/showcase/`.)
 
 Root examples additionally cover FFI (`ffi_libc`, Windows CRT), a ray tracer,
 a neural net, JSON tooling, and the kitchen-sink `all_features.kry`

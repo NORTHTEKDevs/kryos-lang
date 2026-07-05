@@ -1,6 +1,6 @@
 # Concurrency
 
-> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` polls channels with `try_recv` and branches to the first ready channel (busy-poll with 1ms yield, exits when all channels close). Actors are fully implemented end-to-end: handlers compile to mangled functions, `Counter()` spawns the actor thread via `ActorSpawn`, method calls emit `ActorSend` (lock + tag + args + unlock), and the compiler generates a dispatch loop per actor (`ActorName__dispatch`) that receives messages and routes them to handlers via `Switch`. Actor state is not yet heap-allocated (state pointer is 0); handler return values are fire-and-forget. `parallel for` over a `range()` IS implemented (chunked across 4 OS threads); `parallel for` over a non-range iterable currently falls back to a sequential `for`. **`async`/`await`: `await foo()` runs the async function and returns its value (correct on both backends). Concurrency comes from running async work on real OS threads via `spawn` -- `spawn { let r = await foo(); use(r) }` executes `foo` on its own thread, so multiple spawned async blocks run in parallel (verified: two spawned tasks with different sleeps complete in parallel order). This is real thread parallelism, not a single-threaded cooperative scheduler. The cooperative `kryos_rt::future` executor (poll/park/wake) exists in the runtime but is not yet wired to a Kryos surface syntax; that single-threaded model is separate future work.**
+> **Implementation Status:** `spawn` creates real OS threads via `kryos_spawn()` in the runtime. `kryos_spawn_wait_all()` is inserted at the end of `main` and joins all spawned threads before the process exits -- spawned threads are NOT daemon threads. Channels are fully implemented as MPMC queues with blocking `recv` and non-blocking `try_recv`. Channel creation (`chan<T>`), send, and receive all work end-to-end through codegen. `select` polls channels with `try_recv` and branches to the first ready channel (busy-poll with 1ms yield, exits when all channels close). Actor syntax (`actor Name { field: Type fn handler() { ... } }`) parses and type-checks, and the MIR/codegen fully lowers actor definitions: handlers compile to mangled functions, `ActorSpawn` emits the thread, method calls emit `ActorSend`, and the compiler generates a dispatch loop (`ActorName__dispatch`). **However, the type checker does not register the actor name as a callable type, so `Counter()` is rejected with `error[E0102]: undefined variable` -- actor constructors cannot yet be called from user code.** Actor state uses struct-field syntax (`count: i64`), not `let mut`. `parallel for` over a `range()` IS implemented (chunked across 4 OS threads); `parallel for` over a non-range iterable currently falls back to a sequential `for`. `parallel for` does NOT insert a join point -- code immediately after the loop starts while the parallel chunks are still running. **`async`/`await`: the cooperative executor (`coop_spawn` / `coop_run` / `await`) genuinely interleaves tasks -- `await` suspends the current task and hands control to the next ready task, producing interleaved output (verified: `coop_spawn(task_a()) + coop_spawn(task_b()) + coop_run()` produces `A0 B0 A1 B1 A2 B2`, not `A0 A1 A2 B0 B1 B2`).**
 
 Kryos has two concurrency primitives: `spawn` for fire-and-forget parallel execution, and `actor` for stateful message-passing concurrency. Both are built into the language syntax -- no library imports, no async/await coloring, no callback chains.
 
@@ -15,19 +15,19 @@ spawn {
     println("spawned")
 }
 
-sleep(0.2)
+sleep(200)
 println("after")
 ```
 
-Output:
+Output (one possible ordering):
 
 ```
 before
-spawned
 after
+spawned
 ```
 
-The compiler inserts a `kryos_spawn_wait_all()` call at the end of `main`, so all spawned threads are joined before the process exits. The `sleep(0.2)` is for ordering -- it gives the spawned thread time to print before the main thread's `println("after")` runs. Without the sleep, the output order may vary because spawned threads run concurrently.
+The compiler inserts a `kryos_spawn_wait_all()` call at the end of `main`, so all spawned threads are joined before the process exits. The `sleep(200)` is for ordering -- it gives the main thread time to print `"after"` before the spawned thread prints. Without the sleep, the output order may vary because spawned threads run concurrently.
 
 ### What spawn does
 
@@ -53,20 +53,20 @@ A `return` statement inside a `spawn` block exits the spawned thread, not the en
 
 ### Coordination with sleep
 
-`sleep(seconds)` pauses the current thread. It is the simplest way to coordinate timing between spawned work and the main thread.
+`sleep(ms)` pauses the current thread for `ms` milliseconds. It is the simplest way to coordinate timing between spawned work and the main thread.
 
 ```
 spawn {
-    sleep(1.0)
+    sleep(1000)
     println("one second later")
 }
 
 spawn {
-    sleep(0.5)
+    sleep(500)
     println("half second later")
 }
 
-sleep(1.5)
+sleep(1500)
 println("done")
 ```
 
@@ -78,7 +78,7 @@ one second later
 done
 ```
 
-`sleep` takes a float -- `sleep(0.1)` is 100 milliseconds.
+`sleep` takes `i64` milliseconds -- `sleep(100)` is 100 milliseconds. `sleep_ms(ms: i64)` is an alias with identical behavior.
 
 ### Spawn for parallel computation
 
@@ -89,8 +89,7 @@ Use `spawn` when you have independent work that does not need to communicate res
 - Running independent computations in parallel
 
 ```
-@capabilities(compute)
-fn heavy_compute(n: i32) -> i32 {
+fn heavy_compute(n: i64) -> i64 {
     let mut sum = 0
     for i in range(0, n) {
         sum = sum + i * i
@@ -107,12 +106,12 @@ spawn {
 let main_result = heavy_compute(50000)
 println("main: " + to_string(main_result))
 
-sleep(1.0)
+sleep(1000)
 ```
 
 ## Actors
 
-> **Note:** Actors are fully compiled end-to-end. `Counter()` spawns an actor thread, `c.increment(5)` sends a tagged message, and the generated dispatch loop routes messages to handlers. Actor state is passed as an i64 handle (heap allocation of state structs is planned). Handler return values are discarded (fire-and-forget); request-response patterns require a reply channel.
+> **Note:** Actor definitions parse and the MIR/codegen pipeline fully lowers them (dispatch loop, `ActorSpawn`, `ActorSend`). However, the type checker does not yet register actor names as callable types: `Counter()` fails with `error[E0102]: undefined variable`. Actor constructors cannot be called from user code today. Handler return values are discarded (fire-and-forget); request-response patterns require a reply channel.
 
 Actors are the structured concurrency model in Kryos. An actor is a self-contained unit with private state and message handlers. No one can read or write an actor's state directly -- the only way to interact is by sending messages through its handlers.
 
@@ -120,13 +119,13 @@ Actors are the structured concurrency model in Kryos. An actor is a self-contain
 
 ```
 actor Counter {
-    let mut count: i32 = 0
+    count: i64
 
-    fn increment(amount: i32) {
+    fn increment(amount: i64) {
         count = count + amount
     }
 
-    fn get_count() -> i32 {
+    fn get_count() -> i64 {
         return count
     }
 
@@ -137,10 +136,10 @@ actor Counter {
 ```
 
 The `actor` keyword declares the type. Inside:
-- `let` statements define the actor's private state
+- Bare `name: Type` declarations define the actor's private state (struct-field syntax, not `let mut`)
 - `fn` declarations define message handlers
 
-State fields use `let mut` for mutable state. Handlers can read and modify the actor's own state freely.
+All state fields are implicitly mutable within handlers. Handlers can read and modify the actor's own state freely.
 
 ### Actor state isolation
 
@@ -148,7 +147,7 @@ Each actor instance owns its state. There is no shared mutable state between act
 
 ```
 actor Logger {
-    let mut entries: [str] = []
+    entries: [str]
 
     fn log(message: str) {
         push(entries, message)
@@ -179,7 +178,7 @@ The simplest pattern: send a message, get a result.
 
 ```
 actor Calculator {
-    let mut memory: f64 = 0.0
+    memory: f64
 
     fn add(x: f64) -> f64 {
         memory = memory + x
@@ -202,9 +201,9 @@ An actor collects events over time, then reports:
 
 ```
 actor MetricsCollector {
-    let mut request_count: i32 = 0
-    let mut error_count: i32 = 0
-    let mut total_latency_ms: f64 = 0.0
+    request_count: i64
+    error_count: i64
+    total_latency_ms: f64
 
     fn record_request(latency_ms: f64) {
         request_count = request_count + 1
@@ -230,8 +229,8 @@ Actors naturally model state machines. The internal state determines behavior:
 
 ```
 actor Connection {
-    let mut state: str = "disconnected"
-    let mut retries: i32 = 0
+    state: str
+    retries: i64
 
     fn connect(host: str) -> str {
         if state == "connected" {
@@ -285,10 +284,10 @@ The `select` statement waits on multiple channels simultaneously, running the fi
 
 ```
 select {
-    msg from ch1 => {
+    msg ch1 => {
         println("got from ch1: " + to_string(msg))
     }
-    msg from ch2 => {
+    msg ch2 => {
         println("got from ch2: " + to_string(msg))
     }
 }
@@ -316,7 +315,7 @@ Use `spawn` to run actor processing in the background:
 
 ```
 actor TaskQueue {
-    let mut tasks: [str] = []
+    tasks: [str]
 
     fn add(task: str) {
         push(tasks, task)
@@ -335,7 +334,7 @@ spawn {
     // Worker loop that processes tasks
     let mut running = true
     while running {
-        sleep(0.1)
+        sleep(100)
         // Process available tasks
     }
 }
@@ -347,7 +346,7 @@ spawn {
 |------------|-------|
 | `new Promise(...)` | `spawn { ... }` |
 | `async/await` | Not needed |
-| `setTimeout(fn, ms)` | `spawn { sleep(seconds) ... }` |
+| `setTimeout(fn, ms)` | `spawn { sleep(ms) ... }` |
 | `Worker` (Web Workers) | `spawn` + actors |
 | Event emitters | Actor handlers |
 
@@ -355,7 +354,7 @@ The biggest win: no callback hell, no promise chains, no async/await viral color
 
 ## Common Mistakes
 
-**Forgetting sleep before exit.** Spawned blocks are daemon threads. If the main program exits, spawned work is killed immediately. Use `sleep()` to wait for spawned work to complete, or structure your program so the main thread naturally outlives the spawned work.
+**Relying on spawn order for output.** `kryos_spawn_wait_all()` joins all spawned threads before the process exits, so spawned work always completes -- but the order in which threads run is not guaranteed. Use `sleep()` to bias timing if output order matters, or use channels/actors if you need coordinated results.
 
 **Trying to return values from spawn.** `spawn` does not return the result of the block. If you need a result, use an actor with a handler that stores the result, then query the actor from the main thread.
 

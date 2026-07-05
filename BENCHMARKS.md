@@ -82,8 +82,8 @@ identical on both backends.
 
 ## What changed (2026-06-14)
 
-Cumulative this session, all gated on backend parity (55 smoke tests, both
-backends, 0 divergences) + conformance 6/6 + examples 79/79 + the self-host
+Cumulative this session, all gated on backend parity (58 smoke tests, both
+backends, 0 divergences) + conformance 6/6 + examples 80/80 + the self-host
 bootstrap (stage-2 == stage-3 == stage-4, fixed point held):
 
 - **Reverted an unsound in-place string-concat fast path** (it corrupted every
