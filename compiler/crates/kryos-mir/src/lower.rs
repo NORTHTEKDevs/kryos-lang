@@ -2200,6 +2200,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // Struct; fall back to the actor being lowered.
                             .or_else(|| ctx.current_actor.clone());
                         if let Some(ref aname) = actor_name {
+                            let fty = ctx
+                                .struct_defs
+                                .get(aname.as_str())
+                                .and_then(|fs| {
+                                    fs.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone())
+                                })
+                                .unwrap_or(MirType::I64);
                             ctx.actor_state_fields
                                 .get(aname)
                                 .cloned()
@@ -2207,7 +2214,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     fields
                                         .iter()
                                         .find(|(n, _)| n == field)
-                                        .map(|(_, idx)| (self_local, *idx))
+                                        .map(|(_, idx)| (self_local, *idx, fty.clone()))
                                 })
                         } else {
                             None
@@ -2222,7 +2229,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 None
             };
 
-            if let Some((state_ptr, field_offset)) = actor_field_target {
+            if let Some((state_ptr, field_offset, field_ty)) = actor_field_target {
                 // Actor state field assignment.
                 match op {
                     ast::AssignOp::Assign => {
@@ -2242,14 +2249,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             ast::AssignOp::DivAssign => MirBinOp::Div,
                             ast::AssignOp::Assign => unreachable!(),
                         };
-                        let current = ctx.alloc_temp(MirType::I64);
+                        let current = ctx.alloc_temp(field_ty.clone());
                         ctx.emit(Instruction::ActorStateLoad {
                             dest: current,
                             state_ptr,
                             field_offset,
                         });
                         let rhs = lower_expr_to_operand(ctx, value);
-                        let result = ctx.alloc_temp(MirType::I64);
+                        let result = ctx.alloc_temp(field_ty.clone());
                         ctx.emit(Instruction::Assign {
                             dest: result,
                             value: RValue::BinOp {
@@ -5097,6 +5104,23 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     return MirType::Enum(name.clone());
                 }
             }
+            // `self.field` inside an ACTOR handler: the actor value erases to
+            // i64 so obj_ty is not Struct; resolve the field type from the
+            // actor's registered state layout. Without this an f64/str state
+            // field inferred as I64 (iadd on f64 operands; ptr slots on AOT).
+            if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                if name == "self" {
+                    if let Some(aname) = ctx.current_actor.clone() {
+                        if let Some(fields) = ctx.struct_defs.get(aname.as_str()) {
+                            if let Some((_, fty)) =
+                                fields.iter().find(|(n, _)| n == field.as_str())
+                            {
+                                return fty.clone();
+                            }
+                        }
+                    }
+                }
+            }
             MirType::I64
         }
 
@@ -6469,7 +6493,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             if let Some((_fname, field_idx)) =
                                 fields.iter().find(|(n, _)| n == field)
                             {
-                                let dest = ctx.alloc_temp(MirType::I64);
+                                // Type the load by the FIELD's declared type
+                                // (recorded in struct_defs at actor
+                                // registration). An i64-typed dest made both
+                                // backends mis-select ops on f64/str state
+                                // (iadd on f64; ptr stored as i64 on AOT).
+                                let fty = ctx
+                                    .struct_defs
+                                    .get(aname.as_str())
+                                    .and_then(|fs| {
+                                        fs.iter().find(|(n, _)| n == field).map(|(_, t)| t.clone())
+                                    })
+                                    .unwrap_or(MirType::I64);
+                                let dest = ctx.alloc_temp(fty);
                                 ctx.emit(Instruction::ActorStateLoad {
                                     dest,
                                     state_ptr: self_local,

@@ -3114,6 +3114,14 @@ fn translate_instruction<M: Module>(
                     }
                     _ => val,
                 };
+                // The mailbox carries raw i64 slots; an f64 message argument
+                // (literal or local) must be bit-reinterpreted, not passed as
+                // f64 into the i64-signature send (verifier error).
+                let send_val = if builder.func.dfg.value_type(send_val) == types::F64 {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), send_val)
+                } else {
+                    send_val
+                };
                 builder.ins().call(send_ref, &[actor_val, send_val]);
             }
             // Unlock.
@@ -3131,12 +3139,21 @@ fn translate_instruction<M: Module>(
             state_ptr,
             field_offset,
         } => {
-            // Load from state_ptr + field_offset * 8.
+            // Load from state_ptr + field_offset * 8. State slots are 8 bytes;
+            // load with the DEST's type so an f64 field reinterprets the slot
+            // as f64 (an I64 load fed `iadd` on f64 operands — verifier error).
             let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
             let offset_bytes = (*field_offset as i32) * 8;
+            let dest_is_f64 = translator
+                .mir_func
+                .locals
+                .iter()
+                .find(|l| l.id == *dest)
+                .is_some_and(|l| matches!(l.ty, MirType::F64));
+            let load_ty = if dest_is_f64 { types::F64 } else { types::I64 };
             let loaded = builder
                 .ins()
-                .load(types::I64, MemFlags::new(), ptr_val, offset_bytes);
+                .load(load_ty, MemFlags::new(), ptr_val, offset_bytes);
             let var = translator.variables[&dest.0];
             builder.def_var(var, loaded);
         }

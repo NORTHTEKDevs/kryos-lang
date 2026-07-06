@@ -2397,6 +2397,36 @@ impl TypeChecker {
                         }
                     }
                     sig.ret.clone()
+                } else if self.env.lookup_struct(type_name).is_none()
+                    && self.env.lookup_enum(type_name).is_none()
+                    && self.env.lookup_function(method).is_some()
+                {
+                    // MODULE-qualified call: `util::add(2, 3)` (or via an
+                    // alias, `u::add(..)`). `type_name` is not a type, and the
+                    // module's functions are imported under their plain names
+                    // -- type this as a call of the plain function. The MIR
+                    // lowering already resolves it the same way; only the
+                    // checker rejected it ("no method `add` on type `util`").
+                    let sig = self.env.lookup_function(method).cloned().unwrap();
+                    let (params, ret) = self.engine.instantiate_sig(&sig);
+                    if args.len() != params.len() {
+                        self.error(
+                            format!(
+                                "function `{method}` expects {} arguments, found {}",
+                                params.len(),
+                                args.len()
+                            ),
+                            *span,
+                        );
+                    } else {
+                        for (arg, param_ty) in args.iter().zip(params.iter()) {
+                            let arg_ty = self.infer_expr(arg);
+                            if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
+                                self.diagnostics.push(diag);
+                            }
+                        }
+                    }
+                    ret
                 } else {
                     self.error(
                         format!("no method `{method}` found on type `{type_name}`"),

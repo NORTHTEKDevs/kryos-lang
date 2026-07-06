@@ -4,6 +4,45 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.7] — 2026-07-06 — "Completeness sweep II: modules, actors, FFI hygiene"
+
+A second 35-probe audit tier (multi-file projects, trait bounds, numeric/literal
+edges, actor/concurrency depth, tooling) after beta.6's 123-probe sweep.
+
+### Fixed
+- **Module-qualified calls work:** `util::add(2, 3)` and alias forms
+  (`use util as u` + `u::add(..)`) now type-check. The MIR lowering always
+  resolved them; the checker rejected them as "no method `add` found on type
+  `util`". Cross-module imports themselves (bare calls, structs, enums,
+  methods, generics, selective imports, aliases) were verified working on
+  both backends; the examples gate now includes a multi-file project layer
+  (bare + qualified + aliased calls, JIT + AOT).
+- **Actor state fields and messages beyond i64.** `buf: str` state hit an AOT
+  codegen error (a concat result (ptr) stored raw into the i64 state slot);
+  `total: f64` state failed BOTH backends (the field load was typed i64 in
+  MIR, selecting `iadd` on f64 operands); an f64 message argument was passed
+  as f64 into the i64-slot mailbox send (verifier/clang errors). State loads/
+  stores now coerce by the value's declared LLVM type, the field type flows
+  from the actor's registered layout, and f64 message args are
+  bit-reinterpreted on send — values round-trip exactly. Regression:
+  `tests/native/actor_state_types.kry`.
+- **`ask` is no longer a reserved keyword.** It was reserved in the lexer for
+  a feature that was never wired (no parser/AST/lowering references), so users
+  could not name anything `ask`. Removed; `ask` is a normal identifier.
+- **Docs: `try_recv` claim corrected.** `docs/09-concurrency.md` promised a
+  user-facing non-blocking `try_recv`; none exists (it is select's internal
+  mechanism, and a raw try-receive would be a check-then-act race on an MPMC
+  queue). The documented non-blocking construct is `select` — verified working
+  with its documented syntax on both backends.
+
+### Verified (no changes needed)
+Multi-file projects (8 import shapes), trait bounds (`fn f<T: Speak>`), generic
+enums with str payloads, hex/binary literals, if/match as expressions, scalar
+match guards, pipe operator, two-actor concurrency, `select` (documented
+syntax), `parallel for`, spawn blocks, `kryos fmt` idempotence, piped REPL,
+`kryos test` (including a failing-test negative control), `kryos doc`,
+`kryos audit`, `kryos explain`.
+
 ## [1.0.0-beta.6] — 2026-07-06 — "Language completeness sweep"
 
 A systematic 120+-probe audit of every language surface (JIT vs AOT), followed

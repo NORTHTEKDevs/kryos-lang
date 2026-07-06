@@ -73,6 +73,54 @@ for f in "$REPO"/examples/showcase/*.kry; do
 done
 echo "examples-gate: showcase $((n-bad))/$n"
 
+# Layer 4: multi-file project -- cross-module imports, bare AND module-qualified
+# calls (`util::add` / alias `u::add`), JIT + AOT. Regression: the checker
+# rejected module-qualified calls ("no method `add` found on type `util`")
+# while the MIR lowering resolved them fine.
+PROJ="$TMP/gate_proj"
+mkdir -p "$PROJ/src"
+cat > "$PROJ/kryos.toml" <<'EOF'
+[package]
+name = "gate_proj"
+version = "0.1.0"
+EOF
+cat > "$PROJ/src/util.kry" <<'EOF'
+fn add(a: i64, b: i64) -> i64 { return a + b }
+fn shout(s: str) -> str { return s + "!" }
+EOF
+cat > "$PROJ/src/main.kry" <<'EOF'
+use util as u
+
+fn main() {
+    println(to_string(add(1, 2)))
+    println(to_string(util::add(3, 4)))
+    println(to_string(u::add(5, 6)))
+    println(shout("mod"))
+}
+EOF
+expect_proj="3
+7
+11
+mod!"
+got_jit=$(cd "$PROJ" && "$KRYOS" run src/main.kry 2>/dev/null | tr -d '')
+if [[ "$got_jit" != "$expect_proj" ]]; then
+    echo "  PROJECT JIT FAIL (got: $(echo "$got_jit" | tr '
+' ' '))"
+    fail=1
+fi
+if (cd "$PROJ" && "$KRYOS" build --release src/main.kry -o "$PROJ/out" >/dev/null 2>&1); then
+    got_aot=$("$PROJ/out" 2>/dev/null | tr -d '')
+    if [[ "$got_aot" != "$expect_proj" ]]; then
+        echo "  PROJECT AOT WRONG (got: $(echo "$got_aot" | tr '
+' ' '))"
+        fail=1
+    fi
+else
+    echo "  PROJECT AOT BUILD FAIL"
+    fail=1
+fi
+[[ $fail -eq 0 ]] && echo "examples-gate: project ok"
+
 if [[ $fail -eq 0 ]]; then
     echo "examples-gate: PASS"
 else

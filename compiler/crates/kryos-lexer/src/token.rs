@@ -51,7 +51,6 @@ pub enum TokenKind {
     Select,
     Send,
     Recv,
-    Ask,
     Chan,
     Parallel,
     Quantum,
@@ -160,7 +159,6 @@ impl TokenKind {
                 | Self::Select
                 | Self::Send
                 | Self::Recv
-                | Self::Ask
                 | Self::Chan
                 | Self::Parallel
                 | Self::Quantum
@@ -234,7 +232,6 @@ impl fmt::Display for TokenKind {
             Self::Select => "'select'",
             Self::Send => "'send'",
             Self::Recv => "'recv'",
-            Self::Ask => "'ask'",
             Self::Chan => "'chan'",
             Self::Parallel => "'parallel'",
             Self::Quantum => "'quantum'",
@@ -373,7 +370,6 @@ pub fn keyword_lookup(word: &str) -> Option<TokenKind> {
         "select" => TokenKind::Select,
         "send" => TokenKind::Send,
         "recv" => TokenKind::Recv,
-        "ask" => TokenKind::Ask,
         "chan" => TokenKind::Chan,
         "parallel" => TokenKind::Parallel,
         "quantum" => TokenKind::Quantum,

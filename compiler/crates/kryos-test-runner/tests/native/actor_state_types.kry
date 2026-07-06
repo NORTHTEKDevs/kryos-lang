@@ -1,0 +1,38 @@
+// Actor state fields and message arguments beyond i64: str and f64, in ONE
+// actor (single mailbox -> FIFO -> deterministic output order).
+// Regressions covered:
+// - str state (`buf: str`): the state-slot store passed a ptr (concat result)
+//   into a raw-i64 slot without ptrtoint -- an AOT codegen error; loads now
+//   inttoptr back based on the local's declared LLVM type.
+// - f64 state (`total: f64`): the field load was typed i64 in MIR, so both
+//   backends selected iadd on f64 operands (Cranelift verifier error); the
+//   field type now flows from the actor's registered layout.
+// - f64 MESSAGE arguments: the mailbox carries raw i64 slots; f64 args are
+//   bit-reinterpreted on send (both backends) and round-trip exactly.
+// expect-stdout: buf x
+// expect-stdout: buf xy
+// expect-stdout: t 1.5
+// expect-stdout: t 3.75
+
+actor Mixed {
+    buf: str,
+    total: f64,
+
+    fn add_str(self, s: str) {
+        self.buf = self.buf + s
+        println("buf " + self.buf)
+    }
+
+    fn add_num(self, v: f64) {
+        self.total = self.total + v
+        println("t " + to_string(self.total))
+    }
+}
+
+fn main() {
+    let m = Mixed()
+    m.add_str("x")
+    m.add_str("y")
+    m.add_num(1.5)
+    m.add_num(2.25)
+}

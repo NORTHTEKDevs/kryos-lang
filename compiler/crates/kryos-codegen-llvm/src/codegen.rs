@@ -3611,6 +3611,13 @@ impl LlvmCodegen {
                         let t = self.next_temp();
                         self.emit_line(&format!("  {t} = ptrtoint ptr {send_val} to i64"));
                         t
+                    } else if self.operand_type(arg, func) == "double" {
+                        // f64 message argument: the mailbox carries raw i64
+                        // slots -- bit-reinterpret (a double literal/SSA value
+                        // is invalid as an i64 call argument).
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = bitcast double {send_val} to i64"));
+                        t
                     } else {
                         send_val
                     };
@@ -3630,6 +3637,10 @@ impl LlvmCodegen {
             } => {
                 // Load from state_ptr + field_offset * 8.
                 // Convert i64 state_ptr to a real pointer, GEP to field, then load.
+                // State slots are raw i64; a ptr-typed field (str/array state --
+                // e.g. `buf: str`) must inttoptr the slot back to ptr, and an f64
+                // field bitcasts, else the SSA def's type mismatches its uses
+                // ("'%_N' defined with type 'ptr' but expected 'i64'").
                 let ptr_local = self.operand_to_llvm(&Operand::Local(*state_ptr), func);
                 let ptr_tmp = self.next_temp();
                 self.emit_line(&format!("  {ptr_tmp} = inttoptr i64 {ptr_local} to ptr"));
@@ -3637,11 +3648,24 @@ impl LlvmCodegen {
                 self.emit_line(&format!(
                     "  {field_ptr} = getelementptr i64, ptr {ptr_tmp}, i32 {field_offset}"
                 ));
+                // Match the def's type to the local's DECLARED LLVM type (the
+                // type every use-site renders with), not the raw i64 slot.
+                let dest_llvm = self.local_type(*dest);
                 let is_mutable = self.mutable_locals.contains(&dest.0);
                 if is_mutable {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = load i64, ptr {field_ptr}"));
+                    // Opaque-pointer stores through the alloca are
+                    // bit-compatible for ptr/f64 slots on LP64.
                     self.emit_line(&format!("  store i64 {tmp}, ptr %_{}.addr", dest.0));
+                } else if dest_llvm == "ptr" {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = load i64, ptr {field_ptr}"));
+                    self.emit_line(&format!("  %_{} = inttoptr i64 {tmp} to ptr", dest.0));
+                } else if dest_llvm == "double" {
+                    let tmp = self.next_temp();
+                    self.emit_line(&format!("  {tmp} = load i64, ptr {field_ptr}"));
+                    self.emit_line(&format!("  %_{} = bitcast i64 {tmp} to double", dest.0));
                 } else {
                     self.emit_line(&format!("  %_{} = load i64, ptr {field_ptr}", dest.0));
                 }
@@ -3651,9 +3675,26 @@ impl LlvmCodegen {
                 field_offset,
                 value,
             } => {
-                // Store value to state_ptr + field_offset * 8.
+                // Store value to state_ptr + field_offset * 8. State slots are
+                // raw i64: ptr-typed values (str/array state) ptrtoint first,
+                // f64 bitcasts (mirrors the ActorSend argument coercion).
                 let ptr_local = self.operand_to_llvm(&Operand::Local(*state_ptr), func);
                 let val = self.operand_to_llvm(value, func);
+                // Coerce by the value's RENDERED LLVM type (a str-concat dest is
+                // declared ptr even when its MIR local says i64).
+                let val = match self.operand_type(value, func).as_str() {
+                    "ptr" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = ptrtoint ptr {val} to i64"));
+                        t
+                    }
+                    "double" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = bitcast double {val} to i64"));
+                        t
+                    }
+                    _ => val,
+                };
                 let ptr_tmp = self.next_temp();
                 self.emit_line(&format!("  {ptr_tmp} = inttoptr i64 {ptr_local} to ptr"));
                 let field_ptr = self.next_temp();
