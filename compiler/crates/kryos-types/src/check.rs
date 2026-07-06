@@ -5009,6 +5009,13 @@ pub fn type_check_with_lambda_params(
         params: vec![],
         ret: Type::I64,
     });
+    // `time_millis` is the documented short alias for `time_now_millis`.
+    checker.env.define_function(FunctionSig {
+        name: "time_millis".to_string(),
+        generic_params: vec![], generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
     checker.env.define_function(FunctionSig {
         name: "mutex_new".to_string(),
         generic_params: vec![], generic_var_ids: vec![],

@@ -4097,7 +4097,7 @@ fn translate_rvalue<M: Module>(
                 "byte_at" => ("kryos_byte_at_ks", 2),
                 // Time
                 "time_now_secs" => ("kryos_time_now_secs", 0),
-                "time_now_millis" => ("kryos_time_now_millis", 0),
+                "time_now_millis" | "time_millis" => ("kryos_time_now_millis", 0),
                 // Mutex
                 "mutex_new" => ("kryos_mutex_new", 0),
                 "mutex_lock" => ("kryos_mutex_lock", 1),

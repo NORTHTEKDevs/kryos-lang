@@ -786,6 +786,7 @@ pub fn lower_module_with_lambda_params(
         // Time / Mutex
         ("time_now_secs", MirType::I64),
         ("time_now_millis", MirType::I64),
+        ("time_millis", MirType::I64),
         ("mutex_new", MirType::I64),
         ("mutex_lock", MirType::Void),
         ("mutex_unlock", MirType::Void),

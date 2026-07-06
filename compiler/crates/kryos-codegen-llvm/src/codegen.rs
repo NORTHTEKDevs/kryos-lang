@@ -5108,7 +5108,7 @@ impl LlvmCodegen {
                                 "byte_at" => "kryos_byte_at_ks",
                                 // Time / sleep
                                 "time_now_secs" => "kryos_time_now_secs",
-                                "time_now_millis" => "kryos_time_now_millis",
+                                "time_now_millis" | "time_millis" => "kryos_time_now_millis",
                                 "sleep_ms" => "kryos_sleep_ms",
                                 // sleep(ms: i64) -> kryos_sleep_ms (i64 millis).
                                 // The old kryos_sleep reinterpreted the i64 as
