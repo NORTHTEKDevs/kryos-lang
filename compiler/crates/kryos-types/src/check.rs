@@ -366,6 +366,14 @@ impl TypeChecker {
                     variants: vec![],
                 });
             }
+            // Actors are a PREVIEW feature: the type checker deliberately does
+            // NOT register the actor name as a callable constructor, because the
+            // actor RUNTIME is incomplete -- message arguments are not
+            // transmitted and handlers do not execute reliably (see
+            // docs/09-concurrency.md). A `Counter()` call therefore fails at
+            // compile time (E0102) rather than compiling to a spawn that
+            // silently does nothing. The MIR/codegen lowering exists for when
+            // the runtime is finished; registration is a one-line change then.
             _ => {}
         }
     }
@@ -760,7 +768,9 @@ impl TypeChecker {
                 }
             }
             Decl::Import { .. } | Decl::Actor { .. } => {
-                // These don't introduce types we need to check yet.
+                // Actors are preview; the checker does not register them as
+                // callable types (the runtime is incomplete -- see
+                // pre_register_type_name). Imports introduce no types here.
             }
             Decl::Extern { items, .. } => {
                 // Register extern function declarations so they're callable.
