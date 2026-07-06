@@ -315,7 +315,7 @@ let c = Color::Red
 let c = Color.Red
 ```
 
-Kryos uses `.` for everything -- field access, method calls, and enum variant access. There is no `::` operator.
+Kryos uses `.` for field access, method calls, and enum variant access. Rust-style `::` also works for static methods (`Point::new(...)`) and enum variants (`Opt::Some(7)`, `Opt::None`) -- `.` and `::` are interchangeable in those positions.
 
 **Forgetting to provide all fields**
 

@@ -1613,6 +1613,31 @@ impl TypeChecker {
                         name: ename,
                         generics: fresh_generics,
                     }
+                } else if let Some(edef) = self.env.find_enum_by_variant(name).cloned().filter(
+                    |edef| {
+                        edef.variants
+                            .iter()
+                            .any(|(v, ftys)| v == name && ftys.is_empty())
+                    },
+                ) {
+                    // Bare (unqualified) NULLARY enum variant used as a value, e.g.
+                    // `Nil` / `Done` / `Red`. This mirrors the bare with-args
+                    // constructor path in the FnCall arm (`Cons(1, t)` already
+                    // resolves by unambiguous variant name) and the MIR lowering,
+                    // which already resolves bare nullary variants via
+                    // `find_enum_variant`. Only NULLARY variants resolve here — a
+                    // with-args variant used bare without a call is not a value.
+                    // Closes the inconsistency where `Cons(1, Nil)` rejected only
+                    // the `Nil`, forcing recursive/tree enums to qualify every leaf.
+                    let fresh_generics: Vec<Type> = edef
+                        .generic_var_ids
+                        .iter()
+                        .map(|_| self.engine.fresh_var())
+                        .collect();
+                    Type::Enum {
+                        name: edef.name.clone(),
+                        generics: fresh_generics,
+                    }
                 } else {
                     self.error_with_code(
                         format!("undefined variable `{name}`"),

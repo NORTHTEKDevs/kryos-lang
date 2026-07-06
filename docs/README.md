@@ -62,12 +62,12 @@ kryos run hello.kry
 - [std.net](stdlib/net.md) -- HTTP client, WebSocket, TCP sockets, URL encoding
 - [std.term](stdlib/term.md) -- Terminal control, cursor, colors, raw mode, key reading
 - [std.crypto](stdlib/crypto.md) -- SHA-256, SHA-512, MD5, HMAC, Base64, hex, random bytes, UUID
-- [std.json](stdlib/json.md) -- `json_parse`, `json_stringify`, `json_get`, `json_has`
-- [std.map](stdlib/map.md) -- Dictionary operations: `map_new`, `map_set`, `map_get`, `map_has`, `map_keys`, `map_values`
-- [std.math](stdlib/math.md) -- `round`, `log10`, `random`, `pi`, `e`
-- [std.string](stdlib/string.md) -- `repeat`, `pad_left`, `pad_right`, `lines`, `to_int`, `to_float`, `to_upper`, `to_lower`
-- [std.set](stdlib/set.md) -- Set operations: `set_new`, `set_add`, `set_has`, `set_remove`, `set_union`
-- [std.process](stdlib/process.md) -- `exec`, `argc`, `argv`, `sleep`, subprocess management
+- [std.json](stdlib/json.md) -- `parse`, `stringify`, `pretty_print`, `get`, `set`; constructors `json_string`, `json_number`, `json_object`, `json_array`
+- Maps are a built-in type (`map<K, V>`): `m[k]`, `m[k] = v`, `contains(m, k)`, `keys(m)`, `len(m)` -- no import needed (see [std.map](stdlib/map.md))
+- [std.math](stdlib/math.md) -- `round`, `log10`, `log2`, `ln`, `gcd`, `lcm`; constants `PI`, `E`, `TAU` (`sqrt`/`pow`/`abs`/`min`/`max` are global builtins)
+- [std.string](stdlib/string.md) -- `repeat`, `pad_left`, `pad_right`, `split_lines`, `to_upper`, `to_lower`, `trim`, `find`
+- [std.set](stdlib/set.md) -- sorted-array set primitives: `insert`, `contains`, `remove`, `lower_bound` (or use `Set` from `std.collections`)
+- [std.process](stdlib/process.md) -- `env_get`, `env_has`, `exit`, `argc`, `argv`, `args`, `command` (subprocess builder)
 - [std.datetime](stdlib/datetime.md) -- Date/time operations
 - [std.regex](stdlib/regex.md) -- Regular expressions
 - [std.db](stdlib/db.md) -- SQLite database access

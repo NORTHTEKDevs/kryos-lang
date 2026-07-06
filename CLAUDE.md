@@ -189,11 +189,13 @@ fn main() {
 Every function has a capability set inferred from the builtins it calls. If your function calls `file_write`, it needs `fs:write`. If you `spawn`/`exec` a process **or read the environment** (`env_get`/`env_set` — reading env can exfiltrate secrets), you need `process`. Network needs `net:http` / `net:tcp`. `crypto` for `sha256`/`hmac`. `exit`/`abort`, clock reads, and `sleep` are ambient (not gated). The compiler tracks these through the call graph.
 
 Three enforcement modes, via `--capabilities-mode=<mode>` or `[capabilities] mode` in `kryos.toml`:
-- **`inferred`** (recommended; the `kryos new` default): deny-by-default at the boundary. Declare `@capabilities(...)` on `main` (and any `pub` fn); interior helpers are inferred. An unannotated `main` that transitively uses a gated builtin is rejected — the error names the exact set to add.
+- **`inferred`** (THE DEFAULT for `kryos run`, `check`, and `build`): deny-by-default at the boundary. Declare `@capabilities(...)` on `main` (and any `pub` fn); interior helpers are inferred. An unannotated `main` that transitively uses a gated builtin is rejected — the error names the exact set to add.
 - **`strict`** (`--strict-capabilities`): every function must declare its own caps.
-- **`permissive`**: only annotated functions are checked (the bare-compiler default for a loose single file this beta).
+- **`permissive`**: only annotated functions are checked. Opt in per-invocation with `--capabilities-mode=permissive` (works on `run` too) for scratch files.
 
 When writing Kryos for a `kryos new` project, put `@capabilities(...)` on `main` listing what the program needs; leave helpers unannotated. See `docs/10-capabilities.md` for the full model.
+
+**Extern calls are capability-gated too (E0506):** calling a function declared in an `extern { }` block requires the capability of the builtin it backs when the name is `kryos_*` (e.g. `kryos_env_get` needs `process`), and `ffi` for any other extern name (C libraries). Declaring the extern is free; calling it demands authority — there is no FFI bypass around deny-by-default.
 
 ### Sub-capabilities (least-privilege)
 
@@ -236,14 +238,17 @@ Imported with `use std::<module>::{symbol1, symbol2}`. The stdlib ships 66 `.kry
 Line splitting is `use std::string::{split_lines}` (`split_lines(s) -> [str]`, handles `\n` and `\r\n`) — it is a `std::string` function, not a global builtin, so it needs the import.
 
 ```kryos
-use std::json::{json_stringify, json_object, json_string}
+use std::json::{stringify, json_object, json_string}
 
 fn main() {
     // abs / min / max are polymorphic builtins — call them WITHOUT importing.
     println(to_string(abs(-42)))     // works on i64 and f64
     println(to_string(min(3, 8)))
+    println(stringify(json_string("hi")))   // prints "hi" (JSON-quoted)
 }
 ```
+
+> `std::json` gotcha: the JsonValue serializer is **`stringify`** (and `parse`, `pretty_print`, `get`, `set`, `to_str`...), NOT `json_stringify`. The `json_*` names in the module are only the **constructors** (`json_string`, `json_number`, `json_object`, `json_array`, `json_bool`, `json_null`). A separate native handle-based builtin named `json_stringify` exists in the runtime with a DIFFERENT (i64-handle) signature — importing/mixing it with JsonValue values fails with a type mismatch. Use the `std::json` module API end-to-end.
 
 > Note: `abs`, `min`, and `max` are polymorphic builtins (i64 or f64) available without any import. `use std::math::{abs, min, max}` imports **f64-only** versions that shadow the builtins, so `abs(-42)` would then fail to type-check — don't import them unless you specifically want the f64 form. `sqrt`, `pow`, `sin`, `cos` are likewise builtins.
 

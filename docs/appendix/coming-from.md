@@ -51,8 +51,8 @@ Quick reference for developers transitioning to Kryos from Rust, JavaScript, or 
 | `arr.reduce(fn, init)` | `reduce(arr, fn, init)` | Free function |
 | `str.split(",")` | `split(str, ",")` | Free function |
 | `arr.join(",")` | `join(",", arr)` | Free function, delimiter first |
-| `JSON.parse(s)` | `json_parse(s)` | Global function |
-| `JSON.stringify(x)` | `json_stringify(x)` | Global function |
+| `JSON.parse(s)` | `parse(s)` | `use std::json::{parse}` |
+| `JSON.stringify(x)` | `stringify(v)` | `use std::json::{stringify}` |
 | `null` / `undefined` | `none` | Single null type |
 | `true` / `false` | `true` / `false` | Same |
 | `&&` / `\|\|` / `!` | `and` / `or` / `not` | Word operators |
@@ -136,7 +136,7 @@ let result = map([1, 2, 3], double)   // [2, 4, 6]
 ```kryos
 try {
     let data = file_read("config.toml")
-    let config = json_parse(data)
+    let config = parse(data)   // use std::json::{parse}
 } catch e {
     println("Error: " + to_string(e))
 }

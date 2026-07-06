@@ -56,6 +56,7 @@ pub enum TokenKind {
     Parallel,
     Quantum,
     Comptime,
+    Unsafe,
     Match,
     And,
     Or,
@@ -164,6 +165,7 @@ impl TokenKind {
                 | Self::Parallel
                 | Self::Quantum
                 | Self::Comptime
+                | Self::Unsafe
                 | Self::Match
                 | Self::And
                 | Self::Or
@@ -237,6 +239,7 @@ impl fmt::Display for TokenKind {
             Self::Parallel => "'parallel'",
             Self::Quantum => "'quantum'",
             Self::Comptime => "'comptime'",
+            Self::Unsafe => "'unsafe'",
             Self::Match => "'match'",
             Self::And => "'and'",
             Self::Or => "'or'",
@@ -375,6 +378,7 @@ pub fn keyword_lookup(word: &str) -> Option<TokenKind> {
         "parallel" => TokenKind::Parallel,
         "quantum" => TokenKind::Quantum,
         "comptime" => TokenKind::Comptime,
+        "unsafe" => TokenKind::Unsafe,
         "match" => TokenKind::Match,
         "and" => TokenKind::And,
         "or" => TokenKind::Or,

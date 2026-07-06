@@ -12,6 +12,7 @@ extern "C" {
     fn puts(s: i64) -> i64
 }
 
+@capabilities(ffi)
 fn main() {
     println("--- libc FFI smoke test ---")
     let pid = _getpid()

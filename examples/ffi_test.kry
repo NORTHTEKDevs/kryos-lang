@@ -9,6 +9,7 @@ extern "C" {
     fn _getpid() -> i64
 }
 
+@capabilities(ffi)
 fn main() {
     let pid = _getpid()
     println("pid: " + to_string(pid))

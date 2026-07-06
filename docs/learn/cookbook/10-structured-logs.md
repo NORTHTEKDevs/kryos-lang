@@ -85,6 +85,6 @@ kryos run app.log.kry
 ## Things to know
 
 - `split_lines` handles both `\n` and `\r\n` — safe across platforms.
-- `json_parse` on a malformed line returns an empty handle; field reads off it return zero values. For strict mode you'd add an `if json_is_null(rec) { throw "bad line: " + line }` guard.
+- `parse` throws on a malformed line; wrap the call in `try`/`catch` if your input may contain bad lines you want to skip rather than abort on.
 - Counts are kept in `let mut` locals — no need for a `map<str, i64>` for the four well-known levels. For arbitrary user-defined levels, switch to `map<str, i64>` and use `m["new_level"] = (m["new_level"] + 1)`.
 - For 100M-line files this loop is the bottleneck; switch to a buffered iterator if you hit memory pressure (see `std::stream::file_lines`).

@@ -12,16 +12,16 @@ The Kryos standard library ships with every installation. Core builtins are avai
 | [std.string](string.md) | **Implemented** | String manipulation: `upper`, `lower`, `trim`, `split`, `join`, `replace`, `contains`, `starts_with`, `ends_with`, `repeat`, `pad_left`, `pad_right` |
 | [std.math](math.md) | **Implemented** | Extended math: `round`, `log10`, `random`, `pi`, `e` (beyond core `sin`, `cos`, `tan`, `log`, `pow`, `sqrt`, `floor`, `ceil`, `min`, `max`, `abs`) |
 | [std.collections](collections.md) | **Implemented** | Higher-order: `map`, `filter`, `reduce`, `sort`, `reverse`, `zip`, `enumerate`, `find`, `any`, `all`, `flat_map`, `sum`, `count` |
-| [std.map](map.md) | **Implemented** (FFI-backed) | Hash map ops: `map_new`, `map_set`, `map_get`, `map_has`, `map_keys`, `map_values`, `map_remove`, `map_merge` |
-| [std.set](set.md) | **Implemented** | Set ops: `set_new`, `set_add`, `set_remove`, `set_has`, `set_union`, `set_intersection`, `set_difference` |
-| [std.json](json.md) | **Implemented** | JSON: `json_parse`, `json_stringify`, `json_get`, `json_has` |
+| [std.map](map.md) | **Built-in type** | `map<K, V>` needs no import: `m[k]`, `m[k] = v`, `contains(m, k)`, `keys(m)`, `len(m)` |
+| [std.set](set.md) | **Implemented** | Sorted-array set primitives: `insert`, `contains`, `remove`, `lower_bound` (or `Set` from std.collections) |
+| [std.json](json.md) | **Implemented** | JSON: `parse`, `stringify`, `pretty_print`, `get`, `set`, `to_str`/`to_int`/...; constructors `json_string`, `json_object`, ... |
 | [std.io](io.md) | **Implemented** (FFI-backed) | File I/O: `file_read`, `file_write`, `file_append`, `file_exists`, `file_delete`, `dir_list`, `dir_create` |
-| [std.process](process.md) | **Implemented** (FFI-backed) | Process: `exec`, `argc`, `argv`, `args`, subprocess execution |
+| [std.process](process.md) | **Implemented** (FFI-backed) | Process: `env_get`, `env_has`, `exit`, `argc`, `argv`, `args`, `command` (subprocess builder) |
 | [std.net](net.md) | **Implemented** | HTTP client, WebSocket, TCP, URL encoding |
 | [std.crypto](crypto.md) | **Implemented** | SHA-256, SHA-512, MD5, HMAC, Base64, hex, random bytes, UUID |
-| [std.regex](regex.md) | **Implemented** | Regular expressions: `regex_match`, `regex_search`, `regex_find_all`, `regex_replace` |
-| [std.datetime](datetime.md) | **Implemented** | Date/time: `now`, `now_ms`, `now_iso`, `format_date`, `parse_date`, `date_add`, `date_diff` |
-| [std.term](term.md) | **Implemented** (FFI-backed) | Terminal: `term_clear`, `term_write`, `term_move`, `term_size`, `term_color`, `term_read_key`, `term_raw_mode` |
+| [std.regex](regex.md) | **Implemented** | Regular expressions (`std::re`): `compile`, `is_match`, `find`, `find_all`, `replace`, `replace_all`, `split` |
+| [std.datetime](datetime.md) | **Implemented** | Date/time: `now`, `now_utc`, `now_iso`, `timestamp`, `timestamp_millis`, `format_timestamp`, `sleep` |
+| [std.term](term.md) | **Implemented** (FFI-backed) | Terminal: `clear`, `cursor_move`, `size`, `color`, `read_key`, `raw_enable`/`raw_disable`, `draw_box` |
 | std.tensor | **Implemented** (FFI-backed) | N-dimensional tensors: creation, math, reductions, linear algebra, ML ops. See [AI Runtime](../14-ai-runtime.md). |
 | std.stream | **Implemented** (Pure Kryos) | Reactive streams: `map`, `filter`, `take`, `skip`, `reduce`, `collect`. See [AI Runtime](../14-ai-runtime.md). |
 | std.probable | **Implemented** (Pure Kryos) | Confidence-aware values, ensemble methods. See [AI Runtime](../14-ai-runtime.md). |

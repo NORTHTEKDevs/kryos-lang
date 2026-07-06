@@ -118,7 +118,7 @@ This is useful for layered error handling -- handle what you can at the inner le
 
 ```
 try {
-    let result = json_parse("not valid json")
+    let result = parse("not valid json")   // use std::json::{parse}
 } catch e {
     println("Parse failed: " + e)
 }

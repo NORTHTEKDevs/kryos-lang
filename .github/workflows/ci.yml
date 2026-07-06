@@ -125,6 +125,13 @@ jobs:
         # closed by adversarial review so a refactor cannot silently reopen one.
         run: bash tests/inferred_soundness.sh
 
+      - name: Examples gate (root check + fixtures AOT/JIT + showcase)
+        # Type-checks every root example, AOT-compiles + JIT-runs the
+        # regression fixtures, and runs the showcase apps. This gate existed
+        # but was not wired into CI -- the http_api fixture silently rotted
+        # past the deny-by-default flip until a manual run caught it.
+        run: bash tests/run_examples_gate.sh
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload

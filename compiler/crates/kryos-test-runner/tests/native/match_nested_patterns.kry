@@ -1,0 +1,77 @@
+// Nested match patterns: enum-in-enum, tuple-in-enum, literal payloads,
+// multiple arms on the same outer variant, and 3-deep nesting.
+// Regression: nested sub-patterns were silently skipped by the enum-arm
+// binder -- `Wrap(X(v))` bound v to a fresh UNINITIALIZED local (printed 0)
+// and no inner tag was checked, so the wrong inner variant fell into the
+// arm. Also two arms with the same outer tag emitted duplicate switch cases.
+// expect-stdout: deep 7
+// expect-stdout: x7
+// expect-stdout: y9
+// expect-stdout: tup 7
+// expect-stdout: five
+// expect-stdout: other 8
+// expect-stdout: deep3 42
+// expect-stdout: nn 9
+
+enum In { X(i64), Y(i64) }
+enum Out { Wrap(In), Empty }
+enum P2 { P((i64, i64)), Z }
+enum Num { N(i64), NZ }
+enum A3 { L(i64) }
+enum B3 { M(A3) }
+enum C3 { N3(B3) }
+
+use std::option::{Option, Some, None}
+
+fn classify(o: Out) -> str {
+    match o {
+        Wrap(X(v)) => return "x" + to_string(v),
+        Wrap(Y(v)) => return "y" + to_string(v),
+        Empty => return "empty",
+    }
+}
+
+fn main() {
+    // enum-in-enum binding
+    let o = Wrap(X(7))
+    match o {
+        Wrap(X(v)) => println("deep " + to_string(v)),
+        Wrap(Y(v)) => println("wrong"),
+        Empty => println("e"),
+    }
+
+    // two arms on the SAME outer tag, refined by inner variant (fail-chain)
+    println(classify(Wrap(X(7))))
+    println(classify(Wrap(Y(9))))
+
+    // tuple payload destructuring
+    match P((3, 4)) {
+        P((a, b)) => println("tup " + to_string(a + b)),
+        Z => println("z"),
+    }
+
+    // literal payload refinement: N(5) arm must NOT swallow N(8)
+    match N(5) {
+        N(5) => println("five"),
+        N(v) => println("other " + to_string(v)),
+        NZ => println("nz"),
+    }
+    match N(8) {
+        N(5) => println("five"),
+        N(v) => println("other " + to_string(v)),
+        NZ => println("nz"),
+    }
+
+    // three-deep nesting
+    match N3(M(L(42))) {
+        N3(M(L(v))) => println("deep3 " + to_string(v)),
+    }
+
+    // nested GENERIC std enums (previously an AOT build failure)
+    let oo: Option<Option<i64>> = Some(Some(9))
+    match oo {
+        Some(Some(v)) => println("nn " + to_string(v)),
+        Some(None()) => println("sn"),
+        None() => println("n"),
+    }
+}

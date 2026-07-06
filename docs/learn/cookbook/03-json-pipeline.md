@@ -74,8 +74,8 @@ cat admins.json
 
 ## What this teaches
 
-- **`json_parse`** returns an opaque handle; field accessors (`json_string_field`, `json_int_field`, `json_array_get`, `json_array_len`) operate on it.
-- **No silent type coercion** — calling `json_int_field` on a non-integer field is an error, not a sloppy implicit cast.
+- **`parse`** returns a `JsonValue` tree; access object fields with `get(val, key)`, extract native values with `to_str`/`to_int`/`to_float`, and use `to_array`/`length` for arrays.
+- **No silent type coercion** — calling `to_int` on a non-integer field is an error, not a sloppy implicit cast.
 - **Streaming filter + collect** is the canonical shape of these scripts.
 
 ## Variations to try

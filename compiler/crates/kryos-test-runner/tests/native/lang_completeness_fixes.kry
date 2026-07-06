@@ -1,0 +1,39 @@
+// Regression bundle for the language-completion sweep:
+// 1. Inclusive ranges `0..=n` include the end (was silently exclusive).
+// 2. `keys(m)` returns a real iterable array (was typed as a bare i64
+//    handle, so `for k in keys(m)` looped zero times, silently).
+// 3. `unsafe { ... }` blocks parse (statement AND value position).
+// 4. A block expression used as a value works on AOT (was `store void`).
+// expect-stdout: incl 15
+// expect-stdout: excl 10
+// expect-stdout: keysum 3
+// expect-stdout: in unsafe
+// expect-stdout: uval 42
+// expect-stdout: bval 7
+
+fn main() {
+    // 1. inclusive vs exclusive ranges
+    let mut si = 0
+    for i in 0..=5 { si = si + i }
+    println("incl " + to_string(si))
+    let mut se = 0
+    for i in 0..5 { se = se + i }
+    println("excl " + to_string(se))
+
+    // 2. map key iteration
+    let mut m: map<str, i64> = {}
+    m["a"] = 1
+    m["b"] = 2
+    let mut ks = 0
+    for k in keys(m) { ks = ks + m[k] }
+    println("keysum " + to_string(ks))
+
+    // 3. unsafe block as a statement
+    unsafe { println("in unsafe") }
+
+    // 3b + 4. unsafe / plain block expressions as values
+    let u = unsafe { 40 + 2 }
+    println("uval " + to_string(u))
+    let b = { 3 + 4 }
+    println("bval " + to_string(b))
+}

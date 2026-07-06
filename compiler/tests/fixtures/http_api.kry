@@ -126,6 +126,7 @@ fn make_handle_count(tasks: [Task]) -> fn(Request) -> Response {
 
 // ---- main -------------------------------------------------------------------
 
+@capabilities(net)
 fn main() {
     let mut tasks: [Task] = []
     let mut next_id = 1

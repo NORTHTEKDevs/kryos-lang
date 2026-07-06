@@ -4,9 +4,63 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0-beta.6] — 2026-07-05 — "Enum path syntax + `run` capability modes"
+## [1.0.0-beta.6] — 2026-07-06 — "Language completeness sweep"
+
+A systematic 120+-probe audit of every language surface (JIT vs AOT), followed
+by fixes for every real defect it found. Silent-wrong-behavior bugs — the worst
+class for a public language — dominated the findings.
 
 ### Fixed
+- **Nested match patterns now destructure and refine correctly** on both
+  backends: enum-in-enum (`Wrap(X(v))`), nested generic std enums
+  (`Some(Some(v))` — previously an AOT build failure), tuple payloads
+  (`P((a, b))`), literal payloads (`N(5)` vs `N(v)`), multiple arms on the
+  same outer variant, and arbitrary nesting depth (`N3(M(L(v)))`).
+  Previously nested sub-patterns were silently skipped: their names bound
+  fresh UNINITIALIZED locals (matching bound 0/garbage) and no inner tag was
+  checked, so the wrong inner variant fell into the arm. Arms sharing an
+  outer variant also emitted duplicate switch cases. A refuted nested
+  pattern with no other matching arm now panics with a clear message
+  ("match: no arm matched"), like other runtime faults. Regression:
+  `tests/native/match_nested_patterns.kry`.
+- **Inclusive ranges include their end.** `for i in 0..=5` iterated as
+  `0..5` (the parser recorded inclusivity; lowering dropped it) — silently
+  wrong sums on both backends.
+- **`keys(m)` / `map_keys` are iterable.** They were typed as a bare i64
+  handle in MIR, so `for k in keys(m)` missed the array-iteration path and
+  looped ZERO times, silently.
+- **Extern-call capability bypass closed (soundness).** Declaring
+  `extern { fn kryos_env_get(...) }` and calling it from unannotated code
+  passed every capability mode — a deny-by-default escape hatch. Calls to
+  extern-declared functions are now gated (E0506): `kryos_*` names require
+  the same capability as the builtin they back (`kryos_env_get` ->
+  `process`); any other extern name requires `ffi`; the requirement
+  propagates through inferred-mode fixpoint inference and applies in value
+  position too. `examples/ffi_test.kry` / `ffi_libc.kry` now declare
+  `@capabilities(ffi)`.
+- **`unsafe { ... }` blocks parse** (statement and value position). The
+  reference documented them (§10, keyword list, E0500) but the keyword did
+  not exist in the lexer. Semantically transparent for now; E0500
+  enforcement is a future stdlib-wide migration.
+- **Block expressions work as values on AOT.** `let x = { 40 + 2 }` (and the
+  `unsafe { ... }` form) hit a `store void` LLVM error — the block's type
+  fell to the Void catch-all in MIR type inference.
+- **Bare nullary enum variants resolve in value position.**
+  `Cons(1, Cons(2, Nil))` rejected only the `Nil` (E0102) while the
+  with-args constructor resolved fine, forcing recursive/tree enums to
+  qualify every leaf. Bare nullary now resolves by unambiguous variant
+  name, mirroring the with-args path. Regression:
+  `tests/native/enum_bare_nullary.kry`.
+- **Docs: 44 phantom API references corrected.** The two stdlib index pages
+  promised functions that do not exist (`json_parse`/`json_stringify`,
+  `map_new`/`map_set`, `set_new`/`set_add`, `regex_match`, `term_clear`,
+  `date_add`, ...) — every stdlib line now matches the real module exports.
+  The "there is no `::` operator" claim was also stale.
+- **CI now runs the examples gate** (root check + fixture AOT/JIT +
+  showcase). It existed but was not wired in; the `http_api` fixture had
+  silently rotted past the deny-by-default flip (now annotated).
+
+### Fixed (earlier in this release)
 - **`Enum::Variant` (Rust-style `::` path) now constructs enum values correctly
   on both backends.** Previously `Opt::Some(7)` mis-lowered to a call of the
   nonexistent function `Opt__Some` (unresolved-symbol link error on the JIT, a

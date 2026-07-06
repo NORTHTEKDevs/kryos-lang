@@ -701,13 +701,16 @@ pub fn lower_module_with_lambda_params(
         ("char_from", MirType::Str),
         ("int", MirType::I64),
         ("float", MirType::F64),
-        ("keys", MirType::I64), // returns array handle
+        // keys/map_keys return a real array (of key handles). Typing them as a
+        // bare I64 handle made `for k in keys(m)` miss the array-iteration path
+        // entirely -- the loop ran zero times, silently.
+        ("keys", MirType::Array(Box::new(MirType::Str), None)),
         ("map_has", MirType::Bool),
         ("map_has_str", MirType::Bool),
         ("map_delete", MirType::I64),
         ("map_delete_str", MirType::I64),
-        ("map_keys", MirType::I64), // returns array handle
-        ("map_keys_str", MirType::I64),
+        ("map_keys", MirType::Array(Box::new(MirType::Str), None)),
+        ("map_keys_str", MirType::Array(Box::new(MirType::Str), None)),
         ("sleep_ms", MirType::Void),
         ("buf_new", MirType::I64),
         ("buf_write_byte", MirType::Void),
@@ -3013,14 +3016,20 @@ fn lower_for(
     if let ast::Expr::FnCall { callee, args, .. } = iterable {
         if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
             if name == "range" && args.len() == 2 {
-                lower_for_range(ctx, pattern, &args[0], &args[1], body);
+                lower_for_range(ctx, pattern, &args[0], &args[1], body, false);
                 return;
             }
         }
     }
 
     // Check if the iterable is a range expression (start..end or start..=end).
-    if let ast::Expr::RangeExpr { start, end, .. } = iterable {
+    if let ast::Expr::RangeExpr {
+        start,
+        end,
+        inclusive,
+        ..
+    } = iterable
+    {
         // Use 0 as default start and i64::MAX as default end for open ranges.
         let default_start = ast::Expr::IntLiteral {
             value: 0,
@@ -3032,7 +3041,7 @@ fn lower_for(
         };
         let s = start.as_deref().unwrap_or(&default_start);
         let e = end.as_deref().unwrap_or(&default_end);
-        lower_for_range(ctx, pattern, s, e, body);
+        lower_for_range(ctx, pattern, s, e, body, *inclusive);
         return;
     }
 
@@ -3161,6 +3170,7 @@ fn lower_for_range(
     start_expr: &ast::Expr,
     end_expr: &ast::Expr,
     body: &ast::Block,
+    inclusive: bool,
 ) {
     // Lower start and end bounds.
     let start_op = lower_expr_to_operand(ctx, start_expr);
@@ -3188,12 +3198,14 @@ fn lower_for_range(
     // Jump to header.
     ctx.finish_block(Terminator::Goto(header_bb), header_bb);
 
-    // Header: _idx < end
+    // Header: `_idx < end` (exclusive `..`) or `_idx <= end` (inclusive `..=`).
+    // The parser records the `..=` form in RangeExpr.inclusive; dropping it
+    // here made `for i in 0..=5` iterate as 0..5 -- silently wrong sums.
     let cond_temp = ctx.alloc_temp(MirType::Bool);
     ctx.emit(Instruction::Assign {
         dest: cond_temp,
         value: RValue::BinOp {
-            op: MirBinOp::Lt,
+            op: if inclusive { MirBinOp::LtEq } else { MirBinOp::Lt },
             left: Operand::Local(idx_local),
             right: Operand::Local(end_local),
         },
@@ -4000,6 +4012,218 @@ fn lower_match_sequential(
     Operand::Local(result_local)
 }
 
+/// True when a sub-pattern inside an enum-variant pattern can FAIL to match
+/// (so the arm needs a runtime refinement check, not just payload bindings).
+fn is_refutable_subpattern(pat: &ast::Pattern) -> bool {
+    match pat {
+        ast::Pattern::Literal { .. } => true,
+        // A nested variant pattern refines which inner variant matches.
+        ast::Pattern::Enum { .. } => true,
+        ast::Pattern::Tuple { elements, .. } => elements.iter().any(is_refutable_subpattern),
+        _ => false,
+    }
+}
+
+/// Recursively destructure `value_op` (of MIR type `value_ty`) against `pat`,
+/// emitting payload/field extractions for bindings and refinement checks
+/// (inner enum tags, literal equality) that branch to `fail_bb` on mismatch.
+///
+/// This is what makes NESTED match patterns work: `Wrap(X(v))`, `Some(Some(v))`,
+/// `P((a, b))`, `Some(5)`. Previously only top-level `Ident` sub-patterns were
+/// bound; nested patterns were silently skipped, so their names resolved to
+/// fresh UNINITIALIZED locals (binding 0/garbage) and no inner tag was checked.
+fn lower_refutable_bind(
+    ctx: &mut LoweringContext,
+    value_op: Operand,
+    value_ty: &MirType,
+    pat: &ast::Pattern,
+    fail_bb: BlockId,
+) {
+    match pat {
+        ast::Pattern::Wildcard { .. } => {}
+        ast::Pattern::Ident { name, .. } => {
+            let local = ctx.alloc_local(Some(name.clone()), value_ty.clone(), false);
+            // Extracted views alias the subject's payload; scope cleanup must
+            // not drop them (mirrors the top-level Ident binding path).
+            if !is_copy_type(ctx, value_ty) {
+                ctx.dropped_locals.insert(local.0);
+            }
+            ctx.emit(Instruction::Assign {
+                dest: local,
+                value: RValue::Use(value_op),
+            });
+        }
+        ast::Pattern::Literal { expr, .. } => {
+            let lit = match expr.as_ref() {
+                ast::Expr::IntLiteral { value, .. } => Some(Constant::Int(*value)),
+                ast::Expr::BoolLiteral { value, .. } => Some(Constant::Bool(*value)),
+                ast::Expr::FloatLiteral { value, .. } => Some(Constant::Float(*value)),
+                ast::Expr::StringLiteral { value, .. } => Some(Constant::Str(value.clone())),
+                _ => None,
+            };
+            if let Some(c) = lit {
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: value_op,
+                        right: Operand::Constant(c),
+                    },
+                });
+                let cont = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(cmp),
+                        then_block: cont,
+                        else_block: fail_bb,
+                    },
+                    cont,
+                );
+            }
+        }
+        ast::Pattern::Enum {
+            name,
+            variant,
+            fields,
+            ..
+        } => {
+            // Resolve the enum def: prefer the value's (possibly monomorphized)
+            // type name, then the pattern's explicit name.
+            let ty_name = match value_ty {
+                MirType::Enum(n) => Some(n.clone()),
+                _ => None,
+            };
+            let resolved = ty_name
+                .clone()
+                .filter(|n| ctx.enum_defs.contains_key(n.as_str()))
+                .or_else(|| {
+                    if !name.is_empty() && ctx.enum_defs.contains_key(name.as_str()) {
+                        Some(name.clone())
+                    } else {
+                        None
+                    }
+                });
+            let Some(resolved) = resolved else { return };
+            let Some(idx) = ctx
+                .enum_defs
+                .get(resolved.as_str())
+                .and_then(|vs| vs.iter().position(|v| v.name == *variant))
+            else {
+                return;
+            };
+            // Inner tag refinement.
+            let tag = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: tag,
+                value: RValue::EnumTag {
+                    operand: value_op.clone(),
+                },
+            });
+            let cmp = ctx.alloc_temp(MirType::Bool);
+            ctx.emit(Instruction::Assign {
+                dest: cmp,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: Operand::Local(tag),
+                    right: Operand::Constant(Constant::Int(idx as i64)),
+                },
+            });
+            let cont = ctx.alloc_block();
+            ctx.finish_block(
+                Terminator::Branch {
+                    cond: Operand::Local(cmp),
+                    then_block: cont,
+                    else_block: fail_bb,
+                },
+                cont,
+            );
+            // Extract + recurse into each payload field.
+            for (field_idx, fpat) in fields.iter().enumerate() {
+                if matches!(fpat, ast::Pattern::Wildcard { .. }) {
+                    continue;
+                }
+                let field_type = ctx
+                    .enum_defs
+                    .get(resolved.as_str())
+                    .and_then(|vs| vs.get(idx))
+                    .and_then(|v| v.fields.get(field_idx))
+                    .cloned()
+                    .unwrap_or(MirType::I64);
+                // Recover enum-typed payloads recorded as Struct(name) (see the
+                // identical recovery in the top-level binding path).
+                let field_type = match field_type {
+                    MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
+                    other => other,
+                };
+                let dest = if let ast::Pattern::Ident { name: bn, .. } = fpat {
+                    let l = ctx.alloc_local(Some(bn.clone()), field_type.clone(), false);
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(l.0);
+                    }
+                    l
+                } else {
+                    let t = ctx.alloc_temp(field_type.clone());
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(t.0);
+                    }
+                    t
+                };
+                ctx.emit(Instruction::Assign {
+                    dest,
+                    value: RValue::EnumPayload {
+                        operand: value_op.clone(),
+                        enum_name: resolved.clone(),
+                        variant_idx: idx as u32,
+                        field_idx: field_idx as u32,
+                    },
+                });
+                if !matches!(fpat, ast::Pattern::Ident { .. }) {
+                    lower_refutable_bind(ctx, Operand::Local(dest), &field_type, fpat, fail_bb);
+                }
+            }
+        }
+        ast::Pattern::Tuple { elements, .. } => {
+            let elem_tys = match value_ty {
+                MirType::Tuple(e) => e.clone(),
+                _ => Vec::new(),
+            };
+            for (elem_idx, epat) in elements.iter().enumerate() {
+                if matches!(epat, ast::Pattern::Wildcard { .. }) {
+                    continue;
+                }
+                let ety = elem_tys.get(elem_idx).cloned().unwrap_or(MirType::I64);
+                let dest = if let ast::Pattern::Ident { name: bn, .. } = epat {
+                    let l = ctx.alloc_local(Some(bn.clone()), ety.clone(), false);
+                    if !is_copy_type(ctx, &ety) {
+                        ctx.dropped_locals.insert(l.0);
+                    }
+                    l
+                } else {
+                    let t = ctx.alloc_temp(ety.clone());
+                    if !is_copy_type(ctx, &ety) {
+                        ctx.dropped_locals.insert(t.0);
+                    }
+                    t
+                };
+                ctx.emit(Instruction::Assign {
+                    dest,
+                    value: RValue::Field {
+                        object: value_op.clone(),
+                        field: elem_idx.to_string(),
+                    },
+                });
+                if !matches!(epat, ast::Pattern::Ident { .. }) {
+                    lower_refutable_bind(ctx, Operand::Local(dest), &ety, epat, fail_bb);
+                }
+            }
+        }
+        // Or / Struct sub-patterns: unsupported in nested position (kept at
+        // today's bind-nothing behavior; the checker constrains these).
+        _ => {}
+    }
+}
+
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     let subj_op = lower_expr_to_operand(ctx, subject);
     // Infer the result type from the first arm's body expression.
@@ -4137,7 +4361,13 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 };
                 if let Some(variants) = ctx.enum_defs.get(resolved_name.as_str()) {
                     if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
-                        targets.push((idx as i64, arm_bb));
+                        // One switch case per tag: a second arm with the same
+                        // outer variant (e.g. `Wrap(X(v))` then `Wrap(Y(w))`)
+                        // is reached via the refinement fail-chain, not a
+                        // duplicate switch entry (which is invalid in codegen).
+                        if !targets.iter().any(|(t, _)| *t == idx as i64) {
+                            targets.push((idx as i64, arm_bb));
+                        }
                         enum_for_exhaustiveness = Some(resolved_name.clone());
                         arm_blocks.push((
                             arm_bb,
@@ -4179,7 +4409,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 if let Some(ref enum_name) = subj_enum_name {
                     if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
                         if let Some(idx) = variants.iter().position(|v| v.name == *name) {
-                            targets.push((idx as i64, arm_bb));
+                            if !targets.iter().any(|(t, _)| *t == idx as i64) {
+                                targets.push((idx as i64, arm_bb));
+                            }
                             arm_blocks.push((arm_bb, &arm.body, None, None));
                             matched = true;
                         }
@@ -4296,6 +4528,34 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         .map(|(bb, _)| bb)
         .or(unreachable_default)
         .unwrap_or(merge_bb);
+
+    // Fail targets for arms with REFUTABLE sub-patterns (nested variants,
+    // literal payloads, tuple payloads with literals). A refuted refinement
+    // falls to the next arm with the same outer tag, else the default arm,
+    // else a synthetic no-match block. It must never fall to the switch's
+    // unreachable-default: outer-tag exhaustiveness does not make nested
+    // refinements exhaustive.
+    let mut refut_nomatch_block: Option<BlockId> = None;
+    let mut arm_fail_targets: Vec<Option<BlockId>> = vec![None; arm_blocks.len()];
+    for i in 0..arm_blocks.len() {
+        let Some(eb) = &arm_blocks[i].2 else { continue };
+        if !eb.field_patterns.iter().any(is_refutable_subpattern) {
+            continue;
+        }
+        let mut fail = None;
+        for arm_j in arm_blocks.iter().skip(i + 1) {
+            if let Some(eb2) = &arm_j.2 {
+                if eb2.enum_name == eb.enum_name && eb2.variant_idx == eb.variant_idx {
+                    fail = Some(arm_j.0);
+                    break;
+                }
+            }
+        }
+        let fail = fail.or_else(|| default_arm.map(|(db, _)| db)).unwrap_or_else(|| {
+            *refut_nomatch_block.get_or_insert_with(|| ctx.alloc_block())
+        });
+        arm_fail_targets[i] = Some(fail);
+    }
 
     // Emit terminator: string patterns use an equality-comparison chain
     // (strings can't go through integer Switch), integer patterns use Switch.
@@ -4494,47 +4754,71 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 _ => binding.enum_name.clone(),
             };
             for (field_idx, pat) in binding.field_patterns.iter().enumerate() {
-                if let ast::Pattern::Ident { name, .. } = pat {
-                    // Look up the actual field type from enum_defs so
-                    // the local has the correct type (e.g. f64 not i64).
-                    let field_type = ctx
-                        .enum_defs
-                        .get(subj_enum_name.as_str())
-                        .or_else(|| ctx.enum_defs.get(binding.enum_name.as_str()))
-                        .and_then(|variants| variants.get(binding.variant_idx as usize))
-                        .and_then(|variant| variant.fields.get(field_idx))
-                        .cloned()
-                        .unwrap_or(MirType::I64);
-                    // lower_type_expr maps every non-builtin named type to
-                    // Struct(name) (it has no context to know which names are
-                    // enums), so a variant whose payload is itself an enum --
-                    // e.g. `Move.Go(Dir)` -- records the field as Struct("Dir").
-                    // Recover the real Enum type here, else the binding `d` is
-                    // typed Struct and a following `match d { Up => .. }` is not
-                    // detected as an enum match: it silently falls through to the
-                    // first arm (and AOT crashes when `d` is passed onward).
-                    // Layout is identical ({i64, ..}); only the type label changes.
-                    let field_type = match field_type {
-                        MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
-                        other => other,
-                    };
+                if matches!(pat, ast::Pattern::Wildcard { .. }) {
+                    continue;
+                }
+                // Look up the actual field type from enum_defs so
+                // the local has the correct type (e.g. f64 not i64).
+                let field_type = ctx
+                    .enum_defs
+                    .get(subj_enum_name.as_str())
+                    .or_else(|| ctx.enum_defs.get(binding.enum_name.as_str()))
+                    .and_then(|variants| variants.get(binding.variant_idx as usize))
+                    .and_then(|variant| variant.fields.get(field_idx))
+                    .cloned()
+                    .unwrap_or(MirType::I64);
+                // lower_type_expr maps every non-builtin named type to
+                // Struct(name) (it has no context to know which names are
+                // enums), so a variant whose payload is itself an enum --
+                // e.g. `Move.Go(Dir)` -- records the field as Struct("Dir").
+                // Recover the real Enum type here, else the binding `d` is
+                // typed Struct and a following `match d { Up => .. }` is not
+                // detected as an enum match: it silently falls through to the
+                // first arm (and AOT crashes when `d` is passed onward).
+                // Layout is identical ({i64, ..}); only the type label changes.
+                let field_type = match field_type {
+                    MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
+                    other => other,
+                };
+                let dest = if let ast::Pattern::Ident { name, .. } = pat {
                     let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), false);
                     // Pre-mark non-copy payload bindings as consumed: they will be
                     // moved into the arm result, not dropped by scope cleanup.
                     if !is_copy_type(ctx, &field_type) {
                         ctx.dropped_locals.insert(local.0);
                     }
-                    ctx.emit(Instruction::Assign {
-                        dest: local,
-                        value: RValue::EnumPayload {
-                            operand: subj_op.clone(),
-                            enum_name: binding.enum_name.clone(),
-                            variant_idx: binding.variant_idx,
-                            field_idx: field_idx as u32,
-                        },
-                    });
+                    local
+                } else {
+                    // Nested pattern (enum / tuple / literal): extract the
+                    // payload into a temp, then recursively refine + bind.
+                    let t = ctx.alloc_temp(field_type.clone());
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(t.0);
+                    }
+                    t
+                };
+                ctx.emit(Instruction::Assign {
+                    dest,
+                    value: RValue::EnumPayload {
+                        operand: subj_op.clone(),
+                        enum_name: binding.enum_name.clone(),
+                        variant_idx: binding.variant_idx,
+                        field_idx: field_idx as u32,
+                    },
+                });
+                if !matches!(pat, ast::Pattern::Ident { .. }) {
+                    // Fail target: next same-tag arm / default / synthetic
+                    // no-match (computed above; present whenever the arm has
+                    // a refutable sub-pattern).
+                    let fail_bb = arm_fail_targets[i].unwrap_or(merge_bb);
+                    lower_refutable_bind(
+                        ctx,
+                        Operand::Local(dest),
+                        &field_type,
+                        pat,
+                        fail_bb,
+                    );
                 }
-                // Wildcard patterns — skip, no binding needed.
             }
         }
 
@@ -4583,6 +4867,26 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         ctx.emit(Instruction::Assign {
             dest: result_local,
             value: arm_rvalue,
+        });
+        ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+    }
+
+    // Synthetic no-match block for refuted NESTED patterns with no other
+    // same-tag arm and no default: semantically a non-exhaustive-match miss,
+    // so panic at runtime (like division by zero). Deliberately does NOT
+    // touch result_local: when every arm returns, merge is unreachable and a
+    // store here would reference an alloca the LLVM backend never emits.
+    if let Some(nm_bb) = refut_nomatch_block {
+        ctx.current_block = nm_bb;
+        let sink = ctx.alloc_temp(MirType::Void);
+        ctx.emit(Instruction::Assign {
+            dest: sink,
+            value: RValue::Call {
+                func: "panic".to_string(),
+                args: vec![Operand::Constant(Constant::Str(
+                    "match: no arm matched (nested pattern refuted)".to_string(),
+                ))],
+            },
         });
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
     }
@@ -5188,6 +5492,24 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 })
                 .unwrap_or(MirType::I64)
+        }
+
+        ast::Expr::Block { block, .. } => {
+            // A block expression's value is its last expression. Falling to
+            // the Void catch-all typed `let x = { 40 + 2 }` (and the
+            // `unsafe { ... }` form, which parses to Block) as a void slot --
+            // a `store void` codegen error on AOT.
+            block
+                .stmts
+                .last()
+                .and_then(|s| {
+                    if let ast::Stmt::Expr { expr, .. } = s {
+                        Some(infer_expr_type(ctx, expr))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(MirType::Void)
         }
 
         _ => MirType::Void,

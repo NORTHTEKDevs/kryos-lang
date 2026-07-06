@@ -1,0 +1,55 @@
+// Bare (unqualified) NULLARY enum variants in value position.
+// Regression: `Cons(1, Nil)` used to reject only the `Nil` (E0102 undefined
+// variable) while the with-args `Cons(...)` resolved fine -- an inconsistency
+// that forced recursive/tree enums to qualify every leaf (`List::Nil`).
+// Bare nullary now resolves by unambiguous variant name, mirroring the
+// with-args constructor path. Qualified forms (`List::Nil`, `List.Nil`)
+// continue to work.
+// expect-stdout: sum 6
+// expect-stdout: count 2
+// expect-stdout: bee
+// expect-stdout: drain 3 2 1
+
+enum List { Cons(i64, List), Nil }
+enum Tree { Node(i64, Tree, Tree), Leaf }
+enum E { A(i64), B }
+enum Step { More(i64), Done }
+
+fn sum(l: List) -> i64 {
+    match l { Cons(h, t) => return h + sum(t), Nil => return 0 }
+}
+
+fn count(t: Tree) -> i64 {
+    match t { Node(v, l, r) => return 1 + count(l) + count(r), Leaf => return 0 }
+}
+
+fn describe(e: E) -> str {
+    match e { A(v) => return "a", B => return "bee" }
+}
+
+fn take(n: i64) -> Step {
+    if n > 0 { return More(n) }
+    return Done
+}
+
+fn main() {
+    // bare nullary as recursive-enum leaf
+    let l = Cons(1, Cons(2, Cons(3, Nil)))
+    println("sum " + to_string(sum(l)))
+
+    // bare nullary in a tree
+    let t = Node(1, Node(2, Leaf, Leaf), Leaf)
+    println("count " + to_string(count(t)))
+
+    // bare nullary as a function argument
+    println(describe(B))
+
+    // bare nullary returned from a fn + while-let drain
+    let mut i = 3
+    let mut out = "drain"
+    while let More(v) = take(i) {
+        out = out + " " + to_string(v)
+        i = i - 1
+    }
+    println(out)
+}

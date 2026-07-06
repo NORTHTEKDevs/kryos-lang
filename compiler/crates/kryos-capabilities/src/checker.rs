@@ -105,6 +105,14 @@ struct CapabilityChecker {
     /// each *unannotated* function's inferred set, so a caller is checked
     /// against what its callee transitively requires.
     fn_capabilities: HashMap<String, CapabilitySet>,
+    /// Every function name declared in an `extern { ... }` block anywhere in
+    /// the module. Calls to these are the raw FFI surface: a `kryos_*` name
+    /// maps to the same semantic capability as its builtin (e.g.
+    /// `kryos_env_get` -> `process`); any other extern name requires `ffi`.
+    /// Without this call-side gate, a user-declared extern block was a
+    /// deny-by-default bypass (declared top-level, called from unannotated
+    /// code, no capability ever demanded).
+    extern_fns: std::collections::HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -115,7 +123,43 @@ impl CapabilityChecker {
             scope_stack: Vec::new(),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
+            extern_fns: std::collections::HashSet::new(),
             mode,
+        }
+    }
+
+    /// The capability a CALL to `name` requires because `name` is an
+    /// extern-declared function. `kryos_*` runtime exports resolve through the
+    /// builtin table (same authority, same capability); unmapped `kryos_*`
+    /// names are runtime plumbing (allocators, pointer helpers) and stay
+    /// ambient; every non-`kryos_` extern (user C libraries) requires `ffi`.
+    fn required_capability_for_extern(&self, name: &str) -> Option<Capability> {
+        if !self.extern_fns.contains(name) {
+            return None;
+        }
+        match name.strip_prefix("kryos_") {
+            Some(stripped) => required_capability_for_builtin(stripped),
+            None => Some(Capability::Ffi),
+        }
+    }
+
+    /// Collect every extern-declared function name (recursing into nested
+    /// declaration containers) so call sites can be gated.
+    fn collect_extern_fns(&mut self, decls: &[Decl]) {
+        for d in decls {
+            match d {
+                Decl::Extern { items, .. } => {
+                    for item in items {
+                        if let Decl::Function { name, .. } = item {
+                            self.extern_fns.insert(name.clone());
+                        }
+                    }
+                }
+                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                    self.collect_extern_fns(methods);
+                }
+                _ => {}
+            }
         }
     }
 
@@ -362,6 +406,12 @@ impl CapabilityChecker {
                     if let Some(cap) = required_capability_for_builtin(&segments[0]) {
                         acc.insert(cap);
                     }
+                    // Extern calls contribute their FFI capability to inference
+                    // so helpers calling raw externs propagate the requirement
+                    // to the boundary (same rule as enforce_callee_name).
+                    if let Some(cap) = self.required_capability_for_extern(&segments[0]) {
+                        acc.insert(cap);
+                    }
                     if let Some(caps) = working.get(&segments[0]) {
                         acc = acc.union(caps);
                     }
@@ -485,6 +535,10 @@ impl CapabilityChecker {
     }
 
     fn check_module(&mut self, module: &Module) {
+        // Pass 0: record every extern-declared function name so call sites
+        // can require the corresponding capability (see extern_fns).
+        self.collect_extern_fns(&module.declarations);
+
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
         self.build_fn_capability_map(&module.declarations);
@@ -1066,6 +1120,26 @@ impl CapabilityChecker {
             }
         }
 
+        // Calls to extern-declared functions are the raw FFI surface — gate
+        // them like the builtin they wrap (`kryos_*`) or on `ffi` (anything
+        // else). Declaring an extern is free; CALLING it demands authority.
+        if let Some(required_cap) = self.required_capability_for_extern(name) {
+            if let Some(caps) = self.current_caps() {
+                if !caps.satisfies_required(&required_cap) {
+                    self.diagnostics.push(
+                        Diagnostic::error(format!(
+                            "extern function `{name}` requires `{required_cap}` capability"
+                        ))
+                        .with_label(call_span, format!("requires `{required_cap}`"))
+                        .with_note(format!(
+                            "add `@capabilities({required_cap})` to the enclosing function or actor"
+                        ))
+                        .with_code(kryos_errors::codes::E0506),
+                    );
+                }
+            }
+        }
+
         if let Some(callee_caps) = self.fn_capabilities.get(name).cloned() {
             if let Some(caller_caps) = self.current_caps() {
                 if !callee_caps.is_subset_of(caller_caps) {
@@ -1102,6 +1176,20 @@ impl CapabilityChecker {
         if let Expr::Identifier { name, .. } = expr {
             if !(self.strict_mode() || self.has_annotated_scope()) {
                 return;
+            }
+            // An extern fn handed out as a value carries its authority too.
+            if let Some(required_cap) = self.required_capability_for_extern(name) {
+                if let Some(caps) = self.current_caps() {
+                    if !caps.satisfies_required(&required_cap) {
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "extern function `{name}` used as a value requires `{required_cap}` capability"
+                            ))
+                            .with_label(span, format!("requires `{required_cap}`"))
+                            .with_code(kryos_errors::codes::E0506),
+                        );
+                    }
+                }
             }
             if let Some(required_cap) = required_capability_for_builtin(name) {
                 if let Some(caps) = self.current_caps() {
