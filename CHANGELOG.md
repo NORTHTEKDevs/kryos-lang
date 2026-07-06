@@ -4,6 +4,76 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.3] — 2026-07-05 — "Deny-by-default"
+
+The capability model — Kryos's defining feature — is now enforced **by
+default**. A loose `kryos run foo.kry` with no flag and no project file rejects
+any undeclared authority (filesystem, network, process, environment, crypto,
+db, terminal) at compile time. You declare a program's authority once on `main`;
+the compiler infers every interior helper and proves nothing exceeds the
+declared boundary.
+
+### Added
+- **Interior capability inference (`inferred` mode).** A third enforcement mode
+  between `permissive` and `strict`: deny-by-default *at the boundary* with
+  interior inference. `main` (and any annotated function) must hold every
+  capability its code transitively uses; helpers need no annotation — their
+  capability set is inferred as a fixpoint over the call graph. Ergonomic *and*
+  safe: the ~15k-line self-host compiler is deny-by-default clean with a single
+  `@capabilities(fs:read, fs:write, process)` on `main`.
+- **`--capabilities-mode=<permissive|inferred|strict>`** on `kryos check` and
+  `kryos build`; **`[capabilities] mode`** in `kryos.toml`. `kryos new` scaffolds
+  `mode = "inferred"`.
+- CI soundness gate (`tests/inferred_soundness.sh`, 16 probes) locking every
+  authority path closed.
+
+### Changed
+- **The global default is now `inferred`** (was `permissive`). Deny-by-default
+  for every `kryos run` / `check` / `build`. Opt out with
+  `--capabilities-mode=permissive` or `[capabilities] mode = "permissive"`.
+- Standard-library authority wrappers are annotated so their capabilities
+  propagate to callers (`std::fs`, `std::process` env, `std::os`, `std::io`
+  file ops, `std::db`); `std::term` corrected from `io` to `term`.
+- `env_get` / `env_set` require `process` (reading the environment can
+  exfiltrate secrets), documented explicitly.
+
+### Fixed (capability soundness — three adversarial review rounds)
+- Authority through **method / static dispatch** (`obj.write()`, `Type::m()`)
+  was never enforced — a hole present since the checker existed (strict mode
+  too). Now gated via call-site propagation.
+- Gated builtins used as **first-class values** — passed as `fn` arguments,
+  bound with `let`, returned, or stored in arrays/structs — no longer smuggle
+  authority past the boundary.
+- Stdlib wrappers reaching authority via raw `kryos_*` externs (`env_get_or`,
+  `env_has`, `create_dir_all`, the `os` platform helpers, `io::File`, `db`
+  cursors) no longer leak — they are annotated.
+- **`sleep(ms)`** slept ~0ms: the i64 millisecond argument was reinterpreted as
+  f64-seconds bits. Now routes to `kryos_sleep_ms`.
+
+### Preview / honest boundaries
+- **Actors remain preview and are rejected at compile time on purpose.** An
+  implementation attempt this release confirmed the actor *runtime* is
+  incomplete — message arguments are not transmitted and handlers do not
+  execute reliably — so a callable constructor would compile to a spawn that
+  silently does nothing. Use `spawn` + channels for message-passing. See
+  docs/09-concurrency.md.
+
+## [1.0.0-beta.2] — 2026-07-04 — "Claims audit + memory model, verified"
+
+### Fixed
+- Memory model: the previously-documented unbounded-RSS growth is closed —
+  flat ~4MB steady state, cross-machine verified and CI-gated (peak <250MB).
+- Async/await documented honestly: the cooperative executor (`coop_spawn` /
+  `coop_run` / `await`) genuinely interleaves tasks on both backends
+  (`A0 B0 A1 B1 A2 B2`), correcting stale "grammar only / synchronous" claims.
+
+### Changed
+- Claims audit: README + docs corrected to measured reality (stdlib module
+  count, crate/LOC counts, self-host 16/16, capability posture). Added
+  `docs/capability-roadmap.md` and `docs/HOW_THIS_WAS_BUILT.md`.
+- Actors reframed as preview (parsing + lowering present; constructor not
+  callable) rather than advertised as a ready concurrency primitive.
+
 ## [1.0.0-beta.1] — 2026-07-01 — "Honest renumber + honest benchmarks"
 
 ### Added (launch hardening, 2026-06-28 → 07-01)

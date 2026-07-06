@@ -577,7 +577,7 @@ for details.
 
 ## 13. Conformance checklist
 
-What "implemented" means in 1.0.0-beta.2:
+What "implemented" means in 1.0.0-beta.3:
 
 | Feature                     | Status              |
 | --------------------------- | ------------------- |

@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-07-04 (v1.0.0-beta.2).
+Last updated: 2026-07-05 (v1.0.0-beta.3).
 
 ---
 
@@ -65,7 +65,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0-beta.2)
+## 4. Current pass rates (v1.0.0-beta.3)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
@@ -82,10 +82,10 @@ failures (`test_generics`, `test_process`, `test_match_return`,
 
 ---
 
-## 5. Known limitations (v1.0.0-beta.2)
+## 5. Known limitations (v1.0.0-beta.3)
 
 There are no architectural failures in the release-gating sweep at
-v1.0.0-beta.2. The v2.1 "known limitations" listed below were all closed in
+v1.0.0-beta.3. The v2.1 "known limitations" listed below were all closed in
 v2.2 and are kept here as historical context.
 
 ### 5.1 (Closed in v2.2) Closures that escape their defining scope
