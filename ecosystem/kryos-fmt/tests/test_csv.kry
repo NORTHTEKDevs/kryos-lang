@@ -66,6 +66,7 @@ fn test_to_csv_rows() {
     assert(to_csv(rows) == "a,b\n1,2\n", "to_csv joins rows")
 }
 
+@capabilities(compute)
 fn main() {
     test_parse_simple()
     println("PASS test_parse_simple")

@@ -61,6 +61,7 @@ fn test_round_trip_value_json_value() {
     assert(as_str(table_get(back, "b")) == "x", "round-trip b")
 }
 
+@capabilities(compute)
 fn main() {
     test_scalar_bridge()
     println("PASS test_scalar_bridge")

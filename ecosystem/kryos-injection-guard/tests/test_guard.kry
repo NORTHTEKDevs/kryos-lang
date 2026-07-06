@@ -175,6 +175,7 @@ fn test_injection_hits_dedup_and_count() {
 
 // ---- main driver (also run by `kryos run tests/test_guard.kry`) ----------
 
+@capabilities(compute)
 fn main() {
     test_net_request_flagged_when_declared_io()
     println("PASS test_net_request_flagged_when_declared_io")

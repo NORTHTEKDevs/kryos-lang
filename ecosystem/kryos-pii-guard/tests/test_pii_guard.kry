@@ -169,6 +169,7 @@ fn test_card_grouped_spaces() {
 
 // ---- main -------------------------------------------------------------------
 
+@capabilities(compute)
 fn main() {
     // Spec tests
     test_ssn_detected()

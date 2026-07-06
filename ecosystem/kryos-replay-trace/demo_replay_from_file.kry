@@ -13,6 +13,7 @@
 use tape::{Tape, load_tape, tape_len, tape_capabilities, caps_render, hash_args}
 use replay::{RepState, replay_start, rep_file_read, replay_tape}
 
+@capabilities(io)
 fn main() {
     let path = "ecosystem/kryos-replay-trace/fixtures/incident_tape.json"
     let t = load_tape(path)

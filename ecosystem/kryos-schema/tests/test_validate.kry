@@ -204,6 +204,7 @@ fn test_optional_present_is_validated() {
     assert(has_err(es, "tags[0]"), "optional-but-present array element validated")
 }
 
+@capabilities(compute)
 fn main() {
     // Allow `kryos run tests/test_validate.kry` to exercise the suite too.
     test_string_ok()

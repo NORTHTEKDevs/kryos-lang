@@ -70,6 +70,7 @@ fn test_missing_sidecar_yields_empty_tag() {
     assert(not has(line, "cap_tag"), "empty tag omits the member")
 }
 
+@capabilities(fs:write, io)
 fn main() {
     test_info_serializes_to_json_line()
     println("PASS test_info_serializes_to_json_line")

@@ -116,6 +116,7 @@ fn test_read_manifest_roundtrip() {
     assert(len(missing) == 0, "missing manifest -> empty declared set")
 }
 
+@capabilities(fs:write, io)
 fn main() {
     test_honest_within_declared()
     println("PASS test_honest_within_declared")

@@ -262,6 +262,7 @@ fn test_cap_tag_parts_roundtrip() {
     assert(len(empty) == 0, "empty tag -> no parts")
 }
 
+@capabilities(fs:write, io, process)
 fn main() {
     test_empty_tracer()
     println("PASS test_empty_tracer")

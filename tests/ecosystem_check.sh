@@ -16,7 +16,9 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 EXCLUDE='kryos-capi/fixtures/mislabel_compute.kry
 kryos-llm-router/fixtures/leaky_route.kry
 kryos-resilient-llm/fixtures/leaky_io.kry
-kryos-embed/agent/neg_control.kry'
+kryos-embed/agent/neg_control.kry
+kryos-secrets/tests/fixtures/leak_compute.kry
+kryos-typed-config/tests/fixtures/leak_config.kry'
 
 is_excluded() {
   local f="$1"
@@ -33,17 +35,15 @@ for pkg in ecosystem/*/ packages/*/; do
     rel="${f#"$pkg"}"
     is_excluded "$f" && continue
     total=$((total+1))
-    # This gate verifies the ecosystem packages TYPE-CHECK (compile), not their
-    # capability hygiene, so it pins --capabilities-mode=permissive rather than
-    # the compiler default (now inferred). Migrating the ~132 package entry
-    # points to declare their capabilities is tracked separately in
-    # docs/capability-roadmap.md.
-    if ! ( cd "$pkg" && timeout 25 "$KRYOS" check --capabilities-mode=permissive "$rel" >/dev/null 2>/tmp/eco_ck.txt ); then
+    # Checked under the compiler default (inferred / deny-by-default): every
+    # ecosystem entry point declares its capabilities on `main`. The intentional
+    # negative fixtures are excluded above.
+    if ! ( cd "$pkg" && timeout 25 "$KRYOS" check "$rel" >/dev/null 2>/tmp/eco_ck.txt ); then
       echo "  FAIL  $f"
       grep -m1 "error" /tmp/eco_ck.txt | head -c 160; echo ""
       failed=$((failed+1))
     fi
   done < <(find "$pkg" -name "*.kry" -not -path "*/node_modules/*")
 done
-echo "ecosystem-check: $((total-failed))/$total clean ($failed failed, 4 negative fixtures excluded by design)"
+echo "ecosystem-check: $((total-failed))/$total clean ($failed failed, 6 negative fixtures excluded by design)"
 [ "$failed" -eq 0 ]

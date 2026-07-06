@@ -91,6 +91,7 @@ fn test_pure_program_output() {
     assert(contains(result.stdout, "42"), "pure_program.kry must print 42, got: " + result.stdout)
 }
 
+@capabilities(process)
 fn main() {
     test_io_program_refused_under_pure()
     println("PASS test_io_program_refused_under_pure")

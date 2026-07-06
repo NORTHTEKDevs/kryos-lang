@@ -264,6 +264,7 @@ fn test_io_escape_blocked_at_read() {
     }
 }
 
+@capabilities(fs:write, io, process)
 fn main() {
     // Pure-compute tests (mirrors what kryos test runs).
     test_dotdot_single_rejected()

@@ -74,6 +74,7 @@ fn run_case(label: str, raw: str) {
     println("")
 }
 
+@capabilities(compute)
 fn main() {
     println("== create_user input validation ==")
     println("")

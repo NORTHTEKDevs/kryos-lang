@@ -27,6 +27,7 @@ fn sample() -> Transcript {
     return Transcript { model: "claude-sonnet-4-6", turns: turns }
 }
 
+@capabilities(ffi)
 fn main() {
     let t = sample()
     println("recorded envelope: " + to_string(total_calls(t)) + " call(s) / " + to_string(total_tokens(t)) + " tokens")

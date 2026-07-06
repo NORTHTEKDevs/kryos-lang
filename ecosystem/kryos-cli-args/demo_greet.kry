@@ -117,6 +117,7 @@ fn cmd_whoami() -> i64 {
     return 0
 }
 
+@capabilities(process)
 fn main() {
     let spec_cli = build_cli()
     let argv = args()

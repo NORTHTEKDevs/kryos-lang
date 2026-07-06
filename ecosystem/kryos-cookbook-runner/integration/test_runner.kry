@@ -119,6 +119,7 @@ fn test_no_blocks_exits_zero() {
     assert(contains(result.stdout, "no"), "must report no blocks found")
 }
 
+@capabilities(io, process)
 fn main() {
     test_passing_block_reports_pass()
     println("PASS test_passing_block_reports_pass")

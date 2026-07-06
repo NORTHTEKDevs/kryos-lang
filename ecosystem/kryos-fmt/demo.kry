@@ -59,6 +59,7 @@ fn _yn(b: bool) -> str {
     return "no"
 }
 
+@capabilities(compute)
 fn main() {
     demo_toml()
     demo_yaml()

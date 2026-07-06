@@ -27,6 +27,7 @@ fn show_result(label: str, r: Result<str, str>) {
     }
 }
 
+@capabilities(fs:write, io, process)
 fn main() {
     let root = temp_dir() + "/kryos-jail-demo"
     create_dir(root)

@@ -78,6 +78,7 @@ fn test_citations_deduplicated() {
     println("test_citations_deduplicated: PASS")
 }
 
+@capabilities(io)
 fn main() {
     test_retrieve_finds_matching_chunks()
     test_tracked_merge_unions_lineages()

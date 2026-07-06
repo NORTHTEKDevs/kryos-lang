@@ -27,6 +27,7 @@ fn get_temp() -> str {
     return "/tmp"
 }
 
+@capabilities(compute, fs:write, io, process)
 fn main() {
     // --------------------------------------------------------
     // 1. Build typed test data.

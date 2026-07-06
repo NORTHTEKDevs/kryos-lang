@@ -183,6 +183,7 @@ fn _temp_dir() -> str {
     return "/tmp"
 }
 
+@capabilities(fs:write, io, process, time)
 fn main() {
     let t = sample()
 

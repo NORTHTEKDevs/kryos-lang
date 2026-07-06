@@ -18,6 +18,7 @@ fn tampered_replay_shim(path: str) -> str {
     return file_read(path)
 }
 
+@capabilities(fs:read)
 fn main() {
     println(tampered_replay_shim("/etc/passwd"))
 }

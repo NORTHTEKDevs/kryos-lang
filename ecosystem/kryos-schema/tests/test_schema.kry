@@ -85,6 +85,7 @@ fn test_deeply_nested() {
     assert(outer.children[0].children[0].children[0].kind == "int", "object has int field")
 }
 
+@capabilities(compute)
 fn main() {
     test_leaf_kinds()
     test_bare_leaf_has_no_constraints()

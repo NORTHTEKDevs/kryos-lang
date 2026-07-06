@@ -96,6 +96,7 @@ fn print_row(t: [Span], id: i64) {
     println("  " + pad(label, 26) + " cap=" + pad(s.cap_tag, 6) + " " + own + " " + sub)
 }
 
+@capabilities(fs:write, io, process)
 fn main() {
     println("=== kryos-trace demo: tracing a chat_tools_governed loop ===")
     println("")

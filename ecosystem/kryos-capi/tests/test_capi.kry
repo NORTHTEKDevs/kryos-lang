@@ -73,6 +73,7 @@ fn test_bind_policy() {
     assert(is_subset_of(symbol_caps(caps, "csv_to_json_file"), allow_io), "json_file binds under compute+io")
 }
 
+@capabilities(fs:read)
 fn main() {
     test_subset_and_excess()
     println("PASS test_subset_and_excess")

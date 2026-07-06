@@ -109,6 +109,7 @@ fn test_reject_tab_indent() {
     assert(threw, "tab indentation must be rejected")
 }
 
+@capabilities(compute)
 fn main() {
     test_flat_mapping_scalar_types()
     println("PASS test_flat_mapping_scalar_types")

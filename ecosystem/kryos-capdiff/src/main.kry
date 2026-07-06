@@ -19,6 +19,7 @@ use manifest
 use diff
 use report
 
+@capabilities(fs:read)
 fn main() {
     let argv = args()
     // argv[0] is the program path; user tokens start at index 1.

@@ -24,6 +24,7 @@ fn temp_dir() -> str {
     return "/tmp"
 }
 
+@capabilities(io, process)
 fn main() {
     println("=== kryos-durable-checkpoint demo ===")
     println("")

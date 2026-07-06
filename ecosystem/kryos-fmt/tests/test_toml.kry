@@ -114,6 +114,7 @@ fn test_reject_inline_table() {
     assert(threw, "inline table must be rejected")
 }
 
+@capabilities(compute)
 fn main() {
     test_round_trip_byte_stable()
     println("PASS test_round_trip_byte_stable")

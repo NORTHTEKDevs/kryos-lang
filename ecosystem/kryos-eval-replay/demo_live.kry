@@ -56,6 +56,7 @@ fn rec_with_budget(tokens: i64) -> Transcript {
     return Transcript { model: "mock", turns: turns }
 }
 
+@capabilities(net, net:tcp)
 fn main() {
     let listen_fd = tcp_listen("127.0.0.1", PORT)
     if listen_fd < 0 {

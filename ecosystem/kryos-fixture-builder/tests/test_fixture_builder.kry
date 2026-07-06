@@ -195,6 +195,7 @@ fn get_temp() -> str {
     return "/tmp"
 }
 
+@capabilities(compute, fs:write, io, process)
 fn main() {
     // Run the @test suite first.
     test_golden_compare_match()

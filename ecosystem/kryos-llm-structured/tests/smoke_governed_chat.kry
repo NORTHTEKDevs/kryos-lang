@@ -125,6 +125,7 @@ fn test_malformed_json_returns_err_not_crash() {
 
 // ---- main -------------------------------------------------------------------
 
+@capabilities(compute)
 fn main() {
     test_valid_json_returns_ok()
     test_invalid_json_returns_err()

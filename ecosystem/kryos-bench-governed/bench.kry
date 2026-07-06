@@ -246,6 +246,7 @@ fn print_offline(cases: [BenchCase], budget_tokens: i64, budget_calls: i64) {
     println("No request sent. Exiting 0.")
 }
 
+@capabilities(net, process, time)
 fn main() {
     // Mirror of the @budget(tokens=50000, calls=100) attribute on run_benchmark,
     // used only to print the ceiling in offline mode (attributes take literals).

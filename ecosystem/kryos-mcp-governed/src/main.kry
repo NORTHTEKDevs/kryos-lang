@@ -157,6 +157,7 @@ fn handle_message(line: str) -> str {
   return make_error(id, -32601, "method not found: " + method)
 }
 
+@capabilities(compute, net, process)
 fn main() {
   startup_check()
   while SHUTDOWN == 0 {

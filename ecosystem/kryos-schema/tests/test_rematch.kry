@@ -84,6 +84,7 @@ fn test_unanchored_substring() {
     no("[0-9]+", "abcdef")
 }
 
+@capabilities(compute)
 fn main() {
     test_literals_and_anchors()
     test_classes_and_ranges()

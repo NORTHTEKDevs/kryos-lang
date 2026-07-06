@@ -43,6 +43,7 @@ fn _caps_to_json(caps: [str]) -> JsonValue {
     return json_array(jcaps)
 }
 
+@capabilities(fs:read, fs:write)
 fn main() {
     let a: [str] = args()
     if len(a) < 5 {

@@ -68,6 +68,7 @@ fn test_pure_only_runs_compute_skips_io() {
     assert(contains(run.outputs[2], "double = 42"), "cell 2 must still see threaded n (double=42), got [" + run.outputs[2] + "]")
 }
 
+@capabilities(io, process)
 fn main() {
     test_full_run_badges_and_threads()
     println("PASS test_full_run_badges_and_threads")

@@ -74,6 +74,7 @@ fn test_redact_nullifies_named_field() {
     assert(not json_is_null(json_get(parsed, "annex_iv")), "annex_iv preserved (still structurally valid)")
 }
 
+@capabilities(fs:write, io)
 fn main() {
     test_stream_batches_records()
     println("PASS test_stream_batches_records")

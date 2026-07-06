@@ -42,6 +42,7 @@ fn may_bind(caps_json: str, symbol: str, allow: [str]) -> bool {
     return true
 }
 
+@capabilities(fs:read)
 fn main() {
     let a: [str] = args()
     if len(a) < 4 {

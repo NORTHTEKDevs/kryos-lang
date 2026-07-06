@@ -163,6 +163,7 @@ fn _check(name: str, cond: bool) {
     }
 }
 
+@capabilities(ffi)
 fn main() {
     let t = sample()
 
