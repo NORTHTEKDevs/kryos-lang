@@ -14,7 +14,7 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
     kryos_rt::trace::set_profile_mode(true);
     eprintln!("\x1b[1mkryos profile\x1b[0m enabled for {file}");
     eprintln!();
-    let result = super::run::execute(file, args);
+    let result = super::run::execute(file, args, kryos_driver::CapabilityMode::Inferred);
     kryos_rt::trace::set_profile_mode(false);
     std::env::remove_var("KRYOS_PROFILE");
     result

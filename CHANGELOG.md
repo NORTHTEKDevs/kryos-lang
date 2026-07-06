@@ -4,6 +4,28 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.6] — 2026-07-05 — "Enum path syntax + `run` capability modes"
+
+### Fixed
+- **`Enum::Variant` (Rust-style `::` path) now constructs enum values correctly
+  on both backends.** Previously `Opt::Some(7)` mis-lowered to a call of the
+  nonexistent function `Opt__Some` (unresolved-symbol link error on the JIT, a
+  `store void` codegen error on AOT), and the nullary form `Opt::None` failed
+  as an "undefined variable" — even though the type-checker accepted both. The
+  `::` form now lowers identically to the already-working bare `Some(7)` /
+  dotted `Opt.Some(7)` forms: in construction, as a function argument, in array
+  literals, and in nested matches. A related latent bug is also fixed — a
+  nullary variant used *directly* as an operand (e.g. inline `f(Opt::None)`,
+  not via a `let`) previously fell through to an uninitialized i64 local (JIT
+  crash / AOT misdispatch); it now constructs the variant. Regression test:
+  `tests/native/enum_path_syntax.kry` (both backends).
+- **`kryos run` now accepts `--capabilities-mode=<permissive|inferred|strict>`
+  and `--strict-capabilities`,** matching `kryos check` and `kryos build`.
+  Previously the fast JIT path was hard-locked to `inferred` (deny-by-default)
+  with no override, so you could not JIT-run a scratch file permissively or
+  test `strict` mode without going through `build`. The default is unchanged
+  (`inferred`).
+
 ## [1.0.0-beta.5] — 2026-07-06 — "Non-blocking async I/O"
 
 ### Added

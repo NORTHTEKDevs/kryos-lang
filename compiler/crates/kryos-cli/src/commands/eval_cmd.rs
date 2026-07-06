@@ -34,7 +34,7 @@ pub fn execute(opts: EvalOptions) -> Result<(), String> {
     std::fs::write(&tmp, wrapped.as_bytes())
         .map_err(|e| format!("kryos eval: write tmp: {e}"))?;
 
-    let result = super::run::execute(&tmp.to_string_lossy(), &[]);
+    let result = super::run::execute(&tmp.to_string_lossy(), &[], kryos_driver::CapabilityMode::Inferred);
     let _ = std::fs::remove_file(&tmp);
     result
 }

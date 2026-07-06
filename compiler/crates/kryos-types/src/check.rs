@@ -1595,6 +1595,24 @@ impl TypeChecker {
                         name: name.clone(),
                         generics: vec![],
                     }
+                } else if let Some((ename, edef)) = name.split_once("::").and_then(|(e, v)| {
+                    // Qualified NULLARY enum variant, e.g. `Opt::None`. The parser
+                    // emits this as an `Identifier` named "Opt::None" (the payload
+                    // form `Opt::Some(7)` is a StaticMethodCall handled elsewhere).
+                    self.env
+                        .lookup_enum(e)
+                        .filter(|d| d.variants.iter().any(|(vn, _)| vn == v))
+                        .map(|d| (e.to_string(), d.clone()))
+                }) {
+                    let fresh_generics: Vec<Type> = edef
+                        .generic_var_ids
+                        .iter()
+                        .map(|_| self.engine.fresh_var())
+                        .collect();
+                    Type::Enum {
+                        name: ename,
+                        generics: fresh_generics,
+                    }
                 } else {
                     self.error_with_code(
                         format!("undefined variable `{name}`"),

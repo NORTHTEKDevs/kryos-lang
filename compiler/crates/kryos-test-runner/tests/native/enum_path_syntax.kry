@@ -1,0 +1,48 @@
+// Rust-style `Enum::Variant` path syntax for construction AND patterns.
+// Regression: `Opt::Some(7)` used to lower to a call of the nonexistent
+// function `Opt__Some` -- unresolved symbol on the JIT, a `store void`
+// codegen error on AOT -- even though the checker type-checked it fine.
+// The bare `Some(7)` and dotted `Opt.Some(7)` forms always worked; `::` did
+// not. All three now lower identically to an enum construction.
+// expect-stdout: some 7
+// expect-stdout: c3
+// expect-stdout: sq4
+// expect-stdout: arg none
+// expect-stdout: nested 9
+
+enum Opt { Some(i64), None }
+enum Shape { Circle(i64), Sq(i64) }
+
+fn describe(o: Opt) -> str {
+    match o {
+        Opt::Some(v) => return "arg some " + to_string(v),
+        Opt::None => return "arg none",
+    }
+}
+
+fn main() {
+    // construction + match via `::`
+    let x = Opt::Some(7)
+    match x {
+        Opt::Some(v) => println("some " + to_string(v)),
+        Opt::None => println("none"),
+    }
+
+    // `::` variants inside an array literal (the array_of_enums signature)
+    let a = [Shape::Circle(3), Shape::Sq(4)]
+    match a[0] { Shape::Circle(r) => println("c" + to_string(r)), Shape::Sq(s) => println("sq") }
+    match a[1] { Shape::Circle(r) => println("c"), Shape::Sq(s) => println("sq" + to_string(s)) }
+
+    // `::` construction passed as a function argument
+    println(describe(Opt::None))
+
+    // nested match on a `::`-constructed value
+    let y = Opt::Some(9)
+    match y {
+        Opt::Some(v) => match v {
+            9 => println("nested 9"),
+            _ => println("nested other"),
+        },
+        Opt::None => println("nested none"),
+    }
+}

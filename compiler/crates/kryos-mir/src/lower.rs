@@ -4984,6 +4984,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         ast::Expr::StaticMethodCall {
             type_name, method, ..
         } => {
+            // `Enum::Variant(..)` constructs an enum value (see the matching branch
+            // in lower_expr_to_rvalue); its type is the enum, not Void. Returning
+            // Void here made AOT emit a `store void` for `let x = Opt::Some(7)`.
+            if let Some(variants) = ctx.enum_defs.get(type_name.as_str()) {
+                if variants.iter().any(|v| v.name == *method) {
+                    return MirType::Enum(type_name.clone());
+                }
+            }
             let mangled = format!("{type_name}__{method}");
             if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
                 return ret_ty.clone();
@@ -5362,6 +5370,25 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
                     value: rvalue,
                 });
                 return Operand::Local(temp);
+            }
+            // Nullary enum variant used directly as an operand: bare `None`/`Red`
+            // or qualified `Opt::None`. Without this, an inline `describe(Opt::None)`
+            // fell through to the fallback below, which allocates a fresh
+            // UNINITIALIZED i64 local -- crashing the JIT and mis-dispatching AOT.
+            // (The let-bound form went through the rvalue path and was fine.)
+            if !is_local {
+                if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, name) {
+                    let temp = ctx.alloc_temp(MirType::Enum(enum_name.clone()));
+                    ctx.emit(Instruction::Assign {
+                        dest: temp,
+                        value: RValue::EnumVariant {
+                            enum_name,
+                            variant_idx,
+                            fields: vec![],
+                        },
+                    });
+                    return Operand::Local(temp);
+                }
             }
             let local = find_local_by_name(ctx, name)
                 .unwrap_or_else(|| ctx.alloc_local(Some(name.to_string()), MirType::I64, false));
@@ -5959,6 +5986,25 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             args,
             ..
         } => {
+            // `Enum::Variant(args)` (Rust-style path) constructs an enum value, not
+            // a static method call. Mirror the `Enum.Variant(args)` MethodCall path
+            // above. Without this, `Opt::Some(7)` lowered to a call of the
+            // nonexistent function `Opt__Some` (unresolved symbol on the JIT, a
+            // `store void` codegen error on AOT) even though the checker already
+            // type-checks it as an enum construction.
+            if let Some(variants) = ctx.enum_defs.get(type_name.as_str()) {
+                if let Some((idx, _)) =
+                    variants.iter().enumerate().find(|(_, v)| v.name == *method)
+                {
+                    let fields: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    return RValue::EnumVariant {
+                        enum_name: type_name.clone(),
+                        variant_idx: idx as u32,
+                        fields,
+                    };
+                }
+            }
             let mir_args: Vec<Operand> =
                 args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
             let func_name = ctx
@@ -6985,6 +7031,22 @@ fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String
 
 /// Check if `name` is an enum variant. Returns (enum_name, variant_index) if found.
 fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)> {
+    // Qualified `Enum::Variant` (Rust-style path) for a NULLARY variant, e.g.
+    // `Opt::None`. The parser emits this as an `Identifier` named "Opt::None"
+    // (the with-payload form `Opt::Some(7)` is a StaticMethodCall instead).
+    // Resolve strictly within the named enum. A non-enum `head::tail` (a module
+    // path like `math::PI`) returns None here and falls through to global
+    // handling.
+    if let Some((enum_name, variant)) = name.split_once("::") {
+        if let Some(variants) = ctx.enum_defs.get(enum_name) {
+            if let Some((idx, _)) =
+                variants.iter().enumerate().find(|(_, v)| v.name == variant)
+            {
+                return Some((enum_name.to_string(), idx as u32));
+            }
+        }
+        return None;
+    }
     for (enum_name, variants) in &ctx.enum_defs {
         for (idx, v) in variants.iter().enumerate() {
             if v.name == name {

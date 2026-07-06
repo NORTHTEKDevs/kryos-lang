@@ -60,7 +60,7 @@ fn invoke(path: &Path, action: &str) {
             false,
             kryos_driver::CapabilityMode::Permissive,
         ),
-        _ => super::run::execute(&path.to_string_lossy(), &[]),
+        _ => super::run::execute(&path.to_string_lossy(), &[], kryos_driver::CapabilityMode::Inferred),
     };
     match result {
         Ok(()) => eprintln!("\x1b[32mwatch:\x1b[0m ok"),

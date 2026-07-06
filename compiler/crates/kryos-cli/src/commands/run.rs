@@ -7,17 +7,30 @@ use kryos_driver::{BuildConfig, BuildMode, OutputType};
 use kryos_errors::render_diagnostic;
 
 /// Execute the run command without timing output (the historical entry point).
-pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
-    execute_inner(file, args, false)
+pub fn execute(
+    file: &str,
+    args: &[String],
+    cap_mode: kryos_driver::CapabilityMode,
+) -> Result<(), String> {
+    execute_inner(file, args, false, cap_mode)
 }
 
 /// Execute with `--time` enabled — prints "compile: Xms, exec: Yms, total: Zms"
 /// to stderr after the program exits.
-pub fn execute_timed(file: &str, args: &[String]) -> Result<(), String> {
-    execute_inner(file, args, true)
+pub fn execute_timed(
+    file: &str,
+    args: &[String],
+    cap_mode: kryos_driver::CapabilityMode,
+) -> Result<(), String> {
+    execute_inner(file, args, true, cap_mode)
 }
 
-fn execute_inner(file: &str, args: &[String], time: bool) -> Result<(), String> {
+fn execute_inner(
+    file: &str,
+    args: &[String],
+    time: bool,
+    cap_mode: kryos_driver::CapabilityMode,
+) -> Result<(), String> {
     let total_start = Instant::now();
     let path = Path::new(file);
 
@@ -65,7 +78,7 @@ fn execute_inner(file: &str, args: &[String], time: bool) -> Result<(), String> 
         use_cache: false,
         split_async_awaits: true,
         strict_capabilities: false,
-        capability_mode: kryos_driver::CapabilityMode::Inferred,
+        capability_mode: cap_mode,
     };
 
     // Compile first, then execute.

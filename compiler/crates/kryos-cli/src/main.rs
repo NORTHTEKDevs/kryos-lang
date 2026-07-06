@@ -113,6 +113,18 @@ enum Commands {
         #[arg(long)]
         time: bool,
 
+        /// Deny capability-gated builtins in unannotated functions.
+        /// See `kryos build --help` for the full description.
+        #[arg(long)]
+        strict_capabilities: bool,
+
+        /// Capability enforcement mode: `permissive` (only annotated functions
+        /// enforce), `inferred` (deny-by-default at the boundary; the default),
+        /// or `strict` (every function must declare). Overrides
+        /// `--strict-capabilities`. Place before the source file.
+        #[arg(long, value_name = "MODE")]
+        capabilities_mode: Option<String>,
+
         /// Arguments to pass to the program
         #[arg(trailing_var_arg = true)]
         args: Vec<String>,
@@ -672,11 +684,32 @@ fn main() {
             )
         }
 
-        Commands::Run { file, args, time } => {
+        Commands::Run {
+            file,
+            args,
+            time,
+            strict_capabilities,
+            capabilities_mode,
+        } => {
+            // Same resolution as `check`/`build`: explicit --capabilities-mode
+            // wins, then --strict-capabilities, else deny-by-default (Inferred).
+            let cap_mode = match capabilities_mode.as_deref() {
+                Some(s) => match kryos_driver::CapabilityMode::from_str(s) {
+                    Some(m) => m,
+                    None => {
+                        eprintln!(
+                            "error: unknown --capabilities-mode `{s}` (expected permissive | inferred | strict)"
+                        );
+                        std::process::exit(2);
+                    }
+                },
+                None if strict_capabilities => kryos_driver::CapabilityMode::Strict,
+                None => kryos_driver::CapabilityMode::Inferred,
+            };
             if time {
-                commands::run::execute_timed(&file, &args)
+                commands::run::execute_timed(&file, &args, cap_mode)
             } else {
-                commands::run::execute(&file, &args)
+                commands::run::execute(&file, &args, cap_mode)
             }
         }
 

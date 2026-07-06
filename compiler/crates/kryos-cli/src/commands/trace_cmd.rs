@@ -17,7 +17,7 @@ pub fn execute(file: &str, args: &[String]) -> Result<(), String> {
     kryos_rt::trace::set_verbose_trace(true);
     eprintln!("\x1b[1mkryos trace\x1b[0m enabled for {file}");
     eprintln!();
-    let result = super::run::execute(file, args);
+    let result = super::run::execute(file, args, kryos_driver::CapabilityMode::Inferred);
     kryos_rt::trace::set_verbose_trace(false);
     std::env::remove_var("KRYOS_TRACE");
     result
