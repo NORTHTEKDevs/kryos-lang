@@ -600,7 +600,7 @@ What "implemented" means in 1.0.0-beta.3:
 | Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
-| `async` / `await`           | Cooperative executor (tasks interleave; no non-blocking I/O yet) |
+| `async` / `await`           | Cooperative executor (interleaves CPU tasks). Concurrent I/O via spawn/channels/actors (OS threads). |
 | Actors                      | Implemented (JIT + AOT) |
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |
