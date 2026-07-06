@@ -2987,8 +2987,16 @@ impl LlvmCodegen {
         let mut referenced: HashSet<u32> = HashSet::new();
         for block in &func.blocks {
             for inst in &block.instructions {
-                if let Instruction::Assign { dest, .. } = inst {
-                    assigned.insert(dest.0);
+                // Every instruction that BINDS a local counts as a definition —
+                // otherwise the defensive pass zero-inits it and collides with
+                // the real def (observed for ActorStateLoad / ActorSpawn dests).
+                match inst {
+                    Instruction::Assign { dest, .. }
+                    | Instruction::ActorStateLoad { dest, .. }
+                    | Instruction::ActorSpawn { dest, .. } => {
+                        assigned.insert(dest.0);
+                    }
+                    _ => {}
                 }
                 Self::collect_operand_locals(inst, &mut referenced);
             }
@@ -3559,38 +3567,52 @@ impl LlvmCodegen {
                             .iter()
                             .find(|l| l.id == *id)
                             .map(|l| l.ty.clone()),
+                        // A string LITERAL arg is a Constant, not a Local; it is
+                        // still a pointer that must be cloned + ptrtoint'd.
+                        Operand::Constant(Constant::Str(_)) => Some(MirType::Str),
                         _ => None,
                     };
-                    let send_val = match arg_ty.as_ref() {
+                    // Produce a `(value, is_pointer)` pair; pointer-typed
+                    // messages are ptrtoint'd to i64 before the mailbox send
+                    // (kryos_actor_send_i64 takes an i64 -- a raw ptr operand is
+                    // rejected by the verifier).
+                    let (send_val, is_ptr) = match arg_ty.as_ref() {
                         Some(MirType::Str) => {
                             let cloned = self.next_temp();
                             self.emit_line(&format!(
                                 "  {cloned} = call ptr @kryos_string_clone(ptr {val})"
                             ));
-                            cloned
+                            (cloned, true)
                         }
                         Some(MirType::Array(_, _)) => {
                             let cloned = self.next_temp();
                             self.emit_line(&format!(
                                 "  {cloned} = call ptr @kryos_array_clone(ptr {val})"
                             ));
-                            cloned
+                            (cloned, true)
                         }
                         Some(MirType::Map { .. }) => {
                             let cloned = self.next_temp();
                             self.emit_line(&format!(
                                 "  {cloned} = call i64 @kryos_map_clone(i64 {val})"
                             ));
-                            cloned
+                            (cloned, false)
                         }
                         Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                             self.emit_line(&format!("  call void @kryos_arc_retain(ptr {val})"));
-                            val
+                            (val, true)
                         }
-                        _ => val,
+                        _ => (val, false),
+                    };
+                    let send_i64 = if is_ptr {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = ptrtoint ptr {send_val} to i64"));
+                        t
+                    } else {
+                        send_val
                     };
                     self.emit_line(&format!(
-                        "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {send_val})"
+                        "  call i64 @kryos_actor_send_i64(i64 {actor_val}, i64 {send_i64})"
                     ));
                 }
                 // Unlock.

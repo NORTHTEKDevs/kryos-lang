@@ -366,14 +366,17 @@ impl TypeChecker {
                     variants: vec![],
                 });
             }
-            // Actors are a PREVIEW feature: the type checker deliberately does
-            // NOT register the actor name as a callable constructor, because the
-            // actor RUNTIME is incomplete -- message arguments are not
-            // transmitted and handlers do not execute reliably (see
-            // docs/09-concurrency.md). A `Counter()` call therefore fails at
-            // compile time (E0102) rather than compiling to a spawn that
-            // silently does nothing. The MIR/codegen lowering exists for when
-            // the runtime is finished; registration is a one-line change then.
+            // An actor is, to the type system, a struct-like handle: its name is
+            // a type and a zero-arg constructor (`Counter()` spawns it). Register
+            // the name here so it resolves during the full pass.
+            Decl::Actor { name, .. } => {
+                self.env.define_struct(StructDef {
+                    name: name.clone(),
+                    generic_params: vec![],
+                    generic_var_ids: vec![],
+                    fields: vec![],
+                });
+            }
             _ => {}
         }
     }
@@ -767,11 +770,69 @@ impl TypeChecker {
                     self.env.define_var(name.clone(), resolved_ty);
                 }
             }
-            Decl::Import { .. } | Decl::Actor { .. } => {
-                // Actors are preview; the checker does not register them as
-                // callable types (the runtime is incomplete -- see
-                // pre_register_type_name). Imports introduce no types here.
+            Decl::Actor {
+                name,
+                state_fields,
+                handlers,
+                ..
+            } => {
+                // Register the actor as a struct-like type with its state fields
+                // (so `self.field` in handlers type-checks).
+                let field_types: Vec<(String, Type)> = state_fields
+                    .iter()
+                    .map(|f| (f.name.clone(), self.resolve_type_expr(&f.ty)))
+                    .collect();
+                self.env.define_struct(StructDef {
+                    name: name.clone(),
+                    generic_params: vec![],
+                    generic_var_ids: vec![],
+                    fields: field_types,
+                });
+                let actor_ty = Type::Struct {
+                    name: name.clone(),
+                    generics: vec![],
+                };
+                // `Counter()` -- zero-arg constructor spawning the actor.
+                self.env.define_function(FunctionSig {
+                    name: name.clone(),
+                    generic_params: vec![],
+                    generic_var_ids: vec![],
+                    params: vec![],
+                    ret: actor_ty.clone(),
+                });
+                // Handlers become methods `c.handler(msg_args)`; sends are
+                // fire-and-forget so the observable return is unit.
+                let method_sigs: Vec<FunctionSig> = handlers
+                    .iter()
+                    .map(|h| {
+                        let params: Vec<(String, Type)> = h
+                            .params
+                            .iter()
+                            .map(|p| {
+                                if p.name == "self" {
+                                    (p.name.clone(), actor_ty.clone())
+                                } else {
+                                    let ty = p
+                                        .ty
+                                        .as_ref()
+                                        .map(|t| self.resolve_type_expr(t))
+                                        .unwrap_or_else(|| self.engine.fresh_var());
+                                    (p.name.clone(), ty)
+                                }
+                            })
+                            .collect();
+                        FunctionSig {
+                            name: h.name.clone(),
+                            generic_params: vec![],
+                            generic_var_ids: vec![],
+                            params,
+                            ret: Type::Void,
+                        }
+                    })
+                    .collect();
+                self.env.define_impl(name.clone(), None, method_sigs);
             }
+            Decl::Import { .. } => {}
             Decl::Extern { items, .. } => {
                 // Register extern function declarations so they're callable.
                 for item in items {

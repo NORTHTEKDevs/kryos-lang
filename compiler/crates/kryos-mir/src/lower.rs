@@ -102,6 +102,10 @@ pub struct LoweringContext {
     /// Actor state field layouts: actor_name -> ordered list of (field_name, field_index).
     /// Each field occupies one i64 slot at offset field_index * 8.
     actor_state_fields: HashMap<String, Vec<(String, u32)>>,
+    /// The actor whose handler is currently being lowered, if any. `self.field`
+    /// inside a handler resolves against this (actor VALUES erase to i64, so the
+    /// old "self's type is Struct(actor)" check no longer identifies them).
+    current_actor: Option<String>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
     /// Top-level mutable globals: name -> (MirType, init expression).
@@ -204,6 +208,7 @@ impl LoweringContext {
             pending_closure_regs: Vec::new(),
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
+            current_actor: None,
             const_defs: HashMap::new(),
             mutable_globals: HashMap::new(),
             mutable_global_order: Vec::new(),
@@ -235,6 +240,15 @@ impl LoweringContext {
         // referencing an unsized `%T` type on the LLVM backend.
         if let ast::TypeExpr::Simple { name, .. } = ty {
             if self.current_impl_generics.iter().any(|g| g == name) {
+                return MirType::I64;
+            }
+            // An actor VALUE is an opaque i64 handle (the actor_id), not its
+            // state struct: `let c = Counter()` binds the handle; state lives on
+            // the actor's heap and is reached only via `self.field` inside
+            // handlers (which lowers to ActorStateStore/Load, not a struct GEP).
+            // Erasing to i64 keeps both backends' representation consistent
+            // (the LLVM backend is strict: %Counter != i64).
+            if self.actor_defs.contains_key(name) {
                 return MirType::I64;
             }
         }
@@ -1156,7 +1170,12 @@ pub fn lower_module_with_lambda_params(
                     ctx.func_ret_types.insert(mangled.clone(), mir_ret.clone());
                     ctx.method_owners
                         .insert((name.clone(), handler.name.clone()), mangled);
-                    handler_info.push((handler.name.clone(), handler.params.len()));
+                    // The dispatch loop receives only the MESSAGE arguments, not
+                    // `self` (the actor's own state is threaded via state_ptr, not
+                    // the mailbox). Count non-self params.
+                    let msg_arg_count =
+                        handler.params.iter().filter(|p| p.name != "self").count();
+                    handler_info.push((handler.name.clone(), msg_arg_count));
                 }
                 ctx.actor_defs.insert(name.clone(), handler_info);
                 // Register actor state field layout for heap allocation and field access.
@@ -1361,7 +1380,11 @@ pub fn lower_module_with_lambda_params(
                 // Lower each message handler as a free function: ActorName__handler_name.
                 for handler in handlers {
                     let mangled = format!("{name}__{}", handler.name);
-                    // Prepend implicit `self` param for actor state.
+                    // The handler lowers to `ActorName__handler(self, msg_args...)`.
+                    // Use an actor-typed `self` (for `self.field` access) followed
+                    // by the message args. The parser already puts `self` in
+                    // handler.params, so drop it and re-add a properly-typed one
+                    // (avoids a double-`self` / wrong arity).
                     let mut all_params = vec![ast::Param {
                         name: "self".into(),
                         ty: Some(ast::TypeExpr::Simple {
@@ -1371,7 +1394,10 @@ pub fn lower_module_with_lambda_params(
                         default: None,
                         span: kryos_errors::Span::DUMMY,
                     }];
-                    all_params.extend_from_slice(&handler.params);
+                    all_params.extend(
+                        handler.params.iter().filter(|p| p.name != "self").cloned(),
+                    );
+                    ctx.current_actor = Some(name.clone());
                     functions.push(lower_function(
                         &mut ctx,
                         &mangled,
@@ -1379,6 +1405,7 @@ pub fn lower_module_with_lambda_params(
                         &handler.ret_ty,
                         &handler.body,
                     ));
+                    ctx.current_actor = None;
                 }
             }
             _ => {}
@@ -1392,6 +1419,27 @@ pub fn lower_module_with_lambda_params(
 
     // Collect monomorphized specializations generated during lowering.
     functions.append(&mut ctx.monomorphized_functions);
+
+    // Erase actor VALUE types to i64 across every function. An actor binding is
+    // an opaque handle (actor_id); inferred `let c = Counter()` bindings pick up
+    // the checker's Struct(Counter) type, which the strict LLVM backend then
+    // conflicts with the i64 the spawn produces. resolve_type erases annotated
+    // occurrences; this catches the inferred ones too.
+    if !ctx.actor_defs.is_empty() {
+        let is_actor = |t: &MirType| matches!(t, MirType::Struct(n) if ctx.actor_defs.contains_key(n));
+        for f in &mut functions {
+            for p in &mut f.params {
+                if is_actor(&p.ty) {
+                    p.ty = MirType::I64;
+                }
+            }
+            for l in &mut f.locals {
+                if is_actor(&l.ty) {
+                    l.ty = MirType::I64;
+                }
+            }
+        }
+    }
 
     MirModule {
         functions,
@@ -2137,14 +2185,17 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     if name == "self" {
                         let self_local = find_local_by_name(ctx, "self")
                             .expect("internal: 'self' local not found in actor handler");
-                        let actor_name =
-                            ctx.locals
-                                .iter()
-                                .find(|l| l.id == self_local)
-                                .and_then(|l| match &l.ty {
-                                    MirType::Struct(n) => Some(n.clone()),
-                                    _ => None,
-                                });
+                        let actor_name = ctx
+                            .locals
+                            .iter()
+                            .find(|l| l.id == self_local)
+                            .and_then(|l| match &l.ty {
+                                MirType::Struct(n) => Some(n.clone()),
+                                _ => None,
+                            })
+                            // Actor VALUES erase to i64, so self's type is not a
+                            // Struct; fall back to the actor being lowered.
+                            .or_else(|| ctx.current_actor.clone());
                         if let Some(ref aname) = actor_name {
                             ctx.actor_state_fields
                                 .get(aname)
@@ -6041,7 +6092,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         .and_then(|l| match &l.ty {
                             MirType::Struct(n) => Some(n.clone()),
                             _ => None,
-                        });
+                        })
+                        // Actor VALUES erase to i64; fall back to the actor
+                        // whose handler is currently being lowered.
+                        .or_else(|| ctx.current_actor.clone());
                     if let Some(ref aname) = actor_name {
                         if let Some(fields) = ctx.actor_state_fields.get(aname).cloned() {
                             if let Some((_fname, field_idx)) =
