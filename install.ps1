@@ -35,17 +35,27 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
     exit 1
 }
 
-# Resolve release tag. The default is PINNED rather than GitHub's "latest":
-# the repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically, so
-# the releases/latest API resolves to a legacy version. Pin the public default
-# to the 1.0 line; override with KRYOS_VERSION to install any specific tag.
-$DEFAULT_VERSION = "v1.0.0-beta.1"
+# Resolve release tag. GitHub's releases/latest is NOT used directly: the
+# repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically. Query
+# the release list and take the newest v1.0.0* release by publish order,
+# falling back to a pinned floor if the API is unreachable. Override with
+# KRYOS_VERSION to install any specific tag.
+$FALLBACK_VERSION = "v1.0.0-beta.7"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"
 } else {
-    $TAG = $DEFAULT_VERSION
-    Write-Host "Installing default version: $TAG"
+    $TAG = $null
+    try {
+        $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=30" -Headers $AUTH -UseBasicParsing
+        $TAG = ($rels | Where-Object { $_.tag_name -like "v1.0.0*" } | Select-Object -First 1).tag_name
+    } catch { }
+    if (-not $TAG) {
+        $TAG = $FALLBACK_VERSION
+        Write-Host "Installing default version (API unavailable, pinned floor): $TAG"
+    } else {
+        Write-Host "Installing latest 1.0 release: $TAG"
+    }
 }
 
 $platform = "windows-$arch"

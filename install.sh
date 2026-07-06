@@ -55,17 +55,23 @@ ARTIFACT="kryos-${PLATFORM}-${ARCH}"
 
 echo "Installing Kryos ($PLATFORM-$ARCH)..."
 
-# Resolve release tag. The default is PINNED rather than GitHub's "latest":
-# the repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically, so
-# the releases/latest API resolves to a legacy version. Pin the public default
-# to the 1.0 line; override with KRYOS_VERSION to install any specific tag.
-DEFAULT_VERSION="v1.0.0-beta.1"
+# Resolve release tag. GitHub's releases/latest is NOT used directly: the
+# repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically. Query
+# the release list and take the newest v1.0.0* release by publish order,
+# falling back to a pinned floor if the API is unreachable. Override with
+# KRYOS_VERSION to install any specific tag.
+FALLBACK_VERSION="v1.0.0-beta.7"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"
 else
-    TAG="$DEFAULT_VERSION"
-    echo "Installing default version: $TAG"
+    TAG=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"}         "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null         | grep -o '"tag_name": *"v1.0.0[^"]*"'         | head -1 | grep -o 'v1.0.0[^"]*')
+    if [ -z "$TAG" ]; then
+        TAG="$FALLBACK_VERSION"
+        echo "Installing default version (API unavailable, pinned floor): $TAG"
+    else
+        echo "Installing latest 1.0 release: $TAG"
+    fi
 fi
 
 # Download release asset. Private repos reject the browser download URL for
