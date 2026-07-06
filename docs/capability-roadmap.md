@@ -65,14 +65,17 @@ Staged plan, done in order:
    authority wrappers are annotated so their capabilities propagate.
 4. **Flip the global default to `inferred`** — done (beta.3).
 
-### The one remaining migration
+### Nothing is checked permissively anymore
 
-The `ecosystem/` packages (~132 entry points) are still checked under
-`permissive` by the ecosystem type-check gate — that gate verifies they
-*compile*, and migrating every package's `main` to declare its capabilities is
-tracked as follow-up work, not a blocker for the default. Everything a new user
-touches — the compiler, `kryos new` projects, the examples, the docs' runnable
-snippets — is deny-by-default today.
+The `ecosystem/` packages were the last surface checked under `permissive`.
+Every package entry point now declares its capabilities and the ecosystem gate
+runs under the compiler default (inferred): 253/253 clean, with a handful of
+intentional negative fixtures (`leaky_io`, `leak_config`, ...) excluded by
+design because they exist to demonstrate a leak. **The compiler, `kryos new`
+projects, the examples, the self-host compiler, and the ecosystem packages are
+all deny-by-default.** The only code checked permissively is the internal
+test-harness fixtures that verify compilation/runtime rather than capability
+hygiene, and illustrative doc snippets.
 
 ## Migrating a program
 
