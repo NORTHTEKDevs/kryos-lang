@@ -1,0 +1,24 @@
+// Non-blocking async I/O: a blocking op (sleep) on an async task yields the
+// coop baton, so N tasks overlap. 4 x 300ms run concurrently (~300ms) rather
+// than sequentially (~1200ms). Threshold 700ms leaves a wide margin.
+// expect-stdout: concurrent
+
+async fn worker() {
+    sleep(300)
+}
+
+fn main() {
+    coop_reset()
+    let start = time_millis()
+    coop_spawn(worker())
+    coop_spawn(worker())
+    coop_spawn(worker())
+    coop_spawn(worker())
+    coop_run()
+    let elapsed = time_millis() - start
+    if elapsed < 700 {
+        println("concurrent")
+    } else {
+        println("sequential: " + to_string(elapsed) + "ms")
+    }
+}

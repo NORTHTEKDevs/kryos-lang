@@ -466,13 +466,15 @@ fn main() {
 ```
 
 `async`/`await` run on a **cooperative executor** (`coop_spawn` /
-`coop_run`): `await` suspends the current task and hands control to the
-next ready task, so tasks genuinely interleave (verified on both backends:
+`coop_run`) with **non-blocking I/O**. A blocking I/O op (`sleep`,
+`http_get`, `tcp_*`) inside an `async` task yields the scheduler for the
+duration of the syscall, so sibling tasks run concurrently -- four async
+tasks each doing 300ms of I/O finish in ~300ms, not 1.2s (verified on both
+backends). `await` also suspends cooperatively for CPU-task interleaving:
 `coop_spawn(task_a()) + coop_spawn(task_b()) + coop_run()` prints
-`A0 B0 A1 B1 A2 B2`, not `A0 A1 A2 B0 B1 B2`). What is **not** yet shipped
-is a non-blocking I/O runtime behind `await` -- an `await` on a blocking
-syscall still blocks its OS thread. For CPU-bound parallelism use
-`spawn` + channels.
+`A0 B0 A1 B1 A2 B2`, not `A0 A1 A2 B0 B1 B2`. (Implemented as a
+thread-per-task scheduler that releases the baton on blocking calls, not an
+epoll/IOCP reactor; the observable behavior is concurrent async I/O.)
 
 ### 9.4 Actors
 
@@ -600,7 +602,7 @@ What "implemented" means in 1.0.0-beta.4:
 | Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
-| `async` / `await`           | Cooperative executor (interleaves CPU tasks). Concurrent I/O via spawn/channels/actors (OS threads). |
+| `async` / `await`           | Non-blocking I/O (blocking ops yield; async tasks overlap I/O) + cooperative CPU interleaving. Both backends. |
 | Actors                      | Implemented (JIT + AOT) |
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |

@@ -1,0 +1,32 @@
+// Non-blocking async I/O.
+//
+// A blocking I/O op (here `sleep`, but the same holds for `http_get` / `tcp_*`)
+// inside an `async` task yields the cooperative scheduler for the duration of
+// the syscall. So `coop_spawn`ing several tasks and running them overlaps their
+// I/O instead of serializing it: four 300ms tasks finish in ~300ms, not 1.2s.
+//
+// expect-stdout: all 4 async tasks complete
+// expect-stdout: concurrent
+
+async fn fetch(id: i64) {
+    sleep(300)          // stand-in for a blocking http_get / tcp_recv
+}
+
+fn main() {
+    coop_reset()
+    let start = time_millis()
+
+    coop_spawn(fetch(1))
+    coop_spawn(fetch(2))
+    coop_spawn(fetch(3))
+    coop_spawn(fetch(4))
+    coop_run()          // drives all four; their sleeps overlap
+
+    println("all 4 async tasks complete")
+    let elapsed = time_millis() - start
+    if elapsed < 700 {
+        println("concurrent")
+    } else {
+        println("sequential (" + to_string(elapsed) + "ms)")
+    }
+}

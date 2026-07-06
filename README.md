@@ -230,7 +230,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Concurrency** — real OS-thread parallelism with `spawn` + channels (`chan<T>` MPMC, `select`) and `actor` message-passing (private state, in-order handling, threads joined at exit). Concurrent I/O works today: spawn N workers, each doing blocking I/O, and the OS runs them in parallel. A cooperative `async`/`await` executor additionally interleaves CPU-bound tasks on demand (verified on both backends; `await` is cooperative, not a non-blocking I/O reactor — for concurrent I/O use spawn/channels/actors)
+- **Concurrency** — real OS-thread parallelism with `spawn` + channels (`chan<T>` MPMC, `select`), `actor` message-passing (private state, in-order handling, threads joined at exit), and **non-blocking `async`/`await`**: a blocking I/O op (`sleep`, `http_get`, `tcp_*`) inside an `async` task yields the scheduler, so `coop_spawn` N tasks and their I/O overlaps — 4 × 300 ms of I/O finishes in ~300 ms, not 1.2 s (verified concurrent on both backends). `await` also interleaves CPU-bound tasks cooperatively.
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
@@ -293,7 +293,7 @@ Kryos is **v1.0.0-beta.4**. Feature-complete language and toolchain + self-hosti
 | Closures (ARC-captured) | Complete |
 | Channels + `spawn` + `select` | Complete |
 | Actors (message-passing) | Complete (JIT + AOT) |
-| Async / await (cooperative executor) | Complete — tasks interleave under `coop_run()`; non-blocking I/O runtime not yet shipped |
+| Async / await | Complete — non-blocking I/O (blocking ops yield the scheduler; async tasks overlap I/O) + cooperative CPU interleaving; both backends |
 | Capability enforcement (`@pure`, `@capabilities`) | Complete |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |
 | Cranelift backend | Complete |

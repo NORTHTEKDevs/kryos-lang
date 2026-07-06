@@ -134,7 +134,9 @@ pub extern "C" fn kryos_sleep(seconds_bits: i64) {
 pub extern "C" fn kryos_sleep_ms(millis: i64) {
     if millis > 0 {
         let dur = std::time::Duration::from_millis(millis as u64);
-        std::thread::sleep(dur);
+        // On a coop task, yield the baton while sleeping so sibling async tasks
+        // run concurrently (`await sleep(..)` becomes a non-blocking suspension).
+        crate::executor::io_offload(|| std::thread::sleep(dur));
     }
 }
 

@@ -183,6 +183,46 @@ pub extern "C" fn kryos_coop_yield() {
     }
 }
 
+/// Release the baton for a blocking I/O operation WITHOUT re-queueing: the
+/// calling task goes "away" (still live, but neither running nor ready) so the
+/// scheduler runs other tasks while this one's own thread performs the blocking
+/// I/O. This is what makes async I/O concurrent -- N tasks each doing a slow
+/// syscall overlap. Returns 1 if the baton was released (we are on a coop task),
+/// 0 if not (a direct, non-spawned call degrades to an ordinary blocking call).
+/// Pair every `io_begin` that returns 1 with exactly one `io_end`.
+#[no_mangle]
+pub extern "C" fn kryos_coop_io_begin() -> i64 {
+    let id = CURRENT_TASK.with(|c| c.get());
+    if id == 0 {
+        return 0;
+    }
+    let s = sched();
+    let mut g = lock(s);
+    // Hand the baton back to the scheduler but do NOT re-queue -- we are away
+    // doing I/O and will re-queue ourselves in `io_end`.
+    g.turn = Turn::Scheduler;
+    s.cv.notify_all();
+    1
+}
+
+/// Re-acquire the baton after a blocking I/O operation: re-queue this task as
+/// ready and park until the scheduler grants it a turn. Call only after an
+/// `io_begin` that returned 1.
+#[no_mangle]
+pub extern "C" fn kryos_coop_io_end() {
+    let id = CURRENT_TASK.with(|c| c.get());
+    if id == 0 {
+        return;
+    }
+    let s = sched();
+    let mut g = lock(s);
+    g.ready.push_back(id);
+    s.cv.notify_all();
+    while g.turn != Turn::Task(id) {
+        g = s.cv.wait(g).unwrap_or_else(|p| p.into_inner());
+    }
+}
+
 /// Drive all spawned tasks to completion, round-robin. Runs on the calling
 /// (scheduler) thread; must not be called from within a task.
 #[no_mangle]
@@ -190,23 +230,25 @@ pub extern "C" fn kryos_coop_run() {
     let s = sched();
     loop {
         let mut g = lock(s);
-        let next = g.ready.pop_front();
-        let id = match next {
-            Some(id) => id,
-            None => {
-                // No ready tasks. If none are live, we're done; otherwise a
-                // task is blocked with no way to be woken — bail rather than
-                // hang (cannot happen in the cooperative model).
+        // Pick the next ready task. If none are ready but some are still live,
+        // they are away doing blocking I/O (`io_begin`) and will re-queue via
+        // `io_end` -- wait for that rather than returning early.
+        let id = loop {
+            if let Some(id) = g.ready.pop_front() {
+                break id;
+            }
+            if g.live == 0 {
                 return;
             }
+            g = s.cv.wait(g).unwrap_or_else(|p| p.into_inner());
         };
         g.turn = Turn::Task(id);
         s.cv.notify_all();
-        // Wait until the task hands the baton back (yielded or completed).
+        // Wait until the task hands the baton back (yielded, went away for I/O,
+        // or completed).
         while g.turn != Turn::Scheduler {
             g = s.cv.wait(g).unwrap_or_else(|p| p.into_inner());
         }
-        // The task either re-queued itself (yield) or finished; loop on.
         drop(g);
     }
 }
@@ -256,6 +298,26 @@ pub extern "C" fn kryos_coop_reset() {
 #[no_mangle]
 pub extern "C" fn kryos_coop_current() -> u64 {
     CURRENT_TASK.with(|c| c.get())
+}
+
+/// Run a blocking operation `f` with cooperative I/O offload. On a coop task
+/// this releases the baton for the duration of `f` (so sibling tasks run
+/// concurrently) and re-acquires it after -- turning a blocking syscall into a
+/// non-blocking `await` point. On any other thread it just runs `f`. The
+/// baton is re-acquired even if `f` panics (a drop guard), so an I/O error that
+/// unwinds cannot wedge the scheduler.
+pub fn io_offload<T>(f: impl FnOnce() -> T) -> T {
+    let released = kryos_coop_io_begin() == 1;
+    struct Guard(bool);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if self.0 {
+                kryos_coop_io_end();
+            }
+        }
+    }
+    let _g = Guard(released);
+    f()
 }
 
 // ---------------------------------------------------------------------------

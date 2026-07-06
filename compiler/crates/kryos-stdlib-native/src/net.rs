@@ -73,7 +73,9 @@ pub extern "C" fn kryos_tcp_connect(host_ptr: *const u8, host_len: usize, port: 
     };
 
     let addr = format!("{host}:{port}");
-    match TcpStream::connect(&addr) {
+    // On a coop task, connect off the baton so sibling async tasks run while
+    // the (slow) handshake blocks.
+    match kryos_rt::executor::io_offload(|| TcpStream::connect(&addr)) {
         Ok(stream) => with_socket_table(|table| table.insert(SocketEntry::Stream(stream))),
         Err(_) => -1,
     }
@@ -122,8 +124,9 @@ pub extern "C" fn kryos_tcp_accept(listener_fd: i64) -> i64 {
         None => return -1,
     };
 
-    // Phase 2: block on accept() WITHOUT holding the mutex.
-    match listener_arc.accept() {
+    // Phase 2: block on accept() WITHOUT holding the mutex (off the coop baton
+    // so other async tasks run while we wait for a connection).
+    match kryos_rt::executor::io_offload(|| listener_arc.accept()) {
         Ok((stream, _addr)) => {
             // Phase 3: re-acquire briefly to insert the new stream.
             with_socket_table(|table| {
@@ -160,8 +163,8 @@ pub extern "C" fn kryos_tcp_send(fd: i64, data: *const u8, len: usize) -> i64 {
         None => return -1,
     };
 
-    // Phase 2: blocking I/O WITHOUT holding the mutex.
-    match stream.write(slice) {
+    // Phase 2: blocking I/O WITHOUT holding the mutex (off the coop baton).
+    match kryos_rt::executor::io_offload(|| stream.write(slice)) {
         Ok(n) => n as i64,
         Err(_) => -1,
     }
@@ -191,8 +194,8 @@ pub extern "C" fn kryos_tcp_recv(fd: i64, buf: *mut u8, buf_len: usize) -> i64 {
         None => return -1,
     };
 
-    // Phase 2: blocking I/O WITHOUT holding the mutex.
-    match stream.read(slice) {
+    // Phase 2: blocking I/O WITHOUT holding the mutex (off the coop baton).
+    match kryos_rt::executor::io_offload(|| stream.read(slice)) {
         Ok(n) => n as i64,
         Err(_) => -1,
     }

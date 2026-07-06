@@ -1484,7 +1484,9 @@ pub extern "C" fn kryos_builtin_http_get(url_handle: i64) -> i64 {
         }
     };
 
-    let body = http_get_impl(&url_str).unwrap_or_default();
+    // Off the coop baton: on an async task, sibling tasks run while the HTTP
+    // round-trip (connect + request + response) blocks.
+    let body = crate::executor::io_offload(|| http_get_impl(&url_str)).unwrap_or_default();
     let bytes = body.as_bytes();
     unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
 }
