@@ -230,7 +230,7 @@ The full toolchain. Not a roadmap — actually built and tested:
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
 - **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Concurrency** — `spawn` (OS threads) + channels (`chan<T>` MPMC, `select`) + a cooperative `async`/`await` executor that genuinely interleaves tasks (verified on both backends; a non-blocking I/O runtime behind `await` is still planned). `actor` message-passing is **preview** — it parses and has codegen lowering, but constructors are not yet callable from user code
+- **Concurrency** — `spawn` (OS threads) + channels (`chan<T>` MPMC, `select`) + a cooperative `async`/`await` executor that genuinely interleaves tasks (verified on both backends; a non-blocking I/O runtime behind `await` is still planned) + `actor` for stateful message-passing (each actor owns private state, processes messages in order on its own thread; args transmitted, threads joined at exit)
 - **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
 - **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
 - **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
@@ -292,7 +292,7 @@ Kryos is **v1.0.0-beta.3**. Feature-complete language and toolchain + self-hosti
 | Pattern matching + enums | Complete |
 | Closures (ARC-captured) | Complete |
 | Channels + `spawn` + `select` | Complete |
-| Actors (message-passing) | Preview — parses + lowers; constructor not yet callable |
+| Actors (message-passing) | Complete (JIT + AOT) |
 | Async / await (cooperative executor) | Complete — tasks interleave under `coop_run()`; non-blocking I/O runtime not yet shipped |
 | Capability enforcement (`@pure`, `@capabilities`) | Complete |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |

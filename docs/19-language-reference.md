@@ -474,25 +474,33 @@ is a non-blocking I/O runtime behind `await` -- an `await` on a blocking
 syscall still blocks its OS thread. For CPU-bound parallelism use
 `spawn` + channels.
 
-### 9.4 Actors (preview)
+### 9.4 Actors
 
-> **Preview:** actor syntax parses, type-checks, and has MIR/codegen
-> lowering, but the type checker does not yet register the actor name as a
-> callable type, so `Counter()` is rejected (`error[E0102]`). Actors are
-> not usable from user code today; the example below describes the intended
-> design. Use `spawn` + channels for message-passing now.
+`ActorName()` spawns an actor on its own OS thread and returns a handle;
+`handle.method(args)` sends a message. Handlers run one at a time, in order,
+mutating private state via `self.field`. Fully working on both backends.
 
 ```kryos
 actor Counter {
     count: i64,
 
     fn inc(self) { self.count = self.count + 1 }
-    fn get(self) -> i64 { return self.count }
+    fn add(self, n: i64) { self.count = self.count + n }
+}
+
+fn main() {
+    let c = Counter()
+    c.inc()
+    c.add(10)
 }
 ```
 
-Actors own their state and process one message at a time. Messages are
-method calls; the actor system serializes them.
+Actors own their state and process one message at a time; the runtime
+serializes messages. Handler return values are discarded (fire-and-forget) --
+a request-response pattern needs a reply channel. Message arguments (`i64`,
+`str`, arrays, ...) are transmitted through the mailbox. At `main` exit the
+runtime drains and joins every actor, so all messages sent before `main`
+returns are processed with no `sleep` needed. See `examples/actors.kry`.
 
 ---
 
@@ -593,7 +601,7 @@ What "implemented" means in 1.0.0-beta.3:
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
 | `async` / `await`           | Cooperative executor (tasks interleave; no non-blocking I/O yet) |
-| Actors                      | Preview (parses + lowers; constructor not yet callable) |
+| Actors                      | Implemented (JIT + AOT) |
 | `unsafe` blocks             | Implemented         |
 | FFI (extern "C")            | Implemented         |
 | Cross-compile (LLVM)        | Implemented         |

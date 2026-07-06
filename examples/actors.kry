@@ -1,0 +1,37 @@
+// Actors: stateful, message-passing concurrency.
+//
+// An actor owns private state and processes its messages one at a time, in
+// order, on its own OS thread. No shared memory, no locks in user code -- you
+// send messages and the actor serializes them. Every message sent before
+// `main` returns is processed: the runtime drains and joins actor threads at
+// exit, so no `sleep` is needed.
+//
+// (Messages to a SINGLE actor are FIFO-ordered, as below. Two different actors
+// run concurrently, so their outputs may interleave in any order.)
+//
+// expect-stdout: balance: 100
+// expect-stdout: balance: 150
+// expect-stdout: balance: 120
+// expect-stdout: balance: 620
+
+actor Account {
+    balance: i64,
+
+    fn deposit(self, amount: i64) {
+        self.balance = self.balance + amount
+        println("balance: " + to_string(self.balance))
+    }
+
+    fn withdraw(self, amount: i64) {
+        self.balance = self.balance - amount
+        println("balance: " + to_string(self.balance))
+    }
+}
+
+fn main() {
+    let acct = Account()
+    acct.deposit(100)   // balance: 100
+    acct.deposit(50)    // balance: 150
+    acct.withdraw(30)   // balance: 120
+    acct.deposit(500)   // balance: 620
+}

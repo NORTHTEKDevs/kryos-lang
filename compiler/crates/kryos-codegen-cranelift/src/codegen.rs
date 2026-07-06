@@ -2134,6 +2134,17 @@ pub fn compile_module_with_options(
                 None
             };
 
+            // Drain + join actor threads, then wait for spawned threads.
+            let actor_wait_sig = Signature::new(call_conv);
+            let actor_wait_id = object_module.declare_function(
+                "kryos_actor_wait_all",
+                Linkage::Import,
+                &actor_wait_sig,
+            )?;
+            let actor_wait_ref =
+                object_module.declare_func_in_func(actor_wait_id, builder.func);
+            builder.ins().call(actor_wait_ref, &[]);
+
             // Wait for all spawned threads before exiting.
             let wait_sig = {
                 let mut s = Signature::new(call_conv);

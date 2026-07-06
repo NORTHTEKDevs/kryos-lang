@@ -823,6 +823,7 @@ impl LlvmCodegen {
         // Spawn runtime
         self.emit_line("declare i64 @kryos_spawn(i64, ptr, i64)");
         self.emit_line("declare void @kryos_spawn_wait_all()");
+        self.emit_line("declare void @kryos_actor_wait_all()");
         self.emit_line("declare void @kryos_sleep(i64)");
         // Cooperative async executor (real interleaving via await/yield).
         self.emit_line("declare i64 @kryos_coop_spawn(i64, i64)");
@@ -2155,7 +2156,9 @@ impl LlvmCodegen {
         self.emit_line("define i32 @main() {");
         self.emit_line("entry:");
         self.emit_line("  call void @_kryos_main()");
-        // Wait for any spawned threads to complete before exit (no-op if none).
+        // Drain + join actor threads, then wait for spawned threads (no-op if
+        // none of either). Actors first so their handlers finish before exit.
+        self.emit_line("  call void @kryos_actor_wait_all()");
         self.emit_line("  call void @kryos_spawn_wait_all()");
         self.emit_line("  ret i32 0");
         self.emit_line("}");

@@ -1,0 +1,33 @@
+// Actor: spawn, stateful message-passing with i64 + str args, graceful drain.
+// A single actor processes messages FIFO, so the output is deterministic. The
+// runtime joins actor threads at main exit -- no sleep needed.
+// expect-stdout: total: 5
+// expect-stdout: total: 15
+// expect-stdout: log: hello
+// expect-stdout: total: 12
+
+actor Accumulator {
+    total: i64,
+
+    fn add(self, n: i64) {
+        self.total = self.total + n
+        println("total: " + to_string(self.total))
+    }
+
+    fn note(self, msg: str) {
+        println("log: " + msg)
+    }
+
+    fn sub(self, n: i64) {
+        self.total = self.total - n
+        println("total: " + to_string(self.total))
+    }
+}
+
+fn main() {
+    let a = Accumulator()
+    a.add(5)
+    a.add(10)
+    a.note("hello")
+    a.sub(3)
+}

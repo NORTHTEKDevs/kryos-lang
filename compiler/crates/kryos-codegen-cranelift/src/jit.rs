@@ -441,6 +441,10 @@ impl JitCompiler {
             "kryos_spawn_wait_all",
             kryos_rt::spawn::kryos_spawn_wait_all as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_actor_wait_all",
+            kryos_rt::actor::kryos_actor_wait_all as *const u8,
+        );
         jit_builder.symbol("kryos_sleep", kryos_rt::spawn::kryos_sleep as *const u8);
         jit_builder.symbol(
             "kryos_sleep_ms",
@@ -1951,6 +1955,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_chan_recv_i64", "kryos_chan_recv_i64", sig(1));
     decl!("kryos_spawn", "kryos_spawn", sig(2));
     decl!("kryos_spawn_wait_all", "kryos_spawn_wait_all", sig(0));
+    decl!("kryos_actor_wait_all", "kryos_actor_wait_all", sig(0));
     decl!("kryos_sleep", "kryos_sleep", sig(1));
     decl!("kryos_sleep_ms", "kryos_sleep_ms", sig(1));
 

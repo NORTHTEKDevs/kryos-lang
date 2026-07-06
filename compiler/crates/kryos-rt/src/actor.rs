@@ -73,7 +73,7 @@ pub extern "C" fn kryos_actor_spawn(entry_fn: extern "C" fn(*mut u8), state_ptr:
     let state_addr = state_ptr as usize;
 
     let entry_for_thread = entry;
-    std::thread::spawn(move || {
+    let handle = std::thread::spawn(move || {
         CURRENT_ACTOR_ID.set(actor_id);
 
         let ptr = state_addr as *mut u8;
@@ -89,8 +89,57 @@ pub extern "C" fn kryos_actor_spawn(entry_fn: extern "C" fn(*mut u8), state_ptr:
         }
         entry_for_thread.condvar.notify_all();
     });
+    // Track the handle so `kryos_actor_wait_all` can join it at `main` exit.
+    {
+        let mut ths = match actor_threads().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        ths.push(handle);
+    }
 
     actor_id
+}
+
+/// Join handles for every spawned actor thread, drained by `kryos_actor_wait_all`.
+static ACTOR_THREADS: OnceLock<Mutex<Vec<std::thread::JoinHandle<()>>>> = OnceLock::new();
+
+fn actor_threads() -> &'static Mutex<Vec<std::thread::JoinHandle<()>>> {
+    ACTOR_THREADS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Gracefully shut down and join every actor at `main` exit: close each
+/// mailbox (the dispatch loop drains its remaining messages, then `recv`
+/// returns 0 and the loop exits), then join the thread. This makes actors
+/// reliable without a hand-tuned `sleep` -- every message sent before `main`
+/// returns is processed. Inserted by codegen at the end of `main`, right
+/// before `kryos_spawn_wait_all`.
+#[no_mangle]
+pub extern "C" fn kryos_actor_wait_all() {
+    {
+        let reg = match get_registry().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        for entry in reg.values() {
+            let mut mb = match entry.mailbox.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            mb.closed = true;
+            entry.condvar.notify_all();
+        }
+    }
+    let handles: Vec<std::thread::JoinHandle<()>> = {
+        let mut ths = match actor_threads().lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        std::mem::take(&mut *ths)
+    };
+    for h in handles {
+        let _ = h.join();
+    }
 }
 
 /// Send a message to an actor's mailbox.
