@@ -4,6 +4,35 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.4] — 2026-07-06 — "Actors work; nothing checked permissively"
+
+### Added
+- **Actors are fully implemented** on both backends (JIT + AOT). `ActorName()`
+  spawns an actor on its own OS thread; `handle.method(args)` sends a message;
+  the actor processes messages one at a time, in order, mutating private state
+  via `self.field`. Message arguments (i64, str, arrays) are transmitted through
+  the mailbox. At `main` exit the runtime drains every mailbox and joins the
+  threads, so all messages sent before `main` returns are processed with no
+  `sleep` needed. `examples/actors.kry` + a native regression test. (Actors were
+  a broken preview in beta.3; the fix corrected the dispatch arg count, handler
+  lowering, actor-handle type erasure, an LLVM SSA/pointer-arg bug, and added a
+  graceful join.)
+- **`time_millis()`** builtin — the documented short alias for
+  `time_now_millis` (both backends). Closes a doc/reality gap.
+
+### Changed
+- **The entire ecosystem is now deny-by-default.** Every ecosystem package entry
+  point declares its capabilities; the ecosystem gate runs under `inferred`
+  (253/253 clean). Combined with the compiler default, examples, and self-host
+  compiler, **no first-class Kryos code is checked permissively** — only
+  internal test-harness fixtures and illustrative doc snippets.
+- Concurrency documented accurately: concurrent I/O works today via
+  `spawn`/channels/`actor` (real OS threads); `async`/`await` is a cooperative
+  CPU-task interleaver, not a non-blocking I/O reactor. Removed the misleading
+  "concurrent I/O is unavailable" framing.
+- `std::iter` HOFs (`fold`/`filter`/`map`/`reduce`) documented as needing an
+  import (they are not global builtins).
+
 ## [1.0.0-beta.3] — 2026-07-05 — "Deny-by-default"
 
 The capability model — Kryos's defining feature — is now enforced **by

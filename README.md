@@ -1,11 +1,11 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v1.0.0--beta.3-blue.svg)](CHANGELOG.md)
+[![Release](https://img.shields.io/badge/release-v1.0.0--beta.4-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-47%2F47-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
-[![Ecosystem check](https://img.shields.io/badge/ecosystem_typecheck-255%2F255-brightgreen.svg)](tests/ecosystem_check.sh)
+[![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-253%2F253-brightgreen.svg)](tests/ecosystem_check.sh)
 [![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
 
 **Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics — a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions — 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
@@ -31,9 +31,9 @@ kryos run hello.kry
 - **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical self-hosting fixed point — a self-host-compiled compiler recompiling its own source produces a bit-identical compiler (stage-3 == stage-4, SHA-256-verified). The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 66 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
-- **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 81 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, or a builtin passed as a value. `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture; the only surface still checked permissively is the legacy `ecosystem/` corpus (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
+- **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 81 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, or a builtin passed as a value. `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
 
-> **Status:** Kryos is **1.0.0-beta.3** — a feature-complete beta with one primary author, not yet externally stress-tested. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are frozen for 1.x backwards compatibility. See [STABILITY.md](STABILITY.md) for the contract.
+> **Status:** Kryos is **1.0.0-beta.4** — a feature-complete beta with one primary author, not yet externally stress-tested. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are frozen for 1.x backwards compatibility. See [STABILITY.md](STABILITY.md) for the contract.
 
 ---
 
@@ -82,7 +82,7 @@ kryos new hello && cd hello && kryos run src/main.kry
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 1.0.0-beta.3
+./target/release/kryos --version   # → kryos 1.0.0-beta.4
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
@@ -272,7 +272,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v1.0.0-beta.3**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
+Kryos is **v1.0.0-beta.4**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver
