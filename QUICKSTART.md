@@ -80,7 +80,7 @@ For deeper reference:
 - [docs/grammar.md](docs/grammar.md) — formal grammar
 - [docs/06-ownership.md](docs/06-ownership.md) — ARC + move semantics without lifetimes
 - [docs/10-capabilities.md](docs/10-capabilities.md) — `@capabilities` / `@pure` annotations
-- [CHANGELOG.md](CHANGELOG.md) — what's new in v1.0.0-beta.4
+- [CHANGELOG.md](CHANGELOG.md) — what's new in v1.0.0-beta.5
 
 ## Troubleshooting
 

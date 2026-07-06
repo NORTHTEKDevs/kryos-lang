@@ -4,6 +4,24 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-beta.5] — 2026-07-06 — "Non-blocking async I/O"
+
+### Added
+- **Non-blocking async I/O.** A blocking I/O op (`sleep`, `http_get`,
+  `tcp_connect`/`accept`/`send`/`recv`) inside an `async` task now yields the
+  cooperative scheduler for the duration of the syscall, so `coop_spawn`ed tasks
+  run concurrently — their I/O overlaps instead of serializing. Four async tasks
+  each doing 300 ms of I/O finish in ~300 ms, not 1.2 s (verified concurrent on
+  both backends). Implemented as a thread-per-task scheduler that releases the
+  baton on blocking calls (`kryos_coop_io_begin`/`io_end`/`io_offload`;
+  `coop_run` waits for away tasks), not an epoll/IOCP reactor — the observable
+  behavior is concurrent async I/O. `examples/async_io.kry` + a threshold-based
+  native regression test. The deterministic `await` interleave semantics are
+  unchanged.
+
+This closes the last "planned" concurrency item: Kryos now has real OS-thread
+parallelism (`spawn`/channels/`actor`) **and** non-blocking `async`/`await`.
+
 ## [1.0.0-beta.4] — 2026-07-06 — "Actors work; nothing checked permissively"
 
 ### Added
