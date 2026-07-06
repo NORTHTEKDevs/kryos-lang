@@ -68,10 +68,6 @@ curl -fsSL https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/inst
 irm https://raw.githubusercontent.com/NORTHTEKDevs/kryos-lang/master/install.ps1 | iex
 ```
 
-> While this repository is private, release downloads need a GitHub token:
-> set `GITHUB_TOKEN` (or `GH_TOKEN`) to a PAT with repo read access before
-> running either installer. This note disappears when the repo goes public.
-
 After installing, verify the toolchain and take the tour:
 
 ```bash
