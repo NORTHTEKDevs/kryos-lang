@@ -100,21 +100,21 @@ v1.0.0-rc.1. Honest, non-blocking residuals:
 `unsafe { }` is now ENFORCED: a raw-pointer dereference outside any `unsafe`
 block is rejected with E0500.
 
-### 5.0 WASM backend coverage (v0.6)
+### 5.0 WASM backend coverage (v0.7)
 
 The `wasm32` backend is a compute-focused subset, not full parity. **Works**
 (verified via the node host): i64/f64, all integer widths + narrow-int casts
 (`x as u8`), strings, structs, enums, arrays (host-backed + mutable,
 `push`/`pop` in place — matching native), maps (`map<str,i64>`), if/else,
-single-level loops (`while`, `for i in a..b`), recursion, generics, traits,
-`Result`/`Option`, **closures** (no-capture AND capturing, via a heap env
-array + per-lambda thunk + `call_indirect`), and **higher-order functions**
-(`fold`/`map`/`filter` with lambdas, incl. captured variables). **Not on
-wasm:** NESTED loops (the structured-CFG translator is single-level — a
-relooper is future work; use recursion or the native backends), capturing an
-f64/f32 value (i64/str/handle captures work), and all concurrency
-(spawn/channels/actors — wasm is single-threaded by design). The native
-Cranelift JIT and LLVM AOT backends remain the full-language, at-parity path.
+loops (`while`, `for i in a..b`, NESTED loops, `break`/`continue` — via a
+dispatch-relooper fallback for CFGs the structured translator can't express),
+recursion, generics, traits, `Result`/`Option`, **closures** (no-capture AND
+capturing, via a heap env array + per-lambda thunk + `call_indirect`), and
+**higher-order functions** (`fold`/`map`/`filter` with lambdas, incl. captured
+variables). **Not on wasm:** capturing an f64/f32 value (i64/str/handle
+captures work), and all concurrency (spawn/channels/actors — wasm is
+single-threaded by design). The native Cranelift JIT and LLVM AOT backends
+remain the full-language, at-parity path.
 
 The v2.1 "known limitations" listed below were all closed in v2.2 and are kept
 here as historical context.

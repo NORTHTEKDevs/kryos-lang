@@ -48,3 +48,12 @@ JIT AND AOT, and native corpus + strict-caps + soundness + ecosystem stay green.
   wiring for a concurrency edge; select is the documented non-blocking path.
 - wasm f64/f32 captures: edge (i64/str/handle captures work).
 These are honest, documented limitations — not silent-wrong.
+
+
+## RESIDUALS (round 2 - user asked to do them)
+R1. [DONE] wasm NESTED loops (1f98edd) - dispatch-relooper fallback (loop + pc-dispatch,
+    branch-free terminators via select). Zero-regression: structured tried first, relooper
+    only on error. Fixed inner-branch continue miscompile too. nested/triple/continue/break
+    all wasm==native; corpus 10/10.
+R2. [IN PROGRESS] wasm f64/f32 closure captures.
+R3. [ ] chan buffered/try_receive.
