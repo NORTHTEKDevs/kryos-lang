@@ -28,6 +28,9 @@ let memory;
 let bumpPtr = 1 << 14;
 // Host-side map storage: handle N -> maps[N-1] (a JS Map<string, bigint>).
 const maps = [];
+// Host-side array storage: handle N -> arrays[N-1] (a JS array of BigInt).
+// Host-backed so push/pop mutate in place, matching the native backends.
+const arrays = [];
 
 function bumpAlloc(bytes) {
   const pageBytes = 65536;
@@ -130,25 +133,18 @@ const env = {
   },
 
   // ---- arrays (8-byte i64 slots in linear memory) ----
+  // ---- Arrays: host-backed (a JS array of BigInt per handle), so push/pop
+  // MUTATE IN PLACE -- matching the native backends, where `push(arr, x)` with
+  // the result discarded grows arr. Handle = 1-based index into `arrays`. ----
   kryos_array_new: (count) => {
-    const n = asNum(count);
-    const off = bumpAlloc(n * 8);
-    new Uint8Array(memory.buffer, off, n * 8).fill(0);
-    return pack(off, n);
+    arrays.push(new Array(asNum(count)).fill(0n));
+    return BigInt(arrays.length); // 1-based, nonzero
   },
-  kryos_array_get: (packed, index) => {
-    const [off] = unpack(packed);
-    return new DataView(memory.buffer).getBigInt64(off + asNum(index) * 8, true);
+  kryos_array_get: (handle, index) => arrays[asNum(handle) - 1][asNum(index)],
+  kryos_array_set: (handle, index, value) => {
+    arrays[asNum(handle) - 1][asNum(index)] = BigInt(value);
   },
-  kryos_array_set: (packed, index, value) => {
-    const [off] = unpack(packed);
-    new DataView(memory.buffer).setBigInt64(
-      off + asNum(index) * 8,
-      BigInt(value),
-      true,
-    );
-  },
-  kryos_array_length: (packed) => unpack(packed)[1],
+  kryos_array_length: (handle) => arrays[asNum(handle) - 1].length,
   // ---- Maps (str-keyed, i64-valued). Handle = 1-based index into `maps`. ----
   kryos_map_new: () => {
     maps.push(new Map());
@@ -172,20 +168,15 @@ const env = {
     return m.has(readStr(off, len)) ? 1n : 0n;
   },
   kryos_map_len: (handle) => maps[asNum(handle) - 1].size,
-  kryos_array_push: (packed, value) => {
-    // Reallocate len+1 slots, copy, append. Handles are immutable packs.
-    const [off, len] = unpack(packed);
-    const noff = bumpAlloc((len + 1) * 8);
-    new Uint8Array(memory.buffer, noff, len * 8).set(
-      new Uint8Array(memory.buffer, off, len * 8),
-    );
-    new DataView(memory.buffer).setBigInt64(noff + len * 8, BigInt(value), true);
-    return pack(noff, len + 1);
+  kryos_array_push: (handle, value) => {
+    // In-place append (mutates the existing array), returns the SAME handle so
+    // both `push(a, x)` (discarded) and `a = push(a, x)` (reassigned) work.
+    arrays[asNum(handle) - 1].push(BigInt(value));
+    return handle;
   },
-  kryos_array_pop: (packed) => {
-    const [off, len] = unpack(packed);
-    if (len === 0) return 0n;
-    return new DataView(memory.buffer).getBigInt64(off + (len - 1) * 8, true);
+  kryos_array_pop: (handle) => {
+    const a = arrays[asNum(handle) - 1];
+    return a.length === 0 ? 0n : a.pop();
   },
 
   // ---- JSON ----

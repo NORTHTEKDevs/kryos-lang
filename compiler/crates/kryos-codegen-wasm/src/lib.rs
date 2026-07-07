@@ -321,6 +321,9 @@ struct WasmCodegen {
     map_len_idx: u32,
     /// call_indirect type signatures, deduped by a canonical key -> type index.
     indirect_types: HashMap<String, u32>,
+    /// User functions whose return type is void (leave nothing on the wasm
+    /// stack). Used to decide whether a discarded call's result must be dropped.
+    void_user_fns: std::collections::HashSet<String>,
 
     /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
     /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
@@ -392,6 +395,7 @@ impl WasmCodegen {
             map_has_str_idx: 0,
             map_len_idx: 0,
             indirect_types: HashMap::new(),
+            void_user_fns: std::collections::HashSet::new(),
             struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
@@ -860,6 +864,7 @@ impl WasmCodegen {
                 params.push(lower_type(&p.ty)?);
             }
             let results: Vec<ValType> = if is_void(&func.ret_ty) {
+                self.void_user_fns.insert(func.name.clone());
                 vec![]
             } else {
                 vec![lower_type(&func.ret_ty)?]
@@ -1947,6 +1952,27 @@ impl<'a> FnEmitter<'a> {
     // Instruction-level lowering
     // -----------------------------------------------------------------------
 
+    /// Whether emitting `rv` leaves exactly one value on the wasm stack. Used
+    /// to decide if a discarded (void-dest) statement result must be dropped.
+    /// Only `Call` to a void builtin or a void user function leaves nothing;
+    /// every other rvalue pushes one value.
+    fn rvalue_leaves_value(&self, rv: &RValue) -> bool {
+        match rv {
+            RValue::Call { func, .. } => {
+                const VOID_BUILTINS: &[&str] = &[
+                    "println", "print", "eprintln", "eprint", "array_set", "alert",
+                    "canvas_clear", "canvas_fill_rect", "dom_set_text", "sleep", "sleep_ms",
+                ];
+                !VOID_BUILTINS.contains(&func.as_str())
+                    && !self.cg.void_user_fns.contains(func.as_str())
+            }
+            // Statement-level Nop-like rvalues don't occur here; every other
+            // rvalue (BinOp, Array, Map, Closure, CallIndirect to non-void, ...)
+            // leaves a value.
+            _ => true,
+        }
+    }
+
     fn emit_instruction(&mut self, inst: &Instruction) -> Result<(), WasmCodegenError> {
         match inst {
             Instruction::Assign { dest, value } => {
@@ -1960,7 +1986,16 @@ impl<'a> FnEmitter<'a> {
                     .map(|l| is_void(&l.ty))
                     .unwrap_or(false);
                 if dest_is_void {
+                    // Discarded statement (e.g. `push(r, i)` with the result
+                    // thrown away). Emit for side effect, but if the rvalue
+                    // still LEAVES a value on the stack (push, str_concat, a
+                    // non-void call, ...), drop it -- else the wasm stack is
+                    // imbalanced (the bug behind `filter` and any discarded
+                    // value-returning call inside a while+if).
                     self.emit_rvalue(value)?;
+                    if self.rvalue_leaves_value(value) {
+                        self.wfunc.instruction(&W::Drop);
+                    }
                 } else {
                     self.emit_rvalue(value)?;
                     self.wfunc.instruction(&W::LocalSet(dest.0));
@@ -2722,9 +2757,16 @@ impl<'a> FnEmitter<'a> {
         // Built-in: push(arr, value) — append value to array, return new handle
         // -------------------------------------------------------------
         if func == "push" && args.len() == 2 {
-            self.emit_operand(&args[0])?; // packed array i64
+            self.emit_operand(&args[0])?; // array handle
             self.emit_operand(&args[1])?; // value i64
             self.wfunc.instruction(&W::Call(self.cg.array_push_idx));
+            return Ok(());
+        }
+
+        // Built-in: pop(arr) -> element (removes + returns the last element).
+        if func == "pop" && args.len() == 1 {
+            self.emit_operand(&args[0])?; // array handle
+            self.wfunc.instruction(&W::Call(self.cg.array_pop_idx));
             return Ok(());
         }
 
