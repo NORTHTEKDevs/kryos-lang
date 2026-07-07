@@ -55,5 +55,28 @@ R1. [DONE] wasm NESTED loops (1f98edd) - dispatch-relooper fallback (loop + pc-d
     branch-free terminators via select). Zero-regression: structured tried first, relooper
     only on error. Fixed inner-branch continue miscompile too. nested/triple/continue/break
     all wasm==native; corpus 10/10.
-R2. [IN PROGRESS] wasm f64/f32 closure captures.
-R3. [ ] chan buffered/try_receive.
+R2. [CLOSED-as-limitation] wasm f64/f32 closure captures. Bitcast plumbing
+    (I64ReinterpretF64 store / F64ReinterpretI64 load) leaked across the direct-call
+    AND HOF paths - reverted to the honest compile error. i64/str/handle captures +
+    all HOFs work; native backends have full f64-capture parity. Documented in
+    STABILITY 5.0 as a bounded wasm residual, not silent-wrong.
+R3. [DONE] chan non-blocking try_receive + honest buffered docs.
+    - Wired chan_try_recv (status 1/0/-1) + chan_last_recv builtins end-to-end:
+      MIR builtin table, cranelift dispatch + JIT symbol/decl, LLVM codegen arms,
+      type-checker sigs. Runtime primitives already existed (kryos_chan_try_recv_status_i64
+      + kryos_chan_last_recv_i64); the queue is an unbounded Mutex<VecDeque> (already
+      buffered - send never blocks).
+    - stdlib try_receive() rewritten to genuinely non-block (was a blocking stub that
+      always reported ok=true). This ALSO un-breaks select_cases() and try_acquire(),
+      which busy-poll on try_receive and previously blocked forever.
+    - Corrected the misleading "unbuffered" module docs (runtime is unbounded-buffered;
+      capacity is an advisory hint, no hard backpressure bound - documented).
+    - PARSER FIX: `use std::chan::{...}` now parses. `chan` is a reserved keyword, so
+      the whole chan module was previously unimportable; added expect_path_segment so a
+      use-path segment accepts a reserved-keyword module name (unambiguous in that
+      position). Applies to chan/select/type/... as module names.
+    - Verified: corpus chan_try_recv.kry (raw builtins, deterministic) + example
+      chan_try_receive.kry (std::chan wrapper) both JIT==AOT correct. Native JIT +
+      AOT suites, examples-gate (root 45/45), strict-caps 89/89, soundness all green.
+
+## ALL ROUND-2 RESIDUALS RESOLVED (R1 done, R2 closed-as-limitation, R3 done).

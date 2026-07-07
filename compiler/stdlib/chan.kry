@@ -13,10 +13,14 @@
 //   std.chan.send_val(ch, 42)
 //   let msg = std.chan.receive(ch)
 //
-// NOTE: The underlying `chan()` builtin currently encodes a single
-// unbuffered channel of i64-shaped values. Capacity and close are
-// best-effort: the `is_closed` flag is advisory at the language
-// level, and `close_chan` only forwards to the runtime close hook.
+// NOTE: The underlying `chan()` builtin is an UNBOUNDED buffered
+// channel of i64-shaped values (a mutex-guarded queue): `send` never
+// blocks and enqueues, `recv` blocks only while the queue is empty,
+// and `try_receive` polls without blocking. The `capacity` field is an
+// advisory hint -- there is no hard backpressure bound. Close is
+// best-effort: `is_closed` is advisory at the language level and
+// `close_chan` forwards to the runtime close hook (after which a
+// drained `recv`/`try_receive` reports empty/closed).
 // ============================================================
 
 // --- Channel struct ----------------------------------------------------------
@@ -27,7 +31,8 @@ struct Channel {
     is_closed: bool
 }
 
-/// Create an unbuffered channel (capacity 0 -- send blocks until recv).
+/// Create a channel. The runtime queue is unbounded, so `send` never
+/// blocks; `capacity` is recorded as 0 (advisory only).
 fn new_channel() -> Channel {
     let raw = chan()
     return Channel {
@@ -38,8 +43,9 @@ fn new_channel() -> Channel {
 }
 
 /// Create a channel with a recorded capacity hint. The underlying
-/// `chan()` builtin is currently unbuffered; the capacity field is
-/// retained for documentation and for higher-level helpers.
+/// runtime queue is unbounded (the hint is not a hard bound); the
+/// `capacity` field is retained for documentation and higher-level
+/// helpers that size their buffers off it.
 fn buffered(capacity: i64) -> Channel {
     assert(capacity >= 0, "chan: capacity must be >= 0")
     let raw = chan()
@@ -52,8 +58,8 @@ fn buffered(capacity: i64) -> Channel {
 
 // --- Core operations ---------------------------------------------------------
 
-/// Send a value on the channel. Blocks until a receiver is ready.
-/// Aborts if the channel was previously marked closed.
+/// Send a value on the channel. Enqueues without blocking (the runtime
+/// queue is unbounded). Aborts if the channel was previously marked closed.
 fn send_val(ch: Channel, val: i64) -> void {
     assert(not ch.is_closed, "chan: send on closed channel")
     send(ch.raw, val)
@@ -65,17 +71,23 @@ fn receive(ch: Channel) -> i64 {
 }
 
 /// Try to receive a value without blocking.
-/// Returns a struct with `ok` and `value` fields.
-/// The current channel runtime blocks on recv, so this currently
-/// behaves like a blocking receive that always reports ok.
+/// Returns a struct with `ok` and `value` fields: `ok == true` with the
+/// dequeued `value` when a message was ready, `ok == false` (value 0) when
+/// the channel was empty or closed. Never blocks.
 struct TryRecv {
     ok: bool,
     value: i64
 }
 
 fn try_receive(ch: Channel) -> TryRecv {
-    let val = recv(ch.raw)
-    return TryRecv { ok: true, value: val }
+    // chan_try_recv returns 1 = data (fetch with chan_last_recv), 0 = empty,
+    // -1 = closed. The status/value pair is thread-local and read back
+    // immediately with no intervening yield, so it is race-free here.
+    let status = chan_try_recv(ch.raw)
+    if status == 1 {
+        return TryRecv { ok: true, value: chan_last_recv() }
+    }
+    return TryRecv { ok: false, value: 0 }
 }
 
 /// Mark a channel as closed and forward the close hint to the runtime.

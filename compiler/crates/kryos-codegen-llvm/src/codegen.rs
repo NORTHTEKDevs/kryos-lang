@@ -4514,6 +4514,45 @@ impl LlvmCodegen {
                                 ));
                             }
                         }
+                        "chan_try_recv" => {
+                            let ch = if !args.is_empty() {
+                                self.operand_to_llvm(&args[0], func)
+                            } else {
+                                "0".into()
+                            };
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call i64 @kryos_chan_try_recv_status_i64(i64 {ch})"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store i64 {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call i64 @kryos_chan_try_recv_status_i64(i64 {ch})",
+                                    dest.0
+                                ));
+                            }
+                        }
+                        "chan_last_recv" => {
+                            if is_mutable {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {tmp} = call i64 @kryos_chan_last_recv_i64()"
+                                ));
+                                self.emit_line(&format!(
+                                    "  store i64 {tmp}, ptr %_{}.addr",
+                                    dest.0
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  %_{} = call i64 @kryos_chan_last_recv_i64()",
+                                    dest.0
+                                ));
+                            }
+                        }
                         "pop" => {
                             // pop(arr: [T]) -> T
                             // Runtime: kryos_builtin_pop(arr: i64) -> i64

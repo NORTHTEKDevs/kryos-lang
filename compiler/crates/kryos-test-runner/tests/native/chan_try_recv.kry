@@ -1,0 +1,32 @@
+// Non-blocking channel receive builtins: chan_try_recv + chan_last_recv.
+// The runtime channel is an unbounded buffered queue; chan_try_recv polls
+// without blocking (1 = data / 0 = empty / -1 = closed) and chan_last_recv
+// returns the value of the most recent successful poll on this thread.
+// Deterministic (no spawn): drain a pre-filled queue and confirm the empty
+// polls report 0 instead of hanging. Verified identical on JIT and AOT.
+// expect-stdout: s0=0
+// expect-stdout: s1=1 v1=10
+// expect-stdout: s2=1 v2=20
+// expect-stdout: s3=0
+
+@capabilities()
+fn main() {
+    let ch = chan()
+
+    let s0 = chan_try_recv(ch)
+    println("s0=" + to_string(s0))
+
+    send(ch, 10)
+    send(ch, 20)
+
+    let s1 = chan_try_recv(ch)
+    let v1 = chan_last_recv()
+    println("s1=" + to_string(s1) + " v1=" + to_string(v1))
+
+    let s2 = chan_try_recv(ch)
+    let v2 = chan_last_recv()
+    println("s2=" + to_string(s2) + " v2=" + to_string(v2))
+
+    let s3 = chan_try_recv(ch)
+    println("s3=" + to_string(s3))
+}

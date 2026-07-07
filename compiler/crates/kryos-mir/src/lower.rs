@@ -679,6 +679,10 @@ pub fn lower_module_with_lambda_params(
         ("panic", MirType::Void),
         ("chan", MirType::I64),
         ("recv", MirType::I64),
+        // Non-blocking receive: chan_try_recv(ch) -> status (1 data / 0 empty /
+        // -1 closed); on status 1, chan_last_recv() returns the value.
+        ("chan_try_recv", MirType::I64),
+        ("chan_last_recv", MirType::I64),
         ("println", MirType::Void),
         ("print", MirType::Void),
         ("eprintln", MirType::Void),

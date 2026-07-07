@@ -202,6 +202,22 @@ impl Parser {
         }
     }
 
+    /// Parse a single segment of a module path (`use a::b::c`). Unlike an
+    /// expression identifier, a path segment is unambiguous, so a reserved
+    /// keyword whose spelling is also a stdlib module name (`chan`, `select`,
+    /// `type`, ...) is accepted here by its source text. This keeps modules
+    /// like `std::chan` importable even though `chan` is a keyword elsewhere.
+    fn expect_path_segment(&mut self) -> (String, Span) {
+        let tok = self.peek().clone();
+        if matches!(tok.kind, TokenKind::Ident | TokenKind::TypeIdent) || tok.kind.is_keyword() {
+            if !tok.text.is_empty() {
+                self.advance();
+                return (tok.text.clone(), tok.span);
+            }
+        }
+        self.expect_ident()
+    }
+
     fn expect_name(&mut self) -> (String, Span) {
         let tok = self.peek().clone();
         match tok.kind {
@@ -962,7 +978,7 @@ impl Parser {
         let start = kw.span;
         let mut segments = Vec::new();
 
-        let (first, _) = self.expect_ident();
+        let (first, _) = self.expect_path_segment();
         segments.push(first);
 
         while self.eat(TokenKind::ColonColon) {
@@ -996,7 +1012,7 @@ impl Parser {
                     span: start.merge(rbrace.span),
                 };
             }
-            let (seg, _) = self.expect_ident();
+            let (seg, _) = self.expect_path_segment();
             segments.push(seg);
         }
 

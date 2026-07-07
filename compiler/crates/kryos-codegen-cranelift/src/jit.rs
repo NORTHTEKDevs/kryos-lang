@@ -409,6 +409,14 @@ impl JitCompiler {
             kryos_rt::builtins::kryos_chan_last_recv_i64 as *const u8,
         );
         jit_builder.symbol(
+            "kryos_chan_try_recv_status_i64",
+            kryos_rt::builtins::kryos_chan_try_recv_status_i64 as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_chan_last_recv_i64",
+            kryos_rt::builtins::kryos_chan_last_recv_i64 as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_chan_is_closed_i64",
             kryos_rt::builtins::kryos_chan_is_closed_i64 as *const u8,
         );
@@ -1953,6 +1961,8 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_chan_new_i64", "kryos_chan_new_i64", sig(0));
     decl!("kryos_chan_send_i64", "kryos_chan_send_i64", sig(2));
     decl!("kryos_chan_recv_i64", "kryos_chan_recv_i64", sig(1));
+    decl!("kryos_chan_try_recv_status_i64", "kryos_chan_try_recv_status_i64", sig(1));
+    decl!("kryos_chan_last_recv_i64", "kryos_chan_last_recv_i64", sig(0));
     decl!("kryos_spawn", "kryos_spawn", sig(2));
     decl!("kryos_spawn_wait_all", "kryos_spawn_wait_all", sig(0));
     decl!("kryos_actor_wait_all", "kryos_actor_wait_all", sig(0));

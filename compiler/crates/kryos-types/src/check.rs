@@ -3300,6 +3300,24 @@ pub fn type_check_with_lambda_params(
         ret: Type::I64,
     });
 
+    // chan_try_recv(ch) -> i64 status (1 data / 0 empty / -1 closed) — non-blocking.
+    checker.env.define_function(FunctionSig {
+        name: "chan_try_recv".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ch".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
+    // chan_last_recv() -> i64 value of the most recent successful try_recv on this thread.
+    checker.env.define_function(FunctionSig {
+        name: "chan_last_recv".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![],
+        ret: Type::I64,
+    });
+
     // file_read(path: str) -> str — read entire file to string
     checker.env.define_function(FunctionSig {
         name: "file_read".to_string(),
