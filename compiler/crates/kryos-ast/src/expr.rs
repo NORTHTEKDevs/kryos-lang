@@ -263,6 +263,13 @@ pub enum Expr {
         body: Block,
         span: Span,
     },
+    /// `unsafe { ... }` — semantically a plain block, but the marker is
+    /// tracked by the type-checker so raw-pointer operations (`*ptr`) outside
+    /// any unsafe block are rejected with E0500.
+    UnsafeBlock {
+        body: Block,
+        span: Span,
+    },
 
     Cast {
         expr: Box<Expr>,
@@ -315,6 +322,7 @@ impl Expr {
             | Self::WeakExpr { span, .. }
             | Self::ComptimeBlock { span, .. }
             | Self::QuantumBlock { span, .. }
+            | Self::UnsafeBlock { span, .. }
             | Self::Cast { span, .. }
             | Self::Block { span, .. }
             | Self::Await { span, .. } => *span,

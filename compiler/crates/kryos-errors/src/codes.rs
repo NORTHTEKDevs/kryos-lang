@@ -43,6 +43,7 @@ pub const W0400: &str = "W0400"; // tracked value discarded (provenance/lineage 
 pub const W0500: &str = "W0500"; // deny!() block names no recognized capability (no effect)
 
 // Capability errors (E05xx)
+pub const E0500: &str = "E0500"; // unsafe operation outside `unsafe` context
 pub const E0501: &str = "E0501"; // capability import violation
 pub const E0502: &str = "E0502"; // missing required capability
 pub const E0503: &str = "E0503"; // capability attenuation violation

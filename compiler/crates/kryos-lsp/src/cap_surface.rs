@@ -234,9 +234,9 @@ fn walk_expr(expr: &Expr, set: &mut CapabilitySet) {
         | Expr::SharedExpr { inner, .. }
         | Expr::MoveExpr { inner, .. }
         | Expr::WeakExpr { inner, .. } => walk_expr(inner, set),
-        Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
-            walk_block(body, set)
-        }
+        Expr::ComptimeBlock { body, .. }
+        | Expr::QuantumBlock { body, .. }
+        | Expr::UnsafeBlock { body, .. } => walk_block(body, set),
         Expr::Cast { expr, .. } => walk_expr(expr, set),
         Expr::Block { block, .. } => walk_block(block, set),
         Expr::Await { value, .. } => walk_expr(value, set),

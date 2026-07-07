@@ -2360,16 +2360,15 @@ impl Parser {
                 }
             }
 
-            // Unsafe block: `unsafe { ... }`. Semantically a plain block — the
-            // marker documents intent (raw-pointer / FFI work) and is what
-            // `kryos audit` keys on; hard E0500 enforcement is a future,
-            // stdlib-wide migration.
+            // Unsafe block: `unsafe { ... }`. Semantically a plain block, but
+            // the marker is tracked by the checker so a raw-pointer deref
+            // outside any unsafe block is rejected (E0500).
             TokenKind::Unsafe => {
                 self.advance();
                 let body = self.parse_block();
                 let end = body.span;
-                Expr::Block {
-                    block: body,
+                Expr::UnsafeBlock {
+                    body,
                     span: tok.span.merge(end),
                 }
             }

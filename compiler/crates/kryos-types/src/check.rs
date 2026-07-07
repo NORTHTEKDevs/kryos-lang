@@ -53,6 +53,9 @@ pub struct TypeChecker {
     /// type the local (its own inference defaults an empty array's element to
     /// i64, which mis-types `X[i].field` / aggregate elements on AOT).
     resolved_let_types: std::collections::HashMap<Span, Type>,
+    /// Nesting depth of enclosing `unsafe { }` blocks. Raw-pointer dereference
+    /// is only permitted when this is > 0 (else E0500).
+    unsafe_depth: u32,
 }
 
 impl Default for TypeChecker {
@@ -77,6 +80,7 @@ impl TypeChecker {
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
+            unsafe_depth: 0,
         }
     }
 
@@ -2807,11 +2811,25 @@ impl TypeChecker {
                 }
             }
             // Dereference expression: *x.
-            Expr::Deref { inner, .. } => {
+            Expr::Deref { inner, span } => {
+                let deref_span = *span;
                 let inner_ty = self.infer_expr(inner);
                 match inner_ty {
                     Type::Reference { inner, .. } => *inner,
-                    Type::Pointer { inner, .. } => *inner,
+                    Type::Pointer { inner, .. } => {
+                        // Dereferencing a RAW pointer is an unsafe operation: it
+                        // can read arbitrary memory. Require an enclosing
+                        // `unsafe { }` block (E0500). References/Shared are safe.
+                        if self.unsafe_depth == 0 {
+                            self.error_with_code(
+                                "dereference of raw pointer requires an `unsafe` block"
+                                    .to_string(),
+                                deref_span,
+                                kryos_errors::codes::E0500,
+                            );
+                        }
+                        *inner
+                    }
                     Type::Shared { inner } => *inner,
                     _ => {
                         self.error(
@@ -2899,6 +2917,28 @@ impl TypeChecker {
                 self.check_block(body);
                 self.env.pop_scope();
                 Type::Void
+            }
+
+            // Unsafe block — a plain block whose type is its tail expression's,
+            // but while it is being checked, raw-pointer dereference is allowed
+            // (E0500 is suppressed). Semantically transparent to codegen.
+            Expr::UnsafeBlock { body, .. } => {
+                self.env.push_scope();
+                self.unsafe_depth += 1;
+                let last_idx = body.stmts.len().wrapping_sub(1);
+                let mut ty = Type::Void;
+                for (i, stmt) in body.stmts.iter().enumerate() {
+                    if i == last_idx {
+                        if let Stmt::Expr { expr, .. } = stmt {
+                            ty = self.infer_expr(expr);
+                            continue;
+                        }
+                    }
+                    self.check_stmt(stmt);
+                }
+                self.unsafe_depth -= 1;
+                self.env.pop_scope();
+                ty
             }
 
             // Await expression — for now, just pass through the inner type.

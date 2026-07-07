@@ -75,17 +75,18 @@ for f in "$REPO"/examples/showcase/*.kry; do
 done
 echo "examples-gate: showcase $((n-bad))/$n"
 
-# Layer 5: negative capability demos MUST be rejected. Each `*_overreach.kry`
-# is a trustworthy-agent counterexample (a tool exceeds the agent's granted
-# capabilities); the compiler must refuse it with a capability error (E0505/
-# E0506/E0507). A demo that silently COMPILES would be a false safety claim.
+# Layer 5: negative safety demos MUST be rejected. Each `*_overreach.kry` is a
+# counterexample -- a tool exceeding the agent's granted capabilities, or a raw
+# operation outside `unsafe` -- that the compiler must refuse with a safety
+# error (E0500 unsafe, or E0505/E0506/E0507 capability). A demo that silently
+# COMPILES would be a false safety claim.
 neg=0; negbad=0
 for f in "$REPO"/examples/showcase/*_overreach.kry; do
     [ -f "$f" ] || continue
     base="$(basename "$f" .kry)"
     neg=$((neg+1))
     out="$("$KRYOS" check "$f" 2>&1)"
-    if echo "$out" | grep -qE 'error\[E050[567]\]'; then
+    if echo "$out" | grep -qE 'error\[E050[0567]\]'; then
         :  # correctly rejected
     else
         echo "  NEGATIVE FAIL showcase/$base (expected a capability rejection, got none)"

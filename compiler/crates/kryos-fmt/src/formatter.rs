@@ -1154,6 +1154,15 @@ impl Formatter {
                 s
             }
 
+            Expr::UnsafeBlock { body, .. } => {
+                let mut s = String::from("unsafe {\n");
+                s.push_str(&self.fmt_block_as_string(body));
+                let indent_str = " ".repeat(self.indent * INDENT_WIDTH);
+                s.push_str(&indent_str);
+                s.push('}');
+                s
+            }
+
             Expr::QuantumBlock { body, .. } => {
                 let mut s = String::from("quantum {\n");
                 s.push_str(&self.fmt_block_as_string(body));

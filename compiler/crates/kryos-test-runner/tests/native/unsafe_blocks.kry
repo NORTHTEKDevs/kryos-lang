@@ -1,0 +1,26 @@
+// `unsafe { }` blocks: semantically transparent (value + statement position),
+// on both backends. The safety marker is enforced by the type-checker (E0500
+// on a raw-pointer deref outside any unsafe block -- see the negative demo
+// examples/showcase/unsafe_violation_overreach.kry), not at runtime.
+// expect-stdout: val 42
+// expect-stdout: in unsafe
+// expect-stdout: nested 7
+
+fn main() {
+    // unsafe as a value expression
+    let x = unsafe { 40 + 2 }
+    println("val " + to_string(x))
+
+    // unsafe as a statement
+    unsafe {
+        println("in unsafe")
+    }
+
+    // nested / with locals
+    let y = unsafe {
+        let a = 3
+        let b = 4
+        a + b
+    }
+    println("nested " + to_string(y))
+}

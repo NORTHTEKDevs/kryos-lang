@@ -5577,11 +5577,11 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 .unwrap_or(MirType::I64)
         }
 
-        ast::Expr::Block { block, .. } => {
+        ast::Expr::Block { block, .. } | ast::Expr::UnsafeBlock { body: block, .. } => {
             // A block expression's value is its last expression. Falling to
             // the Void catch-all typed `let x = { 40 + 2 }` (and the
-            // `unsafe { ... }` form, which parses to Block) as a void slot --
-            // a `store void` codegen error on AOT.
+            // `unsafe { ... }` form) as a void slot -- a `store void` codegen
+            // error on AOT.
             block
                 .stmts
                 .last()
@@ -6765,7 +6765,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::Use(Operand::Local(result_local))
         }
 
-        ast::Expr::Block { block, .. } => {
+        // `unsafe { ... }` is semantically transparent: lower it exactly like a
+        // plain block. The safety marker is enforced by the type-checker (E0500).
+        ast::Expr::Block { block, .. } | ast::Expr::UnsafeBlock { body: block, .. } => {
             // Lower all statements, return last expression.
             for (i, stmt) in block.stmts.iter().enumerate() {
                 if i == block.stmts.len() - 1 {
@@ -7660,7 +7662,9 @@ fn collect_identifiers(
                 }
             }
         }
-        ast::Expr::ComptimeBlock { body, .. } | ast::Expr::QuantumBlock { body, .. } => {
+        ast::Expr::ComptimeBlock { body, .. }
+        | ast::Expr::QuantumBlock { body, .. }
+        | ast::Expr::UnsafeBlock { body, .. } => {
             collect_identifiers_block(&body.stmts, bound, free_vars, seen, ctx);
         }
         // Leaf literals — no sub-expressions to recurse into.

@@ -501,7 +501,9 @@ impl CapabilityChecker {
             | Expr::SharedExpr { inner, .. }
             | Expr::MoveExpr { inner, .. }
             | Expr::WeakExpr { inner, .. } => e(inner, &mut acc),
-            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => b(body, &mut acc),
+            Expr::ComptimeBlock { body, .. }
+            | Expr::QuantumBlock { body, .. }
+            | Expr::UnsafeBlock { body, .. } => b(body, &mut acc),
             Expr::Cast { expr, .. } => e(expr, &mut acc),
             Expr::Block { block, .. } => b(block, &mut acc),
             Expr::Await { value, .. } => e(value, &mut acc),
@@ -995,7 +997,9 @@ impl CapabilityChecker {
             | Expr::WeakExpr { inner, .. } => {
                 self.check_expr(inner);
             }
-            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
+            Expr::ComptimeBlock { body, .. }
+            | Expr::QuantumBlock { body, .. }
+            | Expr::UnsafeBlock { body, .. } => {
                 self.check_block(body);
             }
             Expr::Cast { expr, .. } => {

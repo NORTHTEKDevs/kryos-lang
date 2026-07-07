@@ -1278,7 +1278,7 @@ impl OwnershipAnalyzer {
                     self.analyze_expr_use(e);
                 }
             }
-            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } | Expr::UnsafeBlock { body, .. } => {
                 self.push_scope();
                 self.analyze_block(body);
                 self.pop_scope();
@@ -1525,7 +1525,7 @@ impl OwnershipAnalyzer {
                 // Nested lambdas: their captures are our captures too.
                 self.collect_captures(body, locals, out);
             }
-            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } => {
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } | Expr::UnsafeBlock { body, .. } => {
                 for stmt in &body.stmts {
                     self.collect_captures_stmt(stmt, locals, out);
                 }

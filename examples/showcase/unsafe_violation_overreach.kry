@@ -1,0 +1,18 @@
+// Deliberately-rejected demo: a raw-pointer dereference OUTSIDE any `unsafe`
+// block. Kryos refuses it with E0500 -- raw memory access must be explicitly
+// marked `unsafe { }`, so it can't happen silently.
+//
+//   kryos check examples/showcase/unsafe_violation_overreach.kry
+//   -> error[E0500]: dereference of raw pointer requires an `unsafe` block
+//
+// Wrap the deref in `unsafe { *p }` to make it compile (you are asserting you
+// verified the pointer is valid).
+
+extern { fn raw_ptr() -> *i64 }
+
+@capabilities(ffi)
+fn main() {
+    let p: *i64 = raw_ptr()
+    let v = *p              // <- E0500: needs `unsafe { *p }`
+    println(to_string(v))
+}
