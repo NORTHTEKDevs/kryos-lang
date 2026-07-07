@@ -1118,31 +1118,33 @@ impl WasmCodegen {
             local_decls.push((count, t));
         }
 
-        // v0.2: reserve TWO extra i64 scratch locals at the very end of every
-        // function. Index func.locals.len() = `cg_scratch_local` (string
-        // unpack, array/map/env building); func.locals.len()+1 =
-        // `cg_scratch_local2` (holds a closure env across arg emission in
-        // call_indirect, which itself uses scratch 1 for string args).
+        // v0.2: reserve THREE extra i64 scratch locals at the very end of every
+        // function. func.locals.len() = `cg_scratch_local` (string unpack,
+        // array/map/env building); +1 = `cg_scratch_local2` (closure env across
+        // call_indirect arg emission); +2 = `cg_pc_local` (the dispatch
+        // relooper's program counter, which must survive across block bodies).
         match local_decls.last_mut() {
-            Some(entry) if entry.1 == ValType::I64 => entry.0 += 2,
-            _ => local_decls.push((2, ValType::I64)),
+            Some(entry) if entry.1 == ValType::I64 => entry.0 += 3,
+            _ => local_decls.push((3, ValType::I64)),
         }
 
-        let mut wfunc = Function::new(local_decls);
+        // Try the structured-control-flow translator first (it produces small,
+        // idiomatic wasm for the common shapes). If it can't express the CFG
+        // (nested loops, irreducible edges), fall back to the dispatch relooper
+        // which handles ANY reducible CFG. The structured attempt writes into a
+        // throwaway `Function`; on error we discard it and re-emit. CG-level
+        // state touched during the attempt (string interning) is dedup-safe.
+        let mut wfunc = Function::new(local_decls.clone());
+        let structured = self.emit_function_body(func, &mut wfunc);
+        if structured.is_err() {
+            wfunc = Function::new(local_decls);
+            self.emit_function_body_relooper(func, &mut wfunc)?;
+        }
 
-        // Lower the function body using a structured-control-flow translator
-        // (`emit_block` walks the CFG and uses wasm's `block` / `loop` / `if`
-        // to express the shapes we accept in v0.1).
-        self.emit_function_body(func, &mut wfunc)?;
-
-        // Every wasm function body must terminate with `end`. wasm-encoder
-        // adds this for us when we call `code.function(&wfunc)`. But if the
-        // last terminator we emitted was a Goto that fell through (no
-        // Return / Unreachable instruction was emitted), we may need to push
-        // a default return value for non-void functions.
+        // Every wasm function body must terminate with `end`. If the last
+        // emitted terminator fell through (no Return/Unreachable), push a
+        // default return value for non-void functions so validation passes.
         if !is_void(&func.ret_ty) {
-            // Best-effort: push a zero of the right type so wasm validation
-            // passes when the user code didn't end every path in a Return.
             match lower_type(&func.ret_ty) {
                 Ok(ValType::I32) => {
                     wfunc.instruction(&W::I32Const(0));
@@ -1206,6 +1208,35 @@ impl WasmCodegen {
         let entry_id = func.blocks[0].id;
         emitter.emit_block(entry_id)?;
         Ok(())
+    }
+
+    /// Emit a function body as a DISPATCH RELOOPER: one `loop` whose body is an
+    /// if-else chain over a program-counter local. This expresses ANY reducible
+    /// CFG (nested loops, multi-exit blocks) that the structured translator
+    /// can't, at the cost of a per-edge dispatch. Used only as a fallback when
+    /// `emit_function_body` returns an error, so structured functions are
+    /// unaffected. All inter-block values already live in wasm locals (MIR is
+    /// register-based), so nothing needs to survive on the operand stack.
+    fn emit_function_body_relooper(
+        &mut self,
+        func: &MirFunction,
+        wfunc: &mut Function,
+    ) -> Result<(), WasmCodegenError> {
+        let n_params = func.params.len();
+        let mut id_to_index: HashMap<u32, usize> = HashMap::new();
+        for (i, b) in func.blocks.iter().enumerate() {
+            id_to_index.insert(b.id.0, i);
+        }
+        let visited = vec![false; func.blocks.len()];
+        let mut emitter = FnEmitter {
+            cg: self,
+            func,
+            wfunc,
+            n_params,
+            id_to_index,
+            visited,
+        };
+        emitter.emit_relooper()
     }
 
     /// Allocate (or return cached) string literal in the data segment.
@@ -1991,6 +2022,18 @@ impl<'a> FnEmitter<'a> {
         let else_has_return = self.chain_has_return(else_block);
         let then_reaches_else = self.goto_chain_reaches(then_block, else_block);
         let then_reaches_header = self.goto_chain_reaches(then_block, loop_header);
+        let else_reaches_header = self.goto_chain_reaches(else_block, loop_header);
+
+        // Both arms loop back to the header (e.g. a `continue`) without a simple
+        // diamond join (handled above). The visited-based emission below would
+        // place the shared increment block in only ONE arm, so the other arm
+        // would skip it (wrong / infinite loop). Defer to the dispatch relooper,
+        // which handles any reducible CFG correctly.
+        if then_reaches_header && else_reaches_header {
+            return Err(WasmCodegenError::unsupported(
+                "while body inner-if: both arms continue to header (needs relooper)",
+            ));
+        }
 
         // If else arm is the short arm, invert the condition.
         let invert = !then_has_return && !then_reaches_else && !then_reaches_header && else_has_return;
@@ -2808,6 +2851,112 @@ impl<'a> FnEmitter<'a> {
     /// Second reserved i64 scratch (holds a closure env across arg emission).
     fn cg_scratch_local2(&self) -> u32 {
         self.func.locals.len() as u32 + 1
+    }
+
+    /// Third reserved i64 scratch: the dispatch relooper's program counter.
+    fn cg_pc_local(&self) -> u32 {
+        self.func.locals.len() as u32 + 2
+    }
+
+    /// Emit the whole function body as a dispatch loop over a program counter.
+    /// The pc is a dense block index (position in `func.blocks`); block 0 is the
+    /// entry. Layout:
+    ///   pc = 0
+    ///   loop
+    ///     if pc==0 { <block 0>; set pc; br 1 (or return) }
+    ///     else if pc==1 { <block 1>; set pc; br 2 } ...
+    ///     else { unreachable }
+    ///   end
+    /// Inside block i's `if` the loop is `i+1` frames up, so a continue is
+    /// `br (i+1)`.
+    fn emit_relooper(&mut self) -> Result<(), WasmCodegenError> {
+        let n = self.func.blocks.len();
+        let pc = self.cg_pc_local();
+        // Entry = block 0.
+        self.wfunc.instruction(&W::I64Const(0));
+        self.wfunc.instruction(&W::LocalSet(pc));
+        self.wfunc.instruction(&W::Loop(BlockType::Empty));
+        for i in 0..n {
+            self.wfunc.instruction(&W::LocalGet(pc));
+            self.wfunc.instruction(&W::I64Const(i as i64));
+            self.wfunc.instruction(&W::I64Eq);
+            self.wfunc.instruction(&W::If(BlockType::Empty));
+            let instrs = self.func.blocks[i].instructions.clone();
+            for inst in &instrs {
+                self.emit_instruction(inst)?;
+            }
+            let term = self.func.blocks[i].terminator.clone();
+            self.emit_relooper_terminator(&term, i, pc)?;
+            self.wfunc.instruction(&W::Else);
+        }
+        // pc out of range: unreachable.
+        self.wfunc.instruction(&W::Unreachable);
+        for _ in 0..n {
+            self.wfunc.instruction(&W::End); // close each `if`
+        }
+        self.wfunc.instruction(&W::End); // close `loop`
+        // The loop never falls through (every block ends in br/return), so
+        // anything here is unreachable; keep the stack polymorphic.
+        self.wfunc.instruction(&W::Unreachable);
+        Ok(())
+    }
+
+    /// Emit a block terminator inside the relooper: set the pc to the successor
+    /// and continue the loop (`br (block_i + 1)`), or return/unreachable.
+    fn emit_relooper_terminator(
+        &mut self,
+        term: &Terminator,
+        block_i: usize,
+        pc: u32,
+    ) -> Result<(), WasmCodegenError> {
+        let cont = (block_i + 1) as u32; // br depth to the enclosing loop
+        match term {
+            Terminator::Goto(t) => {
+                let idx = self.block_index(*t)?;
+                self.wfunc.instruction(&W::I64Const(idx as i64));
+                self.wfunc.instruction(&W::LocalSet(pc));
+                self.wfunc.instruction(&W::Br(cont));
+            }
+            Terminator::Branch { cond, then_block, else_block } => {
+                let ti = self.block_index(*then_block)? as i64;
+                let ei = self.block_index(*else_block)? as i64;
+                // pc = cond ? ti : ei   (via `select`, no extra control frame)
+                self.wfunc.instruction(&W::I64Const(ti));
+                self.wfunc.instruction(&W::I64Const(ei));
+                self.emit_operand(cond)?;
+                self.wfunc.instruction(&W::I32WrapI64);
+                self.wfunc.instruction(&W::Select);
+                self.wfunc.instruction(&W::LocalSet(pc));
+                self.wfunc.instruction(&W::Br(cont));
+            }
+            Terminator::Return(val) => {
+                if let Some(op) = val {
+                    self.emit_operand(op)?;
+                }
+                self.wfunc.instruction(&W::Return);
+            }
+            Terminator::Switch { value, targets, default } => {
+                let di = self.block_index(*default)? as i64;
+                self.wfunc.instruction(&W::I64Const(di));
+                self.wfunc.instruction(&W::LocalSet(pc));
+                // pc = (value == case) ? case_target : pc, folded over cases.
+                for (case, tgt) in targets {
+                    let ti = self.block_index(*tgt)? as i64;
+                    self.wfunc.instruction(&W::I64Const(ti));
+                    self.wfunc.instruction(&W::LocalGet(pc));
+                    self.emit_operand(value)?;
+                    self.wfunc.instruction(&W::I64Const(*case));
+                    self.wfunc.instruction(&W::I64Eq);
+                    self.wfunc.instruction(&W::Select);
+                    self.wfunc.instruction(&W::LocalSet(pc));
+                }
+                self.wfunc.instruction(&W::Br(cont));
+            }
+            Terminator::Unreachable => {
+                self.wfunc.instruction(&W::Unreachable);
+            }
+        }
+        Ok(())
     }
 
     fn emit_call(&mut self, func: &str, args: &[Operand]) -> Result<(), WasmCodegenError> {
