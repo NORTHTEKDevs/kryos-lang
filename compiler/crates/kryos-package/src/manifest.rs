@@ -74,7 +74,18 @@ impl Serialize for DepSpec {
                 source,
                 version_req,
             } => {
-                let s = format!("{source}@{version_req}");
+                // A bare registry name is carried by the TOML KEY, so the value
+                // is just the version requirement (`http-router = "*"`). Only a
+                // real source URL (`github:org/repo`, contains `:` or `/`) is
+                // encoded as `source@version`. Without this, `kryos pkg add
+                // http-router` wrote a redundant `http-router = "http-router@*"`.
+                let s = if source.is_empty()
+                    || !(source.contains(':') || source.contains('/'))
+                {
+                    version_req.to_string()
+                } else {
+                    format!("{source}@{version_req}")
+                };
                 serializer.serialize_str(&s)
             }
             DepSpec::Path { path } => {
