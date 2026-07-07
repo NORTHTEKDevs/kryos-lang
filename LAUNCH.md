@@ -42,22 +42,23 @@ rc.1 is the "last call". After a short soak (days) with no new bug reports, say
 - tag `v1.0.0` (a bare tag auto-drops the pre-release label on GitHub),
 - push and verify the release.
 
-## WASM status (honest)
+## WASM status (playground-ready)
 
-The `wasm32` backend is a deliberate **experimental subset** (self-labeled v0.1,
-evolving to v0.3), NOT at full-language parity with the native backends. As of
-rc.1, compiled to wasm and verified:
+The `wasm32` backend (v0.5) now covers enough of the language for a real
+browser playground. Verified via the node host (`tools/wasm-host/run.mjs`):
 
-- **Works:** i64/f64, strings, structs, enums, arrays + indexing, control flow,
-  loops, recursion, generics, traits + impl, `Result`/`Option`, casts, calls.
-- **Not yet:** closures/lambdas, higher-order functions (fn-type params), maps,
-  and all concurrency (spawn/channels/actors) — wasm v0.1 is single-threaded.
+- **Works:** i64/f64, strings, structs, enums, **arrays (mutable, in-place
+  push/pop)**, **maps** (`map<str,i64>`), control flow, loops, recursion,
+  generics, traits, `Result`/`Option`, casts, **no-capture closures**, and
+  **higher-order functions** (`fold`/`map`/`filter` via a funcref table +
+  `call_indirect`). Cross-backend parity checked (wasm == native output).
+- **Not on wasm:** capturing closures (`|x| x + n`) and concurrency
+  (spawn/channels/actors — single-threaded by design). Use the native
+  backends for those.
 
-This is enough for computational/algorithmic code and the browser demos
-(`examples/wasm_*.kry`, all compile). The native Cranelift JIT and LLVM AOT
-backends are the full-language, at-parity backends.
+Examples: `examples/wasm_maps.kry`, `examples/wasm_closures.kry`, plus the
+original `wasm_*` set. All build + run.
 
-No playground is currently deployed. A browser "try it" page is a separate
-build; the practical gaps to close first for a useful playground are **closures,
-HOFs, and maps** (not "the entire language" — wasm concurrency is a different
-beast and arguably out of scope for a single-threaded target).
+A browser playground is now a viable build (the language subset that runs in
+wasm is broad enough for real snippets). It is not yet deployed — that's a
+frontend build wiring the compiler's wasm output to the JS host in a web page.

@@ -89,6 +89,15 @@ A release tag is cut when **all** of the following hold:
 There are no architectural failures in the release-gating sweep at
 v1.0.0-rc.1. Honest, non-blocking residuals:
 
+- **`async` functions cannot carry local state across an `await` point.** The
+  cooperative executor runs fire-and-forget tasks and interleaves at `await`
+  (proven: `async_io.kry` overlaps four 300ms I/O tasks concurrently; the
+  `A0 B0 A1 B1` interleave holds). But a function that keeps a local live
+  across two awaits (`let a = ..; await x(); let b = a + ..; await y()`) fails
+  to COMPILE — the CPS state-machine transform that threads locals through a
+  suspend/resume state struct is scaffolded but not finished (`async_lower.rs`).
+  Pass state via channels or keep async tasks straight-line for now. (Honest
+  compile error, never silent-wrong.)
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
 - **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable
@@ -96,8 +105,22 @@ v1.0.0-rc.1. Honest, non-blocking residuals:
   is intentional, documented semantics.
 - **`unsafe { }` is parsed and audited but not yet ENFORCED** (no E0500 on raw
   ops outside an unsafe block); enforcement is a future stdlib-wide migration.
+  Low impact: Kryos is capability-safe, so `unsafe` is a rare escape hatch.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
   linking; the JIT (`kryos run`) needs nothing.
+
+### 5.0 WASM backend coverage (v0.5)
+
+The `wasm32` backend is a compute-focused subset, not full parity. **Works**
+(verified via the node host): i64/f64, strings, structs, enums, arrays
+(host-backed + mutable, `push`/`pop` in place — matching native), maps
+(`map<str,i64>`), control flow, loops, recursion, generics, traits,
+`Result`/`Option`, **no-capture closures**, and **higher-order functions**
+(`fold`/`map`/`filter` with lambdas, via a funcref table + `call_indirect`).
+**Not on wasm:** capturing closures (`|x| x + n` — needs a heap-env ABI; use
+the native backends), and all concurrency (spawn/channels/actors — wasm v0.5
+is single-threaded by design). The native Cranelift JIT and LLVM AOT backends
+remain the full-language, at-parity path.
 
 The v2.1 "known limitations" listed below were all closed in v2.2 and are kept
 here as historical context.
