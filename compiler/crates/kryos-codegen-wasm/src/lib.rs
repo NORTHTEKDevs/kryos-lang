@@ -1421,6 +1421,11 @@ impl<'a> FnEmitter<'a> {
         ) {
             return true;
         }
+        // for-range shape: body -> increment block(s) -> header, all straight
+        // Gotos (e.g. `for i in 0..n { .. }` lowers to header/body/increment).
+        if self.goto_chain_reaches(body, header) {
+            return true;
+        }
         // While-true-with-match pattern: body ends in a Switch where at least
         // one arm eventually reaches `header` via a Goto chain.
         if let Terminator::Switch { targets, .. } = &self.func.blocks[body_idx].terminator {
@@ -1637,6 +1642,41 @@ impl<'a> FnEmitter<'a> {
         match body_block.terminator.clone() {
             Terminator::Goto(b) if b == header => {
                 self.wfunc.instruction(&W::Br(0)); // continue
+            }
+            // for-range: body -> increment block(s) -> header. Emit each
+            // intermediate block's instructions (e.g. `i = i + 1`) inline,
+            // then loop back.
+            Terminator::Goto(next) => {
+                let mut cur = next;
+                let mut guard = 0;
+                loop {
+                    if cur == header {
+                        self.wfunc.instruction(&W::Br(0));
+                        break;
+                    }
+                    let cidx = self.block_index(cur)?;
+                    if self.visited[cidx] {
+                        return Err(WasmCodegenError::unsupported(
+                            "loop increment chain already visited (irreducible CFG)",
+                        ));
+                    }
+                    self.visited[cidx] = true;
+                    for inst in self.func.blocks[cidx].instructions.clone() {
+                        self.emit_instruction(&inst)?;
+                    }
+                    match self.func.blocks[cidx].terminator.clone() {
+                        Terminator::Goto(nb) => cur = nb,
+                        _ => {
+                            return Err(WasmCodegenError::unsupported(
+                                "loop increment chain must be straight Goto",
+                            ))
+                        }
+                    }
+                    guard += 1;
+                    if guard > 64 {
+                        return Err(WasmCodegenError::unsupported("loop increment chain too long"));
+                    }
+                }
             }
             Terminator::Return(value) => {
                 // Early return inside loop body.
