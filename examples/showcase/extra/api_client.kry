@@ -1,6 +1,7 @@
 // api_client.kry — outbound HTTP GET + JSON parsing.
 // Fetches a public test API and pretty-prints the response.
 
+@capabilities(net:http)
 fn main() {
   let url: str = "https://httpbin.org/json"
   println("GET " + url)

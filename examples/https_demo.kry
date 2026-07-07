@@ -1,6 +1,7 @@
 // HTTPS demo — proves TLS via rustls is live end-to-end.
 // Exercises https_get + http_request against real public endpoints.
 
+@capabilities(net:http)
 fn main() {
   println("=== Kryos HTTPS Demo (v1.3 TLS) ===")
   println("")

@@ -324,13 +324,16 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         // like Rust's process::exit and WASI's proc_exit.
         "exit" | "abort" => None,
 
-        // Network — HTTP(S) client/server (net:http)
-        "http_get" | "http_post" | "http2_get" | "http2_post" | "http2_request" => {
-            Some(Capability::NetHttp)
-        }
+        // Network — HTTP(S) client/server (net:http). `http_request` /
+        // `https_get` are real callable builtins that were UNGATED.
+        "http_get" | "http_post" | "http_request" | "https_get"
+        | "http2_get" | "http2_post" | "http2_request" => Some(Capability::NetHttp),
 
-        // Network — raw TCP / sockets / TLS / unix-domain sockets (net:tcp)
+        // Network — raw TCP / sockets / TLS / unix-domain sockets (net:tcp).
+        // The non-blocking variants (tcp_bind/set_nonblocking/try_accept/
+        // try_recv) are network authority too and were UNGATED.
         "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send" | "tcp_recv"
+        | "tcp_bind" | "tcp_set_nonblocking" | "tcp_try_accept" | "tcp_try_recv"
         | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv" | "tls_close"
         | "uds_connect" | "uds_bind" | "uds_accept" | "uds_send" | "uds_recv"
         | "uds_close" => Some(Capability::NetTcp),

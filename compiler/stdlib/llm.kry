@@ -459,6 +459,7 @@ fn _anthropic_tools_node(tools: [ToolDef]) -> i64 {
 
 /// Internal: POST a raw request body, return the response body. Shares the
 /// budget hooks with chat().
+@capabilities(net)
 fn _post(cfg: LlmConfig, body: str) -> str {
     let mut url = ""
     let mut headers = "Content-Type: application/json"
