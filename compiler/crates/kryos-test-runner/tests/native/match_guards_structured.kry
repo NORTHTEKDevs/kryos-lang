@@ -1,0 +1,39 @@
+// Guards on STRUCTURED (enum) match arms.
+// Regression: the switch path dispatches purely on the variant tag, so a guard
+// on an enum arm was silently DROPPED -- `match e { A(x) if x>5 => .., A(x) => .. }`
+// took the first A arm even for x<=5 (both backends printed the wrong branch).
+// A false guard now falls through to the next same-tag arm, else the default.
+// expect-stdout: big
+// expect-stdout: small
+// expect-stdout: b
+// expect-stdout: hi
+// expect-stdout: lo
+// expect-stdout: def
+
+enum E { A(i64), B }
+
+fn cls(e: E) -> str {
+    match e {
+        A(x) if x > 5 => return "big",
+        A(x) => return "small",
+        B => return "b",
+    }
+}
+
+// guard with only a wildcard fallback (no second same-tag arm)
+fn band(n: i64) -> str {
+    match A(n) {
+        A(x) if x > 100 => return "hi",
+        A(x) if x > 10 => return "lo",
+        _ => return "def",
+    }
+}
+
+fn main() {
+    println(cls(A(9)))    // big
+    println(cls(A(2)))    // small (guard false -> next A arm)
+    println(cls(B))       // b
+    println(band(500))    // hi
+    println(band(50))     // lo (first guard false, second true)
+    println(band(1))      // def (both guards false -> wildcard)
+}

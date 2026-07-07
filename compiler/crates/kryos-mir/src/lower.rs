@@ -4349,9 +4349,19 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let mut default_arm: Option<(BlockId, &ast::Expr)> = None;
     // Enum being matched, used to decide exhaustiveness for the switch default.
     let mut enum_for_exhaustiveness: Option<String> = subj_enum_name.clone();
+    // Guards on STRUCTURED arms (enum/tuple/struct patterns). The switch path
+    // dispatches purely on tag, so a guard on such an arm was silently dropped
+    // (`match e { A(x) if x>5 => .., A(x) => .. }` took the first A arm even for
+    // x<=5). Keyed by arm block; evaluated after binding, and a false guard
+    // falls through to the next same-tag arm / default via the fail-chain.
+    let mut arm_guards: std::collections::HashMap<u32, &ast::Expr> =
+        std::collections::HashMap::new();
 
     for arm in arms {
         let arm_bb = ctx.alloc_block();
+        if let Some(g) = arm.guard.as_deref() {
+            arm_guards.insert(arm_bb.0, g);
+        }
         match &arm.pattern {
             ast::Pattern::Enum {
                 name,
@@ -4546,7 +4556,11 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let mut arm_fail_targets: Vec<Option<BlockId>> = vec![None; arm_blocks.len()];
     for i in 0..arm_blocks.len() {
         let Some(eb) = &arm_blocks[i].2 else { continue };
-        if !eb.field_patterns.iter().any(is_refutable_subpattern) {
+        // An arm needs a fail target if a nested sub-pattern can be refuted OR
+        // it carries a guard (a false guard falls through like a refutation).
+        let has_guard = arm_guards.contains_key(&arm_blocks[i].0 .0);
+        let has_refutable = eb.field_patterns.iter().any(is_refutable_subpattern);
+        if !has_guard && !has_refutable {
             continue;
         }
         let mut fail = None;
@@ -4827,6 +4841,24 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     );
                 }
             }
+        }
+
+        // Structured-arm guard: the payload is now bound, so evaluate the
+        // guard and, on false, fall through to this arm's fail target (the
+        // next same-tag arm, else the default, else the synthetic no-match).
+        // The guard-true path continues into a fresh block that emits the body.
+        if let Some(guard) = arm_guards.get(&arm_bb.0) {
+            let cond = lower_expr_to_operand(ctx, guard);
+            let body_bb = ctx.alloc_block();
+            let fail_bb = arm_fail_targets[i].unwrap_or(merge_bb);
+            ctx.finish_block(
+                Terminator::Branch {
+                    cond,
+                    then_block: body_bb,
+                    else_block: fail_bb,
+                },
+                body_bb,
+            );
         }
 
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
