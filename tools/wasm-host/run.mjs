@@ -26,6 +26,8 @@ if (!file) {
 
 let memory;
 let bumpPtr = 1 << 14;
+// Host-side map storage: handle N -> maps[N-1] (a JS Map<string, bigint>).
+const maps = [];
 
 function bumpAlloc(bytes) {
   const pageBytes = 65536;
@@ -147,6 +149,29 @@ const env = {
     );
   },
   kryos_array_length: (packed) => unpack(packed)[1],
+  // ---- Maps (str-keyed, i64-valued). Handle = 1-based index into `maps`. ----
+  kryos_map_new: () => {
+    maps.push(new Map());
+    return BigInt(maps.length); // 1-based, nonzero
+  },
+  kryos_map_insert_str: (handle, keyPacked, value) => {
+    const m = maps[asNum(handle) - 1];
+    const [off, len] = unpack(keyPacked);
+    m.set(readStr(off, len), BigInt(value));
+    return handle; // passthrough
+  },
+  kryos_map_get_str: (handle, keyPacked) => {
+    const m = maps[asNum(handle) - 1];
+    const [off, len] = unpack(keyPacked);
+    const v = m.get(readStr(off, len));
+    return v === undefined ? 0n : v;
+  },
+  kryos_map_has_str: (handle, keyPacked) => {
+    const m = maps[asNum(handle) - 1];
+    const [off, len] = unpack(keyPacked);
+    return m.has(readStr(off, len)) ? 1n : 0n;
+  },
+  kryos_map_len: (handle) => maps[asNum(handle) - 1].size,
   kryos_array_push: (packed, value) => {
     // Reallocate len+1 slots, copy, append. Handles are immutable packs.
     const [off, len] = unpack(packed);

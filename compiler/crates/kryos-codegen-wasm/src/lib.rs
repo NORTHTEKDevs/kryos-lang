@@ -307,6 +307,12 @@ struct WasmCodegen {
     string_char_code_idx: u32,
     /// `kryos_string_contains(haystack: i64, needle: i64) -> i64` — 1 if needle in haystack.
     string_contains_idx: u32,
+    /// Map host imports (str-keyed, i64-valued; host keeps a JS Map per handle).
+    map_new_idx: u32,
+    map_insert_str_idx: u32,
+    map_get_str_idx: u32,
+    map_has_str_idx: u32,
+    map_len_idx: u32,
 
     /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
     /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
@@ -372,6 +378,11 @@ impl WasmCodegen {
             string_retain_idx: 0,
             string_char_code_idx: 0,
             string_contains_idx: 0,
+            map_new_idx: 0,
+            map_insert_str_idx: 0,
+            map_get_str_idx: 0,
+            map_has_str_idx: 0,
+            map_len_idx: 0,
             struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
@@ -790,6 +801,43 @@ impl WasmCodegen {
         self.imports.import(env_module, "kryos_string_contains",
             wasm_encoder::EntityType::Function(self.type_count));
         self.string_contains_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // ---- Maps (host-backed, like arrays). Keys are packed strings, values
+        // i64. The host keeps a JS Map per handle. map_new() -> handle. ----
+        // map_new() -> i64 handle
+        self.types.ty().function(vec![], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_new",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_new_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_insert_str(handle, key_packed, value) -> i64 (handle passthrough)
+        self.types.ty().function(vec![ValType::I64, ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_insert_str",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_insert_str_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_get_str(handle, key_packed) -> i64 (value, 0 if absent)
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_get_str",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_get_str_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_has_str(handle, key_packed) -> i64 (1/0)
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_has_str",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_has_str_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_len(handle) -> i32
+        self.types.ty().function(vec![ValType::I64], vec![ValType::I32]);
+        self.imports.import(env_module, "kryos_map_len",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_len_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
     }
 
@@ -2198,9 +2246,24 @@ impl<'a> FnEmitter<'a> {
                 }
                 self.wfunc.instruction(&W::LocalGet(scratch));
             }
+            // Map literal `{}` / `{k: v, ...}`: host-backed handle. map_new(),
+            // then map_insert_str(handle, key, value) per entry.
+            RValue::Map(entries) => {
+                self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                for (k, v) in entries {
+                    self.wfunc.instruction(&W::LocalGet(scratch)); // handle
+                    self.emit_operand(k)?; // packed key string
+                    self.emit_operand(v)?; // i64 value
+                    self.wfunc.instruction(&W::Call(self.cg.map_insert_str_idx));
+                    self.wfunc.instruction(&W::Drop); // handle passthrough, discard
+                }
+                self.wfunc.instruction(&W::LocalGet(scratch));
+            }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(
-                    "rvalue `{}` (v0.3 supports scalars, calls, casts, arrays, indexing)",
+                    "rvalue `{}` (v0.3 supports scalars, calls, casts, arrays, indexing, maps)",
                     debug_short(other)
                 )));
             }
@@ -2415,6 +2478,10 @@ impl<'a> FnEmitter<'a> {
                 MirType::Array(_, _) => {
                     let idx = self.cg.array_length_idx;
                     self.wfunc.instruction(&W::Call(idx));
+                    self.wfunc.instruction(&W::I64ExtendI32U);
+                }
+                MirType::Map { .. } => {
+                    self.wfunc.instruction(&W::Call(self.cg.map_len_idx));
                     self.wfunc.instruction(&W::I64ExtendI32U);
                 }
                 _ => {
@@ -2632,6 +2699,34 @@ impl<'a> FnEmitter<'a> {
         ) && args.len() == 2
         {
             self.wfunc.instruction(&W::I64Const(0));
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
+        // Map runtime builtins (str-keyed). The MIR lowers `m[k]=v` / `m[k]` /
+        // `contains(m,k)` to these; the host keeps a JS Map per handle.
+        // -------------------------------------------------------------
+        if (func == "kryos_map_insert_str" || func == "map_insert_str") && args.len() == 3 {
+            self.emit_operand(&args[0])?; // handle
+            self.emit_operand(&args[1])?; // packed key
+            self.emit_operand(&args[2])?; // value
+            self.wfunc.instruction(&W::Call(self.cg.map_insert_str_idx));
+            return Ok(());
+        }
+        if (func == "kryos_map_get_str" || func == "map_get_str") && args.len() == 2 {
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(self.cg.map_get_str_idx));
+            return Ok(());
+        }
+        if (func == "kryos_map_has_str" || func == "map_has_str") && args.len() == 2 {
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(self.cg.map_has_str_idx));
+            return Ok(());
+        }
+        if (func == "kryos_map_new" || func == "map_new") && args.is_empty() {
+            self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
             return Ok(());
         }
 
