@@ -1,0 +1,127 @@
+// Capability-audited tool-using agent.
+//
+// This is Kryos's wedge made concrete: the compiler PROVES which resources
+// each tool -- and the agent as a whole -- is allowed to touch. An agent that
+// only declares `fs:read` + `fs:write` physically cannot open a socket or read
+// an environment secret: any tool that tries makes the whole program fail to
+// COMPILE (see trust_agent_overreach.kry for the rejected companion).
+//
+// Runs fully offline -- a deterministic planner picks tools from the task, so
+// anyone can `kryos run` this with no API key. Swap `plan()` for a real
+// `llm::chat_tools` call (which requires `net`) to make it model-driven; the
+// capability set on `main` is exactly what changes.
+//
+// expect-stdout: [plan] read_note -> summarize -> write_note
+// expect-stdout: summary: 4 words, first line: Kryos proves agent safety.
+// expect-stdout: [audit] agent capabilities: fs:read, fs:write
+
+use std::string::{split_lines}
+
+// A tool the agent can invoke. Each variant maps to one capability-scoped fn.
+enum Tool {
+    ReadNote,
+    Summarize,
+    WriteNote,
+    Done,
+}
+
+// ---- Tools: each declares EXACTLY the authority it needs ----
+
+@capabilities(fs:read)
+fn tool_read_note(path: str) -> str {
+    if file_exists(path) == 1 {
+        return file_read(path)
+    }
+    return "Kryos proves agent safety.\nTools cannot exceed their capabilities.\n"
+}
+
+// Pure tool -- no capability needed (word count + first line).
+fn tool_summarize(text: str) -> str {
+    let lines = split_lines(text)
+    let first = if len(lines) > 0 { lines[0] } else { "" }
+    let mut words = 1
+    let mut i = 0
+    while i < len(first) {
+        if substr(first, i, i + 1) == " " { words = words + 1 }
+        i = i + 1
+    }
+    return "summary: " + to_string(words) + " words, first line: " + first
+}
+
+@capabilities(fs:write)
+fn tool_write_note(path: str, content: str) {
+    file_write(path, content)
+}
+
+// ---- Deterministic planner (offline stand-in for an LLM tool-call loop) ----
+
+fn plan(task: str) -> [Tool] {
+    let mut steps: [Tool] = []
+    if contains(task, "summarize") {
+        steps = push(steps, ReadNote)
+        steps = push(steps, Summarize)
+    }
+    if contains(task, "save") {
+        steps = push(steps, WriteNote)
+    }
+    steps = push(steps, Done)
+    return steps
+}
+
+fn tool_name(t: Tool) -> str {
+    match t {
+        ReadNote => return "read_note",
+        Summarize => return "summarize",
+        WriteNote => return "write_note",
+        Done => return "done",
+    }
+}
+
+// ---- Agent loop. Its capability set is the WHOLE agent's authority ceiling.
+// Declaring only fs:read + fs:write means no tool reachable from here can
+// touch the network or the environment -- the compiler enforces it. ----
+
+@capabilities(fs:read, fs:write)
+fn run_agent(task: str, note_path: str, out_path: str) {
+    let steps = plan(task)
+
+    // Show the plan.
+    let mut line = "[plan]"
+    let mut i = 0
+    while i < len(steps) {
+        let t = steps[i]
+        match t {
+            Done => {}
+            _ => {
+                if i > 0 { line = line + " ->" } else { line = line + "" }
+                line = line + " " + tool_name(t)
+            }
+        }
+        i = i + 1
+    }
+    println(line)
+
+    // Execute the plan.
+    let mut scratch = ""
+    let mut j = 0
+    while j < len(steps) {
+        let step = steps[j]
+        match step {
+            ReadNote => { scratch = tool_read_note(note_path) }
+            Summarize => {
+                scratch = tool_summarize(scratch)
+                println(scratch)
+            }
+            WriteNote => { tool_write_note(out_path, scratch) }
+            Done => {}
+        }
+        j = j + 1
+    }
+
+    println("[audit] agent capabilities: fs:read, fs:write")
+}
+
+@capabilities(fs:read, fs:write)
+fn main() {
+    run_agent("summarize the note and save it", "note.txt", "summary.txt")
+}

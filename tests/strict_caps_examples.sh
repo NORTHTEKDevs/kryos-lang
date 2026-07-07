@@ -27,6 +27,9 @@ check() {
 
 for f in examples/*.kry examples/showcase/*.kry examples/showcase/extra/*.kry; do
   [ -f "$f" ] || continue
+  # `*_overreach.kry` are DELIBERATELY-rejected demos (a tool exceeds the
+  # agent's capabilities) -- asserted to FAIL in run_examples_gate.sh, not here.
+  case "$f" in *_overreach.kry) continue ;; esac
   # Library-style files with no `fn main` are skipped (nothing to gate at an
   # entry point); the capability checker still runs on them during normal builds.
   grep -q "fn main" "$f" || continue

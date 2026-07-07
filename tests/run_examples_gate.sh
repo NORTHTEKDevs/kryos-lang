@@ -65,6 +65,8 @@ echo "examples-gate: fixtures $((n-bad))/$n"
 n=0; bad=0
 for f in "$REPO"/examples/showcase/*.kry; do
     base="$(basename "$f" .kry)"
+    # `*_overreach.kry` are must-FAIL capability demos, asserted in Layer 5.
+    case "$base" in *_overreach) continue ;; esac
     n=$((n+1))
     if ! "$KRYOS" build "$f" --release --backend llvm -o "$TMP/sc_$base" >/dev/null 2>&1; then
         echo "  AOT FAIL showcase/$base"
@@ -72,6 +74,25 @@ for f in "$REPO"/examples/showcase/*.kry; do
     fi
 done
 echo "examples-gate: showcase $((n-bad))/$n"
+
+# Layer 5: negative capability demos MUST be rejected. Each `*_overreach.kry`
+# is a trustworthy-agent counterexample (a tool exceeds the agent's granted
+# capabilities); the compiler must refuse it with a capability error (E0505/
+# E0506/E0507). A demo that silently COMPILES would be a false safety claim.
+neg=0; negbad=0
+for f in "$REPO"/examples/showcase/*_overreach.kry; do
+    [ -f "$f" ] || continue
+    base="$(basename "$f" .kry)"
+    neg=$((neg+1))
+    out="$("$KRYOS" check "$f" 2>&1)"
+    if echo "$out" | grep -qE 'error\[E050[567]\]'; then
+        :  # correctly rejected
+    else
+        echo "  NEGATIVE FAIL showcase/$base (expected a capability rejection, got none)"
+        negbad=$((negbad+1)); fail=1
+    fi
+done
+[ "$neg" -gt 0 ] && echo "examples-gate: capability-rejection $((neg-negbad))/$neg"
 
 # Layer 4: multi-file project -- cross-module imports, bare AND module-qualified
 # calls (`util::add` / alias `u::add`), JIT + AOT. Regression: the checker
