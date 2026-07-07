@@ -32,3 +32,19 @@ JIT AND AOT, and native corpus + strict-caps + soundness + ecosystem stay green.
 
 ## Log
 - Started from master @ bc6443d (8 gaps closed earlier this session).
+
+
+## BONUS (beyond the 3 features)
+4. [DONE] wasm narrow-int casts (x as u8/i8/u16/i16) — uniform i64 int slots (98eaf88 prior)
+5. [DONE] wasm single-level `for i in 0..n` range loops (98eaf88)
+6. [VERIFIED] native language complete — advanced-feature probe (dyn traits, nested
+   generics, generic methods, Result?/chain, closures-in-structs, recursive trees)
+   all pass both backends; only turbofish-literal construct is a gap (matches Rust).
+
+## REMAINING (documented residuals, NOT rushed overnight — regression risk too high)
+- wasm NESTED loops: needs a relooper/structured-CFG rewrite (the translator is
+  single-level). High-value but large+risky; use recursion or native for now.
+- chan buffered() / try_receive(): needs fragile multi-backend runtime-builtin
+  wiring for a concurrency edge; select is the documented non-blocking path.
+- wasm f64/f32 captures: edge (i64/str/handle captures work).
+These are honest, documented limitations — not silent-wrong.
