@@ -41,8 +41,8 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use kryos_mir::ir::{
-    BasicBlock, BlockId, Constant, Instruction, MirBinOp, MirFunction, MirModule, MirType,
-    MirUnOp, Operand, RValue, Terminator,
+    BasicBlock, BlockId, Constant, Instruction, LocalId, MirAttributes, MirBinOp, MirFunction,
+    MirLocal, MirModule, MirParam, MirType, MirUnOp, Operand, RValue, Terminator,
 };
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements, ExportKind,
@@ -324,6 +324,16 @@ struct WasmCodegen {
     /// User functions whose return type is void (leave nothing on the wasm
     /// stack). Used to decide whether a discarded call's result must be dropped.
     void_user_fns: std::collections::HashSet<String>,
+    /// For each lambda used as a closure: its thunk's function/table index.
+    /// The thunk `(env, user_args) -> ret` unpacks captures from the env array
+    /// and calls the real lambda. ALL closures (capturing or not) are env
+    /// arrays `[thunk_idx, caps...]`, and call_indirect always dispatches
+    /// through the thunk -- one uniform indirect-call signature per closure
+    /// shape.
+    closure_thunk_idx: std::collections::HashMap<String, u32>,
+    /// Synthesized thunk MirFunctions, emitted alongside the module's own
+    /// functions (planned + emitted through the normal pipeline).
+    synth_thunks: Vec<MirFunction>,
 
     /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
     /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
@@ -396,6 +406,8 @@ impl WasmCodegen {
             map_len_idx: 0,
             indirect_types: HashMap::new(),
             void_user_fns: std::collections::HashSet::new(),
+            closure_thunk_idx: std::collections::HashMap::new(),
+            synth_thunks: Vec::new(),
             struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
@@ -412,9 +424,13 @@ impl WasmCodegen {
         // 1. Register host imports for printing.
         self.register_host_imports();
 
+        // 1b. Synthesize closure thunks (one per lambda used as a closure) so
+        //     capturing closures have a uniform env-based indirect-call ABI.
+        self.build_closure_thunks(module)?;
+
         // 2. Plan: assign signature indices and function indices for every
-        //    user function up-front so calls can resolve by name regardless
-        //    of definition order.
+        //    user function (and thunk) up-front so calls resolve by name
+        //    regardless of definition order.
         self.plan_functions(module)?;
 
         // 3. Emit memory section: 1 page (64KB) for now. Enough for string
@@ -430,10 +446,15 @@ impl WasmCodegen {
         // 4. Export memory so the host can read string literals.
         self.exports.export("memory", ExportKind::Memory, 0);
 
-        // 5. Walk every user function and emit its body.
+        // 5. Walk every user function and emit its body, then the thunks.
         for func in &module.functions {
             self.emit_function(func)?;
         }
+        let thunks = std::mem::take(&mut self.synth_thunks);
+        for thunk in &thunks {
+            self.emit_function(thunk)?;
+        }
+        self.synth_thunks = thunks;
 
         // 6. Write the accumulated string-literal bytes into a data segment
         //    starting at offset 0.
@@ -854,6 +875,137 @@ impl WasmCodegen {
         self.func_count += 1; self.type_count += 1;
     }
 
+    /// Synthesize a thunk MirFunction per lambda used as a closure. The thunk
+    /// `__wasm_thunk_<lambda>(env: i64, user_args...) -> ret` reads the lambda's
+    /// captures from the env array (`array_get(env, i+1)`) and forwards them
+    /// plus the user args to the real lambda. This gives every closure a
+    /// UNIFORM indirect-call ABI: the closure value is an env array
+    /// `[thunk_idx, cap0, ...]`, and `call_indirect` always calls the thunk.
+    fn build_closure_thunks(&mut self, module: &MirModule) -> Result<(), WasmCodegenError> {
+        // Collect closured lambda name -> capture count.
+        let mut closured: HashMap<String, usize> = HashMap::new();
+        for func in &module.functions {
+            for block in &func.blocks {
+                for inst in &block.instructions {
+                    if let Instruction::Assign {
+                        value: RValue::Closure { func_name, captures },
+                        ..
+                    } = inst
+                    {
+                        closured.insert(func_name.clone(), captures.len());
+                    }
+                }
+            }
+        }
+        // Deterministic order (thunks get stable indices).
+        let mut names: Vec<_> = closured.into_iter().collect();
+        names.sort();
+
+        for (lambda_name, num_caps) in names {
+            let lambda = module
+                .functions
+                .iter()
+                .find(|f| f.name == lambda_name)
+                .ok_or_else(|| {
+                    WasmCodegenError::unsupported(&format!(
+                        "closure over unknown function `{lambda_name}`"
+                    ))
+                })?;
+            // f64/f32 captures would need a bitcast from the i64 array slot we
+            // don't emit here; keep the honest error for that rare case.
+            for p in lambda.params.iter().take(num_caps) {
+                if matches!(p.ty, MirType::F64 | MirType::F32) {
+                    return Err(WasmCodegenError::unsupported(
+                        "wasm closure capturing an f64/f32 value (capture i64/str/handle \
+                         values, or use --backend cranelift/llvm)",
+                    ));
+                }
+            }
+            let user_params: Vec<MirParam> = lambda.params.iter().skip(num_caps).cloned().collect();
+            let ret = lambda.ret_ty.clone();
+
+            let mut locals: Vec<MirLocal> = Vec::new();
+            let mut next: u32 = 0;
+            // env is local 0.
+            let env = LocalId(next);
+            locals.push(MirLocal { id: env, name: Some("__env".into()), ty: MirType::I64, mutable: false });
+            next += 1;
+            // user params are locals 1..=M (wasm param convention: params first).
+            let mut user_locals: Vec<(LocalId, MirType)> = Vec::new();
+            for (i, up) in user_params.iter().enumerate() {
+                let id = LocalId(next);
+                locals.push(MirLocal { id, name: Some(format!("__u{i}")), ty: up.ty.clone(), mutable: false });
+                next += 1;
+                user_locals.push((id, up.ty.clone()));
+            }
+            // capture temps.
+            let mut cap_locals: Vec<LocalId> = Vec::new();
+            for i in 0..num_caps {
+                let id = LocalId(next);
+                locals.push(MirLocal { id, name: Some(format!("__c{i}")), ty: lambda.params[i].ty.clone(), mutable: false });
+                next += 1;
+                cap_locals.push(id);
+            }
+
+            let mut instrs: Vec<Instruction> = Vec::new();
+            for (i, &cid) in cap_locals.iter().enumerate() {
+                instrs.push(Instruction::Assign {
+                    dest: cid,
+                    value: RValue::Call {
+                        func: "array_get".into(),
+                        args: vec![
+                            Operand::Local(env),
+                            Operand::Constant(Constant::Int((i + 1) as i64)),
+                        ],
+                    },
+                });
+            }
+            // call real lambda(caps..., users...).
+            let mut call_args: Vec<Operand> =
+                cap_locals.iter().map(|&c| Operand::Local(c)).collect();
+            for (uid, _) in &user_locals {
+                call_args.push(Operand::Local(*uid));
+            }
+            let terminator = if is_void(&ret) {
+                // void return: call for side effect, into a void sink local.
+                let sink = LocalId(next);
+                locals.push(MirLocal { id: sink, name: Some("__sink".into()), ty: MirType::Void, mutable: false });
+                next += 1;
+                instrs.push(Instruction::Assign {
+                    dest: sink,
+                    value: RValue::Call { func: lambda_name.clone(), args: call_args },
+                });
+                Terminator::Return(None)
+            } else {
+                let result = LocalId(next);
+                locals.push(MirLocal { id: result, name: Some("__r".into()), ty: ret.clone(), mutable: false });
+                #[allow(unused_assignments)]
+                { next += 1; }
+                instrs.push(Instruction::Assign {
+                    dest: result,
+                    value: RValue::Call { func: lambda_name.clone(), args: call_args },
+                });
+                Terminator::Return(Some(Operand::Local(result)))
+            };
+
+            let mut params = vec![MirParam { local: env, ty: MirType::I64 }];
+            for (uid, uty) in &user_locals {
+                params.push(MirParam { local: *uid, ty: uty.clone() });
+            }
+            self.synth_thunks.push(MirFunction {
+                name: format!("__wasm_thunk_{lambda_name}"),
+                params,
+                ret_ty: ret,
+                blocks: vec![BasicBlock { id: BlockId(0), instructions: instrs, terminator }],
+                locals,
+                attributes: MirAttributes::default(),
+                source_file: None,
+                source_line: 0,
+            });
+        }
+        Ok(())
+    }
+
     /// Walk the module once to assign function indices and signature indices.
     fn plan_functions(&mut self, module: &MirModule) -> Result<(), WasmCodegenError> {
         for func in &module.functions {
@@ -886,6 +1038,34 @@ impl WasmCodegen {
             self.exports
                 .export(&func.name, ExportKind::Func, fn_idx);
         }
+        // Plan the synthesized closure thunks (take out to avoid the self
+        // borrow, plan each, restore for emission). Record thunk index per
+        // lambda so the Closure rvalue can put it in env[0].
+        let thunks = std::mem::take(&mut self.synth_thunks);
+        for thunk in &thunks {
+            let mut params = Vec::with_capacity(thunk.params.len());
+            for p in &thunk.params {
+                params.push(lower_type(&p.ty)?);
+            }
+            let results: Vec<ValType> = if is_void(&thunk.ret_ty) {
+                self.void_user_fns.insert(thunk.name.clone());
+                vec![]
+            } else {
+                vec![lower_type(&thunk.ret_ty)?]
+            };
+            let sig_idx = self.type_count;
+            self.types.ty().function(params, results);
+            self.type_count += 1;
+            self.funcs.function(sig_idx);
+            let fn_idx = self.func_count;
+            self.func_count += 1;
+            self.fn_indices.insert(thunk.name.clone(), fn_idx);
+            self.fn_sigs.insert(thunk.name.clone(), sig_idx);
+            if let Some(lambda) = thunk.name.strip_prefix("__wasm_thunk_") {
+                self.closure_thunk_idx.insert(lambda.to_string(), fn_idx);
+            }
+        }
+        self.synth_thunks = thunks;
         Ok(())
     }
 
@@ -928,14 +1108,14 @@ impl WasmCodegen {
             local_decls.push((count, t));
         }
 
-        // v0.2: reserve ONE extra i64 scratch local at the very end of every
-        // function. Index = func.locals.len(). Used by `emit_unpack_string`
-        // to tee/dup a packed (offset|len) i64 without disturbing user
-        // locals. Cost: 8 bytes per call frame — negligible.
-        // Merge with the trailing group if it's already i64, else append.
+        // v0.2: reserve TWO extra i64 scratch locals at the very end of every
+        // function. Index func.locals.len() = `cg_scratch_local` (string
+        // unpack, array/map/env building); func.locals.len()+1 =
+        // `cg_scratch_local2` (holds a closure env across arg emission in
+        // call_indirect, which itself uses scratch 1 for string args).
         match local_decls.last_mut() {
-            Some(entry) if entry.1 == ValType::I64 => entry.0 += 1,
-            _ => local_decls.push((1, ValType::I64)),
+            Some(entry) if entry.1 == ValType::I64 => entry.0 += 2,
+            _ => local_decls.push((2, ValType::I64)),
         }
 
         let mut wfunc = Function::new(local_decls);
@@ -2342,51 +2522,75 @@ impl<'a> FnEmitter<'a> {
                 }
                 self.wfunc.instruction(&W::LocalGet(scratch));
             }
-            // Closure value: a function reference for `call_indirect`. A
-            // no-capture closure (the common HOF case: `fold(xs,0,|a,x| a+x)`)
-            // is just the lambda's table index. Capturing closures need a heap
-            // env + a uniform (env, args) ABI not yet built for wasm.
+            // Closure value: a heap env array `[thunk_idx, cap0, cap1, ...]`
+            // for EVERY closure (no-capture -> just `[thunk_idx]`). The uniform
+            // env representation gives call_indirect one signature per closure
+            // shape (env, user_args) -> ret via the thunk.
             RValue::Closure { func_name, captures } => {
-                if !captures.is_empty() {
-                    return Err(WasmCodegenError::unsupported(
-                        "capturing closure in wasm (v0.5 supports no-capture closures / HOF \
-                         lambdas; use --backend cranelift/llvm for captures)",
-                    ));
-                }
-                let idx = *self.cg.fn_indices.get(func_name.as_str()).ok_or_else(|| {
+                let lambda_idx = *self.cg.fn_indices.get(func_name.as_str()).ok_or_else(|| {
                     WasmCodegenError::unsupported(&format!(
                         "closure over unknown function `{func_name}`"
                     ))
                 })?;
-                self.wfunc.instruction(&W::I64Const(idx as i64));
+                let thunk_idx = self
+                    .cg
+                    .closure_thunk_idx
+                    .get(func_name.as_str())
+                    .copied()
+                    .unwrap_or(lambda_idx);
+                let n = (captures.len() + 1) as i32;
+                self.wfunc.instruction(&W::I32Const(n));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+                let scratch = self.cg_scratch_local();
+                self.wfunc.instruction(&W::LocalSet(scratch));
+                // slot 0 = thunk table index.
+                self.wfunc.instruction(&W::LocalGet(scratch));
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::I64Const(thunk_idx as i64));
+                self.wfunc.instruction(&W::Call(self.cg.array_set_idx));
+                // slots 1.. = captures.
+                for (i, cap) in captures.iter().enumerate() {
+                    self.wfunc.instruction(&W::LocalGet(scratch));
+                    self.wfunc.instruction(&W::I32Const((i + 1) as i32));
+                    self.emit_operand(cap)?;
+                    self.wfunc.instruction(&W::Call(self.cg.array_set_idx));
+                }
+                self.wfunc.instruction(&W::LocalGet(scratch));
             }
-            // Indirect call through a closure value (its table index).
+            // Indirect call through a closure value (its env array). Dispatch
+            // via the thunk stored in env[0]: thunk(env, user_args...) unpacks
+            // the captures and calls the real lambda.
             RValue::CallIndirect { callee, args } => {
                 let callee_ty = self.operand_ty(callee).unwrap_or(MirType::I64);
-                let (param_tys, ret_ty) = match &callee_ty {
-                    MirType::Function { params, ret } => (params.clone(), (**ret).clone()),
-                    _ => {
-                        // Fall back: derive params from the args, assume i64 ret.
-                        let mut ps = Vec::new();
-                        for a in args {
-                            ps.push(self.operand_ty(a).unwrap_or(MirType::I64));
-                        }
-                        (ps, MirType::I64)
-                    }
+                let ret_ty = match &callee_ty {
+                    MirType::Function { ret, .. } => (**ret).clone(),
+                    _ => MirType::I64,
                 };
-                let wparams: Vec<ValType> =
-                    param_tys.iter().map(|t| lower_type(t).unwrap_or(ValType::I64)).collect();
+                // Thunk signature: (i64 env, user_arg_types...) -> ret.
+                let mut wparams: Vec<ValType> = vec![ValType::I64]; // env
+                for a in args {
+                    wparams.push(lower_type(&self.operand_ty(a).unwrap_or(MirType::I64)).unwrap_or(ValType::I64));
+                }
                 let wret = if is_void(&ret_ty) {
                     None
                 } else {
                     Some(lower_type(&ret_ty).unwrap_or(ValType::I64))
                 };
                 let type_index = self.cg.indirect_type_index(&wparams, wret);
-                // Push the args, then the table index (i32), then call_indirect.
+                // Stash the env in scratch 2 (arg emission below uses scratch 1
+                // for string unpacking, so env survives), then push
+                // (env, user_args...) then the thunk index (env[0]).
+                let env = self.cg_scratch_local2();
+                self.emit_operand(callee)?;
+                self.wfunc.instruction(&W::LocalSet(env));
+                self.wfunc.instruction(&W::LocalGet(env)); // arg0 = env
                 for a in args {
                     self.emit_operand(a)?;
                 }
-                self.emit_operand(callee)?;
+                // table index = env[0].
+                self.wfunc.instruction(&W::LocalGet(env));
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
                 self.wfunc.instruction(&W::I32WrapI64);
                 self.wfunc.instruction(&W::CallIndirect {
                     type_index,
@@ -2547,10 +2751,13 @@ impl<'a> FnEmitter<'a> {
     /// Return the WASM local index of the scratch i64 local appended at
     /// the very end of every function (see emit_function).
     fn cg_scratch_local(&self) -> u32 {
-        // We reserve 1 extra i64 local after all user locals.
-        // WASM local index = n_params + (user_locals - n_params) + 0
-        //                  = func.locals.len()
+        // First reserved i64 local after all user locals.
         self.func.locals.len() as u32
+    }
+
+    /// Second reserved i64 scratch (holds a closure env across arg emission).
+    fn cg_scratch_local2(&self) -> u32 {
+        self.func.locals.len() as u32 + 1
     }
 
     fn emit_call(&mut self, func: &str, args: &[Operand]) -> Result<(), WasmCodegenError> {

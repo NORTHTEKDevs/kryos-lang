@@ -1,0 +1,47 @@
+// Capturing closures in the WASM backend (v0.6).
+//
+// A closure that captures a variable (`|x| x + n`) compiles to wasm via a
+// heap env array `[thunk_idx, captures...]`. call_indirect dispatches through
+// a per-lambda thunk that unpacks the captures and calls the real lambda --
+// so capturing closures work directly, as function arguments, inside HOFs
+// (map/filter/fold), and when returned from a function.
+//
+//   kryos build examples/wasm_capturing_closures.kry --backend wasm -o cc.wasm
+//   node tools/wasm-host/run.mjs cc.wasm
+//
+// (Capturing an f64/f32 value is the one residual -- use the native backends.)
+//
+// expect-stdout: 15
+// expect-stdout: 11 13
+// expect-stdout: 3
+// expect-stdout: 105
+
+use std::iter::{map, filter}
+
+fn apply(f: fn(i64) -> i64, v: i64) -> i64 {
+    return f(v)
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    return |x| x + n
+}
+
+fn main() {
+    // captured local, called directly
+    let n = 10
+    let f = |x: i64| x + n
+    println(to_string(f(5)))
+
+    // captured local inside a HOF (map)
+    let ys = map([1, 2, 3], |x| x + n)
+    println(to_string(ys[0]) + " " + to_string(ys[2]))
+
+    // captured local inside filter
+    let lo = 2
+    let big = filter([1, 2, 3, 4, 5], |x| x > lo)
+    println(to_string(len(big)))
+
+    // captured local through a fn-parameter + a returned closure
+    let k = 100
+    println(to_string(apply(make_adder(k), 5)))
+}

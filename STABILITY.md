@@ -103,23 +103,23 @@ v1.0.0-rc.1. Honest, non-blocking residuals:
 - **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable
   path; `panic` (div-by-zero, OOB, non-exhaustive nested match) aborts. This
   is intentional, documented semantics.
-- **`unsafe { }` is parsed and audited but not yet ENFORCED** (no E0500 on raw
-  ops outside an unsafe block); enforcement is a future stdlib-wide migration.
-  Low impact: Kryos is capability-safe, so `unsafe` is a rare escape hatch.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
   linking; the JIT (`kryos run`) needs nothing.
 
-### 5.0 WASM backend coverage (v0.5)
+`unsafe { }` is now ENFORCED: a raw-pointer dereference outside any `unsafe`
+block is rejected with E0500.
+
+### 5.0 WASM backend coverage (v0.6)
 
 The `wasm32` backend is a compute-focused subset, not full parity. **Works**
 (verified via the node host): i64/f64, strings, structs, enums, arrays
 (host-backed + mutable, `push`/`pop` in place — matching native), maps
 (`map<str,i64>`), control flow, loops, recursion, generics, traits,
-`Result`/`Option`, **no-capture closures**, and **higher-order functions**
-(`fold`/`map`/`filter` with lambdas, via a funcref table + `call_indirect`).
-**Not on wasm:** capturing closures (`|x| x + n` — needs a heap-env ABI; use
-the native backends), and all concurrency (spawn/channels/actors — wasm v0.5
-is single-threaded by design). The native Cranelift JIT and LLVM AOT backends
+`Result`/`Option`, **closures** (no-capture AND capturing, via a heap env
+array + per-lambda thunk + `call_indirect`), and **higher-order functions**
+(`fold`/`map`/`filter` with lambdas, incl. captured variables). **Not on
+wasm:** capturing an f64/f32 value (i64/str/handle captures work), and all
+concurrency (spawn/channels/actors — wasm is single-threaded by design). The native Cranelift JIT and LLVM AOT backends
 remain the full-language, at-parity path.
 
 The v2.1 "known limitations" listed below were all closed in v2.2 and are kept
