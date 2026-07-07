@@ -217,6 +217,20 @@ jobs:
             fi
             ran=$((ran+1))
             rm -f "$out"
+            # Verify every `// expect-stdout: <text>` line appears in the output
+            # (catches SILENT-WRONG regressions, not just build/run failures).
+            missing=0
+            while IFS= read -r want; do
+              if ! grep -qF -- "$want" /tmp/run.log; then
+                echo "  FAIL  $name (expected stdout not found: '$want')"
+                missing=1
+              fi
+            done < <(grep -oE '// expect-stdout: .*' "$f" | sed 's|// expect-stdout: ||')
+            if [ "$missing" -ne 0 ]; then
+              echo "    --- actual output ---"; cat /tmp/run.log
+              fail=$((fail+1))
+              continue
+            fi
             echo "  OK    $name"
           done
           echo ""
