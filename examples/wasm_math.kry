@@ -1,3 +1,5 @@
+// expect-stdout: 42
+// expect-stdout: 1764
 // Kryos -> WASM: arithmetic and println(i64).
 fn add(a: i64, b: i64) -> i64 {
     a + b

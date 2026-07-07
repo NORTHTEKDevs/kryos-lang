@@ -1,3 +1,5 @@
+// expect-stdout: hello, world!
+// expect-stdout: done
 // WASM v0.2 demo: first-class strings.
 //
 // In v0.1 string locals carried only an offset. In v0.2 they carry a packed

@@ -1,3 +1,7 @@
+// expect-stdout: 5
+// expect-stdout: 10
+// expect-stdout: 50
+// expect-stdout: 150
 // WASM v0.3 demo: first-class arrays in the browser/wasm target.
 //
 // In v0.2 arrays were only reachable via explicit array_new/array_get/array_set
