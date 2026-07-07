@@ -345,8 +345,17 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
         // Terminal
         "term_clear" | "term_raw_mode" | "term_size" => Some(Capability::Term),
 
-        // Crypto
-        "sha256" | "sha512" | "random_bytes" | "hmac_sha256" => Some(Capability::Crypto),
+        // Crypto — hashing, key derivation, signing, key generation, and CSPRNG
+        // bytes. All require `crypto`: signing/keygen (ed25519_*) is authority
+        // over key material; hashing is gated for consistency + audit (you want
+        // to KNOW when code does crypto). Previously only sha256/sha512/
+        // random_bytes/hmac_sha256 were gated -- ed25519_sign/generate/public/
+        // verify, pbkdf2, and the sha1 helpers were UNGATED, so an unannotated
+        // function could sign or mint keys without declaring `crypto`.
+        // (base64/hex encoders are pure data transforms, NOT crypto -- ungated.)
+        "sha256" | "sha512" | "sha1_hex" | "sha1_base64" | "hmac_sha256"
+        | "pbkdf2_sha256" | "random_bytes" | "ed25519_generate" | "ed25519_public"
+        | "ed25519_sign" | "ed25519_verify" => Some(Capability::Crypto),
 
         // Time — reading the wall clock and pausing your OWN execution are
         // self-scoped: they cannot read your data, reach other systems, or
