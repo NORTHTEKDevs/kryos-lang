@@ -45,9 +45,9 @@ use kryos_mir::ir::{
     MirUnOp, Operand, RValue, Terminator,
 };
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, DataSection, ExportKind, ExportSection, Function,
-    FunctionSection, ImportSection, Instruction as W, MemArg, MemorySection, MemoryType, Module,
-    TypeSection, ValType,
+    BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements, ExportKind,
+    ExportSection, Function, FunctionSection, ImportSection, Instruction as W, MemArg,
+    MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
 
 // ---------------------------------------------------------------------------
@@ -179,6 +179,12 @@ fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
         // encoding as structs: slot 0 = tag (variant index), slots 1..n = payload
         // fields. This reuses all the struct infrastructure already in place.
         MirType::Enum(_) => ValType::I64,
+        // A closure/function value is its table index (i64) for call_indirect.
+        // This is what lets a HOF like `fold(xs, 0, |a,x| a+x)` take a
+        // `fn(U,T)->U` parameter and call it through the function table.
+        MirType::Function { .. } => ValType::I64,
+        // A map is a host-backed handle (i64), like arrays.
+        MirType::Map { .. } => ValType::I64,
         // Tuples are represented as i64 array handles (same as structs):
         // slot i holds element i of the tuple.
         MirType::Tuple(_) => ValType::I64,
@@ -313,6 +319,8 @@ struct WasmCodegen {
     map_get_str_idx: u32,
     map_has_str_idx: u32,
     map_len_idx: u32,
+    /// call_indirect type signatures, deduped by a canonical key -> type index.
+    indirect_types: HashMap<String, u32>,
 
     /// Struct definitions: maps struct name -> ordered list of (field_name, field_type).
     /// Used for field-index resolution when lowering RValue::Struct / RValue::Field.
@@ -383,6 +391,7 @@ impl WasmCodegen {
             map_get_str_idx: 0,
             map_has_str_idx: 0,
             map_len_idx: 0,
+            indirect_types: HashMap::new(),
             struct_defs: HashMap::new(),
             string_table: HashMap::new(),
             // Reserve the first 16 bytes so offset 0 stays sentinel-free.
@@ -1024,14 +1033,51 @@ impl WasmCodegen {
         (offset, len)
     }
 
+    /// Register (or reuse) a function type for `call_indirect` and return its
+    /// type index. Deduped by a canonical string key so repeated closure
+    /// signatures share one type entry.
+    fn indirect_type_index(&mut self, params: &[ValType], ret: Option<ValType>) -> u32 {
+        let key = format!("{params:?}->{ret:?}");
+        if let Some(&idx) = self.indirect_types.get(&key) {
+            return idx;
+        }
+        let idx = self.type_count;
+        let results: Vec<ValType> = ret.into_iter().collect();
+        self.types.ty().function(params.to_vec(), results);
+        self.type_count += 1;
+        self.indirect_types.insert(key, idx);
+        idx
+    }
+
     /// Finalize: stitch all sections together into the final module bytes.
     fn finish(self) -> Vec<u8> {
         let mut m = Module::new();
         m.section(&self.types);
         m.section(&self.imports);
         m.section(&self.funcs);
+        // Table of all functions (index i -> function i) so closures can be
+        // called via `call_indirect`. A closure value is a function's table
+        // index; the element segment below makes every function ref-able.
+        let mut table = TableSection::new();
+        table.table(TableType {
+            element_type: RefType::FUNCREF,
+            minimum: self.func_count as u64,
+            maximum: Some(self.func_count as u64),
+            table64: false,
+            shared: false,
+        });
+        m.section(&table);
         m.section(&self.memory);
         m.section(&self.exports);
+        // Active element segment: table[i] = function i for every function.
+        let all_fns: Vec<u32> = (0..self.func_count).collect();
+        let mut elems = ElementSection::new();
+        elems.active(
+            None,
+            &ConstExpr::i32_const(0),
+            Elements::Functions(all_fns.into()),
+        );
+        m.section(&elems);
         m.section(&self.code);
         if !self.string_bytes.is_empty() {
             m.section(&self.data);
@@ -2261,9 +2307,61 @@ impl<'a> FnEmitter<'a> {
                 }
                 self.wfunc.instruction(&W::LocalGet(scratch));
             }
+            // Closure value: a function reference for `call_indirect`. A
+            // no-capture closure (the common HOF case: `fold(xs,0,|a,x| a+x)`)
+            // is just the lambda's table index. Capturing closures need a heap
+            // env + a uniform (env, args) ABI not yet built for wasm.
+            RValue::Closure { func_name, captures } => {
+                if !captures.is_empty() {
+                    return Err(WasmCodegenError::unsupported(
+                        "capturing closure in wasm (v0.5 supports no-capture closures / HOF \
+                         lambdas; use --backend cranelift/llvm for captures)",
+                    ));
+                }
+                let idx = *self.cg.fn_indices.get(func_name.as_str()).ok_or_else(|| {
+                    WasmCodegenError::unsupported(&format!(
+                        "closure over unknown function `{func_name}`"
+                    ))
+                })?;
+                self.wfunc.instruction(&W::I64Const(idx as i64));
+            }
+            // Indirect call through a closure value (its table index).
+            RValue::CallIndirect { callee, args } => {
+                let callee_ty = self.operand_ty(callee).unwrap_or(MirType::I64);
+                let (param_tys, ret_ty) = match &callee_ty {
+                    MirType::Function { params, ret } => (params.clone(), (**ret).clone()),
+                    _ => {
+                        // Fall back: derive params from the args, assume i64 ret.
+                        let mut ps = Vec::new();
+                        for a in args {
+                            ps.push(self.operand_ty(a).unwrap_or(MirType::I64));
+                        }
+                        (ps, MirType::I64)
+                    }
+                };
+                let wparams: Vec<ValType> =
+                    param_tys.iter().map(|t| lower_type(t).unwrap_or(ValType::I64)).collect();
+                let wret = if is_void(&ret_ty) {
+                    None
+                } else {
+                    Some(lower_type(&ret_ty).unwrap_or(ValType::I64))
+                };
+                let type_index = self.cg.indirect_type_index(&wparams, wret);
+                // Push the args, then the table index (i32), then call_indirect.
+                for a in args {
+                    self.emit_operand(a)?;
+                }
+                self.emit_operand(callee)?;
+                self.wfunc.instruction(&W::I32WrapI64);
+                self.wfunc.instruction(&W::CallIndirect {
+                    type_index,
+                    table_index: 0,
+                });
+            }
             other => {
                 return Err(WasmCodegenError::unsupported(&format!(
-                    "rvalue `{}` (v0.3 supports scalars, calls, casts, arrays, indexing, maps)",
+                    "rvalue `{}` (v0.5 supports scalars, calls, casts, arrays, indexing, maps, \
+                     no-capture closures)",
                     debug_short(other)
                 )));
             }

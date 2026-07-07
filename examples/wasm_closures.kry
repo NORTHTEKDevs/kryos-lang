@@ -1,0 +1,35 @@
+// Closures and higher-order functions in the WASM backend (v0.5).
+//
+// No-capture closures compile to a function-table index; calling one (directly
+// or through a `fn(T)->U` parameter) uses `call_indirect`. This is what lets
+// higher-order functions like fold/map run in the browser.
+//
+//   kryos build examples/wasm_closures.kry --backend wasm -o closures.wasm
+//   node tools/wasm-host/run.mjs closures.wasm
+//
+// Note: capturing closures (`let n = 10; |x| x + n`) still need the native
+// backends -- the wasm path supports no-capture lambdas (the common HOF case).
+//
+// expect-stdout: 6
+// expect-stdout: 21
+// expect-stdout: 10
+// expect-stdout: 6
+
+use std::iter::{fold, map}
+
+fn apply(f: fn(i64) -> i64, v: i64) -> i64 {
+    return f(v)
+}
+
+fn main() {
+    // a closure stored in a local, called directly
+    let inc = |x: i64| x + 1
+    println(to_string(inc(5)))
+
+    // a closure passed as a function parameter (call_indirect)
+    println(to_string(apply(|x| x * 3, 7)))
+
+    // higher-order fold + map with no-capture lambdas
+    println(to_string(fold([1, 2, 3, 4], 0, |a, x| a + x)))
+    println(to_string(map([1, 2, 3], |x| x * 2)[2]))
+}
