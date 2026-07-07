@@ -20,17 +20,13 @@ split by who does them.
 
 ## Your actions (need credentials or a human decision)
 
-### 1. Publish the VSCode extension (needs an Azure DevOps PAT)
-The extension lives in `editors/vscode/` (publisher `northtekdevs`, v0.4.0) and a
-publish workflow already exists (`.github/workflows/publish-vscode.yml`).
-
-1. Create the publisher (once, web): https://marketplace.visualstudio.com/manage
-   -> "Create publisher" -> id **must be** `northtekdevs`.
-2. Mint a PAT: https://dev.azure.com -> User settings -> Personal access tokens
-   -> scope **Marketplace: Manage**.
-3. Store it: `gh secret set VSCE_PAT -R NORTHTEKDevs/kryos-lang`
-4. Publish: run the `publish-vscode` workflow (Actions tab -> Run workflow ->
-   enter the release tag, e.g. `v1.0.0-rc.1`).
+### 1. VSCode extension — DONE (live on the marketplace)
+- [x] `northtekdevs.kryos v0.4.0` is **published and installable** on the VS Code
+      Marketplace. `VSCE_PAT` is stored as a repo secret and verified valid.
+- To ship a NEW version: bump `editors/vscode/package.json` `version`, then the
+  next release build packages it and the `publish-vscode` workflow pushes it.
+  (Re-running publish on the SAME version fails with "already exists" — expected.)
+  This will be folded into the 1.0.0-final cut (bump to a 1.0-line version).
 
 ### 2. Post the announcement
 A finished, IP-cleared, fact-checked draft is ready (Show HN / blog / social).
@@ -46,5 +42,22 @@ rc.1 is the "last call". After a short soak (days) with no new bug reports, say
 - tag `v1.0.0` (a bare tag auto-drops the pre-release label on GitHub),
 - push and verify the release.
 
-No playground is currently deployed; if you want a browser "try it" page, that's
-a separate build (the wasm target compiles today given a `wasm-ld` toolchain).
+## WASM status (honest)
+
+The `wasm32` backend is a deliberate **experimental subset** (self-labeled v0.1,
+evolving to v0.3), NOT at full-language parity with the native backends. As of
+rc.1, compiled to wasm and verified:
+
+- **Works:** i64/f64, strings, structs, enums, arrays + indexing, control flow,
+  loops, recursion, generics, traits + impl, `Result`/`Option`, casts, calls.
+- **Not yet:** closures/lambdas, higher-order functions (fn-type params), maps,
+  and all concurrency (spawn/channels/actors) — wasm v0.1 is single-threaded.
+
+This is enough for computational/algorithmic code and the browser demos
+(`examples/wasm_*.kry`, all compile). The native Cranelift JIT and LLVM AOT
+backends are the full-language, at-parity backends.
+
+No playground is currently deployed. A browser "try it" page is a separate
+build; the practical gaps to close first for a useful playground are **closures,
+HOFs, and maps** (not "the entire language" — wasm concurrency is a different
+beast and arguably out of scope for a single-threaded target).
