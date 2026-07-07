@@ -19,7 +19,16 @@ JIT AND AOT, and native corpus + strict-caps + soundness + ecosystem stay green.
    - [x] call_indirect via env[0] thunk; 2nd scratch local for env-across-args
    - [x] ALL cases wasm==native: nocap, direct-cap, escaping(map/filter), apply, curry
    - [x] f64-capture -> honest error (not trap); wasm corpus 11/11; native green
-3. [ ] Async cross-await state (CPS state-machine transform)
+3. [DONE] Async cross-await state — commit pending
+   - [x] ROOT CAUSE: the CPS await-split (apply_split_at_awaits) was broken
+     (treated i64 param as a state struct) AND unnecessary (thread-per-task
+     executor keeps each task's stack across await).
+   - [x] FIX: disabled await-split by default (run.rs + config default);
+     scaffolding kept dormant, opt-in via KRYOS_ENABLE_AWAIT_SPLIT.
+   - [x] multi-await + cross-await locals now compile+run correct JIT==AOT;
+     interleave A0 B0 A1 B1 preserved; async_io concurrent. native corpus green.
+
+## ALL THREE DONE.
 
 ## Log
 - Started from master @ bc6443d (8 gaps closed earlier this session).

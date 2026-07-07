@@ -89,15 +89,6 @@ A release tag is cut when **all** of the following hold:
 There are no architectural failures in the release-gating sweep at
 v1.0.0-rc.1. Honest, non-blocking residuals:
 
-- **`async` functions cannot carry local state across an `await` point.** The
-  cooperative executor runs fire-and-forget tasks and interleaves at `await`
-  (proven: `async_io.kry` overlaps four 300ms I/O tasks concurrently; the
-  `A0 B0 A1 B1` interleave holds). But a function that keeps a local live
-  across two awaits (`let a = ..; await x(); let b = a + ..; await y()`) fails
-  to COMPILE — the CPS state-machine transform that threads locals through a
-  suspend/resume state struct is scaffolded but not finished (`async_lower.rs`).
-  Pass state via channels or keep async tasks straight-line for now. (Honest
-  compile error, never silent-wrong.)
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
 - **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable

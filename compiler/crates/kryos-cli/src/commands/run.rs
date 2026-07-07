@@ -76,7 +76,9 @@ fn execute_inner(
         lto: false,
         debug_info: false,
         use_cache: false,
-        split_async_awaits: true,
+        // Thread-per-task executor keeps each task's stack; no CPS await-split
+        // needed (and the incomplete split miscompiled cross-await locals).
+        split_async_awaits: false,
         strict_capabilities: false,
         capability_mode: cap_mode,
     };

@@ -172,12 +172,20 @@ impl BuildConfig {
     }
 }
 
-/// Default for [`BuildConfig::split_async_awaits`]. ON unless the
-/// `KRYOS_DISABLE_AWAIT_SPLIT` environment variable is set to a truthy
-/// value (anything non-empty other than `0`/`false`/`no`/`off`).
+/// Default for [`BuildConfig::split_async_awaits`]. OFF by default.
+///
+/// The runtime executor is thread-per-task ("green tasks backed by OS
+/// threads"): each `async fn` runs its body straight-line on its own OS
+/// thread and `await` yields the cooperative baton. Because each task keeps
+/// its own native stack, locals live naturally across `await` points -- no
+/// CPS split into a poll state machine is needed, and the (incomplete) split
+/// transform actively MISCOMPILED functions with cross-await locals (it
+/// treated the i64 param as a state struct). The split scaffolding is kept
+/// dormant for a possible future stackless executor; opt in with a truthy
+/// `KRYOS_ENABLE_AWAIT_SPLIT`.
 fn default_split_async_awaits() -> bool {
-    match std::env::var("KRYOS_DISABLE_AWAIT_SPLIT").ok().as_deref() {
-        None | Some("") | Some("0") | Some("false") | Some("no") | Some("off") => true,
-        _ => false,
-    }
+    matches!(
+        std::env::var("KRYOS_ENABLE_AWAIT_SPLIT").ok().as_deref(),
+        Some(v) if !v.is_empty() && v != "0" && v != "false" && v != "no" && v != "off"
+    )
 }

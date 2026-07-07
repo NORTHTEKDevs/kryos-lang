@@ -1,0 +1,66 @@
+// async functions that keep locals live ACROSS await points.
+// Regression: the CPS await-split transform (async_lower::apply_split_at_awaits)
+// miscompiled these -- it treated the i64 param as a state struct
+// ("StoreField 'state' on unknown struct type"), failing to compile on both
+// backends. The runtime executor is thread-per-task (each task runs
+// straight-line on its own OS thread, so locals survive across `await`
+// naturally), so the split is unnecessary; it is now off by default. `await`
+// still yields the cooperative baton, so tasks still interleave.
+// expect-stdout: A0
+// expect-stdout: B0
+// expect-stdout: A1
+// expect-stdout: B1
+// expect-stdout: t1 15
+// expect-stdout: t2 25
+// expect-stdout: z 111
+
+async fn a() {
+    println("A0")
+    await tick()
+    println("A1")
+}
+
+async fn b() {
+    println("B0")
+    await tick()
+    println("B1")
+}
+
+// locals (id-derived) live across an await
+async fn compute(id: i64) {
+    let base = id * 10
+    await tick()
+    let total = base + 5
+    println("t" + to_string(id) + " " + to_string(total))
+}
+
+// three await points, accumulating local state
+async fn accumulate() {
+    let x = 1
+    await tick()
+    let y = x + 10
+    await tick()
+    let z = y + 100
+    println("z " + to_string(z))
+}
+
+async fn tick() { }
+
+fn main() {
+    // cooperative interleave (await yields the baton)
+    coop_reset()
+    coop_spawn(a())
+    coop_spawn(b())
+    coop_run()
+
+    // locals across a single await
+    coop_reset()
+    coop_spawn(compute(1))
+    coop_spawn(compute(2))
+    coop_run()
+
+    // locals across multiple awaits
+    coop_reset()
+    coop_spawn(accumulate())
+    coop_run()
+}
