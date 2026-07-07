@@ -4,6 +4,30 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0-rc.1] — 2026-07-06 — "Release candidate"
+
+First 1.0 release candidate. This is the "last call" before the SemVer 1.0
+stability lock: the language, CLI, MIR/runtime ABI, and registry format are
+proposed frozen. Report anything before 1.0.0 final.
+
+### Added
+- **Capability-audited AI agent showcase** (`examples/showcase/trust_agent.kry`)
+  -- a tool-using agent whose authority is proven at compile time, runnable
+  fully offline. Its companion `trust_agent_overreach.kry` is a deliberately
+  REJECTED counterexample (a tool tries to exfiltrate an env secret over the
+  network; the compiler refuses it, E0507). The examples gate asserts the
+  rejection, so a demo that silently compiled would fail CI.
+- **Installers resolve the newest 1.0 release dynamically** instead of a stale
+  pinned tag, with a pinned floor fallback (`install.sh` / `install.ps1`).
+
+### State at rc.1
+- 157 feature probes across three completeness-audit tiers, 0 defects on both
+  backends (Cranelift JIT + LLVM AOT).
+- All release gates green: native corpus (131x2), 495 unit tests, capability
+  soundness, strict-caps 84/84, ecosystem 253/253, examples gate, self-host
+  18/18, docs snippets 55/55.
+- See §4/§5 of `STABILITY.md` for pass rates and the honest residual list.
+
 ## [1.0.0-beta.7] — 2026-07-06 — "Completeness sweep II: modules, actors, FFI hygiene"
 
 A second 35-probe audit tier (multi-file projects, trait bounds, numeric/literal

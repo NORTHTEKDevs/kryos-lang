@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-07-06 (v1.0.0-beta.5).
+Last updated: 2026-07-06 (v1.0.0-rc.1).
 
 ---
 
@@ -65,28 +65,42 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0-beta.5)
+## 4. Current pass rates (v1.0.0-rc.1)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
-  `native_build_release_tests` suite.
-- Parity matrix (`tests/parity/run_parity.sh`): **47 / 47
-  both_pass on Cranelift + LLVM** across the smoke suite.
+  `native_build_release_tests` suite (131 programs, both backends).
+- Compiler unit tests: **100%** (495 tests across the front/middle/back end).
+- Capability soundness: `inferred_soundness.sh` green; `strict_caps_examples.sh`
+  **84 / 84**; `ecosystem_check.sh` **253 / 253** (deny-by-default across all
+  packages, incl. the extern-call gate).
+- Examples gate: root **44 / 44**, fixtures **16 / 16**, showcase **23 / 23**,
+  capability-rejection **1 / 1**, multi-file project OK.
+- Self-host: `kryos check` **18 / 18** self-host sources + stage-1 mini-parser.
+- Docs snippets: **55 / 55** type-check.
+- Completeness: **157 executed feature probes across three audit tiers, 0
+  defects on both backends.**
 - Compiler build warnings: **zero**.
-
-The v2.1 "known limitations" (escaping closures, `dyn Trait` dispatch)
-were closed in v2.2 and remain green. All previously-known parity
-failures (`test_generics`, `test_process`, `test_match_return`,
-`test_tuple_mut`, plus the B/B' string-vs-ptr class on LLVM) are closed
-— see `AUDIT-llvm-parity.md` for the per-test fix breakdown.
 
 ---
 
-## 5. Known limitations (v1.0.0-beta.5)
+## 5. Known limitations (v1.0.0-rc.1)
 
 There are no architectural failures in the release-gating sweep at
-v1.0.0-beta.5. The v2.1 "known limitations" listed below were all closed in
-v2.2 and are kept here as historical context.
+v1.0.0-rc.1. Honest, non-blocking residuals:
+
+- **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
+  `Box{..}` with inference (Rust rejects the turbofish-literal form too).
+- **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable
+  path; `panic` (div-by-zero, OOB, non-exhaustive nested match) aborts. This
+  is intentional, documented semantics.
+- **`unsafe { }` is parsed and audited but not yet ENFORCED** (no E0500 on raw
+  ops outside an unsafe block); enforcement is a future stdlib-wide migration.
+- **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
+  linking; the JIT (`kryos run`) needs nothing.
+
+The v2.1 "known limitations" listed below were all closed in v2.2 and are kept
+here as historical context.
 
 ### 5.1 (Closed in v2.2) Closures that escape their defining scope
 
