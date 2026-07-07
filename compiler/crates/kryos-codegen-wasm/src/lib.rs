@@ -155,10 +155,20 @@ impl kryos_driver::Backend for WasmBackend {
 /// The WASM value type a Kryos MIR type lowers to.
 fn lower_type(ty: &MirType) -> Result<ValType, WasmCodegenError> {
     Ok(match ty {
-        MirType::I8 | MirType::I16 | MirType::I32 | MirType::U8 | MirType::U16 | MirType::U32 => {
-            ValType::I32
-        }
-        MirType::I64 | MirType::U64 | MirType::Bool | MirType::Char => ValType::I64,
+        // All integer widths are uniform i64 slots (like the native backends):
+        // values stay 64-bit, and casts truncate/sign-extend within i64. This
+        // keeps a narrow-int value passable to the i64 builtin ABI (to_string,
+        // println, ...). Array indices are wrapped to i32 at the use site.
+        MirType::I8
+        | MirType::I16
+        | MirType::I32
+        | MirType::U8
+        | MirType::U16
+        | MirType::U32
+        | MirType::I64
+        | MirType::U64
+        | MirType::Bool
+        | MirType::Char => ValType::I64,
         MirType::F32 => ValType::F32,
         MirType::F64 => ValType::F64,
         // For v0.2 we represent strings as packed i64 pointers:
@@ -3314,9 +3324,35 @@ impl<'a> FnEmitter<'a> {
             MirType::F64 => {
                 self.wfunc.instruction(&W::F64ConvertI64S);
             }
-            MirType::I32 | MirType::U32 => {
+            MirType::I32 => {
                 self.wfunc.instruction(&W::I32WrapI64);
                 self.wfunc.instruction(&W::I64ExtendI32S);
+            }
+            // Narrow ints are uniform i64 slots in wasm (like native), so these
+            // casts truncate/sign-extend within i64. char = Unicode scalar (u32).
+            MirType::U32 | MirType::Char => {
+                self.wfunc.instruction(&W::I64Const(0xFFFF_FFFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            MirType::U8 => {
+                self.wfunc.instruction(&W::I64Const(0xFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            MirType::U16 => {
+                self.wfunc.instruction(&W::I64Const(0xFFFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            MirType::I8 => {
+                self.wfunc.instruction(&W::I64Const(56));
+                self.wfunc.instruction(&W::I64Shl);
+                self.wfunc.instruction(&W::I64Const(56));
+                self.wfunc.instruction(&W::I64ShrS);
+            }
+            MirType::I16 => {
+                self.wfunc.instruction(&W::I64Const(48));
+                self.wfunc.instruction(&W::I64Shl);
+                self.wfunc.instruction(&W::I64Const(48));
+                self.wfunc.instruction(&W::I64ShrS);
             }
             _ => {
                 return Err(WasmCodegenError::unsupported(&format!(
