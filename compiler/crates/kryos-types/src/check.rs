@@ -1271,10 +1271,10 @@ impl TypeChecker {
 
                 self.env.push_scope();
 
-                // Bind the loop variable from the pattern into scope.
-                if let Pattern::Ident { name, .. } = pattern {
-                    self.env.define_var(name.clone(), elem_ty);
-                }
+                // Bind the loop pattern into scope. Was Ident-only, so
+                // `for (a, b) in pairs` left a/b undefined (E0102); route
+                // through bind_pattern to destructure tuples/structs/enums.
+                self.bind_pattern(pattern, &elem_ty);
 
                 self.check_block(body);
                 self.env.pop_scope();

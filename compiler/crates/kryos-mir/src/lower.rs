@@ -3125,6 +3125,7 @@ fn lower_for(
         ast::Pattern::Ident { name, .. } => name.clone(),
         _ => "_anon".into(),
     };
+    let elem_type_for_destructure = elem_type.clone();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
     // Loop variable borrows from the array — must NOT be freed on scope exit.
     ctx.borrowed_locals.insert(loop_var.0);
@@ -3135,6 +3136,32 @@ fn lower_for(
             index: Operand::Local(idx_local),
         },
     });
+    // Tuple pattern: `for (a, b) in pairs` — destructure the element into its
+    // named fields (the checker binds a/b's types; the MIR must extract them,
+    // else a/b were undefined temporaries reading 0).
+    if let ast::Pattern::Tuple { elements, .. } = pattern {
+        let elem_tys = if let MirType::Tuple(ts) = &elem_type_for_destructure {
+            ts.clone()
+        } else {
+            Vec::new()
+        };
+        for (ei, epat) in elements.iter().enumerate() {
+            if let ast::Pattern::Ident { name, .. } = epat {
+                let ety = elem_tys.get(ei).cloned().unwrap_or(MirType::I64);
+                let bind = ctx.alloc_local(Some(name.clone()), ety.clone(), false);
+                if !is_copy_type(ctx, &ety) {
+                    ctx.borrowed_locals.insert(bind.0);
+                }
+                ctx.emit(Instruction::Assign {
+                    dest: bind,
+                    value: RValue::Field {
+                        object: Operand::Local(loop_var),
+                        field: ei.to_string(),
+                    },
+                });
+            }
+        }
+    }
 
     // `continue` must jump to increment_bb (not header), otherwise _idx
     // never advances and the loop spins forever.

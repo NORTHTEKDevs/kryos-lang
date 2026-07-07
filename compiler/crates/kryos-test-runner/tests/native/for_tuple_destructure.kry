@@ -1,0 +1,29 @@
+// for-loop tuple-pattern destructuring: `for (a, b) in pairs`.
+// Regression: the for-loop bound only Pattern::Ident, so a tuple pattern left
+// its names undefined -- the checker raised E0102, and after the checker was
+// taught to bind them, the MIR still read 0 (no field extraction). Now both
+// the type-checker (bind_pattern) and the MIR (Field extraction from the loop
+// element) destructure tuples.
+// expect-stdout: 3
+// expect-stdout: 7
+// expect-stdout: 1a
+// expect-stdout: 2b
+// expect-stdout: plain 10
+
+fn main() {
+    let pairs = [(1, 2), (3, 4)]
+    for (a, b) in pairs {
+        println(to_string(a + b))
+    }
+
+    // mixed element types
+    let labeled = [(1, "a"), (2, "b")]
+    for (n, s) in labeled {
+        println(to_string(n) + s)
+    }
+
+    // plain ident loop still works
+    for x in [10] {
+        println("plain " + to_string(x))
+    }
+}
