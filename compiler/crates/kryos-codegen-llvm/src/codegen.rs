@@ -6927,6 +6927,26 @@ impl LlvmCodegen {
                 }
             }
         }
+        // Mask the shift amount to the operand width, matching the Cranelift
+        // JIT (which masks like x86 hardware). LLVM's raw shl/lshr/ashr yield
+        // POISON for a shift >= bit width, so `1024 >> 66` produced garbage on
+        // AOT while the JIT gave 256 — a silent AOT/JIT divergence (backlog
+        // #100/#108/#120).
+        let right_owned2;
+        let mut right = right;
+        if matches!(op, MirBinOp::Shl | MirBinOp::Shr) {
+            let mask: i64 = match ty {
+                "i8" => 7,
+                "i16" => 15,
+                "i32" => 31,
+                "i128" => 127,
+                _ => 63,
+            };
+            let masked = self.next_temp();
+            self.emit_line(&format!("  {masked} = and {ty} {right}, {mask}"));
+            right_owned2 = masked;
+            right = &right_owned2;
+        }
         let line = match op {
             MirBinOp::Add if is_float => format!("  {target} = fadd {ty} {left}, {right}"),
             MirBinOp::Add => format!("  {target} = add {ty} {left}, {right}"),
