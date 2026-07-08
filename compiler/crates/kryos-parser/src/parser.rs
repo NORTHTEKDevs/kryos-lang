@@ -3541,7 +3541,23 @@ impl Parser {
                 let element = self.parse_type();
                 let size = if self.eat(TokenKind::Semicolon) {
                     let size_tok = self.expect(TokenKind::Integer);
-                    Some(parse_int_literal(&size_tok.text) as u64)
+                    // Reject an overflowing size literal instead of silently
+                    // truncating it to 0 (the infallible wrapper returned 0 on
+                    // overflow, so `[i64; 10^24]` became a zero-length array
+                    // with no diagnostic — a silent-wrong, backlog #125).
+                    match parse_int_literal_checked(&size_tok.text) {
+                        Ok(n) if n >= 0 => Some(n as u64),
+                        _ => {
+                            self.error(
+                                format!(
+                                    "invalid fixed-array size `{}`: must be a non-negative integer within i64 range",
+                                    size_tok.text
+                                ),
+                                size_tok.span,
+                            );
+                            Some(0)
+                        }
+                    }
                 } else {
                     None
                 };
