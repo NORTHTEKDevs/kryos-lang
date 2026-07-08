@@ -1,0 +1,38 @@
+// Regression guard for unsigned (u8..u64) machine semantics: literals above
+// i64::MAX, unsigned compare / div / mod / logical shift, float->u64 into the
+// upper half, and zero-extending widening. Audit backlog #7-11/#14/#20-22/#30/
+// #50/#52-53/#66-70/#87/#93/#101/#110 (fixed by 39ca7ce; this pins it).
+// Self-checking; exits nonzero on any wrong result.
+
+fn check(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: " + what)
+        exit(1)
+    }
+}
+
+fn main() {
+    let umax: u64 = 18446744073709551615
+    check(to_string(umax) == "18446744073709551615", "u64 max literal + to_string")
+
+    let hexmax: u64 = 0xFFFFFFFFFFFFFFFF
+    check(hexmax == umax, "hex u64 max literal")
+
+    let five: u64 = 5
+    check(umax > five, "unsigned > (max > 5)")
+    check(five < umax, "unsigned < (5 < max)")
+    check(not (umax < five), "unsigned not (max < 5)")
+
+    let half: u64 = 9223372036854775810
+    check(half / 2 == 4611686018427387905, "unsigned division")
+
+    check((umax >> 1) == 9223372036854775807, "logical right shift")
+
+    let f: f64 = 1.0e19
+    check((f as u64) == 10000000000000000000, "float->u64 upper half")
+
+    let small: u8 = 200
+    check((small as u64) == 200, "u8->u64 zero-extend")
+
+    println("u64 semantics: all pass")
+}
