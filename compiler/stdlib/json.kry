@@ -619,13 +619,23 @@ fn _throw_json_tuple(msg: str) -> ([str], [JsonValue]) { throw msg }
 // --- Accessor helpers --------------------------------------------------------
 
 fn _object_get(keys: [str], values: [JsonValue], key: str) -> JsonValue {
+    // On a duplicate key, return the LAST occurrence (near-universal JSON
+    // "last value wins" convention). Scanning front-to-back and returning
+    // the first match diverged from every mainstream parser (backlog
+    // #96/#122). Scan forward but keep updating so the final match wins.
     let count = len(keys)
     let mut i = 0
+    let mut found = false
+    let mut result = JsonValue.Null
     while i < count {
         if keys[i] == key {
-            return values[i]
+            result = values[i]
+            found = true
         }
         i = i + 1
+    }
+    if found {
+        return result
     }
     return JsonValue.Null
 }

@@ -230,7 +230,7 @@ fn emit_json(report: &AuditReport) {
             if !f_first { out.push(','); }
             f_first = false;
             out.push('"');
-            out.push_str(&f.replace('"', "\\\""));
+            out.push_str(&json_escape(f));
             out.push('"');
         }
         out.push(']');
@@ -256,10 +256,30 @@ fn emit_json(report: &AuditReport) {
             r#"{{"file":"{}","line":{},"pattern":"{}","excerpt":"{}"}}"#,
             s.file.display().to_string().replace('\\', "/"),
             s.line,
-            s.pattern,
-            s.excerpt.replace('"', "\\\"")
+            json_escape(&s.pattern),
+            json_escape(&s.excerpt)
         ));
     }
     out.push_str("]}");
     println!("{}", out);
+}
+
+/// Escape a string for embedding in a JSON string literal. The old emitter
+/// escaped only `"`, so a source excerpt containing a backslash (e.g. a
+/// Windows path or a regex) produced invalid JSON like `"\Users"` that no
+/// parser could read (backlog #124).
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }

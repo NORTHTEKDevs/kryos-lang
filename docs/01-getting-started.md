@@ -35,7 +35,7 @@ kryos version
 You should see output like:
 
 ```
-kryos 2.3.0
+kryos 1.0.0-rc.1
 ```
 
 ### Optional: LLVM toolchain
@@ -132,7 +132,7 @@ A few things to notice:
 
 ## CLI Commands
 
-The `kryos` command has 10 subcommands. Here is what each one does and when you would use it.
+The `kryos` command has 30+ subcommands (see `kryos --help` for the full list). Here is what each one does and when you would use it.
 
 ### Running and building
 
@@ -183,7 +183,7 @@ kryos repl
 ```
 
 ```
-kryos 2.3.0 REPL
+kryos 1.0.0-rc.1 REPL
 Type 'exit' or Ctrl+D to quit.
 
 kryos> let x = 42
