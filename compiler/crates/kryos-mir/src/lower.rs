@@ -2204,9 +2204,46 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             }
 
             // Now allocate the new local (after RHS is evaluated).
+            let bind_ty = mir_ty.clone();
             let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
 
             if let Some((rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
+                // Value semantics (#40): binding from an index/field read of a
+                // non-Copy value takes an independent DEEP COPY, not an alias
+                // to the container's storage. Without this, `let b = arr[i]`
+                // and `let c = arr[i]` shared one heap buffer, so mutating one
+                // changed the other — a silent violation of the single-owner
+                // guarantee. The clone binding OWNS its copy (drop-tracked),
+                // so no double-free (container keeps the original).
+                let clone_fn: Option<&str> = if mark_non_owning && !is_copy_type(ctx, &bind_ty) {
+                    match &bind_ty {
+                        MirType::Str => Some("kryos_string_clone"),
+                        MirType::Array(_, _) => Some("kryos_array_clone"),
+                        MirType::Map { .. } => Some("kryos_map_clone"),
+                        // Struct/enum clone-on-bind: slice 2 (needs the
+                        // per-struct deep-clone fn); still borrows for now.
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if let Some(cf) = clone_fn {
+                    let raw = ctx.alloc_temp(bind_ty.clone());
+                    ctx.emit(Instruction::Assign {
+                        dest: raw,
+                        value: rvalue,
+                    });
+                    ctx.emit(Instruction::Assign {
+                        dest: local,
+                        value: RValue::Call {
+                            func: cf.to_string(),
+                            args: vec![Operand::Local(raw)],
+                        },
+                    });
+                    // Owning binding: intentionally NOT added to borrowed_locals,
+                    // so scope-end drop frees this independent copy.
+                    return;
+                }
                 if mark_non_owning {
                     ctx.borrowed_locals.insert(local.0);
                 }
