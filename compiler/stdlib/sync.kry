@@ -105,8 +105,15 @@ fn mutex_new() -> Mutex {
 // True atomics require hardware CAS instructions.  This implementation
 // provides the Atomic API using a Mutex for thread-safe access.
 
+// The value lives in a 1-element heap array (`cell`), NOT a plain i64 field.
+// Kryos structs are pass-by-value, so a mutator that reassigned `self`
+// (`self = AtomicInt { value: ... }`) only touched a throwaway local and the
+// caller's value never changed — every fetch_add/increment/CAS was a silent
+// no-op. An array field is a shared heap reference, so `self.cell[0] = x`
+// mutates through the pointer and the caller observes it. (True cross-thread
+// atomicity still needs hardware CAS; this is the single-owner API contract.)
 struct AtomicInt {
-    value: i64,
+    cell: [i64],
     mu: Mutex
 }
 
@@ -114,7 +121,7 @@ impl AtomicInt {
     // Load the current value atomically.
     fn load(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        let v = self.value
+        let v = self.cell[0]
         locked.unlock()
         return v
     }
@@ -122,45 +129,53 @@ impl AtomicInt {
     // Store a new value atomically.
     fn store(self: AtomicInt, new_value: i64) -> AtomicInt {
         let locked = self.mu.lock()
-        let result = AtomicInt { value: new_value, mu: locked.unlock() }
-        return result
+        self.cell[0] = new_value
+        locked.unlock()
+        return self
     }
 
     // Add a value and return the previous value.
     fn fetch_add(self: AtomicInt, delta: i64) -> i64 {
         let locked = self.mu.lock()
-        let old = self.value
-        self = AtomicInt { value: old + delta, mu: locked.unlock() }
+        let old = self.cell[0]
+        self.cell[0] = old + delta
+        locked.unlock()
         return old
     }
 
     // Subtract a value and return the previous value.
     fn fetch_sub(self: AtomicInt, delta: i64) -> i64 {
         let locked = self.mu.lock()
-        let old = self.value
-        self = AtomicInt { value: old - delta, mu: locked.unlock() }
+        let old = self.cell[0]
+        self.cell[0] = old - delta
+        locked.unlock()
         return old
     }
 
     // Increment by 1 and return the new value.
     fn increment(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        self = AtomicInt { value: self.value + 1, mu: locked.unlock() }
-        return self.value
+        self.cell[0] = self.cell[0] + 1
+        let v = self.cell[0]
+        locked.unlock()
+        return v
     }
 
     // Decrement by 1 and return the new value.
     fn decrement(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        self = AtomicInt { value: self.value - 1, mu: locked.unlock() }
-        return self.value
+        self.cell[0] = self.cell[0] - 1
+        let v = self.cell[0]
+        locked.unlock()
+        return v
     }
 
     // Compare-and-swap: if current value == expected, set to new_value and return true.
     fn compare_and_swap(self: AtomicInt, expected: i64, new_value: i64) -> bool {
         let locked = self.mu.lock()
-        if self.value == expected {
-            self = AtomicInt { value: new_value, mu: locked.unlock() }
+        if self.cell[0] == expected {
+            self.cell[0] = new_value
+            locked.unlock()
             return true
         }
         locked.unlock()
@@ -169,49 +184,55 @@ impl AtomicInt {
 
     // Drop the underlying mutex.
     fn drop(self: AtomicInt) -> AtomicInt {
-        return AtomicInt { value: self.value, mu: self.mu.drop() }
+        return AtomicInt { cell: self.cell, mu: self.mu.drop() }
     }
 }
 
 // Create a new AtomicInt with an initial value.
 fn atomic_int(initial: i64) -> AtomicInt {
-    return AtomicInt { value: initial, mu: mutex_new() }
+    let mut c: [i64] = []
+    c = push(c, initial)
+    return AtomicInt { cell: c, mu: mutex_new() }
 }
 
 struct AtomicBool {
-    value: bool,
+    cell: [i64],
     mu: Mutex
 }
 
 impl AtomicBool {
     fn load(self: AtomicBool) -> bool {
         let locked = self.mu.lock()
-        let v = self.value
+        let v = self.cell[0]
         locked.unlock()
-        return v
+        return v != 0
     }
 
     fn store(self: AtomicBool, new_value: bool) -> AtomicBool {
         let locked = self.mu.lock()
-        let result = AtomicBool { value: new_value, mu: locked.unlock() }
-        return result
+        self.cell[0] = if new_value { 1 } else { 0 }
+        locked.unlock()
+        return self
     }
 
     fn toggle(self: AtomicBool) -> bool {
         let locked = self.mu.lock()
-        let old = self.value
-        self = AtomicBool { value: not old, mu: locked.unlock() }
-        return old
+        let old = self.cell[0]
+        self.cell[0] = if old != 0 { 0 } else { 1 }
+        locked.unlock()
+        return old != 0
     }
 
     fn drop(self: AtomicBool) -> AtomicBool {
-        return AtomicBool { value: self.value, mu: self.mu.drop() }
+        return AtomicBool { cell: self.cell, mu: self.mu.drop() }
     }
 }
 
 // Create a new AtomicBool with an initial value.
 fn atomic_bool(initial: bool) -> AtomicBool {
-    return AtomicBool { value: initial, mu: mutex_new() }
+    let mut c: [i64] = []
+    c = push(c, if initial { 1 } else { 0 })
+    return AtomicBool { cell: c, mu: mutex_new() }
 }
 
 // --- WaitGroup --------------------------------------------------------------

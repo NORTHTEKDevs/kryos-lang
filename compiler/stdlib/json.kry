@@ -111,7 +111,7 @@ fn _is_digit(ch: str) -> bool {
 fn parse(input: str) -> JsonValue {
     let mut p = _new_parser(input)
     p = _skip_whitespace(p)
-    let result = _parse_value(p)
+    let result = _parse_value(p, 0)
     return result.value
 }
 
@@ -121,7 +121,13 @@ struct ParseResult {
     parser: Parser
 }
 
-fn _parse_value(p: Parser) -> ParseResult {
+fn _parse_value(p: Parser, depth: i64) -> ParseResult {
+    // Bound recursion so an adversarial deeply-nested document (a "JSON
+    // bomb") raises a catchable error instead of overflowing the native
+    // stack and crashing the whole process uncatchably (backlog #29).
+    if depth > 1000 {
+        throw "json: maximum nesting depth exceeded (1000)"
+    }
     let mut parser = _skip_whitespace(p)
     let ch = _peek(parser)
 
@@ -129,10 +135,10 @@ fn _parse_value(p: Parser) -> ParseResult {
         return _parse_string(parser)
     }
     if char_code(ch) == 123 {
-        return _parse_object(parser)
+        return _parse_object(parser, depth)
     }
     if ch == "[" {
-        return _parse_array(parser)
+        return _parse_array(parser, depth)
     }
     if ch == "t" {
         return _parse_true(parser)
@@ -333,7 +339,7 @@ fn _parse_number(p: Parser) -> ParseResult {
     return ParseResult { value: JsonValue.Number(value), parser: parser }
 }
 
-fn _parse_array(p: Parser) -> ParseResult {
+fn _parse_array(p: Parser, depth: i64) -> ParseResult {
     let mut parser = _expect_char(p, "[")
     parser = _skip_whitespace(parser)
 
@@ -346,7 +352,7 @@ fn _parse_array(p: Parser) -> ParseResult {
     }
 
     // First element
-    let first = _parse_value(parser)
+    let first = _parse_value(parser, depth + 1)
     push(items, first.value)
     parser = _skip_whitespace(first.parser)
 
@@ -354,7 +360,7 @@ fn _parse_array(p: Parser) -> ParseResult {
     while _peek(parser) == "," {
         parser = _advance(parser)
         parser = _skip_whitespace(parser)
-        let elem = _parse_value(parser)
+        let elem = _parse_value(parser, depth + 1)
         push(items, elem.value)
         parser = _skip_whitespace(elem.parser)
     }
@@ -363,7 +369,7 @@ fn _parse_array(p: Parser) -> ParseResult {
     return ParseResult { value: JsonValue.Array(items), parser: parser }
 }
 
-fn _parse_object(p: Parser) -> ParseResult {
+fn _parse_object(p: Parser, depth: i64) -> ParseResult {
     let mut parser = _expect_char(p, char_from(123))
     parser = _skip_whitespace(parser)
 
@@ -386,7 +392,7 @@ fn _parse_object(p: Parser) -> ParseResult {
     parser = _skip_whitespace(first_key.parser)
     parser = _expect_char(parser, ":")
     parser = _skip_whitespace(parser)
-    let first_val = _parse_value(parser)
+    let first_val = _parse_value(parser, depth + 1)
     push(values, first_val.value)
     parser = _skip_whitespace(first_val.parser)
 
@@ -404,7 +410,7 @@ fn _parse_object(p: Parser) -> ParseResult {
         parser = _skip_whitespace(key_result.parser)
         parser = _expect_char(parser, ":")
         parser = _skip_whitespace(parser)
-        let val_result = _parse_value(parser)
+        let val_result = _parse_value(parser, depth + 1)
         push(values, val_result.value)
         parser = _skip_whitespace(val_result.parser)
     }

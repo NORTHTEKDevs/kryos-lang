@@ -41,12 +41,35 @@ fn parse(s: str) -> Version {
     let maj_s = substr(core, 0, dot1)
     let min_s = substr(rest, 0, dot2)
     let pat_s = substr(rest, dot2 + 1, len(rest))
+    // Reject any non-numeric segment (e.g. an extra ".4": pat_s would be
+    // "3.4", which parse_int silently truncated to 0). A valid core has
+    // exactly three numeric segments.
+    if not is_all_digits(maj_s) or not is_all_digits(min_s) or not is_all_digits(pat_s) {
+        return Version { major: -1, minor: 0, patch: 0, has_pre: false }
+    }
     return Version {
         major: parse_int(maj_s),
         minor: parse_int(min_s),
         patch: parse_int(pat_s),
         has_pre: has_pre,
     }
+}
+
+/// True if `s` is non-empty and every byte is an ASCII digit.
+fn is_all_digits(s: str) -> bool {
+    let n = len(s)
+    if n == 0 {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        let b = char_code(substr(s, i, i + 1))
+        if b < 48 or b > 57 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 /// Compare two versions. Returns -1, 0, or 1.

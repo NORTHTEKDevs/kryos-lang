@@ -25,8 +25,11 @@ fn lcm(a: i64, b: i64) -> i64 {
         return 0
     }
     let g = gcd(a, b)
+    // LCM is non-negative: take abs of BOTH operands, not just `b`
+    // (a negative `a` used to leak its sign into the result).
+    let absa = if a < 0 { -a } else { a }
     let absb = if b < 0 { -b } else { b }
-    return (a / g) * absb
+    return (absa / g) * absb
 }
 
 /// Integer square root (floor). Returns 0 for negative.

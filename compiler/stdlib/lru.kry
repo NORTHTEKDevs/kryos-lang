@@ -33,6 +33,11 @@ fn new_cache(cap: i64) -> Lru {
 
 /// Insert or update. Evicts LRU on full.
 fn put(c: Lru, key: i64, val: i64) {
+    // A zero-capacity cache holds nothing: the eviction branch would read
+    // recency[0] on empty backing arrays and panic. No-op instead.
+    if c.state[1] <= 0 {
+        return
+    }
     c.state[2] = c.state[2] + 1
     let touch = c.state[2]
     let cap = c.state[1]

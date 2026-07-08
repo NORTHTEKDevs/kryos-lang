@@ -44,15 +44,26 @@ fn bin(n: i64) -> str {
 
 /// Zero-pad `n` to `width` decimal digits.
 fn decimal_padded(n: i64, width: i64) -> str {
-    let s = to_string(n)
-    if len(s) >= width { return s }
+    // Split off a leading sign so zero-padding lands BETWEEN the sign and
+    // the digits ("-005"), not before it ("00-5", which is not a number).
+    let neg = n < 0
+    let digits = if neg { to_string(-n) } else { to_string(n) }
+    let sign_len = if neg { 1 } else { 0 }
+    let total = sign_len + len(digits)
+    if total >= width {
+        if neg { return "-" + digits }
+        return digits
+    }
     let mut pad: str = ""
     let mut i: i64 = 0
-    while i < width - len(s) {
+    while i < width - total {
         pad = pad + "0"
         i = i + 1
     }
-    return pad + s
+    if neg {
+        return "-" + pad + digits
+    }
+    return pad + digits
 }
 
 /// Human-readable byte size: B / KB / MB / GB / TB (binary units).

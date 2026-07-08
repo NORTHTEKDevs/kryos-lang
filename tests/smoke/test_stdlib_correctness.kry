@@ -1,0 +1,94 @@
+// Regression (audit backlog #33/#57/#58/#63/#86/#88/#103/#104/#106/#107/#117/#126/#29):
+// a batch of stdlib correctness + robustness fixes. Self-checking; exits
+// nonzero on any wrong result.
+
+use std::sync::{atomic_int}
+use std::mathx::{lcm}
+use std::stat::{variance_x1000}
+use std::fmt::{ordinal}
+use std::numfmt::{decimal_padded}
+use std::slice_ops::{drop}
+use std::lru::{new_cache, put}
+use std::semver::{parse}
+use std::string::{reverse}
+use std::re::{split, is_ipv4}
+use std::ratelimit::{new_bucket, try_acquire, tokens}
+
+fn check(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: " + what)
+        exit(1)
+    }
+}
+
+fn main() {
+    // #33 atomics actually mutate shared state.
+    let counter = atomic_int(0)
+    counter.increment()
+    counter.increment()
+    counter.increment()
+    check(counter.load() == 3, "atomic increment")
+    counter.fetch_add(100)
+    check(counter.load() == 103, "atomic fetch_add")
+
+    // #63 lcm non-negative for negative first arg.
+    check(lcm(-4, 6) == 12, "lcm(-4,6)")
+    check(lcm(4, -6) == 12, "lcm(4,-6)")
+
+    // #58 variance keeps sub-unit precision (was 666).
+    check(variance_x1000([1, 2, 3, 4]) == 1666, "variance_x1000")
+
+    // #107 ordinal handles negatives.
+    check(ordinal(-1) == "-1st", "ordinal(-1)")
+    check(ordinal(21) == "21st", "ordinal(21)")
+
+    // #106 decimal_padded keeps the sign in front.
+    check(decimal_padded(-5, 4) == "-005", "decimal_padded(-5,4)")
+
+    // #126 drop clamps a negative count.
+    check(len(drop([10, 20, 30], -1)) == 3, "drop(-1)")
+
+    // #117 zero-capacity LRU is a no-op, not a crash.
+    let c = new_cache(0)
+    put(c, 1, 100)
+
+    // #103 semver rejects an extra segment.
+    check(parse("1.2.3.4").major == -1, "semver reject 1.2.3.4")
+    check(parse("1.2.3").major == 1, "semver accept 1.2.3")
+
+    // #88 reverse preserves multibyte UTF-8.
+    check(reverse("héllo") == "olléh", "reverse utf-8")
+
+    // #57 split emits the trailing empty field for multi-char delimiters.
+    check(len(split("::", "a::b::")) == 3, "split trailing empty")
+
+    // #104 is_ipv4 range-checks octets.
+    check(is_ipv4("999.999.999.999") == false, "is_ipv4 out of range")
+    check(is_ipv4("192.168.1.1") == true, "is_ipv4 valid")
+
+    // #86 ratelimit refills when polled sub-interval (carries remainder).
+    let b = new_bucket(5, 1, 0)
+    let mut i = 0
+    while i < 5 {
+        let ok = try_acquire(b, i)
+        i = i + 1
+    }
+    check(tokens(b) == 0, "ratelimit drained")
+    // Poll every 500ms for 10s. Each granted acquire consumes the token it
+    // just refilled, so tokens() hovers near 0 either way; what the bug
+    // broke is REFILL itself (0 grants ever after drain under sub-interval
+    // polling). Count grants: with rate 1/sec over 10s it should be ~10.
+    let mut now: i64 = 0
+    let mut j = 0
+    let mut grants = 0
+    while j < 20 {
+        now = now + 500000000
+        if try_acquire(b, now) {
+            grants = grants + 1
+        }
+        j = j + 1
+    }
+    check(grants >= 5, "ratelimit refilled under frequent polling")
+
+    println("stdlib correctness: all pass")
+}

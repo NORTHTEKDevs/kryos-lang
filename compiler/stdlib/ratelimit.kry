@@ -37,15 +37,24 @@ fn tokens(state: [i64]) -> i64 {
 }
 
 fn refill(state: [i64], now_nanos: i64) {
+    let rate = state[2]
+    if rate <= 0 { return }
     let elapsed = now_nanos - state[3]
     if elapsed <= 0 { return }
     // tokens to add = (refill_per_sec * elapsed) / 1_000_000_000
-    let add = (state[2] * elapsed) / 1000000000
+    let add = (rate * elapsed) / 1000000000
     let new_tokens = state[1] + add
-    if new_tokens > state[0] {
+    if new_tokens >= state[0] {
+        // Bucket full: reset the baseline to now.
         state[1] = state[0]
+        state[3] = now_nanos
     } else {
         state[1] = new_tokens
+        // Advance the baseline only by the time the WHOLE tokens actually
+        // consumed, carrying the sub-token remainder forward. Advancing
+        // straight to now_nanos discarded fractional progress, so a bucket
+        // polled more often than once per token-interval never refilled.
+        let consumed_ns = (add * 1000000000) / rate
+        state[3] = state[3] + consumed_ns
     }
-    state[3] = now_nanos
 }

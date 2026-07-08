@@ -300,21 +300,37 @@ fn repeat(s: str, n: i64) -> str {
 
 // --- Reversal ----------------------------------------------------------------
 
-/// Reverse a string character by character.
+/// Reverse a string character by character (by Unicode codepoint).
 fn reverse(s: str) -> str {
-    // O(n): byte-reverse into a fixed buffer (matches the previous byte-level
-    // reversal; multibyte sequences are reversed byte-wise as before).
+    // Walk UTF-8 codepoint boundaries and prepend each whole codepoint, so
+    // multibyte sequences stay intact. The old byte-wise reversal split
+    // multibyte characters apart and produced invalid UTF-8 (the runtime
+    // then returned the sentinel "<invalid utf-8>") for any non-ASCII input.
     let slen = len(s)
     if slen == 0 {
         return ""
     }
-    let buf = alloc(slen)
+    let mut result = ""
     let mut i = 0
     while i < slen {
-        ptr_set_byte(buf, slen - 1 - i, char_code(s[i]))
-        i = i + 1
+        let b = char_code(substr(s, i, i + 1))
+        let mut step = 1
+        if b >= 240 {
+            step = 4
+        } elif b >= 224 {
+            step = 3
+        } elif b >= 192 {
+            step = 2
+        } elif b >= 128 {
+            // Stray continuation byte -> not valid UTF-8; treat as one byte
+            // so we never slice mid-sequence into an invalid substring.
+            step = 1
+        }
+        let cp = substr(s, i, i + step)
+        result = cp + result
+        i = i + step
     }
-    return buf_to_str(buf, slen)
+    return result
 }
 
 // --- Character access --------------------------------------------------------

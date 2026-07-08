@@ -514,7 +514,10 @@ fn _join_parts(parts: [str], sep: str) -> str {
 ///   ordinal(22) => "22nd"
 ///   ordinal(13) => "13th"
 fn ordinal(n: i64) -> str {
-    let abs_n = n
+    // Use the magnitude for suffix selection: truncating modulo on a
+    // negative n yielded negative mod10/mod100 that never matched 1/2/3,
+    // so negatives always fell through to "th".
+    let abs_n = if n < 0 { -n } else { n }
     let mut suffix = "th"
     let mod100 = abs_n % 100
     if mod100 >= 11 and mod100 <= 13 {

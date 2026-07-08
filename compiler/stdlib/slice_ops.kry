@@ -20,7 +20,10 @@ fn take(xs: [i64], n: i64) -> [i64] {
 fn drop(xs: [i64], n: i64) -> [i64] {
     let m = len(xs)
     let mut out: [i64] = []
-    let mut i: i64 = if n < m { n } else { m }
+    // Clamp the start index to [0, m]: a negative n produced a negative
+    // start index and an out-of-bounds panic (take() already tolerates it).
+    let clamped = if n < m { n } else { m }
+    let mut i: i64 = if clamped < 0 { 0 } else { clamped }
     while i < m {
         out = push(out, xs[i])
         i = i + 1

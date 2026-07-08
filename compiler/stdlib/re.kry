@@ -177,6 +177,7 @@ impl Regex {
         let mut parts = []
         let text_len = len(text)
         let mut pos = 0
+        let mut last_consumed_match = false
 
         while pos < text_len {
             let remaining = substr(text, pos, text_len)
@@ -184,6 +185,7 @@ impl Regex {
             if not m.found {
                 parts = push(parts, remaining)
                 pos = text_len
+                last_consumed_match = false
             } else {
                 // Add the part before the match
                 let part = substr(remaining, 0, m.start)
@@ -192,15 +194,16 @@ impl Regex {
                 if m.end == m.start {
                     pos = pos + 1
                 }
+                last_consumed_match = true
             }
         }
 
-        // If the text ends with the pattern, add an empty trailing element
-        if pos == text_len and text_len > 0 {
-            let last_remaining = substr(text, pos - 1, text_len)
-            if self.is_match(last_remaining) {
-                parts = push(parts, "")
-            }
+        // If the text ended exactly on a delimiter, emit the trailing empty
+        // field. Tracking whether the last thing consumed was a match works
+        // for any delimiter length; the old check only re-tested the last
+        // SINGLE character, so multi-char delimiters silently lost it.
+        if last_consumed_match and text_len > 0 {
+            parts = push(parts, "")
         }
 
         return parts
@@ -315,9 +318,42 @@ fn is_url(text: str) -> bool {
     return is_match("https?://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~:/?#@!$&'()*+,;=-]*)?", text)
 }
 
-// Match an IPv4 address.
+// Match an IPv4 address: exactly four dot-separated octets, each a 1-3 digit
+// decimal number in 0..=255. The old version only bounded each group to 1-3
+// digits, so out-of-range octets like 999 were wrongly accepted.
 fn is_ipv4(text: str) -> bool {
-    return is_match("^\\d\{1,3\}\\.\\d\{1,3\}\\.\\d\{1,3\}\\.\\d\{1,3\}$", text)
+    let n = len(text)
+    if n == 0 {
+        return false
+    }
+    let mut octets = 0
+    let mut digits = 0
+    let mut value = 0
+    let mut i = 0
+    while i < n {
+        let b = char_code(substr(text, i, i + 1))
+        if b == 46 {
+            // '.' — end of an octet
+            if digits == 0 || digits > 3 || value > 255 {
+                return false
+            }
+            octets = octets + 1
+            digits = 0
+            value = 0
+        } elif b >= 48 && b <= 57 {
+            digits = digits + 1
+            value = value * 10 + (b - 48)
+        } else {
+            return false
+        }
+        i = i + 1
+    }
+    // Final octet after the last dot.
+    if digits == 0 || digits > 3 || value > 255 {
+        return false
+    }
+    octets = octets + 1
+    return octets == 4
 }
 
 // Match a hex string.

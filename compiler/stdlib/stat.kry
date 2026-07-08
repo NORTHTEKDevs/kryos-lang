@@ -60,9 +60,15 @@ fn variance_x1000(xs: [i64]) -> i64 {
     let mut acc: i64 = 0
     let mut i: i64 = 0
     while i < n {
+        // d is the deviation in milli-units (xs scaled by 1000). Square it
+        // WITHOUT dividing first: `(d/1000)` truncated the entire sub-1.0
+        // fraction of every deviation before squaring, throwing away most
+        // of the variance for any non-integer mean. Accumulate d*d (micro²)
+        // and rescale once at the end.
         let d = xs[i] * 1000 - mu
-        acc = acc + (d / 1000) * (d / 1000)
+        acc = acc + d * d
         i = i + 1
     }
-    return (acc * 1000) / (n - 1)
+    // acc = Σ(deviation*1000)² = Σdev² * 1e6; variance*1000 = acc/(1000*(n-1)).
+    return acc / (1000 * (n - 1))
 }
