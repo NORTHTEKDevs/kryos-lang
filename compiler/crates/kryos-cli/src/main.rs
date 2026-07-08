@@ -207,6 +207,17 @@ enum Commands {
         /// `kryos test` looks for a `tests/` directory and falls back to `.`.
         #[arg(long, value_name = "PATH")]
         path: Option<String>,
+
+        /// Deny capability-gated builtins in unannotated functions (same as
+        /// `kryos build --strict-capabilities`).
+        #[arg(long)]
+        strict_capabilities: bool,
+
+        /// Capability enforcement mode: `permissive`, `inferred`, or `strict`.
+        /// Defaults to `inferred` — the same deny-by-default `check`/`run`/
+        /// `build` use — so `kryos test` catches capability regressions.
+        #[arg(long, value_name = "MODE")]
+        capabilities_mode: Option<String>,
     },
 
     /// Function-level coverage report (runs `kryos test` with profiling)
@@ -778,6 +789,8 @@ fn real_main() {
             format,
             list,
             path,
+            strict_capabilities,
+            capabilities_mode,
         } => {
             // Positional FILTER takes precedence over --filter; otherwise fall back.
             // Special case: if filter_pos points to an existing path on disk and
@@ -786,6 +799,21 @@ fn real_main() {
             let (chosen_path, chosen_filter) = match (filter_pos, path) {
                 (Some(p), None) if std::path::Path::new(&p).exists() => (Some(p), filter),
                 (fp, p) => (p, fp.or(filter)),
+            };
+            // Resolve capability mode: explicit --capabilities-mode wins, then
+            // --strict-capabilities, else the toolchain default (inferred).
+            let cap_mode = match capabilities_mode.as_deref() {
+                Some(m) => match kryos_driver::CapabilityMode::from_str(m) {
+                    Some(mode) => mode,
+                    None => {
+                        eprintln!(
+                            "error: unknown --capabilities-mode `{m}` (expected permissive | inferred | strict)"
+                        );
+                        std::process::exit(2);
+                    }
+                },
+                None if strict_capabilities => kryos_driver::CapabilityMode::Strict,
+                None => kryos_driver::CapabilityMode::Inferred,
             };
             match format.as_str() {
                 "pretty" | "json" => {
@@ -801,6 +829,7 @@ fn real_main() {
                         format: fmt,
                         list,
                         path: chosen_path,
+                        capability_mode: cap_mode,
                     })
                 }
                 other => Err(format!(
@@ -1100,6 +1129,7 @@ mod tests {
                 format,
                 list,
                 path: _,
+                ..
             } => {
                 assert_eq!(filter.as_deref(), Some("math"));
                 assert!(filter_pos.is_none());

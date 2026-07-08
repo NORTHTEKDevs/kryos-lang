@@ -221,7 +221,7 @@ pub fn test_case_from_source(name: &str, source: &str) -> TestCase {
 // ---------------------------------------------------------------------------
 
 /// Options that influence test execution beyond pass/fail logic.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct RunOptions {
     /// If `true`, child-process stdout/stderr (for `// run-expect:` tests) is
     /// inherited from the parent instead of being captured. Captured output
@@ -229,6 +229,21 @@ pub struct RunOptions {
     /// `RunOutput` expectation is treated as "compiled binary exited zero"
     /// when `nocapture` is set.
     pub nocapture: bool,
+    /// Capability enforcement mode for the test compile. Defaults to
+    /// `Inferred` — the same deny-by-default the rest of the toolchain
+    /// (`check`/`run`/`build`) uses — so `kryos test` is a real CI gate for
+    /// capability regressions instead of silently forcing Permissive
+    /// (backlog #51).
+    pub capability_mode: kryos_driver::CapabilityMode,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            nocapture: false,
+            capability_mode: kryos_driver::CapabilityMode::Inferred,
+        }
+    }
 }
 
 /// Run a single test case through the compiler and check the result.
@@ -249,7 +264,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
 
     let start = Instant::now();
     let mut config = BuildConfig::for_file(test.source_path.to_string_lossy().to_string());
-        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
+    config.capability_mode = opts.capability_mode;
     // Non-run tests only need type checking, not binary output.
     if !matches!(test.expectation, Expectation::RunOutput(_)) {
         config.output_type = OutputType::Mir; // skip codegen + linking
@@ -405,7 +420,7 @@ pub fn run_test_with(test: &TestCase, opts: RunOptions) -> TestResult {
                 use_cache: false,
                 split_async_awaits: true,
                 strict_capabilities: false,
-        capability_mode: kryos_driver::CapabilityMode::Permissive,
+                capability_mode: opts.capability_mode,
             };
 
             let backend = CraneliftBackend::new();
@@ -752,7 +767,7 @@ pub fn discover_annotated_tests_in_file(path: &Path) -> Vec<(PathBuf, Vec<String
             return results;
         }
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
-        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
+        config.capability_mode = kryos_driver::CapabilityMode::Inferred;
         // Stop at MIR — we only need attributes to discover @test fns. This
         // also avoids the "no main function" error when the file only contains
         // tests.
@@ -794,7 +809,7 @@ fn discover_annotated_recursive(dir: &Path, results: &mut Vec<(PathBuf, Vec<Stri
                     continue;
                 }
                 let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
-        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
+        config.capability_mode = kryos_driver::CapabilityMode::Inferred;
                 // Stop at MIR — we only need attributes to discover @test fns,
                 // and the test file may not have a `main()` entry point.
                 config.output_type = OutputType::Mir;
@@ -868,7 +883,7 @@ fn run_annotated_tests_internal(
         // resolve correctly. Stop at MIR — we then hand the MIR module to
         // the JIT directly, and the file may not have a `main()` entry point.
         let mut config = BuildConfig::for_file(path.to_string_lossy().to_string());
-        config.capability_mode = kryos_driver::CapabilityMode::Permissive;
+        config.capability_mode = kryos_driver::CapabilityMode::Inferred;
         config.output_type = OutputType::Mir;
         let result = compile_file(path, &config);
         if !result.success {

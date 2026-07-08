@@ -61,6 +61,18 @@ want_reject builtin_in_array \
 want_reject env_get_direct \
 'fn main() { env_get("PATH") }'
 
+# --- top-level const initializer runs at startup (backlog #24) ---
+want_reject const_init_builtin \
+'let mut x: i64 = file_write("/tmp/z","a")
+fn main() { println(to_string(x)) }'
+
+# --- Type::builtin(..) static-dispatch disguise (backlog #38) ---
+want_reject static_dispatch_builtin \
+'fn main() { NotAType::file_write("/tmp/z","a") }'
+
+want_reject static_dispatch_env \
+'fn main() { let s: str = Bogus::env_get("PATH")  println(s) }'
+
 # --- stdlib wrappers that reach authority via raw externs (annotated) ---
 want_reject stdlib_env_get_or \
 'use std::process::{env_get_or}

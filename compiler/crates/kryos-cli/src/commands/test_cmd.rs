@@ -24,7 +24,7 @@ pub enum OutputFormat {
 }
 
 /// User-facing options for `kryos test`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct TestOptions {
     /// Optional filter pattern (positional FILTER or `--filter`).
     pub filter: Option<String>,
@@ -39,6 +39,23 @@ pub struct TestOptions {
     /// Optional path to a `.kry` file or directory. When `None`, defaults to
     /// `tests/` if it exists, otherwise the current directory.
     pub path: Option<String>,
+    /// Capability enforcement mode for the test compile. Defaults to
+    /// `Inferred` so `kryos test` is a real capability-regression gate.
+    pub capability_mode: kryos_driver::CapabilityMode,
+}
+
+impl Default for TestOptions {
+    fn default() -> Self {
+        Self {
+            filter: None,
+            exact: false,
+            nocapture: false,
+            format: OutputFormat::default(),
+            list: false,
+            path: None,
+            capability_mode: kryos_driver::CapabilityMode::Inferred,
+        }
+    }
 }
 
 impl Default for OutputFormat {
@@ -120,6 +137,7 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
 
     let run_opts = RunOptions {
         nocapture: opts.nocapture,
+        capability_mode: opts.capability_mode,
     };
 
     let file_report = if tests.is_empty() {

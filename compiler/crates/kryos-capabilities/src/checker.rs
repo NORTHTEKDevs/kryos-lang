@@ -614,6 +614,31 @@ impl CapabilityChecker {
                     }
                 }
             }
+            Decl::Const { value, .. } => {
+                // A top-level `let`/`let mut` initializer (Decl::Const) runs
+                // at program startup and can call gated builtins
+                // (file_write, env_get, http_get, ...). It was never checked
+                // — a full capability bypass in every mode (backlog #24).
+                // A const has no annotation site of its own, but it is part
+                // of the program whose authority ceiling is `main`'s
+                // declaration. Check the initializer against `main`'s
+                // capabilities: a const that needs authority `main` never
+                // declared (the leak case: net:http-only main with a
+                // file_write const) is rejected, while legitimate startup
+                // initializers covered by main's annotation pass. Permissive
+                // leaves it unchecked, matching unannotated functions.
+                let annotated = !matches!(self.mode, CapabilityMode::Permissive);
+                self.scope_stack.push(CapabilityScope {
+                    capabilities: self
+                        .fn_capabilities
+                        .get("main")
+                        .cloned()
+                        .unwrap_or_else(CapabilitySet::empty),
+                    annotated,
+                });
+                self.check_expr(value);
+                self.scope_stack.pop();
+            }
             // Struct, Enum, TypeAlias — no capability concerns.
             _ => {}
         }
@@ -925,8 +950,16 @@ impl CapabilityChecker {
             Expr::StaticMethodCall {
                 method, args, span, ..
             } => {
-                // Same call-site propagation for `Type::method()` static dispatch.
-                self.enforce_callee_name(method, *span, false);
+                // Same call-site propagation for `Type::method()` static
+                // dispatch. The parser turns ANY `Ident::name(args)` into a
+                // StaticMethodCall, and the checker/MIR lower an unknown
+                // `type_name` to a bare call to `name` — so
+                // `NotAType::file_write(..)` actually invokes the builtin.
+                // If `method` is a gated builtin name, gate it (backlog #38):
+                // pass is_builtin_name so the E0505 builtin gate fires, just
+                // as it does for the ordinary `file_write(..)` call shape.
+                let is_gated_builtin = required_capability_for_builtin(method).is_some();
+                self.enforce_callee_name(method, *span, is_gated_builtin);
                 for arg in args {
                     self.check_expr(arg);
                 }
