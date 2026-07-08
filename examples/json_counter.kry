@@ -20,7 +20,7 @@ fn aggregate(items: i64, name: str) -> DataSet {
 }
 
 fn compute_sum(n: i64) -> i64 {
-    let sum = 0
+    let mut sum = 0
     for i in 1..n {
         sum = sum + i
     }

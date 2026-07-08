@@ -55,7 +55,7 @@ fn main() {
     println("Input A | Input B | Expected | Output | Correct?")
     println("--------|---------|----------|--------|----------")
 
-    let correct = 0
+    let mut correct = 0
     for i in 0..4 {
         let x1 = inputs_x[i]
         let x2 = inputs_y[i]
@@ -68,13 +68,13 @@ fn main() {
         let output = neuron_forward(out, hidden1, hidden2)
 
         // Threshold at 50 to get binary output
-        let prediction = 0
+        let mut prediction = 0
         if output >= 50 {
             prediction = 1
         }
 
         let exp = expected[i]
-        let mark = "  FAIL"
+        let mut mark = "  FAIL"
         if prediction == exp {
             correct = correct + 1
             mark = "  PASS"

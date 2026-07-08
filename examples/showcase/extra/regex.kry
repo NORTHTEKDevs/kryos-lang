@@ -56,7 +56,7 @@ fn match_pattern(re: str, s: str) -> i64 {
 
 fn try_match(re: str, s: str) {
   let r: i64 = match_pattern(re, s)
-  let label: str = "no match"
+  let mut label: str = "no match"
   if r == 1 { label = "MATCH" }
   println("  /" + re + "/ on \"" + s + "\" -> " + label)
 }

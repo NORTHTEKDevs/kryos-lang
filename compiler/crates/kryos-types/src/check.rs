@@ -1188,16 +1188,18 @@ impl TypeChecker {
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
                 }
-                // Enforce immutability: only `let mut` variables can be reassigned.
-                // Currently a warning — will promote to error once the self-host
-                // is updated to use `let mut` consistently.
+                // Enforce immutability: only `let mut` variables can be
+                // reassigned. This is an ERROR (E0302), matching CLAUDE.md and
+                // `kryos explain E0302` — it was previously only a warning, so
+                // immutability was silently unenforced (backlog #113).
                 if let Expr::Identifier { name, .. } = target {
                     if !self.env.is_mutable(name) {
                         self.diagnostics.push(
-                            Diagnostic::warning(format!(
+                            Diagnostic::error(format!(
                                 "assignment to immutable variable `{name}`"
                             ))
-                            .with_label(*span, "help: consider declaring with `let mut`"),
+                            .with_label(*span, "help: consider declaring with `let mut`")
+                            .with_code(kryos_errors::codes::E0302),
                         );
                     }
                 }

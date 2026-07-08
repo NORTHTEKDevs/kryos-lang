@@ -55,7 +55,7 @@ fn main() {
 
     println("")
     println("Powers of two:")
-    let val = 1
+    let mut val = 1
     for i in 0..10 {
         println("  2^" + to_string(i) + " = " + to_string(val))
         val = val * 2

@@ -76,7 +76,7 @@ fn hit_sphere(sphere: Sphere, ray: Ray) -> i64 {
 }
 
 fn render_row(y: i64, sphere: Sphere) {
-    let row = ""
+    let mut row = ""
     for x in 0..40 {
         let ray = Ray {
             ox: 20, oy: 10, oz: 0,

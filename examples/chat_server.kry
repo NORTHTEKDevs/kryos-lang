@@ -56,9 +56,9 @@ fn main() {
     // Stats — count messages per sender
     println("")
     println("Stats:")
-    let alice_count = 0
-    let bob_count = 0
-    let charlie_count = 0
+    let mut alice_count = 0
+    let mut bob_count = 0
+    let mut charlie_count = 0
     for i in 0..7 {
         let msg = messages[i]
         alice_count = alice_count + is_alice(msg)

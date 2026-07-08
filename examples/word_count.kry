@@ -45,7 +45,7 @@ fn main() {
     println("")
 
     // Summation demo with for loop
-    let total_chars = 0
+    let mut total_chars = 0
     for i in 1..100 {
         total_chars = total_chars + i
     }
