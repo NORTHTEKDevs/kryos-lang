@@ -1,0 +1,22 @@
+// Regression (audit backlog #114): a coop_spawn task capturing 2+ variables
+// used to compute garbage for the 2nd+ argument (the coop executor threaded
+// only one). The coop ABI now packs all captures like kryos_spawn.
+// Self-checking; exits nonzero on wrong output.
+
+fn worker(a: i64, b: i64, c: i64) -> str {
+    let sum = a + b + c
+    if sum != 60 {
+        println("FAIL: coop task got sum=" + to_string(sum) + " (want 60)")
+        exit(1)
+    }
+    return "ok"
+}
+
+fn main() {
+    let x = 10
+    let y = 20
+    let z = 30
+    coop_spawn(worker(x, y, z))
+    coop_run()
+    println("coop_spawn multi-capture: pass")
+}

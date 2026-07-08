@@ -2881,15 +2881,34 @@ fn translate_instruction<M: Module>(
             // `await` / `coop_yield` inside them interleave with other tasks,
             // instead of `kryos_spawn`'s truly-parallel OS thread.
             if func.starts_with("__coopspawn_") {
-                let arg0 = if args.is_empty() {
-                    builder.ins().iconst(types::I64, 0)
-                } else {
-                    // At most one capture is threaded to a coop task today.
-                    translate_operand(&args[0], builder, translator, module)?
-                };
+                // Pack ALL captures into a stack slot and pass (fn_ptr,
+                // args_ptr, count) — the coop executor copies them into an
+                // owned Vec and unpacks by arity, same as kryos_spawn. The
+                // old path threaded only args[0], so a task capturing 2+
+                // variables got garbage for the rest (backlog #114).
                 let coop_ref =
-                    ensure_func_ref_with_args("kryos_coop_spawn", builder, translator, module, 2)?;
-                builder.ins().call(coop_ref, &[fn_ptr, arg0]);
+                    ensure_func_ref_with_args("kryos_coop_spawn", builder, translator, module, 3)?;
+                if args.is_empty() {
+                    let null_ptr = builder.ins().iconst(types::I64, 0);
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder.ins().call(coop_ref, &[fn_ptr, null_ptr, zero]);
+                    return Ok(());
+                }
+                let slot_size = (args.len() * 8) as u32;
+                let slot = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot,
+                    slot_size,
+                    0,
+                ));
+                let args_ptr = builder.ins().stack_addr(types::I64, slot, 0);
+                for (i, arg_op) in args.iter().enumerate() {
+                    let val = translate_operand(arg_op, builder, translator, module)?;
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), val, args_ptr, (i * 8) as i32);
+                }
+                let count = builder.ins().iconst(types::I64, args.len() as i64);
+                builder.ins().call(coop_ref, &[fn_ptr, args_ptr, count]);
                 return Ok(());
             }
 

@@ -840,7 +840,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_actor_wait_all()");
         self.emit_line("declare void @kryos_sleep(i64)");
         // Cooperative async executor (real interleaving via await/yield).
-        self.emit_line("declare i64 @kryos_coop_spawn(i64, i64)");
+        self.emit_line("declare i64 @kryos_coop_spawn(i64, ptr, i64)");
         self.emit_line("declare void @kryos_coop_yield()");
         self.emit_line("declare void @kryos_coop_run()");
         self.emit_line("declare void @kryos_coop_reset()");
@@ -3385,22 +3385,19 @@ impl LlvmCodegen {
                 // Cooperative tasks (from `coop_spawn`, `__coopspawn_` prefix)
                 // route to the cooperative executor so `await`/`coop_yield`
                 // interleave them, instead of `kryos_spawn`'s OS thread.
-                if spawn_fn.starts_with("__coopspawn_") {
-                    let arg0 = if args.is_empty() {
-                        "0".to_string()
-                    } else {
-                        // At most one capture is threaded to a coop task today.
-                        let v = self.operand_to_llvm(&args[0], func);
-                        let vt = self.operand_type(&args[0], func);
-                        self.coerce_value(&v, &vt, "i64")
-                    };
+                // Coop tasks route to the cooperative executor; both entry
+                // points now share the (fn_ptr, args_ptr, count) ABI, so ALL
+                // captures are packed and marshalled by arity. (The coop path
+                // used to thread only args[0] — 2+ captures were garbage,
+                // backlog #114.)
+                let spawn_target = if spawn_fn.starts_with("__coopspawn_") {
+                    "kryos_coop_spawn"
+                } else {
+                    "kryos_spawn"
+                };
+                if args.is_empty() {
                     self.emit_line(&format!(
-                        "  call i64 @kryos_coop_spawn(i64 {tmp_fptr}, i64 {arg0})"
-                    ));
-                } else if args.is_empty() {
-                    // kryos_spawn(fn_ptr, null, 0)
-                    self.emit_line(&format!(
-                        "  call i64 @kryos_spawn(i64 {tmp_fptr}, ptr null, i64 0)"
+                        "  call i64 @{spawn_target}(i64 {tmp_fptr}, ptr null, i64 0)"
                     ));
                 } else {
                     // Alloca for args array.
@@ -3476,7 +3473,7 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  store i64 {store_val}, ptr {gep}"));
                     }
                     self.emit_line(&format!(
-                        "  call i64 @kryos_spawn(i64 {tmp_fptr}, ptr {arr}, i64 {})",
+                        "  call i64 @{spawn_target}(i64 {tmp_fptr}, ptr {arr}, i64 {})",
                         args.len()
                     ));
                 }

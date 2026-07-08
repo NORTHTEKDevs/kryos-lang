@@ -105,13 +105,24 @@ thread_local! {
 /// ready queue and its OS thread immediately parks until the scheduler grants
 /// it the baton. Returns the task id (>0), or 0 if `fn_ptr` is null.
 ///
-/// The body is invoked as `extern "C" fn(i64) -> i64`; a 0-argument Kryos
-/// task simply ignores the extra register, and the return value is discarded.
+/// `args_ptr`/`arg_count` carry the task's captured arguments (0..=8),
+/// unpacked into registers by arity — the same marshalling `kryos_spawn`
+/// uses. Previously only a single arg was threaded, so a task capturing 2+
+/// variables computed garbage for the rest (backlog #114). The args are
+/// copied into an owned Vec before the task runs (it runs later, on
+/// `coop_run`, after the spawning frame's slot may be gone). Returns the
+/// task id (>0), or 0 if `fn_ptr` is null.
 #[no_mangle]
-pub extern "C" fn kryos_coop_spawn(fn_ptr: i64, arg: i64) -> u64 {
+pub extern "C" fn kryos_coop_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64) -> u64 {
     if fn_ptr == 0 {
         return 0;
     }
+    // Copy captures now so the task (which runs later) owns them.
+    let args: Vec<i64> = if arg_count > 0 && !args_ptr.is_null() {
+        unsafe { std::slice::from_raw_parts(args_ptr, arg_count as usize).to_vec() }
+    } else {
+        Vec::new()
+    };
     let s = sched();
     let id = {
         let mut g = lock(s);
@@ -131,10 +142,7 @@ pub extern "C" fn kryos_coop_spawn(fn_ptr: i64, arg: i64) -> u64 {
         // Run the task body straight-through. Any `kryos_coop_yield` inside
         // hands the baton back to the scheduler and parks here until re-granted.
         // SAFETY: `addr` is a valid Kryos function address per spawn contract.
-        unsafe {
-            let f: extern "C" fn(i64) -> i64 = std::mem::transmute(addr);
-            f(arg);
-        }
+        crate::spawn::invoke_task(addr, &args);
         // A `throw` that unwound out of the task would otherwise vanish with
         // the thread; report it like the spawn runtime does.
         crate::exception::kryos_exception_report_thread_if_pending();
@@ -378,8 +386,8 @@ mod tests {
     fn two_tasks_interleave() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         kryos_coop_reset();
-        kryos_coop_spawn(fn_addr(task_a), 0);
-        kryos_coop_spawn(fn_addr(task_b), 0);
+        kryos_coop_spawn(fn_addr(task_a), std::ptr::null(), 0);
+        kryos_coop_spawn(fn_addr(task_b), std::ptr::null(), 0);
         kryos_coop_run();
         assert_eq!(order_raw(), "A0 B0 A1 B1 A2 B2");
     }
@@ -390,7 +398,7 @@ mod tests {
     fn single_task_is_not_interleaved() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         kryos_coop_reset();
-        kryos_coop_spawn(fn_addr(task_a), 0);
+        kryos_coop_spawn(fn_addr(task_a), std::ptr::null(), 0);
         kryos_coop_run();
         assert_eq!(order_raw(), "A0 A1 A2");
     }
@@ -408,9 +416,9 @@ mod tests {
     fn three_tasks_round_robin() {
         let _guard = TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         kryos_coop_reset();
-        kryos_coop_spawn(fn_addr(task_a), 0);
-        kryos_coop_spawn(fn_addr(task_b), 0);
-        kryos_coop_spawn(fn_addr(task_c), 0);
+        kryos_coop_spawn(fn_addr(task_a), std::ptr::null(), 0);
+        kryos_coop_spawn(fn_addr(task_b), std::ptr::null(), 0);
+        kryos_coop_spawn(fn_addr(task_c), std::ptr::null(), 0);
         kryos_coop_run();
         // A,B,C each fire round 0 and 1; then A,B finish their 3rd round
         // (C only had 2 rounds) — C drops out after round 1.
