@@ -899,7 +899,11 @@ impl Formatter {
                     match part {
                         StringPart::Literal(lit) => s.push_str(&escape_string(lit)),
                         StringPart::Expr(e) => {
-                            s.push_str("${");
+                            // Kryos interpolation is `{expr}`, NOT `${expr}`.
+                            // Emitting `${` produced a literal `$` in the
+                            // output and silently changed program behavior
+                            // (`"{x}"` -> `"${x}"` prints a stray `$`).
+                            s.push('{');
                             s.push_str(&self.fmt_expr_to_string(e));
                             s.push('}');
                         }
@@ -1498,6 +1502,13 @@ fn escape_string(s: &str) -> String {
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
             '\0' => out.push_str("\\0"),
+            // A literal brace in the decoded value must be re-doubled — every
+            // Kryos string interpolates, so a bare `{` in the output would
+            // re-lex as an interpolation start (corrupting the string or
+            // failing to parse). The lexer decodes `{{`/`}}` to a single
+            // brace, so this is the inverse.
+            '{' => out.push_str("{{"),
+            '}' => out.push_str("}}"),
             _ => out.push(ch),
         }
     }

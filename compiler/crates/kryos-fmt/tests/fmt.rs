@@ -546,3 +546,25 @@ fn test_doc_comment_idempotent() {
         first, second
     );
 }
+
+// ======================== Interpolation / brace preservation ========================
+
+#[test]
+fn test_interpolation_uses_brace_not_dollar_brace() {
+    // Regression: fmt reconstructed `{expr}` as `${expr}`, injecting a literal
+    // `$` and silently changing program output.
+    let out = fmt("fn main() {\n    println(\"hi {name}\")\n}\n");
+    assert!(
+        out.contains("{name}") && !out.contains("${name}"),
+        "interpolation must format as {{name}}, got:\n{out}"
+    );
+}
+
+#[test]
+fn test_literal_braces_are_re_escaped() {
+    // A decoded literal brace must be re-doubled so it does not re-lex as an
+    // interpolation start. Round-trip must be idempotent and re-parseable.
+    assert_round_trip("fn main() {\n    let j = \"a {{brace}} and {name}\"\n    println(j)\n}\n");
+    let out = fmt("fn main() {\n    let j = \"a {{brace}} and {name}\"\n}\n");
+    assert!(out.contains("{{brace}}"), "literal brace must be doubled, got:\n{out}");
+}

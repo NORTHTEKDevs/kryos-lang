@@ -102,6 +102,13 @@ v1.0.0-rc.1. Honest, non-blocking residuals:
   compiler with a stack overflow instead of a diagnostic.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
   linking; the JIT (`kryos run`) needs nothing.
+- **`kryos fmt` does not preserve non-doc comments.** The formatter is
+  AST-based and the lexer discards `//` line and `/* */` block comments
+  (only `///` doc comments are retained and re-emitted). Formatting a file
+  drops its ordinary comments. `fmt` IS semantics-preserving otherwise —
+  string interpolation and literal braces round-trip correctly. Comment
+  preservation needs a trivia-carrying parse and is tracked as follow-up;
+  until then, avoid `kryos fmt` on comment-heavy files you care about.
 
 `unsafe { }` is now ENFORCED: a raw-pointer dereference outside any `unsafe`
 block is rejected with E0500.
