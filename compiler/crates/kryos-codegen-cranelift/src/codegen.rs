@@ -3722,14 +3722,25 @@ fn translate_rvalue<M: Module>(
                 let b = translate_operand(&args[1], builder, translator, module)?;
                 let a_ty = builder.func.dfg.value_type(a);
                 if is_float_type(a_ty) {
-                    // Float min/max using fcmp + select.
+                    // NaN-avoiding, symmetric minNum/maxNum (matches
+                    // f64::min/max, LLVM's llvm.minnum/maxnum, and the
+                    // runtime helpers): return the non-NaN operand when one
+                    // is NaN. Cranelift's fmin/fmax PROPAGATE NaN (IEEE
+                    // minimum/maximum), and the old fcmp+select was
+                    // order-dependent (min(5,NaN)=NaN but min(NaN,5)=5), so
+                    // build it explicitly.
+                    let a_nan = builder.ins().fcmp(FloatCC::Unordered, a, a);
+                    let b_nan = builder.ins().fcmp(FloatCC::Unordered, b, b);
                     let cmp = if func == "min" {
                         FloatCC::LessThan
                     } else {
                         FloatCC::GreaterThan
                     };
-                    let cond = builder.ins().fcmp(cmp, a, b);
-                    let result = builder.ins().select(cond, a, b);
+                    let pick_a = builder.ins().fcmp(cmp, a, b);
+                    let base = builder.ins().select(pick_a, a, b);
+                    // If b is NaN, the result is a; if a is NaN, the result is b.
+                    let r1 = builder.ins().select(b_nan, a, base);
+                    let result = builder.ins().select(a_nan, b, r1);
                     return Ok(Some(result));
                 } else {
                     let cmp = if func == "min" {
@@ -5703,11 +5714,34 @@ fn translate_cast(
     // (0..=U::MAX), not the signed range — a signed saturating convert clamps
     // an in-range value like 1.5e19 to i64::MAX instead of reaching it.
     if is_float_type(src_ty) && !is_float_type(dest_ty) {
-        return Ok(if dest_unsigned {
-            builder.ins().fcvt_to_uint_sat(dest_ty, val)
+        let dest_bits = dest_ty.bits();
+        if dest_bits >= 64 {
+            return Ok(if dest_unsigned {
+                builder.ins().fcvt_to_uint_sat(dest_ty, val)
+            } else {
+                builder.ins().fcvt_to_sint_sat(dest_ty, val)
+            });
+        }
+        // Narrow destination (i8/i16/i32, u8/u16/u32): Cranelift's
+        // fcvt_to_*_sat to a narrow type does NOT clamp to that type's range
+        // (300.0 as i8 came out 44 = 300 & 0xFF, not the saturated 127).
+        // Saturate to i64 first (NaN -> 0, +huge -> i64::MAX, -huge ->
+        // i64::MIN), then clamp explicitly to the destination's range and
+        // reduce. Matches the LLVM backend's @llvm.fptosi.sat.<width>.
+        let wide = builder.ins().fcvt_to_sint_sat(types::I64, val);
+        let (lo, hi) = if dest_unsigned {
+            (0i64, ((1u64 << dest_bits) - 1) as i64)
         } else {
-            builder.ins().fcvt_to_sint_sat(dest_ty, val)
-        });
+            let half = 1i64 << (dest_bits - 1);
+            (-half, half - 1)
+        };
+        let lo_c = builder.ins().iconst(types::I64, lo);
+        let hi_c = builder.ins().iconst(types::I64, hi);
+        let ge_lo = builder.ins().icmp(IntCC::SignedGreaterThan, wide, lo_c);
+        let clamped_lo = builder.ins().select(ge_lo, wide, lo_c);
+        let le_hi = builder.ins().icmp(IntCC::SignedLessThan, clamped_lo, hi_c);
+        let clamped = builder.ins().select(le_hi, clamped_lo, hi_c);
+        return Ok(builder.ins().ireduce(dest_ty, clamped));
     }
 
     // Int -> Int (widening / narrowing). Widening an unsigned source

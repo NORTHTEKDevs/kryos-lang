@@ -207,7 +207,14 @@ pub extern "C" fn kryos_map_insert_str(map: i64, key: i64, value: i64) {
         for _ in 0..capacity {
             let entry = &mut *entries.add(idx);
             if !entry.occupied {
-                entry.key = key;
+                // The map must OWN its key: store an independent copy, not the
+                // caller's pointer. A key produced per loop iteration (e.g.
+                // `let k = make_key(w); m[k] = v`) is freed when its local
+                // goes out of scope, which left the stored key dangling and
+                // made every subsequent lookup miss (word-count / group-by
+                // pattern silently returned empty).
+                let ks = key as *const crate::string::KryosString;
+                entry.key = crate::string::kryos_string_new((*ks).data, (*ks).len) as i64;
                 entry.value = value;
                 entry.occupied = true;
                 (*header).len += 1;

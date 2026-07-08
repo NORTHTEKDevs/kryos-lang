@@ -1,0 +1,50 @@
+// Regression (audit backlog #31/#36/#37): three JIT runtime bugs where the
+// Cranelift path silently disagreed with AOT / the correct semantics.
+// Self-checking; exits nonzero on any wrong result.
+
+fn make_key(s: str) -> str { return s + "" }
+
+fn check(cond: bool, what: str) {
+    if not cond {
+        println("FAIL: " + what)
+        exit(1)
+    }
+}
+
+fn main() {
+    // #36: min/max on floats are NaN-avoiding and symmetric.
+    let nanv: f64 = 0.0 / 0.0
+    let x: f64 = 5.0
+    check(min(x, nanv) == 5.0, "min(5, NaN)")
+    check(max(x, nanv) == 5.0, "max(5, NaN)")
+    check(min(nanv, x) == 5.0, "min(NaN, 5)")
+    check(max(nanv, x) == 5.0, "max(NaN, 5)")
+    check(min(3.0, 7.0) == 3.0, "min(3,7)")
+    check(max(3.0, 7.0) == 7.0, "max(3,7)")
+
+    // #37: out-of-range float -> narrow int saturates (does not wrap/zero).
+    let midrange: f64 = 300.0
+    check((midrange as i8) == 127, "300.0 as i8 saturates")
+    let big: f64 = 1.0e300
+    check((big as i16) == 32767, "1e300 as i16 saturates")
+    check((big as u16) == 65535, "1e300 as u16 saturates")
+    check((big as i8) == 127, "1e300 as i8 saturates")
+    let negbig: f64 = -1.0e300
+    check((negbig as i8) == -128, "-1e300 as i8 saturates low")
+
+    // #31: map<str,V> insert with a per-iteration fn-call key persists.
+    let words = ["A", "B", "C"]
+    let mut m: map<str, i64> = {}
+    let mut i = 0
+    while i < 3 {
+        let key = make_key(words[i])
+        m[key] = i + 100
+        i = i + 1
+    }
+    check(m["A"] == 100, "map key A persists")
+    check(m["B"] == 101, "map key B persists")
+    check(m["C"] == 102, "map key C persists")
+    check(contains(m, "A"), "map contains A")
+
+    println("runtime numeric+map: all pass")
+}
