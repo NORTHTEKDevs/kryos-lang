@@ -2296,6 +2296,38 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 } else {
                     None
                 }
+            } else if let ast::Expr::Identifier { name, .. } = target {
+                // Bare-field actor-state assignment: `count = count + 1`
+                // inside a handler (the exact form docs/09-concurrency.md
+                // uses). It is neither a local nor a global, so without this
+                // it fell through to find_local_by_name and ICE'd
+                // ("assign target local not found"). Resolve a bare name that
+                // matches a field of the actor currently being lowered to the
+                // same ActorStateStore path as `self.field`.
+                let is_local = ctx
+                    .locals
+                    .iter()
+                    .any(|l| l.name.as_deref() == Some(name.as_str()));
+                if !is_local {
+                    ctx.current_actor.clone().and_then(|aname| {
+                        let fty = ctx
+                            .struct_defs
+                            .get(aname.as_str())
+                            .and_then(|fs| {
+                                fs.iter().find(|(n, _)| n == name).map(|(_, t)| t.clone())
+                            })
+                            .unwrap_or(MirType::I64);
+                        ctx.actor_state_fields.get(&aname).cloned().and_then(|fields| {
+                            fields.iter().find(|(n, _)| n == name).map(|(_, idx)| {
+                                let self_local = find_local_by_name(ctx, "self")
+                                    .expect("internal: 'self' local not found in actor handler");
+                                (self_local, *idx, fty.clone())
+                            })
+                        })
+                    })
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -3663,7 +3695,11 @@ fn lower_spawn_block_prefixed(ctx: &mut LoweringContext, stmts: &[ast::Stmt], pr
     // Find captured variables from enclosing scope.
     let captures = find_free_variables_block(ctx, stmts);
 
-    // Build the capture operands before we save state (need access to current locals).
+    // Build the capture operands + their MIR types before we save state
+    // (need access to the enclosing frame's locals). Preserving each
+    // capture's type is what lets a method call inside the spawn body
+    // (e.g. `w.run()`) resolve to the mangled `Worker__run` instead of a
+    // bare unmangled `run` symbol that fails to link (backlog #32).
     let capture_ops: Vec<Operand> = captures
         .iter()
         .map(|name| {
@@ -3672,16 +3708,26 @@ fn lower_spawn_block_prefixed(ctx: &mut LoweringContext, stmts: &[ast::Stmt], pr
             Operand::Local(local)
         })
         .collect();
+    let capture_tys: Vec<Option<ast::TypeExpr>> = captures
+        .iter()
+        .map(|name| {
+            find_local_by_name(ctx, name)
+                .and_then(|lid| ctx.locals.iter().find(|l| l.id == lid))
+                .and_then(|l| mir_type_to_type_expr(&l.ty))
+        })
+        .collect();
 
     // Save current function state and lower the spawn body as a new function.
     let saved = ctx.save_function_state();
 
-    // Build params from captures.
+    // Build params from captures, carrying each capture's resolved type so
+    // method/field resolution inside the spawn body sees the real type.
     let params: Vec<ast::Param> = captures
         .iter()
-        .map(|name| ast::Param {
+        .zip(capture_tys.into_iter())
+        .map(|(name, ty)| ast::Param {
             name: name.clone(),
-            ty: None,
+            ty,
             default: None,
             span: kryos_errors::Span::DUMMY,
         })
@@ -5866,6 +5912,38 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
                     return Operand::Local(temp);
                 }
             }
+            // Bare-field actor-state READ inside a handler (`count + amount`,
+            // `return count`): route to ActorStateLoad. The fallback below
+            // would allocate a fresh i64 local that silently reads 0 (backlog
+            // #25; docs/09-concurrency.md uses bare-field state throughout).
+            if !is_local {
+                if let Some(aname) = ctx.current_actor.clone() {
+                    if let Some(fields) = ctx.actor_state_fields.get(&aname).cloned() {
+                        if let Some((_fname, field_idx)) =
+                            fields.iter().find(|(n, _)| n == name.as_str())
+                        {
+                            if let Some(self_local) = find_local_by_name(ctx, "self") {
+                                let fty = ctx
+                                    .struct_defs
+                                    .get(aname.as_str())
+                                    .and_then(|fs| {
+                                        fs.iter()
+                                            .find(|(n, _)| n == name.as_str())
+                                            .map(|(_, t)| t.clone())
+                                    })
+                                    .unwrap_or(MirType::I64);
+                                let dest = ctx.alloc_temp(fty);
+                                ctx.emit(Instruction::ActorStateLoad {
+                                    dest,
+                                    state_ptr: self_local,
+                                    field_offset: *field_idx,
+                                });
+                                return Operand::Local(dest);
+                            }
+                        }
+                    }
+                }
+            }
             let local = find_local_by_name(ctx, name)
                 .unwrap_or_else(|| ctx.alloc_local(Some(name.to_string()), MirType::I64, false));
             Operand::Local(local)
@@ -5929,6 +6007,37 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     func_name: name.clone(),
                     captures: vec![],
                 };
+            }
+            // Bare-field actor-state READ inside a handler (`return count`,
+            // `count + amount`): route to ActorStateLoad, mirroring the
+            // `self.field` path. Without this, a bare field name fell through
+            // to the fresh-i64 fallback and silently read 0 (docs/09-
+            // concurrency.md uses bare-field state throughout — backlog #25).
+            if !is_local {
+                if let Some(aname) = ctx.current_actor.clone() {
+                    if let Some(fields) = ctx.actor_state_fields.get(&aname).cloned() {
+                        if let Some((_fname, field_idx)) =
+                            fields.iter().find(|(n, _)| n == name)
+                        {
+                            if let Some(self_local) = find_local_by_name(ctx, "self") {
+                                let fty = ctx
+                                    .struct_defs
+                                    .get(aname.as_str())
+                                    .and_then(|fs| {
+                                        fs.iter().find(|(n, _)| n == name).map(|(_, t)| t.clone())
+                                    })
+                                    .unwrap_or(MirType::I64);
+                                let dest = ctx.alloc_temp(fty);
+                                ctx.emit(Instruction::ActorStateLoad {
+                                    dest,
+                                    state_ptr: self_local,
+                                    field_offset: *field_idx,
+                                });
+                                return RValue::Use(Operand::Local(dest));
+                            }
+                        }
+                    }
+                }
             }
             let local = find_local_by_name(ctx, name)
                 .unwrap_or_else(|| ctx.alloc_local(Some(name.to_string()), MirType::I64, false));

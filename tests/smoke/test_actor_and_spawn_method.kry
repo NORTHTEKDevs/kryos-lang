@@ -1,0 +1,39 @@
+// Regression (audit backlog #4/#25/#32): actors and spawn-captured method
+// calls. #4 (ActorName() typecheck) and #25 (bare-field actor-state assign)
+// were fixed earlier; #32 (spawn block loses captured-variable types, so a
+// method call inside it linked to a bare unmangled symbol) is fixed by
+// carrying capture param types into the spawn wrapper. Self-checking.
+
+struct Worker { id: i64 }
+impl Worker {
+    fn run(self: Worker) -> i64 {
+        return self.id * 10
+    }
+}
+
+actor Counter {
+    count: i64
+    fn bump() {
+        count = count + 1
+    }
+}
+
+fn main() {
+    // #32: capture a struct into a spawn block and call its method.
+    let w = Worker { id: 5 }
+    spawn {
+        let r = w.run()
+        if r != 50 {
+            println("FAIL: spawn captured method wrong result " + to_string(r))
+            exit(1)
+        }
+    }
+    sleep_ms(100)
+
+    // #4 + #25: actor construction + bare-field state mutation compile+run.
+    let c = Counter()
+    c.bump()
+    c.bump()
+
+    println("actor + spawn method: all pass")
+}
