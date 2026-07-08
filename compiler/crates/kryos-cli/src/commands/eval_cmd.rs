@@ -19,7 +19,7 @@ pub struct EvalOptions {
 }
 
 pub fn execute(opts: EvalOptions) -> Result<(), String> {
-    let body = opts.source.replace(';', "\n");
+    let body = rewrite_semicolons(&opts.source);
     let wrapped = format!("fn main() {{\n    {body}\n}}\n");
 
     if opts.show_source {
@@ -49,10 +49,54 @@ pub fn from_argv(expr: Vec<String>, show_source: bool) -> EvalOptions {
     }
 }
 
+/// Replace statement-separating `;` with newlines, but ONLY outside string
+/// and char literals — a naive `replace(';', "\n")` split `println("a;b")`
+/// into three lines and corrupted the string (backlog #99).
+fn rewrite_semicolons(src: &str) -> String {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < n {
+        match b[i] {
+            b'"' | b'\'' => {
+                let quote = b[i];
+                out.push(quote);
+                i += 1;
+                while i < n && b[i] != quote {
+                    if b[i] == b'\\' && i + 1 < n {
+                        out.push(b[i]);
+                        out.push(b[i + 1]);
+                        i += 2;
+                        continue;
+                    }
+                    out.push(b[i]);
+                    i += 1;
+                }
+                if i < n {
+                    out.push(quote);
+                    i += 1;
+                }
+            }
+            b';' => {
+                out.push(b'\n');
+                i += 1;
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    // Input was valid UTF-8 and we only reordered/duplicated whole bytes on
+    // literal boundaries, so this is always valid UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| src.to_string())
+}
+
 /// For testability we expose the wrap-and-return-source path separately.
 #[allow(dead_code)] // used by #[cfg(test)] mod tests below
 pub fn wrap_body(body: &str) -> String {
-    let cleaned = body.replace(';', "\n");
+    let cleaned = rewrite_semicolons(body);
     format!("fn main() {{\n    {cleaned}\n}}\n")
 }
 

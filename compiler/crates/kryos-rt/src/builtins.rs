@@ -612,51 +612,52 @@ pub extern "C" fn kryos_builtin_assert(condition: i64, msg_handle: i64) -> i64 {
     std::process::abort();
 }
 
-/// Parse a KryosString as an integer. Returns the parsed value, or 0 on failure.
+/// Parse a KryosString as an integer. PANICS on malformed input, matching the
+/// documented contract (docs/learn/cookbook: "parse_int panics on non-numeric,
+/// pre-check"). It previously returned 0 silently, so code that followed the
+/// docs and relied on the panic to reject bad input got a valid-looking 0
+/// instead (backlog #41/#71). Pre-check or use std::result for graceful paths.
 #[no_mangle]
 pub extern "C" fn kryos_builtin_parse_int(s_handle: i64) -> i64 {
-    if s_handle == 0 {
-        return 0;
+    let text = parse_str_arg(s_handle);
+    match text.trim().parse::<i64>() {
+        Ok(v) => v,
+        Err(_) => parse_panic("parse_int", &text),
     }
-    let ks = s_handle as *const crate::string::KryosString;
-    let text = unsafe {
-        let len = (*ks).len as usize;
-        let data = (*ks).data;
-        if data.is_null() || len == 0 {
-            return 0;
-        }
-        let slice = std::slice::from_raw_parts(data, len);
-        match std::str::from_utf8(slice) {
-            Ok(s) => s,
-            Err(_) => return 0,
-        }
-    };
-    text.trim().parse::<i64>().unwrap_or(0)
 }
 
-/// Parse a KryosString as an f64, returning the bits as i64. Returns 0 on failure.
+/// Parse a KryosString as an f64, returning the bits as i64. PANICS on
+/// malformed input (see `kryos_builtin_parse_int`; backlog #41/#71).
 #[no_mangle]
 pub extern "C" fn kryos_builtin_parse_float(s_handle: i64) -> i64 {
+    let text = parse_str_arg(s_handle);
+    match text.trim().parse::<f64>() {
+        Ok(v) => v.to_bits() as i64,
+        Err(_) => parse_panic("parse_float", &text),
+    }
+}
+
+/// Extract the UTF-8 text of a KryosString handle (empty string for a null
+/// handle / invalid UTF-8, which then fails the numeric parse and panics).
+fn parse_str_arg(s_handle: i64) -> String {
     if s_handle == 0 {
-        return 0;
+        return String::new();
     }
     let ks = s_handle as *const crate::string::KryosString;
-    let text = unsafe {
+    unsafe {
         let len = (*ks).len as usize;
         let data = (*ks).data;
         if data.is_null() || len == 0 {
-            return 0;
+            return String::new();
         }
         let slice = std::slice::from_raw_parts(data, len);
-        match std::str::from_utf8(slice) {
-            Ok(s) => s,
-            Err(_) => return 0,
-        }
-    };
-    match text.trim().parse::<f64>() {
-        Ok(v) => v.to_bits() as i64,
-        Err(_) => 0,
+        std::str::from_utf8(slice).unwrap_or("").to_string()
     }
+}
+
+fn parse_panic(func: &str, text: &str) -> ! {
+    let msg = format!("{func}: invalid numeric input: '{text}'");
+    crate::panic::kryos_panic(msg.as_ptr(), msg.len())
 }
 
 /// Return the type name of a value. Since everything is i64 at runtime,
