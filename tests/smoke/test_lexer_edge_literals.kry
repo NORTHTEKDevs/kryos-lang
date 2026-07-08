@@ -1,0 +1,50 @@
+// Regression (audit backlog #17): a `{` immediately followed by the
+// string's closing quote (or by `}`) is a LITERAL brace, matching the
+// self-host lexer. Previously the interpolation scanner recursed into
+// scan_string on the closing quote and consumed source PAST the literal's
+// end, silently collapsing adjacent array elements -- `["{", "}", "|"]`
+// lexed as TWO elements with the first holding ", ". This broke
+// std::re::escape for every caller.
+// Self-checking: exits nonzero on any wrong behavior.
+
+use std::re::{escape}
+use std::string::{format}
+
+fn main() {
+    let arr: [str] = ["{", "}", "|"]
+    if len(arr) != 3 {
+        println("FAIL: brace array collapsed, len=" + to_string(len(arr)))
+        exit(1)
+    }
+    if arr[0] != "{" {
+        println("FAIL: first element corrupted: <" + arr[0] + ">")
+        exit(1)
+    }
+    if arr[1] != "}" {
+        println("FAIL: second element corrupted: <" + arr[1] + ">")
+        exit(1)
+    }
+
+    let empty = "{}"
+    if len(empty) != 2 {
+        println("FAIL: empty-brace pair, len=" + to_string(len(empty)))
+        exit(1)
+    }
+
+    // std::re::escape must escape braces (was silently broken by #17).
+    let esc = escape("a{{b}}c.d")
+    if esc != "a\\\{b\\\}c\\.d" {
+        println("FAIL: re::escape gave <" + esc + ">")
+        exit(1)
+    }
+
+    // std::string::format placeholders were built from a corrupted bare
+    // "{" literal and never matched.
+    let f = format("x={{0}} y={{1}}", ["1", "2"])
+    if f != "x=1 y=2" {
+        println("FAIL: string::format gave <" + f + ">")
+        exit(1)
+    }
+
+    println("lexer edge literals: all pass")
+}

@@ -327,7 +327,9 @@ fn is_hex(text: str) -> bool {
 
 // Escape regex special characters in a string.
 fn escape(text: str) -> str {
-    let specials = ["\\", ".", "^", "$", "*", "+", "?", "(", ")", "[", "]", "{", "}", "|"]
+    // NOTE: braces are escaped (`{{`/`}}`) because every Kryos string
+    // interpolates -- a bare "{" is a lex error (never-closed interpolation).
+    let specials = ["\\", ".", "^", "$", "*", "+", "?", "(", ")", "[", "]", "{{", "}}", "|"]
     let mut result = text
     let mut i = 0
     while i < len(specials) {

@@ -410,7 +410,7 @@ fn format(template: str, args: [str]) -> str {
     let argc = len(args)
     let mut i = 0
     while i < argc {
-        let placeholder = "{" + to_string(i) + "}"
+        let placeholder = "{{" + to_string(i) + "}}"
         result = replace(result, placeholder, args[i])
         i = i + 1
     }

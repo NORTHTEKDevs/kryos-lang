@@ -1615,7 +1615,18 @@ impl TypeChecker {
             // Literals.
             Expr::IntLiteral { .. } => Type::I64,
             Expr::FloatLiteral { .. } => Type::F64,
-            Expr::StringLiteral { .. } | Expr::InterpolatedString { .. } => Type::Str,
+            Expr::StringLiteral { .. } => Type::Str,
+            Expr::InterpolatedString { parts, .. } => {
+                // Type-check every interpolated expression. Previously the
+                // parts were never visited, so an undefined identifier in
+                // `"{...}"` passed `kryos check` and ran as 0 (backlog #23).
+                for part in parts {
+                    if let kryos_ast::StringPart::Expr(e) = part {
+                        let _ = self.infer_expr(e);
+                    }
+                }
+                Type::Str
+            }
             Expr::CharLiteral { .. } => Type::Char,
             Expr::BoolLiteral { .. } => Type::Bool,
             Expr::NoneLiteral { .. } => Type::Option {

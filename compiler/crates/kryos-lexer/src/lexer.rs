@@ -372,6 +372,19 @@ impl<'src> Lexer<'src> {
                     .with_note("Kryos interpolation is `{expr}`, not `${expr}` -- drop the `$`");
                     self.emit_diag(diag);
                 }
+                // A `{` immediately followed by the closing quote (`"{"`)
+                // or by `}` (`"{}"`) cannot be a real interpolation — there
+                // is no expression to tokenize. Treat it as a literal brace,
+                // exactly like the self-host lexer does. Previously the
+                // interpolation scanner recursed into scan_string on that
+                // quote and consumed source PAST the literal's end,
+                // silently collapsing adjacent array elements like
+                // `["{", "}"]` into one corrupted element (backlog #17).
+                if self.peek_at(1) == b'"' || self.peek_at(1) == b'}' {
+                    self.advance();
+                    text.push('{');
+                    continue;
+                }
                 if !text.is_empty() || !has_interpolation {
                     self.emit(TokenKind::StringPart, start, self.pos, text.clone());
                     text.clear();
@@ -408,23 +421,42 @@ impl<'src> Lexer<'src> {
             if self.peek() == b'\\' {
                 self.advance();
                 if !self.at_end() {
-                    let esc = self.advance();
-                    match esc {
-                        b'n' => text.push('\n'),
-                        b't' => text.push('\t'),
-                        b'r' => text.push('\r'),
-                        b'\\' => text.push('\\'),
-                        b'"' => text.push('"'),
-                        b'0' => text.push('\0'),
-                        // \{ and \} escape the interpolation braces so that
-                        // string literals can contain literal `{` and `}`
-                        // characters (useful for embedded JSON, format
-                        // templates, etc.).
-                        b'{' => text.push('{'),
-                        b'}' => text.push('}'),
-                        _ => {
-                            text.push('\\');
-                            text.push(esc as char);
+                    if self.peek() >= 0x80 {
+                        // Backslash before a multi-byte UTF-8 character:
+                        // reading one raw byte here split the code point and
+                        // silently corrupted the string content (backlog
+                        // #55). Consume the whole code point and warn.
+                        let esc_start = self.pos - 1;
+                        let c = self.advance_utf8();
+                        let span =
+                            Span::new(self.file_id, esc_start as u32, self.pos as u32);
+                        let diag = Diagnostic::warning(format!(
+                            "unknown escape sequence `\\{c}`"
+                        ))
+                        .with_label(span, "this backslash is kept literally")
+                        .with_note("write `\\\\` for a literal backslash");
+                        self.emit_diag(diag);
+                        text.push('\\');
+                        text.push(c);
+                    } else {
+                        let esc = self.advance();
+                        match esc {
+                            b'n' => text.push('\n'),
+                            b't' => text.push('\t'),
+                            b'r' => text.push('\r'),
+                            b'\\' => text.push('\\'),
+                            b'"' => text.push('"'),
+                            b'0' => text.push('\0'),
+                            // \{ and \} escape the interpolation braces so that
+                            // string literals can contain literal `{` and `}`
+                            // characters (useful for embedded JSON, format
+                            // templates, etc.).
+                            b'{' => text.push('{'),
+                            b'}' => text.push('}'),
+                            _ => {
+                                text.push('\\');
+                                text.push(esc as char);
+                            }
                         }
                     }
                 }
@@ -462,6 +494,19 @@ impl<'src> Lexer<'src> {
     }
 
     fn scan_char(&mut self, start: usize) {
+        // Empty literal `''`: previously the closing quote was read AS the
+        // content, silently yielding '\'' (39) with no diagnostic.
+        if !self.at_end() && self.peek() == b'\'' {
+            self.advance(); // consume the closing quote
+            let span = Span::new(self.file_id, start as u32, self.pos as u32);
+            let diag = Diagnostic::error("empty character literal")
+                .with_label(span, "a character literal must contain exactly one code point")
+                .with_note("write the character between the quotes: `'a'`; for a quote itself use `'\\''`");
+            self.emit_diag(diag);
+            self.emit(TokenKind::Char, start, self.pos, '\0'.to_string());
+            return;
+        }
+
         let ch = if self.peek() == b'\\' {
             self.advance();
             match self.advance() {
@@ -485,6 +530,30 @@ impl<'src> Lexer<'src> {
                 .with_label(span, "this character literal is never closed")
                 .with_note("character literals are a single quoted code point: `'a'`");
             self.emit_diag(diag);
+        } else {
+            // More than one code point before the closing quote (`'ab'`).
+            // Previously the extra characters leaked out as ordinary tokens,
+            // surfacing as a misleading `undefined variable` cascade
+            // (backlog #56/#64). Consume up to the closing quote on this
+            // line and diagnose once.
+            while !self.at_end() && self.peek() != b'\'' && self.peek() != b'\n' {
+                self.advance_utf8();
+            }
+            if !self.at_end() && self.peek() == b'\'' {
+                self.advance(); // consume the closing quote
+                let span = Span::new(self.file_id, start as u32, self.pos as u32);
+                let diag =
+                    Diagnostic::error("character literal contains more than one character")
+                        .with_label(span, "a character literal holds exactly one code point")
+                        .with_note("use a string literal (\"...\") for multi-character text");
+                self.emit_diag(diag);
+            } else {
+                let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
+                let diag = Diagnostic::error("unterminated character literal")
+                    .with_label(span, "this character literal is never closed")
+                    .with_note("character literals are a single quoted code point: `'a'`");
+                self.emit_diag(diag);
+            }
         }
 
         self.emit(TokenKind::Char, start, self.pos, ch.to_string());
@@ -549,8 +618,19 @@ impl<'src> Lexer<'src> {
             if !self.at_end() && matches!(self.peek(), b'+' | b'-') {
                 self.advance();
             }
+            let mut exp_digits = 0usize;
             while !self.at_end() && self.peek().is_ascii_digit() {
                 self.advance();
+                exp_digits += 1;
+            }
+            // `1e`, `1e-`, `1e+`: previously accepted silently and folded
+            // to 0.0 downstream (backlog #65/#85).
+            if exp_digits == 0 {
+                let span = Span::new(self.file_id, start as u32, self.pos as u32);
+                let diag = Diagnostic::error("missing digits in float exponent")
+                    .with_label(span, "exponent has no digits")
+                    .with_note("write the exponent value, e.g. `1e5` or `1e-3`");
+                self.emit_diag(diag);
             }
         }
 
