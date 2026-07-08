@@ -230,12 +230,33 @@ fn _parse_string(p: Parser) -> ParseResult {
                 // Parse 4-digit hex unicode escape
                 parser = _advance(parser)
                 let hex = substr(parser.input, parser.pos, parser.pos + 4)
-                let code_point = _hex_to_int(hex)
+                let mut code_point = _hex_to_int(hex)
+                // UTF-16 surrogate pair: a high surrogate (D800-DBFF)
+                // followed by \u + low surrogate (DC00-DFFF) encodes one
+                // astral code point (how JS JSON.stringify emits emoji).
+                // Decoding the halves separately drops both silently
+                // (char_from returns "" for surrogates).
+                let mut pair_extra = 0
+                if code_point >= 55296 and code_point <= 56319 {
+                    if parser.pos + 10 <= parser.input_len {
+                        if substr(parser.input, parser.pos + 4, parser.pos + 6) == "\\u" {
+                            let low = _hex_to_int(substr(parser.input, parser.pos + 6, parser.pos + 10))
+                            if low >= 56320 and low <= 57343 {
+                                code_point = 65536 + (code_point - 55296) * 1024 + (low - 56320)
+                                pair_extra = 6
+                            }
+                        }
+                    }
+                }
                 result = result + char_from(code_point)
                 // Advance 3 more (the 4th advance happens below)
                 parser = _advance(parser)
                 parser = _advance(parser)
                 parser = _advance(parser)
+                while pair_extra > 0 {
+                    parser = _advance(parser)
+                    pair_extra = pair_extra - 1
+                }
                 found_escape = true
             }
             if not found_escape {
@@ -412,6 +433,15 @@ fn stringify(val: JsonValue) -> str {
 }
 
 fn _format_number(n: f64) -> str {
+    // NaN/Infinity are not representable in JSON — emit null (matching
+    // JavaScript's JSON.stringify) instead of an invalid bare token.
+    if n != n {
+        return "null"
+    }
+    let inf = 1.0 / 0.0
+    if n == inf or n == 0.0 - inf {
+        return "null"
+    }
     // If the number is an integer value, format without decimal
     let i = int(n)
     if float(i) == n {

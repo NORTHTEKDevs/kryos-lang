@@ -397,7 +397,11 @@ fn stringify_node_with_table(node: &JsonNode, out: &mut String, table: &NodeTabl
         JsonNode::Null => out.push_str("null"),
         JsonNode::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         JsonNode::Number(n) => {
-            if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
+            if !n.is_finite() {
+                // NaN/Infinity are not representable in JSON — emit null
+                // (matching JavaScript's JSON.stringify), not a bare token.
+                out.push_str("null");
+            } else if n.fract() == 0.0 && *n >= i64::MIN as f64 && *n <= i64::MAX as f64 {
                 out.push_str(&format!("{}", *n as i64));
             } else {
                 out.push_str(&format!("{}", n));

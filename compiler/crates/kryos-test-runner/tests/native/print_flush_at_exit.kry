@@ -1,0 +1,12 @@
+// print() without a trailing newline must still reach stdout.
+// Regression: stdout is line-buffered and neither exit path (JIT trampoline
+// return, AOT exit()) runs the Rust stdout destructor, so a program whose
+// final output had no newline lost that output entirely (silent-wrong).
+// The no-newline print builtins now flush explicitly.
+// expect-stdout: tail-no-newline
+
+fn main() {
+    print("tail-")
+    print("no-")
+    print("newline")
+}

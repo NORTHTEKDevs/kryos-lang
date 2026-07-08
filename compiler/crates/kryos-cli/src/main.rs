@@ -625,6 +625,23 @@ enum PkgAction {
 }
 
 fn main() {
+    // Run the whole CLI on a worker thread with a large stack (the reserve
+    // is virtual address space, not committed memory). The compiler phases
+    // (parser, checker, capabilities, MIR, codegen) recurse with the nesting
+    // of the input program; the parser caps that nesting (E0010), but the
+    // default 1 MiB main-thread stack leaves no headroom under the cap.
+    let worker = std::thread::Builder::new()
+        .name("kryos-main".into())
+        .stack_size(256 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("failed to spawn main worker thread");
+    if worker.join().is_err() {
+        // A panic inside real_main already printed its message.
+        std::process::exit(101);
+    }
+}
+
+fn real_main() {
     let cli = Cli::parse();
 
     let result = match cli.command {

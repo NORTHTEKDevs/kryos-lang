@@ -1,0 +1,28 @@
+// std::json edge cases.
+// Regression 1: a UTF-16 surrogate pair (`😀` — how JS
+// JSON.stringify emits emoji) was decoded as two lone halves, both of which
+// char_from() maps to "" — the character silently vanished.
+// Regression 2: stringify(Infinity/NaN) emitted the bare tokens `inf`/`NaN`,
+// which are not valid JSON — now emits `null` (matching JS JSON.stringify).
+// expect-stdout: hi 😀 there
+// expect-stdout: AéB
+// expect-stdout: null
+// expect-stdout: null
+// expect-stdout: 42
+
+use std::json
+
+fn main() {
+    let open = char_from(123)
+    let close = char_from(125)
+    let v = json::parse(open + "\"msg\": \"hi \\ud83d\\ude00 there\"" + close)
+    println(json::to_str(json::get(v, "msg")))
+    let w = json::parse(open + "\"m\": \"A\\u00e9B\"" + close)
+    println(json::to_str(json::get(w, "m")))
+
+    let inf = 1.0 / 0.0
+    println(json::stringify(json::json_number(inf)))
+    let nan = 0.0 / 0.0
+    println(json::stringify(json::json_number(nan)))
+    println(json::stringify(json::json_number(42.0)))
+}

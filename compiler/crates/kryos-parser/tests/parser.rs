@@ -1171,3 +1171,47 @@ fn fuzz_regression_stray_rbrace_at_top_level_terminates() {
         let _ = parse(tokens); // must terminate (errors are fine)
     }
 }
+
+// ======================== Nesting depth guard (E0010) ========================
+
+#[test]
+fn test_nesting_guard_deep_parens() {
+    // 10k nested parens must produce a single clean E0010, not a stack
+    // overflow (ICE class).
+    let src = format!("fn main() {{ let x = {}1{} }}", "(".repeat(10_000), ")".repeat(10_000));
+    let diags = {
+        let tokens = kryos_lexer::Lexer::new(&src, 0).tokenize();
+        kryos_parser::parse(tokens).unwrap_err()
+    };
+    let e0010: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_deref() == Some("E0010"))
+        .collect();
+    assert_eq!(e0010.len(), 1, "expected exactly one E0010, got {diags:?}");
+}
+
+#[test]
+fn test_nesting_guard_long_chain() {
+    // A 200k-term `1+1+...` chain builds a deep LEFT spine without parser
+    // recursion — it must also be rejected with E0010 (the checker would
+    // otherwise recurse per node and overflow).
+    let src = format!("fn main() {{ let x = {}1 }}", "1+".repeat(200_000));
+    let diags = {
+        let tokens = kryos_lexer::Lexer::new(&src, 0).tokenize();
+        kryos_parser::parse(tokens).unwrap_err()
+    };
+    assert!(
+        diags.iter().any(|d| d.code.as_deref() == Some("E0010")),
+        "expected E0010 in {diags:?}"
+    );
+}
+
+#[test]
+fn test_nesting_guard_allows_reasonable_depth() {
+    // 200 nested parens and a 500-term chain are legitimate generated code —
+    // they must stay well inside the limit.
+    let deep = format!("fn main() {{ let x = {}1{} }}", "(".repeat(200), ")".repeat(200));
+    parse_ok(&deep);
+    let chain = format!("fn main() {{ let x = {}1 }}", "1+".repeat(500));
+    parse_ok(&chain);
+}

@@ -114,6 +114,23 @@ fn is_string_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> b
     }
 }
 
+/// Element type of an array-typed MIR operand, when statically known.
+fn array_elem_type<'a>(
+    operand: &Operand,
+    locals: &'a [kryos_mir::ir::MirLocal],
+) -> Option<&'a kryos_mir::ir::MirType> {
+    match operand {
+        Operand::Local(id) => locals
+            .iter()
+            .find(|l| l.id == *id)
+            .and_then(|l| match &l.ty {
+                kryos_mir::ir::MirType::Array(elem, _) => Some(elem.as_ref()),
+                _ => None,
+            }),
+        _ => None,
+    }
+}
+
 /// Returns true if the MIR operand has bool type.
 fn is_bool_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bool {
     match operand {
@@ -3445,25 +3462,37 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(builder.inst_results(call)[0]));
             }
 
-            // Integer division/modulo: emit a runtime div-by-zero check before
-            // the actual sdiv/srem instruction. Without this, a zero divisor
-            // causes a hardware exception instead of a friendly error message.
+            // Integer division/modulo: emit a runtime check before the actual
+            // sdiv/srem instruction. Guards BOTH trap cases — a zero divisor
+            // AND `MIN / -1` (unrepresentable quotient) — either of which
+            // otherwise raises a hardware exception (silent crash, no
+            // diagnostic) instead of a friendly panic.
             if !is_float && (*op == MirBinOp::Div || *op == MirBinOp::Mod) {
                 let check_ref = ensure_func_ref_with_args(
-                    "kryos_check_div_zero_i64",
+                    "kryos_check_sdiv_i64",
                     builder,
                     translator,
                     module,
-                    1,
+                    3,
                 )?;
-                // Widen rhs to i64 for the runtime check (which uses all-i64 ABI).
+                // Widen operands to i64 for the runtime check (all-i64 ABI);
+                // pass the operand width so the check uses the right MIN.
+                let lhs_ty = builder.func.dfg.value_type(lhs);
+                let lhs_wide = if lhs_ty.is_int() && lhs_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, lhs)
+                } else {
+                    lhs
+                };
                 let rhs_ty = builder.func.dfg.value_type(rhs);
                 let rhs_wide = if rhs_ty.is_int() && rhs_ty.bits() < 64 {
                     builder.ins().sextend(types::I64, rhs)
                 } else {
                     rhs
                 };
-                builder.ins().call(check_ref, &[rhs_wide]);
+                let bits = builder
+                    .ins()
+                    .iconst(types::I64, i64::from(lhs_ty.bits().min(64)));
+                builder.ins().call(check_ref, &[lhs_wide, rhs_wide, bits]);
             }
 
             let val = translate_binop(
@@ -4039,6 +4068,17 @@ fn translate_rvalue<M: Module>(
                 "trim_start" => ("kryos_builtin_trim_start", 1),
                 "trim_end" => ("kryos_builtin_trim_end", 1),
                 "index_of" => ("kryos_builtin_index_of", 2),
+                // sort([str]) / sort([f64]) need content-aware comparators:
+                // the raw i64 sort orders strings by heap address and puts
+                // negative floats (sign-bit-set bit patterns) in reverse.
+                "sort" if args.len() == 1 => {
+                    match array_elem_type(&args[0], &translator.mir_func.locals) {
+                        Some(kryos_mir::ir::MirType::Str) => ("kryos_builtin_sort_str", 1),
+                        Some(kryos_mir::ir::MirType::F64)
+                        | Some(kryos_mir::ir::MirType::F32) => ("kryos_builtin_sort_f64", 1),
+                        _ => ("kryos_builtin_sort", 1),
+                    }
+                }
                 "sort" => ("kryos_builtin_sort", 1),
                 "reverse" => ("kryos_builtin_reverse", 1),
                 "append_file" => ("kryos_builtin_file_append", 2),

@@ -305,6 +305,10 @@ impl JitCompiler {
             "kryos_check_div_zero_i64",
             kryos_rt::builtins::kryos_check_div_zero_i64 as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_check_sdiv_i64",
+            kryos_rt::builtins::kryos_check_sdiv_i64 as *const u8,
+        );
 
         // Builtins and type conversions
         jit_builder.symbol(
@@ -1324,6 +1328,8 @@ impl JitCompiler {
         jit_builder.symbol("kryos_builtin_reverse", kryos_rt::builtins::kryos_builtin_reverse as *const u8);
         jit_builder.symbol("kryos_builtin_sin", kryos_rt::builtins::kryos_builtin_sin as *const u8);
         jit_builder.symbol("kryos_builtin_sort", kryos_rt::builtins::kryos_builtin_sort as *const u8);
+        jit_builder.symbol("kryos_builtin_sort_str", kryos_rt::builtins::kryos_builtin_sort_str as *const u8);
+        jit_builder.symbol("kryos_builtin_sort_f64", kryos_rt::builtins::kryos_builtin_sort_f64 as *const u8);
         jit_builder.symbol("kryos_builtin_split", kryos_rt::builtins::kryos_builtin_split as *const u8);
         jit_builder.symbol("kryos_builtin_sqrt", kryos_rt::builtins::kryos_builtin_sqrt as *const u8);
         jit_builder.symbol("kryos_builtin_starts_with", kryos_rt::builtins::kryos_builtin_starts_with as *const u8);
@@ -1956,6 +1962,7 @@ fn declare_runtime_builtins<M: Module>(
         "kryos_check_div_zero_i64",
         sig(1)
     );
+    decl!("kryos_check_sdiv_i64", "kryos_check_sdiv_i64", sig(3));
 
     // --- Channel / Actor / Spawn ---
     decl!("kryos_chan_new_i64", "kryos_chan_new_i64", sig(0));

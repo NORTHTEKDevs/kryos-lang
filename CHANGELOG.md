@@ -4,6 +4,80 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Hardening sweep for 1.0: compiler robustness on adversarial input, runtime
+silent-wrong fixes, and stdlib edge-case correctness. Found by a
+malformed-input probe corpus + verified source audits; every fix has a
+regression test.
+
+### Fixed — compiler robustness (ICE class)
+- **Deeply nested / pathological input no longer crashes the compiler.**
+  Nested parens, blocks, closures, types, patterns, and flat `1+1+...` /
+  method chains previously overflowed the native stack (silent exit, no
+  diagnostic). The parser now enforces two budgets — grammar recursion 256
+  (clang-class limit) and total AST-path depth 2048 (covers iteratively
+  parsed chains, which recurse in the checker) — and reports a single clean
+  `E0010` telling the user to split the expression. Post-limit cascade
+  errors are suppressed. The CLI also runs on a 256 MiB-stack worker thread
+  so legitimate depth keeps ample headroom in every downstream phase.
+- **`i64::MIN / -1` (and `% -1`) no longer kills the process silently.**
+  The quotient is unrepresentable — both backends raised a hardware
+  exception with no message (and `sdiv` on LLVM was UB). The runtime
+  div guard now panics with "integer division overflow", matching the
+  div-by-zero panic. Constant-folding the same expression in `comptime`
+  could panic the compiler itself; the folder now uses checked division and
+  defers the case to the runtime guard.
+
+### Fixed — silent-wrong runtime behavior
+- **`NaN != NaN` was `false` on AOT** (true on JIT, per IEEE 754/Rust): the
+  LLVM backend emitted ordered `fcmp one` for float `!=`. Now unordered
+  `une` — `!=` is exactly the negation of `==` on both backends. Any
+  `x != x` NaN check was silently wrong in release builds.
+- **`sort([str])` sorted by heap address, not content** — nondeterministic
+  garbage order on JIT (on AOT it accidentally looked correct for literals
+  because the string table is emitted sorted; dynamically built strings were
+  garbage there too). **`sort([f64])` with negative values sorted the
+  negative range in reverse** (IEEE bit patterns compared as signed i64) on
+  both backends. `sort` now dispatches on the array element type to
+  content-aware comparators (bytewise for `[str]`, IEEE total order for
+  `[f64]`); `[i64]` is unchanged.
+- **`print()` output could vanish entirely.** stdout is line-buffered and
+  neither exit path runs the Rust stdout destructor, so a program whose
+  final write had no trailing newline lost it (both backends). The
+  no-newline print builtins now flush.
+- **`file_read` of a missing/unreadable file returned `""` silently** —
+  indistinguishable from an empty file. It now panics with the path and OS
+  error, consistent with the other checked builtins (`substr` bounds, div
+  by zero). Use `file_exists()` or `std::fs::read_file` (throws, catchable)
+  for the recoverable path. **(Behavior change.)**
+
+### Fixed — stdlib correctness
+- **`std::json`: UTF-16 surrogate pairs in `\uXXXX` escapes** (how JS
+  `JSON.stringify` emits emoji and all astral-plane characters) were decoded
+  as two lone halves and silently dropped from the string. Pairs are now
+  combined into the real code point.
+- **`std::json`: `stringify` of NaN/Infinity emitted bare `NaN`/`inf`** —
+  invalid JSON — from both the pure-Kryos and native serializers. Both now
+  emit `null`, matching JavaScript's `JSON.stringify`.
+- **`use std::string::{to_upper}` silently downgraded Unicode casing.** The
+  module (and `std::strext`) had ASCII-only byte loops that shadow the
+  Unicode-aware global builtins for importers ("café" -> "CAFé"). Both now
+  delegate to the runtime builtins.
+
+### Documented (behavior verified, intentionally unchanged)
+- `parse_int`/`parse_float` return `0` on garbage or overflowing input —
+  indistinguishable from parsing `"0"`. Validate first if the distinction
+  matters.
+- `abs(i64::MIN)` wraps (returns `i64::MIN`), per the documented
+  wrap-on-overflow integer policy.
+- `substr` panics on out-of-range indices while `std::string::substring`
+  clamps — raw builtin vs safe wrapper, both documented.
+- `type_of` docs corrected: it returns the compile-time-resolved type name
+  (`"i64"`, `"str"`, `"bool"`, `"f64"`, `"array"`, `"struct"`) — the old
+  tutorial promised per-struct names and `"i32"`, and the reference claimed
+  it always returns `"i64"`; both were wrong in opposite directions.
+
 ## [1.0.0-rc.1] — 2026-07-06 — "Release candidate"
 
 First 1.0 release candidate. This is the "last call" before the SemVer 1.0

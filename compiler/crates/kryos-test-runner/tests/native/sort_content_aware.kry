@@ -1,0 +1,40 @@
+// sort() must compare by CONTENT, not raw i64 slot value.
+// Regression: sort([str]) ordered by heap address (nondeterministic garbage;
+// on AOT it accidentally looked lexicographic for literals because the string
+// table is emitted sorted). sort([f64]) compared IEEE bit patterns as signed
+// i64, which reverses the negative range. Both backends were affected.
+// Strings here are built dynamically so a sorted rodata layout can't mask it.
+// expect-stdout: apple
+// expect-stdout: banana
+// expect-stdout: cherry
+// expect-stdout: -3
+// expect-stdout: -2
+// expect-stdout: -1
+// expect-stdout: 5
+// expect-stdout: 1
+// expect-stdout: 2
+// expect-stdout: 9
+
+fn main() {
+    let b = "ba" + "nana"
+    let a = "app" + "le"
+    let c = "cher" + "ry"
+    let mut names: [str] = [b, a, c]
+    sort(names)
+    println(names[0])
+    println(names[1])
+    println(names[2])
+
+    let mut xs: [f64] = [-1.0, -3.0, -2.0, 5.0]
+    sort(xs)
+    println(xs[0])
+    println(xs[1])
+    println(xs[2])
+    println(xs[3])
+
+    let mut ns: [i64] = [9, 1, 2]
+    sort(ns)
+    println(ns[0])
+    println(ns[1])
+    println(ns[2])
+}

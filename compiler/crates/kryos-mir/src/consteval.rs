@@ -168,8 +168,29 @@ fn eval_binop(op: MirBinOp, left: &Constant, right: &Constant) -> RValue {
                 right: const_to_operand(right),
             },
         },
-        (MirBinOp::Div, Constant::Int(a), Constant::Int(b)) if *b != 0 => RValue::ConstInt(a / b),
-        (MirBinOp::Mod, Constant::Int(a), Constant::Int(b)) if *b != 0 => RValue::ConstInt(a % b),
+        // checked_*: `i64::MIN / -1` (and `% -1`) traps in Rust — don't fold
+        // it (or panic the compiler); leave it for the runtime guard, which
+        // panics with "integer division overflow".
+        (MirBinOp::Div, Constant::Int(a), Constant::Int(b)) if *b != 0 => {
+            match a.checked_div(*b) {
+                Some(v) => RValue::ConstInt(v),
+                None => RValue::BinOp {
+                    op,
+                    left: const_to_operand(left),
+                    right: const_to_operand(right),
+                },
+            }
+        }
+        (MirBinOp::Mod, Constant::Int(a), Constant::Int(b)) if *b != 0 => {
+            match a.checked_rem(*b) {
+                Some(v) => RValue::ConstInt(v),
+                None => RValue::BinOp {
+                    op,
+                    left: const_to_operand(left),
+                    right: const_to_operand(right),
+                },
+            }
+        }
         (MirBinOp::Pow, Constant::Int(a), Constant::Int(b)) if *b >= 0 => {
             match a.checked_pow(*b as u32) {
                 Some(v) => RValue::ConstInt(v),

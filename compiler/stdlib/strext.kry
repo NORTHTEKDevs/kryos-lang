@@ -2,43 +2,24 @@
 // std.strext -- Extended string ops beyond builtins.
 // ============================================================
 
-let LOWER_LETTERS = "abcdefghijklmnopqrstuvwxyz"
-let UPPER_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-/// Lowercase ASCII letters; non-ASCII bytes pass through unchanged.
-fn to_lower(s: str) -> str {
-    let n = len(s)
-    let mut out: str = ""
-    let mut i: i64 = 0
-    while i < n {
-        let c = char_code(substr(s, i, i + 1))
-        if c >= 65 && c <= 90 {
-            let idx = c - 65
-            out = out + substr(LOWER_LETTERS, idx, idx + 1)
-        } else {
-            out = out + substr(s, i, i + 1)
-        }
-        i = i + 1
-    }
-    return out
+// Delegate case conversion to the Unicode-aware runtime builtins (see
+// std::string — an ASCII-only loop here silently downgraded casing for
+// importers of these module fns, which shadow the global builtins).
+extern {
+    fn kryos_builtin_to_upper(s: str) -> str
+    fn kryos_builtin_to_lower(s: str) -> str
 }
 
-/// Uppercase ASCII letters.
+/// Convert every character to lowercase (Unicode-aware, same as the global
+/// `to_lower` builtin).
+fn to_lower(s: str) -> str {
+    return kryos_builtin_to_lower(s)
+}
+
+/// Convert every character to uppercase (Unicode-aware, same as the global
+/// `to_upper` builtin).
 fn to_upper(s: str) -> str {
-    let n = len(s)
-    let mut out: str = ""
-    let mut i: i64 = 0
-    while i < n {
-        let c = char_code(substr(s, i, i + 1))
-        if c >= 97 && c <= 122 {
-            let idx = c - 97
-            out = out + substr(UPPER_LETTERS, idx, idx + 1)
-        } else {
-            out = out + substr(s, i, i + 1)
-        }
-        i = i + 1
-    }
-    return out
+    return kryos_builtin_to_upper(s)
 }
 
 /// Count non-overlapping occurrences of `needle` in `haystack`.

@@ -1,0 +1,14 @@
+// `i64::MIN / -1` has no representable quotient — it must panic like division
+// by zero, not raise a hardware exception.
+// Regression: both backends crashed the process silently (exit 127, no
+// message) on this input; the runtime guard now panics with
+// "integer division overflow".
+// expect-stdout: before
+// expect-exit: 98
+
+fn main() {
+    let a: i64 = -9223372036854775807 - 1
+    let b: i64 = -1
+    println("before")
+    println(to_string(a / b))
+}

@@ -22,6 +22,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0003" => Some(E0003),
         "E0004" => Some(E0004),
         "E0009" => Some(E0009),
+        "E0010" => Some(E0010),
         "E0110" => Some(E0110),
         "E0111" => Some(E0111),
         "E0100" => Some(E0100),
@@ -62,6 +63,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0003", "expected expression"),
         ("E0004", "expected type"),
         ("E0009", "syntax error"),
+        ("E0010", "program nesting too deep"),
         ("E0110", "type error"),
         ("E0111", "integer literal out of range for declared type"),
         ("E0100", "type mismatch"),
@@ -206,6 +208,26 @@ Common causes:
 
 Read the message and the underlined span, then compare against the grammar
 in docs/19-language-reference.md.
+"#;
+
+// ----- E0010 ----------------------------------------------------------------
+
+const E0010: &str = r#"E0010: program nesting too deep
+
+The program exceeds the compiler's nesting budget: 256 levels of syntactic
+nesting (parentheses, blocks, nested types or patterns), or 2048 nodes on a
+single expression path (which a long flat chain like `a + b + c + ...` or
+`x.f().g().h()...` also builds, one level per link).
+
+These limits exist so that no input, however deeply nested, can crash the
+compiler with a native stack overflow instead of a diagnostic. No
+hand-written program approaches them; generated code occasionally does.
+
+How to fix:
+  - Split a long expression chain into intermediate `let` bindings.
+  - Flatten deeply nested conditionals into early returns or `match`.
+  - Build long string/array content with a loop instead of one giant
+    expression.
 "#;
 
 // ----- E0100 ----------------------------------------------------------------

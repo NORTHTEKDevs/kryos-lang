@@ -12,6 +12,7 @@ pub const E0002: &str = "E0002"; // expected identifier
 pub const E0003: &str = "E0003"; // expected expression
 pub const E0004: &str = "E0004"; // expected type
 pub const E0009: &str = "E0009"; // syntax error (general / uncategorized)
+pub const E0010: &str = "E0010"; // program nesting too deep / expression too complex
 
 // Type errors (E01xx)
 pub const E0100: &str = "E0100"; // type mismatch

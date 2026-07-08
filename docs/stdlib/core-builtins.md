@@ -750,11 +750,13 @@ Return the runtime type name of a value as a string.
 
 ```kryos
 println(type_of(42))           // "i64"
-println(type_of("hello"))      // "i64"
-println(type_of(true))         // "i64"
+println(type_of("hello"))      // "str"
+println(type_of(true))         // "bool"
+println(type_of(3.14))         // "f64"
+println(type_of([1, 2]))       // "array"
 ```
 
-**Implementation note:** The Kryos runtime uses a uniform i64 ABI -- all values are passed as i64 handles at the machine level. As a result, `type_of` currently always returns `"i64"` regardless of the original source type. Type-aware reflection is planned for a future release.
+**Implementation note:** the name reflects the static type the compiler inferred for the expression, resolved at compile time -- there is no runtime type tag (the runtime ABI is a uniform i64 slot). Struct values report `"struct"`, not the struct's name.
 
 **See also:** `to_string`
 

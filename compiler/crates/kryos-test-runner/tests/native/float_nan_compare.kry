@@ -1,0 +1,21 @@
+// IEEE 754 NaN comparison semantics, cross-backend.
+// Regression: the LLVM backend emitted ORDERED fcmp `one` for float `!=`,
+// so `nan != nan` was FALSE on AOT (true on JIT, per IEEE/Rust). `!=` must
+// be the negation of `==` (unordered-ne).
+// expect-stdout: 1
+// expect-stdout: 0
+// expect-stdout: 0
+// expect-stdout: 0
+// expect-stdout: 1
+// expect-stdout: 0
+
+fn main() {
+    let nan = 0.0 / 0.0
+    let one = 1.0
+    if nan != nan { println(1) } else { println(0) }
+    if nan == nan { println(1) } else { println(0) }
+    if nan < one { println(1) } else { println(0) }
+    if nan > one { println(1) } else { println(0) }
+    if nan != one { println(1) } else { println(0) }
+    if one != one { println(1) } else { println(0) }
+}

@@ -277,15 +277,16 @@ let f = parse_float("3.14")  // 3.14
 Use `type_of()` to inspect a value's type at runtime:
 
 ```
-println(type_of(42))        // "i32"
+println(type_of(42))        // "i64"
 println(type_of(3.14))      // "f64"
 println(type_of("hello"))   // "str"
 println(type_of(true))      // "bool"
 println(type_of([1, 2]))    // "array"
-println(type_of(none))      // "none"
 ```
 
-For struct instances, `type_of()` returns the struct name.
+For struct instances, `type_of()` returns `"struct"`. The name reflects the
+static type the compiler inferred for the expression, resolved at compile
+time -- there is no runtime type tag.
 
 ## Coming from Rust
 

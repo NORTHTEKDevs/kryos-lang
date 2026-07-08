@@ -763,6 +763,8 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_builtin_split(i64, i64)");
         self.emit_line("declare i64 @kryos_builtin_join(i64, i64)");
         self.emit_line("declare void @kryos_builtin_sort(i64)");
+        self.emit_line("declare void @kryos_builtin_sort_str(i64)");
+        self.emit_line("declare void @kryos_builtin_sort_f64(i64)");
         self.emit_line("declare void @kryos_builtin_reverse(i64)");
         self.emit_line("declare i64 @kryos_builtin_file_read(i64)");
         self.emit_line("declare void @kryos_builtin_file_write(i64, i64)");
@@ -1093,6 +1095,7 @@ impl LlvmCodegen {
         self.emit_line("declare i32 @kryos_chan_try_recv(ptr, ptr, i64)");
         self.emit_line("declare void @kryos_check_div_zero_f64(double)");
         self.emit_line("declare void @kryos_check_div_zero_i64(i64)");
+        self.emit_line("declare void @kryos_check_sdiv_i64(i64, i64, i64)");
         self.emit_line("declare i64 @kryos_checked_add_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_checked_mul_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_checked_sub_i64(i64, i64)");
@@ -5099,7 +5102,30 @@ impl LlvmCodegen {
                                 "replace" => "kryos_builtin_replace",
                                 "split" => "kryos_builtin_split",
                                 "join" => "kryos_builtin_join",
-                                "sort" => "kryos_builtin_sort",
+                                // sort([str]) / sort([f64]) need content-aware
+                                // comparators (mirrors the Cranelift dispatch):
+                                // the raw i64 sort orders strings by heap
+                                // address and reverses negative floats.
+                                "sort" => {
+                                    let elem = args.first().and_then(|a| match a {
+                                        Operand::Local(id) => func
+                                            .locals
+                                            .iter()
+                                            .find(|l| l.id == *id)
+                                            .and_then(|l| match &l.ty {
+                                                MirType::Array(e, _) => Some(e.as_ref()),
+                                                _ => None,
+                                            }),
+                                        _ => None,
+                                    });
+                                    match elem {
+                                        Some(MirType::Str) => "kryos_builtin_sort_str",
+                                        Some(MirType::F64) | Some(MirType::F32) => {
+                                            "kryos_builtin_sort_f64"
+                                        }
+                                        _ => "kryos_builtin_sort",
+                                    }
+                                }
                                 "reverse" => "kryos_builtin_reverse",
                                 // Canonical names (match Cranelift + typechecker + runtime).
                                 "file_read" => "kryos_builtin_file_read",
@@ -6832,24 +6858,36 @@ impl LlvmCodegen {
                 right = &right_owned;
             }
         }
-        // Runtime div-by-zero guard for integer division/modulo. A bare
-        // sdiv/srem is undefined behaviour on a zero divisor under LLVM (it
-        // silently produced garbage in release builds), whereas the Cranelift
-        // JIT already panics. Call the same runtime check the JIT uses, which
-        // panics with "integer division by zero" when the divisor is 0.
+        // Runtime guard for integer division/modulo. A bare sdiv/srem is
+        // undefined behaviour under LLVM on a zero divisor AND on `MIN / -1`
+        // (unrepresentable quotient) — the latter raised a hardware exception
+        // with no diagnostic on both backends. Call the same runtime check
+        // the JIT uses, which panics with "integer division by zero" /
+        // "integer division overflow".
         if !is_float && matches!(op, MirBinOp::Div | MirBinOp::Mod) {
-            let divisor = match ty {
-                "i64" => Some(right.to_string()),
-                "i8" | "i16" | "i32" => {
-                    let w = self.next_temp();
-                    self.emit_line(&format!("  {w} = sext {ty} {right} to i64"));
-                    Some(w)
-                }
+            let bits: Option<i64> = match ty {
+                "i64" => Some(64),
+                "i8" => Some(8),
+                "i16" => Some(16),
+                "i32" => Some(32),
                 // i128 / other widths are rare; skip rather than emit invalid IR.
                 _ => None,
             };
-            if let Some(d) = divisor {
-                self.emit_line(&format!("  call void @kryos_check_div_zero_i64(i64 {d})"));
+            if let Some(bits) = bits {
+                let widen = |this: &mut Self, v: &str| -> String {
+                    if ty == "i64" {
+                        v.to_string()
+                    } else {
+                        let w = this.next_temp();
+                        this.emit_line(&format!("  {w} = sext {ty} {v} to i64"));
+                        w
+                    }
+                };
+                let a = widen(self, left);
+                let d = widen(self, right);
+                self.emit_line(&format!(
+                    "  call void @kryos_check_sdiv_i64(i64 {a}, i64 {d}, i64 {bits})"
+                ));
             }
         }
         let line = match op {
@@ -6871,7 +6909,10 @@ impl LlvmCodegen {
             }
             MirBinOp::Eq if is_float => format!("  {target} = fcmp oeq {ty} {left}, {right}"),
             MirBinOp::Eq => format!("  {target} = icmp eq {ty} {left}, {right}"),
-            MirBinOp::Neq if is_float => format!("  {target} = fcmp one {ty} {left}, {right}"),
+            // UNordered-ne: `!=` must be the negation of `==`, so NaN != x
+            // (incl. NaN != NaN) is TRUE — IEEE 754, Rust, and the Cranelift
+            // JIT all agree; `fcmp one` returned false for any NaN operand.
+            MirBinOp::Neq if is_float => format!("  {target} = fcmp une {ty} {left}, {right}"),
             MirBinOp::Neq => format!("  {target} = icmp ne {ty} {left}, {right}"),
             MirBinOp::Lt if is_float => format!("  {target} = fcmp olt {ty} {left}, {right}"),
             MirBinOp::Lt => format!("  {target} = icmp slt {ty} {left}, {right}"),

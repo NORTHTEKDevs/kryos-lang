@@ -121,48 +121,26 @@ fn rfind(haystack: str, needle: str) -> i64 {
 
 // --- Case conversion ---------------------------------------------------------
 
-/// Convert every character to uppercase (ASCII).
-fn to_upper(s: str) -> str {
-    // O(n): write transformed bytes into a fixed buffer of the known output
-    // size (= input byte length) instead of repeated `result + ch` (O(n^2)).
-    let slen = len(s)
-    if slen == 0 {
-        return ""
-    }
-    let buf = alloc(slen)
-    let mut i = 0
-    while i < slen {
-        let code = char_code(s[i])
-        // a-z => A-Z
-        if code >= 97 and code <= 122 {
-            ptr_set_byte(buf, i, code - 32)
-        } else {
-            ptr_set_byte(buf, i, code)
-        }
-        i = i + 1
-    }
-    return buf_to_str(buf, slen)
+// Delegate case conversion to the Unicode-aware runtime builtins. The module
+// fns shadow the same-named global builtins for importers, so an earlier
+// ASCII-only byte-loop here silently DOWNGRADED casing for anyone who wrote
+// `use std::string::{to_upper}` ("café" -> "CAFé"). The raw extern reaches
+// the builtin under a name the shadow can't capture.
+extern {
+    fn kryos_builtin_to_upper(s: str) -> str
+    fn kryos_builtin_to_lower(s: str) -> str
 }
 
-/// Convert every character to lowercase (ASCII).
+/// Convert every character to uppercase (Unicode-aware, same as the global
+/// `to_upper` builtin).
+fn to_upper(s: str) -> str {
+    return kryos_builtin_to_upper(s)
+}
+
+/// Convert every character to lowercase (Unicode-aware, same as the global
+/// `to_lower` builtin).
 fn to_lower(s: str) -> str {
-    let slen = len(s)
-    if slen == 0 {
-        return ""
-    }
-    let buf = alloc(slen)
-    let mut i = 0
-    while i < slen {
-        let code = char_code(s[i])
-        // A-Z => a-z
-        if code >= 65 and code <= 90 {
-            ptr_set_byte(buf, i, code + 32)
-        } else {
-            ptr_set_byte(buf, i, code)
-        }
-        i = i + 1
-    }
-    return buf_to_str(buf, slen)
+    return kryos_builtin_to_lower(s)
 }
 
 // --- Whitespace helpers ------------------------------------------------------

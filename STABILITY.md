@@ -92,8 +92,14 @@ v1.0.0-rc.1. Honest, non-blocking residuals:
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
 - **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable
-  path; `panic` (div-by-zero, OOB, non-exhaustive nested match) aborts. This
+  path; `panic` (div-by-zero, integer division overflow `MIN / -1`, OOB,
+  `file_read` on a missing file, non-exhaustive nested match) aborts. This
   is intentional, documented semantics.
+- **Program nesting is capped (E0010):** grammar recursion at 256 levels
+  (clang-class limit) and total expression depth — including flat
+  `a+b+c+...` chains — at 2048. No legitimate program approaches either
+  bound; the caps exist so no input, however adversarial, can crash the
+  compiler with a stack overflow instead of a diagnostic.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
   linking; the JIT (`kryos run`) needs nothing.
 

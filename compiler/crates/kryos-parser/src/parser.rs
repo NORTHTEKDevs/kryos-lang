@@ -80,7 +80,31 @@ pub struct Parser {
     no_struct_literal: bool,
     /// Counter for parser-generated fresh names (e.g. `?` operator desugar).
     fresh_counter: u64,
+    /// Live nesting depth of the AST path currently being built (grammar
+    /// recursion AND left-spine chain wraps both charge it). Bounding this
+    /// bounds the depth of the final AST, which in turn bounds the recursion
+    /// of every downstream phase (checker, capabilities, MIR, codegen) — an
+    /// unbounded depth overflows the native stack (an ICE, not a diagnostic).
+    nest_depth: usize,
+    /// Live grammar-recursion depth only (parens, blocks, nested types /
+    /// patterns — NOT flat chains). The parser's own frames are much heavier
+    /// than the downstream phases', so recursion gets a tighter cap that
+    /// keeps the parse itself safe even on a default 2 MiB thread stack.
+    rec_depth: usize,
+    /// Set once the nesting limit fired. Suppresses the cascade of follow-on
+    /// syntax errors from the abandoned parse so the user sees ONE E0010.
+    nesting_poisoned: bool,
 }
+
+/// Maximum live AST-path depth (nesting levels + chained-operation spine).
+/// Deep enough that no human- or generator-written program hits it; shallow
+/// enough that downstream recursive phases stay far from stack overflow.
+const MAX_NESTING_DEPTH: usize = 2048;
+
+/// Maximum grammar-recursion depth (same class of cap as clang's 256-bracket
+/// limit). Flat operator/method chains do NOT count against this — only real
+/// syntactic nesting, which no legitimate program takes past a few dozen.
+const MAX_RECURSION_DEPTH: usize = 256;
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
@@ -90,7 +114,32 @@ impl Parser {
             diagnostics: Vec::new(),
             no_struct_literal: false,
             fresh_counter: 0,
+            nest_depth: 0,
+            rec_depth: 0,
+            nesting_poisoned: false,
         }
+    }
+
+    /// True when either nesting budget is exhausted.
+    fn nesting_exhausted(&self) -> bool {
+        self.nest_depth >= MAX_NESTING_DEPTH || self.rec_depth >= MAX_RECURSION_DEPTH
+    }
+
+    /// Report the nesting-limit error (once) and poison the parser.
+    fn nesting_overflow(&mut self) {
+        if self.nesting_poisoned {
+            return;
+        }
+        let span = self.peek().span;
+        self.diagnostics.push(
+            Diagnostic::error(format!(
+                "program nesting exceeds the maximum depth of {MAX_NESTING_DEPTH}; \
+                 split the expression or flatten the nesting"
+            ))
+            .with_code(kryos_errors::codes::E0010)
+            .with_label(span, "nesting limit reached here"),
+        );
+        self.nesting_poisoned = true;
     }
 
     fn fresh_name(&mut self, hint: &str) -> String {
@@ -250,6 +299,11 @@ impl Parser {
     }
 
     fn error(&mut self, message: String, span: Span) {
+        // After the nesting limit fired, the rest of the parse is abandoned
+        // recovery noise — surface only the one E0010.
+        if self.nesting_poisoned {
+            return;
+        }
         // Uncategorized syntax errors still get a code so every diagnostic is
         // explainable via `kryos explain`. Specific cases use error_with_code.
         self.diagnostics.push(
@@ -260,6 +314,9 @@ impl Parser {
     }
 
     fn error_with_code(&mut self, message: String, span: Span, code: &str) {
+        if self.nesting_poisoned {
+            return;
+        }
         self.diagnostics.push(
             Diagnostic::error(message)
                 .with_label(span, "here")
@@ -1066,10 +1123,28 @@ impl Parser {
     // -----------------------------------------------------------------------
 
     fn parse_block(&mut self) -> Block {
+        // Nesting guard: deeply nested blocks (`if { if { ... } }`) recurse
+        // through parse_block/parse_stmt — same stack-overflow class as
+        // deeply nested expressions.
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return Block {
+                stmts: Vec::new(),
+                span,
+            };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
         let lbrace = self.expect(TokenKind::LBrace);
         let start = lbrace.span;
         let stmts = self.parse_block_stmts();
         let rbrace = self.expect(TokenKind::RBrace);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
         Block {
             stmts,
             span: start.merge(rbrace.span),
@@ -1839,10 +1914,44 @@ impl Parser {
     }
 
     fn parse_expr_bp(&mut self, min_bp: u8) -> Expr {
+        // Nesting guard: bail out with a single E0010 before the recursion
+        // (or the deep AST it would build) can overflow the native stack.
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance(); // guarantee forward progress for caller loops
+            }
+            return Expr::IntLiteral { value: 0, span };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let expr = self.parse_expr_bp_inner(min_bp);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        expr
+    }
+
+    fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Expr {
         let mut lhs = self.parse_prefix();
+
+        // Each loop iteration wraps `lhs` one level deeper (field access,
+        // call, index, cast, binary op), so a long flat chain like
+        // `1+1+...+1` builds an AST as deep as a nest of parens — charge the
+        // same nesting budget. Decremented in one step after the loop (the
+        // loop only exits via `break`, so the accounting can't drift).
+        let mut spine: usize = 0;
 
         loop {
             if self.at_end() {
+                break;
+            }
+            spine += 1;
+            self.nest_depth += 1;
+            if self.nest_depth >= MAX_NESTING_DEPTH {
+                // Note: only the shared AST-depth budget — flat chains are
+                // parsed iteratively, so they never stress the parser stack.
+                self.nesting_overflow();
                 break;
             }
 
@@ -2097,6 +2206,7 @@ impl Parser {
             break;
         }
 
+        self.nest_depth -= spine;
         lhs
     }
 
@@ -2965,6 +3075,24 @@ impl Parser {
     // -----------------------------------------------------------------------
 
     fn parse_pattern(&mut self) -> Pattern {
+        // Nesting guard: nested destructuring patterns recurse here.
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return Pattern::Wildcard { span };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let pat = self.parse_pattern_inner();
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        pat
+    }
+
+    fn parse_pattern_inner(&mut self) -> Pattern {
         let tok = self.peek().clone();
         match tok.kind {
             // Wildcard: `_`
@@ -3215,6 +3343,27 @@ impl Parser {
     }
 
     pub fn parse_type(&mut self) -> TypeExpr {
+        // Nesting guard: `B<B<B<...>>>`, `**...*T`, `[[[...]]]` recurse here.
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
+            };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let ty = self.parse_type_inner();
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        ty
+    }
+
+    fn parse_type_inner(&mut self) -> TypeExpr {
         let tok = self.peek().clone();
         match tok.kind {
             // Never type: `!` (diverging functions, e.g. `fn exit_error(...) -> !`).

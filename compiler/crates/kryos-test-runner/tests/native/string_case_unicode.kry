@@ -1,0 +1,18 @@
+// Imported std::string / std::strext case conversion must be Unicode-aware.
+// Regression: both modules had ASCII-only byte loops that SHADOW the
+// Unicode-aware global builtins for importers — `use std::string::{to_upper}`
+// silently downgraded "café" to "CAFé". They now delegate to the builtins.
+// expect-stdout: CAFÉ
+// expect-stdout: café
+// expect-stdout: STRASSE ÜBER
+// expect-stdout: plain
+
+use std::string::{to_upper, to_lower}
+use std::strext::{count_occurrences}
+
+fn main() {
+    println(to_upper("café"))
+    println(to_lower("CAFÉ"))
+    println(to_upper("straße über"))
+    println(to_lower("PLAIN"))
+}

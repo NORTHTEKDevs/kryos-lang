@@ -178,6 +178,10 @@ pub extern "C" fn kryos_print_str(handle: i64) {
         return;
     }
     print!("{text}");
+    // No newline means the line-buffered stdout may never flush this —
+    // and neither exit path (JIT trampoline return, AOT exit()) runs the
+    // Rust stdout destructor, so unflushed output would be silently lost.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 /// Read a `KryosString` handle into an owned `String`. Returns `None` for a
@@ -240,6 +244,8 @@ pub extern "C" fn kryos_print_int(value: i64) {
         return;
     }
     print!("{out}");
+    // See kryos_print_str: unflushed no-newline output is lost at exit.
+    let _ = std::io::Write::flush(&mut std::io::stdout());
 }
 
 // ---------------------------------------------------------------------------
@@ -388,7 +394,17 @@ pub extern "C" fn kryos_builtin_file_read(path_handle: i64) -> i64 {
                 std::str::from_utf8(slice).unwrap_or("")
             }
         };
-        std::fs::read_to_string(path_str).unwrap_or_default()
+        match std::fs::read_to_string(path_str) {
+            Ok(c) => c,
+            Err(e) => {
+                // A silent "" made a missing file indistinguishable from an
+                // empty one. Fail loudly like the other checked builtins
+                // (substr OOB, div by zero); the recoverable path is
+                // std::fs::read_file (throws) or a file_exists() probe.
+                let msg = format!("file_read: {path_str}: {e}");
+                crate::panic::kryos_panic(msg.as_ptr(), msg.len())
+            }
+        }
     };
     let bytes = contents.as_bytes();
     unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
@@ -999,6 +1015,29 @@ pub extern "C" fn kryos_check_div_zero_i64(divisor: i64) {
     }
 }
 
+/// Guard for signed integer division/modulo: panics on a zero divisor and on
+/// the one overflowing case (`MIN(bits) / -1`), which sdiv/srem cannot
+/// represent — without this it raises a hardware exception (silent crash,
+/// no diagnostic) on both backends. `bits` is the operand width (8..64);
+/// operands arrive sign-extended to i64.
+#[no_mangle]
+pub extern "C" fn kryos_check_sdiv_i64(dividend: i64, divisor: i64, bits: i64) {
+    if divisor == 0 {
+        let msg = b"integer division by zero";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    }
+    let min = match bits {
+        8 => i8::MIN as i64,
+        16 => i16::MIN as i64,
+        32 => i32::MIN as i64,
+        _ => i64::MIN,
+    };
+    if divisor == -1 && dividend == min {
+        let msg = b"integer division overflow";
+        crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+    }
+}
+
 /// Check for float division by zero — intentional no-op.
 /// IEEE 754 float division by zero produces inf/nan, which is expected behavior.
 #[no_mangle]
@@ -1409,6 +1448,53 @@ pub unsafe extern "C" fn kryos_builtin_sort(arr_handle: i64) {
     }
     let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
     elems.sort_unstable();
+}
+
+/// Raw byte view of a `KryosString` handle (empty for null/empty handles).
+unsafe fn kryos_str_bytes<'a>(handle: i64) -> &'a [u8] {
+    if handle == 0 {
+        return &[];
+    }
+    let s = handle as *const crate::string::KryosString;
+    let len = (*s).len as usize;
+    let data = (*s).data;
+    if data.is_null() || len == 0 {
+        return &[];
+    }
+    std::slice::from_raw_parts(data, len)
+}
+
+/// `sort(arr)` on `[str]` — sort in-place by string content (byte-wise
+/// lexicographic). Sorting the raw handles would order by heap address.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_sort_str(arr_handle: i64) {
+    if arr_handle == 0 {
+        return;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    let len = (*arr).len as usize;
+    if len <= 1 {
+        return;
+    }
+    let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
+    elems.sort_by(|a, b| kryos_str_bytes(*a).cmp(kryos_str_bytes(*b)));
+}
+
+/// `sort(arr)` on `[f64]` — sort in-place by float value (slots hold the f64
+/// bit pattern; IEEE total order). Sorting the bits as signed i64 reverses
+/// the negative range.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_builtin_sort_f64(arr_handle: i64) {
+    if arr_handle == 0 {
+        return;
+    }
+    let arr = arr_handle as *mut crate::array::KryosArray;
+    let len = (*arr).len as usize;
+    if len <= 1 {
+        return;
+    }
+    let elems = std::slice::from_raw_parts_mut((*arr).data as *mut i64, len);
+    elems.sort_by(|a, b| f64::from_bits(*a as u64).total_cmp(&f64::from_bits(*b as u64)));
 }
 
 /// `reverse(arr)` — Reverse an array in-place.
