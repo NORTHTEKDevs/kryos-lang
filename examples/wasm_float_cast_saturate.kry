@@ -1,0 +1,18 @@
+// expect-stdout: 9223372036854775807
+// expect-stdout: 127
+// expect-stdout: 32767
+// expect-stdout: 65535
+// WASM regression (audit backlog #3/#61/#92): out-of-range float->int casts
+// must SATURATE (matching native), not trap or emit type-invalid bytecode.
+// Previously `1e19 as i64` trapped ("float unrepresentable in integer range")
+// and narrow casts emitted an I64And mask on an f64 stack value. Now the
+// backend uses the non-trapping saturating truncation ops and clamps narrow
+// destinations to their range.
+fn main() {
+    let big: f64 = 1.0e19
+    println(to_string(big as i64))
+    let mid: f64 = 300.0
+    println(to_string(mid as i8))
+    println(to_string(big as i16))
+    println(to_string(big as u16))
+}

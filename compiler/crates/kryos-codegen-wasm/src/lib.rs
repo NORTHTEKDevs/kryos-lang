@@ -2420,13 +2420,33 @@ impl<'a> FnEmitter<'a> {
                     if matches!(src_ty, MirType::F32) {
                         self.wfunc.instruction(&W::F64PromoteF32);
                     }
+                    // Use SATURATING (non-trapping) truncation: the trapping
+                    // I64TruncF64S crashed the module with "float
+                    // unrepresentable" on any out-of-range value (e.g.
+                    // 1e19 as i64), whereas native saturates. Unsigned
+                    // destinations use the U variant to reach the upper half
+                    // of the range (backlog #61/#92). Narrow ints saturate to
+                    // i64 then clamp to range — the old path emitted an
+                    // I64And mask on an f64 stack value (type-invalid, #3).
                     match ty {
-                        MirType::I64 | MirType::U64 => {
-                            self.wfunc.instruction(&W::I64TruncF64S);
+                        MirType::I64 => {
+                            self.wfunc.instruction(&W::I64TruncSatF64S);
                         }
-                        MirType::I32 | MirType::U32 => {
-                            self.wfunc.instruction(&W::I32TruncF64S);
+                        MirType::U64 => {
+                            self.wfunc.instruction(&W::I64TruncSatF64U);
+                        }
+                        MirType::I32 => {
+                            self.wfunc.instruction(&W::I32TruncSatF64S);
                             self.wfunc.instruction(&W::I64ExtendI32S);
+                        }
+                        MirType::U32 => {
+                            self.wfunc.instruction(&W::I32TruncSatF64U);
+                            self.wfunc.instruction(&W::I64ExtendI32U);
+                        }
+                        MirType::I8 | MirType::I16 | MirType::U8 | MirType::U16 => {
+                            self.wfunc.instruction(&W::I64TruncSatF64S);
+                            let (lo, hi) = narrow_int_range(ty);
+                            self.emit_i64_clamp(lo, hi);
                         }
                         MirType::F64 => { /* f32->f64 already promoted, f64->f64 no-op */ }
                         _ => { self.emit_cast(ty)?; }
@@ -2846,6 +2866,29 @@ impl<'a> FnEmitter<'a> {
     fn cg_scratch_local(&self) -> u32 {
         // First reserved i64 local after all user locals.
         self.func.locals.len() as u32
+    }
+
+    /// Clamp the i64 value on top of the stack to `[lo, hi]` (used for
+    /// narrow-int saturating casts). `select` returns its first operand when
+    /// the condition is non-zero.
+    fn emit_i64_clamp(&mut self, lo: i64, hi: i64) {
+        let s = self.cg_scratch_local();
+        self.wfunc.instruction(&W::LocalSet(s));
+        // s = (s < lo) ? lo : s
+        self.wfunc.instruction(&W::I64Const(lo));
+        self.wfunc.instruction(&W::LocalGet(s));
+        self.wfunc.instruction(&W::LocalGet(s));
+        self.wfunc.instruction(&W::I64Const(lo));
+        self.wfunc.instruction(&W::I64LtS);
+        self.wfunc.instruction(&W::Select);
+        self.wfunc.instruction(&W::LocalSet(s));
+        // s = (s > hi) ? hi : s
+        self.wfunc.instruction(&W::I64Const(hi));
+        self.wfunc.instruction(&W::LocalGet(s));
+        self.wfunc.instruction(&W::LocalGet(s));
+        self.wfunc.instruction(&W::I64Const(hi));
+        self.wfunc.instruction(&W::I64GtS);
+        self.wfunc.instruction(&W::Select);
     }
 
     /// Second reserved i64 scratch (holds a closure env across arg emission).
@@ -3634,6 +3677,18 @@ fn debug_short(rv: &RValue) -> String {
         RValue::Comptime(_) => "comptime".into(),
         RValue::MakeTraitObject { .. } => "trait-object".into(),
         RValue::VtableCall { .. } => "vtable-call".into(),
+    }
+}
+
+/// Inclusive [min, max] range for a narrow integer MIR type, used to clamp a
+/// saturating float->int cast into the destination's representable range.
+fn narrow_int_range(ty: &MirType) -> (i64, i64) {
+    match ty {
+        MirType::I8 => (-128, 127),
+        MirType::U8 => (0, 255),
+        MirType::I16 => (-32768, 32767),
+        MirType::U16 => (0, 65535),
+        _ => (i64::MIN, i64::MAX),
     }
 }
 
