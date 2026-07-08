@@ -159,17 +159,23 @@ fn is_float_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bo
 
 /// True when the operand is an unsigned-integer-typed local. Used to choose
 /// zero- vs sign-extension when widening narrow ints to i64.
+fn is_unsigned_mir_type(ty: &kryos_mir::ir::MirType) -> bool {
+    matches!(
+        ty,
+        kryos_mir::ir::MirType::U8
+            | kryos_mir::ir::MirType::U16
+            | kryos_mir::ir::MirType::U32
+            | kryos_mir::ir::MirType::U64
+            | kryos_mir::ir::MirType::U128
+    )
+}
+
 fn is_unsigned_operand(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -> bool {
     match operand {
-        Operand::Local(id) => locals.iter().find(|l| l.id == *id).is_some_and(|l| {
-            matches!(
-                l.ty,
-                kryos_mir::ir::MirType::U8
-                    | kryos_mir::ir::MirType::U16
-                    | kryos_mir::ir::MirType::U32
-                    | kryos_mir::ir::MirType::U64
-            )
-        }),
+        Operand::Local(id) => locals
+            .iter()
+            .find(|l| l.id == *id)
+            .is_some_and(|l| is_unsigned_mir_type(&l.ty)),
         _ => false,
     }
 }
@@ -3214,17 +3220,26 @@ fn coerce_to_string<M: Module>(
     } else if is_float_operand(operand, &translator.mir_func.locals) {
         "kryos_f64_to_string"
     } else {
+        let unsigned = is_unsigned_operand(operand, &translator.mir_func.locals);
         let val_ty = builder.func.dfg.value_type(val);
         if val_ty.is_int() && val_ty.bits() < 64 {
             // Unsigned narrow ints must ZERO-extend (sextend would print
             // u8 200 as -56).
-            val = if is_unsigned_operand(operand, &translator.mir_func.locals) {
+            val = if unsigned {
                 builder.ins().uextend(types::I64, val)
             } else {
                 builder.ins().sextend(types::I64, val)
             };
         }
-        "kryos_builtin_to_string"
+        // A 64-bit unsigned value must print its true unsigned decimal, not
+        // the signed reinterpretation (u64::MAX -> 18446744073709551615, not
+        // -1). Narrow unsigned types are already zero-extended above, so the
+        // unsigned formatter is correct for them too.
+        if unsigned {
+            "kryos_u64_to_string"
+        } else {
+            "kryos_builtin_to_string"
+        }
     };
     let to_str_ref = ensure_func_ref_with_args(to_str_fn, builder, translator, module, 1)?;
     let call = builder.ins().call(to_str_ref, &[val]);
@@ -3355,16 +3370,32 @@ fn translate_rvalue<M: Module>(
             let lhs_ty = type_of_operand_hint(left, &translator.mir_func.locals);
             let rhs_ty = type_of_operand_hint(right, &translator.mir_func.locals);
             let is_float = is_float_type(lhs_ty);
+            // Unsigned if either operand is an unsigned integer type. Drives
+            // udiv/urem, unsigned comparison, logical shift-right, and
+            // zero-extension below — signed ops on a u64 above i64::MAX give
+            // silently wrong results.
+            let is_unsigned = is_unsigned_operand(left, &translator.mir_func.locals)
+                || is_unsigned_operand(right, &translator.mir_func.locals);
 
             // Coerce integer operands to the same width before the operation.
+            // Unsigned operands ZERO-extend; sign-extending a narrow unsigned
+            // value would corrupt its magnitude.
             if !is_float && !is_float_type(rhs_ty) {
                 let lhs_actual = builder.func.dfg.value_type(lhs);
                 let rhs_actual = builder.func.dfg.value_type(rhs);
                 if lhs_actual != rhs_actual {
                     if lhs_actual.bits() < rhs_actual.bits() {
-                        lhs = builder.ins().sextend(rhs_actual, lhs);
+                        lhs = if is_unsigned {
+                            builder.ins().uextend(rhs_actual, lhs)
+                        } else {
+                            builder.ins().sextend(rhs_actual, lhs)
+                        };
                     } else {
-                        rhs = builder.ins().sextend(lhs_actual, rhs);
+                        rhs = if is_unsigned {
+                            builder.ins().uextend(lhs_actual, rhs)
+                        } else {
+                            builder.ins().sextend(lhs_actual, rhs)
+                        };
                     }
                 }
             }
@@ -3463,36 +3494,56 @@ fn translate_rvalue<M: Module>(
             }
 
             // Integer division/modulo: emit a runtime check before the actual
-            // sdiv/srem instruction. Guards BOTH trap cases — a zero divisor
-            // AND `MIN / -1` (unrepresentable quotient) — either of which
-            // otherwise raises a hardware exception (silent crash, no
-            // diagnostic) instead of a friendly panic.
+            // div/rem instruction, which otherwise raises a hardware exception
+            // (silent crash) on the trap cases. Signed division has TWO trap
+            // cases (zero divisor AND `MIN / -1`); UNSIGNED division only
+            // traps on a zero divisor — the MIN/-1 overflow is a signed
+            // concept, and applying the signed guard to unsigned operands
+            // would falsely trap legitimate divisions like 2^63 / (2^64-1).
             if !is_float && (*op == MirBinOp::Div || *op == MirBinOp::Mod) {
-                let check_ref = ensure_func_ref_with_args(
-                    "kryos_check_sdiv_i64",
-                    builder,
-                    translator,
-                    module,
-                    3,
-                )?;
-                // Widen operands to i64 for the runtime check (all-i64 ABI);
-                // pass the operand width so the check uses the right MIN.
-                let lhs_ty = builder.func.dfg.value_type(lhs);
-                let lhs_wide = if lhs_ty.is_int() && lhs_ty.bits() < 64 {
-                    builder.ins().sextend(types::I64, lhs)
+                if is_unsigned {
+                    let check_ref = ensure_func_ref_with_args(
+                        "kryos_check_div_zero_i64",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    let rhs_ty = builder.func.dfg.value_type(rhs);
+                    let rhs_wide = if rhs_ty.is_int() && rhs_ty.bits() < 64 {
+                        builder.ins().uextend(types::I64, rhs)
+                    } else {
+                        rhs
+                    };
+                    builder.ins().call(check_ref, &[rhs_wide]);
                 } else {
-                    lhs
-                };
-                let rhs_ty = builder.func.dfg.value_type(rhs);
-                let rhs_wide = if rhs_ty.is_int() && rhs_ty.bits() < 64 {
-                    builder.ins().sextend(types::I64, rhs)
-                } else {
-                    rhs
-                };
-                let bits = builder
-                    .ins()
-                    .iconst(types::I64, i64::from(lhs_ty.bits().min(64)));
-                builder.ins().call(check_ref, &[lhs_wide, rhs_wide, bits]);
+                    let check_ref = ensure_func_ref_with_args(
+                        "kryos_check_sdiv_i64",
+                        builder,
+                        translator,
+                        module,
+                        3,
+                    )?;
+                    // Widen operands to i64 for the runtime check (all-i64
+                    // ABI); pass the operand width so the check uses the
+                    // right MIN.
+                    let lhs_ty = builder.func.dfg.value_type(lhs);
+                    let lhs_wide = if lhs_ty.is_int() && lhs_ty.bits() < 64 {
+                        builder.ins().sextend(types::I64, lhs)
+                    } else {
+                        lhs
+                    };
+                    let rhs_ty = builder.func.dfg.value_type(rhs);
+                    let rhs_wide = if rhs_ty.is_int() && rhs_ty.bits() < 64 {
+                        builder.ins().sextend(types::I64, rhs)
+                    } else {
+                        rhs
+                    };
+                    let bits = builder
+                        .ins()
+                        .iconst(types::I64, i64::from(lhs_ty.bits().min(64)));
+                    builder.ins().call(check_ref, &[lhs_wide, rhs_wide, bits]);
+                }
             }
 
             let val = translate_binop(
@@ -3500,6 +3551,7 @@ fn translate_rvalue<M: Module>(
                 lhs,
                 rhs,
                 is_float,
+                is_unsigned,
                 builder,
                 translator.checked_arithmetic,
             )?;
@@ -3785,14 +3837,16 @@ fn translate_rvalue<M: Module>(
                 } else if is_unsigned_operand(&args[0], &translator.mir_func.locals) {
                     // Unsigned narrow ints ZERO-extend here — the generic
                     // fall-through widens call args with sextend, which
-                    // would print u8 200 as -56.
+                    // would print u8 200 as -56. A 64-bit unsigned value must
+                    // additionally use the UNSIGNED formatter so u64::MAX
+                    // prints 18446744073709551615, not -1.
                     let mut v = val;
                     let val_ty = builder.func.dfg.value_type(v);
                     if val_ty.is_int() && val_ty.bits() < 64 {
                         v = builder.ins().uextend(types::I64, v);
                     }
                     let int_ref = ensure_func_ref_with_args(
-                        "kryos_builtin_to_string",
+                        "kryos_u64_to_string",
                         builder,
                         translator,
                         module,
@@ -4960,7 +5014,10 @@ fn translate_rvalue<M: Module>(
             let val = translate_operand(operand, builder, translator, module)?;
             let src_ty = type_of_operand_hint(operand, &translator.mir_func.locals);
             let dest_ty = mir_type_to_cl(ty)?.unwrap_or(types::I64);
-            let result = translate_cast(val, src_ty, dest_ty, builder)?;
+            let src_unsigned = is_unsigned_operand(operand, &translator.mir_func.locals);
+            let dest_unsigned = is_unsigned_mir_type(ty);
+            let result =
+                translate_cast(val, src_ty, dest_ty, src_unsigned, dest_unsigned, builder)?;
             Ok(Some(result))
         }
 
@@ -5401,13 +5458,14 @@ fn translate_binop(
     lhs: cranelift_codegen::ir::Value,
     rhs: cranelift_codegen::ir::Value,
     is_float: bool,
+    is_unsigned: bool,
     builder: &mut FunctionBuilder,
     checked: bool,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     if is_float {
         translate_binop_float(op, lhs, rhs, builder)
     } else {
-        translate_binop_int(op, lhs, rhs, builder, checked)
+        translate_binop_int(op, lhs, rhs, is_unsigned, builder, checked)
     }
 }
 
@@ -5415,6 +5473,7 @@ fn translate_binop_int(
     op: MirBinOp,
     lhs: cranelift_codegen::ir::Value,
     rhs: cranelift_codegen::ir::Value,
+    is_unsigned: bool,
     builder: &mut FunctionBuilder,
     checked: bool,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
@@ -5464,8 +5523,20 @@ fn translate_binop_int(
         MirBinOp::Add => builder.ins().iadd(lhs, rhs),
         MirBinOp::Sub => builder.ins().isub(lhs, rhs),
         MirBinOp::Mul => builder.ins().imul(lhs, rhs),
-        MirBinOp::Div => builder.ins().sdiv(lhs, rhs),
-        MirBinOp::Mod => builder.ins().srem(lhs, rhs),
+        MirBinOp::Div => {
+            if is_unsigned {
+                builder.ins().udiv(lhs, rhs)
+            } else {
+                builder.ins().sdiv(lhs, rhs)
+            }
+        }
+        MirBinOp::Mod => {
+            if is_unsigned {
+                builder.ins().urem(lhs, rhs)
+            } else {
+                builder.ins().srem(lhs, rhs)
+            }
+        }
         MirBinOp::Pow => {
             // Handled at call site via kryos_ipow runtime call.
             // Should never reach here — Pow is intercepted before dispatch.
@@ -5478,19 +5549,53 @@ fn translate_binop_int(
             cmp
         }
         MirBinOp::Neq => builder.ins().icmp(IntCC::NotEqual, lhs, rhs),
-        MirBinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs, rhs),
-        MirBinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs, rhs),
-        MirBinOp::LtEq => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs, rhs),
-        MirBinOp::GtEq => builder
-            .ins()
-            .icmp(IntCC::SignedGreaterThanOrEqual, lhs, rhs),
+        MirBinOp::Lt => {
+            let cc = if is_unsigned {
+                IntCC::UnsignedLessThan
+            } else {
+                IntCC::SignedLessThan
+            };
+            builder.ins().icmp(cc, lhs, rhs)
+        }
+        MirBinOp::Gt => {
+            let cc = if is_unsigned {
+                IntCC::UnsignedGreaterThan
+            } else {
+                IntCC::SignedGreaterThan
+            };
+            builder.ins().icmp(cc, lhs, rhs)
+        }
+        MirBinOp::LtEq => {
+            let cc = if is_unsigned {
+                IntCC::UnsignedLessThanOrEqual
+            } else {
+                IntCC::SignedLessThanOrEqual
+            };
+            builder.ins().icmp(cc, lhs, rhs)
+        }
+        MirBinOp::GtEq => {
+            let cc = if is_unsigned {
+                IntCC::UnsignedGreaterThanOrEqual
+            } else {
+                IntCC::SignedGreaterThanOrEqual
+            };
+            builder.ins().icmp(cc, lhs, rhs)
+        }
         MirBinOp::And => builder.ins().band(lhs, rhs),
         MirBinOp::Or => builder.ins().bor(lhs, rhs),
         MirBinOp::BitAnd => builder.ins().band(lhs, rhs),
         MirBinOp::BitOr => builder.ins().bor(lhs, rhs),
         MirBinOp::BitXor => builder.ins().bxor(lhs, rhs),
         MirBinOp::Shl => builder.ins().ishl(lhs, rhs),
-        MirBinOp::Shr => builder.ins().sshr(lhs, rhs),
+        // Unsigned right shift is LOGICAL (zero-fill); signed is arithmetic
+        // (sign-extending). Using sshr on a u64 corrupts the top half.
+        MirBinOp::Shr => {
+            if is_unsigned {
+                builder.ins().ushr(lhs, rhs)
+            } else {
+                builder.ins().sshr(lhs, rhs)
+            }
+        }
     };
     Ok(val)
 }
@@ -5558,6 +5663,8 @@ fn translate_cast(
     val: cranelift_codegen::ir::Value,
     src_ty: Type,
     dest_ty: Type,
+    src_unsigned: bool,
+    dest_unsigned: bool,
     builder: &mut FunctionBuilder,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     if src_ty == dest_ty {
@@ -5573,21 +5680,37 @@ fn translate_cast(
         }
     }
 
-    // Int -> Float
+    // Int -> Float. An unsigned source above i64::MAX must convert from
+    // unsigned, else e.g. u64::MAX would read as -1.0.
     if !is_float_type(src_ty) && is_float_type(dest_ty) {
-        return Ok(builder.ins().fcvt_from_sint(dest_ty, val));
+        return Ok(if src_unsigned {
+            builder.ins().fcvt_from_uint(dest_ty, val)
+        } else {
+            builder.ins().fcvt_from_sint(dest_ty, val)
+        });
     }
 
-    // Float -> Int
+    // Float -> Int. An unsigned destination saturates into the UNSIGNED range
+    // (0..=U::MAX), not the signed range — a signed saturating convert clamps
+    // an in-range value like 1.5e19 to i64::MAX instead of reaching it.
     if is_float_type(src_ty) && !is_float_type(dest_ty) {
-        return Ok(builder.ins().fcvt_to_sint_sat(dest_ty, val));
+        return Ok(if dest_unsigned {
+            builder.ins().fcvt_to_uint_sat(dest_ty, val)
+        } else {
+            builder.ins().fcvt_to_sint_sat(dest_ty, val)
+        });
     }
 
-    // Int -> Int (widening / narrowing)
+    // Int -> Int (widening / narrowing). Widening an unsigned source
+    // ZERO-extends; sign-extending would corrupt the magnitude.
     let src_bits = src_ty.bits();
     let dest_bits = dest_ty.bits();
     if src_bits < dest_bits {
-        Ok(builder.ins().sextend(dest_ty, val))
+        Ok(if src_unsigned {
+            builder.ins().uextend(dest_ty, val)
+        } else {
+            builder.ins().sextend(dest_ty, val)
+        })
     } else if src_bits > dest_bits {
         Ok(builder.ins().ireduce(dest_ty, val))
     } else {

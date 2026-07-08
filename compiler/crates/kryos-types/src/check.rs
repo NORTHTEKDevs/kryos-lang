@@ -1471,8 +1471,22 @@ impl TypeChecker {
             Type::U64 => (0, u64::MAX as i128),
             _ => return,
         };
+        // Unsigned targets have min == 0; only they may hold values above
+        // i64::MAX. A bare integer literal is stored as an i64 bit-pattern
+        // (the parser bit-casts u64 values above i64::MAX to a negative i64),
+        // so for an unsigned target reinterpret those bits as unsigned —
+        // otherwise u64::MAX reads back as -1 and is wrongly rejected. A
+        // NEGATED literal (`-5`) stays negative and is still rejected for
+        // unsigned types, as intended.
+        let unsigned_target = min == 0;
         let value: Option<i128> = match expr {
-            Expr::IntLiteral { value, .. } => Some(*value as i128),
+            Expr::IntLiteral { value, .. } => {
+                if unsigned_target && *value < 0 {
+                    Some(*value as u64 as i128)
+                } else {
+                    Some(*value as i128)
+                }
+            }
             Expr::UnaryOp {
                 op: UnOp::Neg,
                 operand,

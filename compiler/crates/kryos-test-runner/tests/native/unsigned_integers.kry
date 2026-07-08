@@ -1,0 +1,41 @@
+// Unsigned integer types (u8..u64) must use UNSIGNED machine semantics, not
+// signed, on both backends. Regression: comparison, div/mod, shift-right,
+// widening cast, float<->uint cast, and to_string all used signed ops, so
+// any u64 value above i64::MAX was silently wrong (u64::MAX printed -1,
+// u64::MAX > 5 was false, u64::MAX / 2 was 0). The literal parser also
+// rejected valid u64 values in [2^63, 2^64).
+// expect-stdout: 18446744073709551614
+// expect-stdout: cmp-gt-ok
+// expect-stdout: 9223372036854775807
+// expect-stdout: 4
+// expect-stdout: 15
+// expect-stdout: 18446744073709551615
+// expect-stdout: max-gt-ok
+// expect-stdout: 0
+// expect-stdout: 200
+// expect-stdout: 200
+// expect-stdout: 15000000000000000000
+
+fn main() {
+    let big: u64 = 9223372036854775807
+    let bigger: u64 = big + big
+    println(to_string(bigger))                       // 2^64-2, unsigned add
+    if bigger > 5 { println("cmp-gt-ok") } else { println("BUG") }
+    println(to_string(bigger / 2))                   // udiv -> 2^63-1
+    println(to_string(bigger % 10))                  // urem -> 4
+    println(to_string(bigger >> 60))                 // logical shr -> 15
+    let mx: u64 = 18446744073709551615               // u64::MAX literal accepted
+    println(to_string(mx))
+    if mx > big { println("max-gt-ok") } else { println("BUG") }
+
+    // Unsigned division whose operand bit-patterns look like signed MIN / -1
+    // (2^63 and all-ones) must NOT falsely trip the overflow guard.
+    let minbits: u64 = 9223372036854775808           // 2^63, bit pattern of i64::MIN
+    println(to_string(minbits / mx))                 // 2^63 / (2^64-1) = 0
+
+    let b: u8 = 200
+    println(to_string(b))                            // zero-extended, 200 not -56
+    println(to_string(b as u64))                     // widening zext -> 200
+    let f: f64 = 15000000000000000000.0
+    println(to_string(f as u64))                     // fptoui.sat -> 1.5e19
+}

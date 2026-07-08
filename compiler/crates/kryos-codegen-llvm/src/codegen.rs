@@ -680,6 +680,14 @@ impl LlvmCodegen {
             self.emit_line(&format!(
                 "declare {dst} @llvm.fptosi.sat.{dst}.f32(float)"
             ));
+            // Unsigned counterpart: a float cast to an unsigned integer type
+            // saturates into the UNSIGNED range (0..=U::MAX).
+            self.emit_line(&format!(
+                "declare {dst} @llvm.fptoui.sat.{dst}.f64(double)"
+            ));
+            self.emit_line(&format!(
+                "declare {dst} @llvm.fptoui.sat.{dst}.f32(float)"
+            ));
         }
         // Math intrinsics used by the float builtins (sqrt/pow/abs). Same
         // LLVM 22+ explicit-declaration requirement as the sat casts above.
@@ -809,6 +817,7 @@ impl LlvmCodegen {
             }
         }
         self.emit_line("declare i64 @kryos_i64_to_string(i64)");
+        self.emit_line("declare i64 @kryos_u64_to_string(i64)");
         self.emit_line("declare i64 @kryos_f64_to_string(double)");
         self.emit_line("declare i64 @kryos_bool_to_string(i64)");
         // Channel runtime
@@ -3988,6 +3997,10 @@ impl LlvmCodegen {
                 // String operations: dispatch to runtime instead of integer ops.
                 let is_string =
                     Self::operand_is_string(left, func) || Self::operand_is_string(right, func);
+                // Unsigned if either operand is an unsigned integer type —
+                // drives unsigned div/rem, comparison, and logical shr below.
+                let is_unsigned = Self::operand_is_unsigned(left, func)
+                    || Self::operand_is_unsigned(right, func);
 
                 if is_string && *op == MirBinOp::Add {
                     let left_val = self.operand_to_llvm(left, func);
@@ -4127,14 +4140,14 @@ impl LlvmCodegen {
                         let operand_ty_w = "i64".to_string();
                         if is_mutable {
                             let tmp = self.next_temp();
-                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
+                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty_w, is_float, is_unsigned)?;
                             // Bring result to dest_ty before store; widening/narrowing
                             // mismatch (e.g. i64 -> i32 local) would otherwise emit
                             // a verifier error.
                             let coerced = self.coerce_value(&tmp, &operand_ty_w, &dest_ty);
                             self.emit_line(&format!("  store {dest_ty} {coerced}, ptr %_{}.addr", dest.0));
                         } else {
-                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty_w, is_float)?;
+                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty_w, is_float, is_unsigned)?;
                         }
                     } else if is_mutable {
                         let tmp = self.next_temp();
@@ -4145,6 +4158,7 @@ impl LlvmCodegen {
                             &right_val,
                             &operand_ty,
                             is_float,
+                            is_unsigned,
                         )?;
                         // Operand-type result may differ from dest_ty (e.g. an i64
                         // subtraction stored into an i32 local). Coerce before
@@ -4169,12 +4183,12 @@ impl LlvmCodegen {
                         );
                         if !is_cmp && operand_ty != dest_ty {
                             let tmp = self.next_temp();
-                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                            self.emit_binop_to(&tmp, *op, &left_val, &right_val, &operand_ty, is_float, is_unsigned)?;
                             let coerced = self.coerce_value(&tmp, &operand_ty, &dest_ty);
                             let name = format!("%_{}", dest.0);
                             self.emit_identity_copy(&name, &dest_ty, &coerced);
                         } else {
-                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float)?;
+                            self.emit_binop(dest, *op, &left_val, &right_val, &operand_ty, is_float, is_unsigned)?;
                         }
                     }
                 }
@@ -4394,19 +4408,15 @@ impl LlvmCodegen {
                                 return Ok(());
                             } else {
                                 // Integer types: coerce to i64 if needed.
-                                // Unsigned narrow ints ZERO-extend — the
-                                // coerce_value sext arm would print u8 200
-                                // as -56. (U8/U16/U32 all render as iN type
-                                // strings, so signedness must come from the
-                                // MIR local type, not the LLVM type string.)
-                                let is_unsigned_narrow = matches!(&args[0], Operand::Local(id)
-                                    if func.locals.iter().find(|l| l.id == *id).is_some_and(|l| {
-                                        matches!(
-                                            l.ty,
-                                            MirType::U8 | MirType::U16 | MirType::U32
-                                        )
-                                    }));
-                                let coerced = if is_unsigned_narrow
+                                // Unsigned ints ZERO-extend — the coerce_value
+                                // sext arm would print u8 200 as -56. (iN type
+                                // strings carry no signedness, so it must come
+                                // from the MIR local type.) A 64-bit unsigned
+                                // value additionally uses the UNSIGNED
+                                // formatter so u64::MAX prints
+                                // 18446744073709551615, not -1.
+                                let is_unsigned = Self::operand_is_unsigned(&args[0], func);
+                                let coerced = if is_unsigned
                                     && matches!(arg_ty.as_str(), "i8" | "i16" | "i32")
                                 {
                                     let tmp = self.next_temp();
@@ -4418,7 +4428,12 @@ impl LlvmCodegen {
                                 } else {
                                     self.coerce_value(&val, &arg_ty, "i64")
                                 };
-                                ("kryos_builtin_to_string", format!("i64 {coerced}"))
+                                let fmt_fn = if is_unsigned {
+                                    "kryos_u64_to_string"
+                                } else {
+                                    "kryos_builtin_to_string"
+                                };
+                                (fmt_fn, format!("i64 {coerced}"))
                             };
                             // The runtime returns i64 (a handle). If dest expects ptr, convert.
                             if dest_ty == "ptr" {
@@ -6822,9 +6837,10 @@ impl LlvmCodegen {
         right: &str,
         ty: &str,
         is_float: bool,
+        is_unsigned: bool,
     ) -> Result<(), CodegenError> {
         let name = format!("%_{}", dest.0);
-        self.emit_binop_to(&name, op, left, right, ty, is_float)
+        self.emit_binop_to(&name, op, left, right, ty, is_float, is_unsigned)
     }
 
     /// Emit a binary op to a named target (used for both direct SSA and mutable temp names).
@@ -6836,6 +6852,7 @@ impl LlvmCodegen {
         right: &str,
         ty: &str,
         is_float: bool,
+        is_unsigned: bool,
     ) -> Result<(), CodegenError> {
         // Operands whose tracked SSA type differs from the op's chosen type
         // (e.g. an i16 local compared against an i64 literal — the emitter
@@ -6874,20 +6891,31 @@ impl LlvmCodegen {
                 _ => None,
             };
             if let Some(bits) = bits {
+                // Unsigned ints ZERO-extend to i64 for the check; signed
+                // sign-extend. Unsigned division has only the zero-divisor
+                // trap (no MIN/-1 overflow), so use the zero-only guard —
+                // the signed guard would falsely trap legitimate unsigned
+                // divisions whose bit patterns look like MIN / -1.
+                let ext = if is_unsigned { "zext" } else { "sext" };
                 let widen = |this: &mut Self, v: &str| -> String {
                     if ty == "i64" {
                         v.to_string()
                     } else {
                         let w = this.next_temp();
-                        this.emit_line(&format!("  {w} = sext {ty} {v} to i64"));
+                        this.emit_line(&format!("  {w} = {ext} {ty} {v} to i64"));
                         w
                     }
                 };
-                let a = widen(self, left);
-                let d = widen(self, right);
-                self.emit_line(&format!(
-                    "  call void @kryos_check_sdiv_i64(i64 {a}, i64 {d}, i64 {bits})"
-                ));
+                if is_unsigned {
+                    let d = widen(self, right);
+                    self.emit_line(&format!("  call void @kryos_check_div_zero_i64(i64 {d})"));
+                } else {
+                    let a = widen(self, left);
+                    let d = widen(self, right);
+                    self.emit_line(&format!(
+                        "  call void @kryos_check_sdiv_i64(i64 {a}, i64 {d}, i64 {bits})"
+                    ));
+                }
             }
         }
         let line = match op {
@@ -6898,8 +6926,10 @@ impl LlvmCodegen {
             MirBinOp::Mul if is_float => format!("  {target} = fmul {ty} {left}, {right}"),
             MirBinOp::Mul => format!("  {target} = mul {ty} {left}, {right}"),
             MirBinOp::Div if is_float => format!("  {target} = fdiv {ty} {left}, {right}"),
+            MirBinOp::Div if is_unsigned => format!("  {target} = udiv {ty} {left}, {right}"),
             MirBinOp::Div => format!("  {target} = sdiv {ty} {left}, {right}"),
             MirBinOp::Mod if is_float => format!("  {target} = frem {ty} {left}, {right}"),
+            MirBinOp::Mod if is_unsigned => format!("  {target} = urem {ty} {left}, {right}"),
             MirBinOp::Mod => format!("  {target} = srem {ty} {left}, {right}"),
             MirBinOp::Pow if is_float => {
                 format!("  {target} = call {ty} @llvm.pow.f64({ty} {left}, {ty} {right})")
@@ -6915,17 +6945,24 @@ impl LlvmCodegen {
             MirBinOp::Neq if is_float => format!("  {target} = fcmp une {ty} {left}, {right}"),
             MirBinOp::Neq => format!("  {target} = icmp ne {ty} {left}, {right}"),
             MirBinOp::Lt if is_float => format!("  {target} = fcmp olt {ty} {left}, {right}"),
+            MirBinOp::Lt if is_unsigned => format!("  {target} = icmp ult {ty} {left}, {right}"),
             MirBinOp::Lt => format!("  {target} = icmp slt {ty} {left}, {right}"),
             MirBinOp::Gt if is_float => format!("  {target} = fcmp ogt {ty} {left}, {right}"),
+            MirBinOp::Gt if is_unsigned => format!("  {target} = icmp ugt {ty} {left}, {right}"),
             MirBinOp::Gt => format!("  {target} = icmp sgt {ty} {left}, {right}"),
             MirBinOp::LtEq if is_float => format!("  {target} = fcmp ole {ty} {left}, {right}"),
+            MirBinOp::LtEq if is_unsigned => format!("  {target} = icmp ule {ty} {left}, {right}"),
             MirBinOp::LtEq => format!("  {target} = icmp sle {ty} {left}, {right}"),
             MirBinOp::GtEq if is_float => format!("  {target} = fcmp oge {ty} {left}, {right}"),
+            MirBinOp::GtEq if is_unsigned => format!("  {target} = icmp uge {ty} {left}, {right}"),
             MirBinOp::GtEq => format!("  {target} = icmp sge {ty} {left}, {right}"),
             MirBinOp::And | MirBinOp::BitAnd => format!("  {target} = and {ty} {left}, {right}"),
             MirBinOp::Or | MirBinOp::BitOr => format!("  {target} = or {ty} {left}, {right}"),
             MirBinOp::BitXor => format!("  {target} = xor {ty} {left}, {right}"),
             MirBinOp::Shl => format!("  {target} = shl {ty} {left}, {right}"),
+            // Logical (zero-fill) shift-right for unsigned; arithmetic
+            // (sign-extending) for signed. `ashr` on a u64 corrupts the top.
+            MirBinOp::Shr if is_unsigned => format!("  {target} = lshr {ty} {left}, {right}"),
             MirBinOp::Shr => format!("  {target} = ashr {ty} {left}, {right}"),
         };
 
@@ -7505,20 +7542,28 @@ impl LlvmCodegen {
         let dst_is_float = is_float_type(&dst_ty);
         let src_is_ptr = src_ty == "ptr";
         let dst_is_ptr = dst_ty == "ptr";
+        // Signedness comes from the MIR types (LLVM iN strings carry none).
+        let src_unsigned = Self::operand_is_unsigned(operand, func);
+        let dst_unsigned = matches!(
+            target_ty,
+            MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
+        );
 
         // float -> int: use the saturating intrinsic instead of bare `fptosi`.
-        // `fptosi` is undefined (poison) for out-of-range / NaN inputs, which
-        // silently produced garbage in release; `@llvm.fptosi.sat` saturates to
-        // the target's min/max (and yields 0 for NaN), matching the Cranelift
-        // JIT's `fcvt_to_sint_sat`. The intrinsic suffix uses `f64`/`f32`, not
-        // the IR type names `double`/`float`.
+        // `fptosi`/`fptoui` are undefined (poison) for out-of-range / NaN
+        // inputs; the `.sat` intrinsics saturate to the target's min/max (and
+        // yield 0 for NaN), matching the Cranelift JIT. An UNSIGNED destination
+        // must use `fptoui.sat` so an in-range value like 1.5e19 reaches the
+        // unsigned range instead of clamping at i64::MAX. The intrinsic suffix
+        // uses `f64`/`f32`, not the IR names `double`/`float`.
         if src_is_float && !dst_is_float {
             let src_suffix = match src_ty.as_str() {
                 "double" => "f64",
                 "float" => "f32",
                 other => other,
             };
-            let intrinsic = format!("@llvm.fptosi.sat.{dst_ty}.{src_suffix}");
+            let conv = if dst_unsigned { "fptoui" } else { "fptosi" };
+            let intrinsic = format!("@llvm.{conv}.sat.{dst_ty}.{src_suffix}");
             if is_mutable {
                 let tmp = self.next_temp();
                 self.emit_line(&format!(
@@ -7544,16 +7589,23 @@ impl LlvmCodegen {
         } else if src_is_float && !dst_is_float {
             unreachable!("float->int is handled by the saturating intrinsic above")
         } else if !src_is_float && dst_is_float {
-            "sitofp"
+            // Unsigned source converts from unsigned (u64::MAX -> 1.8e19, not
+            // -1.0).
+            if src_unsigned {
+                "uitofp"
+            } else {
+                "sitofp"
+            }
         } else if src_is_ptr && !dst_is_ptr {
             "ptrtoint"
         } else if !src_is_ptr && dst_is_ptr {
             "inttoptr"
         } else {
-            // int -> int: sext or trunc. Booleans widen with ZERO extension —
-            // `true as i64` must be 1, not -1 (sext i1 1 = -1).
+            // int -> int: sext/zext or trunc. Unsigned sources (and booleans)
+            // widen with ZERO extension — `true as i64` must be 1 not -1
+            // (sext i1 1 = -1), and u8 200 -> u64 must stay 200 not sign-flip.
             if llvm_type_width(&dst_ty) > llvm_type_width(&src_ty) {
-                if src_ty == "i1" {
+                if src_ty == "i1" || src_unsigned {
                     "zext"
                 } else {
                     "sext"
@@ -7811,6 +7863,22 @@ impl LlvmCodegen {
     fn operand_is_float(&self, op: &Operand, func: &MirFunction) -> bool {
         let ty = self.operand_type(op, func);
         is_float_type(&ty)
+    }
+
+    /// Check if an operand has an unsigned integer type at the MIR level.
+    /// LLVM type strings (i8/i16/i32/i64) carry no signedness, so this must
+    /// come from the MIR local type. Drives unsigned div/rem, comparison,
+    /// logical shift-right, zero-extension, and unsigned float conversions.
+    fn operand_is_unsigned(op: &Operand, func: &MirFunction) -> bool {
+        match op {
+            Operand::Local(id) => func.locals.iter().find(|l| l.id == *id).is_some_and(|l| {
+                matches!(
+                    l.ty,
+                    MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 | MirType::U128
+                )
+            }),
+            _ => false,
+        }
     }
 
     /// Check if an operand has string type at the MIR level.

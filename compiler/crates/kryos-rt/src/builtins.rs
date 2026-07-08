@@ -131,6 +131,20 @@ pub extern "C" fn kryos_i64_to_string(value: i64) -> i64 {
     unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
 }
 
+/// Convert an unsigned 64-bit value (stored in an i64 slot) to a KryosString.
+/// The codegen routes to_string of a u64 here so that values above i64::MAX
+/// print as their true unsigned decimal (e.g. u64::MAX -> 18446744073709551615)
+/// instead of the signed reinterpretation (-1). Narrow unsigned types
+/// (u8/u16/u32) are zero-extended before the call, so this is also correct for
+/// them.
+#[no_mangle]
+pub extern "C" fn kryos_u64_to_string(value: i64) -> i64 {
+    crate::fault::hang_tick();
+    let s = (value as u64).to_string();
+    let bytes = s.as_bytes();
+    unsafe { kryos_string_new(bytes.as_ptr(), bytes.len() as i64) as i64 }
+}
+
 /// Convert an f64 to a KryosString. Returns an opaque handle (pointer as i64).
 #[no_mangle]
 pub extern "C" fn kryos_f64_to_string(value: f64) -> i64 {

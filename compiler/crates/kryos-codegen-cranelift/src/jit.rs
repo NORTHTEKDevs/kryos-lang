@@ -324,6 +324,10 @@ impl JitCompiler {
             kryos_rt::builtins::kryos_i64_to_string as *const u8,
         );
         jit_builder.symbol(
+            "kryos_u64_to_string",
+            kryos_rt::builtins::kryos_u64_to_string as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_f64_to_string",
             kryos_rt::builtins::kryos_f64_to_string as *const u8,
         );
@@ -1888,6 +1892,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_f64_to_string", "kryos_f64_to_string", sig(1));
     decl!("kryos_bool_to_string", "kryos_bool_to_string", sig(1));
     decl!("kryos_i64_to_string", "kryos_i64_to_string", sig(1));
+    decl!("kryos_u64_to_string", "kryos_u64_to_string", sig(1));
     decl!("kryos_ipow", "kryos_ipow", sig(2));
     decl!("kryos_builtin_assert", "kryos_builtin_assert", sig(2));
     decl!("kryos_builtin_assert_eq", "kryos_builtin_assert_eq", sig(2));
