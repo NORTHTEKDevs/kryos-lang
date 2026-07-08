@@ -670,6 +670,12 @@ impl TypeChecker {
 
                 self.env
                     .define_impl(target.clone(), trait_name.clone(), all_method_sigs);
+                // Record the (type, trait) pair for `dyn Trait` coercion
+                // verification in unify (backlog #18/#34).
+                if let Some(ref tname) = trait_name {
+                    self.engine
+                        .register_trait_impl(target.clone(), tname.clone());
+                }
 
                 // (impl-generic scope already popped above, before define_impl)
                 self.current_self_type = prev_self;
@@ -1580,6 +1586,30 @@ impl TypeChecker {
         walk(fty, &map)
     }
 
+    /// The stdlib bridge enums `Result`/`Option` are declared non-generic
+    /// with `any` payloads; their constructors used to produce a bare
+    /// `Enum{Result, []}` that unified with ANY `Result<T, E>` annotation,
+    /// so `fn f() -> Result<i64, str> { return Err(42) }` type-checked
+    /// clean and then segfaulted when the i64 payload was read through the
+    /// str-typed match binding (backlog #13/#19). Synthesize payload-bearing
+    /// generics from the constructed variant so the annotation bridge in
+    /// `unify` can check them. The un-constrained slot gets a fresh var.
+    fn stdlib_bridge_generics(
+        &mut self,
+        enum_name: &str,
+        variant: &str,
+        arg_tys: &[Type],
+    ) -> Vec<Type> {
+        let payload = arg_tys.first().cloned().unwrap_or(Type::Error);
+        match (enum_name, variant) {
+            ("Result", "Ok") => vec![payload, self.engine.fresh_var()],
+            ("Result", "Err") => vec![self.engine.fresh_var(), payload],
+            ("Option", "Some") => vec![payload],
+            ("Option", "None") => vec![self.engine.fresh_var()],
+            _ => Vec::new(),
+        }
+    }
+
     pub fn infer_expr(&mut self, expr: &Expr) -> Type {
         match expr {
             // Literals.
@@ -1602,7 +1632,14 @@ impl TypeChecker {
                     // each call site gets independent type inference (prevents
                     // generic type pinning across call sites).
                     let sig = sig.clone();
-                    let (params, ret) = self.engine.instantiate_sig(&sig);
+                    let (params, ret, var_map) = self.engine.instantiate_sig(&sig);
+                    // Carry the sig's trait bounds onto the fresh call-site
+                    // vars so unify can enforce them (backlog #89).
+                    for (old_id, new_id) in &var_map {
+                        if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
+                            self.engine.set_var_bounds(*new_id, bounds);
+                        }
+                    }
                     Type::Function {
                         params,
                         ret: Box::new(ret),
@@ -1998,6 +2035,7 @@ impl TypeChecker {
                                     }
                                     fresh_generics.push(fresh);
                                 }
+                                let mut arg_tys = Vec::with_capacity(args.len());
                                 for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
                                     let arg_ty = self.infer_expr(arg);
                                     let expected_instantiated = if var_map.is_empty() {
@@ -2010,10 +2048,16 @@ impl TypeChecker {
                                     {
                                         self.diagnostics.push(diag);
                                     }
+                                    arg_tys.push(arg_ty);
                                 }
+                                let generics = if fresh_generics.is_empty() {
+                                    self.stdlib_bridge_generics(&edef.name, cname, &arg_tys)
+                                } else {
+                                    fresh_generics
+                                };
                                 return Type::Enum {
                                     name: edef.name.clone(),
-                                    generics: fresh_generics,
+                                    generics,
                                 };
                             }
                         }
@@ -2249,6 +2293,7 @@ impl TypeChecker {
                                 }
                                 fresh_generics.push(fresh);
                             }
+                            let mut arg_tys = Vec::with_capacity(args.len());
                             for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
                                 let arg_ty = self.infer_expr(arg);
                                 let expected_instantiated = if var_map.is_empty() {
@@ -2262,10 +2307,16 @@ impl TypeChecker {
                                 {
                                     self.diagnostics.push(diag);
                                 }
+                                arg_tys.push(arg_ty);
                             }
+                            let generics = if fresh_generics.is_empty() {
+                                self.stdlib_bridge_generics(tname, method, &arg_tys)
+                            } else {
+                                fresh_generics
+                            };
                             return Type::Enum {
                                 name: tname.clone(),
-                                generics: fresh_generics,
+                                generics,
                             };
                         }
                     }
@@ -2390,6 +2441,7 @@ impl TypeChecker {
                             }
                             fresh_generics.push(fresh);
                         }
+                        let mut arg_tys = Vec::with_capacity(args.len());
                         for (arg, expected_ty) in args.iter().zip(field_types.iter()) {
                             let arg_ty = self.infer_expr(arg);
                             let expected_instantiated = if var_map.is_empty() {
@@ -2403,10 +2455,16 @@ impl TypeChecker {
                             {
                                 self.diagnostics.push(diag);
                             }
+                            arg_tys.push(arg_ty);
                         }
+                        let generics = if fresh_generics.is_empty() {
+                            self.stdlib_bridge_generics(type_name, method, &arg_tys)
+                        } else {
+                            fresh_generics
+                        };
                         return Type::Enum {
                             name: type_name.clone(),
-                            generics: fresh_generics,
+                            generics,
                         };
                     }
                 }
@@ -2448,7 +2506,12 @@ impl TypeChecker {
                     // lowering already resolves it the same way; only the
                     // checker rejected it ("no method `add` on type `util`").
                     let sig = self.env.lookup_function(method).cloned().unwrap();
-                    let (params, ret) = self.engine.instantiate_sig(&sig);
+                    let (params, ret, var_map) = self.engine.instantiate_sig(&sig);
+                    for (old_id, new_id) in &var_map {
+                        if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
+                            self.engine.set_var_bounds(*new_id, bounds);
+                        }
+                    }
                     if args.len() != params.len() {
                         self.error(
                             format!(

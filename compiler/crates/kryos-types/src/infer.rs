@@ -67,6 +67,17 @@ pub struct InferenceEngine {
     next_var: u32,
     /// Substitution map: Var(id) → resolved Type.
     substitutions: HashMap<u32, Type>,
+    /// Every `impl Trait for Type` seen by the checker, as
+    /// (type_name, trait_name). Used to verify concrete → `dyn Trait`
+    /// coercion: accepting a struct with NO impl of the trait type-checked
+    /// clean and then segfaulted on the first vtable call (backlog #18/#34).
+    trait_impls: std::collections::HashSet<(String, String)>,
+    /// Trait bounds carried by call-site-instantiated generic vars
+    /// (`fn f<T: Trait>(x: T)` → the fresh var for T at each call site).
+    /// Enforced when the var binds to a concrete type: an unsatisfied bound
+    /// used to type-check clean and die at link time (unresolved trait
+    /// method symbol) or at runtime (backlog #89).
+    var_bounds: HashMap<u32, Vec<String>>,
 }
 
 impl Default for InferenceEngine {
@@ -80,7 +91,76 @@ impl InferenceEngine {
         Self {
             next_var: 0,
             substitutions: HashMap::new(),
+            trait_impls: std::collections::HashSet::new(),
+            var_bounds: HashMap::new(),
         }
+    }
+
+    /// Attach trait bounds to a (fresh, call-site) generic type variable.
+    pub fn set_var_bounds(&mut self, id: u32, bounds: Vec<String>) {
+        if !bounds.is_empty() {
+            self.var_bounds.insert(id, bounds);
+        }
+    }
+
+    /// When a bounded var binds to a concrete type, verify the bounds.
+    /// Binding to another var transfers the bounds; `any`/error is exempt.
+    fn check_var_bounds(&mut self, id: u32, bound_to: &Type, span: Span) -> Result<(), Diagnostic> {
+        let Some(bounds) = self.var_bounds.get(&id).cloned() else {
+            return Ok(());
+        };
+        let type_name = match bound_to {
+            Type::Var(other) => {
+                let entry = self.var_bounds.entry(*other).or_default();
+                for b in bounds {
+                    if !entry.contains(&b) {
+                        entry.push(b);
+                    }
+                }
+                return Ok(());
+            }
+            Type::Error => return Ok(()),
+            Type::DynTrait { trait_name } => {
+                for b in &bounds {
+                    if b != trait_name {
+                        return Err(Diagnostic::error(format!(
+                            "the trait `{b}` is not implemented for `dyn {trait_name}`"
+                        ))
+                        .with_label(span, format!("`dyn {trait_name}` does not satisfy the `{b}` bound")));
+                    }
+                }
+                return Ok(());
+            }
+            Type::Struct { name, .. } | Type::Enum { name, .. } => name.clone(),
+            other => format!("{other}"),
+        };
+        for b in &bounds {
+            if !self.implements_trait(&type_name, b) {
+                return Err(Diagnostic::error(format!(
+                    "the trait `{b}` is not implemented for `{type_name}`"
+                ))
+                .with_label(
+                    span,
+                    format!("`{type_name}` does not satisfy the `{b}` bound required here"),
+                )
+                .with_note(format!(
+                    "add `impl {b} for {type_name} {{ ... }}` or pass a type that implements the trait"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record that `type_name` implements `trait_name` (called by the
+    /// checker when it registers an `impl Trait for Type` block).
+    pub fn register_trait_impl(&mut self, type_name: String, trait_name: String) {
+        self.trait_impls.insert((type_name, trait_name));
+    }
+
+    /// True if an `impl trait_name for type_name` block was registered.
+    pub fn implements_trait(&self, type_name: &str, trait_name: &str) -> bool {
+        self.trait_impls
+            .contains(&(type_name.to_string(), trait_name.to_string()))
     }
 
     /// Generate a fresh, unresolved type variable.
@@ -178,6 +258,7 @@ impl InferenceEngine {
                     Err(Diagnostic::error(format!("infinite type: ?T{id} = {b}"))
                         .with_label(span, "recursive type detected"))
                 } else {
+                    self.check_var_bounds(*id, &b, span)?;
                     self.substitutions.insert(*id, b);
                     Ok(())
                 }
@@ -189,6 +270,7 @@ impl InferenceEngine {
                     Err(Diagnostic::error(format!("infinite type: ?T{id} = {a}"))
                         .with_label(span, "recursive type detected"))
                 } else {
+                    self.check_var_bounds(*id, &a, span)?;
                     self.substitutions.insert(*id, a);
                     Ok(())
                 }
@@ -250,18 +332,50 @@ impl InferenceEngine {
 
             // Bridge the builtin generic `Result<T, E>` (used by annotations) and
             // the stdlib `enum Result { Ok(any), Err(any) }` (produced by
-            // `Result.Ok(..)` construction). The stdlib enum is `any`-typed, so
-            // the inner T/E carry no constraint and the two are interchangeable.
-            (Type::Result { .. }, Type::Enum { name, .. })
-            | (Type::Enum { name, .. }, Type::Result { .. })
+            // `Result.Ok(..)` construction). Constructors synthesize payload-
+            // bearing generics ([ok, err]); check them against the annotation
+            // so `-> Result<i64, str> { return Err(42) }` is rejected instead
+            // of segfaulting at use (backlog #13/#19). A bare/erased enum (no
+            // generics — e.g. a stdlib fn declared `-> Result`) stays
+            // interchangeable, matching the documented erasure semantics.
+            (Type::Result { ok, err }, Type::Enum { name, generics })
+            | (Type::Enum { name, generics }, Type::Result { ok, err })
                 if name == "Result" =>
             {
+                if generics.len() == 2 {
+                    self.unify(ok, &generics[0], span)?;
+                    self.unify(err, &generics[1], span)?;
+                }
                 Ok(())
             }
             // Same bridge for `Option<T>` and `enum Option { Some(any), None }`.
-            (Type::Option { .. }, Type::Enum { name, .. })
-            | (Type::Enum { name, .. }, Type::Option { .. })
+            (Type::Option { inner }, Type::Enum { name, generics })
+            | (Type::Enum { name, generics }, Type::Option { inner })
                 if name == "Option" =>
+            {
+                if generics.len() == 1 {
+                    self.unify(inner, &generics[0], span)?;
+                }
+                Ok(())
+            }
+
+            // Erased-compat: a bare stdlib `Result`/`Option` enum (no
+            // generics) unifies with any payload-bearing instantiation of
+            // the same enum — bare annotations erase payloads to i64 slots
+            // (CLAUDE.md gotcha #13) and stdlib helpers are typed that way.
+            (
+                Type::Enum {
+                    name: n1,
+                    generics: g1,
+                },
+                Type::Enum {
+                    name: n2,
+                    generics: g2,
+                },
+            ) if n1 == n2
+                && (n1 == "Result" || n1 == "Option")
+                && g1.len() != g2.len()
+                && (g1.is_empty() || g2.is_empty()) =>
             {
                 Ok(())
             }
@@ -370,11 +484,27 @@ impl InferenceEngine {
                 },
             ) if m1 == m2 => self.unify(i1, i2, span),
 
-            // Dynamic trait objects: a concrete struct type can be assigned to dyn Trait.
-            // Full trait-implementation checking is done during type checking; here we
-            // allow the coercion.
-            (Type::Struct { .. }, Type::DynTrait { .. })
-            | (Type::DynTrait { .. }, Type::Struct { .. }) => Ok(()),
+            // Dynamic trait objects: a concrete struct type can be assigned
+            // to `dyn Trait` ONLY when an `impl Trait for Struct` exists —
+            // an unimplemented coercion type-checked clean and segfaulted at
+            // the first vtable dispatch (backlog #18/#34).
+            (Type::Struct { name: sname, .. }, Type::DynTrait { trait_name })
+            | (Type::DynTrait { trait_name }, Type::Struct { name: sname, .. }) => {
+                if self.implements_trait(sname, trait_name) {
+                    Ok(())
+                } else {
+                    Err(Diagnostic::error(format!(
+                        "the trait `{trait_name}` is not implemented for `{sname}`"
+                    ))
+                    .with_label(
+                        span,
+                        format!("`{sname}` cannot be coerced to `dyn {trait_name}`"),
+                    )
+                    .with_note(format!(
+                        "add `impl {trait_name} for {sname} {{ ... }}` or pass a type that implements the trait"
+                    )))
+                }
+            }
             // Two dyn Traits unify if they name the same trait.
             (Type::DynTrait { trait_name: t1 }, Type::DynTrait { trait_name: t2 }) if t1 == t2 => {
                 Ok(())
@@ -550,11 +680,14 @@ impl InferenceEngine {
     ///
     /// For each generic type parameter's original var ID, a new fresh var is
     /// allocated, and all occurrences in the param/ret types are replaced.
-    pub fn instantiate_sig(&mut self, sig: &crate::env::FunctionSig) -> (Vec<Type>, Type) {
+    pub fn instantiate_sig(
+        &mut self,
+        sig: &crate::env::FunctionSig,
+    ) -> (Vec<Type>, Type, HashMap<u32, u32>) {
         if sig.generic_var_ids.is_empty() {
             // Non-generic function — no instantiation needed.
             let params = sig.params.iter().map(|(_, t)| t.clone()).collect();
-            return (params, sig.ret.clone());
+            return (params, sig.ret.clone(), HashMap::new());
         }
 
         // Build old_id → new_id mapping.
@@ -573,7 +706,7 @@ impl InferenceEngine {
             .collect();
         let ret = self.instantiate(&sig.ret, &var_map);
 
-        (params, ret)
+        (params, ret, var_map)
     }
 
     /// Get the current substitution map (for debugging/testing).
