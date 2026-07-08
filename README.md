@@ -73,7 +73,7 @@ After installing, verify the toolchain and take the tour:
 ```bash
 kryos doctor    # checks linker, stdlib, runtime libs
 kryos welcome   # first-run banner with an example workflow
-kryos new hello && cd hello && kryos run src/main.kry
+kryos new hello && cd hello && kryos run
 ```
 
 ### From source
@@ -254,7 +254,7 @@ The third thesis is **capability typing as a first-class compile-time check**. `
 ## Toolchain
 
 ```
-kryos run <file.kry>          Compile and execute
+kryos run [file|dir]          Compile and execute (defaults to the current project)
 kryos check <file.kry>        Type-check without running
 kryos build <file.kry>        Compile to native (Cranelift default)
 kryos build --release         Compile via LLVM backend

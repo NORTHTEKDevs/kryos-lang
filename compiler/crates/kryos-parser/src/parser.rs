@@ -125,6 +125,28 @@ impl Parser {
         self.nest_depth >= MAX_NESTING_DEPTH || self.rec_depth >= MAX_RECURSION_DEPTH
     }
 
+    /// After a condition, a stray `=` almost always means `==`. Emit a
+    /// targeted hint (the generic "expected `{`" that would follow is much
+    /// less helpful), then recover by consuming `= <expr>` so the block
+    /// parse proceeds without cascade errors.
+    fn hint_assign_in_condition(&mut self) {
+        if self.peek_kind() == TokenKind::Eq {
+            let span = self.peek().span;
+            self.error_with_code(
+                "assignment `=` is not allowed in a condition".to_string(),
+                span,
+                kryos_errors::codes::E0009,
+            );
+            if !self.nesting_poisoned {
+                if let Some(d) = self.diagnostics.last_mut() {
+                    d.notes.push("use `==` to compare".to_string());
+                }
+            }
+            self.advance();
+            let _ = self.parse_expr_no_struct_lit();
+        }
+    }
+
     /// Report the nesting-limit error (once) and poison the parser.
     fn nesting_overflow(&mut self) {
         if self.nesting_poisoned {
@@ -1413,11 +1435,13 @@ impl Parser {
             return self.parse_if_let(start);
         }
         let condition = self.parse_expr_no_struct_lit();
+        self.hint_assign_in_condition();
         let then_block = self.parse_block();
 
         let mut elif_clauses = Vec::new();
         while self.eat(TokenKind::Elif) {
             let cond = self.parse_expr_no_struct_lit();
+            self.hint_assign_in_condition();
             let block = self.parse_block();
             elif_clauses.push((cond, block));
         }
@@ -1430,6 +1454,7 @@ impl Parser {
             self.advance(); // eat `else`
             self.advance(); // eat `if`
             let cond = self.parse_expr_no_struct_lit();
+            self.hint_assign_in_condition();
             let block = self.parse_block();
             elif_clauses.push((cond, block));
         }
@@ -1593,6 +1618,7 @@ impl Parser {
             return self.parse_while_let(start);
         }
         let condition = self.parse_expr_no_struct_lit();
+        self.hint_assign_in_condition();
         let body = self.parse_block();
         let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
         Stmt::While {
@@ -1934,6 +1960,21 @@ impl Parser {
 
     fn parse_expr_bp_inner(&mut self, min_bp: u8) -> Expr {
         let mut lhs = self.parse_prefix();
+
+        // Rust-style macro call `name!(...)`: Kryos has no macros. Without
+        // this, `println!("hi")` parses as `println` then `!("hi")` (boolean
+        // not) and surfaces as a baffling bool type-mismatch two phases
+        // later. Report at the source, eat the `!`, and recover by parsing
+        // the call normally.
+        if let Expr::Identifier { name, span } = &lhs {
+            if self.peek_kind() == TokenKind::Bang && self.peek_nth(1) == TokenKind::LParen {
+                let msg =
+                    format!("Kryos has no macros -- call `{name}(...)` without the `!`");
+                let at = span.merge(self.peek().span);
+                self.error_with_code(msg, at, kryos_errors::codes::E0009);
+                self.advance(); // consume `!`; the `(` postfix below builds the call
+            }
+        }
 
         // Each loop iteration wraps `lhs` one level deeper (field access,
         // call, index, cast, binary op), so a long flat chain like
@@ -2536,6 +2577,15 @@ impl Parser {
                     span,
                     kryos_errors::codes::E0003,
                 );
+                // Newcomer hint: JS/C# arrow-closure syntax.
+                if tok.kind == TokenKind::FatArrow && !self.nesting_poisoned {
+                    if let Some(d) = self.diagnostics.last_mut() {
+                        d.notes.push(
+                            "closures are written `|x| x + 1` -- `=>` only introduces match arms"
+                                .to_string(),
+                        );
+                    }
+                }
                 self.advance();
                 Expr::Identifier {
                     name: "<error>".to_string(),

@@ -1648,16 +1648,25 @@ impl TypeChecker {
                         *span,
                         kryos_errors::codes::E0102,
                     );
+                    // Newcomer hints for names carried over from other
+                    // languages beat a Levenshtein suggestion here.
+                    let newcomer_note: Option<&str> = match name.as_str() {
+                        "null" | "nil" | "undefined" | "NULL" | "nullptr" => Some(
+                            "Kryos has no null -- use `Option<T>` from std::option (`Some(x)` / `None()`)",
+                        ),
+                        "console" => Some("there is no `console` -- print with `println(...)`"),
+                        _ => None,
+                    };
                     let known = self.env.all_var_names();
-                    if let Some(suggestion) =
-                        crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
-                    {
-                        if let Some(diag) = self.diagnostics.last_mut() {
+                    if let Some(diag) = self.diagnostics.last_mut() {
+                        if let Some(note) = newcomer_note {
+                            diag.notes.push(note.to_string());
+                        } else if let Some(suggestion) =
+                            crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
+                        {
                             diag.notes.push(format!("did you mean `{suggestion}`?"));
-                        }
-                    } else {
-                        // No close match, show that variable is not in scope
-                        if let Some(diag) = self.diagnostics.last_mut() {
+                        } else {
+                            // No close match, show that variable is not in scope
                             diag.notes.push("this variable is not in scope".to_string());
                         }
                     }
@@ -2321,6 +2330,19 @@ impl TypeChecker {
                     *span,
                     kryos_errors::codes::E0107,
                 );
+                // Common builtins mistaken for methods (`s.len()`, `a.push(x)`).
+                const BUILTIN_FN_HINTS: &[&str] = &[
+                    "len", "push", "pop", "contains", "starts_with", "ends_with",
+                    "trim", "to_upper", "to_lower", "replace", "split", "join",
+                    "substr", "sort", "reverse", "abs", "to_string",
+                ];
+                if BUILTIN_FN_HINTS.contains(&method.as_str()) {
+                    if let Some(diag) = self.diagnostics.last_mut() {
+                        diag.notes.push(format!(
+                            "`{method}` is a global builtin, not a method -- write `{method}(value, ...)`"
+                        ));
+                    }
+                }
                 if let Type::Struct { name, .. } | Type::Enum { name, .. } = &obj_ty {
                     let methods = self.env.all_method_names(name);
                     if let Some(s) =
@@ -5232,10 +5254,6 @@ pub fn type_check_with_lambda_params(
         params: vec![("m".to_string(), Type::I64)],
         ret: Type::Void,
     });
-
-    // `null` is a global constant of type i64 = 0. We treat raw pointers/handles
-    // as i64 throughout the stdlib FFI, so this is the canonical null sentinel.
-    checker.env.define_var("null".to_string(), Type::I64);
 
     checker.check_module(module);
     // Resolve recorded empty-array let bindings through the (now fully unified)

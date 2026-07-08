@@ -1215,3 +1215,42 @@ fn test_nesting_guard_allows_reasonable_depth() {
     let chain = format!("fn main() {{ let x = {}1 }}", "1+".repeat(500));
     parse_ok(&chain);
 }
+
+// ======================== Newcomer-mistake diagnostics ========================
+
+#[test]
+fn test_hint_rust_macro_call() {
+    let diags = parse_err("fn main() { println!(\"hi\") }");
+    assert!(
+        diags.iter().any(|d| d.message.contains("has no macros")),
+        "expected macro hint in {diags:?}"
+    );
+}
+
+#[test]
+fn test_hint_arrow_closure() {
+    let diags = parse_err("fn main() { let f = (x) => x + 1 }");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.notes.iter().any(|n| n.contains("closures are written"))),
+        "expected closure-syntax note in {diags:?}"
+    );
+}
+
+#[test]
+fn test_hint_assign_in_condition() {
+    let diags = parse_err("fn main() { let mut x = 1\n if x = 5 { println(\"y\") } }");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("assignment `=` is not allowed in a condition")),
+        "expected assign-in-condition error in {diags:?}"
+    );
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.notes.iter().any(|n| n.contains("use `==` to compare"))),
+        "expected == note in {diags:?}"
+    );
+}

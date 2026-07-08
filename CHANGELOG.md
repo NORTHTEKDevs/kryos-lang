@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added — first-run experience
+- **`kryos run` project mode.** Bare `kryos run` (and `kryos run <dir>`) now
+  resolves the project's `src/main.kry`, mirroring `kryos check`/`kryos build`
+  and cargo's bare `run` — previously the documented `kryos new` -> `kryos run`
+  flow failed with "required arguments not provided". Program args follow the
+  path (`kryos run . World`). A malformed `kryos.toml` is now reported (it was
+  silently ignored on the file path).
+- **Newcomer-mistake diagnostics.** Targeted errors/hints for the habits every
+  Rust/JS/Python developer brings on day one:
+  - `println!("hi")` -> "Kryos has no macros — call `println(...)` without the
+    `!`" (previously parsed as boolean `not` and surfaced as a baffling bool
+    type-mismatch);
+  - `(x) => x + 1` -> note: closures are written `|x| x + 1`;
+  - `if x = 5` -> "assignment `=` is not allowed in a condition; use `==`";
+  - `"hi ${name}"` -> warning: the `$` prints literally (JS template-literal
+    habit; the output was silently `hi $World`);
+  - a bare `{` in a JSON-looking string -> the unterminated-string error now
+    explains the `{{` escape (it opens an interpolation that swallows the
+    closing quote);
+  - `s.len()` -> note: `len` is a global builtin, not a method (same for
+    push/pop/contains/trim/split/...);
+  - `null`/`nil`/`undefined` -> "Kryos has no null — use `Option<T>`".
+- `kryos explain E0010` long-form entry for the new nesting-limit error.
+
+### Removed
+- **The undocumented global `null` binding** (an i64 = 0 "FFI sentinel" that
+  nothing in the stdlib, examples, or ecosystem actually used). `let x = null`
+  silently compiled to integer 0 — it is now an error with the Option hint
+  above, matching the documented "no null" semantics.
+
+### Security
+- Bumped transitive `cmov` 0.5.3 -> 0.5.4 (RUSTSEC advisory: wrong results on
+  aarch64 with high register bits set).
+
+### Hardening sweep (same release)
+
 Hardening sweep for 1.0: compiler robustness on adversarial input, runtime
 silent-wrong fixes, and stdlib edge-case correctness. Found by a
 malformed-input probe corpus + verified source audits; every fix has a

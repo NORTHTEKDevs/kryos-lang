@@ -747,3 +747,33 @@ fn fuzz_regression_truncated_utf8_at_eof_does_not_panic() {
         let _ = lex(&s);
     }
 }
+
+// ======================== Newcomer-mistake diagnostics ========================
+
+#[test]
+fn test_dollar_interp_warning() {
+    // JS template-literal habit: `"${name}"` -- the `$` prints literally, warn.
+    let (_, diags) =
+        Lexer::new("fn main() { let s = \"hi ${x}\" }", 0).tokenize_with_diagnostics();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.message.contains("printed literally")),
+        "expected dollar-interp warning in {diags:?}"
+    );
+}
+
+#[test]
+fn test_brace_json_gotcha_note() {
+    // A bare `{` in a JSON-looking string opens an interpolation that
+    // swallows the closing quote; the unterminated-string error must
+    // explain the `{{` escape.
+    let (_, diags) =
+        Lexer::new("fn main() { let j = \"{\\\"a\\\":1}\" }", 0).tokenize_with_diagnostics();
+    assert!(
+        diags
+            .iter()
+            .any(|d| d.notes.iter().any(|n| n.contains("starts string interpolation"))),
+        "expected interpolation note in {diags:?}"
+    );
+}

@@ -106,7 +106,9 @@ enum Commands {
 
     /// Compile and run a Kryos file
     Run {
-        /// Source file to run
+        /// Source file (.kry) or project directory to run. Defaults to the
+        /// current directory, which must contain a kryos.toml project.
+        #[arg(default_value = ".")]
         file: String,
 
         /// Print compile + exec + total timings after the program exits.

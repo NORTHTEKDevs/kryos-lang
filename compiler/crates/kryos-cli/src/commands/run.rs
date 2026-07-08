@@ -32,7 +32,35 @@ fn execute_inner(
     cap_mode: kryos_driver::CapabilityMode,
 ) -> Result<(), String> {
     let total_start = Instant::now();
-    let path = Path::new(file);
+    let mut resolved = std::path::PathBuf::from(file);
+
+    // Project mode: `kryos run` / `kryos run <dir>` resolves the project's
+    // entry point, mirroring `kryos check <dir>` (and cargo's bare `run`).
+    if resolved.is_dir() {
+        let manifest = resolved.join("kryos.toml");
+        if !manifest.exists() {
+            return Err(format!(
+                "no kryos.toml found in `{}` -- pass a .kry file, or run `kryos new <name>` to create a project",
+                resolved.display()
+            ));
+        }
+        // Validate the manifest up front (matches `check`/`build`) instead of
+        // silently ignoring a malformed kryos.toml.
+        if let Err(e) = kryos_package::Manifest::from_file(&manifest) {
+            return Err(format!("failed to load project manifest: {e}"));
+        }
+        let entry = resolved.join("src").join("main.kry");
+        if !entry.is_file() {
+            return Err(format!(
+                "project `{}` has no src/main.kry entry point",
+                resolved.display()
+            ));
+        }
+        resolved = entry;
+    }
+
+    let path = resolved.as_path();
+    let file: &str = &resolved.to_string_lossy();
 
     if !path.exists() {
         return Err(format!("file not found: {file}"));

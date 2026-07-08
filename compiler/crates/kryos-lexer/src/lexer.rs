@@ -359,6 +359,19 @@ impl<'src> Lexer<'src> {
                     text.push('{');
                     continue;
                 }
+                // Newcomer trap: JS template-literal syntax. `"${name}"`
+                // interpolates `{name}` and prints the `$` literally, which
+                // silently produces `$World`-style output -- warn.
+                if text.ends_with('$') {
+                    let span =
+                        Span::new(self.file_id, (self.pos - 1) as u32, (self.pos + 1) as u32);
+                    let diag = Diagnostic::warning(
+                        "`$` before an interpolation is printed literally",
+                    )
+                    .with_label(span, "this `$` is not part of the interpolation")
+                    .with_note("Kryos interpolation is `{expr}`, not `${expr}` -- drop the `$`");
+                    self.emit_diag(diag);
+                }
                 if !text.is_empty() || !has_interpolation {
                     self.emit(TokenKind::StringPart, start, self.pos, text.clone());
                     text.clear();
@@ -428,9 +441,16 @@ impl<'src> Lexer<'src> {
             // points at the opening quote, so users don't see misleading
             // "unexpected end of file" from the parser further down.
             let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
-            let diag = Diagnostic::error("unterminated string literal")
+            let mut diag = Diagnostic::error("unterminated string literal")
                 .with_label(span, "this string is never closed")
                 .with_note("add a matching `\"` before end of file");
+            if has_interpolation {
+                // The most common cause: a bare `{` (e.g. embedded JSON)
+                // opened an interpolation that swallowed the closing quote.
+                diag = diag.with_note(
+                    "a bare `{` starts string interpolation -- for a literal brace (e.g. JSON) write `{{`",
+                );
+            }
             self.emit_diag(diag);
         }
 

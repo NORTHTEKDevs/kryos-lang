@@ -63,9 +63,9 @@ pub fn execute(opts: NewOptions) -> Result<(), String> {
     eprintln!();
     eprintln!("next steps:");
     eprintln!("  cd {name}");
-    eprintln!("  kryos run src/main.kry");
+    eprintln!("  kryos run");
     eprintln!("  kryos test");
-    eprintln!("  kryos build --release src/main.kry");
+    eprintln!("  kryos build --release");
 
     Ok(())
 }
@@ -112,7 +112,7 @@ fn render_toml(name: &str, template: &str) -> String {
 
 fn render_readme(name: &str, template: &str) -> String {
     format!(
-        "# {name}\n\nA Kryos project, generated from the `{template}` template.\n\n## Build\n\n```bash\nkryos run src/main.kry           # JIT (Cranelift)\nkryos build --release src/main.kry  # AOT (LLVM)\nkryos test                       # run tests/\n```\n\n## Layout\n\n```\n{name}/\n  kryos.toml\n  src/main.kry\n  tests/smoke.kry\n```\n"
+        "# {name}\n\nA Kryos project, generated from the `{template}` template.\n\n## Build\n\n```bash\nkryos run                        # JIT (Cranelift); runs src/main.kry\nkryos build --release            # AOT (LLVM)\nkryos test                       # run tests/\n```\n\n## Layout\n\n```\n{name}/\n  kryos.toml\n  src/main.kry\n  tests/smoke.kry\n```\n"
     )
 }
 
