@@ -16,10 +16,24 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     }
 
     let mut unformatted = 0usize;
+    let mut skipped = 0usize;
 
     for path in &targets {
         let source =
             std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+
+        // The formatter re-emits from the AST, which does not carry regular
+        // `//` line/inline comments (only `///` doc comments survive). So a
+        // naive format would silently DELETE every non-doc comment. Until
+        // comment trivia is threaded through the parser, refuse to rewrite a
+        // file that has such comments rather than destroy them.
+        if has_non_doc_comment(&source) {
+            eprintln!(
+                "  skipped {path} (has line/inline comments the formatter cannot preserve yet)"
+            );
+            skipped += 1;
+            continue;
+        }
 
         let formatted = kryos_fmt::format_source(&source).map_err(|diags| {
             let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
@@ -39,6 +53,13 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
         }
     }
 
+    if skipped > 0 {
+        eprintln!(
+            "kryos fmt: skipped {skipped} file{} to avoid deleting comments (see above)",
+            if skipped == 1 { "" } else { "s" }
+        );
+    }
+
     if check && unformatted > 0 {
         return Err(format!(
             "{unformatted} file{} would be reformatted",
@@ -47,6 +68,72 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// True if the source contains a regular `//` line or inline comment (NOT a
+/// `///` doc comment, which the formatter preserves). Scans with minimal
+/// awareness of string/char literals and block comments so a `//` inside a
+/// string (e.g. a URL) does not trigger a false positive.
+fn has_non_doc_comment(src: &str) -> bool {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        match b[i] {
+            b'"' => {
+                // Skip a string literal (respecting backslash escapes).
+                i += 1;
+                while i < n && b[i] != b'"' {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'\'' => {
+                // Skip a char literal (respecting backslash escapes).
+                i += 1;
+                while i < n && b[i] != b'\'' {
+                    if b[i] == b'\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'/' if i + 1 < n && b[i + 1] == b'*' => {
+                // Skip a (possibly nested) block comment.
+                let mut depth = 1;
+                i += 2;
+                while i < n && depth > 0 {
+                    if i + 1 < n && b[i] == b'/' && b[i + 1] == b'*' {
+                        depth += 1;
+                        i += 2;
+                    } else if i + 1 < n && b[i] == b'*' && b[i + 1] == b'/' {
+                        depth -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'/' if i + 1 < n && b[i + 1] == b'/' => {
+                // A doc comment `///` is preserved by the formatter; anything
+                // else (`//` or `//!`) is a regular comment that would be lost.
+                let is_doc = i + 2 < n && b[i + 2] == b'/';
+                if !is_doc {
+                    return true;
+                }
+                // Skip the rest of the doc-comment line.
+                while i < n && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 /// Recursively find all `.kry` files under a directory.
