@@ -1,0 +1,129 @@
+// Regression (audit backlog #2/#15/#16/#27/#28): cross-function `throw`
+// must unwind IMMEDIATELY to the nearest enclosing try/catch:
+//   1. a throw from a call nested inside if/for/while within a try must not
+//      let the statements after the call run (dead code executed, loop
+//      iterations continued, totals corrupted);
+//   2. the FIRST exception wins — later iterations must not overwrite it;
+//   3. catching a throw from a function returning a heap-bearing enum must
+//      not crash after the catch handler runs (null-placeholder drop);
+//   4. a throw outside any try must propagate out of the function instead
+//      of being swallowed by a later unrelated try/catch in the same
+//      function (stale-exception misattribution), and the message must
+//      survive the unwind intact (runtime owns a copy of the string).
+// Self-checking: exits nonzero on any wrong behavior.
+
+enum Value { S(str), A([Value]) }
+
+fn boom() {
+    throw "boom"
+}
+
+fn charge(amount: i64) -> i64 {
+    if amount > 100 { throw "amount exceeds limit" }
+    return amount
+}
+
+fn fail_at(n: i64) { throw "failed at " + to_string(n) }
+
+fn make_value() -> Value { throw "cannot make value" }
+
+fn maybe_thrower(n: i64) -> i64 {
+    if n == 2 { throw "bad n=2" }
+    return n * 10
+}
+
+fn process() -> i64 {
+    let mut total: i64 = 0
+    let mut i: i64 = 0
+    while i < 5 {
+        let v: i64 = maybe_thrower(i)
+        total = total + v
+        i = i + 1
+    }
+    try {
+        let unrelated: i64 = 1
+    } catch e {
+        println("FAIL: unrelated try swallowed: " + e)
+        exit(1)
+    }
+    return total
+}
+
+fn main() {
+    // 1. Nested-if: code after a throwing call must not run.
+    let mut ran_dead_code: i64 = 0
+    try {
+        if true {
+            boom()
+            ran_dead_code = 1
+        }
+        ran_dead_code = 2
+    } catch e {
+        if contains(e, "boom") == false {
+            println("FAIL: wrong message: " + e)
+            exit(1)
+        }
+    }
+    if ran_dead_code != 0 {
+        println("FAIL: dead code after throw ran (" + to_string(ran_dead_code) + ")")
+        exit(1)
+    }
+
+    // 1b. Loop: iterations after the throwing one must not run.
+    let mut total: i64 = 0
+    try {
+        for amt in [10, 20, 500, 30] {
+            let charged = charge(amt)
+            total = total + charged
+        }
+    } catch e2 {
+        if contains(e2, "amount exceeds limit") == false {
+            println("FAIL: wrong loop message: " + e2)
+            exit(1)
+        }
+    }
+    if total != 30 {
+        println("FAIL: loop continued after throw, total=" + to_string(total))
+        exit(1)
+    }
+
+    // 2. First exception wins.
+    try {
+        for i in [1, 2, 3] { fail_at(i) }
+    } catch e3 {
+        if contains(e3, "failed at 1") == false {
+            println("FAIL: first exception lost, got: " + e3)
+            exit(1)
+        }
+    }
+
+    // 3. Heap-bearing enum: catch must run and NOT crash afterwards.
+    try {
+        let result = make_value()
+    } catch e4 {
+        if contains(e4, "cannot make value") == false {
+            println("FAIL: wrong enum message: " + e4)
+            exit(1)
+        }
+    }
+
+    // 4. No stale-exception misattribution; message survives the unwind.
+    let mut caught_in_main: i64 = 0
+    try {
+        let r: i64 = process()
+        println("FAIL: main try saw no exception, r=" + to_string(r))
+        exit(1)
+    } catch e5 {
+        if contains(e5, "bad n=2") == false {
+            println("FAIL: exception message corrupted: " + e5)
+            exit(1)
+        }
+        caught_in_main = 1
+    }
+    if caught_in_main != 1 {
+        println("FAIL: main catch never ran")
+        exit(1)
+    }
+
+    println("exception unwind soundness: all pass")
+}

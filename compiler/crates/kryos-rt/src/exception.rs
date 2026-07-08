@@ -23,10 +23,32 @@ thread_local! {
 ///
 /// Called by compiled code when `throw` executes outside a `try` block.
 /// The calling function will return immediately after this call.
+///
+/// The value is always a KryosString pointer (the MIR lowering stringifies
+/// thrown values at the throw site). The runtime stores its OWN COPY: the
+/// throwing function's return path drops its locals — including the temp
+/// that held the thrown string — so keeping the raw pointer here was a
+/// use-after-free once the unwind crossed a frame whose cleanup reused the
+/// allocation (caught message printed as garbage / `<invalid utf-8>`).
+/// `kryos_exception_take` transfers ownership of the copy to the catcher.
 #[no_mangle]
 pub extern "C" fn kryos_exception_throw(value: i64) {
+    let owned = if value != 0 {
+        let s = value as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len;
+            let data = (*s).data;
+            if !data.is_null() {
+                crate::string::kryos_string_new(data, len) as i64
+            } else {
+                value
+            }
+        }
+    } else {
+        value
+    };
     HAS_EXCEPTION.with(|h| h.set(true));
-    EXCEPTION_VALUE.with(|v| v.set(value));
+    EXCEPTION_VALUE.with(|v| v.set(owned));
 }
 
 /// Check whether an exception is pending.

@@ -147,9 +147,52 @@ pub struct LoweringContext {
 }
 
 /// Context passed to `throw` statements inside a `try` block.
+#[derive(Clone, Copy)]
 struct TryCatchTarget {
     result_local: LocalId,
     check_block: BlockId,
+}
+
+/// True when this instruction is a call that can carry a cross-function
+/// `throw` (a user function, an indirect closure call, or a vtable call).
+/// Runtime builtins (`kryos_*`) and the pure global builtins never throw.
+/// Mirrors the post-call safety-net filter in both codegen backends.
+fn is_unwind_source(inst: &Instruction) -> bool {
+    let Instruction::Assign { value, .. } = inst else {
+        return false;
+    };
+    match value {
+        RValue::Call { func, .. } => {
+            !func.starts_with("kryos_")
+                && !matches!(
+                    func.as_str(),
+                    "println"
+                        | "print"
+                        | "eprintln"
+                        | "sleep"
+                        | "sleep_ms"
+                        | "sqrt"
+                        | "floor"
+                        | "ceil"
+                        | "round"
+                        | "abs"
+                        | "min"
+                        | "max"
+                        | "assert"
+                        | "assert_eq"
+                        | "panic"
+                        | "len"
+                        | "range"
+                        | "to_string"
+                        | "exit"
+                        | "malloc"
+                        | "calloc"
+                        | "free"
+                )
+        }
+        RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
+        _ => false,
+    }
 }
 
 /// Stores a generic function's AST for deferred monomorphization.
@@ -339,7 +382,24 @@ impl LoweringContext {
     // ----- block management -----
 
     fn emit(&mut self, inst: Instruction) {
+        // Inside a try block, every call that can carry a cross-function
+        // `throw` is followed IMMEDIATELY by a pending-exception check that
+        // routes to the enclosing catch. This covers calls at any nesting
+        // depth (if/for/while/match bodies) — the per-statement checks in
+        // lower_try_catch only cover the try body's top level, which let
+        // dead code run (and later throws overwrite earlier ones) until
+        // control returned to the top level. The codegen backends rely on
+        // this immediacy: their per-call unwind safety net is skipped only
+        // when the very next MIR instruction is this check.
+        let target = if self.try_catch_target.is_some() && is_unwind_source(&inst) {
+            self.try_catch_target
+        } else {
+            None
+        };
         self.current_instructions.push(inst);
+        if let Some(t) = target {
+            emit_exception_check(self, t.result_local, t.check_block);
+        }
     }
 
     /// Finish the current block with the given terminator and start a new open
@@ -380,6 +440,7 @@ impl LoweringContext {
         self.param_locals.clear();
         self.hidden_locals.clear();
         self.partial_moved_locals.clear();
+        self.try_catch_target = None;
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -397,6 +458,10 @@ impl LoweringContext {
             loop_exits: std::mem::take(&mut self.loop_exits),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
             closure_locals: std::mem::take(&mut self.closure_locals),
+            // A nested function body (lambda/spawn/monomorphized fn) must
+            // NOT inherit the enclosing function's try context — its blocks
+            // and locals live in a different function.
+            try_catch_target: self.try_catch_target.take(),
         }
     }
 
@@ -412,6 +477,7 @@ impl LoweringContext {
         self.loop_exits = state.loop_exits;
         self.hidden_locals = state.hidden_locals;
         self.closure_locals = state.closure_locals;
+        self.try_catch_target = state.try_catch_target;
     }
 }
 
@@ -427,6 +493,7 @@ struct FunctionState {
     loop_exits: Vec<BlockId>,
     hidden_locals: HashSet<u32>,
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    try_catch_target: Option<TryCatchTarget>,
 }
 
 // ---------------------------------------------------------------------------

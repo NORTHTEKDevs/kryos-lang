@@ -2267,10 +2267,15 @@ struct FuncTranslator<'a> {
     borrow_slots: HashMap<u32, cranelift_codegen::ir::StackSlot>,
     /// Trait method vtable map: (concrete_type, trait_name) -> [method_name, ...].
     mir_module_trait_methods: &'a HashMap<(String, String), Vec<String>>,
-    /// Whether this function has MIR-level exception checks (try/catch).
-    /// When true, the codegen does NOT emit its own post-call exception
-    /// checks because the MIR checks handle routing to catch blocks.
-    has_mir_exception_checks: bool,
+    /// True while translating an instruction whose IMMEDIATE successor in
+    /// the same MIR block is a `kryos_exception_check` call (emitted by
+    /// try/catch lowering right after every throwing call inside a try).
+    /// The codegen's own post-call unwind safety net is skipped ONLY for
+    /// such calls — the MIR check routes to the catch block instead. All
+    /// other calls (including ones outside the try in the same function)
+    /// keep the net, so a pending exception propagates immediately rather
+    /// than being misattributed to a later unrelated try/catch.
+    next_is_mir_exc_check: bool,
     /// Emit overflow checks for integer arithmetic.
     checked_arithmetic: bool,
     /// Structs annotated with `@copy` — assignment deep-copies the struct.
@@ -2368,16 +2373,6 @@ pub fn translate_function<M: Module>(
     copy_structs: &HashSet<String>,
     user_func_names: &HashSet<String>,
 ) -> Result<(), CodegenError> {
-    // Check if this function already contains MIR-level exception checks
-    // (from try/catch lowering).  If so, the codegen must NOT add its own
-    // post-call return-on-exception guards because they would bypass the
-    // catch handler.
-    let has_mir_exception_checks = mir_func.blocks.iter().any(|bb| {
-        bb.instructions.iter().any(|inst| {
-            matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
-                if func == "kryos_exception_check")
-        })
-    });
 
     let mut translator = FuncTranslator {
         mir_func,
@@ -2390,7 +2385,7 @@ pub fn translate_function<M: Module>(
         enum_defs,
         borrow_slots: HashMap::new(),
         mir_module_trait_methods: trait_vtables,
-        has_mir_exception_checks,
+        next_is_mir_exc_check: false,
         checked_arithmetic,
         copy_structs,
         user_func_names,
@@ -2543,11 +2538,24 @@ fn translate_block_body<M: Module>(
     translator: &mut FuncTranslator,
     module: &mut M,
 ) -> Result<(), CodegenError> {
-    for instr in &bb.instructions {
+    for (i, instr) in bb.instructions.iter().enumerate() {
+        translator.next_is_mir_exc_check = bb
+            .instructions
+            .get(i + 1)
+            .map(is_mir_exc_check)
+            .unwrap_or(false);
         translate_instruction(instr, builder, translator, module)?;
     }
+    translator.next_is_mir_exc_check = false;
     translate_terminator(&bb.terminator, builder, translator, module)?;
     Ok(())
+}
+
+/// True for the `kryos_exception_check` flag call that try/catch lowering
+/// emits immediately after every throwing call inside a try block.
+fn is_mir_exc_check(inst: &Instruction) -> bool {
+    matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
+        if func == "kryos_exception_check")
 }
 
 // ---------------------------------------------------------------------------
@@ -2622,12 +2630,13 @@ fn translate_instruction<M: Module>(
                 }
             }
 
-            // For functions WITHOUT MIR-level exception handling (i.e., no
-            // try/catch), check the thread-local exception state after every
-            // user function call.  If an exception is pending, return
-            // immediately to propagate the unwind toward the nearest try/catch
-            // up the call stack.
-            if !translator.has_mir_exception_checks {
+            // Check the thread-local exception state after every user
+            // function call.  If an exception is pending, return immediately
+            // to propagate the unwind toward the nearest try/catch up the
+            // call stack.  Skipped only when the MIR already placed its own
+            // check right after this call (throwing call inside a try) —
+            // that check routes to the catch block instead of returning.
+            if !translator.next_is_mir_exc_check {
                 let should_check = match value {
                     RValue::Call { func, .. } => {
                         !func.starts_with("kryos_")
@@ -6688,6 +6697,25 @@ fn emit_drop_for_value<M: Module>(
             builder.ins().call(free_ref, &[val]);
         }
         MirType::Enum(ref enum_name) => {
+            // Guard: an enum local can legitimately hold null — a callee
+            // that throws returns a scalar default 0 before the exception
+            // check routes to catch, so the binding's drop at scope exit
+            // sees a null pointer (same guard as the Struct arm). Loading
+            // the tag from it was a segfault-after-catch (backlog #16).
+            let zero_ptr = builder.ins().iconst(types::I64, 0);
+            let is_nonnull = builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::NotEqual,
+                val,
+                zero_ptr,
+            );
+            let enum_drop_block = builder.create_block();
+            let enum_after_block = builder.create_block();
+            builder
+                .ins()
+                .brif(is_nonnull, enum_drop_block, &[], enum_after_block, &[]);
+            builder.seal_block(enum_drop_block);
+            builder.switch_to_block(enum_drop_block);
+
             // Runtime variant-aware Drop: load the tag, dispatch on it,
             // and free heap-owning payload fields for the active variant.
             if let Some(variants) = translator.enum_defs.get(enum_name).cloned() {
@@ -6773,6 +6801,10 @@ fn emit_drop_for_value<M: Module>(
             // Enum is heap-allocated via malloc — free the enum pointer.
             let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
+
+            builder.ins().jump(enum_after_block, &[]);
+            builder.seal_block(enum_after_block);
+            builder.switch_to_block(enum_after_block);
         }
         _ => {}
     }

@@ -62,11 +62,14 @@ pub struct LlvmCodegen {
     value_types: HashMap<String, String>,
     /// Structs annotated with `@copy` — assignment deep-copies the struct.
     copy_structs: HashSet<String>,
-    /// Whether the function currently being emitted contains MIR-level
-    /// exception checks (try/catch). When it does, the MIR already routes
-    /// pending exceptions and the auto post-call checks must stay out of
-    /// the way (mirrors the Cranelift backend's gating).
-    cur_fn_has_mir_exception_checks: bool,
+    /// True while emitting an instruction whose IMMEDIATE successor in the
+    /// same MIR block is a `kryos_exception_check` call (placed by try/catch
+    /// lowering right after every throwing call inside a try). Only such
+    /// calls skip the auto post-call unwind check — the MIR check routes to
+    /// the catch block instead. All other calls (including ones outside the
+    /// try in the same function) keep the net so a pending exception
+    /// propagates immediately (mirrors the Cranelift backend's gating).
+    next_is_mir_exc_check: bool,
     /// True if ANY function in the module calls `kryos_exception_throw` (the
     /// only thing that sets the catchable-exception flag; native panics abort
     /// instead). When false, no `throw` can ever fire, so the auto post-call
@@ -123,7 +126,7 @@ impl LlvmCodegen {
             mutable_locals: HashSet::new(),
             value_types: HashMap::new(),
             copy_structs: HashSet::new(),
-            cur_fn_has_mir_exception_checks: false,
+            next_is_mir_exc_check: false,
             module_can_throw: true,
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
@@ -2703,12 +2706,6 @@ impl LlvmCodegen {
         self.stackable_locals = Self::compute_stackable_locals(func);
 
         let fn_text_start = self.output.len();
-        self.cur_fn_has_mir_exception_checks = func.blocks.iter().any(|bb| {
-            bb.instructions.iter().any(|inst| {
-                matches!(inst, Instruction::Assign { value: RValue::Call { func, .. }, .. }
-                    if func == "kryos_exception_check")
-            })
-        });
         // Build the local type map for this function.
         self.local_types.clear();
         self.value_types.clear();
@@ -3066,9 +3063,15 @@ impl LlvmCodegen {
         }
 
         // Emit the entry block's instructions and terminator (label already emitted).
-        for inst in &first_block.instructions {
+        for (i, inst) in first_block.instructions.iter().enumerate() {
+            self.next_is_mir_exc_check = matches!(
+                first_block.instructions.get(i + 1),
+                Some(Instruction::Assign { value: RValue::Call { func: f, .. }, .. })
+                    if f == "kryos_exception_check"
+            );
             self.emit_instruction(inst, func)?;
         }
+        self.next_is_mir_exc_check = false;
         self.emit_terminator(&first_block.terminator, func)?;
 
         // Emit remaining blocks.
@@ -3198,9 +3201,15 @@ impl LlvmCodegen {
     fn emit_block(&mut self, block: &BasicBlock, func: &MirFunction) -> Result<(), CodegenError> {
         self.emit_line(&format!("bb{}:", block.id.0));
 
-        for inst in &block.instructions {
+        for (i, inst) in block.instructions.iter().enumerate() {
+            self.next_is_mir_exc_check = matches!(
+                block.instructions.get(i + 1),
+                Some(Instruction::Assign { value: RValue::Call { func: f, .. }, .. })
+                    if f == "kryos_exception_check"
+            );
             self.emit_instruction(inst, func)?;
         }
+        self.next_is_mir_exc_check = false;
 
         self.emit_terminator(&block.terminator, func)?;
 
@@ -3219,14 +3228,14 @@ impl LlvmCodegen {
         match inst {
             Instruction::Assign { dest, value } => {
                 self.emit_assign(*dest, value, func)?;
-                // For functions WITHOUT MIR-level exception handling, check
-                // the thread-local exception state after every user function
-                // call and return early to propagate the unwind toward the
-                // nearest try/catch up the call stack (mirrors the Cranelift
-                // backend; without this an out-of-try `throw` in a callee is
-                // silently ignored and execution continues).
+                // Check the thread-local exception state after every user
+                // function call and return early to propagate the unwind
+                // toward the nearest try/catch up the call stack. Skipped
+                // only when the MIR placed its own check right after this
+                // call (throwing call inside a try) — that check routes to
+                // the catch block instead (mirrors the Cranelift backend).
                 if self.module_can_throw
-                    && !self.cur_fn_has_mir_exception_checks
+                    && !self.next_is_mir_exc_check
                     && post_call_exception_check_applies(value)
                 {
                     self.emit_post_call_exception_check(func);
@@ -8720,6 +8729,21 @@ impl LlvmCodegen {
         func: &MirFunction,
         free_buf: bool,
     ) {
+        // Guard: an enum local can legitimately hold null — a callee that
+        // throws returns a scalar default 0 before the exception check
+        // routes to catch, so the binding's drop at scope exit sees a null
+        // pointer. Loading the tag from it was a segfault-after-catch
+        // (backlog #16). Mirrors the Cranelift backend's guard.
+        let is_null = self.next_temp();
+        let body_label = format!("enum_drop_body_{}", self.temp_counter);
+        let done_label = format!("enum_drop_done_{}", self.temp_counter);
+        self.temp_counter += 1;
+        self.emit_line(&format!("  {is_null} = icmp eq ptr {val}, null"));
+        self.emit_line(&format!(
+            "  br i1 {is_null}, label %{done_label}, label %{body_label}"
+        ));
+        self.emit_line(&format!("{body_label}:"));
+
         let variants = match self.enum_defs.get(enum_name).cloned() {
             Some(v) => v,
             None => {
@@ -8727,6 +8751,8 @@ impl LlvmCodegen {
                 if free_buf {
                     self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
                 }
+                self.emit_line(&format!("  br label %{done_label}"));
+                self.emit_line(&format!("{done_label}:"));
                 return;
             }
         };
@@ -8846,6 +8872,8 @@ impl LlvmCodegen {
         if free_buf {
             self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
         }
+        self.emit_line(&format!("  br label %{done_label}"));
+        self.emit_line(&format!("{done_label}:"));
     }
 }
 
