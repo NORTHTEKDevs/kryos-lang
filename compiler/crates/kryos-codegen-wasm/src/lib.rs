@@ -1,26 +1,25 @@
-//! WebAssembly codegen backend for Kryos (v0.1 — minimum viable).
+//! WebAssembly codegen backend for Kryos (experimental, secondary backend).
 //!
-//! This backend lowers a subset of Kryos MIR to a WebAssembly module that runs
-//! in `wasmtime` (with WASI) and in browsers (with a small JS shim for `println`).
+//! This backend lowers Kryos MIR to a `wasm32-unknown-unknown` module that runs
+//! against the JS host contract (browser or `node tools/wasm-host/run.mjs`).
+//! WASI is NOT a target — linear-memory heap ops import small host helpers.
 //!
-//! ## Supported (v0.1)
+//! ## Supported
 //!
-//! - Integer (`i64`) and float (`f64`) arithmetic
-//! - Booleans, comparisons, logical ops, bitwise ops
-//! - `if`/`else`, `while`, `for`, recursion, mutual recursion
-//! - Function definitions and direct calls
-//! - `println(i64)` and `println(f64)` via host-imported `kryos_print_i64` /
-//!   `kryos_print_f64` functions
-//! - Constant string literals via `kryos_print_str(offset, len)`
-//! - `return`, basic block control flow
+//! - Integer (`i64`, narrow ints via saturating casts) and `f64` arithmetic;
+//!   comparisons, logical/bitwise ops, shifts (shift amount masked to width)
+//! - `if`/`else`, `while`, `for` (incl. nested loops via a dispatch relooper),
+//!   recursion, function definitions, direct + indirect (closure) calls
+//! - Strings, arrays (literals + index), structs, enums, maps via host-imported
+//!   linear-memory helpers; string interpolation; capturing closures
+//! - `println` of i64/f64/str via host imports
 //!
-//! ## Not supported yet (v0.1)
+//! ## Not supported (falls back to a clear `unsupported` codegen error)
 //!
-//! - Heap-allocated values: strings beyond literals, arrays, maps, structs, enums
-//! - ARC, closures, traits, vtables, channels, spawn, actors
-//! - The full stdlib (HTTP, file I/O, regex, JSON, etc.)
-//! - These will return a `BackendError` with a clear "unsupported in WASM v0.1"
-//!   message during codegen, leaving the door open for future growth.
+//! - `dyn Trait` dynamic dispatch (native-only for now)
+//! - Full parity with the native runtime on some stdlib surfaces
+//! - Divergences vs native are documented per-item in the audit backlog
+//!   (e.g. array bounds checks, string_slice edge semantics).
 //!
 //! ## Module structure
 //!

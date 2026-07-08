@@ -15,7 +15,7 @@ deny-by-default from day one.**
 
 | Mode | What it does | When |
 |---|---|---|
-| `permissive` | Only functions carrying a `@capabilities(...)` annotation are checked. An unannotated function is unconstrained. Capabilities are advisory. | The bare-compiler default this beta (single-file `kryos run foo.kry`); legacy code. |
+| `permissive` | Only functions carrying a `@capabilities(...)` annotation are checked. An unannotated function is unconstrained. Capabilities are advisory. | Opt-in for scratch/legacy code via `--capabilities-mode=permissive`. |
 | `inferred` | **Deny-by-default at the boundary, with interior inference.** `main` — and any annotated function — must actually hold every capability its code *transitively* uses. Interior helpers need no annotation: the compiler infers each one's capability set as the union of what it and its callees require. So an unannotated `main` that (directly or through helpers) writes a file is rejected: declare `@capabilities(fs:write)` on `main`. **Recommended, and the `kryos new` default.** | New projects; production code. |
 | `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every gated builtin call from an unannotated function is an error — every function is auditable in isolation. This is `--strict-capabilities`. | Maximum scrutiny; security-critical libraries. |
 
