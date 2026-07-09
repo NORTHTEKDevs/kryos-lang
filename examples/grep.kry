@@ -1,4 +1,4 @@
-// expect-stdout: apple\ngrape
+// expect-stdout: Lines containing "ap":\napple\ngrape
 
 fn main() {
     let fruits = ["apple", "banana", "grape", "orange"]

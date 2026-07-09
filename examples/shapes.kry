@@ -1,4 +1,4 @@
-// expect-stdout: Circle with radius 5.0: 78.54975\nRectangle 4.0 x 6.0: 24
+// expect-stdout: Circle with radius 5.0: 78.53975\nRectangle 4.0 x 6.0: 24
 
 enum Shape {
     Circle(f64),
