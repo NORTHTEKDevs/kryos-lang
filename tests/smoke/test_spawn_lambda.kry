@@ -4,6 +4,10 @@
 // which evaluated the lambda value and discarded it, so the body never ran.
 // Fix: in lower_spawn, detect Lambda and use its body as the spawn function
 // body (lower_spawn_block on its inner block stmts).
+//
+// parity-unordered: the two spawned threads print concurrently, so line
+// ORDER is scheduling-dependent (flaked FAIL_DIFF on macOS CI). The parity
+// runner compares this test's output as a sorted line set instead.
 
 fn main() {
     println("before")

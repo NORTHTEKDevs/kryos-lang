@@ -163,7 +163,19 @@ run_one() {
     # byte-for-byte. A silent codegen divergence (e.g. 42 on JIT, 43 on AOT)
     # otherwise passes because both exit 0. This is the correctness check the
     # exit-code-only gate was missing.
+    #
+    # Tests marked `// parity-unordered` (spawned threads printing
+    # concurrently -- interleaving is scheduling-dependent BY DESIGN, and
+    # varies between backends/platforms) are compared as SORTED line sets:
+    # every line must still appear on both backends, only ordering is
+    # relaxed. Without this, test_spawn_lambda flakes FAIL_DIFF on macOS.
     if [[ "$cl_status" == "PASS" && "$llvm_status" == "PASS" ]]; then
+        if grep -q "parity-unordered" "$kry" 2>/dev/null; then
+            sort "$cl_out" > "$cl_out.sorted"
+            sort "$exe_out" > "$exe_out.sorted"
+            mv "$cl_out.sorted" "$cl_out"
+            mv "$exe_out.sorted" "$exe_out"
+        fi
         if ! diff -q "$cl_out" "$exe_out" >/dev/null 2>&1; then
             llvm_status="FAIL_DIFF"
             {
