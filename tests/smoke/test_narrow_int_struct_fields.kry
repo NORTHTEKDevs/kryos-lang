@@ -1,0 +1,24 @@
+// Regression: i8/i16/i32 struct fields extract at their declared width on
+// the LLVM backend and must be widened (sext) before flowing into i64
+// slots/arithmetic. Without the widening, clang rejected the module
+// ("defined with type 'i32' but expected 'i64'"), which blocked
+// `kryos build --release` on any program with narrow-int struct fields.
+struct Rec {
+    id: i32,
+    flag: i16,
+    tag: i8,
+    total: i64,
+}
+
+fn main() {
+    let r = Rec { id: 41, flag: 7, tag: 3, total: 1000 }
+    let x = r.id
+    let mut sum = 0
+    sum = sum + x
+    sum = sum + r.flag
+    sum = sum + r.tag
+    sum = sum + r.total
+    println(to_string(sum))
+    let neg = Rec { id: -5, flag: -2, tag: -1, total: 0 }
+    println(to_string(neg.id + neg.flag + neg.tag))
+}

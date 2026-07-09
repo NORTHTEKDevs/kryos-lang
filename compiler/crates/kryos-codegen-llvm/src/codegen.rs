@@ -5332,6 +5332,27 @@ impl LlvmCodegen {
                                 // Low-level FFI helpers (v2.3.4)
                                 "str_to_ptr" => "kryos_str_to_ptr",
                                 "buf_to_str" => "kryos_buf_to_str",
+                                // Byte-buffer builtins (self-host codegen uses
+                                // these heavily). The Cranelift backend mapped
+                                // the full set; LLVM only had buf_to_str, so
+                                // `kryos build --release` of the self-host
+                                // source failed with "use of undefined value
+                                // '@buf_free'".
+                                "buf_new" => "kryos_buf_new",
+                                "buf_write_byte" => "kryos_buf_write_byte",
+                                "buf_write_i16_le" => "kryos_buf_write_i16_le",
+                                "buf_write_i32_le" => "kryos_buf_write_i32_le",
+                                "buf_write_i64_le" => "kryos_buf_write_i64_le",
+                                "buf_write_bytes" => "kryos_buf_write_bytes",
+                                "buf_write_str" => "kryos_buf_write_str",
+                                "buf_write_zeros" => "kryos_buf_write_zeros",
+                                "buf_len" => "kryos_buf_len",
+                                "buf_get_byte" => "kryos_buf_get_byte",
+                                "buf_set_byte" => "kryos_buf_set_byte",
+                                "buf_patch_i32_le" => "kryos_buf_patch_i32_le",
+                                "buf_patch_i64_le" => "kryos_buf_patch_i64_le",
+                                "buf_write_to_file" => "kryos_buf_write_to_file",
+                                "buf_free" => "kryos_buf_free",
                                 "alloc" => "kryos_alloc_bytes",
                                 "free_bytes" => "kryos_free_bytes",
                                 "ptr_byte_at" => "kryos_ptr_byte_at",
@@ -5677,14 +5698,49 @@ impl LlvmCodegen {
 
                 // Resolve field index from struct definitions.
                 let field_idx = self.resolve_field_index(object, field, func);
-                let target_name = if is_mutable {
+                // Narrow-int fields (i8/i16/i32 in the named struct type)
+                // extract at their declared width, but the destination local
+                // is an i64 slot. Without a sext the extract result flows
+                // straight into `store i64 %tN` / downstream i64 uses and
+                // clang rejects the module ("defined with type 'i32' but
+                // expected 'i64'") -- this blocked `kryos build --release`
+                // on the self-host source (MirLocal.id / MirType.kind: i32).
+                let early_field_ty: Option<String> = obj_ty
+                    .strip_prefix('%')
+                    .and_then(|sn| self.struct_defs.get(sn))
+                    .and_then(|fs| fs.get(field_idx))
+                    .map(|(_, t)| self.sig_ty_to_llvm(t));
+                let needs_widen = matches!(
+                    early_field_ty.as_deref(),
+                    Some("i8") | Some("i16") | Some("i32")
+                ) && dest_ty == "i64";
+                let target_name = if is_mutable || needs_widen {
                     self.next_temp()
                 } else {
                     format!("%_{}", dest.0)
                 };
+                let ext_ty = if needs_widen {
+                    early_field_ty.clone().unwrap()
+                } else {
+                    String::new()
+                };
                 self.emit_line(&format!(
                     "  {target_name} = extractvalue {obj_ty} {obj_val}, {field_idx} ; .{field}"
                 ));
+                let target_name = if needs_widen {
+                    let wide = if is_mutable {
+                        self.next_temp()
+                    } else {
+                        format!("%_{}", dest.0)
+                    };
+                    self.emit_line(&format!(
+                        "  {wide} = sext {ext_ty} {target_name} to i64"
+                    ));
+                    self.track_type(&wide, "i64");
+                    wide
+                } else {
+                    target_name
+                };
                 // Track the SSA value's actual LLVM type so downstream callers
                 // (kryos_array_push, kryos_string_concat, ...) that look at
                 // actual_type can coerce ptr→i64 / i64→ptr correctly. Without
@@ -5707,7 +5763,14 @@ impl LlvmCodegen {
                         // downstream (push/concat/enum-construct) sees "i64" for an
                         // enum field and skips aggregate boxing.
                         let field_llvm_ty = self.sig_ty_to_llvm(&fmt);
-                        self.track_type(&target_name, &field_llvm_ty);
+                        // Do not clobber the widened-field tracking: when the
+                        // narrow extract was already sext'd to i64 under the
+                        // destination's name, re-tracking it at the declared
+                        // narrow width makes later coercions re-sext an i64
+                        // as i32 (invalid IR).
+                        if !needs_widen {
+                            self.track_type(&target_name, &field_llvm_ty);
+                        }
                         // Borrow-to-own: a container-typed field read hands out
                         // the struct's own handle; retain so the receiving slot
                         // owns its reference (double-free fix; mirrors the
@@ -8086,6 +8149,18 @@ impl LlvmCodegen {
             if let Some(real) = self.actual_type(value) {
                 if real == "i1" {
                     from_type = "i1";
+                }
+            }
+        }
+        // Symmetric trust for narrow ints: a narrow struct field (i8/i16/i32)
+        // may have been widened to i64 already at its extract site (the
+        // narrow-int field fix tracks the sext result as i64). Re-sexting an
+        // i64 as i32 is invalid IR ("defined with type 'i64' but expected
+        // 'i32'"), so believe the tracked SSA type over the declared width.
+        if matches!(from_type, "i8" | "i16" | "i32") {
+            if let Some(real) = self.actual_type(value) {
+                if real == "i64" {
+                    from_type = "i64";
                 }
             }
         }
