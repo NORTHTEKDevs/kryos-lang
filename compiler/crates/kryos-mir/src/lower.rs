@@ -1863,7 +1863,12 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
             if !ctx.dropped_locals.contains(&local_id.0)
                 && !ctx.partial_moved_locals.contains(&local_id.0)
             {
-                drop_tag(ctx, "fn-exit");
+                let lbl = format!(
+                    "fn-exit:{}:{:?}",
+                    ctx.locals[i].name.as_deref().unwrap_or("?"),
+                    ctx.locals[i].ty
+                );
+                drop_tag(ctx, &lbl);
                 ctx.emit(Instruction::Drop { local: local_id });
                 ctx.dropped_locals.insert(local_id.0);
             }

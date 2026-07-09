@@ -2758,15 +2758,26 @@ fn translate_instruction<M: Module>(
                             )?;
                             builder.ins().call(release_ref, &[val]);
                         }
-                        kryos_mir::ir::MirType::Struct(ref _sname) => {
-                            // Drop the struct via emit_drop_for_value. For @copy
-                            // structs the field arrays/strings are retained (ref-
-                            // counted), so multi-owner drops correctly decrement
-                            // ref_count and free at zero. Previously this was a
-                            // no-op for @copy structs ("original owner will
-                            // free") — but that produced a leak because no
-                            // owner's drop ran, so ref_count never decremented.
-                            emit_drop_for_value(val, ty, builder, translator, module)?;
+                        kryos_mir::ir::MirType::Struct(ref sname) => {
+                            // @copy structs: SKIP the drop, matching the LLVM
+                            // backend (codegen.rs Drop lowering + the no-op
+                            // __kryos_drop_<copy> helper). @copy copies share
+                            // field pointers on both backends -- a returned
+                            // MirType aliases the callee's/checker's storage;
+                            // real-dropping any copy frees fields every other
+                            // owner still references (the 1215 over-free class
+                            // in the merged self-host compile: fn-exit drops of
+                            // ctx_operand_ty results in lower_binop). The
+                            // "retain fields at every copy" invariant this
+                            // drop relied on does not hold at return/array/map
+                            // boundaries, and enforcing it at MIR level
+                            // miscompiles the JIT's value model. Cost of the
+                            // skip: bounded leak-on-copy -- identical to the
+                            // LLVM backend's long-standing model, and header
+                            // churn is absorbed by the type-stable pools.
+                            if !translator.copy_structs.contains(sname) {
+                                emit_drop_for_value(val, ty, builder, translator, module)?;
+                            }
                         }
                         kryos_mir::ir::MirType::Enum(_) => {
                             // Runtime variant-aware Drop: dispatch on tag to
