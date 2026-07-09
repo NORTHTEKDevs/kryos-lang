@@ -415,6 +415,64 @@ pub fn resolve_imports(
             .cloned()
             .collect();
 
+        // Validate every selected name against the module's exportable
+        // declarations. Without this, `use std::datetime::{from_unix}`
+        // for a name the module does not define succeeded silently and the
+        // failure surfaced later as a misleading "undefined variable
+        // `from_unix`" at the CALL site instead of at the import.
+        if !selected.is_empty() {
+            let mut exported: HashSet<String> = imported_module
+                .declarations
+                .iter()
+                .filter_map(decl_name_of)
+                .collect();
+            // Enum VARIANTS are importable by name (`use std::result::{Ok,
+            // Err}` is the documented pattern), and extern items are callable
+            // exports; neither is a top-level named decl, so include both.
+            for decl in &imported_module.declarations {
+                match decl {
+                    Decl::Enum { variants, .. } => {
+                        for v in variants {
+                            exported.insert(v.name.clone());
+                        }
+                    }
+                    Decl::Extern { items, .. } => {
+                        for item in items {
+                            if let Some(n) = decl_name_of(item) {
+                                exported.insert(n);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let mut missing: Vec<Diagnostic> = Vec::new();
+            for name in &selected {
+                if !exported.contains(name) {
+                    // Suggest a close match to catch typos.
+                    let suggestion = exported
+                        .iter()
+                        .filter(|e| {
+                            let a = e.to_lowercase();
+                            let b = name.to_lowercase();
+                            a.contains(&b) || b.contains(&a)
+                        })
+                        .min_by_key(|e| e.len());
+                    let mut d = Diagnostic::error(format!(
+                        "module `{module_name}` has no export `{name}`"
+                    ))
+                    .with_label(span, "imported here");
+                    if let Some(sug) = suggestion {
+                        d = d.with_note(format!("did you mean `{sug}`?"));
+                    }
+                    missing.push(d);
+                }
+            }
+            if !missing.is_empty() {
+                return Err(missing);
+            }
+        }
+
         if selected.is_empty() {
             for decl in imported_module.declarations {
                 if !matches!(decl, Decl::Import { .. }) {

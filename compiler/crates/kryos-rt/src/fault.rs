@@ -161,6 +161,19 @@ mod imp {
     static PROBED: AtomicU8 = AtomicU8::new(0);
 
     pub fn install() {
+        // Reserve guard stack for exception handlers ON THIS THREAD. A
+        // stack-overflow exception is delivered on the exhausted stack; with
+        // no guarantee the process dies before any handler can even run
+        // (the silent bare-127 exit). Per-thread, so runs before the
+        // once-only gate below -- call install() from every thread that
+        // executes user code.
+        unsafe {
+            extern "system" {
+                fn SetThreadStackGuarantee(size: *mut u32) -> i32;
+            }
+            let mut sz: u32 = 64 * 1024;
+            let _ = SetThreadStackGuarantee(&mut sz);
+        }
         // Probe the environment at most ONCE for the whole process. Calling
         // std::env::var_os on every kryos_alloc puts env lookup in the hot
         // path and pollutes fault traces (the env code becomes the apparent
@@ -172,6 +185,14 @@ mod imp {
             start_watchdog();
         }
         if std::env::var_os("KRYOS_FAULT_TRACE").is_none() {
+            // Even without the full trace handler, a stack overflow must not
+            // be a SILENT death (a runaway recursion exited with a bare 127
+            // and no output). Install a minimal always-on reporter.
+            if !INSTALLED.swap(true, Ordering::Relaxed) {
+                unsafe {
+                    AddVectoredExceptionHandler(1, so_handler);
+                }
+            }
             return;
         }
         if INSTALLED.swap(true, Ordering::Relaxed) {
@@ -180,6 +201,37 @@ mod imp {
         unsafe {
             AddVectoredExceptionHandler(1, handler);
         }
+    }
+
+    /// Minimal always-on handler: report stack overflow with a static
+    /// message via WriteFile (eprintln needs stack we may not have), then
+    /// exit with the distinctive code 253.
+    extern "system" fn so_handler(info: *mut ExceptionPointers) -> i32 {
+        unsafe {
+            if !info.is_null() {
+                let rec = (*info).record;
+                if !rec.is_null() && (*rec).code == 0xC000_00FD {
+                    extern "system" {
+                        fn GetStdHandle(which: u32) -> *mut u8;
+                        fn WriteFile(
+                            h: *mut u8,
+                            buf: *const u8,
+                            len: u32,
+                            written: *mut u32,
+                            overlapped: *mut u8,
+                        ) -> i32;
+                    }
+                    const MSG: &[u8] =
+                        b"kryos: stack overflow (unbounded recursion?)
+";
+                    let h = GetStdHandle(0xFFFF_FFF4); // STD_ERROR_HANDLE
+                    let mut w: u32 = 0;
+                    let _ = WriteFile(h, MSG.as_ptr(), MSG.len() as u32, &mut w, std::ptr::null_mut());
+                    ExitProcess(253);
+                }
+            }
+        }
+        0
     }
 }
 

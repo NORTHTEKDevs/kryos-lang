@@ -67,7 +67,7 @@ fn enumerate(arr: [any]) -> [any] {
 /// Stops at the shorter array.
 fn zip(a: [any], b: [any]) -> [any] {
     let mut result = []
-    let min_len = len(a)
+    let mut min_len = len(a)
     if len(b) < min_len {
         min_len = len(b)
     }
@@ -294,7 +294,7 @@ fn flatten(arr: [any]) -> [any] {
 /// Take the first n elements.
 fn take(arr: [any], n: i64) -> [any] {
     let mut result = []
-    let limit = n
+    let mut limit = n
     if limit > len(arr) {
         limit = len(arr)
     }

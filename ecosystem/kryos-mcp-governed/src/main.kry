@@ -14,7 +14,7 @@
 //
 // All diagnostics go to STDERR; STDOUT carries only JSON-RPC.
 
-use std::os::{exit}
+// exit() is a global builtin -- no import needed.
 use cap_emit
 use cap_check
 use tools

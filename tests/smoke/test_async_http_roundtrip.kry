@@ -11,7 +11,7 @@
 // Uses a fixed port (19877). If the port is busy the test prints
 // "PORT_BUSY" and exits — the harness treats that as transient.
 
-use std::net::{tcp_listen, tcp_connect, tcp_accept, tcp_send, tcp_recv, tcp_close}
+// tcp_* are global builtins (runtime-mapped), not std::net exports.
 
 @capabilities(net)
 fn main() {

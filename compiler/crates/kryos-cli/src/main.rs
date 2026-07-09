@@ -655,6 +655,11 @@ fn main() {
 }
 
 fn real_main() {
+    // Install the always-on stack-overflow reporter on THIS thread (the
+    // kryos-main worker that runs user code). A JIT'd program with unbounded
+    // recursion may never allocate, so the lazy install at kryos_alloc never
+    // fires -- it died silently with a bare exit code and no diagnostic.
+    kryos_rt::fault::install();
     let cli = Cli::parse();
 
     let result = match cli.command {
