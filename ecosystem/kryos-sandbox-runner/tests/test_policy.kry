@@ -110,7 +110,7 @@ fn test_caps_join_empty() {
 @test
 fn test_caps_render_braces() {
     let rendered = caps_render(["compute"])
-    assert(rendered == "{{compute}}", "single cap render must be {compute}, got " + rendered)
+    assert(rendered == "{{compute}}", "single cap render must be {{compute}}, got " + rendered)
 }
 
 @test

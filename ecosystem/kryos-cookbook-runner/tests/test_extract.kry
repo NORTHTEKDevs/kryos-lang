@@ -11,10 +11,10 @@ use extract
 
 @test
 fn test_single_block() {
-    let src = "# Title\n\n```kryos\nfn main() { println(x) }\n```\n"
+    let src = "# Title\n\n```kryos\nfn main() {{ println(x) }}\n```\n"
     let blocks = extract_blocks(src)
     assert(len(blocks) == 1, "expected 1 block, got " + to_string(len(blocks)))
-    assert(blocks[0].content == "fn main() { println(x) }", "content mismatch")
+    assert(blocks[0].content == "fn main() {{ println(x) }}", "content mismatch")
     assert(blocks[0].line_num == 3, "line_num should be 3, got " + to_string(blocks[0].line_num))
 }
 

@@ -50,7 +50,7 @@ fn check_policy(policy_name: str, fixture: str) -> bool {
 @capabilities(process)
 fn test_io_program_refused_under_pure() {
     let allowed = check_policy("pure", "ecosystem/kryos-sandbox-runner/tests/fixtures/io_program.kry")
-    assert(!allowed, "io_program.kry must be REFUSED under pure policy (io is not in {compute})")
+    assert(!allowed, "io_program.kry must be REFUSED under pure policy (io is not in {{compute}})")
 }
 
 @test
