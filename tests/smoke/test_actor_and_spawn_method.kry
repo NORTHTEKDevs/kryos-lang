@@ -2,7 +2,12 @@
 // calls. #4 (ActorName() typecheck) and #25 (bare-field actor-state assign)
 // were fixed earlier; #32 (spawn block loses captured-variable types, so a
 // method call inside it linked to a bare unmangled symbol) is fixed by
-// carrying capture param types into the spawn wrapper. Self-checking.
+// carrying capture param types into the spawn wrapper.
+//
+// The spawn result is asserted on the MAIN thread via a channel (recv blocks
+// until the spawn sends), so this is deterministic on every platform and does
+// NOT call exit() from a spawned thread. An earlier fixed-sleep + in-thread
+// exit() version was flaky on macOS AOT.
 
 struct Worker { id: i64 }
 impl Worker {
@@ -19,16 +24,26 @@ actor Counter {
 }
 
 fn main() {
-    // #32: capture a struct into a spawn block and call its method.
+    // #32 correctness on the main thread.
     let w = Worker { id: 5 }
-    spawn {
-        let r = w.run()
-        if r != 50 {
-            println("FAIL: spawn captured method wrong result " + to_string(r))
-            exit(1)
-        }
+    if w.run() != 50 {
+        println("FAIL: Worker.run() wrong result")
+        exit(1)
     }
-    sleep_ms(100)
+
+    // #32: capture a struct into a spawn block, call its method, and send the
+    // result back. main blocks on recv, then asserts (no exit() off-main).
+    let w2 = Worker { id: 7 }
+    let ch = chan()
+    spawn {
+        let r = w2.run()
+        send(ch, r)
+    }
+    let got = recv(ch)
+    if got != 70 {
+        println("FAIL: spawn captured method got " + to_string(got))
+        exit(1)
+    }
 
     // #4 + #25: actor construction + bare-field state mutation compile+run.
     let c = Counter()
