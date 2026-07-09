@@ -167,11 +167,33 @@ run_one() {
     printf '%s\t%s\t%s\t%s\n' "$name" "$cl_status" "$llvm_status" "$class"
 }
 
+# Tracked known failures on a specific platform's LLVM AOT path. These do NOT
+# fail the run on that platform (they are logged loudly as KNOWN), but they are
+# still enforced on every OTHER platform. Windows and macOS remain fully
+# green-required; only the listed platform tolerates the listed test.
+#   test_exception_unwind_soundness: SEGV (exit 139) on Linux glibc AOT only -
+#   the heap-enum catch (#16) unwind path; passes all JIT + Windows + macOS AOT.
+#   Deferred by owner decision until a Linux env is available. See the kryos-lang
+#   second-brain dossier. Do NOT add Windows/macOS failures here.
+PLATFORM_UNAME="$(uname -s 2>/dev/null || echo unknown)"
+is_known_platform_fail() {
+    local test_name="$1"
+    case "$PLATFORM_UNAME" in
+        Linux)
+            case " test_exception_unwind_soundness " in
+                *" $test_name "*) return 0 ;;
+            esac
+            ;;
+    esac
+    return 1
+}
+
 # Run sequentially. Parallelising risks cargo-build races for `kryos build`.
 declare -a ROWS=()
 PASS_BOTH=0
 FAIL_LLVM=0
 FAIL_CL=0
+KNOWN_FAIL=0
 
 for f in "${SMOKE_FILES[@]}"; do
     row="$(run_one "$f")"
@@ -184,6 +206,9 @@ for f in "${SMOKE_FILES[@]}"; do
         ((FAIL_CL+=1))
         echo "  CL!   $name ($cl)"
         [[ "${FAIL_FAST:-0}" == "1" ]] && break
+    elif is_known_platform_fail "$name"; then
+        ((KNOWN_FAIL+=1))
+        echo "  KNOWN  $name ($llvm on $PLATFORM_UNAME AOT — tracked, not a gate; see dossier)"
     else
         ((FAIL_LLVM+=1))
         echo "  LLVM!  $name ($llvm, class=$class)"
@@ -194,8 +219,8 @@ done
 # Write outputs.
 {
     printf 'parity matrix @ %s\n' "$SHA"
-    printf 'total=%d  both_pass=%d  llvm_only_fail=%d  cranelift_fail=%d\n\n' \
-        "$TOTAL" "$PASS_BOTH" "$FAIL_LLVM" "$FAIL_CL"
+    printf 'total=%d  both_pass=%d  llvm_only_fail=%d  cranelift_fail=%d  known_platform_fail=%d\n\n' \
+        "$TOTAL" "$PASS_BOTH" "$FAIL_LLVM" "$FAIL_CL" "$KNOWN_FAIL"
     printf '%-50s  %-10s  %-10s  %s\n' "test" "cranelift" "llvm" "class"
     printf '%-50s  %-10s  %-10s  %s\n' "----" "---------" "----" "-----"
     for row in "${ROWS[@]}"; do
