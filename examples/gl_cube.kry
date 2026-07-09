@@ -8,31 +8,58 @@
 //   SDL_VIDEODRIVER=offscreen LIBGL_ALWAYS_SOFTWARE=1 kryos run examples/gl_cube.kry
 //
 // Output: examples/gl_cube_output.ppm  (P6 RGB image)
-
 extern "C" {
     fn kryos_ffi_dlopen(name: str) -> i64
     fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
     fn kryos_ffi_dlclose(handle: i64) -> i64
-
     fn kryos_ffi_dlcall0(fp: i64) -> i64
     fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
     fn kryos_ffi_dlcall2(fp: i64, a1: i64, a2: i64) -> i64
     fn kryos_ffi_dlcall3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64
     fn kryos_ffi_dlcall4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64
-    fn kryos_ffi_dlcall5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
-    fn kryos_ffi_dlcall6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64
-
+    fn kryos_ffi_dlcall5(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64
+    ) -> i64
+    fn kryos_ffi_dlcall6(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64,
+        a6: i64
+    ) -> i64
     fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
     fn kryos_ffi_dlcallv2(fp: i64, a1: i64, a2: i64)
     fn kryos_ffi_dlcallv3(fp: i64, a1: i64, a2: i64, a3: i64)
     fn kryos_ffi_dlcallv4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64)
     fn kryos_ffi_dlcallv5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)
-    fn kryos_ffi_dlcallv6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64)
-    fn kryos_ffi_dlcallv7(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64, a7: i64)
-
+    fn kryos_ffi_dlcallv6(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64,
+        a6: i64
+    )
+    fn kryos_ffi_dlcallv7(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64,
+        a6: i64,
+        a7: i64
+    )
     // Float-argument helpers
     fn kryos_ffi_dlcallv_4f32(fp: i64, b1: i64, b2: i64, b3: i64, b4: i64)
-
     fn kryos_ffi_malloc(n: i64) -> i64
     fn kryos_ffi_free(p: i64, n: i64)
     fn kryos_ffi_write_i8(p: i64, v: i64)
@@ -48,7 +75,6 @@ extern "C" {
 // ---------------------------------------------------------------------------
 // Helpers to write vertex data and MVP matrix
 // ---------------------------------------------------------------------------
-
 fn write_vertex_buf(buf: i64) {
     // 8 vertices of a unit cube, 3 f32 each = 24 floats = 96 bytes
     // f32(-0.5) bits = 3204448256
@@ -56,9 +82,9 @@ fn write_vertex_buf(buf: i64) {
     let neg = 3204448256
     let pos = 1056964608
     // v0: -0.5, -0.5, -0.5
-    kryos_ffi_write_f32_bits(buf + 0,  neg)
-    kryos_ffi_write_f32_bits(buf + 4,  neg)
-    kryos_ffi_write_f32_bits(buf + 8,  neg)
+    kryos_ffi_write_f32_bits(buf + 0, neg)
+    kryos_ffi_write_f32_bits(buf + 4, neg)
+    kryos_ffi_write_f32_bits(buf + 8, neg)
     // v1:  0.5, -0.5, -0.5
     kryos_ffi_write_f32_bits(buf + 12, pos)
     kryos_ffi_write_f32_bits(buf + 16, neg)
@@ -92,35 +118,35 @@ fn write_vertex_buf(buf: i64) {
 fn write_index_buf(buf: i64) {
     // 36 indices (12 triangles, 6 faces)
     // front (z+): 4,5,6, 4,6,7
-    kryos_ffi_write_i32(buf + 0,   4)
-    kryos_ffi_write_i32(buf + 4,   5)
-    kryos_ffi_write_i32(buf + 8,   6)
-    kryos_ffi_write_i32(buf + 12,  4)
-    kryos_ffi_write_i32(buf + 16,  6)
-    kryos_ffi_write_i32(buf + 20,  7)
+    kryos_ffi_write_i32(buf + 0, 4)
+    kryos_ffi_write_i32(buf + 4, 5)
+    kryos_ffi_write_i32(buf + 8, 6)
+    kryos_ffi_write_i32(buf + 12, 4)
+    kryos_ffi_write_i32(buf + 16, 6)
+    kryos_ffi_write_i32(buf + 20, 7)
     // back (z-): 1,0,3, 1,3,2
-    kryos_ffi_write_i32(buf + 24,  1)
-    kryos_ffi_write_i32(buf + 28,  0)
-    kryos_ffi_write_i32(buf + 32,  3)
-    kryos_ffi_write_i32(buf + 36,  1)
-    kryos_ffi_write_i32(buf + 40,  3)
-    kryos_ffi_write_i32(buf + 44,  2)
+    kryos_ffi_write_i32(buf + 24, 1)
+    kryos_ffi_write_i32(buf + 28, 0)
+    kryos_ffi_write_i32(buf + 32, 3)
+    kryos_ffi_write_i32(buf + 36, 1)
+    kryos_ffi_write_i32(buf + 40, 3)
+    kryos_ffi_write_i32(buf + 44, 2)
     // left (x-): 0,4,7, 0,7,3
-    kryos_ffi_write_i32(buf + 48,  0)
-    kryos_ffi_write_i32(buf + 52,  4)
-    kryos_ffi_write_i32(buf + 56,  7)
-    kryos_ffi_write_i32(buf + 60,  0)
-    kryos_ffi_write_i32(buf + 64,  7)
-    kryos_ffi_write_i32(buf + 68,  3)
+    kryos_ffi_write_i32(buf + 48, 0)
+    kryos_ffi_write_i32(buf + 52, 4)
+    kryos_ffi_write_i32(buf + 56, 7)
+    kryos_ffi_write_i32(buf + 60, 0)
+    kryos_ffi_write_i32(buf + 64, 7)
+    kryos_ffi_write_i32(buf + 68, 3)
     // right (x+): 5,1,2, 5,2,6
-    kryos_ffi_write_i32(buf + 72,  5)
-    kryos_ffi_write_i32(buf + 76,  1)
-    kryos_ffi_write_i32(buf + 80,  2)
-    kryos_ffi_write_i32(buf + 84,  5)
-    kryos_ffi_write_i32(buf + 88,  2)
-    kryos_ffi_write_i32(buf + 92,  6)
+    kryos_ffi_write_i32(buf + 72, 5)
+    kryos_ffi_write_i32(buf + 76, 1)
+    kryos_ffi_write_i32(buf + 80, 2)
+    kryos_ffi_write_i32(buf + 84, 5)
+    kryos_ffi_write_i32(buf + 88, 2)
+    kryos_ffi_write_i32(buf + 92, 6)
     // top (y+): 7,6,2, 7,2,3
-    kryos_ffi_write_i32(buf + 96,  7)
+    kryos_ffi_write_i32(buf + 96, 7)
     kryos_ffi_write_i32(buf + 100, 6)
     kryos_ffi_write_i32(buf + 104, 2)
     kryos_ffi_write_i32(buf + 108, 7)
@@ -139,9 +165,9 @@ fn write_mvp(buf: i64) {
     // Pre-computed MVP = proj * view * model (column-major, 16 f32)
     // model = rotY(0.5) * rotX(0.3), view = translate(0,0,-3)
     // proj  = perspective(fov=45deg, aspect=1, near=0.1, far=100)
-    kryos_ffi_write_f32_bits(buf + 0,  1074239569)
-    kryos_ffi_write_f32_bits(buf + 4,  0)
-    kryos_ffi_write_f32_bits(buf + 8,  3203790098)
+    kryos_ffi_write_f32_bits(buf + 0, 1074239569)
+    kryos_ffi_write_f32_bits(buf + 4, 0)
+    kryos_ffi_write_f32_bits(buf + 8, 3203790098)
     kryos_ffi_write_f32_bits(buf + 12, 3203757892)
     kryos_ffi_write_f32_bits(buf + 16, 1051664538)
     kryos_ffi_write_f32_bits(buf + 20, 1075026901)
@@ -166,42 +192,38 @@ fn read_u32(p: i64) -> i64 {
 
 fn main() {
     println("[gl] Kryos OpenGL 3.3 cube demo")
-
     // ---- Constants ----
-    let SDL_INIT_VIDEO                 = 32
-    let SDL_WIN_CENTERED               = 805240832
-    let SDL_WIN_OPENGL                 = 2
-    let SDL_GL_DOUBLEBUFFER            = 5
-    let SDL_GL_CONTEXT_MAJOR_VERSION   = 17
-    let SDL_GL_CONTEXT_MINOR_VERSION   = 18
-    let SDL_GL_CONTEXT_PROFILE_MASK    = 21
-    let SDL_GL_CONTEXT_PROFILE_CORE    = 1
+    let SDL_INIT_VIDEO = 32
+    let SDL_WIN_CENTERED = 805240832
+    let SDL_WIN_OPENGL = 2
+    let SDL_GL_DOUBLEBUFFER = 5
+    let SDL_GL_CONTEXT_MAJOR_VERSION = 17
+    let SDL_GL_CONTEXT_MINOR_VERSION = 18
+    let SDL_GL_CONTEXT_PROFILE_MASK = 21
+    let SDL_GL_CONTEXT_PROFILE_CORE = 1
     let W = 320
     let H = 320
-
-    let GL_COLOR_BUFFER_BIT   = 16384
-    let GL_DEPTH_BUFFER_BIT   = 256
-    let GL_DEPTH_TEST          = 2929
-    let GL_ARRAY_BUFFER        = 34962
+    let GL_COLOR_BUFFER_BIT = 16384
+    let GL_DEPTH_BUFFER_BIT = 256
+    let GL_DEPTH_TEST = 2929
+    let GL_ARRAY_BUFFER = 34962
     let GL_ELEMENT_ARRAY_BUFFER = 34963
-    let GL_STATIC_DRAW         = 35044  // 0x88E4 (GL 1.5 core, NOT ARB 0x88B4)
-    let GL_FLOAT               = 5126
-    let GL_UNSIGNED_INT        = 5125
-    let GL_UNSIGNED_BYTE       = 5121
-    let GL_VERTEX_SHADER       = 35633
-    let GL_FRAGMENT_SHADER     = 35632
-    let GL_COMPILE_STATUS      = 35713
-    let GL_LINK_STATUS         = 35714
-    let GL_TRIANGLES           = 4
-    let GL_RGBA                = 6408
-    let GL_VERSION             = 7938
-
+    let GL_STATIC_DRAW = 35044 // 0x88E4 (GL 1.5 core, NOT ARB 0x88B4)
+    let GL_FLOAT = 5126
+    let GL_UNSIGNED_INT = 5125
+    let GL_UNSIGNED_BYTE = 5121
+    let GL_VERTEX_SHADER = 35633
+    let GL_FRAGMENT_SHADER = 35632
+    let GL_COMPILE_STATUS = 35713
+    let GL_LINK_STATUS = 35714
+    let GL_TRIANGLES = 4
+    let GL_RGBA = 6408
+    let GL_VERSION = 7938
     // f32 bit patterns for glClearColor(0.05, 0.05, 0.05, 1.0)
     // f32(0.05) = 0x3D4CCCCD = 1028443341
     // f32(1.0)  = 0x3F800000 = 1065353216
-    let F32_005  = 1028443341
-    let F32_10   = 1065353216
-
+    let F32_005 = 1028443341
+    let F32_10 = 1065353216
     // ---- Load SDL2 ----
     let sdl = kryos_ffi_dlopen("libSDL2-2.0.so.0")
     if sdl == 0 {
@@ -209,18 +231,16 @@ fn main() {
         return
     }
     println("[gl] SDL2 loaded")
-
-    let sdl_init           = kryos_ffi_dlsym(sdl, "SDL_Init")
-    let sdl_quit           = kryos_ffi_dlsym(sdl, "SDL_Quit")
-    let sdl_get_error      = kryos_ffi_dlsym(sdl, "SDL_GetError")
-    let sdl_gl_set_attr    = kryos_ffi_dlsym(sdl, "SDL_GL_SetAttribute")
-    let sdl_create_window  = kryos_ffi_dlsym(sdl, "SDL_CreateWindow")
+    let sdl_init = kryos_ffi_dlsym(sdl, "SDL_Init")
+    let sdl_quit = kryos_ffi_dlsym(sdl, "SDL_Quit")
+    let sdl_get_error = kryos_ffi_dlsym(sdl, "SDL_GetError")
+    let sdl_gl_set_attr = kryos_ffi_dlsym(sdl, "SDL_GL_SetAttribute")
+    let sdl_create_window = kryos_ffi_dlsym(sdl, "SDL_CreateWindow")
     let sdl_destroy_window = kryos_ffi_dlsym(sdl, "SDL_DestroyWindow")
-    let sdl_gl_create_ctx  = kryos_ffi_dlsym(sdl, "SDL_GL_CreateContext")
-    let sdl_gl_delete_ctx  = kryos_ffi_dlsym(sdl, "SDL_GL_DeleteContext")
-    let sdl_gl_get_proc    = kryos_ffi_dlsym(sdl, "SDL_GL_GetProcAddress")
-    let sdl_gl_swap_win    = kryos_ffi_dlsym(sdl, "SDL_GL_SwapWindow")
-
+    let sdl_gl_create_ctx = kryos_ffi_dlsym(sdl, "SDL_GL_CreateContext")
+    let sdl_gl_delete_ctx = kryos_ffi_dlsym(sdl, "SDL_GL_DeleteContext")
+    let sdl_gl_get_proc = kryos_ffi_dlsym(sdl, "SDL_GL_GetProcAddress")
+    let sdl_gl_swap_win = kryos_ffi_dlsym(sdl, "SDL_GL_SwapWindow")
     // SDL_Init
     if kryos_ffi_dlcall1(sdl_init, SDL_INIT_VIDEO) != 0 {
         let ep = kryos_ffi_dlcall0(sdl_get_error)
@@ -228,13 +248,11 @@ fn main() {
         return
     }
     println("[gl] SDL_Init OK")
-
     // Set GL attributes: 3.3 core
     kryos_ffi_dlcall2(sdl_gl_set_attr, SDL_GL_CONTEXT_MAJOR_VERSION, 3)
     kryos_ffi_dlcall2(sdl_gl_set_attr, SDL_GL_CONTEXT_MINOR_VERSION, 3)
     kryos_ffi_dlcall2(sdl_gl_set_attr, SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE)
     kryos_ffi_dlcall2(sdl_gl_set_attr, SDL_GL_DOUBLEBUFFER, 1)
-
     // Create window with SDL_WINDOW_OPENGL flag
     let win_title_ptr = kryos_ffi_cstr("kryos-gl")
     let win = kryos_ffi_dlcall6(sdl_create_window, win_title_ptr, SDL_WIN_CENTERED, SDL_WIN_CENTERED, W, H, SDL_WIN_OPENGL)
@@ -245,7 +263,6 @@ fn main() {
         return
     }
     println("[gl] Window created")
-
     // Create GL context
     let ctx = kryos_ffi_dlcall1(sdl_gl_create_ctx, win)
     if ctx == 0 {
@@ -256,61 +273,54 @@ fn main() {
         return
     }
     println("[gl] GL context created")
-
     // ---- Load GL functions via SDL_GL_GetProcAddress ----
-    let gl_get_string      = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetString"))
-    let gl_clear_color     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glClearColor"))
-    let gl_clear           = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glClear"))
-    let gl_viewport        = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glViewport"))
-    let gl_enable          = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glEnable"))
-    let gl_gen_buffers     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGenBuffers"))
-    let gl_bind_buffer     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBindBuffer"))
-    let gl_buffer_data     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBufferData"))
-    let gl_gen_vaos        = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGenVertexArrays"))
-    let gl_bind_vao        = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBindVertexArray"))
+    let gl_get_string = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetString"))
+    let gl_clear_color = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glClearColor"))
+    let gl_clear = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glClear"))
+    let gl_viewport = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glViewport"))
+    let gl_enable = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glEnable"))
+    let gl_gen_buffers = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGenBuffers"))
+    let gl_bind_buffer = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBindBuffer"))
+    let gl_buffer_data = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBufferData"))
+    let gl_gen_vaos = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGenVertexArrays"))
+    let gl_bind_vao = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glBindVertexArray"))
     let gl_vert_attrib_ptr = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glVertexAttribPointer"))
-    let gl_enable_vaa      = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glEnableVertexAttribArray"))
-    let gl_create_shader   = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCreateShader"))
-    let gl_shader_src      = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glShaderSource"))
-    let gl_compile_shader  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCompileShader"))
-    let gl_get_shader_iv   = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetShaderiv"))
-    let gl_get_shader_log  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetShaderInfoLog"))
-    let gl_create_program  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCreateProgram"))
-    let gl_attach_shader   = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glAttachShader"))
-    let gl_link_program    = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glLinkProgram"))
-    let gl_get_program_iv  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetProgramiv"))
-    let gl_use_program     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glUseProgram"))
+    let gl_enable_vaa = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glEnableVertexAttribArray"))
+    let gl_create_shader = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCreateShader"))
+    let gl_shader_src = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glShaderSource"))
+    let gl_compile_shader = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCompileShader"))
+    let gl_get_shader_iv = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetShaderiv"))
+    let gl_get_shader_log = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetShaderInfoLog"))
+    let gl_create_program = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glCreateProgram"))
+    let gl_attach_shader = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glAttachShader"))
+    let gl_link_program = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glLinkProgram"))
+    let gl_get_program_iv = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetProgramiv"))
+    let gl_use_program = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glUseProgram"))
     let gl_get_uniform_loc = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glGetUniformLocation"))
-    let gl_uniform_mat4fv  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glUniformMatrix4fv"))
-    let gl_draw_elements   = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDrawElements"))
-    let gl_read_pixels     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glReadPixels"))
-    let gl_delete_buffers  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteBuffers"))
-    let gl_delete_vaos     = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteVertexArrays"))
-    let gl_delete_program  = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteProgram"))
-
+    let gl_uniform_mat4fv = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glUniformMatrix4fv"))
+    let gl_draw_elements = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDrawElements"))
+    let gl_read_pixels = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glReadPixels"))
+    let gl_delete_buffers = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteBuffers"))
+    let gl_delete_vaos = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteVertexArrays"))
+    let gl_delete_program = kryos_ffi_dlcall1(sdl_gl_get_proc, kryos_ffi_cstr("glDeleteProgram"))
     println("[gl] GL functions loaded")
-
     // Check GL version
     let ver_ptr = kryos_ffi_dlcall1(gl_get_string, GL_VERSION)
     if ver_ptr != 0 {
         println("[gl] GL version: " + kryos_ffi_string_from_ptr(ver_ptr, -1))
     }
-
     // Setup viewport + depth test
     kryos_ffi_dlcallv4(gl_viewport, 0, 0, W, H)
     kryos_ffi_dlcallv1(gl_enable, GL_DEPTH_TEST)
-
     // ---- Build shaders ----
     // Vertex shader source (escaped for Kryos string rules)
     let vert_src_1 = "#version 330 core\nlayout (location = 0) in vec3 aPos;\nuniform mat4 uMVP;\n"
     let vert_src_2 = "void main() " + chr(123) + "\n    gl_Position = uMVP * vec4(aPos, 1.0);\n" + chr(125) + "\n"
     let vert_src = vert_src_1 + vert_src_2
-
     // Fragment shader source
     let frag_src_1 = "#version 330 core\nout vec4 FragColor;\n"
     let frag_src_2 = "void main() " + chr(123) + "\n    FragColor = vec4(0.8, 0.4, 0.2, 1.0);\n" + chr(125) + "\n"
     let frag_src = frag_src_1 + frag_src_2
-
     // Compile vertex shader
     let vert_sh = kryos_ffi_dlcall1(gl_create_shader, GL_VERTEX_SHADER)
     let vert_cstr = kryos_ffi_cstr(vert_src)
@@ -318,7 +328,6 @@ fn main() {
     kryos_ffi_write_i64(vert_src_pp, vert_cstr)
     kryos_ffi_dlcallv4(gl_shader_src, vert_sh, 1, vert_src_pp, 0)
     kryos_ffi_dlcallv1(gl_compile_shader, vert_sh)
-
     let status_buf = kryos_ffi_malloc(4)
     kryos_ffi_dlcallv3(gl_get_shader_iv, vert_sh, GL_COMPILE_STATUS, status_buf)
     let vert_ok = kryos_ffi_read_i32(status_buf)
@@ -330,7 +339,6 @@ fn main() {
     } else {
         println("[gl] vert shader OK")
     }
-
     // Compile fragment shader
     let frag_sh = kryos_ffi_dlcall1(gl_create_shader, GL_FRAGMENT_SHADER)
     let frag_cstr = kryos_ffi_cstr(frag_src)
@@ -348,7 +356,6 @@ fn main() {
     } else {
         println("[gl] frag shader OK")
     }
-
     // Link program
     let prog = kryos_ffi_dlcall0(gl_create_program)
     kryos_ffi_dlcallv2(gl_attach_shader, prog, vert_sh)
@@ -365,75 +372,62 @@ fn main() {
         println("[gl] program linked OK")
     }
     kryos_ffi_dlcallv1(gl_use_program, prog)
-
     // ---- Create VAO ----
     let vao_tmp = kryos_ffi_malloc(4)
     kryos_ffi_dlcallv2(gl_gen_vaos, 1, vao_tmp)
     let vao_id = kryos_ffi_read_i32(vao_tmp)
     println("[gl] VAO = " + to_string(vao_id))
     kryos_ffi_dlcallv1(gl_bind_vao, vao_id)
-
     // ---- Create VBO ----
     let vbo_tmp = kryos_ffi_malloc(4)
     kryos_ffi_dlcallv2(gl_gen_buffers, 1, vbo_tmp)
     let vbo_id = kryos_ffi_read_i32(vbo_tmp)
     println("[gl] VBO = " + to_string(vbo_id))
-
     let vdata = kryos_ffi_malloc(96)
     write_vertex_buf(vdata)
     kryos_ffi_dlcallv2(gl_bind_buffer, GL_ARRAY_BUFFER, vbo_id)
     kryos_ffi_dlcallv4(gl_buffer_data, GL_ARRAY_BUFFER, 96, vdata, GL_STATIC_DRAW)
     kryos_ffi_free(vdata, 96)
-
     // ---- Create EBO ----
     let ebo_tmp = kryos_ffi_malloc(4)
     kryos_ffi_dlcallv2(gl_gen_buffers, 1, ebo_tmp)
     let ebo_id = kryos_ffi_read_i32(ebo_tmp)
     println("[gl] EBO = " + to_string(ebo_id))
-
     let idata = kryos_ffi_malloc(144)
     write_index_buf(idata)
     kryos_ffi_dlcallv2(gl_bind_buffer, GL_ELEMENT_ARRAY_BUFFER, ebo_id)
     kryos_ffi_dlcallv4(gl_buffer_data, GL_ELEMENT_ARRAY_BUFFER, 144, idata, GL_STATIC_DRAW)
     kryos_ffi_free(idata, 144)
-
     // ---- Vertex attrib: location 0, 3 floats, stride 12 bytes, offset 0 ----
     kryos_ffi_dlcallv6(gl_vert_attrib_ptr, 0, 3, GL_FLOAT, 0, 12, 0)
     kryos_ffi_dlcallv1(gl_enable_vaa, 0)
     println("[gl] Vertex attribs set")
-
     // ---- Upload MVP uniform ----
     let mvp_name_ptr = kryos_ffi_cstr("uMVP")
     let mvp_loc = kryos_ffi_dlcall2(gl_get_uniform_loc, prog, mvp_name_ptr)
     println("[gl] uMVP loc = " + to_string(mvp_loc))
-
     let mvp_data = kryos_ffi_malloc(64)
     write_mvp(mvp_data)
     // glUniformMatrix4fv(location, count=1, transpose=GL_FALSE, value)
     kryos_ffi_dlcallv4(gl_uniform_mat4fv, mvp_loc, 1, 0, mvp_data)
     println("[gl] MVP uploaded")
-
     // ---- Clear + Draw ----
     // glClearColor(0.05, 0.05, 0.05, 1.0) using f32 bit-patterns
     kryos_ffi_dlcallv_4f32(gl_clear_color, F32_005, F32_005, F32_005, F32_10)
     kryos_ffi_dlcallv1(gl_clear, GL_COLOR_BUFFER_BIT + GL_DEPTH_BUFFER_BIT)
     println("[gl] Cleared")
-
     // glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0)
     kryos_ffi_dlcallv4(gl_draw_elements, GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0)
     println("[gl] Draw call issued")
-
     // ---- Read pixels BEFORE SwapWindow (reads back buffer we just drew to) ----
     let pixel_bytes = W * H * 4
     let pixels = kryos_ffi_malloc(pixel_bytes)
     // glReadPixels(0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, buf)
     kryos_ffi_dlcallv7(gl_read_pixels, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, pixels)
     println("[gl] Pixels read")
-
     // Swap buffers
     kryos_ffi_dlcallv1(sdl_gl_swap_win, win)
     println("[gl] Buffers swapped")
-
     // ---- Count non-background pixels ----
     // Background is ~(13, 13, 13) from our clear color.
     // Cube orange = (204, 102, 51) from fragment shader vec4(0.8, 0.4, 0.2, 1.0).
@@ -454,13 +448,11 @@ fn main() {
         }
         pi = pi + 4
     }
-
     // ---- Build RGB buffer and write PPM ----
     // glReadPixels returns bottom-to-top; PPM is top-to-bottom.
     // We flip vertically when copying to the RGB buffer.
     let rgb_bytes = W * H * 3
     let rgb_buf = kryos_ffi_malloc(rgb_bytes)
-
     let mut row = 0
     while row < H {
         // source row: (H-1-row) from bottom in RGBA buffer
@@ -479,13 +471,11 @@ fn main() {
         }
         row = row + 1
     }
-
     // Write the PPM file
     let libc = kryos_ffi_dlopen("libc.so.6")
-    let fopen  = kryos_ffi_dlsym(libc, "fopen")
+    let fopen = kryos_ffi_dlsym(libc, "fopen")
     let fwrite = kryos_ffi_dlsym(libc, "fwrite")
     let fclose = kryos_ffi_dlsym(libc, "fclose")
-
     let ppm_path_str = "examples/gl_cube_output.ppm"
     let ppm_fd = kryos_ffi_dlcall2(fopen, kryos_ffi_cstr(ppm_path_str), kryos_ffi_cstr("wb"))
     if ppm_fd == 0 {
@@ -502,9 +492,7 @@ fn main() {
         println("[gl] PPM written: examples/gl_cube_output.ppm (WxH = 320x320, size = " + to_string(total_size) + " bytes)")
     }
     kryos_ffi_dlclose(libc)
-
     println("[gl] non-background pixels: " + to_string(nonbg) + " (proves something was drawn)")
-
     // ---- Cleanup ----
     // Free render data
     kryos_ffi_free(rgb_buf, rgb_bytes)
@@ -513,18 +501,15 @@ fn main() {
     kryos_ffi_free(status_buf, 4)
     kryos_ffi_free(frag_src_pp, 8)
     kryos_ffi_free(vert_src_pp, 8)
-
     // Delete GL objects (vXX_tmp still hold the IDs and are still valid memory)
     kryos_ffi_dlcallv2(gl_delete_buffers, 1, vbo_tmp)
     kryos_ffi_dlcallv2(gl_delete_buffers, 1, ebo_tmp)
     kryos_ffi_dlcallv2(gl_delete_vaos, 1, vao_tmp)
     kryos_ffi_dlcallv1(gl_delete_program, prog)
-
     // Now free the ID buffers
     kryos_ffi_free(ebo_tmp, 4)
     kryos_ffi_free(vbo_tmp, 4)
     kryos_ffi_free(vao_tmp, 4)
-
     kryos_ffi_dlcallv1(sdl_gl_delete_ctx, ctx)
     kryos_ffi_dlcallv1(sdl_destroy_window, win)
     kryos_ffi_dlcall0(sdl_quit)

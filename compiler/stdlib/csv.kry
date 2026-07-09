@@ -59,8 +59,19 @@ fn parse(input: str) -> [CsvRow] {
                 i = i + 1
             }
         } else {
-            if c == "\"" {
+            if c == "\"" and len(cur) == 0 {
+                // RFC 4180: a quote only opens a quoted field when it is the
+                // FIRST character of the field. A quote appearing mid-field
+                // (an inch mark, an unescaped quotation) is literal data --
+                // toggling quote mode on it silently absorbed every comma and
+                // newline in the rest of the document into one field (a
+                // single stray quote made a 4-row file parse as 2 rows with
+                // no error).
                 in_quotes = true
+                row_has_content = true
+                i = i + 1
+            } elif c == "\"" {
+                cur = cur + c
                 row_has_content = true
                 i = i + 1
             } elif c == "," {

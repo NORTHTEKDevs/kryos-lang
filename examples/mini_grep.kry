@@ -4,7 +4,6 @@
 // Demonstrates: functions, control flow, string operations,
 //               maps, error handling, while loops
 // ============================================================
-
 // Simulate a pattern search by using a map of known matches.
 // In a real implementation this would use string scanning builtins.
 fn build_search_index() -> i64 {
@@ -44,11 +43,9 @@ fn report(r: SearchResult) {
 fn main() {
     println("=== Kryos Mini-Grep Demo ===")
     println("")
-
     let text = "The quick brown fox jumps over the lazy dog"
     println("Text: \"" + text + "\"")
     println("")
-
     // Build a lookup table for known words
     let mut known = {}
     known["fox"] = 1
@@ -57,39 +54,30 @@ fn main() {
     known["brown"] = 1
     known["dog"] = 1
     known["jumps"] = 1
-
     // Search for patterns
     let mut total_matches = 0
-
     println("Searching for patterns:")
-
     // Pattern 1: fox
     let r1 = make_result("fox", 1)
     report(r1)
     total_matches = total_matches + 1
-
     // Pattern 2: cat (not in text)
     let r2 = make_result("cat", 0)
     report(r2)
-
     // Pattern 3: lazy
     let r3 = make_result("lazy", 1)
     report(r3)
     total_matches = total_matches + 1
-
     // Pattern 4: kryos (not in text)
     let r4 = make_result("kryos", 0)
     report(r4)
-
     // Pattern 5: quick
     let r5 = make_result("quick", 1)
     report(r5)
     total_matches = total_matches + 1
-
     println("")
     println("Total matches: " + to_string(total_matches) + " / 5 patterns")
     println("")
-
     // Error handling for file operations
     println("Error handling:")
     try {
@@ -98,7 +86,6 @@ fn main() {
         println("  Caught I/O error: " + e)
         println("  Falling back to stdin mode")
     }
-
     println("")
     println("=== Search complete ===")
 }

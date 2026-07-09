@@ -22,23 +22,31 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
         let source =
             std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
-        // The formatter re-emits from the AST, which does not carry regular
-        // `//` line/inline comments (only `///` doc comments survive). So a
-        // naive format would silently DELETE every non-doc comment. Until
-        // comment trivia is threaded through the parser, refuse to rewrite a
-        // file that has such comments rather than destroy them.
-        if has_non_doc_comment(&source) {
-            eprintln!(
-                "  skipped {path} (has line/inline comments the formatter cannot preserve yet)"
-            );
-            skipped += 1;
-            continue;
-        }
-
-        let formatted = kryos_fmt::format_source(&source).map_err(|diags| {
-            let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
-            format!("parse error in `{path}`: {}", msgs.join("; "))
-        })?;
+        // The AST does not carry `//` line/inline comments (only `///` doc
+        // comments survive), so a naive re-emit would DELETE them. For files
+        // with such comments, use the comment-preserving path: it re-anchors
+        // every comment against the formatted output and refuses (skip, not
+        // destroy) when any comment cannot be placed confidently.
+        let formatted = if has_non_doc_comment(&source) {
+            match kryos_fmt::format_source_preserving_comments(&source).map_err(|diags| {
+                let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+                format!("parse error in `{path}`: {}", msgs.join("; "))
+            })? {
+                Some(f) => f,
+                None => {
+                    eprintln!(
+                        "  skipped {path} (a comment could not be re-anchored; file left untouched)"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            }
+        } else {
+            kryos_fmt::format_source(&source).map_err(|diags| {
+                let msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+                format!("parse error in `{path}`: {}", msgs.join("; "))
+            })?
+        };
 
         if source == formatted {
             continue;

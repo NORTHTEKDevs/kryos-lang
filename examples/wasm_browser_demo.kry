@@ -5,7 +5,6 @@
 //
 // Shows: Fibonacci (recursion), factorial (loops), and a quadratic
 // formula — all running as WASM compiled from Kryos, in the browser.
-
 fn fib(n: i64) -> i64 {
     if n < 2 {
         n

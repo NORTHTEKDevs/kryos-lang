@@ -3,7 +3,6 @@
 // This loads libc at runtime (no recompile, no link flags) and calls
 // getpid / getuid through function pointers resolved at runtime. The
 // kryos_ffi_dl* helpers come from the stdlib-native runtime.
-
 extern "C" {
     fn kryos_ffi_dlopen(name: str) -> i64
     fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
@@ -17,14 +16,12 @@ fn main() {
     let lib = kryos_ffi_dlopen("libc.so.6")
     println("libc handle:")
     println(lib)
-
     let getpid_fn = kryos_ffi_dlsym(lib, "getpid")
     let getuid_fn = kryos_ffi_dlsym(lib, "getuid")
     println("getpid() via dlcall:")
     println(kryos_ffi_dlcall0(getpid_fn))
     println("getuid() via dlcall:")
     println(kryos_ffi_dlcall0(getuid_fn))
-
     let n = kryos_ffi_dlclose(lib)
     println("dlclose returned:")
     println(n)

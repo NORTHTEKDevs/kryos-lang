@@ -7,11 +7,10 @@
 // Uses fixed-point integer math (scale factor 100) to simulate
 // a 2-input, 2-hidden, 1-output network learning XOR.
 // ============================================================
-
 struct Neuron {
-    w1: i64,
-    w2: i64,
-    bias: i64,
+    w1: i64
+    w2: i64
+    bias: i64
 }
 
 // Scaled sigmoid approximation: output in [0, 100]
@@ -38,61 +37,48 @@ fn main() {
     println("XOR gate — 2-input, 2-hidden, 1-output")
     println("Fixed-point integer math (scale=100)")
     println("")
-
     // Hand-tuned weights that solve XOR
     // Hidden layer: h1 = AND gate, h2 = OR gate
     let h1 = Neuron { w1: 200, w2: 200, bias: -300 }
     let h2 = Neuron { w1: 200, w2: 200, bias: -100 }
-
     // Output neuron: h2 AND (NOT h1) — XOR = OR AND NOT(AND)
     let out = Neuron { w1: -200, w2: 200, bias: -100 }
-
     // XOR truth table inputs (scaled by 100)
     let inputs_x = [0, 0, 100, 100]
     let inputs_y = [0, 100, 0, 100]
     let expected = [0, 1, 1, 0]
-
     println("Input A | Input B | Expected | Output | Correct?")
     println("--------|---------|----------|--------|----------")
-
     let mut correct = 0
     for i in 0..4 {
         let x1 = inputs_x[i]
         let x2 = inputs_y[i]
-
         // Forward pass through hidden layer
         let hidden1 = neuron_forward(h1, x1, x2)
         let hidden2 = neuron_forward(h2, x1, x2)
-
         // Forward pass through output layer
         let output = neuron_forward(out, hidden1, hidden2)
-
         // Threshold at 50 to get binary output
         let mut prediction = 0
         if output >= 50 {
             prediction = 1
         }
-
         let exp = expected[i]
         let mut mark = "  FAIL"
         if prediction == exp {
             correct = correct + 1
             mark = "  PASS"
         }
-
         println("   " + to_string(x1 / 100) + "    |    " + to_string(x2 / 100) + "    |    " + to_string(exp) + "     |   " + to_string(prediction) + "    |" + mark)
     }
-
     println("")
     println("Accuracy: " + to_string(correct) + "/4")
-
     // Show network architecture
     println("")
     println("Network weights:")
     println("  Hidden 1: w1=" + to_string(h1.w1) + " w2=" + to_string(h1.w2) + " bias=" + to_string(h1.bias))
     println("  Hidden 2: w1=" + to_string(h2.w1) + " w2=" + to_string(h2.w2) + " bias=" + to_string(h2.bias))
     println("  Output:   w1=" + to_string(out.w1) + " w2=" + to_string(out.w2) + " bias=" + to_string(out.bias))
-
     println("")
     println("=== Neural network complete ===")
 }

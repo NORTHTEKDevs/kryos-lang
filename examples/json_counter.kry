@@ -4,7 +4,6 @@
 // Demonstrates: structs, channels, spawn, try/catch,
 //               string building, for loops, integer match
 // ============================================================
-
 struct DataSet {
     name: str
     count: i64
@@ -12,11 +11,7 @@ struct DataSet {
 }
 
 fn aggregate(items: i64, name: str) -> DataSet {
-    return DataSet {
-        name: name,
-        count: items,
-        total: items * 10
-    }
+    return DataSet { name: name, count: items, total: items * 10 }
 }
 
 fn compute_sum(n: i64) -> i64 {
@@ -39,7 +34,6 @@ fn classify(n: i64) -> str {
 fn main() {
     println("=== Kryos Data Processing Demo ===")
     println("")
-
     // Build datasets
     println("Datasets:")
     let ds1 = aggregate(100, "users")
@@ -48,37 +42,29 @@ fn main() {
     println("  " + ds2.name + ": " + to_string(ds2.count) + " items, total=" + to_string(ds2.total))
     let ds3 = aggregate(200, "events")
     println("  " + ds3.name + ": " + to_string(ds3.count) + " items, total=" + to_string(ds3.total))
-
     println("")
-
     // Parallel computation with channels
     println("Parallel processing:")
     let ch1 = chan()
     let ch2 = chan()
-
     spawn {
         send(ch1, compute_sum(1000))
     }
     spawn {
         send(ch2, compute_sum(500))
     }
-
     let r1 = recv(ch1)
     println("  Worker 1 (sum 1..1000): " + to_string(r1))
     let r2 = recv(ch2)
     println("  Worker 2 (sum 1..500): " + to_string(r2))
-
     println("")
-
     // Integer match
     println("Classification:")
     println("  0 -> " + classify(0))
     println("  1 -> " + classify(1))
     println("  2 -> " + classify(2))
     println("  42 -> " + classify(42))
-
     println("")
-
     // Error handling
     println("Error handling:")
     try {
@@ -86,14 +72,12 @@ fn main() {
     } catch e {
         println("  Caught: " + e)
     }
-
     try {
         let bad = parse_int("not_a_number")
         println("  Should not reach: " + to_string(bad))
     } catch e {
         println("  Caught parse error: " + e)
     }
-
     println("")
     println("=== Data processing complete ===")
 }

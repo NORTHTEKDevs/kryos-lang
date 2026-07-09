@@ -2,22 +2,17 @@
 //
 // Run: kryos run math_imports_demo.kry
 //   (from the examples/ directory)
-
 use std::math::{abs, min, max}
 
 fn main() {
     println("=== Selective Math Import Demo ===")
     println("")
-
     let a = abs(-42.5)
     println("abs(-42.5) = " + to_string(a))
-
     let lo = min(10.0, 3.0)
     println("min(10.0, 3.0) = " + to_string(lo))
-
     let hi = max(10.0, 3.0)
     println("max(10.0, 3.0) = " + to_string(hi))
-
     println("")
     println("Selective imports working!")
 }

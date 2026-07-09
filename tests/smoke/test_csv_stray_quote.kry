@@ -1,0 +1,16 @@
+// Regression: a stray mid-field quote must not swallow the rest of the
+// document (RFC 4180: a quote only opens a quoted field at field START).
+// Also covers proper quoted fields and "" escapes still working.
+use std::csv::{parse}
+
+fn main() {
+    let input = "a,b\n1,it's a \"test\n2,three\n4,five\n"
+    let rows = parse(input)
+    println("rows=" + to_string(len(rows)))
+    println(rows[1].fields[1])
+    let rfc = "a,b\n\"quoted, comma\",\"with \"\"escape\"\"\"\nplain,end\n"
+    let rows2 = parse(rfc)
+    println("rfc=" + to_string(len(rows2)))
+    println(rows2[1].fields[0])
+    println(rows2[1].fields[1])
+}

@@ -18,17 +18,16 @@
 //
 // run-expect: expr = 10
 // ============================================================
-
 // Token kinds (small integer enum-by-convention).
 //   0=EOF, 1=NUM, 2=PLUS, 3=MINUS, 4=STAR, 5=SLASH, 6=LPAREN, 7=RPAREN
 struct Parser {
     kinds: [i64]
-    nums:  [i64]
-    poss:  [i64]
+    nums: [i64]
+    poss: [i64]
     // Cursor lives in a 1-elem array: arrays are shared heap values on
     // both backends, so advance(p) is visible to the caller (see gotcha #23
     // -- bare i64 fields on a by-value param are NOT portable to mutate).
-    pos:   [i64]
+    pos: [i64]
 }
 
 fn new_parser() -> Parser {
@@ -36,8 +35,7 @@ fn new_parser() -> Parser {
 }
 
 fn is_digit(ch: str) -> bool {
-    return ch == "0" or ch == "1" or ch == "2" or ch == "3" or ch == "4"
-        or ch == "5" or ch == "6" or ch == "7" or ch == "8" or ch == "9"
+    return ch == "0" or ch == "1" or ch == "2" or ch == "3" or ch == "4" or ch == "5" or ch == "6" or ch == "7" or ch == "8" or ch == "9"
 }
 
 fn is_space(ch: str) -> bool {
@@ -45,15 +43,33 @@ fn is_space(ch: str) -> bool {
 }
 
 fn digit_value(d: str) -> i64 {
-    if d == "1" { return 1 }
-    if d == "2" { return 2 }
-    if d == "3" { return 3 }
-    if d == "4" { return 4 }
-    if d == "5" { return 5 }
-    if d == "6" { return 6 }
-    if d == "7" { return 7 }
-    if d == "8" { return 8 }
-    if d == "9" { return 9 }
+    if d == "1" {
+        return 1
+    }
+    if d == "2" {
+        return 2
+    }
+    if d == "3" {
+        return 3
+    }
+    if d == "4" {
+        return 4
+    }
+    if d == "5" {
+        return 5
+    }
+    if d == "6" {
+        return 6
+    }
+    if d == "7" {
+        return 7
+    }
+    if d == "8" {
+        return 8
+    }
+    if d == "9" {
+        return 9
+    }
     return 0
 }
 
@@ -103,7 +119,7 @@ fn tokenize(p: Parser, src: str) {
             throw "lex error at column " + to_string(i) + ": unexpected character '" + ch + "'"
         }
     }
-    push_token(p, 0, 0, n)  // EOF sentinel
+    push_token(p, 0, 0, n) // EOF sentinel
 }
 
 fn peek_kind(p: Parser) -> i64 {
@@ -119,7 +135,6 @@ fn advance(p: Parser) {
 }
 
 // --- Recursive-descent parser + evaluator ---------------------
-
 fn parse_expr(p: Parser) -> i64 {
     return parse_expr_inner(p)
 }
@@ -213,15 +228,15 @@ fn try_eval(label: str, src: str) {
 fn main() {
     println("=== Kryos Showcase: Recursive-Descent Calculator ===")
     println("")
-    try_eval("expr",  "1 + 2 * (3 + 4) - 5")          // = 10
-    try_eval("calc",  "((1 + 2) * (3 + 4)) / 7")      // =  3
-    try_eval("neg",   "-3 * (4 - 6)")                  // =  6
-    try_eval("nest",  "((((42))))")                    // = 42
+    try_eval("expr", "1 + 2 * (3 + 4) - 5") // = 10
+    try_eval("calc", "((1 + 2) * (3 + 4)) / 7") // =  3
+    try_eval("neg", "-3 * (4 - 6)") // =  6
+    try_eval("nest", "((((42))))") // = 42
     println("")
     println("=== Error reporting (graceful failure) ===")
-    try_eval("badop", "1 + + 2")                       // parse error
-    try_eval("divz",  "10 / 0")                        // div by zero
-    try_eval("paren", "(1 + 2")                        // missing ')'
+    try_eval("badop", "1 + + 2") // parse error
+    try_eval("divz", "10 / 0") // div by zero
+    try_eval("paren", "(1 + 2") // missing ')'
     println("")
     println("=== Done ===")
 }

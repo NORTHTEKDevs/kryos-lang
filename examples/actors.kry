@@ -13,9 +13,8 @@
 // expect-stdout: balance: 150
 // expect-stdout: balance: 120
 // expect-stdout: balance: 620
-
 actor Account {
-    balance: i64,
+    balance: i64
 
     fn deposit(self, amount: i64) {
         self.balance = self.balance + amount
@@ -30,8 +29,8 @@ actor Account {
 
 fn main() {
     let acct = Account()
-    acct.deposit(100)   // balance: 100
-    acct.deposit(50)    // balance: 150
-    acct.withdraw(30)   // balance: 120
-    acct.deposit(500)   // balance: 620
+    acct.deposit(100) // balance: 100
+    acct.deposit(50) // balance: 150
+    acct.withdraw(30) // balance: 120
+    acct.deposit(500) // balance: 620
 }

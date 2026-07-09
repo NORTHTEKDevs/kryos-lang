@@ -4,7 +4,6 @@
 // Demonstrates: structs, string operations, for loops,
 //               functions, ownership patterns
 // ============================================================
-
 struct WcResult {
     lines: i64
     words: i64
@@ -18,39 +17,30 @@ fn format_wc(lines: i64, words: i64, chars: i64, label: str) -> str {
 fn main() {
     println("=== Kryos Word Counter ===")
     println("")
-
     // Simple word counting via len() and known inputs
     // (char_at is not yet a builtin, so we demonstrate string ops)
-
     println(format_wc(1, 2, 11, "Hello World"))
     println(format_wc(1, 9, 43, "The quick brown fox jumps over the lazy dog"))
     println(format_wc(1, 1, 3, "one"))
     println(format_wc(0, 0, 0, "(empty)"))
-
     println("")
-
     // Demonstrate len builtin
     let s1 = "Kryos"
     let l1 = len(s1)
     println("len(\"Kryos\") = " + to_string(l1))
-
     let s2 = "Hello, World!"
     let l2 = len(s2)
     println("len(\"Hello, World!\") = " + to_string(l2))
-
     let s3 = ""
     let l3 = len(s3)
     println("len(\"\") = " + to_string(l3))
-
     println("")
-
     // Summation demo with for loop
     let mut total_chars = 0
     for i in 1..100 {
         total_chars = total_chars + i
     }
     println("Sum 1..99 = " + to_string(total_chars))
-
     println("")
     println("=== Word counter complete ===")
 }

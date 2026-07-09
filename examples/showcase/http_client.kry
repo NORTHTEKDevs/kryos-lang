@@ -6,7 +6,6 @@
 //
 // Usage:
 //   kryos run http_client.kry example.com /
-
 use std::string::{split_lines}
 
 @capabilities(net, io)
@@ -15,40 +14,35 @@ fn main() {
     let host: str = if len(argv) >= 2 { argv[1] } else { "example.com" }
     let path: str = if len(argv) >= 3 { argv[2] } else { "/" }
     let port: i64 = 80
-
     let sock = tcp_connect(host, port)
     if sock < 0 {
         println("connect failed")
         return
     }
-
-    let req = "GET " + path + " HTTP/1.1\r\n" +
-              "Host: " + host + "\r\n" +
-              "User-Agent: kryos-http-client/v4\r\n" +
-              "Accept: */*\r\n" +
-              "Connection: close\r\n" +
-              "\r\n"
+    let req = "GET " + path + " HTTP/1.1\r\n" + "Host: " + host + "\r\n" + "User-Agent: kryos-http-client/v4\r\n" + "Accept: */*\r\n" + "Connection: close\r\n" + "\r\n"
     tcp_send(sock, req)
-
     let mut response: str = ""
-    loop {
+    while true {
         let chunk = tcp_recv(sock, 4096)
-        if len(chunk) == 0 { break }
+        if len(chunk) == 0 {
+            break
+        }
         response = response + chunk
     }
     tcp_close(sock)
-
     // Print status + first few headers + body length.
     let lines = split_lines(response)
     if len(lines) > 0 {
-        println(lines[0])  // HTTP/1.1 200 OK
+        println(lines[0]) // HTTP/1.1 200 OK
     }
     let mut header_count: i64 = 0
     let mut i: i64 = 1
     let n = len(lines)
     while i < n {
         let l = lines[i]
-        if len(l) == 0 { break }
+        if len(l) == 0 {
+            break
+        }
         if header_count < 4 {
             println("  " + l)
         }

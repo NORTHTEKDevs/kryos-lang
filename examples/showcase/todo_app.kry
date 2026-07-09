@@ -8,7 +8,6 @@
 //   kryos run todo_app.kry list
 //   kryos run todo_app.kry done 1
 //   kryos run todo_app.kry clear
-
 use std::string::{split_lines}
 
 @capabilities(io)
@@ -19,7 +18,6 @@ fn main() {
         return
     }
     let cmd = argv[1]
-
     if cmd == "add" {
         if len(argv) < 3 {
             println("usage: add <text>")
@@ -32,14 +30,15 @@ fn main() {
         println("added: " + text)
         return
     }
-
     if cmd == "list" {
         let body = load_or_empty()
         let lines = split_lines(body)
         let mut i: i64 = 1
         let mut printed: i64 = 0
         for line in lines {
-            if len(line) == 0 { continue }
+            if len(line) == 0 {
+                continue
+            }
             println("  " + to_string(i) + ". " + line)
             i = i + 1
             printed = printed + 1
@@ -49,7 +48,6 @@ fn main() {
         }
         return
     }
-
     if cmd == "done" {
         if len(argv) < 3 {
             println("usage: done <n>")
@@ -61,8 +59,10 @@ fn main() {
         let mut out: str = ""
         let mut i: i64 = 1
         for line in lines {
-            if len(line) == 0 { continue }
-            if i == idx && substr(line, 0, 3) == "[ ]" {
+            if len(line) == 0 {
+                continue
+            }
+            if i == idx and substr(line, 0, 3) == "[ ]" {
                 out = out + "[x]" + substr(line, 3, len(line)) + "\n"
             } else {
                 out = out + line + "\n"
@@ -73,17 +73,15 @@ fn main() {
         println("done #" + to_string(idx))
         return
     }
-
     if cmd == "clear" {
         file_write("todo.txt", "")
         println("cleared")
         return
     }
-
     print_help()
 }
 
-@capabilities(fs:read)
+@capabilities(fs : read)
 fn load_or_empty() -> str {
     if file_exists("todo.txt") == 1 {
         return file_read("todo.txt")

@@ -9,7 +9,7 @@
 // backend uses the non-trapping saturating truncation ops and clamps narrow
 // destinations to their range.
 fn main() {
-    let big: f64 = 1.0e19
+    let big: f64 = 10000000000000000000.0
     println(to_string(big as i64))
     let mid: f64 = 300.0
     println(to_string(mid as i8))

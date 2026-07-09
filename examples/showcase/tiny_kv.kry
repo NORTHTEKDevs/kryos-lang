@@ -8,20 +8,19 @@
 //   quit         — exit
 //
 // Demonstrates: parallel-array map pattern, simple command parsing.
-
 @capabilities(io)
 fn main() {
     println("tiny_kv ready — try `set foo bar`, `get foo`, `list`, `quit`")
     let mut keys: [str] = []
     let mut vals: [str] = []
-
-    loop {
+    while true {
         print("> ")
         let line = read_line()
-        if len(line) == 0 { break }
-
+        if len(line) == 0 {
+            break
+        }
         let cmd = first_word(line)
-        if cmd == "quit" || cmd == "exit" {
+        if cmd == "quit" or cmd == "exit" {
             println("bye.")
             break
         }
@@ -42,7 +41,7 @@ fn main() {
             let rest = after_word(line)
             let k = first_word(rest)
             let v = after_word(rest)
-            if len(k) == 0 || len(v) == 0 {
+            if len(k) == 0 or len(v) == 0 {
                 println("usage: set <key> <value>")
                 continue
             }
@@ -122,7 +121,7 @@ fn rstrip(s: str) -> str {
     let mut n = len(s)
     while n > 0 {
         let c = char_code(substr(s, n - 1, n))
-        if c == 10 || c == 13 || c == 32 {
+        if c == 10 or c == 13 or c == 32 {
             n = n - 1
         } else {
             break

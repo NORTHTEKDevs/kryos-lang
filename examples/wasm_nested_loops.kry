@@ -12,7 +12,6 @@
 // expect-stdout: triple 8
 // expect-stdout: continue 9
 // expect-stdout: break 10
-
 fn main() {
     // nested for-range with a computation
     let mut mult = 0
@@ -22,7 +21,6 @@ fn main() {
         }
     }
     println("mult " + to_string(mult))
-
     // triple-nested
     let mut c = 0
     for i in 0..2 {
@@ -33,19 +31,21 @@ fn main() {
         }
     }
     println("triple " + to_string(c))
-
     // continue inside a range loop (shares the increment block)
     let mut s = 0
     for i in 0..6 {
-        if i % 2 == 0 { continue }
+        if i % 2 == 0 {
+            continue
+        }
         s = s + i
     }
     println("continue " + to_string(s))
-
     // early break
     let mut b = 0
     for i in 0..100 {
-        if i == 5 { break }
+        if i == 5 {
+            break
+        }
         b = b + i
     }
     println("break " + to_string(b))

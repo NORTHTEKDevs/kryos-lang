@@ -1,24 +1,21 @@
 // expect-stdout: Circle with radius 5.0: 78.53975\nRectangle 4.0 x 6.0: 24
-
 enum Shape {
-    Circle(f64),
-    Rectangle(f64, f64),
+    Circle(f64)
+    Rectangle(f64, f64)
 }
 
 fn compute_area(shape: Shape) -> f64 {
     match shape {
-        Shape::Circle(r) => 3.14159 * r * r,
-        Shape::Rectangle(w, h) => w * h,
+        Shape::Circle(r) => 3.14159 * r * r
+        Shape::Rectangle(w, h) => w * h
     }
 }
 
 fn main() {
     let circle = Shape.Circle(5.0)
     let rect = Shape.Rectangle(4.0, 6.0)
-
     let circle_area = compute_area(circle)
     let rect_area = compute_area(rect)
-
     println("Circle with radius 5.0: " + to_string(circle_area))
     println("Rectangle 4.0 x 6.0: " + to_string(rect_area))
 }

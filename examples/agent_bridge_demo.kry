@@ -1,24 +1,15 @@
 use std::tracked::{Tracked, tracked_source}
+
 use std::cost::{ComputeCost, cost_zero, cost_add}
+
 use std::probable::{Probable, probable, is_confident}
+
 use std::agent_bridge::{tracked_cost, tracked_merge, tracked_to_citation, budget_remaining, filter_confident}
 
 fn make_chunks() -> [Tracked<str>] {
-    let c1 = tracked_source(
-        "Kryos capabilities prevent unauthorized IO at compile time.",
-        "docs/10-capabilities.md",
-        "capability spec"
-    )
-    let c2 = tracked_source(
-        "@budget(tokens=N) halts runaway agent loops at runtime.",
-        "docs/11-budgets.md",
-        "budget spec"
-    )
-    let c3 = tracked_source(
-        "Tracked<T> records every transformation for audit.",
-        "docs/10-capabilities.md",
-        "capability spec"
-    )
+    let c1 = tracked_source("Kryos capabilities prevent unauthorized IO at compile time.", "docs/10-capabilities.md", "capability spec")
+    let c2 = tracked_source("@budget(tokens=N) halts runaway agent loops at runtime.", "docs/11-budgets.md", "budget spec")
+    let c3 = tracked_source("Tracked<T> records every transformation for audit.", "docs/10-capabilities.md", "capability spec")
     return [c1, c2, c3]
 }
 
@@ -26,42 +17,26 @@ fn main() {
     let chunks = make_chunks()
     let answer_text = "Kryos enforces capability safety, budget limits, and data provenance."
     let answer: Tracked<str> = tracked_merge(chunks, answer_text)
-
-    let inference_cost = ComputeCost {
-        wall_time_ms: 340.0,
-        tokens_used: 1200,
-        api_calls: 1,
-        money_usd: 0.006,
-        energy_kwh: 0.0
-    }
+    let inference_cost = ComputeCost { wall_time_ms: 340.0, tokens_used: 1200, api_calls: 1, money_usd: 0.006, energy_kwh: 0.0 }
     let final_answer = tracked_cost(answer, inference_cost, "summarize via claude-sonnet-4-6")
-
     let citations = tracked_to_citation(final_answer)
     println("Answer: " + final_answer.value)
     println("Citations (" + to_string(len(citations)) + "):")
     for cite in citations {
         println("  - " + cite)
     }
-
     let (toks, calls) = budget_remaining()
     if toks == -1 {
         println("No active @budget frame.")
     } else {
         println("Budget remaining: " + to_string(toks) + " tokens, " + to_string(calls) + " calls")
     }
-
-    let candidates: [Probable<str>] = [
-        probable("Kryos", 0.95),
-        probable("Rust", 0.62),
-        probable("Go", 0.38),
-        probable("Python", 0.20)
-    ]
+    let candidates: [Probable<str>] = [probable("Kryos", 0.95), probable("Rust", 0.62), probable("Go", 0.38), probable("Python", 0.2)]
     let strong = filter_confident(candidates, 0.6)
     println("High-confidence candidates (" + to_string(len(strong)) + "):")
     for c in strong {
         println("  " + c.value + " @ " + to_string(c.confidence))
     }
-
     println("")
     let mut explain_out = "Value: " + final_answer.value + "\n\nLineage:"
     let mut ei = 0

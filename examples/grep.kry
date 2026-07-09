@@ -1,9 +1,7 @@
 // expect-stdout: Lines containing "ap":\napple\ngrape
-
 fn main() {
     let fruits = ["apple", "banana", "grape", "orange"]
     let search_term = "ap"
-
     println("Lines containing \"" + search_term + "\":")
     for fruit in fruits {
         if contains(fruit, search_term) {

@@ -7,15 +7,12 @@ fn main() {
         return
     }
     println("[pg] connected")
-
     let r1 = pg_exec(h, "DROP TABLE IF EXISTS notes")
     let r2 = pg_exec(h, "CREATE TABLE notes (id SERIAL PRIMARY KEY, body TEXT)")
     let r3 = pg_exec(h, "INSERT INTO notes (body) VALUES ('hello kryos'), ('postgres works')")
     println("[pg] inserted: " + to_string(r3))
-
     let rows = pg_query(h, "SELECT id, body FROM notes ORDER BY id")
     println("[pg] rows: " + rows)
-
     pg_close(h)
     println("[pg] done")
 }

@@ -6,7 +6,6 @@
 //
 // `_getpid` is the Windows CRT name; on Linux/macOS the linker resolves it
 // as `getpid` via the compatibility alias in the CRT headers.
-
 extern "C" {
     fn _getpid() -> i64
     fn puts(s: i64) -> i64

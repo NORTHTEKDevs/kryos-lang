@@ -10,8 +10,6 @@
 // Demonstrates: the tcp_* builtins (tcp_listen, tcp_accept, tcp_recv,
 // tcp_send, tcp_close),
 // bounded loop control, basic protocol framing.
-
-
 @capabilities(net, io)
 fn main() {
     let listener = tcp_listen("127.0.0.1", 7000)
@@ -26,7 +24,6 @@ fn main() {
         }
         served = served + 1
         println("tcp_echo: client #" + to_string(served) + " connected")
-
         // Read up to 4 KB then echo back. Production code would buffer
         // until newline, but this demo round-trips one read per client.
         let msg = tcp_recv(conn, 4096)

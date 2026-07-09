@@ -4,17 +4,14 @@
 // Note: Kryos doesn't have a builtin readdir; this example uses the
 // platform-specific shell-out pattern. Replace with std::fs::read_dir
 // when that lands (planned post-v4.0).
-
 use std::string::{split_lines}
 
 @capabilities(io)
 fn main() {
     let argv = args()
     let root: str = if len(argv) >= 2 { argv[1] } else { "." }
-
     println("scanning " + root + " ...")
     println("")
-
     // Naive depth-limited walk via shell. Bounded to 4 levels deep.
     let listing = file_read(".kry_walker_listing.txt")
     // For this example we assume the caller pre-generated the file:
@@ -23,13 +20,16 @@ fn main() {
     let mut count: i64 = 0
     let mut total_size: i64 = 0
     for p in paths {
-        if len(p) == 0 { continue }
-        if !contains(p, ".kry") { continue }
+        if len(p) == 0 {
+            continue
+        }
+        if not contains(p, ".kry") {
+            continue
+        }
         count = count + 1
         let body = file_read(p)
         total_size = total_size + len(body)
     }
-
     println("kry files:    " + to_string(count))
     println("total bytes:  " + to_string(total_size))
     let avg: i64 = if count > 0 { total_size / count } else { 0 }

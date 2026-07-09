@@ -2,57 +2,47 @@
 //
 // Loads libc at runtime, resolves several symbols, calls them through
 // function-pointer indirection, and exercises malloc/free + memory I/O.
-
 extern "C" {
     fn kryos_ffi_dlopen(name: str) -> i64
     fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
     fn kryos_ffi_dlclose(handle: i64) -> i64
-
     fn kryos_ffi_dlcall0(fp: i64) -> i64
     fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
-
     fn kryos_ffi_malloc(n: i64) -> i64
     fn kryos_ffi_free(p: i64, n: i64)
     fn kryos_ffi_read_i64(p: i64) -> i64
     fn kryos_ffi_write_i64(p: i64, v: i64)
-
     fn kryos_ffi_cstr(s: str) -> i64
 }
 
 fn main() {
     println("--- runtime FFI demo ---")
-
     let lib = kryos_ffi_dlopen("libc.so.6")
     if lib == 0 {
         println("could not load libc.so.6")
         return
     }
     println("libc loaded; handle nonzero")
-
     let getpid = kryos_ffi_dlsym(lib, "getpid")
     let getuid = kryos_ffi_dlsym(lib, "getuid")
     let time_fn = kryos_ffi_dlsym(lib, "time")
-
     println("pid:")
     println(kryos_ffi_dlcall0(getpid))
     println("uid:")
     println(kryos_ffi_dlcall0(getuid))
     println("unix time:")
     println(kryos_ffi_dlcall1(time_fn, 0))
-
     // Round-trip through C heap.
     let p = kryos_ffi_malloc(8)
     kryos_ffi_write_i64(p, 12345)
     println("wrote 12345, read back:")
     println(kryos_ffi_read_i64(p))
     kryos_ffi_free(p, 8)
-
     // strlen on a Kryos string via libc.
     let strlen_fn = kryos_ffi_dlsym(lib, "strlen")
     let msg = "hello world"
     println("strlen('hello world') via libc:")
     println(kryos_ffi_dlcall1(strlen_fn, kryos_ffi_cstr(msg)))
-
     let r = kryos_ffi_dlclose(lib)
     println("dlclose returned:")
     println(r)

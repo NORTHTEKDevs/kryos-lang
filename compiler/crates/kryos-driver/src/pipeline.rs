@@ -1150,8 +1150,16 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     let mut source_map = SourceMap::default();
     let file_id = source_map.add_file(path.to_string_lossy().to_string(), source.to_string());
 
-    // Lex
-    let tokens = Lexer::new(&source, file_id).tokenize();
+    // Lex. Use the diagnostics-carrying variant: plain tokenize() silently
+    // dropped lexer errors, so `kryos check` on an unterminated string
+    // showed only the parser's misleading "unexpected end of file, expected
+    // '}'" cascade while `kryos run` (the compile pipeline) reported the
+    // precise "unterminated string literal" at the opening quote.
+    let (tokens, lex_diags) = Lexer::new(&source, file_id).tokenize_with_diagnostics();
+    diagnostics.extend(lex_diags);
+    if diagnostics.iter().any(|d| d.is_error()) {
+        return (diagnostics, source_map);
+    }
 
     // Parse
     let mut module = match parse(tokens) {
@@ -1231,8 +1239,12 @@ pub fn check_file_with_options_full(
     let mut source_map = SourceMap::default();
     let file_id = source_map.add_file(path.to_string_lossy().to_string(), source.to_string());
 
-    // Lex
-    let tokens = Lexer::new(&source, file_id).tokenize();
+    // Lex (diagnostics-carrying; see check_file_with_options_full note).
+    let (tokens, lex_diags) = Lexer::new(&source, file_id).tokenize_with_diagnostics();
+    diagnostics.extend(lex_diags);
+    if diagnostics.iter().any(|d| d.is_error()) {
+        return (diagnostics, source_map);
+    }
 
     // Parse
     let mut module = match parse(tokens) {

@@ -3,7 +3,6 @@
 // Declares puts() and _getpid() from the C runtime and calls them via the
 // Cranelift JIT. On Windows the CRT exports _getpid; on Linux/macOS the
 // linker resolves it through the getpid compatibility alias.
-
 extern "C" {
     fn puts(s: i64) -> i64
     fn _getpid() -> i64

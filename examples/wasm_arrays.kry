@@ -12,7 +12,6 @@
 //   - len():          `len(arr)`
 //
 // All backed by linear-memory storage via host-imported helpers.
-
 fn sum(arr: [i64], n: i64) -> i64 {
     let mut total: i64 = 0
     let mut i: i64 = 0
@@ -26,8 +25,8 @@ fn sum(arr: [i64], n: i64) -> i64 {
 fn main() {
     let nums = [10, 20, 30, 40, 50]
     let n = len(nums)
-    println(n)            // 5
-    println(nums[0])      // 10
-    println(nums[4])      // 50
+    println(n) // 5
+    println(nums[0]) // 10
+    println(nums[4]) // 50
     println(sum(nums, n)) // 150
 }

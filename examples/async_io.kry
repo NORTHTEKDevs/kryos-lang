@@ -7,21 +7,18 @@
 //
 // expect-stdout: all 4 async tasks complete
 // expect-stdout: concurrent
-
 async fn fetch(id: i64) {
-    sleep(300)          // stand-in for a blocking http_get / tcp_recv
+    sleep(300) // stand-in for a blocking http_get / tcp_recv
 }
 
 fn main() {
     coop_reset()
     let start = time_millis()
-
     coop_spawn(fetch(1))
     coop_spawn(fetch(2))
     coop_spawn(fetch(3))
     coop_spawn(fetch(4))
-    coop_run()          // drives all four; their sleeps overlap
-
+    coop_run() // drives all four; their sleeps overlap
     println("all 4 async tasks complete")
     let elapsed = time_millis() - start
     if elapsed < 700 {

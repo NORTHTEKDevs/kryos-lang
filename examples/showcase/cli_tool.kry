@@ -16,7 +16,6 @@
 //
 // run-expect: kgrep
 // ============================================================
-
 fn print_usage() {
     eprintln("kgrep — Kryos showcase grep")
     eprintln("usage: kgrep [-i] [-n] <pattern> <file>")
@@ -32,15 +31,13 @@ fn match_line(haystack: str, needle: str, case_insensitive: bool) -> bool {
     return contains(haystack, needle)
 }
 
-@capabilities(fs:read)
+@capabilities(fs : read)
 fn main() {
     // Banner line — keeps the run-expect annotation happy even when no
     // CLI args are provided.
     println("kgrep — Kryos showcase grep")
-
     let argv = args()
     let argc = len(argv)
-
     // Walk argv parsing flags. argv[0] is the program path; skip it.
     let mut i = 1
     let mut case_insensitive = false
@@ -48,7 +45,6 @@ fn main() {
     let mut pattern = ""
     let mut path = ""
     let mut had_error = false
-
     while i < argc {
         let a = argv[i]
         if a == "-i" {
@@ -71,28 +67,23 @@ fn main() {
         }
         i = i + 1
     }
-
     if had_error {
         print_usage()
         exit(2)
     }
-
     // No real arguments — exit cleanly so the program can also be used
     // as a smoke-test under `kryos run` with no extra args.
     if pattern == "" or path == "" {
         println("(no arguments — try: kgrep needle README.md)")
         return
     }
-
     if file_exists(path) == 0 {
         eprintln("kgrep: file not found: " + path)
         exit(2)
     }
-
     let content = file_read(path)
     let lines = split(content, "\n")
     let n_lines = len(lines)
-
     let mut matched_count = 0
     let mut idx = 0
     while idx < n_lines {
@@ -107,7 +98,6 @@ fn main() {
         }
         idx = idx + 1
     }
-
     if matched_count == 0 {
         exit(1)
     }

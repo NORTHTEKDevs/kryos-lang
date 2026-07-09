@@ -11,13 +11,18 @@
 // expect-stdout: has a
 // expect-stdout: no z
 // expect-stdout: len 2
-
 fn main() {
     let mut m: map<str, i64> = {}
     m["a"] = 1
     m["b"] = 2
     println(to_string(m["a"] + m["b"]))
-    if contains(m, "a") { println("has a") }
-    if contains(m, "z") { println("has z") } else { println("no z") }
+    if contains(m, "a") {
+        println("has a")
+    }
+    if contains(m, "z") {
+        println("has z")
+    } else {
+        println("no z")
+    }
     println("len " + to_string(len(m)))
 }

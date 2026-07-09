@@ -23,9 +23,7 @@
 //
 // run-expect: assistant: 36
 // ============================================================
-
 // ---- Tool implementations ------------------------------------
-
 fn tool_echo(s: str, _n: i64) -> str {
     return "echo: " + s
 }
@@ -48,9 +46,15 @@ fn tool_sysinfo(_s: str, _n: i64) -> str {
 }
 
 fn dispatch_tool(name: str, s: str, n: i64) -> str {
-    if name == "echo"    { return tool_echo(s, n) }
-    if name == "calc"    { return tool_calc(s, n) }
-    if name == "sysinfo" { return tool_sysinfo(s, n) }
+    if name == "echo" {
+        return tool_echo(s, n)
+    }
+    if name == "calc" {
+        return tool_calc(s, n)
+    }
+    if name == "sysinfo" {
+        return tool_sysinfo(s, n)
+    }
     return "error: unknown tool"
 }
 
@@ -60,7 +64,6 @@ fn dispatch_tool(name: str, s: str, n: i64) -> str {
 // arguments and the final-answer text. `kind` selects between:
 //   1 = tool call (read `name`, `arg_s`, `arg_i`)
 //   2 = final answer (read `arg_s`)
-
 struct Action {
     kind: i64
     name: str
@@ -68,7 +71,11 @@ struct Action {
     arg_i: i64
 }
 
-fn plan_next(user_query: str, has_observation: bool, observation: str) -> Action {
+fn plan_next(
+    user_query: str,
+    has_observation: bool,
+    observation: str
+) -> Action {
     if has_observation {
         return Action { kind: 2, name: "", arg_s: observation, arg_i: 0 }
     }
@@ -101,7 +108,6 @@ fn run_agent(initial_query: str, max_steps: i64) -> str {
     let mut contents: [str] = []
     push(roles, "user")
     push(contents, initial_query)
-
     let mut step = 0
     while step < max_steps {
         // Find latest user query and the latest tool observation, if any.
@@ -120,9 +126,7 @@ fn run_agent(initial_query: str, max_steps: i64) -> str {
             }
             k = k + 1
         }
-
         let act = plan_next(last_user, has_obs, last_obs)
-
         if act.kind == 2 {
             // Final answer. Clone the str field so we can both store it in
             // history and return it (each consumer needs its own owned copy).
@@ -131,14 +135,13 @@ fn run_agent(initial_query: str, max_steps: i64) -> str {
             push(contents, answer)
             return act.arg_s
         }
-
         // kind == 1 → tool call.
         // Clone the planner's str fields so dispatch_tool gets owned copies
         // and the println below still has valid handles for `act.name` /
         // `act.arg_s`.
         let name = act.name + ""
-        let s    = act.arg_s + ""
-        let i    = act.arg_i
+        let s = act.arg_s + ""
+        let i = act.arg_i
         println("  [tool] " + name + "(" + s + ", " + to_string(i) + ")")
         let observation = dispatch_tool(name, s, i)
         push(roles, "tool")
@@ -149,7 +152,6 @@ fn run_agent(initial_query: str, max_steps: i64) -> str {
 }
 
 // ---- Demo driver --------------------------------------------
-
 fn demo(query: str) {
     println("user:      " + query)
     let answer = run_agent(query, 8)
@@ -161,13 +163,11 @@ fn main() {
     println("=== Kryos Showcase: Agent Runtime ===")
     println("(deterministic rule-based 'LLM' — swap plan_next() for a real model)")
     println("")
-
-    demo("what is the square of 6")          // 36
-    demo("what is 21 doubled")                 // 42
-    demo("give me the 7th triangular number")  // 28
+    demo("what is the square of 6") // 36
+    demo("what is 21 doubled") // 42
+    demo("give me the 7th triangular number") // 28
     demo("system info please")
     demo("echo hello kryos")
     demo("tell me a story")
-
     println("=== Done ===")
 }

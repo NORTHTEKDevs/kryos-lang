@@ -2,7 +2,6 @@
 //
 // Library functions are defined below. A main() entry point is included so
 // this file can also be run directly with `kryos run examples/mylib.kry`.
-
 /// Double an integer value.
 fn double(x: i64) -> i64 {
     return x * 2

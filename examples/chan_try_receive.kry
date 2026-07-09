@@ -9,21 +9,17 @@
 // expect-stdout: empty ok=false val=0
 // expect-stdout: after-send ok=true val=42
 // expect-stdout: drained ok=false val=0
-
 use std::chan::{new_channel, send_val, try_receive}
 
-@capabilities()
+@capabilities
 fn main() {
     let ch = new_channel()
-
     // Nothing sent yet -> non-blocking poll must report empty, not hang.
     let a = try_receive(ch)
     println("empty ok=" + to_string(a.ok) + " val=" + to_string(a.value))
-
     send_val(ch, 42)
     let b = try_receive(ch)
     println("after-send ok=" + to_string(b.ok) + " val=" + to_string(b.value))
-
     // Queue drained again -> empty.
     let c = try_receive(ch)
     println("drained ok=" + to_string(c.ok) + " val=" + to_string(c.value))

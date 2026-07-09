@@ -4,7 +4,6 @@
 // std::collections aggregates. Outputs min/median/max/sum/count.
 //
 // Usage: kryos run stats_pipeline.kry numbers.csv
-
 use std::string::{split_lines}
 
 @capabilities(io)
@@ -16,22 +15,20 @@ fn main() {
     }
     let raw = file_read(argv[1])
     let lines = split_lines(raw)
-
     let mut nums: [i64] = []
     for line in lines {
         let t = strip(line)
-        if len(t) == 0 { continue }
+        if len(t) == 0 {
+            continue
+        }
         nums = push(nums, parse_int(t))
     }
-
     if len(nums) == 0 {
         println("no numbers parsed")
         return
     }
-
     sort(nums)
     let median = nums[len(nums) / 2]
-
     println("count:  " + to_string(len(nums)))
     println("sum:    " + to_string(sum_i64(nums)))
     println("min:    " + to_string(min_i64(nums)))
@@ -44,7 +41,7 @@ fn strip(s: str) -> str {
     let mut start: i64 = 0
     while start < n {
         let c = char_code(substr(s, start, start + 1))
-        if c == 32 || c == 9 || c == 10 || c == 13 {
+        if c == 32 or c == 9 or c == 10 or c == 13 {
             start = start + 1
         } else {
             break
@@ -53,7 +50,7 @@ fn strip(s: str) -> str {
     let mut end: i64 = n
     while end > start {
         let c = char_code(substr(s, end - 1, end))
-        if c == 32 || c == 9 || c == 10 || c == 13 {
+        if c == 32 or c == 9 or c == 10 or c == 13 {
             end = end - 1
         } else {
             break
@@ -64,18 +61,28 @@ fn strip(s: str) -> str {
 
 fn sum_i64(xs: [i64]) -> i64 {
     let mut total = 0
-    for x in xs { total = total + x }
+    for x in xs {
+        total = total + x
+    }
     return total
 }
 
 fn min_i64(xs: [i64]) -> i64 {
     let mut m = xs[0]
-    for x in xs { if x < m { m = x } }
+    for x in xs {
+        if x < m {
+            m = x
+        }
+    }
     return m
 }
 
 fn max_i64(xs: [i64]) -> i64 {
     let mut m = xs[0]
-    for x in xs { if x > m { m = x } }
+    for x in xs {
+        if x > m {
+            m = x
+        }
+    }
     return m
 }

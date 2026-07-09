@@ -4,27 +4,38 @@
 //
 // Run with:  SDL_VIDEODRIVER=offscreen kryos run examples/sdl_savepng.kry
 // Then view: examples/sdl_output.ppm
-
 extern "C" {
     fn kryos_ffi_dlopen(name: str) -> i64
     fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
     fn kryos_ffi_dlclose(handle: i64) -> i64
-
     fn kryos_ffi_dlcall0(fp: i64) -> i64
     fn kryos_ffi_dlcall1(fp: i64, a1: i64) -> i64
     fn kryos_ffi_dlcall2(fp: i64, a1: i64, a2: i64) -> i64
     fn kryos_ffi_dlcall3(fp: i64, a1: i64, a2: i64, a3: i64) -> i64
-    fn kryos_ffi_dlcall5(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64) -> i64
-    fn kryos_ffi_dlcall6(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64, a6: i64) -> i64
+    fn kryos_ffi_dlcall5(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64
+    ) -> i64
+    fn kryos_ffi_dlcall6(
+        fp: i64,
+        a1: i64,
+        a2: i64,
+        a3: i64,
+        a4: i64,
+        a5: i64,
+        a6: i64
+    ) -> i64
     fn kryos_ffi_dlcallv1(fp: i64, a1: i64)
-
     fn kryos_ffi_malloc(n: i64) -> i64
     fn kryos_ffi_free(p: i64, n: i64)
     fn kryos_ffi_write_i32(p: i64, v: i64)
     fn kryos_ffi_read_i8(p: i64) -> i64
     fn kryos_ffi_cstr(s: str) -> i64
     fn kryos_ffi_string_from_ptr(p: i64, len: i64) -> str
-
     // libc bits we'll need for writing the file.
     fn kryos_ffi_dlcall4(fp: i64, a1: i64, a2: i64, a3: i64, a4: i64) -> i64
 }
@@ -32,89 +43,70 @@ extern "C" {
 fn main() {
     let SDL_INIT_VIDEO = 32
     let SDL_WINDOWPOS_CENTERED = 805240832
-
     // SDL_PIXELFORMAT_ARGB8888
     let SDL_PIXELFORMAT_ARGB8888 = 372645892
-
     let W = 320
     let H = 240
-
     let sdl = kryos_ffi_dlopen("libSDL2-2.0.so.0")
     if sdl == 0 {
         println("SDL2 not available")
         return
     }
-    let sdl_init             = kryos_ffi_dlsym(sdl, "SDL_Init")
-    let sdl_quit             = kryos_ffi_dlsym(sdl, "SDL_Quit")
-    let sdl_get_error        = kryos_ffi_dlsym(sdl, "SDL_GetError")
-    let sdl_create_window    = kryos_ffi_dlsym(sdl, "SDL_CreateWindow")
-    let sdl_destroy_window   = kryos_ffi_dlsym(sdl, "SDL_DestroyWindow")
-    let sdl_create_renderer  = kryos_ffi_dlsym(sdl, "SDL_CreateRenderer")
+    let sdl_init = kryos_ffi_dlsym(sdl, "SDL_Init")
+    let sdl_quit = kryos_ffi_dlsym(sdl, "SDL_Quit")
+    let sdl_get_error = kryos_ffi_dlsym(sdl, "SDL_GetError")
+    let sdl_create_window = kryos_ffi_dlsym(sdl, "SDL_CreateWindow")
+    let sdl_destroy_window = kryos_ffi_dlsym(sdl, "SDL_DestroyWindow")
+    let sdl_create_renderer = kryos_ffi_dlsym(sdl, "SDL_CreateRenderer")
     let sdl_destroy_renderer = kryos_ffi_dlsym(sdl, "SDL_DestroyRenderer")
-    let sdl_set_draw_color   = kryos_ffi_dlsym(sdl, "SDL_SetRenderDrawColor")
-    let sdl_render_clear     = kryos_ffi_dlsym(sdl, "SDL_RenderClear")
-    let sdl_fill_rect        = kryos_ffi_dlsym(sdl, "SDL_RenderFillRect")
-    let sdl_present          = kryos_ffi_dlsym(sdl, "SDL_RenderPresent")
-    let sdl_read_pixels      = kryos_ffi_dlsym(sdl, "SDL_RenderReadPixels")
-
+    let sdl_set_draw_color = kryos_ffi_dlsym(sdl, "SDL_SetRenderDrawColor")
+    let sdl_render_clear = kryos_ffi_dlsym(sdl, "SDL_RenderClear")
+    let sdl_fill_rect = kryos_ffi_dlsym(sdl, "SDL_RenderFillRect")
+    let sdl_present = kryos_ffi_dlsym(sdl, "SDL_RenderPresent")
+    let sdl_read_pixels = kryos_ffi_dlsym(sdl, "SDL_RenderReadPixels")
     if kryos_ffi_dlcall1(sdl_init, SDL_INIT_VIDEO) != 0 {
         println("SDL_Init failed")
         return
     }
-
-    let win = kryos_ffi_dlcall6(
-        sdl_create_window,
-        kryos_ffi_cstr("kryos-sdl"),
-        SDL_WINDOWPOS_CENTERED,
-        SDL_WINDOWPOS_CENTERED,
-        W, H, 0
-    )
+    let win = kryos_ffi_dlcall6(sdl_create_window, kryos_ffi_cstr("kryos-sdl"), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W, H, 0)
     if win == 0 {
         println("CreateWindow failed:")
         println(kryos_ffi_string_from_ptr(kryos_ffi_dlcall0(sdl_get_error), -1))
         kryos_ffi_dlcall0(sdl_quit)
         return
     }
-
     let ren = kryos_ffi_dlcall3(sdl_create_renderer, win, -1, 0)
     if ren == 0 {
         println("CreateRenderer failed:")
         println(kryos_ffi_string_from_ptr(kryos_ffi_dlcall0(sdl_get_error), -1))
         return
     }
-
     // Background: deep blue.
     kryos_ffi_dlcall5(sdl_set_draw_color, ren, 12, 18, 48, 255)
     kryos_ffi_dlcall1(sdl_render_clear, ren)
-
     let rect = kryos_ffi_malloc(16)
-
     // Red square.
-    kryos_ffi_write_i32(rect,        20)
-    kryos_ffi_write_i32(rect +  4,   20)
-    kryos_ffi_write_i32(rect +  8,   60)
-    kryos_ffi_write_i32(rect + 12,   60)
+    kryos_ffi_write_i32(rect, 20)
+    kryos_ffi_write_i32(rect + 4, 20)
+    kryos_ffi_write_i32(rect + 8, 60)
+    kryos_ffi_write_i32(rect + 12, 60)
     kryos_ffi_dlcall5(sdl_set_draw_color, ren, 235, 70, 70, 255)
     kryos_ffi_dlcall2(sdl_fill_rect, ren, rect)
-
     // Green rectangle.
-    kryos_ffi_write_i32(rect,       130)
-    kryos_ffi_write_i32(rect +  4,   80)
-    kryos_ffi_write_i32(rect +  8,   60)
-    kryos_ffi_write_i32(rect + 12,   80)
+    kryos_ffi_write_i32(rect, 130)
+    kryos_ffi_write_i32(rect + 4, 80)
+    kryos_ffi_write_i32(rect + 8, 60)
+    kryos_ffi_write_i32(rect + 12, 80)
     kryos_ffi_dlcall5(sdl_set_draw_color, ren, 110, 200, 110, 255)
     kryos_ffi_dlcall2(sdl_fill_rect, ren, rect)
-
     // Blue rectangle.
-    kryos_ffi_write_i32(rect,       220)
-    kryos_ffi_write_i32(rect +  4,  150)
-    kryos_ffi_write_i32(rect +  8,   80)
-    kryos_ffi_write_i32(rect + 12,   60)
+    kryos_ffi_write_i32(rect, 220)
+    kryos_ffi_write_i32(rect + 4, 150)
+    kryos_ffi_write_i32(rect + 8, 80)
+    kryos_ffi_write_i32(rect + 12, 60)
     kryos_ffi_dlcall5(sdl_set_draw_color, ren, 80, 140, 240, 255)
     kryos_ffi_dlcall2(sdl_fill_rect, ren, rect)
-
     kryos_ffi_dlcall1(sdl_present, ren)
-
     // Read framebuffer (BGRA8888 = 4 bytes per pixel).
     let pitch = W * 4
     let pixels = kryos_ffi_malloc(pitch * H)
@@ -124,11 +116,10 @@ fn main() {
         println("read pixels failed:")
         println(kryos_ffi_string_from_ptr(kryos_ffi_dlcall0(sdl_get_error), -1))
     }
-
     // Save the raw ARGB8888 framebuffer to /tmp/sdl_output.argb via libc.
     let n = pitch * H
     let libc = kryos_ffi_dlopen("libc.so.6")
-    let fopen  = kryos_ffi_dlsym(libc, "fopen")
+    let fopen = kryos_ffi_dlsym(libc, "fopen")
     let fwrite = kryos_ffi_dlsym(libc, "fwrite")
     let fclose = kryos_ffi_dlsym(libc, "fclose")
     let fd = kryos_ffi_dlcall2(fopen, kryos_ffi_cstr("/tmp/sdl_output.argb"), kryos_ffi_cstr("wb"))
@@ -140,7 +131,6 @@ fn main() {
         println("wrote /tmp/sdl_output.argb (320x240 ARGB8888)")
     }
     kryos_ffi_dlclose(libc)
-
     kryos_ffi_free(pixels, pitch * H)
     kryos_ffi_free(rect, 16)
     kryos_ffi_dlcallv1(sdl_destroy_renderer, ren)

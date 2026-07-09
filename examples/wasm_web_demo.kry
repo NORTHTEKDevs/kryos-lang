@@ -2,17 +2,14 @@
 //
 // Compile with:   kryos build --backend wasm examples/wasm_web_demo.kry -o web_demo.wasm
 // Open in a browser via the matching wasm_web_runner.html.
-
 fn main() {
     dom_set_text("title", "Kryos 1.0.0-beta.1 web demo")
     dom_set_text("status", "drawing...")
-
     canvas_clear("c")
-    canvas_fill_rect("c",  10,  10,  60, 60, "#1e88e5")
-    canvas_fill_rect("c",  80,  10,  60, 60, "#ffca28")
-    canvas_fill_rect("c", 150,  10,  60, 60, "#43a047")
-    canvas_fill_rect("c",  10,  80, 200, 60, "#e53935")
-    canvas_fill_rect("c",  10, 150, 200, 60, "#8e24aa")
-
+    canvas_fill_rect("c", 10, 10, 60, 60, "#1e88e5")
+    canvas_fill_rect("c", 80, 10, 60, 60, "#ffca28")
+    canvas_fill_rect("c", 150, 10, 60, 60, "#43a047")
+    canvas_fill_rect("c", 10, 80, 200, 60, "#e53935")
+    canvas_fill_rect("c", 10, 150, 200, 60, "#8e24aa")
     dom_set_text("status", "drawn from Kryos -> WASM -> DOM + canvas")
 }

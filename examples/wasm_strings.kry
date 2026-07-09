@@ -8,7 +8,6 @@
 //   - `len(s)` works (returns the string length in bytes)
 //   - string concatenation with `+` works (host allocates in linear memory)
 //   - `println(s)` works on any string operand, not just literals.
-
 fn greet(who: str) -> str {
     let hello: str = "hello, "
     let bang: str = "!"
@@ -19,16 +18,12 @@ fn greet(who: str) -> str {
 fn main() {
     let world: str = "world"
     let kryos: str = "Kryos"
-
     let g1: str = greet(world)
     let g2: str = greet(kryos)
-
     println(g1)
     println(g2)
-
     println(len(g1))
     println(len(g2))
-
     // String literal still works.
     println("done")
 }

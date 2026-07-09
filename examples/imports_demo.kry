@@ -2,26 +2,20 @@
 //
 // Run: kryos run imports_demo.kry
 //   (from the examples/ directory)
-
 use mylib
 
 fn main() {
     // Call functions imported from mylib.
     println("=== Import System Demo ===")
     println("")
-
     let d = double(21)
     println("double(21) = " + to_string(d))
-
     let t = triple(7)
     println("triple(7) = " + to_string(t))
-
     let msg = greet("Kryos")
     println(msg)
-
     let s = sum_to(10)
     println("sum_to(10) = " + to_string(s))
-
     println("")
     println("All imports working!")
 }

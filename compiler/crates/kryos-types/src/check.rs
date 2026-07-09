@@ -2149,6 +2149,37 @@ impl TypeChecker {
                                     self.diagnostics.push(diag);
                                 }
                                 self.check_int_literal_range(param_ty, arg, arg.span());
+                                // The builtin `len` signature accepts any type
+                                // (its param is Type::Error) because it is
+                                // polymorphic over str/array/map. That let a
+                                // struct/enum/number slip through and read a
+                                // garbage "length" from the value's first
+                                // 8 bytes at runtime (a CsvRow passed to len
+                                // printed a pointer). Gate the builtin only --
+                                // a user function shadowing `len` has typed
+                                // params and never hits this arm.
+                                if matches!(&callee_name_str, Some(n) if n == "len")
+                                    && matches!(param_ty, Type::Error)
+                                {
+                                    let resolved = self.engine.resolve(&arg_ty);
+                                    let ok = matches!(
+                                        resolved,
+                                        Type::Str
+                                            | Type::Array { .. }
+                                            | Type::Map { .. }
+                                            | Type::Tuple { .. }
+                                            | Type::Error
+                                            | Type::Var(_)
+                                    );
+                                    if !ok {
+                                        self.error(
+                                            format!(
+                                                "`len` expects a str, array, or map; found `{resolved}`"
+                                            ),
+                                            arg.span(),
+                                        );
+                                    }
+                                }
                             }
                         }
                         *ret.clone()

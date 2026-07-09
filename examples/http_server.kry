@@ -4,7 +4,6 @@
 // Demonstrates: structs, impl, match, error handling,
 //               string concatenation, higher-order patterns
 // ============================================================
-
 struct Request {
     method: str
     path: str
@@ -39,28 +38,21 @@ fn log_request(path: str, resp: Response) {
 fn main() {
     println("=== Kryos HTTP Server Demo ===")
     println("")
-
     // Simulate handling a batch of requests
     println("Routing requests:")
-
     let req1 = Request { method: "GET", path: "/", body: "" }
     let resp1 = route(req1)
     log_request("/", resp1)
-
     let req2 = Request { method: "GET", path: "/health", body: "" }
     let resp2 = route(req2)
     log_request("/health", resp2)
-
     let req3 = Request { method: "POST", path: "/api/echo", body: "hello" }
     let resp3 = route(req3)
     log_request("/api/echo", resp3)
-
     let req4 = Request { method: "GET", path: "/missing", body: "" }
     let resp4 = route(req4)
     log_request("/missing", resp4)
-
     println("")
-
     // Demonstrate error handling in request processing
     println("Error handling:")
     try {
@@ -69,14 +61,11 @@ fn main() {
         println("  Caught network error: " + e)
         println("  Returning 503 Service Unavailable")
     }
-
     println("")
-
     // Format a full HTTP response
     let sample = Response { status: 200, body: "Hello, World!" }
     let formatted = format_response(sample)
     println("Formatted response: " + formatted)
-
     println("")
     println("=== Server demo complete ===")
 }
