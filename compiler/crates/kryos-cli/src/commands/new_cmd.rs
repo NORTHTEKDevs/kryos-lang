@@ -131,7 +131,7 @@ fn render_main(name: &str, template: &str) -> Result<String, String> {
     Ok(body.replace("{{NAME}}", name))
 }
 
-const CLI_MAIN: &str = "// {{NAME}} — Kryos CLI scaffold.\n//\n// This program touches no capability-gated builtins, so it declares the empty\n// capability set and passes `kryos check --strict-capabilities` as-is.\n\n@capabilities()\nfn main() {\n    let argv = args()\n    if len(argv) < 2 {\n        println(\"usage: {{NAME}} <name>\")\n        return\n    }\n    let who: str = argv[1]\n    println(\"hello, \" + who + \"!\")\n}\n";
+const CLI_MAIN: &str = "// {{NAME}} — Kryos CLI scaffold.\n//\n// This program touches no capability-gated builtins, so it declares the empty\n// capability set and passes `kryos check --strict-capabilities` as-is.\n\n@capabilities()\nfn main() {\n    // A bare `kryos run` greets the world; pass a name to greet someone.\n    let argv = args()\n    let who: str = if len(argv) < 2 { \"world\" } else { argv[1] }\n    println(\"hello, \" + who + \"!\")\n    if len(argv) < 2 {\n        println(\"(tip: `kryos run . <name>` to greet someone by name)\")\n    }\n}\n";
 
 const HTTP_MAIN: &str = "// {{NAME}} — Kryos HTTP service scaffold.
 //
