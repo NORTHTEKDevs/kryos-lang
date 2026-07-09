@@ -6819,13 +6819,45 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let idx = lower_expr_to_operand(ctx, index);
 
             // Maps use runtime lookup instead of pointer arithmetic.
-            if matches!(obj_ty, MirType::Map { .. }) {
+            if let MirType::Map { ref value, .. } = obj_ty {
                 let idx_ty = infer_expr_type(ctx, index);
                 let get_fn = if idx_ty == MirType::Str {
                     "kryos_map_get_str"
                 } else {
                     "kryos_map_get"
                 };
+                // Borrow-to-own: kryos_map_get* returns the map's OWN entry
+                // handle, not a copy. A container-typed result must be
+                // retained so the receiving slot owns its reference —
+                // otherwise the slot's later reassignment-release/drop frees
+                // the map's entry and the next lookup hands out a dangling
+                // pointer (heap corruption once frees became real, fe79f1b).
+                let retain_fn = match **value {
+                    MirType::Str => Some("kryos_string_retain_opt"),
+                    MirType::Array(_, _) => Some("kryos_array_retain_opt"),
+                    MirType::Map { .. } => Some("kryos_map_retain_opt"),
+                    _ => None,
+                };
+                if let Some(rf) = retain_fn {
+                    let val_ty = (**value).clone();
+                    let tmp = ctx.alloc_temp(val_ty);
+                    ctx.emit(Instruction::Assign {
+                        dest: tmp,
+                        value: RValue::Call {
+                            func: get_fn.to_string(),
+                            args: vec![obj, idx],
+                        },
+                    });
+                    let discard = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: discard,
+                        value: RValue::Call {
+                            func: rf.to_string(),
+                            args: vec![Operand::Local(tmp)],
+                        },
+                    });
+                    return RValue::Use(Operand::Local(tmp));
+                }
                 return RValue::Call {
                     func: get_fn.to_string(),
                     args: vec![obj, idx],

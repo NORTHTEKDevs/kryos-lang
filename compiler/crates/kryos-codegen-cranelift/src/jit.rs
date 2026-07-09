@@ -148,6 +148,18 @@ impl JitCompiler {
             "kryos_string_retain",
             kryos_rt::string::kryos_string_retain as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_string_retain_opt",
+            kryos_rt::string::kryos_string_retain_opt as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_array_retain_opt",
+            kryos_rt::array::kryos_array_retain_opt as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_map_retain_opt",
+            kryos_rt::map::kryos_map_retain_opt as *const u8,
+        );
 
         // Array operations
         jit_builder.symbol(
@@ -1921,6 +1933,9 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_string_free", "kryos_string_free", sig(1));
     decl!("kryos_string_clone", "kryos_string_clone", sig(1));
     decl!("kryos_string_retain", "kryos_string_retain", sig(1));
+    decl!("kryos_string_retain_opt", "kryos_string_retain_opt", sig(1));
+    decl!("kryos_array_retain_opt", "kryos_array_retain_opt", sig(1));
+    decl!("kryos_map_retain_opt", "kryos_map_retain_opt", sig(1));
 
     // --- Array runtime ---
     decl!("kryos_array_new", "kryos_array_new", sig(2));

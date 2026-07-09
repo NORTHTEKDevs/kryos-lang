@@ -20,6 +20,9 @@
 use std::alloc::{alloc, dealloc, Layout};
 use std::ptr;
 
+/// Type-stable freelist for KryosString headers (see HeaderPool in lib.rs).
+static STR_HDR_POOL: crate::HeaderPool = crate::HeaderPool::new();
+
 /// Heap-allocated string with explicit length, capacity, and reference count.
 ///
 /// Layout note: `ref_count` is placed AFTER `data` (offset 24) so that codegen
@@ -68,7 +71,9 @@ pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut Kryo
     // Null-terminate.
     *data.add(len_usize) = 0;
 
-    let s = alloc(Layout::new::<KryosString>()) as *mut KryosString;
+    let s = STR_HDR_POOL
+        .get()
+        .unwrap_or_else(|| alloc(Layout::new::<KryosString>())) as *mut KryosString;
     if s.is_null() {
         dealloc(data, layout);
         return ptr::null_mut();
@@ -121,7 +126,9 @@ pub unsafe extern "C" fn kryos_string_concat(
     ptr::copy_nonoverlapping((*b).data, data.add(a_len), b_len);
     *data.add(total) = 0;
 
-    let s = alloc(Layout::new::<KryosString>()) as *mut KryosString;
+    let s = STR_HDR_POOL
+        .get()
+        .unwrap_or_else(|| alloc(Layout::new::<KryosString>())) as *mut KryosString;
     if s.is_null() {
         dealloc(data, layout);
         return ptr::null_mut();
@@ -296,6 +303,23 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     s
 }
 
+/// Borrow-to-own retain for container reads (map-get / array-get / field
+/// read / param entry). Unlike `kryos_string_retain`, this NEVER mints a
+/// new object for null (null stays null — every consumer is null-safe) and
+/// returns nothing: it increments in place. Emitted by codegen so a local
+/// that receives a borrowed handle owns its own reference, balancing the
+/// release the local's reassignment/drop will later emit. Without this,
+/// releasing the local frees the container's own entry (the double-free
+/// that corrupted the merged self-host bootstrap, 2026-07-08).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_string_retain_opt(s: *mut KryosString) -> i64 {
+    if !s.is_null() {
+        // Immortal literal headers (huge negative rc) increment harmlessly.
+        (*s).ref_count += 1;
+    }
+    0
+}
+
 /// Step 46b: refcounted free. Pairs with the ref_count init fix in
 /// kryos_string_concat (constructor wasn't setting ref_count = 1 to
 /// the new struct, leaving garbage that triggered spurious dealloc).
@@ -306,6 +330,27 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     }
     if crate::leak_on_zero() {
         // H41 pure no-op for bootstrap reliability.
+        return;
+    }
+    if crate::free_diag() {
+        // Diagnostic mode: never dealloc; report over-frees with content.
+        let rc = (*s).ref_count;
+        if rc <= 0 {
+            // Immortal literal headers carry a huge negative sentinel;
+            // releasing them is a by-design no-op, not a bug. Only an exact
+            // zero is a real freed-heap-header double-free.
+            if rc == 0 {
+                let len = ((*s).len as usize).min(120);
+                let content = if (*s).data.is_null() {
+                    String::from("<data=null>")
+                } else {
+                    String::from_utf8_lossy(std::slice::from_raw_parts((*s).data, len)).into_owned()
+                };
+                crate::diag_report(&format!("str DOUBLE-FREE hdr={s:p} rc={rc} len={} content={content:?}", (*s).len));
+            }
+            return;
+        }
+        (*s).ref_count = rc - 1;
         return;
     }
     crate::memstats::note_str_free_call();
@@ -322,14 +367,19 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     if !(*s).data.is_null() && cap > 0 {
         dealloc((*s).data, KryosString::layout(cap));
     }
-    // Free the HEADER too. The old "null the fields and leak the header as
-    // an over-free sentinel" pattern converted latent double-frees into an
-    // UNBOUNDED leak: 32 bytes per string ever created (~6GB on a 64M-string
-    // churn soak; the data buffers were freed, the headers never were).
-    // Double-frees are real bugs -- the suite and cross-backend corpus are
-    // the net for them now, not a permanent leak.
+    // Recycle the header TYPE-STABLY instead of returning it to the OS heap.
+    // Wipe to an inert sentinel first: stale readers see the empty string,
+    // stale releases no-op on rc=0, and stale retains at worst bump a
+    // recycled header's count. Returning headers to the OS here (fe79f1b)
+    // turned the historical tail of forgiven stale releases into ntdll heap
+    // corruption (0xC0000374) at merged-bootstrap scale. The pool keeps the
+    // soak-test property: memory stays flat on churn (bounded by peak live).
+    (*s).len = 0;
+    (*s).cap = 0;
+    (*s).data = ptr::null_mut();
+    (*s).ref_count = 0;
     crate::memstats::note_str_free((cap + 1 + 32) as i64);
-    dealloc(s as *mut u8, Layout::new::<KryosString>());
+    STR_HDR_POOL.put(s as *mut u8);
 }
 
 // ---------------------------------------------------------------------------

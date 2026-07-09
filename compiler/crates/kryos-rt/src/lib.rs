@@ -104,6 +104,77 @@ pub fn leak_on_zero() -> bool {
     VALUE.load(Ordering::Relaxed)
 }
 
+/// When KRYOS_FREE_DIAG=1, the *_free entry points never deallocate;
+/// instead they decrement normally and REPORT any over-free (a free call
+/// on a header whose refcount already reached zero) to stderr with the
+/// container's content. Converts silent heap corruption from a latent
+/// double-free into a precise, greppable diagnosis. Debug-only knob.
+#[inline]
+pub fn free_diag() -> bool {
+    use std::sync::atomic::AtomicU8;
+    static PROBED: AtomicU8 = AtomicU8::new(0);
+    static VALUE: AtomicBool = AtomicBool::new(false);
+    if PROBED.load(Ordering::Relaxed) == 0 {
+        let on = std::env::var("KRYOS_FREE_DIAG")
+            .map(|v| v != "0" && !v.is_empty())
+            .unwrap_or(false);
+        VALUE.store(on, Ordering::Relaxed);
+        PROBED.store(1, Ordering::Relaxed);
+    }
+    VALUE.load(Ordering::Relaxed)
+}
+
+/// Bounded reporter for free_diag: prints the first 60 reports, then counts.
+pub fn diag_report(msg: &str) {
+    use std::sync::atomic::AtomicU32;
+    static COUNT: AtomicU32 = AtomicU32::new(0);
+    static LIMIT: AtomicU32 = AtomicU32::new(0);
+    let mut cap = LIMIT.load(Ordering::Relaxed);
+    if cap == 0 {
+        cap = std::env::var("KRYOS_FREE_DIAG_MAX")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(60);
+        LIMIT.store(cap, Ordering::Relaxed);
+    }
+    let n = COUNT.fetch_add(1, Ordering::Relaxed);
+    if n < cap {
+        eprintln!("KRYOS-FREE-DIAG[{n}]: {msg}");
+    } else if n == cap {
+        eprintln!("KRYOS-FREE-DIAG: (further reports suppressed)");
+    }
+}
+
+/// Type-stable header freelist. Container headers (KryosString / KryosArray /
+/// MapHeader) are NEVER returned to the OS heap on free -- they are wiped to
+/// an inert sentinel (len=0, data=null, rc=0) and recycled for the SAME type.
+/// Rationale: generated code still contains a tail of historically-forgiven
+/// stale releases/reads of dead headers (the pre-header-free runtime leaked
+/// headers precisely to absorb them). Freeing headers to the OS turned each
+/// of those into ntdll heap corruption (0xC0000374 fastfail) at scale -- the
+/// merged self-host bootstrap regression. Type-stable recycling restores that
+/// forgiveness with bounded memory: pool size <= peak live count, and reuse
+/// keeps RSS flat on churn (the property the header-free change bought).
+pub struct HeaderPool {
+    list: std::sync::Mutex<Vec<usize>>,
+}
+
+impl HeaderPool {
+    pub const fn new() -> Self {
+        Self { list: std::sync::Mutex::new(Vec::new()) }
+    }
+    #[inline]
+    pub fn put(&self, p: *mut u8) {
+        if let Ok(mut l) = self.list.lock() {
+            l.push(p as usize);
+        }
+    }
+    #[inline]
+    pub fn get(&self) -> Option<*mut u8> {
+        self.list.lock().ok().and_then(|mut l| l.pop()).map(|u| u as *mut u8)
+    }
+}
+
 pub mod actor;
 pub mod alloc;
 pub mod arc;

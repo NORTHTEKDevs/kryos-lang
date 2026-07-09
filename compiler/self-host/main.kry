@@ -756,6 +756,13 @@ fn main() {
         // Default: treat first arg as filename for backward compat
         dump_ast(command)
     }
+
+    // Explicit success exit. main() is unit-typed, and the self-host x86
+    // codegen does not guarantee RAX == 0 at a void main's epilogue -- the
+    // process exit code was whatever the last call left behind. That garbage
+    // exit code (observed: 1 after a fully successful obj emission) aborts
+    // the set -e bootstrap chain at stage-2 -> stage-3.
+    exit(0)
 }
 
 // The entry point is fn main() -- called automatically by the runtime.

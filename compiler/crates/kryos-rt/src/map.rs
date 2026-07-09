@@ -17,6 +17,9 @@
 
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 
+/// Type-stable freelist for MapHeader blocks (see HeaderPool in lib.rs).
+static MAP_HDR_POOL: crate::HeaderPool = crate::HeaderPool::new();
+
 const INITIAL_CAPACITY: usize = 16;
 const LOAD_FACTOR: f64 = 0.75;
 
@@ -106,7 +109,7 @@ unsafe fn resize(header: *mut MapHeader) {
 pub extern "C" fn kryos_map_new() -> i64 {
     unsafe {
         let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
-        let ptr = alloc_zeroed(layout);
+        let ptr = MAP_HDR_POOL.get().unwrap_or_else(|| alloc_zeroed(layout));
         if ptr.is_null() {
             return 0;
         }
@@ -132,6 +135,10 @@ pub extern "C" fn kryos_map_insert(map: i64, key: i64, value: i64) {
     }
     unsafe {
         let header = map as *mut MapHeader;
+        // Stale-handle safety (see kryos_map_get): dead handle -> no-op.
+        if (*header).capacity == 0 {
+            return;
+        }
 
         // Resize if load factor exceeded.
         if ((*header).len + 1) as f64 > (*header).capacity as f64 * LOAD_FACTOR {
@@ -166,6 +173,12 @@ pub extern "C" fn kryos_map_get(map: i64, key: i64) -> i64 {
     }
     unsafe {
         let header = map as *const MapHeader;
+        // Stale-handle safety: a recycled/wiped header has capacity 0 and
+        // null entries; probing it would index through null. Empty-map
+        // semantics are the correct answer for a dead handle.
+        if (*header).capacity == 0 {
+            return 0;
+        }
         let capacity = (*header).capacity as usize;
         let entries = (*header).entries;
 
@@ -193,6 +206,10 @@ pub extern "C" fn kryos_map_insert_str(map: i64, key: i64, value: i64) {
     }
     unsafe {
         let header = map as *mut MapHeader;
+        // Stale-handle safety (see kryos_map_get): dead handle -> no-op.
+        if (*header).capacity == 0 {
+            return;
+        }
 
         // Resize if load factor exceeded.
         if ((*header).len + 1) as f64 > (*header).capacity as f64 * LOAD_FACTOR {
@@ -242,6 +259,12 @@ pub extern "C" fn kryos_map_get_str(map: i64, key: i64) -> i64 {
     }
     unsafe {
         let header = map as *const MapHeader;
+        // Stale-handle safety: a recycled/wiped header has capacity 0 and
+        // null entries; probing it would index through null. Empty-map
+        // semantics are the correct answer for a dead handle.
+        if (*header).capacity == 0 {
+            return 0;
+        }
         let capacity = (*header).capacity as usize;
         let entries = (*header).entries;
 
@@ -345,6 +368,12 @@ pub extern "C" fn kryos_map_has_str(map: i64, key: i64) -> i64 {
     }
     unsafe {
         let header = map as *const MapHeader;
+        // Stale-handle safety: a recycled/wiped header has capacity 0 and
+        // null entries; probing it would index through null. Empty-map
+        // semantics are the correct answer for a dead handle.
+        if (*header).capacity == 0 {
+            return 0;
+        }
         let capacity = (*header).capacity as usize;
         let entries = (*header).entries;
 
@@ -539,6 +568,18 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     map
 }
 
+/// Borrow-to-own retain for container reads. Never mints on 0; in-place
+/// increment only (see kryos_string_retain_opt).
+#[no_mangle]
+pub extern "C" fn kryos_map_retain_opt(map: i64) -> i64 {
+    if map != 0 {
+        unsafe {
+            (*(map as *mut MapHeader)).ref_count += 1;
+        }
+    }
+    0
+}
+
 /// Step 46c: refcounted free for maps. Retest after string_concat fix
 /// to confirm whether map flakes were similar uninitialized-ref_count
 /// bugs.
@@ -553,6 +594,17 @@ pub extern "C" fn kryos_map_free(map: i64) {
     }
     unsafe {
         let header = map as *mut MapHeader;
+        if crate::free_diag() {
+            // Diagnostic mode: never dealloc; report over-frees.
+            let rc = (*header).ref_count;
+            if rc <= 0 {
+                crate::diag_report(&format!(
+                    "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
+                return;
+            }
+            (*header).ref_count = rc - 1;
+            return;
+        }
         let rc = (*header).ref_count;
         if rc <= 0 {
             return;
@@ -564,13 +616,14 @@ pub extern "C" fn kryos_map_free(map: i64) {
         }
         let capacity = (*header).capacity as usize;
         free_entries((*header).entries, capacity);
-        // Free the header itself (symmetric with kryos_map_new's
-        // alloc_zeroed). The leak-the-header-as-sentinel pattern was an
-        // unbounded per-map leak; double-frees are bugs to catch, not
-        // absorb.
-        let layout =
-            Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
-        std::alloc::dealloc(header as *mut u8, layout);
+        // Recycle the header TYPE-STABLY (wiped to an inert sentinel; see
+        // HeaderPool in lib.rs). Stale readers see an empty 0-capacity map
+        // (all accessors guard capacity == 0); stale releases no-op on rc=0.
+        (*header).len = 0;
+        (*header).capacity = 0;
+        (*header).entries = std::ptr::null_mut();
+        (*header).ref_count = 0;
+        MAP_HDR_POOL.put(header as *mut u8);
     }
 }
 

@@ -23,6 +23,26 @@ MODS="runtime token lexer ast parser types mir lower optimize regalloc x86 codeg
 export KRYOS_NO_ASLR=1
 
 link() { powershell -NoProfile -ExecutionPolicy Bypass -File "$SD/link-win.ps1" "$(cygpath -w "$1")" "$(cygpath -w "$2")" >/dev/null 2>&1; }
+# Run a FRESHLY-linked stage exe, retrying once after a short settle if it
+# returns 126/127. Windows Defender briefly holds a newly written binary on
+# first exec (the "not found despite existing" AV scan), which otherwise
+# aborts the bootstrap under `set -e`. Same guard the parity harness uses.
+run_stage() {
+    local exe="$1"; shift
+    local rc=0 attempt=0
+    set +e
+    while [ $attempt -lt 6 ]; do
+        "$exe" "$@"; rc=$?
+        # 126/127 from a freshly-linked binary is the AV on-first-exec hold
+        # (Defender reports "not found" while it scans), not a real failure.
+        # Settle and retry; anything else is a genuine result, return it now.
+        if [ $rc -ne 126 ] && [ $rc -ne 127 ]; then break; fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+    set -e
+    return $rc
+}
 regen() { : > "$BT/kryos-sh-full.kry"; for m in $MODS; do cat "$SD/$m.kry" >> "$BT/kryos-sh-full.kry"; done
   grep -vE '^use ('"$(echo $MODS|tr ' ' '|')"')$' "$BT/kryos-sh-full.kry" > "$BT/kryos-sh-full.kry.tmp" && mv "$BT/kryos-sh-full.kry.tmp" "$BT/kryos-sh-full.kry"; }
 
@@ -32,15 +52,15 @@ regen
 SRC="$BT/kryos-sh-full.kry"
 
 echo "stage-1 -> stage-2.obj"
-"$BT/kryos-stage1" obj "$SRC" -o "$BT/kryos-stage2.obj" >/dev/null
+run_stage "$BT/kryos-stage1" obj "$SRC" -o "$BT/kryos-stage2.obj" >/dev/null
 link "$BT/kryos-stage2.obj" "$BT/kryos-stage2.exe"
 
 echo "stage-2 -> stage-3.obj"
-"$BT/kryos-stage2.exe" obj "$SRC" -o "$BT/kryos-stage3.obj" >/dev/null
+run_stage "$BT/kryos-stage2.exe" obj "$SRC" -o "$BT/kryos-stage3.obj" >/dev/null
 link "$BT/kryos-stage3.obj" "$BT/kryos-stage3.exe"
 
 echo "stage-3 -> stage-4.obj"
-"$BT/kryos-stage3.exe" obj "$SRC" -o "$BT/kryos-stage4.obj" >/dev/null
+run_stage "$BT/kryos-stage3.exe" obj "$SRC" -o "$BT/kryos-stage4.obj" >/dev/null
 
 echo "--- fixed-point check ---"
 h2=$(sha256sum "$BT/kryos-stage2.obj" | cut -d' ' -f1)

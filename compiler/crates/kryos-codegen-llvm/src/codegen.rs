@@ -1054,6 +1054,9 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare ptr @kryos_string_retain(ptr)");
+        self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
+        self.emit_line("declare i64 @kryos_array_retain_opt(ptr)");
+        self.emit_line("declare i64 @kryos_map_retain_opt(i64)");
         self.emit_line("declare i64 @kryos_map_retain(i64)");
         self.emit_line("declare i64 @kryos_async_current_task()");
         self.emit_line("declare i64 @kryos_async_park_current()");
@@ -2982,6 +2985,22 @@ impl LlvmCodegen {
                     ));
                 }
             }
+        }
+        // Borrow-to-own: retain container-typed params. The caller keeps its
+        // reference; the callee's body may store the param into a local whose
+        // reassignment/drop releases it. Without an entry retain that release
+        // frees the CALLER's value (the double-free class behind the merged
+        // self-host bootstrap corruption). Mirrors the Cranelift backend's
+        // step-45 entry retains. retain_opt never mints on null.
+        for param in &func.params {
+            let (rf, aty) = match &param.ty {
+                MirType::Str => ("kryos_string_retain_opt", "ptr"),
+                MirType::Array(_, _) => ("kryos_array_retain_opt", "ptr"),
+                MirType::Map { .. } => ("kryos_map_retain_opt", "i64"),
+                _ => continue,
+            };
+            let t = self.next_temp();
+            self.emit_line(&format!("  {t} = call i64 @{rf}({aty} %_{})", param.local.0));
         }
         // Store parameter values into their allocas (non-aggregate params only).
         for param in &func.params {
@@ -5661,6 +5680,35 @@ impl LlvmCodegen {
                         // enum field and skips aggregate boxing.
                         let field_llvm_ty = self.sig_ty_to_llvm(&fmt);
                         self.track_type(&target_name, &field_llvm_ty);
+                        // Borrow-to-own: a container-typed field read hands out
+                        // the struct's own handle; retain so the receiving slot
+                        // owns its reference (double-free fix; mirrors the
+                        // Cranelift step-44 field-read retains).
+                        let retain = match &fmt {
+                            MirType::Str => Some(("kryos_string_retain_opt", "ptr")),
+                            MirType::Array(_, _) => Some(("kryos_array_retain_opt", "ptr")),
+                            MirType::Map { .. } => Some(("kryos_map_retain_opt", "i64")),
+                            _ => None,
+                        };
+                        if let Some((rf, aty)) = retain {
+                            let val = if field_llvm_ty == aty {
+                                target_name.clone()
+                            } else if aty == "ptr" {
+                                let t = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {t} = inttoptr {field_llvm_ty} {target_name} to ptr"
+                                ));
+                                t
+                            } else {
+                                let t = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {t} = ptrtoint {field_llvm_ty} {target_name} to i64"
+                                ));
+                                t
+                            };
+                            let t2 = self.next_temp();
+                            self.emit_line(&format!("  {t2} = call i64 @{rf}({aty} {val})"));
+                        }
                     }
                 }
                 if is_mutable {
@@ -5690,6 +5738,29 @@ impl LlvmCodegen {
                     self.emit_line(&format!(
                         "  {raw} = call i64 @__kryos_array_get_inline(ptr {obj_val}, i64 {idx_i64})"
                     ));
+                    // Borrow-to-own: an element read of a container-typed
+                    // element hands out the array's own handle; retain so the
+                    // receiving slot owns its reference (double-free fix).
+                    {
+                        let elem_mir = func.locals.iter().find(|l| l.id.0 == dest.0).map(|l| &l.ty);
+                        let retain = match elem_mir {
+                            Some(MirType::Str) => Some(("kryos_string_retain_opt", true)),
+                            Some(MirType::Array(_, _)) => Some(("kryos_array_retain_opt", true)),
+                            Some(MirType::Map { .. }) => Some(("kryos_map_retain_opt", false)),
+                            _ => None,
+                        };
+                        if let Some((rf, as_ptr)) = retain {
+                            if as_ptr {
+                                let p = self.next_temp();
+                                self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                                let t = self.next_temp();
+                                self.emit_line(&format!("  {t} = call i64 @{rf}(ptr {p})"));
+                            } else {
+                                let t = self.next_temp();
+                                self.emit_line(&format!("  {t} = call i64 @{rf}(i64 {raw})"));
+                            }
+                        }
+                    }
                     // Convert i64 -> dest_ty, naming the result %_N for non-mutable.
                     let is_aggregate = dest_ty.starts_with('{')
                         || dest_ty.starts_with('[')
@@ -9191,6 +9262,9 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
             "i64".into(),
         ]),
         "kryos_map_get_str" => Some(vec!["i64".into(), "i64".into()]),
+        // Borrow-to-own retains for container reads (double-free fix).
+        "kryos_string_retain_opt" | "kryos_array_retain_opt" => Some(vec!["ptr".into()]),
+        "kryos_map_retain_opt" => Some(vec!["i64".into()]),
         "kryos_map_delete_str" | "kryos_map_has_str" => {
             Some(vec!["i64".into(), "i64".into()])
         }

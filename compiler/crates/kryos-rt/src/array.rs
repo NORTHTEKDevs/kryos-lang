@@ -25,6 +25,9 @@ pub struct KryosArray {
 
 const ELEM_SIZE: usize = 8; // all elements stored as i64
 
+/// Type-stable freelist for KryosArray headers (see HeaderPool in lib.rs).
+static ARR_HDR_POOL: crate::HeaderPool = crate::HeaderPool::new();
+
 impl KryosArray {
     fn data_layout(cap: usize) -> Layout {
         Layout::from_size_align(cap * ELEM_SIZE, 8).unwrap()
@@ -47,9 +50,13 @@ pub unsafe extern "C" fn kryos_array_new(elem_size: i64, cap: i64) -> *mut Kryos
     // Zero-initialize.
     ptr::write_bytes(data, 0, cap_usize * ELEM_SIZE);
 
-    // Headers are leaked by design (over-free sentinel), so pool blocks for
-    // them never return; the pool still beats a system alloc per header.
-    let arr = crate::alloc::pool_alloc(std::mem::size_of::<KryosArray>()) as *mut KryosArray;
+    // Headers recycle through the TYPE-STABLE freelist (never the shared
+    // pool, never the OS heap) so stale releases/reads of dead headers stay
+    // harmless -- see HeaderPool in lib.rs.
+    let arr = ARR_HDR_POOL
+        .get()
+        .unwrap_or_else(|| crate::alloc::pool_alloc(std::mem::size_of::<KryosArray>()))
+        as *mut KryosArray;
     if arr.is_null() {
         crate::alloc::pool_free(data, cap_usize * ELEM_SIZE);
         return ptr::null_mut();
@@ -367,6 +374,16 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
     arr
 }
 
+/// Borrow-to-own retain for container reads. Never mints on null; in-place
+/// increment only (see kryos_string_retain_opt).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_retain_opt(arr: *mut KryosArray) -> i64 {
+    if !arr.is_null() {
+        (*arr).ref_count += 1;
+    }
+    0
+}
+
 /// Free a KryosArray — decrement reference count and deallocate when it reaches zero.
 ///
 /// H4 INSTRUMENTATION (shift kryos-self-compile step 22, 2026-05-20):
@@ -417,6 +434,17 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
         // contributing to bootstrap flake. Pure no-op removes those reads.
         return;
     }
+    if crate::free_diag() {
+        // Diagnostic mode: never dealloc; report over-frees.
+        let rc = (*arr).ref_count;
+        if rc <= 0 {
+            crate::diag_report(&format!(
+                "array DOUBLE-FREE rc={rc} len={} cap={}", (*arr).len, (*arr).cap));
+            return;
+        }
+        (*arr).ref_count = rc - 1;
+        return;
+    }
     crate::memstats::note_arr_free_call();
     let rc = (*arr).ref_count;
     if rc <= 0 {
@@ -432,14 +460,16 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     if !(*arr).data.is_null() && cap > 0 {
         crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
     }
-    // The old "leak the header as an over-free sentinel" pattern traded
-    // latent double-free crashes for an UNBOUNDED 40-bytes-per-array leak
-    // (headers were never reclaimed for the life of the process). Double-
-    // frees are bugs the suite/cross-backend corpus must catch, not a
-    // reason to leak every header. Stack-promoted arrays never reach this
-    // line (their rc sentinel keeps new_rc > 0 above).
+    // Recycle the header TYPE-STABLY (wiped to an inert sentinel) instead
+    // of pushing it into the shared pool where it could be reused as a data
+    // buffer and corrupted by a stale release. Stack-promoted arrays never
+    // reach this line (their rc sentinel keeps new_rc > 0 above).
+    (*arr).len = 0;
+    (*arr).cap = 0;
+    (*arr).data = ptr::null_mut();
+    (*arr).ref_count = 0;
     crate::memstats::note_arr_free((cap * ELEM_SIZE + 40) as i64);
-    crate::alloc::pool_free(arr as *mut u8, std::mem::size_of::<KryosArray>());
+    ARR_HDR_POOL.put(arr as *mut u8);
 }
 
 // ---------------------------------------------------------------------------

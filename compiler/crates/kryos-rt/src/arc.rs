@@ -18,6 +18,12 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 /// as closures) when retain/release is called defensively.
 pub const ARC_MAGIC: u64 = 0xA7C0_DEAD_BEEF_CAFEu64;
 
+/// Sentinel written over `magic` when KRYOS_FREE_DIAG=1 quarantines a block
+/// at refcount zero (instead of deallocating). A retain/release that later
+/// sees this magic is a use-after-free the normal allocator would have
+/// turned into silent heap corruption.
+pub const ARC_FREED_MAGIC: u64 = 0xF7EE_DEAD_0000_0001u64;
+
 /// Header prepended to every ARC-managed allocation.
 #[repr(C)]
 pub struct ArcHeader {
@@ -173,12 +179,23 @@ pub extern "C" fn kryos_arc_retain(ptr: *mut u8) {
         return;
     }
     unsafe {
+        if crate::free_diag() && is_freed_arc_ptr(ptr) {
+            crate::diag_report("arc RETAIN-AFTER-FREE");
+            return;
+        }
         if !is_arc_ptr(ptr) {
             return;
         }
         let header = header_from_ptr(ptr);
         (*header).ref_count.fetch_add(1, Ordering::Relaxed);
     }
+}
+
+/// Diag-mode check: does this pointer's header carry the quarantine magic?
+unsafe fn is_freed_arc_ptr(ptr: *mut u8) -> bool {
+    let min_align = std::mem::align_of::<ArcHeader>();
+    let candidate = header_from_user_ptr(ptr, min_align);
+    std::ptr::read_unaligned(&(*candidate).magic as *const u64) == ARC_FREED_MAGIC
 }
 
 /// Atomically decrement the reference count. When it reaches zero, calls the
@@ -199,6 +216,26 @@ pub extern "C" fn kryos_arc_release(ptr: *mut u8) {
         return;
     }
     unsafe {
+        if crate::free_diag() {
+            // Diagnostic mode: quarantine at zero instead of deallocating;
+            // report any touch of a quarantined block.
+            if is_freed_arc_ptr(ptr) {
+                crate::diag_report(&format!("arc RELEASE-AFTER-FREE ptr={ptr:p}"));
+                return;
+            }
+            if !is_arc_ptr(ptr) {
+                return;
+            }
+            let header = header_from_ptr(ptr);
+            let prev = (*header).ref_count.fetch_sub(1, Ordering::Release);
+            if prev == 1 {
+                // Quarantine: poison the magic, skip drop_fn + dealloc.
+                std::ptr::write_unaligned(&mut (*header).magic as *mut u64, ARC_FREED_MAGIC);
+            } else if prev == 0 || prev > usize::MAX / 2 {
+                crate::diag_report(&format!("arc UNDERFLOW-RELEASE prev={prev} ptr={ptr:p}"));
+            }
+            return;
+        }
         if !is_arc_ptr(ptr) {
             return;
         }
