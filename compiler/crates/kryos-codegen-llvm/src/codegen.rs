@@ -2904,19 +2904,32 @@ impl LlvmCodegen {
                 let ty = self.local_type(local.id);
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
-                    // Zero-init mutable HEAP-typed locals so the reassignment
-                    // release helpers (kryos_*_release_if_ne) see null/0 on
-                    // the first store instead of alloca garbage.
+                    // Zero-init mutable HEAP/pointer-typed locals so the
+                    // reassignment release helpers see null/0 on the first
+                    // store, AND so a scope-end Drop of a local that was never
+                    // assigned (e.g. `let r = make_value()` where make_value()
+                    // THROWS, so r's slot is never written) reads null instead
+                    // of alloca GARBAGE. Reading garbage there segfaulted on
+                    // Linux glibc AOT (the enum/struct drop deref'd a bad
+                    // pointer past its null guard) while Windows/macOS happened
+                    // to get a zero slot. Enum/Struct/Ptr/Shared/Function were
+                    // previously omitted -- that was the Linux-AOT exception
+                    // segfault (test_exception_unwind_soundness, exit 139).
+                    // `zeroinitializer` is valid for EVERY type: null for a
+                    // pointer, 0 for i64, and all-zero for an aggregate enum/
+                    // struct slot (`{ i64, i64 }`), where `store ... null`
+                    // would be invalid IR.
                     match &local.ty {
-                        MirType::Str | MirType::Array(..) => {
+                        MirType::Str
+                        | MirType::Array(..)
+                        | MirType::Map { .. }
+                        | MirType::Enum(_)
+                        | MirType::Struct(_)
+                        | MirType::Ptr(_)
+                        | MirType::Shared(_)
+                        | MirType::Function { .. } => {
                             self.emit_line(&format!(
-                                "  store {ty} null, ptr %_{}.addr",
-                                local.id.0
-                            ));
-                        }
-                        MirType::Map { .. } => {
-                            self.emit_line(&format!(
-                                "  store i64 0, ptr %_{}.addr",
+                                "  store {ty} zeroinitializer, ptr %_{}.addr",
                                 local.id.0
                             ));
                         }
