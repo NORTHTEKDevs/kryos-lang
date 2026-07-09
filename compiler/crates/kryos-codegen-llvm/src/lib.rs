@@ -409,6 +409,7 @@ impl kryos_driver::Backend for LlvmBackend {
 
         // Emit footer (closure droppers, type drop helpers, main wrapper if needed).
         cg.emit_footer_section(has_void_main);
+        cg.flush_free_tags();
         let footer_text = cg.take_output();
         writer.write_all(footer_text.as_bytes()).map_err(|e| {
             kryos_driver::BackendError::new(format!("failed to write .ll footer: {e}"))

@@ -127,6 +127,8 @@ pub struct LoweringContext {
     /// Locals that are function parameters — must NOT be dropped by the callee
     /// because the caller owns them.
     param_locals: HashSet<u32>,
+    /// Name of the function currently being lowered (drop-tag diagnostics).
+    cur_fn_name: String,
     /// Locals that borrow from another local (e.g., struct field access into a new
     /// struct). These must not be dropped because the source local owns the memory.
     borrowed_locals: HashSet<u32>,
@@ -258,6 +260,7 @@ impl LoweringContext {
             func_param_types: HashMap::new(),
             dropped_locals: HashSet::new(),
             param_locals: HashSet::new(),
+            cur_fn_name: String::new(),
             borrowed_locals: HashSet::new(),
             current_ret_ty: MirType::Void,
             current_self_type: None,
@@ -1525,6 +1528,97 @@ pub fn lower_module_with_lambda_params(
 }
 
 /// Lower a single AST function declaration to a `MirFunction`.
+
+// ---------------------------------------------------------------------------
+// Debug drop-site tagging (KRYOS_MIR_DROP_TAGS=<out.tsv> at compile time).
+// Every inserted Drop / reassignment-release is preceded by a
+// `kryos_diag_site(id)` call; the id -> (function, purpose) table is written
+// to the given TSV so a runtime double-free report names its emitting site.
+// Zero cost unless the env var is set when the compiler runs.
+// ---------------------------------------------------------------------------
+static DROP_TAGS: std::sync::Mutex<Option<(u64, Vec<String>)>> = std::sync::Mutex::new(None);
+
+fn drop_tags_path() -> Option<String> {
+    std::env::var("KRYOS_MIR_DROP_TAGS").ok().filter(|v| !v.is_empty())
+}
+
+fn drop_tag(ctx: &mut LoweringContext, why: &str) {
+    if drop_tags_path().is_none() {
+        return;
+    }
+    let id = {
+        let mut g = DROP_TAGS.lock().unwrap();
+        let entry = g.get_or_insert_with(|| (0, Vec::new()));
+        let id = entry.0;
+        entry.0 += 1;
+        entry.1.push(format!("{id}	{}	{why}", ctx.cur_fn_name));
+        // Debug knob: rewrite the table on every append so it is complete
+        // regardless of which pipeline path finishes the compile.
+        if let Some(path) = drop_tags_path() {
+            let _ = std::fs::write(path, entry.1.join("
+"));
+        }
+        id
+    };
+    let sink = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: sink,
+        value: RValue::Call {
+            func: "kryos_diag_site".to_string(),
+            args: vec![Operand::Constant(Constant::Int(id as i64))],
+        },
+    });
+}
+
+/// Flush the drop-site table (no-op unless tagging is active).
+pub fn flush_drop_tags() {
+    if let Some(path) = drop_tags_path() {
+        if let Ok(g) = DROP_TAGS.lock() {
+            if let Some((_, rows)) = g.as_ref() {
+                let _ = std::fs::write(path, rows.join("
+"));
+            }
+        }
+    }
+}
+
+/// Borrow-to-own retain for a container value flowing OUT of a borrowed
+/// source (function param) into an owned position (a local binding or a
+/// return value). Params are caller-owned and never dropped by the callee,
+/// so without this the receiving slot's later release/drop frees the
+/// CALLER's value (shape-4 of the bootstrap heap-corruption class). The
+/// retain gives the new owner its own reference; null passes through.
+fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
+    match ty {
+        MirType::Str => Some("kryos_string_retain_opt"),
+        MirType::Array(_, _) => Some("kryos_array_retain_opt"),
+        MirType::Map { .. } => Some("kryos_map_retain_opt"),
+        _ => None,
+    }
+}
+
+fn emit_param_source_retain(ctx: &mut LoweringContext, holder: LocalId, src: LocalId) {
+    if !ctx.param_locals.contains(&src.0) {
+        return;
+    }
+    let ty = ctx
+        .locals
+        .iter()
+        .find(|l| l.id == src)
+        .map(|l| l.ty.clone())
+        .unwrap_or(MirType::I64);
+    if let Some(rf) = retain_for_ty(&ty) {
+        let sink = ctx.alloc_temp(MirType::I64);
+        ctx.emit(Instruction::Assign {
+            dest: sink,
+            value: RValue::Call {
+                func: rf.to_string(),
+                args: vec![Operand::Local(holder)],
+            },
+        });
+    }
+}
+
 pub fn lower_function(
     ctx: &mut LoweringContext,
     name: &str,
@@ -1533,6 +1627,7 @@ pub fn lower_function(
     body: &ast::Block,
 ) -> MirFunction {
     ctx.reset();
+    ctx.cur_fn_name = name.to_string();
 
     // Allocate entry block (id = 0).
     let _entry = ctx.alloc_block();
@@ -1647,6 +1742,7 @@ pub fn lower_function(
                     && local_id != result_local
                     && !ctx.partial_moved_locals.contains(&local_id.0)
                 {
+                    drop_tag(ctx, "block-scope-end");
                     ctx.emit(Instruction::Drop { local: local_id });
                     ctx.dropped_locals.insert(local_id.0);
                 }
@@ -1705,6 +1801,7 @@ pub fn lower_function(
                         && source_struct_local_id != Some(local_id.0)
                         && !ctx.partial_moved_locals.contains(&local_id.0)
                     {
+                        drop_tag(ctx, "block-expr-scope-end");
                         ctx.emit(Instruction::Drop { local: local_id });
                         ctx.dropped_locals.insert(local_id.0);
                     }
@@ -1766,6 +1863,7 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
             if !ctx.dropped_locals.contains(&local_id.0)
                 && !ctx.partial_moved_locals.contains(&local_id.0)
             {
+                drop_tag(ctx, "fn-exit");
                 ctx.emit(Instruction::Drop { local: local_id });
                 ctx.dropped_locals.insert(local_id.0);
             }
@@ -2027,6 +2125,7 @@ fn drop_unescaped_str_temps(
         }
     }
     for id in to_drop {
+        drop_tag(ctx, "str-temp-drop");
         ctx.emit(Instruction::Drop { local: id });
     }
 }
@@ -2240,10 +2339,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // second time (double-free; test_csv's `let mut quoted` in a
                 // loop, Linux glibc). Loop-body heap lets are the drop
                 // machinery's job, not this site's.
+                let param_src = if let RValue::Use(Operand::Local(src)) = &rvalue {
+                    Some(*src)
+                } else {
+                    None
+                };
                 ctx.emit(Instruction::Assign {
                     dest: local,
                     value: rvalue,
                 });
+                if let Some(src) = param_src {
+                    emit_param_source_retain(ctx, local, src);
+                }
                 if is_shared {
                     ctx.emit(Instruction::ArcRetain { ptr: local });
                 }
@@ -2445,14 +2552,23 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             } else if let RValue::CallIndirect { ref args, .. } = rvalue {
                                 consume_call_args(ctx, dest, "", args);
                             }
+                            let param_src = if let RValue::Use(Operand::Local(src)) = &rvalue {
+                                Some(*src)
+                            } else {
+                                None
+                            };
                             ctx.emit(Instruction::Assign {
                                 dest,
                                 value: rvalue,
                             });
+                            if let Some(src) = param_src {
+                                emit_param_source_retain(ctx, dest, src);
+                            }
                             // Emit the guarded release AFTER the store: the RHS
                             // (which may read the old value, e.g. s = s + "x")
                             // has fully evaluated by now.
                             if let (Some(f), Some(old)) = (release_fn, old_snapshot) {
+                                drop_tag(ctx, "reassign-release");
                                 let sink = ctx.alloc_temp(MirType::I64);
                                 ctx.emit(Instruction::Assign {
                                     dest: sink,
@@ -2609,6 +2725,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
         ast::Stmt::Return { value, .. } => {
             let operand = value.as_ref().map(|e| lower_expr_to_operand(ctx, e));
+            // Returning a param directly hands the caller a handle it will
+            // treat as owned; retain so the caller's release does not free
+            // its own argument (borrow-to-own at the return boundary).
+            if let Some(Operand::Local(src)) = &operand {
+                emit_param_source_retain(ctx, *src, *src);
+            }
             let next = ctx.alloc_block();
             ctx.finish_block(Terminator::Return(operand), next);
         }
@@ -3994,6 +4116,7 @@ fn lower_try_catch(
         },
     });
     // Drop the result enum shell (payload was moved out by EnumPayload).
+    drop_tag(ctx, "question-op-shell");
     ctx.emit(Instruction::Drop {
         local: result_local,
     });
@@ -4020,6 +4143,7 @@ fn lower_try_catch(
         },
     });
     // Drop the result enum shell (payload was moved out by EnumPayload).
+    drop_tag(ctx, "question-op-shell");
     ctx.emit(Instruction::Drop {
         local: result_local,
     });

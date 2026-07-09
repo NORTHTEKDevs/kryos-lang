@@ -1,0 +1,14 @@
+// Regression: runtime fns returning f64 BITS in an i64 (parse_float, float(),
+// tensor reads) must be CALLED as i64 + bitcast on the LLVM backend. Calling
+// them as `call double` reads XMM0 (never set by the callee) -> printed 0 on
+// AOT while the JIT was correct. Parity output-diff catches any recurrence.
+fn main() {
+    println(to_string(parse_float("3.14")))
+    let f = parse_float("2.5")
+    println(to_string(f))
+    let g: f64 = parse_float("1.25")
+    println(to_string(g + 0.25))
+    let h = parse_float("7.0") + 0.5
+    println(to_string(h))
+    println(to_string(float(3)))
+}

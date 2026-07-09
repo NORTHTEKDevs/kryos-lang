@@ -124,6 +124,20 @@ pub fn free_diag() -> bool {
     VALUE.load(Ordering::Relaxed)
 }
 
+/// Free-site marker (debug tagging builds only): generated code calls this
+/// with a site id immediately before each container-free call. The diag
+/// reporter prints the last site so a double-free names its emitting
+/// function (resolve the id against the KRYOS_EMIT_FREE_TAGS TSV).
+#[no_mangle]
+pub extern "C" fn kryos_diag_site(site: i64) -> i64 {
+    LAST_FREE_SITE.with(|c| c.set(site));
+    0
+}
+
+thread_local! {
+    static LAST_FREE_SITE: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
+}
+
 /// Bounded reporter for free_diag: prints the first 60 reports, then counts.
 pub fn diag_report(msg: &str) {
     use std::sync::atomic::AtomicU32;
@@ -139,11 +153,46 @@ pub fn diag_report(msg: &str) {
     }
     let n = COUNT.fetch_add(1, Ordering::Relaxed);
     if n < cap {
-        eprintln!("KRYOS-FREE-DIAG[{n}]: {msg}");
+        let site = LAST_FREE_SITE.with(|c| c.get());
+        eprintln!("KRYOS-FREE-DIAG[{n}]: {msg} site={site}");
+        diag_stack();
     } else if n == cap {
         eprintln!("KRYOS-FREE-DIAG: (further reports suppressed)");
     }
 }
+
+/// When KRYOS_FREE_DIAG_STACK=1, append the caller stack as module-relative
+/// RVAs to each diag report. Resolve against the binary's PDB (build with
+/// `kryos build -g`) via llvm-symbolizer, or against a /MAP file.
+#[cfg(windows)]
+fn diag_stack() {
+    if std::env::var("KRYOS_FREE_DIAG_STACK").map(|v| v != "0" && !v.is_empty()) != Ok(true) {
+        return;
+    }
+    extern "system" {
+        fn RtlCaptureStackBackTrace(
+            frames_to_skip: u32,
+            frames_to_capture: u32,
+            back_trace: *mut *mut core::ffi::c_void,
+            hash: *mut u32,
+        ) -> u16;
+        fn GetModuleHandleW(name: *const u16) -> *mut core::ffi::c_void;
+    }
+    let mut frames = [std::ptr::null_mut(); 12];
+    let n = unsafe { RtlCaptureStackBackTrace(2, 12, frames.as_mut_ptr(), std::ptr::null_mut()) };
+    let base = unsafe { GetModuleHandleW(std::ptr::null()) } as usize;
+    let rvas: Vec<String> = frames[..n as usize]
+        .iter()
+        .map(|&f| {
+            let a = f as usize;
+            if a >= base { format!("+{:#x}", a - base) } else { format!("{a:#x}") }
+        })
+        .collect();
+    eprintln!("  stack: {}", rvas.join(" "));
+}
+
+#[cfg(not(windows))]
+fn diag_stack() {}
 
 /// Type-stable header freelist. Container headers (KryosString / KryosArray /
 /// MapHeader) are NEVER returned to the OS heap on free -- they are wiped to

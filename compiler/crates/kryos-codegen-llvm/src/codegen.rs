@@ -31,6 +31,14 @@ pub(crate) enum DebugInfoFormat {
 pub struct LlvmCodegen {
     /// Accumulated LLVM IR output.
     output: String,
+    /// Debug free-site tagging (KRYOS_EMIT_FREE_TAGS=<out.tsv> at codegen
+    /// time): every emitted container-free call is preceded by
+    /// `call void @kryos_diag_site(i64 <id>)` and the id -> (function, line)
+    /// mapping is written to the given TSV. Zero cost unless the env is set.
+    free_tags_out: Option<String>,
+    free_tag_next: u64,
+    free_tag_table: Vec<String>,
+    cur_emit_fn: String,
     /// Module-level string constants: content -> global name.
     string_constants: HashMap<String, String>,
     /// Counter for generating unique temporaries (`%t0`, `%t1`, ...).
@@ -113,6 +121,10 @@ impl LlvmCodegen {
     pub fn new(options: EmitOptions) -> Self {
         Self {
             output: String::with_capacity(4096),
+            free_tags_out: std::env::var("KRYOS_EMIT_FREE_TAGS").ok().filter(|v| !v.is_empty()),
+            free_tag_next: 0,
+            free_tag_table: Vec::new(),
+            cur_emit_fn: String::new(),
             string_constants: HashMap::new(),
             temp_counter: 0,
             string_counter: 0,
@@ -319,7 +331,19 @@ impl LlvmCodegen {
             self.emit_dwarf_metadata();
         }
 
-        Ok(self.output.clone())
+        {
+            self.flush_free_tags();
+            Ok(self.output.clone())
+        }
+    }
+
+    /// Write the debug free-site table (KRYOS_EMIT_FREE_TAGS) if enabled.
+    /// Called from both the whole-module and the incremental emission paths.
+    pub fn flush_free_tags(&self) {
+        if let Some(path) = &self.free_tags_out {
+            let _ = std::fs::write(path, self.free_tag_table.join("
+"));
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1055,6 +1079,7 @@ impl LlvmCodegen {
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare ptr @kryos_string_retain(ptr)");
         self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
+        self.emit_line("declare i64 @kryos_diag_site(i64)");
         self.emit_line("declare i64 @kryos_array_retain_opt(ptr)");
         self.emit_line("declare i64 @kryos_map_retain_opt(i64)");
         self.emit_line("declare i64 @kryos_map_retain(i64)");
@@ -2710,6 +2735,7 @@ impl LlvmCodegen {
     }
 
     fn emit_function_as(&mut self, func: &MirFunction, name: &str) -> Result<(), CodegenError> {
+        self.cur_emit_fn = name.to_string();
         // Compute stack-promotable locals before any emission so we can gate
         // on `self.stackable_locals` inside emit_aggregate_array, Drop, etc.
         self.stackable_locals = Self::compute_stackable_locals(func);
@@ -2985,22 +3011,6 @@ impl LlvmCodegen {
                     ));
                 }
             }
-        }
-        // Borrow-to-own: retain container-typed params. The caller keeps its
-        // reference; the callee's body may store the param into a local whose
-        // reassignment/drop releases it. Without an entry retain that release
-        // frees the CALLER's value (the double-free class behind the merged
-        // self-host bootstrap corruption). Mirrors the Cranelift backend's
-        // step-45 entry retains. retain_opt never mints on null.
-        for param in &func.params {
-            let (rf, aty) = match &param.ty {
-                MirType::Str => ("kryos_string_retain_opt", "ptr"),
-                MirType::Array(_, _) => ("kryos_array_retain_opt", "ptr"),
-                MirType::Map { .. } => ("kryos_map_retain_opt", "i64"),
-                _ => continue,
-            };
-            let t = self.next_temp();
-            self.emit_line(&format!("  {t} = call i64 @{rf}({aty} %_{})", param.local.0));
         }
         // Store parameter values into their allocas (non-aggregate params only).
         for param in &func.params {
@@ -5347,6 +5357,24 @@ impl LlvmCodegen {
                                 .get(runtime_fname)
                                 .cloned()
                                 .unwrap_or_else(|| {
+                                    // Runtime fns that return f64 BITS packed
+                                    // in an i64 (C ABI: RAX). The callsite must
+                                    // call them as i64 and bitcast to double --
+                                    // calling as `call double` reads XMM0,
+                                    // which the callee never set: parse_float
+                                    // printed 0 on AOT while JIT was correct.
+                                    if matches!(
+                                        runtime_fname,
+                                        "kryos_builtin_parse_float"
+                                            | "kryos_builtin_float"
+                                            | "kryos_builtin_float_from_float"
+                                            | "kryos_tensor_get"
+                                            | "kryos_tensor_sum"
+                                            | "kryos_tensor_mean"
+                                            | "kryos_f64_to_bits"
+                                    ) {
+                                        return "i64".to_string();
+                                    }
                                     // Runtime (C-ABI) functions aren't recorded in
                                     // func_ret_types and never return a Kryos aggregate
                                     // BY VALUE. So when the dest is an aggregate, the
@@ -8537,6 +8565,29 @@ impl LlvmCodegen {
     // -----------------------------------------------------------------------
 
     fn emit_line(&mut self, line: &str) {
+        // Debug free-site tagging: prefix every emitted container-free call
+        // with a site marker so a runtime double-free report can name the
+        // exact emitting Kryos function. Instruction lines only (declares
+        // start with "declare" and fail the call-prefix check).
+        if self.free_tags_out.is_some() {
+            let t = line.trim_start();
+            let is_free_call = (t.starts_with("call ") || t.contains(" = call "))
+                && (line.contains("@kryos_string_free(")
+                    || line.contains("@kryos_array_free(")
+                    || line.contains("@kryos_map_free(")
+                    || line.contains("release_if_ne"))
+                && !line.contains("@kryos_diag_site");
+            if is_free_call {
+                let id = self.free_tag_next;
+                self.free_tag_next += 1;
+                self.free_tag_table
+                    .push(format!("{id}	{}	{}", self.cur_emit_fn, line.trim()));
+                let tag_tmp = format!("%dtag{id}");
+                self.output
+                    .push_str(&format!("  {tag_tmp} = call i64 @kryos_diag_site(i64 {id})
+"));
+            }
+        }
         // When DI is active inside a function body, LLVM's verifier requires
         // every inlinable call instruction in a function with !dbg to also
         // carry a !dbg location. To avoid touching all 55+ call-emission
