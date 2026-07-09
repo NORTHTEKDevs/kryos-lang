@@ -697,6 +697,12 @@ impl LlvmCodegen {
         self.emit_line("declare double @llvm.sqrt.f64(double)");
         self.emit_line("declare double @llvm.pow.f64(double, double)");
         self.emit_line("declare double @llvm.fabs.f64(double)");
+        // min/max builtins on floats lower to these NaN-avoiding intrinsics.
+        // They were USED but never declared, so `clang`-compiled .ll on macOS
+        // failed with "use of undefined value '@llvm.maxnum.f64'". The Windows
+        // toolchain happened to tolerate the omission; macOS did not.
+        self.emit_line("declare double @llvm.minnum.f64(double, double)");
+        self.emit_line("declare double @llvm.maxnum.f64(double, double)");
         self.emit_blank();
     }
 
