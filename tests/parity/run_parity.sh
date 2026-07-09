@@ -100,14 +100,16 @@ echo "parity: kryos = $KRYOS_BIN"
 run_one() {
     local kry="$1"
     local name; name="$(basename "$kry" .kry)"
-    local tmp_out tmp_err exe_out exe_path
-    tmp_out="$(mktemp)"; tmp_err="$(mktemp)"; exe_out="$(mktemp)"
+    local tmp_out tmp_err exe_out cl_out exe_path
+    tmp_out="$(mktemp)"; tmp_err="$(mktemp)"; exe_out="$(mktemp)"; cl_out="$(mktemp)"
     exe_path="$(mktemp -u)"
     [[ "${OS:-}" == "Windows_NT" ]] && exe_path="$exe_path.exe"
 
-    # Cranelift: kryos run
+    # Cranelift: kryos run. Capture stdout to cl_out so we can DIFF it against
+    # the LLVM AOT stdout below (the two backends must agree on output, not
+    # just exit code -- a silent codegen divergence would otherwise pass).
     local cl_status="PASS"
-    if ! "$KRYOS_BIN" run "$kry" > "$tmp_out" 2> "$tmp_err"; then
+    if ! "$KRYOS_BIN" run "$kry" > "$cl_out" 2> "$tmp_err"; then
         cl_status="FAIL_RUN"
     fi
 
@@ -157,6 +159,21 @@ run_one() {
       fi
     fi
 
+    # OUTPUT PARITY: when both backends ran clean, their stdout must match
+    # byte-for-byte. A silent codegen divergence (e.g. 42 on JIT, 43 on AOT)
+    # otherwise passes because both exit 0. This is the correctness check the
+    # exit-code-only gate was missing.
+    if [[ "$cl_status" == "PASS" && "$llvm_status" == "PASS" ]]; then
+        if ! diff -q "$cl_out" "$exe_out" >/dev/null 2>&1; then
+            llvm_status="FAIL_DIFF"
+            {
+                echo "  ----- $name OUTPUT DIVERGENCE (JIT vs AOT) -----"
+                echo "  | --- cranelift/JIT ---"; head -15 "$cl_out" | sed 's/^/  | /'
+                echo "  | --- llvm/AOT ---";      head -15 "$exe_out" | sed 's/^/  | /'
+            } >&2
+        fi
+    fi
+
     # Classify failure (only meaningful when LLVM != Cranelift).
     local class="-"
     if [[ "$llvm_status" != "PASS" ]]; then
@@ -166,11 +183,12 @@ run_one() {
         elif grep -q "multiple definition of local value"  <<<"$llvm_err"; then class="C"
         elif grep -qE "invalid cast opcode|opaque"         <<<"$llvm_err"; then class="D"
         elif grep -q "insertvalue operand must be aggregate" <<<"$llvm_err"; then class="E"
+        elif [[ "$llvm_status" == "FAIL_DIFF" ]]; then class="O"
         elif [[ "$llvm_status" == "FAIL_RUN" ]]; then class="T"
         fi
     fi
 
-    rm -f "$tmp_out" "$tmp_err" "$exe_out" "$exe_path" 2>/dev/null || true
+    rm -f "$tmp_out" "$tmp_err" "$exe_out" "$cl_out" "$exe_path" 2>/dev/null || true
     printf '%s\t%s\t%s\t%s\n' "$name" "$cl_status" "$llvm_status" "$class"
 }
 
