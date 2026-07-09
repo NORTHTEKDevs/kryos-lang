@@ -120,8 +120,12 @@ run_one() {
         llvm_err="$(head -c 4000 "$tmp_err")"
         # Self-documenting failures: without this, a CI-only FAIL_BUILD is
         # undebuggable (the classified error text never reached the log).
-        echo "  ----- $name build stderr -----"
-        head -30 "$tmp_err" | sed 's/^/  | /'
+        # MUST go to stderr: run_one's stdout is captured into the status row,
+        # so any diagnostic here would corrupt the tab-separated parse.
+        {
+            echo "  ----- $name build stderr -----"
+            head -30 "$tmp_err" | sed 's/^/  | /'
+        } >&2
     else
       "$exe_path" > "$exe_out" 2>> "$tmp_err"
       rc=$?
@@ -144,9 +148,12 @@ run_one() {
       # debuggable without a local repro of that platform (mirrors the
       # FAIL_BUILD self-documenting output above). A double-free abort, a
       # kryos panic, or a failed assertion all print their diagnostic here.
+      # MUST go to stderr (see the FAIL_BUILD note): stdout is the captured row.
       if [[ "$llvm_status" == "FAIL_RUN" ]]; then
-          echo "  ----- $name run failure (exit=$rc) -----"
-          head -20 "$tmp_err" | sed 's/^/  | /'
+          {
+              echo "  ----- $name run failure (exit=$rc) -----"
+              head -20 "$tmp_err" | sed 's/^/  | /'
+          } >&2
       fi
     fi
 
