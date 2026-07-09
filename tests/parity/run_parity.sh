@@ -140,6 +140,14 @@ run_one() {
             llvm_err="$(head -c 4000 "$tmp_err")"
         fi
       fi
+      # Surface the run failure (exit code + stderr) so a CI-only FAIL_RUN is
+      # debuggable without a local repro of that platform (mirrors the
+      # FAIL_BUILD self-documenting output above). A double-free abort, a
+      # kryos panic, or a failed assertion all print their diagnostic here.
+      if [[ "$llvm_status" == "FAIL_RUN" ]]; then
+          echo "  ----- $name run failure (exit=$rc) -----"
+          head -20 "$tmp_err" | sed 's/^/  | /'
+      fi
     fi
 
     # Classify failure (only meaningful when LLVM != Cranelift).
