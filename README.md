@@ -3,7 +3,7 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v1.0.0--rc.1-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
-[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-47%2F47-brightgreen.svg)](tests/parity/run_parity.sh)
+[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-67%2F67-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
 [![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-253%2F253-brightgreen.svg)](tests/ecosystem_check.sh)
 [![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
@@ -31,7 +31,7 @@ kryos run hello.kry
 - **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical self-hosting fixed point — a self-host-compiled compiler recompiling its own source produces a bit-identical compiler (stage-3 == stage-4, SHA-256-verified). The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 66 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
-- **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 89 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, or a builtin passed as a value. `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
+- **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 90 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, or a builtin passed as a value. `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
 
 > **Status:** Kryos is **1.0.0-rc.1** — a feature-complete beta with one primary author, not yet externally stress-tested. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are frozen for 1.x backwards compatibility. See [STABILITY.md](STABILITY.md) for the contract.
 
@@ -225,7 +225,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 
 The full toolchain. Not a roadmap — actually built and tested:
 
-- **Compiler** — three backends (Cranelift / LLVM / WASM), zero cargo warnings, 295+ workspace tests passing
+- **Compiler** — three backends (Cranelift / LLVM / WASM), zero cargo warnings, 670+ workspace tests passing
 - **Self-host** — bootstrap reaches a byte-identical fixed point (stage-3 == stage-4); the self-host source type-checks and ownership-checks clean, and the per-module standalone compile check passes 16/16 modules. See [docs/20-self-hosting.md](docs/20-self-hosting.md)
 - **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, comptime, FFI (async/await parse but lower synchronously — see Status)
 - **Standard library** — 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
@@ -306,7 +306,7 @@ Kryos is **v1.0.0-rc.1**. Feature-complete language and toolchain + self-hosting
 
 **Quality bar (every release):**
 
-- Workspace lib tests: **295+ passing**
+- Workspace lib tests: **670+ passing** (70 suites, zero failures)
 - MIR lib tests: **79/79**
 - Build warnings: **0**
 - Self-host bootstrap: byte-identical fixed point (stage-3 == stage-4, SHA-256); standalone per-module compile check passes **16/16 modules**

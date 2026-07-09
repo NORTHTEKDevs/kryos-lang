@@ -69,10 +69,10 @@ A release tag is cut when **all** of the following hold:
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
-  `native_build_release_tests` suite (131 programs, both backends).
+  `native_build_release_tests` suite (155 programs, both backends).
 - Compiler unit tests: **100%** (495 tests across the front/middle/back end).
 - Capability soundness: `inferred_soundness.sh` green; `strict_caps_examples.sh`
-  **84 / 84**; `ecosystem_check.sh` **253 / 253** (deny-by-default across all
+  **90 / 90**; `ecosystem_check.sh` **253 / 253** (deny-by-default across all
   packages, incl. the extern-call gate).
 - Examples gate: root **44 / 44**, fixtures **16 / 16**, showcase **23 / 23**,
   capability-rejection **1 / 1**, multi-file project OK.
