@@ -36,6 +36,15 @@ jobs:
         # looks them up at link time.
         run: cargo build --release -j 2
 
+      - name: Native test runner (JIT + LLVM --release end-to-end)
+        working-directory: compiler
+        # Runs every fixture through `kryos run` (Cranelift) AND
+        # `kryos build --release` (LLVM AOT) with expected-stdout checks.
+        # This suite caught parse_float printing 0 on AOT -- a days-old
+        # user-facing miscompile that no other CI step covered (the parity
+        # corpus lacked the shape). It must run on every platform.
+        run: cargo test --release -j 2 -p kryos-test-runner --test native_runner -p kryos-rt
+
       - name: Smoke test (kryos run tests/smoke.kry)
         working-directory: compiler
         shell: bash
@@ -440,6 +449,15 @@ jobs:
         working-directory: compiler
         run: cargo build --release -j 2
 
+      - name: Native test runner (JIT + LLVM --release end-to-end)
+        working-directory: compiler
+        # Runs every fixture through `kryos run` (Cranelift) AND
+        # `kryos build --release` (LLVM AOT) with expected-stdout checks.
+        # This suite caught parse_float printing 0 on AOT -- a days-old
+        # user-facing miscompile that no other CI step covered (the parity
+        # corpus lacked the shape). It must run on every platform.
+        run: cargo test --release -j 2 -p kryos-test-runner --test native_runner -p kryos-rt
+
       - name: Smoke test (kryos run tests/smoke.kry)
         working-directory: compiler
         shell: bash
@@ -582,6 +600,16 @@ jobs:
         #     MSVC /DEBUG flag toggle and the LTO-gated-off-for-MSVC
         #     regression tests.
         run: cargo test --release -j 2 -p kryos-driver -p kryos-mir -p kryos-codegen-llvm -p kryos-linker
+
+      - name: Native test runner (JIT + LLVM --release end-to-end)
+        working-directory: compiler
+        # Runs every fixture through `kryos run` (Cranelift) AND
+        # `kryos build --release` (LLVM AOT) with expected-stdout checks.
+        # This suite caught parse_float printing 0 on AOT -- a days-old
+        # user-facing miscompile that no other CI step covered (the parity
+        # corpus lacked the shape). It must run on every platform.
+        run: cargo test --release -j 2 -p kryos-test-runner --test native_runner -p kryos-rt
+
 
       - name: Smoke test (kryos run tests/smoke.kry)
         working-directory: compiler
