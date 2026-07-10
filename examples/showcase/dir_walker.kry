@@ -1,10 +1,12 @@
 // dir_walker.kry — recursive directory walker that counts .kry files.
 //
-// Demonstrates: file_exists, custom recursion control, simple stats.
-// Note: Kryos doesn't have a builtin readdir; this example uses the
-// platform-specific shell-out pattern. Replace with std::fs::read_dir
-// when that lands (planned post-v4.0).
-use std::string::{split_lines}
+// Demonstrates: std::fs::walk_dir (recursive traversal), filtering,
+// simple aggregate stats. Point it at any directory:
+//
+//   kryos run dir_walker.kry [root]
+
+use std::fs::{walk_dir, read_file}
+use std::string::{ends_with}
 
 @capabilities(io)
 fn main() {
@@ -12,26 +14,18 @@ fn main() {
     let root: str = if len(argv) >= 2 { argv[1] } else { "." }
     println("scanning " + root + " ...")
     println("")
-    // Naive depth-limited walk via shell. Bounded to 4 levels deep.
-    let listing = file_read(".kry_walker_listing.txt")
-    // For this example we assume the caller pre-generated the file:
-    //   find <root> -name '*.kry' > .kry_walker_listing.txt
-    let paths = split_lines(listing)
+    let paths = walk_dir(root)
     let mut count: i64 = 0
     let mut total_size: i64 = 0
     for p in paths {
-        if len(p) == 0 {
+        if not ends_with(p, ".kry") {
             continue
         }
-        if not contains(p, ".kry") {
-            continue
-        }
+        let body = read_file(p)
         count = count + 1
-        let body = file_read(p)
         total_size = total_size + len(body)
+        println("  " + p + "  (" + to_string(len(body)) + " bytes)")
     }
-    println("kry files:    " + to_string(count))
-    println("total bytes:  " + to_string(total_size))
-    let avg: i64 = if count > 0 { total_size / count } else { 0 }
-    println("avg per file: " + to_string(avg))
+    println("")
+    println("found " + to_string(count) + " .kry files, " + to_string(total_size) + " bytes total")
 }
