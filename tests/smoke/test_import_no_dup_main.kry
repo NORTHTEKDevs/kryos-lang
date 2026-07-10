@@ -1,0 +1,6 @@
+// expect-stdout: consumer: 42
+use lib_with_main
+
+fn main() {
+    println("consumer: " + to_string(lib_double(21)))
+}

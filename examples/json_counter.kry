@@ -73,11 +73,32 @@ fn main() {
         println("  Caught: " + e)
     }
     try {
-        let bad = parse_int("not_a_number")
+        let raw = "not_a_number"
+        if not is_all_digits(raw) {
+            throw "cannot parse '" + raw + "' as an integer"
+        }
+        let bad = parse_int(raw)
         println("  Should not reach: " + to_string(bad))
     } catch e {
         println("  Caught parse error: " + e)
     }
     println("")
     println("=== Data processing complete ===")
+}
+
+// Guard input BEFORE parse_int: parse_int panics (not throws) on malformed
+// input by design, so validate first when the value is untrusted.
+fn is_all_digits(s: str) -> bool {
+    if len(s) == 0 {
+        return false
+    }
+    let mut i = 0
+    while i < len(s) {
+        let c = char_code(substr(s, i, i + 1))
+        if c < 48 or c > 57 {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }

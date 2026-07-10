@@ -475,6 +475,16 @@ pub fn resolve_imports(
 
         if selected.is_empty() {
             for decl in imported_module.declarations {
+                // An imported module's `main` is an ENTRY POINT, not an
+                // export: pulling it in alongside the importer's own main
+                // produced "Duplicate definition of _kryos_main" (a runnable
+                // library like examples/mylib.kry ships a main() so it can be
+                // run directly, and `use mylib` re-imported it).
+                if let Decl::Function { ref name, .. } = decl {
+                    if name == "main" {
+                        continue;
+                    }
+                }
                 if !matches!(decl, Decl::Import { .. }) {
                     resolved_decls.push(decl);
                 }
@@ -533,7 +543,7 @@ pub fn resolve_imports(
                 match &decl {
                     Decl::Import { .. } => continue,
                     Decl::Function { name, .. } => {
-                        if needed.contains(name) {
+                        if name != "main" && needed.contains(name) {
                             resolved_decls.push(decl);
                         }
                     }

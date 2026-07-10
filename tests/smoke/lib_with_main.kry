@@ -1,0 +1,8 @@
+// A runnable library: ships main() so it works with `kryos run`, but
+// `use lib_with_main` must NOT re-import that main into the consumer
+// (regression: "Duplicate definition of _kryos_main").
+fn lib_double(x: i64) -> i64 { return x * 2 }
+
+fn main() {
+    println("lib standalone: " + to_string(lib_double(21)))
+}
