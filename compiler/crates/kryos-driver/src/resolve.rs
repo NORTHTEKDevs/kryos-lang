@@ -326,6 +326,184 @@ fn parse_module_file(path: &Path) -> Result<(Module, kryos_errors::SourceMap), R
 /// `importing_file` is the canonical path of the file being compiled.
 /// `visited` tracks which files are already being compiled (cycle detection).
 /// `resolved_decls` accumulates declarations from all imported modules.
+use std::cell::RefCell;
+
+thread_local! {
+    /// fn-name -> module last-segment it was imported from, recorded during
+    /// the current resolve pass. Used to validate module-qualified calls:
+    /// `json::parse(..)` is pure sugar for the flat name `parse`, so without
+    /// this check it silently bound to WHATEVER `parse` was in scope (e.g.
+    /// std::csv's) -- a wrong-binding with no diagnostic.
+    static IMPORT_ORIGINS: RefCell<std::collections::HashMap<String, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Reset the per-compile import-origin table. Call before a fresh resolve.
+pub fn reset_import_origins() {
+    IMPORT_ORIGINS.with(|o| o.borrow_mut().clear());
+}
+
+fn record_origin(fn_name: &str, module_last: &str) {
+    IMPORT_ORIGINS.with(|o| {
+        o.borrow_mut()
+            .insert(fn_name.to_string(), module_last.to_string());
+    });
+}
+
+/// Validate every module-qualified call (`mod::fn(..)`) in the ROOT module
+/// against the recorded import origins. Returns diagnostics for calls whose
+/// qualifier names an imported module but whose function either was not
+/// imported from it or came from a DIFFERENT module (the silent-misbinding
+/// case). Method calls on values are unaffected: the check only fires when
+/// the receiver identifier exactly matches an imported module's last segment.
+pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+    let (origins, modules): (std::collections::HashMap<String, String>, std::collections::HashSet<String>) =
+        IMPORT_ORIGINS.with(|o| {
+            let m = o.borrow();
+            let mods = m.values().cloned().collect();
+            (m.clone(), mods)
+        });
+    if modules.is_empty() {
+        return diags;
+    }
+    let mut calls: Vec<(String, String, kryos_errors::Span)> = Vec::new();
+    for decl in &module.declarations {
+        collect_qualified_calls_in_decl(decl, &mut calls);
+    }
+    for (recv, method, span) in calls {
+        if !modules.contains(&recv) {
+            continue; // not a module qualifier (a value/static-type receiver)
+        }
+        match origins.get(&method) {
+            Some(origin) if origin == &recv => {}
+            Some(origin) => {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "`{recv}::{method}` refers to `{method}` imported from `{origin}`, not `{recv}`"
+                    ))
+                    .with_label(span, "qualified call here")
+                    .with_note(format!(
+                        "`{method}` in scope came from `{origin}`; import `{method}` from `{recv}` instead (and drop the conflicting import) -- Kryos has no import aliasing"
+                    )),
+                );
+            }
+            None => {
+                diags.push(
+                    Diagnostic::error(format!(
+                        "`{recv}::{method}` is not imported: add `{method}` to the `use` list for `{recv}`"
+                    ))
+                    .with_label(span, "qualified call here"),
+                );
+            }
+        }
+    }
+    diags
+}
+
+fn collect_qualified_calls_in_decl(d: &Decl, out: &mut Vec<(String, String, kryos_errors::Span)>) {
+    match d {
+        Decl::Function { body: Some(b), .. } => collect_qualified_calls_in_block(b, out),
+        Decl::Impl { methods, .. } => {
+            for m in methods {
+                collect_qualified_calls_in_decl(m, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_qualified_calls_in_block(b: &Block, out: &mut Vec<(String, String, kryos_errors::Span)>) {
+    for st in &b.stmts {
+        collect_qualified_calls_in_stmt(st, out);
+    }
+}
+
+fn collect_qualified_calls_in_stmt(s: &Stmt, out: &mut Vec<(String, String, kryos_errors::Span)>) {
+    match s {
+        Stmt::Let { value: Some(e), .. } => collect_qualified_calls_in_expr(e, out),
+        Stmt::Assign { target, value, .. } => {
+            collect_qualified_calls_in_expr(target, out);
+            collect_qualified_calls_in_expr(value, out);
+        }
+        Stmt::Expr { expr, .. } => collect_qualified_calls_in_expr(expr, out),
+        Stmt::Return { value: Some(e), .. } => collect_qualified_calls_in_expr(e, out),
+        Stmt::Throw { expr, .. } => collect_qualified_calls_in_expr(expr, out),
+        Stmt::Spawn { expr, .. } => collect_qualified_calls_in_expr(expr, out),
+        Stmt::If { condition, then_block, elif_clauses, else_block, .. } => {
+            collect_qualified_calls_in_expr(condition, out);
+            collect_qualified_calls_in_block(then_block, out);
+            for (c, b) in elif_clauses {
+                collect_qualified_calls_in_expr(c, out);
+                collect_qualified_calls_in_block(b, out);
+            }
+            if let Some(b) = else_block {
+                collect_qualified_calls_in_block(b, out);
+            }
+        }
+        Stmt::While { condition, body, .. } => {
+            collect_qualified_calls_in_expr(condition, out);
+            collect_qualified_calls_in_block(body, out);
+        }
+        Stmt::For { iterable, body, .. } => {
+            collect_qualified_calls_in_expr(iterable, out);
+            collect_qualified_calls_in_block(body, out);
+        }
+        Stmt::TryCatch { try_block, catch_block, .. } => {
+            collect_qualified_calls_in_block(try_block, out);
+            collect_qualified_calls_in_block(catch_block, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_qualified_calls_in_expr(e: &Expr, out: &mut Vec<(String, String, kryos_errors::Span)>) {
+    match e {
+        Expr::MethodCall { object, method, args, span, .. } => {
+            if let Expr::Identifier { name, .. } = object.as_ref() {
+                out.push((name.clone(), method.clone(), *span));
+            } else {
+                collect_qualified_calls_in_expr(object, out);
+            }
+            for a in args {
+                collect_qualified_calls_in_expr(a, out);
+            }
+        }
+        // `mod::fn(..)` parses as StaticMethodCall (the `::` spelling);
+        // `mod.fn(..)` as MethodCall. Both are module-qualified sugar.
+        Expr::StaticMethodCall { type_name, method, args, span, .. } => {
+            out.push((type_name.clone(), method.clone(), *span));
+            for a in args {
+                collect_qualified_calls_in_expr(a, out);
+            }
+        }
+        Expr::FnCall { callee, args, .. } => {
+            collect_qualified_calls_in_expr(callee, out);
+            for a in args {
+                collect_qualified_calls_in_expr(a, out);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_qualified_calls_in_expr(left, out);
+            collect_qualified_calls_in_expr(right, out);
+        }
+        Expr::UnaryOp { operand, .. } => collect_qualified_calls_in_expr(operand, out),
+        Expr::FieldAccess { object, .. } => collect_qualified_calls_in_expr(object, out),
+        Expr::IndexAccess { object, index, .. } => {
+            collect_qualified_calls_in_expr(object, out);
+            collect_qualified_calls_in_expr(index, out);
+        }
+        Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+            collect_qualified_calls_in_expr(condition, out);
+            collect_qualified_calls_in_block(then_branch, out);
+            if let Some(b) = else_branch {
+                collect_qualified_calls_in_block(b, out);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub fn resolve_imports(
     module: &Module,
     importing_file: &Path,
@@ -484,6 +662,9 @@ pub fn resolve_imports(
                     if name == "main" {
                         continue;
                     }
+                    if let Some(last) = import_path.segments.last() {
+                        record_origin(name, last);
+                    }
                 }
                 if !matches!(decl, Decl::Import { .. }) {
                     resolved_decls.push(decl);
@@ -544,6 +725,9 @@ pub fn resolve_imports(
                     Decl::Import { .. } => continue,
                     Decl::Function { name, .. } => {
                         if name != "main" && needed.contains(name) {
+                            if let Some(last) = import_path.segments.last() {
+                                record_origin(name, last);
+                            }
                             resolved_decls.push(decl);
                         }
                     }
@@ -578,10 +762,9 @@ pub fn resolve_imports(
                     Diagnostic::error(format!(
                         "duplicate {kind} `{name}` imported from multiple modules"
                     ))
-                    .with_label(decl.span(), "duplicate definition here")
-                    .with_note(format!(
+                                        .with_note(format!(
                         "a {kind} named `{name}` was already imported; \
-                         consider using an alias or selective import to resolve the conflict"
+                         Kryos has no import aliasing -- import disjoint names selectively so only one is in scope"
                     )),
                 );
             } else {

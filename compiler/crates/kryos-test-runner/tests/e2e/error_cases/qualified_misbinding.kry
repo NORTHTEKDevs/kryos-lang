@@ -1,0 +1,8 @@
+// expect-error: refers to `parse` imported from `csv`, not `json`
+use std::csv::{parse}
+use std::json::{stringify}
+
+fn main() {
+    let v = json::parse("[1]")
+    println(stringify(v))
+}

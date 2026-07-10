@@ -1,0 +1,61 @@
+// Gauntlet 3: Result chains with ?, Option, try/catch, error propagation.
+// Expected: parse 10/2 -> ok 5; parse 10/0 -> caught division error via Err;
+// missing key -> default -7; throw across two frames caught with message.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+
+fn checked_div(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0 {
+        return Err("division by zero: " + to_string(a) + "/0")
+    }
+    return Ok(a / b)
+}
+
+fn calc(a: i64, b: i64, c: i64) -> Result<i64, str> {
+    let step1 = checked_div(a, b)?
+    let step2 = checked_div(step1 + 100, c)?
+    return Ok(step2)
+}
+
+fn lookup(m: map<str, i64>, k: str) -> Option<i64> {
+    if contains(m, k) {
+        return Some(m[k])
+    }
+    return None()
+}
+
+fn deep_throw(n: i64) -> i64 {
+    if n <= 0 {
+        throw "bottom reached at frame " + to_string(n)
+    }
+    return deep_throw(n - 1)
+}
+
+fn main() {
+    match calc(10, 2, 5) {
+        Ok(v) => println("calc ok: " + to_string(v)),
+        Err(e) => println("calc err: " + e),
+    }
+    match calc(10, 0, 5) {
+        Ok(v) => println("calc ok: " + to_string(v)),
+        Err(e) => println("calc err: " + e),
+    }
+    let mut m: map<str, i64> = {}
+    m["found"] = 42
+    let a = match lookup(m, "found") {
+        Some(v) => v,
+        None() => 0 - 7,
+    }
+    let b = match lookup(m, "missing") {
+        Some(v) => v,
+        None() => 0 - 7,
+    }
+    println("found=" + to_string(a) + " missing=" + to_string(b))
+    try {
+        let x = deep_throw(3)
+        println("unreachable " + to_string(x))
+    } catch e {
+        println("caught: " + e)
+    }
+    println("done")
+}

@@ -398,6 +398,7 @@ fn compile_file_impl(
     visited.insert(canonical);
 
     let mut imported_decls = Vec::new();
+    resolve::reset_import_origins();
     if let Err(import_diags) = resolve::resolve_imports(
         &module,
         path,
@@ -422,6 +423,23 @@ fn compile_file_impl(
             "[kryos] imports: merged {} declarations from imported modules",
             imported_decls.len()
         );
+    }
+
+    // Validate module-qualified calls against import origins BEFORE the
+    // merge erases module boundaries: `json::parse(..)` is flat-name sugar
+    // and silently bound to whatever `parse` was in scope (wrong module).
+    let qc = resolve::validate_qualified_calls(&module);
+    if !qc.is_empty() {
+        diagnostics.extend(qc);
+        return CompileResult {
+            diagnostics,
+            source_map,
+            success: false,
+            output_path: None,
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        };
     }
 
     // Prepend imported declarations so they are visible during type checking.
@@ -1173,10 +1191,16 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     visited.insert(canonical);
 
     let mut imported_decls = Vec::new();
+    resolve::reset_import_origins();
     if let Err(import_diags) =
         resolve::resolve_imports(&module, path, &mut visited, &mut imported_decls, false)
     {
         diagnostics.extend(import_diags);
+        return (diagnostics, source_map);
+    }
+    let qc = resolve::validate_qualified_calls(&module);
+    if !qc.is_empty() {
+        diagnostics.extend(qc);
         return (diagnostics, source_map);
     }
 
@@ -1258,10 +1282,16 @@ pub fn check_file_with_options_full(
     visited.insert(canonical);
 
     let mut imported_decls = Vec::new();
+    resolve::reset_import_origins();
     if let Err(import_diags) =
         resolve::resolve_imports(&module, path, &mut visited, &mut imported_decls, false)
     {
         diagnostics.extend(import_diags);
+        return (diagnostics, source_map);
+    }
+    let qc = resolve::validate_qualified_calls(&module);
+    if !qc.is_empty() {
+        diagnostics.extend(qc);
         return (diagnostics, source_map);
     }
 

@@ -248,6 +248,8 @@ fn main() {
 }
 ```
 
+> **Import namespace gotcha:** imports share ONE flat namespace and there is **no import aliasing** (`use m::{parse as p}` is a parse error). Two modules exporting the same name (`std::csv::parse` vs `std::json::parse`) cannot both be imported; the compiler errors at the import, and a module-qualified call (`json::parse(..)`) is only sugar for the flat name -- the compiler validates it against the import's ORIGIN and errors if it came from a different module. Resolve collisions by importing disjoint names selectively. **Actors are constructed with `Name()`** (state is private, zero-initialized) -- the struct-literal form `Name { field: v }` is rejected. **`json_object(keys: [str], values: [JsonValue])` takes two arrays**, not zero args.
+
 > `std::json` gotcha: the JsonValue serializer is **`stringify`** (and `parse`, `pretty_print`, `get`, `set`, `to_str`...), NOT `json_stringify`. The `json_*` names in the module are only the **constructors** (`json_string`, `json_number`, `json_object`, `json_array`, `json_bool`, `json_null`). A separate native handle-based builtin named `json_stringify` exists in the runtime with a DIFFERENT (i64-handle) signature — importing/mixing it with JsonValue values fails with a type mismatch. Use the `std::json` module API end-to-end.
 
 > Note: `abs`, `min`, and `max` are polymorphic builtins (i64 or f64) available without any import. `use std::math::{abs, min, max}` imports **f64-only** versions that shadow the builtins, so `abs(-42)` would then fail to type-check — don't import them unless you specifically want the f64 form. `sqrt`, `pow`, `sin`, `cos` are likewise builtins.

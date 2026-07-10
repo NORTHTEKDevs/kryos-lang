@@ -1,0 +1,13 @@
+// expect-error: is an actor; construct it with
+actor Counter {
+    count: i64
+
+    fn bump(self: Counter, n: i64) {
+        count = count + n
+    }
+}
+
+fn main() {
+    let c = Counter { count: 0 }
+    c.bump(1)
+}

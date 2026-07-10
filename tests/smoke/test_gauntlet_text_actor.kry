@@ -1,0 +1,50 @@
+// Gauntlet 6: text processing (split, maps, manual sort-by-value) + actor.
+// "the quick the lazy the dog a dog" -> the:3 dog:2 quick:1 lazy:1 a:1
+use std::string::{split}
+
+actor Counter {
+    count: i64
+
+    fn bump(self: Counter, n: i64) {
+        count = count + n
+    }
+}
+
+fn main() {
+    let text = "the quick the lazy the dog a dog"
+    let words = split(text, " ")
+    let mut freq: map<str, i64> = {}
+    for w in words {
+        if contains(freq, w) {
+            freq[w] = freq[w] + 1
+        } else {
+            freq[w] = 1
+        }
+    }
+    // Extract + sort by count desc then report top 2 deterministically.
+    let uniq = ["the", "quick", "lazy", "dog", "a"]
+    let mut best = ""
+    let mut best_n = 0
+    let mut second = ""
+    let mut second_n = 0
+    for w in uniq {
+        let n = freq[w]
+        if n > best_n {
+            second = best
+            second_n = best_n
+            best = w
+            best_n = n
+        } elif n > second_n {
+            second = w
+            second_n = n
+        }
+    }
+    println("top: " + best + "=" + to_string(best_n) + ", " + second + "=" + to_string(second_n))
+    let c = Counter()
+    c.bump(5)
+    c.bump(37)
+    println("counter test dispatched")
+    if best == "the" and best_n == 3 and second == "dog" and second_n == 2 {
+        println("TEXT CORRECT")
+    }
+}

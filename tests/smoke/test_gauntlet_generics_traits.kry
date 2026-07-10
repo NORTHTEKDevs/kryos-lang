@@ -1,0 +1,56 @@
+// Gauntlet 2: generic stack, traits with dispatch, HOFs, closures.
+// Expected: pushes 1..5, pops 5,4; sum via fold = 1+2+3 = 6 (remaining);
+// doubled = [2,4,6]; trait dispatch prints both animal sounds; compose 5*2+1=11.
+use std::iter::{fold, map}
+
+struct Stack<T> {
+    items: [T],
+}
+
+impl<T> Stack<T> {
+    fn push_item(self: Stack<T>, v: T) -> Stack<T> {
+        return Stack { items: push(self.items, v) }
+    }
+}
+
+trait Speak {
+    fn sound(self: Dog) -> str
+}
+
+struct Dog { name: str }
+struct Cat { name: str }
+
+impl Speak for Dog {
+    fn sound(self: Dog) -> str { return self.name + ": woof" }
+}
+
+impl Speak for Cat {
+    fn sound(self: Cat) -> str { return self.name + ": meow" }
+}
+
+fn compose(f: fn(i64) -> i64, g: fn(i64) -> i64) -> fn(i64) -> i64 {
+    return |x| g(f(x))
+}
+
+fn main() {
+    let mut s: Stack<i64> = Stack { items: [] }
+    let mut i = 1
+    while i <= 5 {
+        s = s.push_item(i)
+        i = i + 1
+    }
+    let mut items = s.items
+    let top = pop(items)
+    let next = pop(items)
+    println("popped " + to_string(top) + " then " + to_string(next))
+    let total = fold(items, 0, |acc, x| acc + x)
+    println("sum of rest = " + to_string(total))
+    let doubled = map([1, 2, 3], |x| x * 2)
+    println("doubled last = " + to_string(doubled[2]))
+    let d = Dog { name: "Rex" }
+    let c = Cat { name: "Tom" }
+    println(d.sound())
+    println(c.sound())
+    let f = compose(|x| x * 2, |x| x + 1)
+    println("compose(5) = " + to_string(f(5)))
+}

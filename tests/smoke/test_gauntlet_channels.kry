@@ -1,0 +1,32 @@
+// Gauntlet 4: channel worker pattern with deterministic totals.
+// 4 workers each sum a range; main aggregates. sum(1..=1000)=500500.
+// Also async overlap: two coop tasks complete and both results land.
+fn sum_range(lo: i64, hi: i64) -> i64 {
+    let mut s = 0
+    let mut i = lo
+    while i <= hi {
+        s = s + i
+        i = i + 1
+    }
+    return s
+}
+
+fn main() {
+    let ch = chan()
+    spawn { send(ch, sum_range(1, 250)) }
+    spawn { send(ch, sum_range(251, 500)) }
+    spawn { send(ch, sum_range(501, 750)) }
+    spawn { send(ch, sum_range(751, 1000)) }
+    let mut total = 0
+    let mut got = 0
+    while got < 4 {
+        total = total + recv(ch)
+        got = got + 1
+    }
+    println("total = " + to_string(total))
+    if total == 500500 {
+        println("PARALLEL SUM CORRECT")
+    } else {
+        println("WRONG")
+    }
+}

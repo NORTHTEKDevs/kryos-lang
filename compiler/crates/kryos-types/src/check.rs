@@ -24,6 +24,11 @@ pub struct TypeChecker {
     deprecated_functions: std::collections::HashSet<String>,
     /// Functions marked with @pure — cannot call non-pure or do I/O.
     pure_functions: std::collections::HashSet<String>,
+    /// Names declared as ACTORS. Actors register as struct-like types (so
+    /// `self.field` type-checks in handlers), which wrongly let the
+    /// struct-literal form `Counter { count: 0 }` type-check -- the LLVM
+    /// backend cannot compile it, and actor state is private by design.
+    actor_names: std::collections::HashSet<String>,
     /// Whether we are currently inside a @pure function body.
     in_pure_function: bool,
     /// The current `Self` type — set when checking trait/impl blocks.
@@ -74,6 +79,7 @@ impl TypeChecker {
             current_function_name: None,
             deprecated_functions: std::collections::HashSet::new(),
             pure_functions: std::collections::HashSet::new(),
+            actor_names: std::collections::HashSet::new(),
             in_pure_function: false,
             current_self_type: None,
             generic_var_bounds: std::collections::HashMap::new(),
@@ -374,6 +380,7 @@ impl TypeChecker {
             // a type and a zero-arg constructor (`Counter()` spawns it). Register
             // the name here so it resolves during the full pass.
             Decl::Actor { name, .. } => {
+                self.actor_names.insert(name.clone());
                 self.env.define_struct(StructDef {
                     name: name.clone(),
                     generic_params: vec![],
@@ -786,6 +793,7 @@ impl TypeChecker {
                 handlers,
                 ..
             } => {
+                self.actor_names.insert(name.clone());
                 // Register the actor as a struct-like type with its state fields
                 // (so `self.field` in handlers type-checks).
                 let field_types: Vec<(String, Type)> = state_fields
@@ -2642,6 +2650,21 @@ impl TypeChecker {
                 }
             }
             Expr::StructLiteral { name, fields, span } => {
+                if self.actor_names.contains(name) {
+                    self.error(
+                        format!(
+                            "`{name}` is an actor; construct it with `{name}()` -- actor state is private and initializes to zero"
+                        ),
+                        *span,
+                    );
+                    for (_f, e) in fields {
+                        let _ = self.infer_expr(e);
+                    }
+                    return Type::Struct {
+                        name: name.clone(),
+                        generics: vec![],
+                    };
+                }
                 if let Some(def) = self.env.lookup_struct(name).cloned() {
                     // Per-use monomorphization: build a var_map from the def's
                     // generic var IDs to fresh vars, then instantiate each
