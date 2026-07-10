@@ -1,7 +1,0 @@
-// Test array index out of bounds
-fn main() {
-    let arr = [1, 2, 3]
-    println("arr[0]: " + to_string(arr[0]))
-    println("arr[2]: " + to_string(arr[2]))
-    println("arr[3]: " + to_string(arr[3]))
-}

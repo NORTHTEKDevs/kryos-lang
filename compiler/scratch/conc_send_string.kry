@@ -1,9 +1,0 @@
-// Test sending strings via channel
-fn main() {
-    let ch = chan()
-    spawn {
-        send(ch, "hello")
-    }
-    let msg = recv(ch)
-    println("received: " + msg)
-}

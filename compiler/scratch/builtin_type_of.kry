@@ -1,9 +1,0 @@
-// Test type_of on all types
-fn main() {
-    println("type of 42: " + type_of(42))
-    println("type of 3.14: " + type_of(3.14))
-    println("type of true: " + type_of(true))
-    println("type of str: " + type_of("hello"))
-    let arr = [1, 2, 3]
-    println("type of arr: " + type_of(arr))
-}

@@ -1,7 +1,0 @@
-// Test type error message quality - i64 should not say i32
-fn main() {
-    let x = 42
-    let y = "hello"
-    let result = x + y
-    println(to_string(result))
-}

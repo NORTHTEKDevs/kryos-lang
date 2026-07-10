@@ -14,7 +14,7 @@
 // HTTP semantics, routing, query parsing, JSON output, and
 // uptime tracking without spawning threads.
 
-use std::os::{args, exit}
+// args()/exit() are global builtins -- no import needed.
 
 fn find_in(s: str, needle: str, from: i64) -> i64 {
     let slen = len(s)

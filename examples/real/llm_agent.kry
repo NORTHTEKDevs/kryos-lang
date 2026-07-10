@@ -19,7 +19,7 @@
 //   2 -- missing API key or usage error
 //   3 -- HTTP non-2xx response or parse failure
 
-use std::os::{args, exit}
+// args()/exit() are global builtins -- no import needed.
 
 // Find a substring starting at `from`.
 fn find_in(s: str, needle: str, from: i64) -> i64 {

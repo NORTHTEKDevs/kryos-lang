@@ -256,7 +256,7 @@ For: 2
 ## Next Steps
 
 - See the [Language Reference](language-reference.md) for complete syntax documentation
-- Check out the [Examples](../examples/README.md) directory for more complex programs
+- Check out the [Examples](../../examples/README.md) directory for more complex programs
 - Study the existing examples: `calculator.kry` and `word_count.kry`
 
 Happy coding with Kryos!

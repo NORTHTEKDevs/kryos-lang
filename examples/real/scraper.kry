@@ -10,7 +10,7 @@
 //   0 -- success (any number of links, including zero)
 //   2 -- usage error or fetch failed
 
-use std::os::{args, exit}
+// exit()/args() are global builtins -- no import needed.
 use std::io::{println, eprintln}
 use std::fs::{write_file}
 

@@ -95,4 +95,4 @@ Consumer spawned
 6. Explore **grep.kry** for arrays and string operations
 7. Finish with **channels.kry** for concurrency basics
 
-For more detailed language documentation, see [GETTING_STARTED.md](../docs/GETTING_STARTED.md) and [language-reference.md](../docs/language-reference.md).
+For more detailed language documentation, see [GETTING_STARTED.md](../compiler/docs/GETTING_STARTED.md) and [language-reference.md](../docs/19-language-reference.md).

@@ -1,8 +1,0 @@
-// Test bool to_string
-fn main() {
-    let t = true
-    let f = false
-    println("true: " + to_string(t))
-    println("false: " + to_string(f))
-    println("contains: " + to_string(contains("hello", "ell")))
-}

@@ -6261,6 +6261,7 @@ fn ensure_func_ref_f64<M: Module>(
 /// `elem_clone_fn_name` is the name of the per-element clone function
 /// (must already be in func_ids): "kryos_string_clone" for Array<Str>,
 /// "__kryos_clone_<N>" for Array<Struct(N)>, etc.
+#[allow(dead_code)] // documented helper, currently superseded by the runtime-ABI clone path
 fn emit_array_clone_deep_call<M: Module>(
     src_arr: cranelift_codegen::ir::Value,
     elem_clone_fn_name: &str,
@@ -6291,6 +6292,7 @@ fn emit_array_clone_deep_call<M: Module>(
     Ok(builder.inst_results(call)[0])
 }
 
+#[allow(dead_code)] // documented helper, currently superseded by the runtime-ABI clone path
 fn emit_array_str_deep_clone<M: Module>(
     src_arr: cranelift_codegen::ir::Value,
     builder: &mut FunctionBuilder,

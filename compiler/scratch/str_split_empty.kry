@@ -1,9 +1,0 @@
-// Test split with empty separator
-fn main() {
-    let s = "hello"
-    let parts = split(s, "")
-    println("split by empty, len: " + to_string(len(parts)))
-    for p in parts {
-        println("part: '" + p + "'")
-    }
-}

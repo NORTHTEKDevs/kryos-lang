@@ -45,12 +45,12 @@ extern "C" {
 // Load libsqlite3 once at module level and resolve the symbols we need.
 // On Linux libsqlite3.so.0 is always the versioned name; libsqlite3.so is
 // the development symlink. We try the versioned name first.
-let SQLITE_LIB: i64 = 0
-let SQLITE_OPEN_FN: i64 = 0
-let SQLITE_EXEC_FN: i64 = 0
-let SQLITE_CLOSE_FN: i64 = 0
-let SQLITE_ERRMSG_FN: i64 = 0
-let SQLITE_INITIALIZED: i64 = 0
+let mut SQLITE_LIB: i64 = 0
+let mut SQLITE_OPEN_FN: i64 = 0
+let mut SQLITE_EXEC_FN: i64 = 0
+let mut SQLITE_CLOSE_FN: i64 = 0
+let mut SQLITE_ERRMSG_FN: i64 = 0
+let mut SQLITE_INITIALIZED: i64 = 0
 
 fn sqlite_init() -> i64 {
     if SQLITE_INITIALIZED == 1 {

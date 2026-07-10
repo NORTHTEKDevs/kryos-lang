@@ -28,13 +28,13 @@ The Kryos standard library ships with every installation. Core builtins are avai
 | std.agent | **Implemented** (Pure Kryos) | Agent framework with memory, tools, alignment. See [AI Runtime](../14-ai-runtime.md). |
 | std.tracked | **Implemented** (Pure Kryos) | Data lineage tracking. See [AI Runtime](../14-ai-runtime.md). |
 | std.cost | **Implemented** (Pure Kryos) | Budget enforcement for AI compute. See [AI Runtime](../14-ai-runtime.md). |
-| [std.server](server.md) | Planned | HTTP server framework |
+| std.server | Planned | HTTP server framework |
 | [std.db](db.md) | Planned | Database connectivity |
-| [std.auth](auth.md) | Planned | Authentication utilities |
-| [std.config](config.md) | Planned | Configuration and environment |
-| [std.email](email.md) | Planned | Email sending |
-| [std.claude](claude.md) | Planned | Anthropic Claude API integration |
-| [std.stripe](stripe.md) | Planned | Stripe payments integration |
+| std.auth | Planned | Authentication utilities |
+| std.config | Planned | Configuration and environment |
+| std.email | Planned | Email sending |
+| std.claude | Planned | Anthropic Claude API integration |
+| std.stripe | Planned | Stripe payments integration |
 
 ## Additional stdlib files (no separate docs)
 

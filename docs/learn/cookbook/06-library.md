@@ -153,4 +153,4 @@ See [docs/package-registry.md](../../package-registry.md) for the full publishin
 
 ---
 
-**You've finished the cookbook.** From here, browse [examples/](../../examples) for 74 more programs covering every corner of the language, or jump back to [Learn Kryos](../README.md) for deeper dives.
+**You've finished the cookbook.** From here, browse [examples/](../../../examples) for 74 more programs covering every corner of the language, or jump back to [Learn Kryos](../README.md) for deeper dives.

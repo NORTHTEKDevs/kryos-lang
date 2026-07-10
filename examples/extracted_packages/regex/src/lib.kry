@@ -45,12 +45,12 @@ extern "C" {
 // regmatch_t has two fields: rm_so (i32) and rm_eo (i32) = 8 bytes total
 // regex_t on glibc x86-64 is at most 40 bytes; 64 is safe.
 
-let LIBC_HANDLE: i64 = 0
-let REGCOMP_FN: i64 = 0
-let REGEXEC_FN: i64 = 0
-let REGFREE_FN: i64 = 0
-let POSIX_AVAILABLE: i64 = 0
-let POSIX_CHECKED: i64 = 0
+let mut LIBC_HANDLE: i64 = 0
+let mut REGCOMP_FN: i64 = 0
+let mut REGEXEC_FN: i64 = 0
+let mut REGFREE_FN: i64 = 0
+let mut POSIX_AVAILABLE: i64 = 0
+let mut POSIX_CHECKED: i64 = 0
 
 // Size constants
 let REGEX_T_SIZE: i64 = 64

@@ -1,9 +1,0 @@
-// Test string equality edge cases
-fn main() {
-    println("empty == empty: " + to_string("" == ""))
-    println("empty != a: " + to_string("" != "a"))
-    println("a == a: " + to_string("a" == "a"))
-    let s1 = "hello"
-    let s2 = "hel" + "lo"
-    println("concat equality: " + to_string(s1 == s2))
-}

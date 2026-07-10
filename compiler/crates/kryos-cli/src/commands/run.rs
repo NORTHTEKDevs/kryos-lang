@@ -1,6 +1,5 @@
 //! `kryos run` — compile and execute a Kryos file.
 
-use std::path::Path;
 use std::time::Instant;
 
 use kryos_driver::{BuildConfig, BuildMode, OutputType};

@@ -1,7 +1,0 @@
-// Test 58: Closure capturing outer variable
-fn main() {
-    let x = 10
-    let add_x = fn(y) { return y + x }
-    println(add_x(5))   // should be 15
-    println(add_x(20))  // should be 30
-}

@@ -1,4 +1,0 @@
-// Test 54: len() on a boolean
-fn main() {
-    println(len(true))
-}

@@ -1,7 +1,0 @@
-// Test range with 3 args (if supported)
-fn main() {
-    // range(start, end, step) - test if this works
-    for i in range(0, 10, 2) {
-        println(to_string(i))
-    }
-}

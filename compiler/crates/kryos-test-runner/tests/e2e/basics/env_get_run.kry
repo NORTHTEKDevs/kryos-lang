@@ -1,4 +1,5 @@
 // run-expect: 1
+@capabilities(process)
 fn main() {
     // PATH is set on virtually every OS. If env_get returns a non-empty string,
     // its length will be > 0.

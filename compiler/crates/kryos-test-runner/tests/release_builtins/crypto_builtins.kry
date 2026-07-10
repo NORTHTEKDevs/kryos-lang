@@ -4,6 +4,7 @@
 // expect-stdout: a9993e364706816aba3e25717850c26c9cd0d89d
 // expect-stdout: SGVsbG8=
 // expect-stdout: Hello
+@capabilities(crypto)
 fn main() {
     println(sha1_hex("abc"))
     let enc = base64_encode("Hello")

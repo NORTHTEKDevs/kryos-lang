@@ -1,6 +1,0 @@
-// Test shift edge cases
-fn main() {
-    println("1 << 63 = " + to_string(1 << 63))
-    println("1 << 64 = " + to_string(1 << 64))
-    println("-1 >> 1 = " + to_string(-1 >> 1))
-}

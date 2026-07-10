@@ -1,7 +1,0 @@
-// Test modulo by zero
-fn main() {
-    let a = 42
-    let b = 0
-    let result = a % b
-    println("42 % 0 = " + to_string(result))
-}

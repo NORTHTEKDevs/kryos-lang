@@ -1,5 +1,0 @@
-// Test 71b: i64 MIN as direct literal
-fn main() {
-    let x = -9223372036854775808
-    println(x)
-}

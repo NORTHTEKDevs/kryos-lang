@@ -4,6 +4,7 @@
 // This test validates symbol linkage + call/return on every host, so it
 // does not assert bind success. Unique path avoids stale-socket clashes.
 // expect-stdout: done
+@capabilities(net, process)
 fn main() {
     let mut dir = env_get("TEMP")
     if len(dir) == 0 { dir = env_get("TMPDIR") }

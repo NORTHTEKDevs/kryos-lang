@@ -1,6 +1,7 @@
 // Validates ws_accept_key against RFC 6455 reference vector through LLVM --release.
 // expect-stdout: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 // expect-stdout: OK
+@capabilities(net)
 fn main() {
     let key = "dGhlIHNhbXBsZSBub25jZQ=="
     let got = ws_accept_key(key)

@@ -1,8 +1,0 @@
-// Test modulo edge cases
-fn main() {
-    println("10 % 3 = " + to_string(10 % 3))
-    println("-10 % 3 = " + to_string(-10 % 3))
-    println("10 % -3 = " + to_string(10 % -3))
-    println("-10 % -3 = " + to_string(-10 % -3))
-    println("0 % 5 = " + to_string(0 % 5))
-}

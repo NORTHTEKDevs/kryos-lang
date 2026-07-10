@@ -1,2 +1,0 @@
-let x = not true
-println(to_string(x))

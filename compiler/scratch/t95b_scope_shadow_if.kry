@@ -1,9 +1,0 @@
-// Test 95b: Shadow in if vs new binding in if
-fn main() {
-    let x = "outer"
-    if true {
-        let x = "inner"
-        println(x)  // should print "inner"
-    }
-    println(x)  // SHOULD print "outer" but might print "inner" (bug)
-}

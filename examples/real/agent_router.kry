@@ -105,7 +105,7 @@ fn run_step_with_retry(step: Step, max_attempts: i64) -> StepResult {
 }
 
 fn format_result(r: StepResult) -> str {
-    let status = "ok"
+    let mut status = "ok"
     if !r.ok {
         status = "fail"
     }

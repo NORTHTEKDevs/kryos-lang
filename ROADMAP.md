@@ -44,9 +44,8 @@ every prod-readiness gap from the v2.8.0 audit closes, and the v2.x
 items previously scattered across v2.9 (LLVM parity), v3.0 (FFI),
 v3.1 (LSP), v3.2 (registry), v3.3 (concurrency) land together.
 
-Scope tracked in [AUDIT-v2.8.0.md](AUDIT-v2.8.0.md) and
-[AUDIT-llvm-parity.md](AUDIT-llvm-parity.md). Stability promises in
-[STABILITY-v3.0.md](STABILITY-v3.0.md).
+Scope was tracked in the v2.8/LLVM-parity audit documents (since retired);
+current stability promises live in [STABILITY.md](STABILITY.md).
 
 What's in v3.0:
 
@@ -77,7 +76,7 @@ What's in v3.0:
   single Kryos program (`tests/smoke/test_async_http_roundtrip.kry`).
   `async fn` / `await` / `spawn { ... }` / `chan / send / recv` all
   documented and supported. Type-checker `Future<T>` unwrap
-  remaining as a known caveat (STABILITY-v3.0.md §6) until the
+  remaining as a known caveat (see STABILITY.md §6) until the
   promoting MIR work lands.
 - **CI matrix** Linux + macOS-14 + Windows tier-1. Fuzz job
   (lexer + parser + typechecker, 60s budget each). Backend parity

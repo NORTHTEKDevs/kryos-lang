@@ -3747,13 +3747,6 @@ fn parse_int_literal_checked(text: &str) -> Result<i64, &'static str> {
     }
 }
 
-/// Legacy infallible wrapper. Returns 0 on error. Kept for the rare
-/// call site that operates without parser context (e.g. type-expression
-/// array sizes parsed from a known-valid lexer token). Prefer the
-/// `_checked` form in any path that has `&mut self` available.
-fn parse_int_literal(text: &str) -> i64 {
-    parse_int_literal_checked(text).unwrap_or(0)
-}
 
 fn looks_like_type_name(name: &str) -> bool {
     name.chars()

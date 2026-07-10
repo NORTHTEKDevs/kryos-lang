@@ -1,6 +1,0 @@
-// Test 73: println with no arguments
-fn main() {
-    println("before")
-    println()
-    println("after")
-}

@@ -1,9 +1,0 @@
-// Test channel with no receiver (send but never recv)
-fn main() {
-    let ch = chan()
-    spawn {
-        send(ch, 42)
-    }
-    // Don't recv - just exit
-    println("exiting without recv")
-}

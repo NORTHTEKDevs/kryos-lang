@@ -265,5 +265,5 @@ Now that you have the toolchain running:
 
 - [Variables and Types](02-variables-and-types.md) covers `let`/`let mut`, type annotations, and the full type system.
 - [Functions](03-functions.md) covers `fn` declarations, closures, lambdas, and first-class functions.
-- [Core Built-ins](stdlib-core.md) lists every function available without imports.
+- [Core Built-ins](stdlib/core-builtins.md) lists every function available without imports.
 - [Compilation Pipeline](15-codegen.md) explains how the compiler transforms your code into native binaries.

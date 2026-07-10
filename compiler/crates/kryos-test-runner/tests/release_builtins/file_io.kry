@@ -2,6 +2,7 @@
 // expect-stdout: written
 // expect-stdout: hello world
 // expect-stdout: true
+@capabilities(io)
 fn main() {
     let path = "/tmp/kryos_release_file_test.txt"
     write_file(path, "hello world")

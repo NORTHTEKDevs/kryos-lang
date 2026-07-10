@@ -1,6 +1,0 @@
-// Test 46: Map access with missing key
-fn main() {
-    let m = {"a": 1, "b": 2}
-    let val = m["z"]
-    println(val)
-}

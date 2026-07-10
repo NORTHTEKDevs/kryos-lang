@@ -1,9 +1,0 @@
-// Test substr with out-of-range indices
-fn main() {
-    let s = "hello"
-    println("normal substr: " + substr(s, 0, 3))
-    println("substr past end: " + substr(s, 0, 100))
-    println("substr start=end: " + substr(s, 3, 3))
-    println("substr start > end: " + substr(s, 3, 1))
-    println("substr negative: " + substr(s, -1, 3))
-}

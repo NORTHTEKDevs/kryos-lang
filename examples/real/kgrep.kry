@@ -8,7 +8,7 @@
 //   1  -- no matches
 //   2  -- usage error or unreadable file
 
-use std::os::{args, exit}
+// args()/exit() are global builtins -- no import needed.
 use std::io::{println, eprintln}
 use std::fs::{read_file, exists}
 use std::re::{is_match}

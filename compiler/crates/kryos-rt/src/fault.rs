@@ -32,7 +32,7 @@ mod imp {
             first: u32,
             handler: extern "system" fn(*mut ExceptionPointers) -> i32,
         ) -> *mut u8;
-        fn GetModuleHandleW(name: *const u16) -> *mut u8;
+        fn GetModuleHandleW(name: *const u16) -> *mut core::ffi::c_void;
         fn GetCurrentThread() -> *mut u8;
         fn GetCurrentProcess() -> *mut u8;
         fn DuplicateHandle(
@@ -265,7 +265,7 @@ mod hang_imp {
     static THRESHOLD: AtomicU64 = AtomicU64::new(3_000_000);
 
     extern "system" {
-        fn GetModuleHandleW(name: *const u16) -> *mut u8;
+        fn GetModuleHandleW(name: *const u16) -> *mut core::ffi::c_void;
     }
 
     #[inline]

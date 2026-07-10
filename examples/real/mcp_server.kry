@@ -20,7 +20,7 @@
 //
 // Exit on EOF (empty read_line) or when stdin closes.
 
-use std::os::{exit}
+// exit()/args() are global builtins -- no import needed.
 
 // --- Tiny string helpers -----------------------------------------------------
 

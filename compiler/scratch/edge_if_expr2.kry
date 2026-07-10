@@ -1,8 +1,0 @@
-fn main() {
-    let x = 10
-    let msg = if x > 5 { "big" } else { "small" }
-    println(msg)
-    
-    // If-expression as function argument
-    println(if x > 0 { "positive" } else { "non-positive" })
-}

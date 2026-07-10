@@ -1,4 +1,0 @@
-fn main() {
-    let x = 10 / 0
-    println(to_string(x))
-}

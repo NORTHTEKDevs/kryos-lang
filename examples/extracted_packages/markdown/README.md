@@ -30,7 +30,7 @@ fn main() {
 - Fenced code blocks (` ``` `)
 - Inline code (`` `x` ``)
 - **Bold** (`**x**`) and *italic* (`*x*`)
-- [Links](url) (`[text](url)`)
+- Links: ``[text](url)``
 - Unordered lists (`- item`)
 - Ordered lists (`1. item`)
 - Horizontal rules (`---`)

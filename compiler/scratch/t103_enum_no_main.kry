@@ -1,4 +1,0 @@
-// Test 103: File with no main function
-fn helper() -> i64 {
-    return 42
-}

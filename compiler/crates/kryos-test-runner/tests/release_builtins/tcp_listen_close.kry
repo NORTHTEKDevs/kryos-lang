@@ -4,6 +4,7 @@
 // undefined value @tcp_listen' under --release builds.
 // expect-stdout: bound
 // expect-stdout: closed
+@capabilities(net)
 fn main() {
     // port 0 = kernel picks an ephemeral port; no external resource needed
     let fd = tcp_listen("127.0.0.1", 0)

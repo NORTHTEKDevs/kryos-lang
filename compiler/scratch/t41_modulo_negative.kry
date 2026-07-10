@@ -1,7 +1,0 @@
-// Test 41: Modulo with negative numbers
-fn main() {
-    println(10 % 3)     // should be 1
-    println(-10 % 3)    // depends on semantics: truncated = -1, floored = 2
-    println(10 % -3)    // depends on semantics
-    println(-10 % -3)   // depends on semantics
-}

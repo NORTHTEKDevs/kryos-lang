@@ -45,7 +45,7 @@ use kryos_mir::ir::{
 };
 use wasm_encoder::{
     BlockType, CodeSection, ConstExpr, DataSection, ElementSection, Elements, ExportKind,
-    ExportSection, Function, FunctionSection, ImportSection, Instruction as W, MemArg,
+    ExportSection, Function, FunctionSection, ImportSection, Instruction as W,
     MemorySection, MemoryType, Module, RefType, TableSection, TableType, TypeSection, ValType,
 };
 
@@ -221,7 +221,7 @@ fn is_void(ty: &MirType) -> bool {
 // ---------------------------------------------------------------------------
 
 struct WasmCodegen {
-    options: WasmOptions,
+    _options: WasmOptions,
 
     // WASM sections, built incrementally.
     types: TypeSection,
@@ -359,7 +359,7 @@ struct WasmCodegen {
 impl WasmCodegen {
     fn new(options: WasmOptions) -> Self {
         Self {
-            options,
+            _options: options,
             types: TypeSection::new(),
             imports: ImportSection::new(),
             funcs: FunctionSection::new(),
@@ -979,7 +979,7 @@ impl WasmCodegen {
                 // void return: call for side effect, into a void sink local.
                 let sink = LocalId(next);
                 locals.push(MirLocal { id: sink, name: Some("__sink".into()), ty: MirType::Void, mutable: false });
-                next += 1;
+                let _ = next; // sink was the final local
                 instrs.push(Instruction::Assign {
                     dest: sink,
                     value: RValue::Call { func: lambda_name.clone(), args: call_args },

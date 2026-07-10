@@ -1,5 +1,6 @@
 // File I/O demo. Writes a file then reads it back.
 
+@capabilities(io)
 fn main() {
     file_write("kryos_test.txt", "Hello from Kryos self-host!")
     println("wrote file")

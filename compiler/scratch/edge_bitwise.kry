@@ -1,8 +1,0 @@
-fn main() {
-    println(to_string(5 & 3))
-    println(to_string(5 | 3))
-    println(to_string(5 ^ 3))
-    println(to_string(1 << 10))
-    println(to_string(1024 >> 5))
-    println(to_string(~0))
-}

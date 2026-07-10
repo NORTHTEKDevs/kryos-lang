@@ -1,9 +1,0 @@
-// Test 85: Multiple return values (tuple return)
-fn divmod(a: i64, b: i64) -> (i64, i64) {
-    return (a / b, a % b)
-}
-
-fn main() {
-    let result = divmod(17, 5)
-    println(result)
-}

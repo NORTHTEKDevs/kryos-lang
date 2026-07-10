@@ -1,6 +1,0 @@
-// Test 06: Passing wrong types to builtins
-fn main() {
-    // len() on an integer (should fail)
-    let x = 42
-    println(len(x))
-}

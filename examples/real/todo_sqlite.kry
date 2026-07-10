@@ -15,7 +15,7 @@
 //   2 -- usage error
 //   3 -- not found
 
-use std::os::{args, exit}
+// exit()/args() are global builtins -- no import needed.
 use std::db::{open, close, execute, query, step, col_int, col_text, finalize}
 
 // Single migration step: schema + a meta table tracking migration version.
