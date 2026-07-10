@@ -2319,7 +2319,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         .insert(name.clone(), (func_name, captures));
                 }
 
-                // If initializer moves a non-copy local, mark it consumed.
+                // `let copy = src` where src is a bare local. For refcounted
+                // CONTAINERS (Str/Array/Map) this is a SHARE, not a move: both
+                // bindings stay valid (Kryos's ARC model -- `let a = s; use(s)`
+                // is legal). The new binding must therefore take its OWN
+                // reference, or a loop-local `let copy = s` frees the buffer
+                // the outer `s` still holds on the first iteration's scope-end
+                // drop (differential-fuzz seed 14: `s` became empty/garbage
+                // after the loop). We retain the shared container into `local`
+                // and do NOT mark src consumed. For non-container non-copy
+                // values (structs/enums), keep the move: mark src consumed so
+                // its scope-end drop is skipped (no double-free).
+                let mut retain_shared_container = false;
                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                     let src_ty = ctx
                         .locals
@@ -2328,7 +2339,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
                     if !is_copy_type(ctx, &src_ty) {
-                        ctx.dropped_locals.insert(src.0);
+                        if retain_for_ty(&src_ty).is_some() {
+                            retain_shared_container = true;
+                        } else {
+                            ctx.dropped_locals.insert(src.0);
+                        }
                     }
                 }
                 // If initializer is a call, mark non-copy args consumed.
@@ -2349,12 +2364,31 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 } else {
                     None
                 };
+                let holder_ty_for_retain = ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == local)
+                    .map(|l| l.ty.clone());
                 ctx.emit(Instruction::Assign {
                     dest: local,
                     value: rvalue,
                 });
                 if let Some(src) = param_src {
                     emit_param_source_retain(ctx, local, src);
+                }
+                if retain_shared_container {
+                    if let Some(ref ty) = holder_ty_for_retain {
+                        if let Some(rf) = retain_for_ty(ty) {
+                            let sink = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: sink,
+                                value: RValue::Call {
+                                    func: rf.to_string(),
+                                    args: vec![Operand::Local(local)],
+                                },
+                            });
+                        }
+                    }
                 }
                 if is_shared {
                     ctx.emit(Instruction::ArcRetain { ptr: local });

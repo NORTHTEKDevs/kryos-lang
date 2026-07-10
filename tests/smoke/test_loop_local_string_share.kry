@@ -1,0 +1,15 @@
+// expect-stdout: after: 'hello' len=5
+// Regression (diff-fuzz seed 14): binding an outer container into a
+// loop-local (`let copy = s`) must SHARE (retain), not move -- otherwise
+// the loop-local's per-iteration scope-end drop frees the buffer the outer
+// `s` still holds, corrupting it after the loop. Was JIT/AOT-divergent AND
+// wrong on both.
+fn main() {
+    let s = "hello"
+    let mut i = 0
+    while i < 2 {
+        let copy = s
+        i = i + 1
+    }
+    println("after: '" + s + "' len=" + to_string(len(s)))
+}
