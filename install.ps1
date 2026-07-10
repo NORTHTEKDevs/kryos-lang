@@ -40,7 +40,7 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 # the release list and take the newest v1.0.0* release by publish order,
 # falling back to a pinned floor if the API is unreachable. Override with
 # KRYOS_VERSION to install any specific tag.
-$FALLBACK_VERSION = "v1.0.0-rc.1"
+$FALLBACK_VERSION = "v1.0.0-rc.2"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"

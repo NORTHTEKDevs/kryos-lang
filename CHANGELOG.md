@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.0.0-rc.2] — 2026-07-10 — "Memory-sound and launch-hardened"
+
+### Fixed — memory model (the headline)
+- **Self-host bootstrap heap corruption healed.** Freeing container headers
+  (rc.1) turned historically-forgiven stale releases into ntdll heap
+  corruption at merged-compile scale. Root causes fixed: borrow/own
+  confusion at container reads (map-get / element / field reads and str
+  params now retain via `*_retain_opt`), plus TYPE-STABLE header recycling
+  (`HeaderPool`) so residual stale releases are harmless with flat RSS
+  (400-round churn soak: 1.1 GB peak vs 10.3 GB pre-fix). The byte-identical
+  fixed point (stage-2 == stage-3 == stage-4) reproduces deterministically.
+- **@copy struct drop semantics unified across backends** — Cranelift now
+  skips @copy struct drops like LLVM (share + no-op drop); the merged
+  self-host compile reports ZERO double-frees under `KRYOS_FREE_DIAG`.
+
+### Fixed — correctness
+- **LLVM AOT called f64-bits-returning runtime fns as `call double`**:
+  `println(to_string(parse_float("3.14")))` printed `0` on release builds
+  (reads XMM0, callee sets RAX). Affected parse_float / float() / tensor
+  reads. New parity test locks the shape.
+- **Narrow-int struct fields (i8/i16/i32) miscompiled on LLVM** (no sext
+  into i64 slots; clang rejected the module). Also unlocked
+  `kryos build --release` on the 21k-line self-host source.
+- **std::csv: a stray mid-field quote silently swallowed the rest of the
+  document** — RFC 4180 quote-at-field-start gating; stray quotes are data.
+- **stdlib/iter.kry `zip()` and `take()` were broken for all callers**
+  (reassigned immutable locals) — caught by the new import validation.
+- **`len(<struct>)` returned silent garbage** — now `error[E0110]`.
+
+### Added — developer experience
+- **Selective imports validated at the use site** with did-you-mean
+  (`module X has no export Y`); enum variants and extern items count.
+- **`kryos fmt` formats commented files** (line-anchored comment
+  re-insertion; refuses — skips, never destroys — when unsure). Previously
+  every commented file was skipped.
+- **`kryos check` surfaces lexer diagnostics** (unterminated string now
+  points at the opening quote instead of a parser cascade).
+- **`kryos build --release .` names the binary after the package**
+  (`myapp.exe`, not `out.exe`).
+- **Free-site forensics** for runtime debugging: `KRYOS_FREE_DIAG=1`
+  (+`_MAX`, `_STACK`), `KRYOS_MIR_DROP_TAGS`, `KRYOS_EMIT_FREE_TAGS`.
+
+### CI
+- The native test runner (155 fixtures through BOTH backends with output
+  checks) now runs on Linux, macOS, and Windows — the coverage hole that
+  hid the parse_float miscompile.
+- Parity corpus 68 tests, stdout-diffed JIT vs AOT on all three platforms.
+
 ### Added — first-run experience
 - **`kryos run` project mode.** Bare `kryos run` (and `kryos run <dir>`) now
   resolves the project's `src/main.kry`, mirroring `kryos check`/`kryos build`

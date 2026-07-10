@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-07-06 (v1.0.0-rc.1).
+Last updated: 2026-07-06 (v1.0.0-rc.2).
 
 ---
 
@@ -65,7 +65,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0-rc.1)
+## 4. Current pass rates (v1.0.0-rc.2)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
@@ -84,10 +84,10 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 5. Known limitations (v1.0.0-rc.1)
+## 5. Known limitations (v1.0.0-rc.2)
 
 There are no architectural failures in the release-gating sweep at
-v1.0.0-rc.1. Honest, non-blocking residuals:
+v1.0.0-rc.2. Honest, non-blocking residuals:
 
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
