@@ -459,18 +459,17 @@ fn collect_qualified_calls_in_stmt(s: &Stmt, out: &mut Vec<(String, String, kryo
 
 fn collect_qualified_calls_in_expr(e: &Expr, out: &mut Vec<(String, String, kryos_errors::Span)>) {
     match e {
-        Expr::MethodCall { object, method, args, span, .. } => {
-            if let Expr::Identifier { name, .. } = object.as_ref() {
-                out.push((name.clone(), method.clone(), *span));
-            } else {
-                collect_qualified_calls_in_expr(object, out);
-            }
+        Expr::MethodCall { object, args, .. } => {
+            // Dot-form receivers are NOT validated as module qualifiers: a
+            // local variable named like a module (`let re = compile(..);
+            // re.drop()`) is common and indistinguishable here. Only the
+            // unambiguous `::` spelling (StaticMethodCall) is validated.
+            collect_qualified_calls_in_expr(object, out);
             for a in args {
                 collect_qualified_calls_in_expr(a, out);
             }
         }
-        // `mod::fn(..)` parses as StaticMethodCall (the `::` spelling);
-        // `mod.fn(..)` as MethodCall. Both are module-qualified sugar.
+        // `mod::fn(..)` parses as StaticMethodCall (the `::` spelling).
         Expr::StaticMethodCall { type_name, method, args, span, .. } => {
             out.push((type_name.clone(), method.clone(), *span));
             for a in args {
