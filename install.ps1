@@ -8,7 +8,7 @@
 #
 # Environment variables:
 #   KRYOS_INSTALL_DIR  -- override install prefix (default: %USERPROFILE%\.kryos\bin)
-#   KRYOS_VERSION      -- pin a specific release tag (default: v1.0.0-beta.1)
+#   KRYOS_VERSION      -- pin a specific release tag (default: latest release)
 #   GITHUB_TOKEN       -- PAT for downloading release assets from private repos
 #   GH_TOKEN           -- alternative auth env var (gh CLI compatible)
 
@@ -40,7 +40,7 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 # the release list and take the newest v1.0.0* release by publish order,
 # falling back to a pinned floor if the API is unreachable. Override with
 # KRYOS_VERSION to install any specific tag.
-$FALLBACK_VERSION = "v1.0.0-beta.7"
+$FALLBACK_VERSION = "v1.0.0-rc.1"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"

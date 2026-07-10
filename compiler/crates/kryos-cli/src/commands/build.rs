@@ -164,6 +164,22 @@ pub fn execute(
                 }
             }
         }
+        // Default the binary name to the PACKAGE name. Without this,
+        // `kryos build --release .` on a fresh `kryos new myapp` project
+        // produced `out.exe` (the stem of the "." input) instead of
+        // `myapp.exe` -- the first thing a new user notices.
+        if output.is_none() {
+            if let Ok(m) = kryos_package::Manifest::from_file(&manifest_path) {
+                if !m.package.name.is_empty() {
+                    let name = if cfg!(windows) {
+                        format!("{}.exe", m.package.name)
+                    } else {
+                        m.package.name.clone()
+                    };
+                    config.output = Some(name);
+                }
+            }
+        }
         kryos_driver::compile_project_with_backend(p, &config, Some(backend.as_ref()))
     } else {
         return Err(format!("`{}` is not a file or directory", p.display()));

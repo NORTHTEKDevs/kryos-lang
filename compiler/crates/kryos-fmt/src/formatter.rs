@@ -212,6 +212,13 @@ impl Formatter {
             self.write_indent();
             self.write("@");
             self.write(&ann.name);
+            // `@capabilities()` keeps its parens: the empty set is an
+            // explicit declaration (scaffold + docs convention), and
+            // dropping the parens broke comment re-anchoring on every
+            // freshly scaffolded project's main.kry.
+            if ann.args.is_empty() && ann.name == "capabilities" {
+                self.write("()");
+            }
             if !ann.args.is_empty() {
                 self.write("(");
                 for (i, arg) in ann.args.iter().enumerate() {

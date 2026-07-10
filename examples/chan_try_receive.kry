@@ -11,7 +11,7 @@
 // expect-stdout: drained ok=false val=0
 use std::chan::{new_channel, send_val, try_receive}
 
-@capabilities
+@capabilities()
 fn main() {
     let ch = new_channel()
     // Nothing sent yet -> non-blocking poll must report empty, not hang.
