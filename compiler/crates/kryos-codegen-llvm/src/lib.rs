@@ -21,6 +21,19 @@ use std::cell::RefCell;
 use std::fmt;
 use std::path::PathBuf;
 
+/// A per-process, per-call unique suffix for temp files. Two concurrent
+/// `kryos build --release` invocations (a parallel build, `make -j`, or a
+/// fuzz campaign) previously shared the fixed temp names
+/// `kryos_llvm_inc.ll` / `.o`, so one build's clang could read another
+/// build's half-written IR -> intermittent "expected top-level entity"
+/// clang errors. Unique names make concurrent builds independent.
+fn unique_temp_stem(base: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{base}_{}_{n}", std::process::id())
+}
+
 // Re-export the main entry point and key types.
 pub use codegen::LlvmCodegen;
 
@@ -201,8 +214,9 @@ impl kryos_driver::Backend for LlvmBackend {
         //    The IR String is scoped so it is freed immediately after the write,
         //    avoiding holding 1-2 GB in memory while clang runs.
         let tmp_dir = std::env::temp_dir();
-        let ll_path = tmp_dir.join("kryos_llvm_tmp.ll");
-        let obj_path = tmp_dir.join("kryos_llvm_tmp.o");
+        let stem = unique_temp_stem("kryos_llvm_tmp");
+        let ll_path = tmp_dir.join(format!("{stem}.ll"));
+        let obj_path = tmp_dir.join(format!("{stem}.o"));
 
         {
             let ir = self.emit_ir(module)?;
@@ -327,7 +341,8 @@ impl kryos_driver::Backend for LlvmBackend {
             )
         })?;
 
-        let ll_path = std::env::temp_dir().join("kryos_llvm_inc.ll");
+        let inc_stem = unique_temp_stem("kryos_llvm_inc");
+        let ll_path = std::env::temp_dir().join(format!("{inc_stem}.ll"));
         let file = std::fs::File::create(&ll_path).map_err(|e| {
             kryos_driver::BackendError::new(format!(
                 "failed to create temp .ll file '{}': {e}",
@@ -422,7 +437,8 @@ impl kryos_driver::Backend for LlvmBackend {
         // Run clang to compile .ll -> .o
         let clang = find_llvm_compiler()
             .ok_or_else(|| kryos_driver::BackendError::new("could not find clang"))?;
-        let obj_path = std::env::temp_dir().join("kryos_llvm_inc.o");
+        // Derive the obj path from the (unique) ll path created in begin_module.
+        let obj_path = ll_path.with_extension("o");
         let opt_flag = format!("-{}", self.options.opt_level);
         let mut cmd = std::process::Command::new(&clang);
         cmd.arg(&opt_flag)

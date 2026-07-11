@@ -141,6 +141,16 @@ jobs:
         # past the deny-by-default flip until a manual run caught it.
         run: bash tests/run_examples_gate.sh
 
+      - name: Differential fuzz smoke (JIT vs AOT, 60 random programs)
+        working-directory: compiler
+        # Generates 60 random type-correct programs and diffs Cranelift-JIT
+        # output against LLVM-AOT output. Catches backend miscompiles/
+        # divergences (the class the loop-share and value-semantics bugs
+        # fell in). Deterministic seed range; the full campaign runs via
+        # `python tools/diff-fuzz/gen2.py --count N` locally / on dispatch.
+        run: |
+          python3 ../tools/diff-fuzz/gen2.py --count 60 --seed-base 777000             --kryos target/release/kryos
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload
