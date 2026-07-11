@@ -1,0 +1,73 @@
+// Runnable selftest for kryos-toml-pkg.
+//   kryos run packages/kryos-toml-pkg/src/selftest.kry
+
+use lib::{toml_parse, toml_has, toml_get_str, toml_get_int, toml_get_bool, toml_get_float}
+
+fn check(label: str, got: str, want: str) -> i64 {
+    if got == want {
+        return 0
+    }
+    println("FAIL " + label + ": got [" + got + "] want [" + want + "]")
+    return 1
+}
+
+fn check_i(label: str, got: i64, want: i64) -> i64 {
+    if got == want {
+        return 0
+    }
+    println("FAIL " + label + ": got " + to_string(got) + " want " + to_string(want))
+    return 1
+}
+
+fn main() {
+    let mut fails = 0
+
+    let doc = "title = \"Kryos Project\"   # trailing comment\n# full-line comment\ncount = 42\nratio = 2.5\nneg = -7\n\n[server]\nhost = 'db.local'\nport = 8080\ndebug = true\nmotto = \"a # inside quotes\"\n\n[owner]\nname = \"North # Tek\"\nactive = false\n"
+    let t = toml_parse(doc)
+
+    fails = fails + check("top-str", toml_get_str(t, "title", "?"), "Kryos Project")
+    fails = fails + check_i("top-int", toml_get_int(t, "count", 0 - 1), 42)
+    fails = fails + check_i("neg-int", toml_get_int(t, "neg", 0), 0 - 7)
+    fails = fails + check("section-str", toml_get_str(t, "server.host", "?"), "db.local")
+    fails = fails + check_i("section-int", toml_get_int(t, "server.port", 0 - 1), 8080)
+    fails = fails + check("hash-in-quotes", toml_get_str(t, "server.motto", "?"), "a # inside quotes")
+    fails = fails + check("hash-in-quotes-2", toml_get_str(t, "owner.name", "?"), "North # Tek")
+
+    if toml_get_bool(t, "server.debug", false) {
+        fails = fails + 0
+    } else {
+        println("FAIL bool-true")
+        fails = fails + 1
+    }
+    if toml_get_bool(t, "owner.active", true) {
+        println("FAIL bool-false")
+        fails = fails + 1
+    }
+    if toml_has(t, "server.port") {
+        fails = fails + 0
+    } else {
+        println("FAIL has")
+        fails = fails + 1
+    }
+    if toml_has(t, "server.absent") {
+        println("FAIL has-absent")
+        fails = fails + 1
+    }
+
+    let r = toml_get_float(t, "ratio", 0.0)
+    if r > 2.49 and r < 2.51 {
+        fails = fails + 0
+    } else {
+        println("FAIL float: got " + to_string(r))
+        fails = fails + 1
+    }
+
+    fails = fails + check_i("int-default-on-str", toml_get_int(t, "title", 99), 99)
+    fails = fails + check("str-default", toml_get_str(t, "nope", "dflt"), "dflt")
+
+    if fails == 0 {
+        println("PASS kryos-toml-pkg selftest (14 checks)")
+    } else {
+        println("FAIL kryos-toml-pkg selftest: " + to_string(fails) + " failures")
+    }
+}

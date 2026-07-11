@@ -1,0 +1,47 @@
+// Runnable selftest for kryos-markdown-pkg.
+//   kryos run packages/kryos-markdown-pkg/src/selftest.kry
+// Prints one FAIL line per mismatch and a final PASS/FAIL summary.
+
+use lib::{md_to_html, md_inline, md_escape}
+
+fn check(label: str, got: str, want: str) -> i64 {
+    if got == want {
+        return 0
+    }
+    println("FAIL " + label + ": got [" + got + "] want [" + want + "]")
+    return 1
+}
+
+fn main() {
+    let mut fails = 0
+
+    fails = fails + check("escape", md_escape("a<b&c>d\"e"), "a&lt;b&amp;c&gt;d&quot;e")
+    fails = fails + check("bold", md_inline("say **hi** now"), "say <strong>hi</strong> now")
+    fails = fails + check("italic", md_inline("an *em* word"), "an <em>em</em> word")
+    fails = fails + check("code-span", md_inline("run `x<1` ok"), "run <code>x&lt;1</code> ok")
+    fails = fails + check("link", md_inline("see [docs](https://kryos.dev) here"),
+        "see <a href=\"https://kryos.dev\">docs</a> here")
+    fails = fails + check("nested-inline", md_inline("**bold *and em***"),
+        "<strong>bold <em>and em</em></strong>")
+    fails = fails + check("unterminated", md_inline("a ** dangler"), "a ** dangler")
+
+    fails = fails + check("h1", md_to_html("# Title"), "<h1>Title</h1>\n")
+    fails = fails + check("h3", md_to_html("### Sub *ttl*"), "<h3>Sub <em>ttl</em></h3>\n")
+    fails = fails + check("not-heading", md_to_html("#nope"), "<p>#nope</p>\n")
+    fails = fails + check("para", md_to_html("hello world"), "<p>hello world</p>\n")
+    fails = fails + check("list",
+        md_to_html("- one\n- two\n\nafter"),
+        "<ul>\n<li>one</li>\n<li>two</li>\n</ul>\n<p>after</p>\n")
+    fails = fails + check("code-block",
+        md_to_html("```\nlet x = 1 < 2\n```"),
+        "<pre><code>let x = 1 &lt; 2\n</code></pre>\n")
+    fails = fails + check("mixed",
+        md_to_html("# T\n\npara **b**\n\n- i1"),
+        "<h1>T</h1>\n<p>para <strong>b</strong></p>\n<ul>\n<li>i1</li>\n</ul>\n")
+
+    if fails == 0 {
+        println("PASS kryos-markdown-pkg selftest (14 checks)")
+    } else {
+        println("FAIL kryos-markdown-pkg selftest: " + to_string(fails) + " failures")
+    }
+}

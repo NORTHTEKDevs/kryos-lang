@@ -1,0 +1,241 @@
+// kryos-toml-pkg — TOML subset parser, pure Kryos, no capabilities.
+//
+// Parses tables (`[section]`) and scalar key = value pairs into a flat
+// map keyed "section.key" (top-level keys are just "key"). Values keep
+// their raw text; typed getters convert on access.
+//
+// Supported values: basic strings ("..."), literal strings ('...'),
+// integers, floats, booleans. `#` comments (full-line or trailing after
+// a quoted/scalar value) are stripped.
+//
+// Not supported (kept honest): nested/dotted keys, arrays,
+// arrays-of-tables ([[x]]), inline tables, dates, multi-line strings,
+// escape sequences inside strings.
+
+fn trim(s: str) -> str {
+    let n = len(s)
+    let mut a = 0
+    while a < n {
+        let c = substr(s, a, a + 1)
+        if c == " " {
+            a = a + 1
+        } elif c == "\t" {
+            a = a + 1
+        } elif c == "\r" {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    let mut b = n
+    while b > a {
+        let c = substr(s, b - 1, b)
+        if c == " " {
+            b = b - 1
+        } elif c == "\t" {
+            b = b - 1
+        } elif c == "\r" {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, a, b)
+}
+
+fn split_lines_local(s: str) -> [str] {
+    let mut out: [str] = []
+    let mut start = 0
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        if substr(s, i, i + 1) == "\n" {
+            out = push(out, substr(s, start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < n {
+        out = push(out, substr(s, start, n))
+    }
+    return out
+}
+
+// Strip a trailing comment. Tracks quote state so a '#' inside a quoted
+// string is preserved.
+fn strip_comment(line: str) -> str {
+    let n = len(line)
+    let mut i = 0
+    let mut in_dq = false
+    let mut in_sq = false
+    while i < n {
+        let c = substr(line, i, i + 1)
+        if c == "\"" and in_sq == false {
+            in_dq = in_dq == false
+        } elif c == "'" and in_dq == false {
+            in_sq = in_sq == false
+        } elif c == "#" and in_dq == false and in_sq == false {
+            return substr(line, 0, i)
+        }
+        i = i + 1
+    }
+    return line
+}
+
+fn unquote(v: str) -> str {
+    let n = len(v)
+    if n >= 2 {
+        let first = substr(v, 0, 1)
+        let last = substr(v, n - 1, n)
+        if first == "\"" and last == "\"" {
+            return substr(v, 1, n - 1)
+        }
+        if first == "'" and last == "'" {
+            return substr(v, 1, n - 1)
+        }
+    }
+    return v
+}
+
+/// Parse TOML text into a flat map: "section.key" (or "key" at top
+/// level) -> raw value text (quotes kept — getters strip them).
+pub fn toml_parse(content: str) -> map<str, str> {
+    let mut out: map<str, str> = {}
+    let mut section = ""
+    let lines = split_lines_local(content)
+    for raw in lines {
+        let line = trim(strip_comment(raw))
+        let n = len(line)
+        if n == 0 {
+            section = section
+        } elif substr(line, 0, 1) == "[" and substr(line, n - 1, n) == "]" {
+            section = trim(substr(line, 1, n - 1))
+        } else {
+            let mut eq = 0 - 1
+            let mut i = 0
+            let mut in_dq = false
+            let mut in_sq = false
+            while i < n {
+                let c = substr(line, i, i + 1)
+                if c == "\"" and in_sq == false {
+                    in_dq = in_dq == false
+                } elif c == "'" and in_dq == false {
+                    in_sq = in_sq == false
+                } elif c == "=" and in_dq == false and in_sq == false {
+                    eq = i
+                    break
+                }
+                i = i + 1
+            }
+            if eq > 0 {
+                let key = trim(substr(line, 0, eq))
+                let val = trim(substr(line, eq + 1, n))
+                if len(key) > 0 {
+                    if len(section) > 0 {
+                        out[section + "." + key] = val
+                    } else {
+                        out[key] = val
+                    }
+                }
+            }
+        }
+    }
+    return out
+}
+
+/// True if the flattened key exists ("section.key" or "key").
+pub fn toml_has(t: map<str, str>, key: str) -> bool {
+    return contains(t, key)
+}
+
+/// String value (quotes stripped), or the default when absent.
+pub fn toml_get_str(t: map<str, str>, key: str, default: str) -> str {
+    if contains(t, key) {
+        return unquote(t[key])
+    }
+    return default
+}
+
+/// Integer value, or the default when absent or not an integer.
+pub fn toml_get_int(t: map<str, str>, key: str, default: i64) -> i64 {
+    if contains(t, key) == false {
+        return default
+    }
+    let v = t[key]
+    let n = len(v)
+    if n == 0 {
+        return default
+    }
+    let mut i = 0
+    if substr(v, 0, 1) == "-" {
+        i = 1
+    }
+    if i >= n {
+        return default
+    }
+    while i < n {
+        let c = char_code(substr(v, i, i + 1))
+        if c < 48 {
+            return default
+        }
+        if c > 57 {
+            return default
+        }
+        i = i + 1
+    }
+    return parse_int(v)
+}
+
+/// Boolean value (`true` / `false`), or the default otherwise.
+pub fn toml_get_bool(t: map<str, str>, key: str, default: bool) -> bool {
+    if contains(t, key) == false {
+        return default
+    }
+    let v = t[key]
+    if v == "true" {
+        return true
+    }
+    if v == "false" {
+        return false
+    }
+    return default
+}
+
+/// Float value, or the default when absent or not numeric.
+pub fn toml_get_float(t: map<str, str>, key: str, default: f64) -> f64 {
+    if contains(t, key) == false {
+        return default
+    }
+    let v = t[key]
+    let n = len(v)
+    if n == 0 {
+        return default
+    }
+    let mut i = 0
+    if substr(v, 0, 1) == "-" {
+        i = 1
+    }
+    if i >= n {
+        return default
+    }
+    let mut dots = 0
+    while i < n {
+        let c = substr(v, i, i + 1)
+        if c == "." {
+            dots = dots + 1
+            if dots > 1 {
+                return default
+            }
+        } else {
+            let cc = char_code(c)
+            if cc < 48 {
+                return default
+            }
+            if cc > 57 {
+                return default
+            }
+        }
+        i = i + 1
+    }
+    return parse_float(v)
+}

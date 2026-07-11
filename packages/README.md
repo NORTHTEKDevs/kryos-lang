@@ -1,6 +1,6 @@
 # First-party Kryos packages
 
-Five small libraries shipped alongside the compiler. Each one is independently versioned and installable via `kryos pkg add <name>` once a registry is wired up.
+Eight small libraries shipped alongside the compiler. Each one is independently versioned and installable via `kryos pkg add <name>` once a registry is wired up.
 
 | Package | What it provides |
 | --- | --- |
@@ -9,6 +9,11 @@ Five small libraries shipped alongside the compiler. Each one is independently v
 | [`kryos-uuid-pkg`](./kryos-uuid-pkg/) | Ergonomic v4 UUID helpers around `std::uuid` |
 | [`kryos-base64-pkg`](./kryos-base64-pkg/) | Ergonomic base64 helpers around `std::base64`, plus a `data_url(...)` builder |
 | [`kryos-time-pkg`](./kryos-time-pkg/) | Datetime helpers: `UtcDate` struct, `now_utc()`, `now_iso()`, `ymd_utc(...)`, `days_between(...)`, `weekday_short(...)` |
+| [`kryos-markdown-pkg`](./kryos-markdown-pkg/) | Markdown (CommonMark subset) to HTML renderer, pure Kryos, everything escaped |
+| [`kryos-dotenv-pkg`](./kryos-dotenv-pkg/) | `.env` parsing; pure `dotenv_parse` needs no capability, `dotenv_load` declares exactly `fs:read` |
+| [`kryos-toml-pkg`](./kryos-toml-pkg/) | TOML subset parser (tables + scalars) with typed default-returning getters |
+
+Each package with a `src/selftest.kry` is runnable proof: `kryos run packages/<name>/src/selftest.kry` prints a `PASS` line with its check count.
 
 ## Layout
 

@@ -1,0 +1,129 @@
+// kryos-dotenv-pkg — .env parsing with least-privilege capabilities.
+//
+// dotenv_parse is a pure string transform (no capabilities). Only
+// dotenv_load touches the filesystem and declares fs:read — a program
+// that parses .env content it already holds needs no grant at all.
+//
+// Format: KEY=VALUE lines. `#` comments, blank lines, and an optional
+// `export ` prefix are handled. Values may be wrapped in single or
+// double quotes (quotes are stripped; no escape processing inside).
+// The first `=` splits key from value. Later duplicate keys win.
+
+fn trim(s: str) -> str {
+    let n = len(s)
+    let mut a = 0
+    while a < n {
+        let c = substr(s, a, a + 1)
+        if c == " " {
+            a = a + 1
+        } elif c == "\t" {
+            a = a + 1
+        } elif c == "\r" {
+            a = a + 1
+        } else {
+            break
+        }
+    }
+    let mut b = n
+    while b > a {
+        let c = substr(s, b - 1, b)
+        if c == " " {
+            b = b - 1
+        } elif c == "\t" {
+            b = b - 1
+        } elif c == "\r" {
+            b = b - 1
+        } else {
+            break
+        }
+    }
+    return substr(s, a, b)
+}
+
+fn strip_quotes(s: str) -> str {
+    let n = len(s)
+    if n >= 2 {
+        let first = substr(s, 0, 1)
+        let last = substr(s, n - 1, n)
+        if first == "\"" and last == "\"" {
+            return substr(s, 1, n - 1)
+        }
+        if first == "'" and last == "'" {
+            return substr(s, 1, n - 1)
+        }
+    }
+    return s
+}
+
+fn split_lines_local(s: str) -> [str] {
+    let mut out: [str] = []
+    let mut start = 0
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        if substr(s, i, i + 1) == "\n" {
+            out = push(out, substr(s, start, i))
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if start < n {
+        out = push(out, substr(s, start, n))
+    }
+    return out
+}
+
+/// Parse .env-format text into a map. Pure — needs no capabilities.
+pub fn dotenv_parse(content: str) -> map<str, str> {
+    let mut env: map<str, str> = {}
+    let lines = split_lines_local(content)
+    for raw in lines {
+        let mut line = trim(raw)
+        if len(line) == 0 {
+            line = line
+        } elif substr(line, 0, 1) == "#" {
+            line = line
+        } else {
+            if len(line) > 7 and substr(line, 0, 7) == "export " {
+                line = trim(substr(line, 7, len(line)))
+            }
+            let mut eq = 0 - 1
+            let mut i = 0
+            let n = len(line)
+            while i < n {
+                if substr(line, i, i + 1) == "=" {
+                    eq = i
+                    break
+                }
+                i = i + 1
+            }
+            if eq > 0 {
+                let key = trim(substr(line, 0, eq))
+                let val = strip_quotes(trim(substr(line, eq + 1, n)))
+                if len(key) > 0 {
+                    env[key] = val
+                }
+            }
+        }
+    }
+    return env
+}
+
+/// Look up a key with a default.
+pub fn dotenv_get(env: map<str, str>, key: str, default: str) -> str {
+    if contains(env, key) {
+        return env[key]
+    }
+    return default
+}
+
+/// Read and parse a .env file. Returns an empty map if the file does
+/// not exist. Declares fs:read — the only capability this package uses.
+@capabilities(fs:read)
+pub fn dotenv_load(path: str) -> map<str, str> {
+    if file_exists(path) == 0 {
+        let empty: map<str, str> = {}
+        return empty
+    }
+    return dotenv_parse(file_read(path))
+}

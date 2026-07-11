@@ -1,0 +1,42 @@
+// Runnable selftest for kryos-dotenv-pkg (pure parsing only — no fs).
+//   kryos run packages/kryos-dotenv-pkg/src/selftest.kry
+
+use lib::{dotenv_parse, dotenv_get}
+
+fn check(label: str, got: str, want: str) -> i64 {
+    if got == want {
+        return 0
+    }
+    println("FAIL " + label + ": got [" + got + "] want [" + want + "]")
+    return 1
+}
+
+fn main() {
+    let mut fails = 0
+
+    let env = dotenv_parse("# comment\nAPI_KEY=abc123\n\nexport HOST='db.local'\nNAME=\"Kryos Lang\"\nEMPTY=\nSPACED =  padded value  \nDUP=first\nDUP=second\nNOEQUALS\n=novalue\n")
+
+    fails = fails + check("plain", dotenv_get(env, "API_KEY", "?"), "abc123")
+    fails = fails + check("export-single-quote", dotenv_get(env, "HOST", "?"), "db.local")
+    fails = fails + check("double-quote", dotenv_get(env, "NAME", "?"), "Kryos Lang")
+    fails = fails + check("empty-value", dotenv_get(env, "EMPTY", "?"), "")
+    fails = fails + check("trimmed", dotenv_get(env, "SPACED", "?"), "padded value")
+    fails = fails + check("dup-last-wins", dotenv_get(env, "DUP", "?"), "second")
+    fails = fails + check("missing-default", dotenv_get(env, "ABSENT", "fallback"), "fallback")
+    fails = fails + check("no-equals-skipped", dotenv_get(env, "NOEQUALS", "skip"), "skip")
+    fails = fails + check("comment-skipped", dotenv_get(env, "# comment", "skip"), "skip")
+
+    let count = len(env)
+    if count == 6 {
+        fails = fails + 0
+    } else {
+        println("FAIL entry-count: got " + to_string(count) + " want 6")
+        fails = fails + 1
+    }
+
+    if fails == 0 {
+        println("PASS kryos-dotenv-pkg selftest (10 checks)")
+    } else {
+        println("FAIL kryos-dotenv-pkg selftest: " + to_string(fails) + " failures")
+    }
+}

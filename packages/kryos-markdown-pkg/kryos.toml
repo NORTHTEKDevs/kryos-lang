@@ -1,0 +1,9 @@
+[package]
+name = "kryos-markdown-pkg"
+version = "0.1.0"
+edition = "2026"
+description = "Markdown (CommonMark subset) to HTML renderer in pure Kryos."
+authors = ["NORTHTEK <info@northtek.io>"]
+license = "Apache-2.0"
+
+[dependencies]
