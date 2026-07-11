@@ -3264,6 +3264,22 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
+        // Runtime ARC: *_retain_opt(handle) -> handle. Emitted by the
+        // share-retain lowering (container let-bindings, map/array value
+        // stores, push of a container element). v0.1 WASM has no
+        // refcounted heap, so these are pure identity — emit the operand
+        // as the result, no host import required.
+        // -------------------------------------------------------------
+        if (func == "kryos_string_retain_opt"
+            || func == "kryos_array_retain_opt"
+            || func == "kryos_map_retain_opt")
+            && args.len() == 1
+        {
+            self.emit_operand(&args[0])?;
+            return Ok(());
+        }
+
+        // -------------------------------------------------------------
         // Runtime: kryos_string_char_at(packed, idx) -> packed single-char str
         // -------------------------------------------------------------
         if func == "kryos_string_char_at" && args.len() == 2 {
