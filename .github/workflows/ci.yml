@@ -141,6 +141,11 @@ jobs:
         # past the deny-by-default flip until a manual run caught it.
         run: bash tests/run_examples_gate.sh
 
+      - name: Package selftests (execute every packages/*/src/selftest.kry)
+        # ecosystem_check.sh only typechecks packages/; these actually RUN.
+        # The dotenv selftest is what exposed the map-value use-after-free.
+        run: bash tests/package_selftests.sh
+
       - name: Differential fuzz smoke (JIT vs AOT, 60 random programs)
         working-directory: compiler
         # Generates 60 random type-correct programs and diffs Cranelift-JIT

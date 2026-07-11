@@ -32,6 +32,8 @@ class Gen:
         self.sv = []          # str vars
         self.av = []          # [i64] vars
         self.bv = []          # bool vars
+        self.mv = []          # map<str, str> vars
+        self.sav = []         # [str] vars
         self.tmp = 0
         self.budget = 0
         self.fns = []         # (name, arity) user int helpers
@@ -120,20 +122,46 @@ class Gen:
             src = r.choice(self.av); b = self.nm("a")
             self.w(f"let mut {b} = {src}"); self.w(f"{b} = push({b}, {self.ie()})")
             self.av.append(b)
-        elif k < 0.66 and self.sv:
+        elif k < 0.63 and self.sv:
             # string share-in-loop was the seed-14 class; keep exercising
             src = r.choice(self.sv); c = self.nm("s")
             self.w(f"let {c} = {src}")
             self.w(f'println("cp=" + {c})')
             self.sv.append(c)
+        elif k < 0.66:
+            # container-VALUE ownership class (the map-store use-after-free):
+            # store a locally-built string into a map or [str] slot, read it
+            # back later via observe(). The value must outlive its local.
+            if self.mv and r.random() < 0.5:
+                m = r.choice(self.mv)
+                kx = self.nm("mk")
+                self.w(f'let {kx} = "key" + to_string({self.ie()})')
+                self.w(f"{m}[{kx}] = {self.se()}")
+                self.w(f'println("mv=" + {m}[{kx}])')
+            elif self.sav and r.random() < 0.5:
+                a = r.choice(self.sav)
+                self.w(f"{a} = push({a}, {self.se()})")
+            elif r.random() < 0.5:
+                m = self.nm("m")
+                self.w(f"let mut {m}: map<str, str> = {{}}")
+                self.w(f'{m}["seed"] = {self.se()}')
+                self.mv.append(m)
+            else:
+                a = self.nm("sa")
+                self.w(f"let mut {a}: [str] = []")
+                self.w(f"{a} = push({a}, {self.se()})")
+                self.sav.append(a)
         elif k < 0.76 and d < 2:
-            snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv))
+            snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv),
+                    list(self.mv), list(self.sav))
             self.w(f"if {self.be()} {{")
             self.indent += 1
             for _ in range(r.randint(1, 3)):
                 self.stmt(d + 1)
             self.w(f'println("t" + to_string({self.ie()}))')
-            self.iv, self.sv, self.av, self.bv = (list(snap[0]), list(snap[1]), list(snap[2]), list(snap[3]))
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = (
+                list(snap[0]), list(snap[1]), list(snap[2]), list(snap[3]),
+                list(snap[4]), list(snap[5]))
             self.indent -= 1
             self.w("} else {")
             self.indent += 1
@@ -141,21 +169,22 @@ class Gen:
             self.w(f'println("f" + to_string({self.ie()}))')
             self.indent -= 1
             self.w("}")
-            self.iv, self.sv, self.av, self.bv = snap
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = snap
         elif k < 0.85 and d < 2:
             v = self.nm("l"); n = r.randint(2, 6)
             self.w(f"let mut {v} = 0")
             # The counter is NOT added to self.iv, so body statements can
             # never pick it as an assignment target -- otherwise a random
             # `{v} = <expr>` in the body breaks termination (infinite loop).
-            snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv))
+            snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv),
+                    list(self.mv), list(self.sav))
             self.w(f"while {v} < {n} {{")
             self.indent += 1
             self.stmt(d + 1)
             self.w(f"{v} = {v} + 1")
             self.indent -= 1
             self.w("}")
-            self.iv, self.sv, self.av, self.bv = snap
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = snap
         elif k < 0.90 and self.have_enum:
             # enum match producing an int
             n = self.ie()
@@ -177,6 +206,13 @@ class Gen:
             self.w(f'println("{v}.len=" + to_string(len({v})))')
         for v in self.bv:
             self.w(f'if {v} {{ println("{v}=T") }} else {{ println("{v}=F") }}')
+        for v in self.mv:
+            # read back the seeded key — dangling values print recycled junk
+            self.w(f'println("{v}.seed=" + {v}["seed"] + " len=" + to_string(len({v})))')
+        for v in self.sav:
+            self.w(f"if len({v}) > 0 {{")
+            self.w(f'    println("{v}[0]=" + {v}[0])')
+            self.w("}")
 
     def prelude(self):
         r = self.r
