@@ -101,6 +101,14 @@ class Gen:
         elif k < 0.58 and self.arr_vars:
             a = r.choice(self.arr_vars)
             self.w(f"{a} = push({a}, {self.int_expr()})")
+        elif k < 0.63 and self.arr_vars:
+            # `let mut b = a; b = push(b, x)` -- exercises independent-copy
+            # semantics (array_dup). b must not alias a.
+            src = r.choice(self.arr_vars)
+            b = self.name("a")
+            self.w(f"let mut {b} = {src}")
+            self.w(f"{b} = push({b}, {self.int_expr()})")
+            self.arr_vars.append(b)
         elif k < 0.70 and depth < 2:
             snap = (list(self.int_vars), list(self.str_vars), list(self.arr_vars))
             self.w(f"if {self.bool_expr()} {{")
