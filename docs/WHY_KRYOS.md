@@ -123,19 +123,20 @@ fn main() {
 
 | Benchmark (medians of 5) | Kryos LLVM | Rust -O | ratio vs Rust |
 |---|---|---|---|
-| hashmap 1M+1M | 0.080s | 0.118s | 0.68x (beats Rust) |
-| matmul 512² | 0.618s | 0.653s | 0.95x (beats Rust) |
-| mandelbrot 1000²×1000 | 0.368s | 0.368s | 1.00x |
-| fib(40) | 0.349s | 0.347s | 1.01x |
-| fannkuch-redux(10) | 0.197s | 0.195s | 1.01x |
-| nbody 2M steps | 0.141s | 0.105s | 1.34x (beats clang/clang++ -O2) |
-| binary_trees d16 | 1.098s | 0.759s | 1.45x |
+| hashmap 1M+1M | 0.082s | 0.127s | 0.65x (beats Rust) |
+| matmul 512² | 0.620s | 0.648s | 0.96x (beats Rust) |
+| mandelbrot 1000²×1000 | 0.369s | 0.368s | 1.00x |
+| fannkuch-redux(10) | 0.202s | 0.198s | 1.02x |
+| fib(40) | 0.351s | 0.340s | 1.03x |
+| nbody 2M steps | 0.141s | 0.107s | 1.31x (beats clang/clang++ -O2) |
+| binary_trees d16 | 1.097s | 0.773s | 1.42x |
 
-All 7 benchmarks land within 1.45x of Rust, and Kryos beats Rust outright on
-matmul (0.95x) and hashmap (0.68x). The honest worst case is binary_trees at
-1.45x (Rc-like `Shared` refcount traffic vs Rust's unique-ownership `Box`);
-nbody (1.34x) still beats clang/clang++ -O2. Full methodology, spreads, and
-the per-benchmark analysis: [BENCHMARKS.md](../BENCHMARKS.md).
+All 7 benchmarks land within 1.42x of Rust, and Kryos beats Rust outright on
+matmul (0.96x) and hashmap (0.65x). The honest worst case is binary_trees at
+1.42x (Rc-like `Shared` refcount traffic vs Rust's unique-ownership `Box`);
+nbody (1.31x) still beats clang/clang++ -O2. Re-measured on 1.0.0-rc.2,
+2026-07-10. Full methodology, spreads, and the per-benchmark analysis:
+[BENCHMARKS.md](../BENCHMARKS.md).
 
 The compiler applies five MIR-level optimization passes before handing off to the backend:
 

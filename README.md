@@ -3,9 +3,10 @@
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/badge/release-v1.0.0--rc.2-blue.svg)](CHANGELOG.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
-[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-67%2F67-brightgreen.svg)](tests/parity/run_parity.sh)
+[![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-77%2F77-brightgreen.svg)](tests/parity/run_parity.sh)
+[![Diff-fuzz](https://img.shields.io/badge/differential_fuzz-8k_programs%2C_0_divergences-brightgreen.svg)](tools/diff-fuzz/)
 [![Self-host](https://img.shields.io/badge/bootstrap-stage3%3D%3D4_byte--identical-brightgreen.svg)](compiler/self-host/bootstrap-win.sh)
-[![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-253%2F253-brightgreen.svg)](tests/ecosystem_check.sh)
+[![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-259%2F259-brightgreen.svg)](tests/ecosystem_check.sh)
 [![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
 
 **Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics — a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions — 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
@@ -28,6 +29,7 @@ kryos run hello.kry
 - **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model — simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
 - **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O — anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
+- **Both backends are held to the same answer.** A differential fuzzer generates random type-correct programs (structs, enums, closures, loops, containers) and diffs the JIT's output against the AOT binary's — ~8,000 programs, zero divergences, and a smoke run repeats on every CI push ([tools/diff-fuzz/](tools/diff-fuzz/)).
 - **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical self-hosting fixed point — a self-host-compiled compiler recompiling its own source produces a bit-identical compiler (stage-3 == stage-4, SHA-256-verified). The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
 - **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 66 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.

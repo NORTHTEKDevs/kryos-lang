@@ -16,7 +16,7 @@
 
 ### LLVM AOT (`kryos build --release`)
 - `compiler/crates/kryos-codegen-llvm/src/codegen.rs` (8,630 lines): full LLVM IR emission, calls `llc` + `clang`/`link.exe`.
-- Measured: within 1.45x of Rust on all 7 benchmarks. Beats Rust on matmul (0.95x) and hashmap (0.68x). Beats C/C++ on nbody, matmul, hashmap. Source: BENCHMARKS.md (auto-generated from results.json, not hand-edited).
+- Measured: within 1.42x of Rust on all 7 benchmarks (rc.2 re-measure, 2026-07-10). Beats Rust on matmul (0.96x) and hashmap (0.65x). Beats C/C++ on nbody, matmul, hashmap. Source: BENCHMARKS.md (auto-generated from results.json, not hand-edited).
 - Supports cross-compilation to 9 named triples plus arbitrary LLVM triples. Debug info (DWARF / CodeView .pdb) is supported.
 
 ### WASM Backend (`kryos build --target wasm32-unknown-unknown`)

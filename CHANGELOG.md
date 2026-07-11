@@ -6,6 +6,59 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — value semantics (found by differential fuzzing)
+- **Map/array container VALUES are now retained on store.** `m[k] = v` and
+  `arr[i] = v` stored the raw pointer; when `v`'s local dropped, the stored
+  value dangled — reads returned recycled buffers (found writing the dotenv
+  package: parsed values came back as fragments of earlier prints). The
+  insert lowering retains container values; the runtime cannot, because only
+  the compiler knows whether a value slot is a scalar or a pointer. Keys
+  were already safe (deep-copied on insert).
+- **`push(arr, s)` of a container element shares (retains) instead of
+  moving.** The language allows reading `s` after the push, but the old
+  consume model never retained — the Cranelift backend's element-releasing
+  array drop then freed `s`'s buffer out from under it (use-after-free +
+  double-free on JIT, and a JIT/AOT divergence since LLVM's drop does not
+  release elements). Scalars and structs keep their existing semantics.
+- **Loop-local container share miscompile.** `let copy = s` on a container
+  inside a loop marked the source consumed without a refcount bump, so the
+  loop-local copy's per-iteration drop freed a buffer the outer variable
+  still held — corrupting it after the loop (wrong on BOTH backends).
+  Container let-bindings now share (retain); the bootstrap fixed point is
+  unchanged, proving the refcounts balance.
+- **Array mutable-rebind aliasing (#40).** `let mut b = a; b = push(b, x)`
+  silently mutated `a` too. `let mut b = <array var>` is now an independent
+  copy via a new `kryos_array_dup` runtime primitive with per-element-kind
+  ownership (scalar / container retain / arc retain) — zero double-frees
+  under `KRYOS_FREE_DIAG`. Maps keep the stricter behavior: `let mut m2 = m`
+  is a move, and using `m` afterward is a compile error (`E0300`) — neither
+  container can silently alias.
+- **Parallel `kryos build` no longer race.** The LLVM backend wrote fixed
+  temp filenames, so two concurrent release builds (make -j, CI matrix,
+  build server) could read each other's half-written IR and fail with a
+  cryptic clang error. Temp files are now unique per process + build.
+
+### Added — verification infrastructure
+- **Differential fuzzing** (`tools/diff-fuzz/`): generates random
+  type-correct programs (structs, enums + match, closures, helper fns,
+  loops, arrays, maps) and diffs Cranelift-JIT output against LLVM-AOT
+  output. ~8,000 programs across seed ranges: zero divergences, zero ICEs
+  after the fixes above. A 60-program smoke runs in CI on every push.
+- **Qualified-call validation**: `mod::fn(...)` is checked against the
+  import's origin module; actor struct-literal construction is rejected
+  with a fix-it (`construct it with Name()`).
+
+### Added — ecosystem
+- **Three new first-party packages** (`packages/`): `kryos-markdown-pkg`
+  (Markdown subset to HTML, everything escaped), `kryos-dotenv-pkg`
+  (pure `dotenv_parse` + `fs:read`-scoped `dotenv_load`), `kryos-toml-pkg`
+  (TOML tables + scalars with typed default-returning getters). Each ships
+  a runnable `src/selftest.kry`; `tests/package_selftests.sh` executes all
+  of them and is part of the local gate battery.
+- **Benchmarks re-measured on rc.2** (BENCHMARKS.md): all 7 within 1.42x of
+  Rust; matmul 0.96x and hashmap 0.65x still beat Rust — the memory-model
+  and value-semantics fixes cost no performance.
+
 ## [1.0.0-rc.2] — 2026-07-10 — "Memory-sound and launch-hardened"
 
 ### Fixed — memory model (the headline)

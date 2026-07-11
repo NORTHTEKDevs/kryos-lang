@@ -29,7 +29,7 @@ escalation, unattributed outputs, and unbounded spend are compile errors or
 runtime throws -- not postmortem discoveries.*
 
 Why this is defensible (and not another benchmark race): raw speed is table
-stakes (Kryos is already within 1.45x of Rust, beats it on some). This wedge
+stakes (Kryos is already within 1.42x of Rust, beats it on some). This wedge
 is a *capability* no other general-purpose language has assembled in one place,
 and it is exactly timed to the moment the industry is scrambling to make
 AI-written and agent-executed code safe to run.
