@@ -1,0 +1,23 @@
+// Regression: a container VALUE stored into a map (or array slot) must
+// survive its source local's drop. The insert lowering retains container
+// values (the runtime cannot: only the compiler knows scalar vs pointer).
+// Before the fix, m["k"] read back recycled buffers.
+// expect-stdout: k0=hello0 k1=hello1 a0=beta
+
+fn mk(tag: str) -> str {
+    return "hello" + tag
+}
+
+fn main() {
+    let mut m: map<str, str> = {}
+    let mut i = 0
+    while i < 2 {
+        let val = mk(to_string(i))
+        m["k" + to_string(i)] = val
+        i = i + 1
+    }
+    let mut arr = ["alpha"]
+    let replacement = "be" + "ta"
+    arr[0] = replacement
+    println("k0=" + m["k0"] + " k1=" + m["k1"] + " a0=" + arr[0])
+}

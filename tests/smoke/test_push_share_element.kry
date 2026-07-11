@@ -1,0 +1,30 @@
+// Regression: pushing a container element SHARES it (retain) — the source
+// variable stays valid after the owning array drops. Before the fix,
+// `push(a, s)` never retained while the Cranelift array drop released
+// elements: s's buffer was freed out from under it (UAF + double-free on
+// JIT, and a backend divergence since LLVM's drop keeps elements alive).
+// expect-stdout: s=hello! nested=3 outer=2
+
+fn main() {
+    let s = "hello" + "!"
+    let mut i = 0
+    while i < 2 {
+        let mut a: [str] = []
+        a = push(a, s)
+        i = i + 1
+    }
+    println("filler line to recycle any freed buffer")
+
+    // nested-array element: outer stays valid after inner-owner drops
+    let outer = [1, 2]
+    let mut j = 0
+    while j < 2 {
+        let mut grid: [[i64]] = []
+        grid = push(grid, outer)
+        grid = push(grid, [9])
+        j = j + 1
+    }
+    let mut o2 = outer
+    o2 = push(o2, 3)
+    println("s=" + s + " nested=" + to_string(len(o2)) + " outer=" + to_string(len(outer)))
+}

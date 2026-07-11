@@ -2673,6 +2673,16 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let map_op = lower_expr_to_operand(ctx, object);
                             let key_op = lower_expr_to_operand(ctx, index);
                             let val_op = lower_expr_to_operand(ctx, value);
+                            // The container now holds a second reference to a
+                            // container VALUE (the runtime stores the raw
+                            // pointer; it cannot retain because only the
+                            // compiler knows whether the slot is a scalar or a
+                            // pointer). Without a retain, `let v = f(); m[k] = v`
+                            // dangles when v's local drops — the map read
+                            // returned recycled buffers. Keys are already safe
+                            // (insert_str deep-copies the key).
+                            let val_ty = infer_expr_type(ctx, value);
+                            let val_retain = retain_for_ty(&val_ty);
                             if matches!(obj_ty, MirType::Map { .. }) {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
@@ -2685,9 +2695,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     dest: temp,
                                     value: RValue::Call {
                                         func: insert_fn.to_string(),
-                                        args: vec![map_op, key_op, val_op],
+                                        args: vec![map_op, key_op, val_op.clone()],
                                     },
                                 });
+                                if let (Some(rf), Operand::Local(_)) = (val_retain, &val_op) {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rf.to_string(),
+                                            args: vec![val_op],
+                                        },
+                                    });
+                                }
                             } else {
                                 // Array index assignment.
                                 let temp = ctx.alloc_temp(MirType::I64);
@@ -2695,9 +2715,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     dest: temp,
                                     value: RValue::Call {
                                         func: "kryos_array_set".to_string(),
-                                        args: vec![map_op, key_op, val_op],
+                                        args: vec![map_op, key_op, val_op.clone()],
                                     },
                                 });
+                                if let (Some(rf), Operand::Local(_)) = (val_retain, &val_op) {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rf.to_string(),
+                                            args: vec![val_op],
+                                        },
+                                    });
+                                }
                             }
                         } else if let ast::Expr::Deref { inner, .. } = target {
                             // Deref assignment: *ptr = value → store through pointer.
@@ -5323,6 +5353,30 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 .find(|l| l.id == *local_id)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
+            // A container element pushed into an array is SHARED, not moved:
+            // the language allows reading the source after the push (the
+            // checker does not flag it), and the Cranelift backend's array
+            // Drop releases elements. Under the old consume model the
+            // element was never retained, so `push(a, s)` inside a loop (or
+            // any read of `s` after the owning array dropped) was a
+            // use-after-free on the JIT — and a divergence, because the LLVM
+            // backend's Drop does not release elements. Retain restores the
+            // balance: JIT array-drop releases what push retained; on AOT
+            // the array's reference leaks (memory-safe, consistent with the
+            // documented leak-on-copy model).
+            if push_like {
+                if let Some(rf) = retain_for_ty(&local_ty) {
+                    let sink = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: sink,
+                        value: RValue::Call {
+                            func: rf.to_string(),
+                            args: vec![Operand::Local(*local_id)],
+                        },
+                    });
+                    continue;
+                }
+            }
             let is_copy = is_copy_type(ctx, &local_ty);
             let consume = if push_like {
                 // Consume heap-owning args (non-copy) AND @copy structs.
