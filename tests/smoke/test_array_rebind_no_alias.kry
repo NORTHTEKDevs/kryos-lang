@@ -1,0 +1,20 @@
+// expect-stdout: e2=1 empty=0
+// expect-stdout: copy=4 src=3
+// expect-stdout: w2=3 words=2
+// Regression (value-semantics #40, array case): `let mut b = a` on an array
+// must be an INDEPENDENT copy -- an in-place push/index-set on b must not
+// alias a. Verified identical on JIT and AOT with no double-free.
+fn main() {
+    let empty: [i64] = []
+    let mut e2 = empty
+    e2 = push(e2, 99)
+    println("e2=" + to_string(len(e2)) + " empty=" + to_string(len(empty)))
+    let src = [10, 20, 30]
+    let mut copy = src
+    copy = push(copy, 40)
+    println("copy=" + to_string(len(copy)) + " src=" + to_string(len(src)))
+    let words = ["a", "b"]
+    let mut w2 = words
+    w2 = push(w2, "c")
+    println("w2=" + to_string(len(w2)) + " words=" + to_string(len(words)))
+}

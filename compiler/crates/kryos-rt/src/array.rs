@@ -318,6 +318,46 @@ pub unsafe extern "C" fn kryos_array_clone(arr: *const KryosArray) -> *mut Kryos
     result
 }
 
+/// Independent DUPLICATE of an array for value-semantic `let mut b = a`
+/// bindings: a fresh header + fresh data buffer (so an in-place `push` on
+/// `b` never grows `a`'s buffer), with element OWNERSHIP made correct per
+/// `elem_kind`:
+///   0 = scalar (i64/f64/bool): slots copied, no element ownership.
+///   1 = refcounted container (Str/Array/Map): all three headers carry
+///       `ref_count` at offset 24, so bump each non-null element's count
+///       once -- both `a` and `b` then release it exactly once at their
+///       own scope ends (balanced, no double-free, no leak).
+///   2 = arc-boxed (struct/enum element): defensive arc retain per element.
+/// Fixes the aliasing where `let mut b = a; b = push(b, x)` left `a`
+/// mutated (differential-fuzz / value-semantics #40, the array case).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_dup(arr: *const KryosArray, elem_kind: i64) -> *mut KryosArray {
+    let result = kryos_array_clone(arr);
+    if result.is_null() || elem_kind == 0 {
+        return result;
+    }
+    let len = (*result).len;
+    let data = (*result).data;
+    if len <= 0 || data.is_null() {
+        return result;
+    }
+    for i in 0..len as usize {
+        let slot = data.add(i * ELEM_SIZE) as *const i64;
+        let elem = *slot;
+        if elem == 0 {
+            continue;
+        }
+        if elem_kind == 1 {
+            // ref_count lives at byte offset 24 in String/Array/Map headers.
+            let rc = (elem as *mut u8).add(24) as *mut i64;
+            *rc += 1;
+        } else if elem_kind == 2 {
+            crate::arc::kryos_arc_retain(elem as *mut u8);
+        }
+    }
+    result
+}
+
 /// Clone a KryosArray AND deep-clone each element by applying
 /// `elem_clone_fn` to it. Used by `@copy` struct field semantics for
 /// Array<Str> / Array<@copy-Struct> to avoid the double-free that arises

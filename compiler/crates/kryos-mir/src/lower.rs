@@ -1588,6 +1588,16 @@ pub fn flush_drop_tags() {
 /// so without this the receiving slot's later release/drop frees the
 /// CALLER's value (shape-4 of the bootstrap heap-corruption class). The
 /// retain gives the new owner its own reference; null passes through.
+/// Element-ownership kind for `kryos_array_dup` (see the runtime doc):
+/// 0 = scalar, 1 = refcounted container (Str/Array/Map), 2 = arc box.
+fn array_elem_dup_kind(elem: &MirType) -> i64 {
+    match elem {
+        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+        MirType::Struct(_) | MirType::Enum(_) | MirType::Shared(_) => 2,
+        _ => 0,
+    }
+}
+
 fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
     match ty {
         MirType::Str => Some("kryos_string_retain_opt"),
@@ -2331,6 +2341,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // values (structs/enums), keep the move: mark src consumed so
                 // its scope-end drop is skipped (no double-free).
                 let mut retain_shared_container = false;
+                // A MUTABLE binding of an ARRAY var must be an INDEPENDENT copy
+                // (not a share): otherwise an in-place `push`/index-set on the
+                // new binding aliases the source (value-semantics #40). Emitted
+                // as kryos_array_dup below. Immutable array bindings, and str
+                // bindings (strings are immutable-by-reassignment) keep the
+                // cheap share-retain.
+                let mut dup_array_kind: Option<i64> = None;
                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                     let src_ty = ctx
                         .locals
@@ -2339,7 +2356,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
                     if !is_copy_type(ctx, &src_ty) {
-                        if retain_for_ty(&src_ty).is_some() {
+                        if *mutable {
+                            if let MirType::Array(elem, _) = &src_ty {
+                                dup_array_kind = Some(array_elem_dup_kind(elem));
+                            }
+                        }
+                        if dup_array_kind.is_some() {
+                            // handled below (independent dup)
+                        } else if retain_for_ty(&src_ty).is_some() {
                             retain_shared_container = true;
                         } else {
                             ctx.dropped_locals.insert(src.0);
@@ -2376,7 +2400,28 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 if let Some(src) = param_src {
                     emit_param_source_retain(ctx, local, src);
                 }
-                if retain_shared_container {
+                if let Some(kind) = dup_array_kind {
+                    // local currently shares the source array; replace it with
+                    // an independent duplicate so mutations do not alias.
+                    let dup_ty = holder_ty_for_retain
+                        .clone()
+                        .unwrap_or(MirType::Array(Box::new(MirType::I64), None));
+                    let dup_tmp = ctx.alloc_temp(dup_ty);
+                    ctx.emit(Instruction::Assign {
+                        dest: dup_tmp,
+                        value: RValue::Call {
+                            func: "kryos_array_dup".to_string(),
+                            args: vec![
+                                Operand::Local(local),
+                                Operand::Constant(Constant::Int(kind)),
+                            ],
+                        },
+                    });
+                    ctx.emit(Instruction::Assign {
+                        dest: local,
+                        value: RValue::Use(Operand::Local(dup_tmp)),
+                    });
+                } else if retain_shared_container {
                     if let Some(ref ty) = holder_ty_for_retain {
                         if let Some(rf) = retain_for_ty(ty) {
                             let sink = ctx.alloc_temp(MirType::I64);

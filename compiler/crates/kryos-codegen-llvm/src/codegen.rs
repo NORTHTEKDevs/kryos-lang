@@ -1081,6 +1081,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
         self.emit_line("declare i64 @kryos_diag_site(i64)");
         self.emit_line("declare i64 @kryos_array_retain_opt(ptr)");
+        self.emit_line("declare ptr @kryos_array_dup(ptr, i64)");
         self.emit_line("declare i64 @kryos_map_retain_opt(i64)");
         self.emit_line("declare i64 @kryos_map_retain(i64)");
         self.emit_line("declare i64 @kryos_async_current_task()");
@@ -9390,6 +9391,7 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         "kryos_map_get_str" => Some(vec!["i64".into(), "i64".into()]),
         // Borrow-to-own retains for container reads (double-free fix).
         "kryos_string_retain_opt" | "kryos_array_retain_opt" => Some(vec!["ptr".into()]),
+        "kryos_array_dup" => Some(vec!["ptr".into(), "i64".into()]),
         "kryos_map_retain_opt" => Some(vec!["i64".into()]),
         "kryos_map_delete_str" | "kryos_map_has_str" => {
             Some(vec!["i64".into(), "i64".into()])
