@@ -1,0 +1,85 @@
+// Ownership matrix A: container values crossing into AGGREGATES.
+// Every case: build a local string, store it into an aggregate, keep using
+// BOTH the source and the aggregate after intervening allocations. A miss
+// in the retain/consume balance shows up as recycled-buffer garbage.
+// expect-stdout: A1 name=kryos-lang src=kryos-lang
+// expect-stdout: A2 some=payload! src2=payload!
+// expect-stdout: A3 arr0=elem0 arr1=elem1 src3=elem0
+// expect-stdout: A4 tup=tupval src4=tupval
+// expect-stdout: A5 ok=okval err=errval
+// expect-stdout: A6 field-after-mut=changed src6=orig6
+
+struct Named { name: str, id: i64 }
+
+fn churn() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 8 {
+        junk = junk + "recycle-bait-" + to_string(i)
+        i = i + 1
+    }
+    println_len(junk)
+}
+
+fn println_len(s: str) {
+    if len(s) > 9999 {
+        println(s)
+    }
+}
+
+fn main() {
+    // A1: struct literal field from a local
+    let src = "kryos" + "-lang"
+    let n = Named { name: src, id: 1 }
+    churn()
+    println("A1 name=" + n.name + " src=" + src)
+
+    // A2: Option payload from a local
+    let src2 = "payload" + "!"
+    let o = Some(src2)
+    churn()
+    match o {
+        Some(v) => println("A2 some=" + v + " src2=" + src2),
+        None() => println("A2 none"),
+    }
+
+    // A3: array literal elements from locals
+    let src3 = "elem" + "0"
+    let e1 = "elem" + "1"
+    let arr = [src3, e1]
+    churn()
+    println("A3 arr0=" + arr[0] + " arr1=" + arr[1] + " src3=" + src3)
+
+    // A4: tuple element from a local
+    let src4 = "tup" + "val"
+    let t = (src4, 42)
+    churn()
+    println("A4 tup=" + t.0 + " src4=" + src4)
+
+    // A5: Result payloads from locals
+    let okv = "ok" + "val"
+    let errv = "err" + "val"
+    let r1: Result<str, str> = Ok(okv)
+    let r2: Result<str, str> = Err(errv)
+    churn()
+    let p1 = match r1 {
+        Ok(v) => " ok=" + v,
+        Err(e) => " badok=" + e,
+    }
+    let p2 = match r2 {
+        Ok(v) => " badbad=" + v,
+        Err(e) => " err=" + e,
+    }
+    println("A5" + p1 + p2)
+
+    // A6: struct field REASSIGNED from a local; both live after churn
+    let src6 = "orig" + "6"
+    let mut m = Named { name: src6, id: 2 }
+    let replacement = "chang" + "ed"
+    m.name = replacement
+    churn()
+    println("A6 field-after-mut=" + m.name + " src6=" + src6)
+}
+
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}

@@ -1,0 +1,65 @@
+// Ownership matrix D: container payloads through THROW/CATCH and NESTED
+// container values (map values that are arrays, arrays of maps). The
+// last unprobed boundary-crossing constructs. (Channels are i64-shaped
+// by design -- send(ch, "str") is a compile error, a safe boundary;
+// string payloads through ACTOR mailboxes are covered by
+// test_gauntlet_text_actor.)
+// expect-stdout: D1 recv=42 src=chan-payload
+// expect-stdout: D2 caught=thrown-msg after=still-here
+// expect-stdout: D3 mv0=n0 mv1=n1 srcarr=2
+// expect-stdout: D4 am.k=deep len=1
+
+fn churn() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 8 {
+        junk = junk + "recycle-bait-" + to_string(i)
+        i = i + 1
+    }
+    if len(junk) > 9999 {
+        println(junk)
+    }
+}
+
+fn main() {
+    // D1: channel round-trip while a built string stays live across it
+    let src = "chan-" + "payload"
+    let ch = chan()
+    send(ch, 42)
+    let got = recv(ch)
+    churn()
+    println("D1 recv=" + to_string(got) + " src=" + src)
+
+    // D2: throw a built string, catch it, keep using another local built
+    // before the throw
+    let keep = "still-" + "here"
+    let mut caught = ""
+    try {
+        let msg = "thrown-" + "msg"
+        throw msg
+    } catch e {
+        caught = e
+    }
+    churn()
+    println("D2 caught=" + caught + " after=" + keep)
+
+    // D3: map value that is an ARRAY of strings; source array used after
+    let srcarr = ["n" + "0", "n" + "1"]
+    let mut m: map<str, [str]> = {}
+    m["k"] = srcarr
+    churn()
+    let got3 = m["k"]
+    println("D3 mv0=" + got3[0] + " mv1=" + got3[1] + " srcarr=" + to_string(len(srcarr)))
+
+    // D4: array of maps. Pushing a map MOVES it (the checker rejects any
+    // later use of `inner` with E0300 -- stricter than the str/array
+    // share, and safe). Read only through the array afterwards.
+    let mut inner: map<str, str> = {}
+    let deep = "de" + "ep"
+    inner["k"] = deep
+    let mut am: [map<str, str>] = []
+    am = push(am, inner)
+    churn()
+    let m0 = am[0]
+    println("D4 am.k=" + m0["k"] + " len=" + to_string(len(am)))
+}

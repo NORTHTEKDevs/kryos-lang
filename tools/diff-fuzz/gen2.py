@@ -185,12 +185,45 @@ class Gen:
             self.indent -= 1
             self.w("}")
             self.iv, self.sv, self.av, self.bv, self.mv, self.sav = snap
-        elif k < 0.90 and self.have_enum:
+        elif k < 0.885 and self.have_enum:
             # enum match producing an int
             n = self.ie()
             v = self.nm("m")
             self.w(f"let {v} = classify({n})")
             self.w(f'println("cls=" + {v})')
+        elif k < 0.905:
+            # ownership-matrix classes the corpus was blind to:
+            sub = r.random()
+            if sub < 0.3 and len(self.sv) >= 2:
+                # string reassignment from another string var
+                a, b = r.sample(self.sv, 2)
+                self.w(f"{a} = {b}")
+            elif sub < 0.55:
+                # throw/catch of a built string (exception-slot ownership)
+                c = self.nm("c")
+                self.w(f'let mut {c} = "pre"')
+                self.w("try {")
+                self.w(f"    throw {self.se()}")
+                self.w("} catch e {")
+                self.w(f"    {c} = e")
+                self.w("}")
+                self.w(f'println("caught=" + {c})')
+                self.sv.append(c)
+            elif sub < 0.8 and self.sav:
+                # for-in over [str]: per-iteration element binding
+                a = r.choice(self.sav)
+                acc = self.nm("j")
+                self.w(f'let mut {acc} = ""')
+                self.w(f"for el in {a} {{")
+                self.w(f'    {acc} = {acc} + "[" + el + "]"')
+                self.w("}")
+                self.w(f'println("iter=" + {acc})')
+            else:
+                # struct literal holding a built string; field read later
+                if self.have_struct:
+                    p = self.nm("p")
+                    self.w(f"let {p} = Pair {{ a: {self.ie()}, b: {self.ie()} }}")
+                    self.w(f'println("pair=" + to_string({p}.a + {p}.b))')
         elif k < 0.95:
             self.w(f'println("v=" + to_string({self.ie()}))')
         else:

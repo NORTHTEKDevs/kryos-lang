@@ -38,6 +38,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build server) could read each other's half-written IR and fail with a
   cryptic clang error. Temp files are now unique per process + build.
 
+### Fixed — value semantics (ownership-matrix sweep)
+- **Reassignment from a container local shares (retains), mirroring the
+  let-binding rule.** The old model silently consumed the source, so an
+  inner-scope destination (`{ let mut t = ...; t = outer }`) freed the
+  outer variable's buffer at scope end while `outer` was still read —
+  recycled-buffer garbage on the JIT, and a backend divergence. Found by
+  the fuzzer within 800 programs of gaining throw/reassign coverage.
+  Structs and enums keep their move semantics.
+- **Thrown strings are retained at the throw site.** `throw msg` stored the
+  string into the exception slot / `Err` aggregate without a retain, so the
+  throwing scope's unwind drop freed the buffer the catch binding still
+  pointed at (a double-free under `KRYOS_FREE_DIAG`; output looked right
+  only because header recycling absorbed it). The retain executes only on
+  the throwing path.
+
+### Added — ownership-matrix battery
+- `tests/smoke/test_ownership_matrix_{a,b,c,d,e}.kry`: a systematic
+  enumeration of every construct where a container value crosses an
+  ownership boundary — struct-literal fields, Option/Result payloads,
+  array/tuple literals, field reassignment, call/return crossings, field
+  and map read-outs, pop, closure captures, loop-local shares, loop-built
+  fills, scope-crossing stores, nested container values, throw/catch,
+  for-in element bindings, if-let/while-let payloads. Each case re-reads
+  both the source and the destination after allocation churn, on both
+  backends, with free-diagnostics required clean.
+
 ### Added — verification infrastructure
 - **Differential fuzzing** (`tools/diff-fuzz/`): generates random
   type-correct programs (structs, enums + match, closures, helper fns,

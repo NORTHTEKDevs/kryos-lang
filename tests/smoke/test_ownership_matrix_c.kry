@@ -1,0 +1,105 @@
+// Ownership matrix C: loops, scopes, and repeated crossings — the shapes
+// that killed us before, generalized. Every stored value re-read AFTER
+// the storing scope ended and allocations churned.
+// expect-stdout: C1 sum=6 outer=shared-str
+// expect-stdout: C2 m.a=val-a m.b=val-b m.c=val-c
+// expect-stdout: C3 total=3 outer=pushed-each-iter
+// expect-stdout: C4 grid=2x2 first=nested outer=nested
+// expect-stdout: C5 kept=survives-scope
+// expect-stdout: C6 s0=w0 s1=w1 s2=w2 src=w1
+
+fn churn() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 8 {
+        junk = junk + "recycle-bait-" + to_string(i)
+        i = i + 1
+    }
+    if len(junk) > 9999 {
+        println(junk)
+    }
+}
+
+fn main() {
+    // C1: outer string shared into a loop-local binding each iteration
+    let outer = "shared" + "-str"
+    let mut sum = 0
+    let mut i = 0
+    while i < 3 {
+        let alias = outer
+        sum = sum + 2
+        if len(alias) == 0 {
+            println("never")
+        }
+        i = i + 1
+    }
+    churn()
+    println("C1 sum=" + to_string(sum) + " outer=" + outer)
+
+    // C2: map filled inside a loop from loop-built keys AND values,
+    // read back after the loop
+    let mut m: map<str, str> = {}
+    let names = ["a", "b", "c"]
+    let mut j = 0
+    while j < 3 {
+        let key = names[j]
+        let val = "val-" + names[j]
+        m[key] = val
+        j = j + 1
+    }
+    churn()
+    println("C2 m.a=" + m["a"] + " m.b=" + m["b"] + " m.c=" + m["c"])
+
+    // C3: outer string pushed into a fresh loop-local [str] each iteration
+    let outer3 = "pushed-each" + "-iter"
+    let mut total = 0
+    let mut k = 0
+    while k < 3 {
+        let mut bucket: [str] = []
+        bucket = push(bucket, outer3)
+        total = total + len(bucket)
+        k = k + 1
+    }
+    churn()
+    println("C3 total=" + to_string(total) + " outer=" + outer3)
+
+    // C4: outer [str] pushed into a nested [[str]] built in a scope
+    let outer4 = ["nes" + "ted", "x"]
+    let mut rows = 0
+    let mut cols = 0
+    if true {
+        let mut grid: [[str]] = []
+        grid = push(grid, outer4)
+        grid = push(grid, ["y", "z"])
+        rows = len(grid)
+        cols = len(grid[0])
+    }
+    churn()
+    println("C4 grid=" + to_string(rows) + "x" + to_string(cols) + " first=" + outer4[0] + " outer=" + outer4[0])
+
+    // C5: string created in an inner scope, stored into an outer map,
+    // scope ends, map read after churn
+    let mut keeper: map<str, str> = {}
+    if true {
+        let temp = "survives" + "-scope"
+        keeper["k"] = temp
+    }
+    churn()
+    println("C5 kept=" + keeper["k"])
+
+    // C6: [str] built in a loop from loop-locals, elements + one source
+    // alias read after
+    let mut words: [str] = []
+    let mut src = ""
+    let mut w = 0
+    while w < 3 {
+        let piece = "w" + to_string(w)
+        words = push(words, piece)
+        if w == 1 {
+            src = piece
+        }
+        w = w + 1
+    }
+    churn()
+    println("C6 s0=" + words[0] + " s1=" + words[1] + " s2=" + words[2] + " src=" + src)
+}

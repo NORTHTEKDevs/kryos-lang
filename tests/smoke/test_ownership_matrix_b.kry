@@ -1,0 +1,74 @@
+// Ownership matrix B: container values crossing CALL boundaries and
+// coming back OUT of aggregates.
+// expect-stdout: B1 ret=made-inside
+// expect-stdout: B2 passed=through src=through
+// expect-stdout: B3 field-out=inner src=inner
+// expect-stdout: B4 popped=last kept=first arr.len=1
+// expect-stdout: B5 got=mapval src=mapval
+// expect-stdout: B6 closure-cap=captured src=captured
+
+use std::option::{Option, Some, None}
+
+struct Holder { inner: str }
+
+fn make() -> str {
+    let local = "made" + "-inside"
+    return local
+}
+
+fn pass_through(s: str) -> str {
+    return s
+}
+
+fn churn() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 8 {
+        junk = junk + "recycle-bait-" + to_string(i)
+        i = i + 1
+    }
+    if len(junk) > 9999 {
+        println(junk)
+    }
+}
+
+fn main() {
+    // B1: string created in callee, returned out; callee scope drops
+    let r = make()
+    churn()
+    println("B1 ret=" + r)
+
+    // B2: local passed INTO a fn and returned back; source still used
+    let src = "thro" + "ugh"
+    let back = pass_through(src)
+    churn()
+    println("B2 passed=" + back + " src=" + src)
+
+    // B3: container read OUT of a struct field into a new binding;
+    // both the binding and the struct live across churn
+    let inner = "inn" + "er"
+    let h = Holder { inner: inner }
+    let out = h.inner
+    churn()
+    println("B3 field-out=" + out + " src=" + out)
+
+    // B4: pop transfers element ownership out of the array
+    let mut arr = ["fi" + "rst", "la" + "st"]
+    let popped = pop(arr)
+    churn()
+    println("B4 popped=" + popped + " kept=" + arr[0] + " arr.len=" + to_string(len(arr)))
+
+    // B5: value read out of a map into a binding; map + binding + source live
+    let src5 = "map" + "val"
+    let mut m: map<str, str> = {}
+    m["k"] = src5
+    let got = m["k"]
+    churn()
+    println("B5 got=" + got + " src=" + src5)
+
+    // B6: closure captures a local string; called after churn; source lives
+    let src6 = "capt" + "ured"
+    let f = || "closure-cap=" + src6
+    churn()
+    println("B6 " + f() + " src=" + src6)
+}

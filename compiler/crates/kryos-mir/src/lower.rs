@@ -2615,6 +2615,16 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 _ => None,
                             };
                             let rvalue = lower_expr_to_rvalue(ctx, value);
+                            // Reassign from a bare local: containers SHARE
+                            // (retain), mirroring the Let-binding rule. The
+                            // old consume-the-source model broke when the
+                            // dest lived in an INNER scope: `{ s17 = c15 }`
+                            // freed c15's buffer at s17's scope end while
+                            // c15 was still read outside (JIT recycled-buffer
+                            // garbage; found by the throw/reassign fuzz
+                            // class). Non-container non-copy values (structs,
+                            // enums) keep the move.
+                            let mut retain_container_src: Option<&'static str> = None;
                             if let RValue::Use(Operand::Local(src)) = &rvalue {
                                 let src_ty = ctx
                                     .locals
@@ -2622,7 +2632,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     .find(|l| l.id == *src)
                                     .map(|l| l.ty.clone())
                                     .unwrap_or(MirType::I64);
-                                if !is_copy_type(ctx, &src_ty) {
+                                if let Some(rf) = retain_for_ty(&src_ty) {
+                                    retain_container_src = Some(rf);
+                                } else if !is_copy_type(ctx, &src_ty) {
                                     ctx.dropped_locals.insert(src.0);
                                 }
                             }
@@ -2645,7 +2657,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 dest,
                                 value: rvalue,
                             });
-                            if let Some(src) = param_src {
+                            if let Some(rf) = retain_container_src {
+                                // Container share: one retain covers every
+                                // source (param or plain local) — skip the
+                                // param-only retain below to avoid doubling.
+                                let sink = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: sink,
+                                    value: RValue::Call {
+                                        func: rf.to_string(),
+                                        args: vec![Operand::Local(dest)],
+                                    },
+                                });
+                            } else if let Some(src) = param_src {
                                 emit_param_source_retain(ctx, dest, src);
                             }
                             // Emit the guarded release AFTER the store: the RHS
@@ -2957,6 +2981,22 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 });
                 Operand::Local(s)
             };
+            // The thrown string enters the exception slot / Err aggregate as
+            // a second reference: retain it, or the throwing scope's unwind
+            // drop frees the buffer the catch binding still points at
+            // (double-free of "thrown-msg" under KRYOS_FREE_DIAG). The
+            // retain only executes when the throw executes, so the
+            // non-throwing path's refcounts are untouched.
+            if let Operand::Local(_) = &val {
+                let sink = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: sink,
+                    value: RValue::Call {
+                        func: "kryos_string_retain_opt".to_string(),
+                        args: vec![val.clone()],
+                    },
+                });
+            }
             if let Some(ref target) = ctx.try_catch_target {
                 // Inside a try block: store Result::Err into the try/catch
                 // result local and jump to the tag-check block.

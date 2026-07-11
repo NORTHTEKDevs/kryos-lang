@@ -1,0 +1,81 @@
+// Ownership matrix E: ITERATION bindings of container elements, and
+// if-let / while-let payload bindings. The loop variable binds each
+// element per iteration; its per-iteration cleanup must not free
+// buffers the array still owns.
+// expect-stdout: E1 joined=[w0][w1][w2] again=[w0][w1][w2]
+// expect-stdout: E2 iflet=payload src=payload
+// expect-stdout: E3 drained=3 items=v0,v1,v2
+// expect-stdout: E4 nested=ab arr0=a arr1=b
+
+use std::option::{Option, Some, None}
+
+fn churn() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 8 {
+        junk = junk + "recycle-bait-" + to_string(i)
+        i = i + 1
+    }
+    if len(junk) > 9999 {
+        println(junk)
+    }
+}
+
+fn next_item(n: i64) -> Option<str> {
+    if n < 3 {
+        return Some("v" + to_string(n))
+    }
+    return None()
+}
+
+fn main() {
+    // E1: for-in over [str] TWICE -- if the loop binding's per-iteration
+    // drop freed elements, the second pass reads recycled buffers
+    let words = ["w" + "0", "w" + "1", "w" + "2"]
+    let mut joined = ""
+    for w in words {
+        joined = joined + "[" + w + "]"
+    }
+    churn()
+    let mut again = ""
+    for w in words {
+        again = again + "[" + w + "]"
+    }
+    println("E1 joined=" + joined + " again=" + again)
+
+    // E2: if-let binds a container payload; source enum + binding both live
+    let src = "pay" + "load"
+    let o = Some(src)
+    if let Some(v) = o {
+        churn()
+        println("E2 iflet=" + v + " src=" + v)
+    } else {
+        println("E2 none")
+    }
+
+    // E3: while-let drains Options carrying built strings
+    let mut n = 0
+    let mut items = ""
+    let mut count = 0
+    while let Some(v) = next_item(n) {
+        if count > 0 {
+            items = items + ","
+        }
+        items = items + v
+        count = count + 1
+        n = n + 1
+    }
+    churn()
+    println("E3 drained=" + to_string(count) + " items=" + items)
+
+    // E4: for-in over a NESTED array's inner elements
+    let grid = [["a", "b"]]
+    let mut nested = ""
+    for row in grid {
+        for cell in row {
+            nested = nested + cell
+        }
+    }
+    churn()
+    println("E4 nested=" + nested + " arr0=" + grid[0][0] + " arr1=" + grid[0][1])
+}

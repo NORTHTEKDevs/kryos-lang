@@ -1,0 +1,55 @@
+// Regression: reassigning a container from a bare local SHARES (retains),
+// mirroring the let-binding rule. Under the old consume model, an
+// inner-scope dest freed the outer source's buffer at scope end:
+//   { let mut inner = ...; inner = outer }  println(outer)  // recycled junk
+// Also covers the catch-variable flavor (caught = e, then shared onward).
+// expect-stdout: inner=keep-me
+// expect-stdout: outer=keep-me
+// expect-stdout: caught=boom copied=boom
+// expect-stdout: cross=swap-b b=swap-b
+
+fn main() {
+    let outer = "keep" + "-me"
+    if len(outer) > 0 {
+        let mut inner = "tmp" + "0"
+        inner = outer
+        println("inner=" + inner)
+    }
+    println_filler()
+    println("outer=" + outer)
+
+    // catch variable shared into an inner scope
+    let mut caught = ""
+    try {
+        throw "bo" + "om"
+    } catch e {
+        caught = e
+    }
+    let mut copied = ""
+    if len(caught) > 0 {
+        let mut tmp = "x" + "y"
+        tmp = caught
+        copied = tmp
+    }
+    println_filler()
+    println("caught=" + caught + " copied=" + copied)
+
+    // plain same-scope cross-assign still fine
+    let mut a = "swap" + "-a"
+    let b = "swap" + "-b"
+    a = b
+    println_filler()
+    println("cross=" + a + " b=" + b)
+}
+
+fn println_filler() {
+    let mut junk = ""
+    let mut i = 0
+    while i < 6 {
+        junk = junk + "filler-" + to_string(i)
+        i = i + 1
+    }
+    if len(junk) > 9999 {
+        println(junk)
+    }
+}
