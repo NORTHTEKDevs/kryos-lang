@@ -128,7 +128,7 @@ class Gen:
             v = self.name("l")
             n = r.randint(2, 6)
             self.w(f"let mut {v} = 0")
-            self.int_vars.append(v)
+            # counter NOT exposed to body (would break loop termination)
             snap = (list(self.int_vars), list(self.str_vars), list(self.arr_vars))
             self.w(f"while {v} < {n} {{")
             self.indent += 1
