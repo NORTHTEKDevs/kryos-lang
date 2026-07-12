@@ -1,0 +1,35 @@
+// parse_int / parse_float defined-path edges. Both backends must agree
+// byte-for-byte.
+//
+// Out-of-range / garbage input to parse_int is a DEFINED runtime panic
+// ("kryos panic: parse_int: invalid numeric input: '...'"), identical on
+// both backends (verified manually; a panicking case can't live in an
+// expect-stdout smoke test). parse_float accepts "inf" and clamps
+// overflowing literals to inf per IEEE 754.
+// expect-stdout: ok=42 neg=-17 zero=0 plus=7
+// expect-stdout: f-ok=3.14 f-neg=-0.5 f-exp=250
+// expect-stdout: f-inf=inf f-huge=inf
+// expect-stdout: max=9223372036854775807 min=-9223372036854775808
+// expect-stdout: conv=42 2.5 42 7
+
+fn main() {
+    println("ok=" + to_string(parse_int("42")) + " neg=" + to_string(parse_int("-17"))
+        + " zero=" + to_string(parse_int("0")) + " plus=" + to_string(parse_int("+7")))
+
+    println("f-ok=" + to_string(parse_float("3.14")) + " f-neg=" + to_string(parse_float("-0.5"))
+        + " f-exp=" + to_string(parse_float("2.5e2")))
+
+    println("f-inf=" + to_string(parse_float("inf")) + " f-huge=" + to_string(parse_float("1e999")))
+
+    // exact i64 boundary values round-trip
+    println("max=" + to_string(parse_int("9223372036854775807"))
+        + " min=" + to_string(parse_int("-9223372036854775808")))
+
+    // float()/int() on STRING args must PARSE, not numerically convert:
+    // both backends previously converted the string's heap POINTER
+    // (json numbers parsed on AOT printed addresses like 2519549715200).
+    // Locals and literals dispatch differently -- cover both.
+    let s = "42"
+    println("conv=" + to_string(float(s)) + " " + to_string(float("2.5"))
+        + " " + to_string(int(s)) + " " + to_string(int("7")))
+}

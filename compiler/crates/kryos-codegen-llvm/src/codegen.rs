@@ -5224,12 +5224,30 @@ impl LlvmCodegen {
                                 "http2_request" => "kryos_http2_request_ks",
                                 "parse_int" => "kryos_builtin_parse_int",
                                 "parse_float" => "kryos_builtin_parse_float",
-                                // int() / float() coercion builtins. Cranelift
-                                // routes these to kryos_builtin_int / _float;
-                                // LLVM previously left them as bare @int /
-                                // @float, which clang rejected as undefined.
-                                "int" => "kryos_builtin_int",
-                                "float" => "kryos_builtin_float",
+                                // int() / float() coercion builtins, dispatched
+                                // on the ARGUMENT type (mirrors Cranelift's
+                                // float(str) special case): a str argument must
+                                // PARSE, not numerically convert -- routing a
+                                // string through kryos_builtin_float converted
+                                // its heap POINTER to f64 (json parse returned
+                                // addresses like 2519549715200 for `42` on AOT).
+                                "int" | "float" => {
+                                    let arg_is_str = args.first().is_some_and(|a| match a {
+                                        Operand::Local(id) => func
+                                            .locals
+                                            .iter()
+                                            .find(|l| l.id == *id)
+                                            .is_some_and(|l| matches!(l.ty, MirType::Str)),
+                                        Operand::Constant(Constant::Str(_)) => true,
+                                        _ => false,
+                                    });
+                                    match (fname.as_str(), arg_is_str) {
+                                        ("int", true) => "kryos_builtin_parse_int",
+                                        ("int", false) => "kryos_builtin_int",
+                                        ("float", true) => "kryos_builtin_parse_float",
+                                        _ => "kryos_builtin_float",
+                                    }
+                                }
                                 "type_of" => "kryos_builtin_type_of",
                                 "char_code" => "kryos_builtin_char_code",
                                 "char_from" => "kryos_builtin_char_from",
@@ -5603,7 +5621,7 @@ impl LlvmCodegen {
                         ));
                     } else if dest_ty == "double" || dest_ty == "float" {
                         self.emit_line(&format!(
-                            "  %_{} = fadd {dest_ty} {coerced}, 0.0",
+                            "  %_{} = fadd {dest_ty} {coerced}, -0.0",
                             dest.0
                         ));
                     } else {
@@ -5636,10 +5654,10 @@ impl LlvmCodegen {
                 let hex = float_to_llvm_hex(*v);
                 if is_mutable {
                     let tmp = self.next_temp();
-                    self.emit_line(&format!("  {tmp} = fadd {dest_ty} {hex}, 0.0"));
+                    self.emit_line(&format!("  {tmp} = fadd {dest_ty} {hex}, -0.0"));
                     self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
                 } else {
-                    self.emit_line(&format!("  %_{} = fadd {dest_ty} {hex}, 0.0", dest.0));
+                    self.emit_line(&format!("  %_{} = fadd {dest_ty} {hex}, -0.0", dest.0));
                 }
             }
             RValue::ConstBool(b) => {
@@ -6809,7 +6827,7 @@ impl LlvmCodegen {
                         ));
                     } else if dest_ty == "double" || dest_ty == "float" {
                         self.emit_line(&format!(
-                            "  %_{} = fadd {dest_ty} {coerced}, 0.0",
+                            "  %_{} = fadd {dest_ty} {coerced}, -0.0",
                             dest.0
                         ));
                     } else if dest_ty == "void" {

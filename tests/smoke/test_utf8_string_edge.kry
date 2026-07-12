@@ -1,0 +1,31 @@
+// UTF-8 / multibyte string handling: len is documented as BYTE count and
+// substr as byte-indexed -- these must be consistent, non-crashing, and
+// identical across backends for multibyte content (CJK, emoji, accents),
+// including interpolation and concat round-trips.
+// expect-stdout: ascii=5 cjk=12 emoji=4 mixed=10
+// expect-stdout: cjk-sub=好 emoji-whole=🚀
+// expect-stdout: interp=héllo wörld
+// expect-stdout: concat=日本語+deutsch
+// expect-stdout: contains-cjk=true contains-miss=false
+
+fn main() {
+    let ascii = "hello"
+    let cjk = "你好世界"
+    let emoji = "🚀"
+    let mixed = "aé日🚀"
+    println("ascii=" + to_string(len(ascii)) + " cjk=" + to_string(len(cjk))
+        + " emoji=" + to_string(len(emoji)) + " mixed=" + to_string(len(mixed)))
+
+    // byte-indexed substr on codepoint boundaries
+    let sub = substr(cjk, 3, 6)
+    println("cjk-sub=" + sub + " emoji-whole=" + substr(emoji, 0, 4))
+
+    let h = "héllo"
+    let w = "wörld"
+    println("interp={h} {w}")
+
+    println("concat=" + "日本語" + "+" + "deutsch")
+
+    println("contains-cjk=" + to_string(contains(cjk, "世"))
+        + " contains-miss=" + to_string(contains(cjk, "克")))
+}

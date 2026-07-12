@@ -38,6 +38,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build server) could read each other's half-written IR and fail with a
   cryptic clang error. Temp files are now unique per process + build.
 
+### Fixed — whole-language hole hunt (post-matrix sweep)
+- **`float(s)` / `int(s)` on STRING arguments parse instead of converting
+  the heap pointer.** The LLVM backend routed `float(str)` to the
+  int-to-float conversion, so every number parsed by `std::json` came back
+  as a heap address on release builds (`parse("42")` stringified to values
+  like `2519549715200`); `int(str)` leaked the pointer on BOTH backends.
+  Both now dispatch on the argument type (local or literal) to
+  `parse_int` / `parse_float`, mirroring the Cranelift `float(str)` case.
+- **Negative zero survives the LLVM backend.** Float constants were
+  materialized with `fadd x, 0.0`, which is not an identity for `-0.0`
+  (IEEE: `-0.0 + 0.0 = +0.0`) — `1.0 / -0.0` returned `+inf` on AOT,
+  `-inf` on JIT. The emitter now uses `fadd x, -0.0`, a true identity.
+- **`kryos fmt` no longer rewrites u64-range literals as `-1`.** The
+  formatter printed integer literals through i64, mangling
+  `18446744073709551615` and `0xFFFF...` into `-1` — which then failed to
+  compile (E0111). Negative stored values (only reachable via u64-range
+  literals) reprint through u64. Full-corpus sweep: 89 files, 0 broken,
+  0 non-idempotent.
+
+### Added — robustness + semantics batteries
+- **ICE hunt** (`tools/diff-fuzz/ice_hunt.py`): mutates valid corpus
+  programs (truncation, byte flips, bracket vandalism, junk splices) and
+  requires `kryos check` to answer with diagnostics — never a compiler
+  panic. 1,168 mutants across three corpora: zero ICEs, zero hangs.
+- New smoke batteries, byte-identical on both backends: float semantic
+  edges (NaN comparisons, infinities, negative zero, formatting, 2^53
+  casts), UTF-8 multibyte handling (CJK/emoji byte-indexed substr,
+  interpolation, contains), parse_int/parse_float defined-path edges
+  (panic behavior on invalid input is deterministic and identical, exit
+  code 98 on both backends), and a stdlib spot battery (sort edges, JSON
+  round-trip stability, regex, set dedup).
+
 ### Fixed — value semantics (ownership-matrix sweep)
 - **Reassignment from a container local shares (retains), mirroring the
   let-binding rule.** The old model silently consumed the source, so an

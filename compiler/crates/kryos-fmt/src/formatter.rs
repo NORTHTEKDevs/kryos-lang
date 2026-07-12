@@ -897,7 +897,19 @@ impl Formatter {
 
     fn fmt_expr_to_string(&self, expr: &Expr) -> String {
         match expr {
-            Expr::IntLiteral { value, .. } => value.to_string(),
+            // A NEGATIVE IntLiteral value can only come from a u64-range
+            // source literal (plain literals parse from unsigned digit text;
+            // `-x` is a unary-minus node). Printing it signed rewrote
+            // `18446744073709551615` / `0xFFFF...` as `-1` -- which no longer
+            // even compiles under E0111. Reinterpret as u64 to restore the
+            // original value (hex literals normalize to decimal, same value).
+            Expr::IntLiteral { value, .. } => {
+                if *value < 0 {
+                    (*value as u64).to_string()
+                } else {
+                    value.to_string()
+                }
+            }
             Expr::FloatLiteral { value, .. } => format_float(*value),
             Expr::StringLiteral { value, .. } => format!("\"{}\"", escape_string(value)),
             Expr::InterpolatedString { parts, .. } => {

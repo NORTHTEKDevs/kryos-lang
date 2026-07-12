@@ -1,0 +1,52 @@
+// Float semantic edges that classically diverge between backends:
+// NaN propagation + comparisons, infinities, negative zero, formatting
+// of exact/periodic/tiny/huge values, and int<->float casts at the edges.
+// Both backends must agree byte-for-byte.
+// expect-stdout: nan-eq=false nan-ne=true nan-lt=false nan-cmp-self=false
+// expect-stdout: inf=inf ninf=-inf inf-sum=NaN
+// expect-stdout: negzero-eq=true div-pos=inf div-neg=-inf
+// expect-stdout: f1=0.1 f2=0.2 f3=0.30000000000000004
+// expect-stdout: whole=3 half=2.5 tiny=0.001
+// expect-stdout: big=100000000000000000000 sci=1000000000000000000000
+// expect-stdout: i2f=9007199254740992 f2i=9007199254740992
+// expect-stdout: round-neg=-3 trunc-neg=-2
+//
+// div-neg is the regression line: the -0.0 literal was materialized on
+// AOT via `fadd x, 0.0`, which is NOT an identity for -0.0 (IEEE:
+// -0.0 + 0.0 = +0.0) -- 1.0/-0.0 printed +inf on AOT, -inf on JIT.
+// The emitter now uses `fadd x, -0.0` (a true identity for every x).
+
+fn main() {
+    let nan = 0.0 / 0.0
+    let one = 1.0
+    println("nan-eq=" + to_string(nan == nan) + " nan-ne=" + to_string(nan != nan)
+        + " nan-lt=" + to_string(nan < one) + " nan-cmp-self=" + to_string(nan > nan))
+
+    let inf = 1.0 / 0.0
+    let ninf = -1.0 / 0.0
+    println("inf=" + to_string(inf) + " ninf=" + to_string(ninf)
+        + " inf-sum=" + to_string(inf + ninf))
+
+    let nz = -0.0
+    let pz = 0.0
+    println("negzero-eq=" + to_string(nz == pz)
+        + " div-pos=" + to_string(1.0 / pz) + " div-neg=" + to_string(1.0 / nz))
+
+    println("f1=" + to_string(0.1) + " f2=" + to_string(0.2)
+        + " f3=" + to_string(0.1 + 0.2))
+
+    println("whole=" + to_string(3.0) + " half=" + to_string(2.5)
+        + " tiny=" + to_string(0.001))
+
+    println("big=" + to_string(1.0e20) + " sci=" + to_string(1.0e21))
+
+    // 2^53: the last exactly-representable integer boundary
+    let big_i = 9007199254740992
+    let as_f = big_i as f64
+    let back = as_f as i64
+    println("i2f=" + to_string(as_f) + " f2i=" + to_string(back))
+
+    // negative truncation vs rounding behavior must be consistent
+    let neg = -2.7
+    println("round-neg=" + to_string(round(neg)) + " trunc-neg=" + to_string(neg as i64))
+}

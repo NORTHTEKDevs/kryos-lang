@@ -3800,6 +3800,21 @@ fn translate_rvalue<M: Module>(
 
             // Handle int() and float() conversions using Cranelift native instructions.
             if func == "int" && args.len() == 1 {
+                if is_string_operand(&args[0], &translator.mir_func.locals) {
+                    // int(str) — PARSE, don't numerically convert: the
+                    // identity path below returned the string's heap
+                    // POINTER as the integer (mirrors float(str) below).
+                    let val = translate_operand(&args[0], builder, translator, module)?;
+                    let parse_int_ref = ensure_func_ref_with_args(
+                        "kryos_builtin_parse_int",
+                        builder,
+                        translator,
+                        module,
+                        1,
+                    )?;
+                    let call = builder.ins().call(parse_int_ref, &[val]);
+                    return Ok(Some(builder.inst_results(call)[0]));
+                }
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 if is_float_type(val_ty) {

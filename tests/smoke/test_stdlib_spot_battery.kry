@@ -1,0 +1,75 @@
+// Stdlib spot battery: sort edges, JSON round-trip fidelity, regex
+// basics, set dedup. Identical on both backends.
+// expect-stdout: sort-empty=0 sort-one=[7] sort-dup=1,1,2,3,3 sort-neg=-5,-1,0,2
+// expect-stdout: json-rt-stable=true
+// expect-stdout: json-name=Kryos rules
+// expect-stdout: re-match=true re-miss=false re-count=2 re-repl=k*_k*_
+// expect-stdout: set-len=3 set-has=true set-missing=false
+
+use std::iter::{sort}
+use std::json::{parse, stringify, json_object, json_string, json_number, json_bool, get, to_str}
+use std::re::{is_match, count, replace_all}
+// NOTE: std::set also exports `contains`, but importing it would collide
+// with the global builtin `contains` in the flat import namespace -- the
+// import-collision design working as documented. Membership is checked
+// manually below.
+use std::set::{insert}
+
+fn join_ints(xs: [i64]) -> str {
+    let mut out = ""
+    let mut i = 0
+    while i < len(xs) {
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + to_string(xs[i])
+        i = i + 1
+    }
+    return out
+}
+
+fn main() {
+    // sort: empty, single, duplicates, negatives
+    let empty: [i64] = []
+    let se = sort(empty)
+    let so = sort([7])
+    let sd = sort([3, 1, 2, 3, 1])
+    let sn = sort([0, -5, 2, -1])
+    println("sort-empty=" + to_string(len(se)) + " sort-one=[" + join_ints(so) + "]"
+        + " sort-dup=" + join_ints(sd) + " sort-neg=" + join_ints(sn))
+
+    // JSON: build -> stringify -> parse -> stringify must be stable
+    let obj = json_object(
+        ["active", "count", "name"],
+        [json_bool(true), json_number(42.0), json_string("Kryos rules")])
+    let once = stringify(obj)
+    let round = stringify(parse(once))
+    println("json-rt-stable=" + to_string(once == round))
+    println("json-name=" + to_str(get(parse(once), "name")))
+
+    // regex basics
+    println("re-match=" + to_string(is_match("k[ry]+os", "kryyros"))
+        + " re-miss=" + to_string(is_match("^[0-9]+$", "12a3"))
+        + " re-count=" + to_string(count("ab", "zabzabz"))
+        + " re-repl=" + replace_all("ab", "kab_kab_", "*"))
+
+    // set dedup (sorted-[i64] sets)
+    let mut s: [i64] = []
+    s = insert(s, 5)
+    s = insert(s, 2)
+    s = insert(s, 5)
+    s = insert(s, 9)
+    println("set-len=" + to_string(len(s)) + " set-has=" + to_string(has(s, 9))
+        + " set-missing=" + to_string(has(s, 4)))
+}
+
+fn has(s: [i64], v: i64) -> bool {
+    let mut i = 0
+    while i < len(s) {
+        if s[i] == v {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
