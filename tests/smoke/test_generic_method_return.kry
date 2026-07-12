@@ -6,15 +6,15 @@
 // `.get()` on Box<str> and then `let x: f64 = box_f64.get()` failed with
 // "expected f64, found str". The checker now instantiates fresh vars per
 // call and unifies the freshened `self` against the receiver, so each
-// instantiation is independent. The `str` then `f64-annot` sequence below
-// is exactly that scenario.
+// instantiation is independent.
 //
-// RESIDUAL (gotcha #17, narrowed): an INLINE unannotated f64 method return
-// in a polymorphic context -- `to_string(box_f64.get())` -- still reports
-// the erased i64 slot and prints raw bits. Direct field access, an
-// annotated local, and any non-f64 instantiation all resolve correctly.
+// REGRESSION GUARD (erasure, formerly gotcha #17): an INLINE unannotated
+// f64 method return -- `to_string(box_f64.get())` -- used to report the
+// erased i64 slot and print raw bits. MIR inference now binds the impl
+// generics from the self param against the monomorphized receiver and
+// substitutes the return, so it resolves to the real f64.
 // expect-stdout: int=42 str=hello nested=7
-// expect-stdout: f64-field=2.5 f64-annot=2.5
+// expect-stdout: f64-field=2.5 f64-annot=2.5 f64-inline=2.5
 // expect-stdout: str-method=world
 
 struct Box2<T> { v: T }
@@ -32,10 +32,12 @@ fn main() {
     println("int=" + to_string(bi.get()) + " str=" + bs.get()
         + " nested=" + to_string(bb.v.v))
 
-    // f64: direct field access and annotated local both resolve correctly
+    // f64: field access, annotated local, AND inline unannotated method
+    // return all resolve to f64 now
     let bf = Box2 { v: 2.5 }
     let annot: f64 = bf.get()
-    println("f64-field=" + to_string(bf.v) + " f64-annot=" + to_string(annot))
+    println("f64-field=" + to_string(bf.v) + " f64-annot=" + to_string(annot)
+        + " f64-inline=" + to_string(bf.get()))
 
     // str method return used directly (parity check for the working case)
     let bs2 = Box2 { v: "wor" + "ld" }

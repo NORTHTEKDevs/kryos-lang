@@ -1,0 +1,39 @@
+// Generic methods whose return TYPE mentions the parameter in a COMPOUND
+// shape -- `(T, i64)`, `[T]`. These must BUILD and behave identically on
+// both backends. The scalar-f64 return fix (which resolves a bare `-> T`
+// to the concrete float) must NOT touch these: the compound value is built
+// with erased i64-slot layout, so typing the inner element as f64 would
+// make the AOT aggregate `{double, i64}` mismatch the constructed
+// `{i64, i64}` and clang would reject the module. Guard: str elements are
+// pointer-shaped and stable; the f64 tuple asserts only its stable i64
+// element, proving it still builds.
+// expect-stdout: pair=hi,1
+// expect-stdout: first=a all-len=2
+// expect-stdout: f-second=7
+
+struct Wrap<T> { v: T }
+impl<T> Wrap<T> {
+    fn pair(self: Wrap<T>) -> (T, i64) { return (self.v, 1) }
+}
+struct Holder<T> { items: [T] }
+impl<T> Holder<T> {
+    fn first(self: Holder<T>) -> T { return self.items[0] }
+    fn all(self: Holder<T>) -> [T] { return self.items }
+}
+
+fn main() {
+    // str compound: stable, non-erased
+    let ws = Wrap { v: "hi" }
+    let t = ws.pair()
+    println("pair=" + t.0 + "," + to_string(t.1))
+
+    let h = Holder { items: ["a", "b"] }
+    let arr = h.all()
+    println("first=" + h.first() + " all-len=" + to_string(len(arr)))
+
+    // f64 compound must at least BUILD; assert only the stable i64 element
+    let wf = Wrap { v: 2.5 }
+    let tf = wf.pair()
+    let n = 7
+    println("f-second=" + to_string(tf.1 * n))
+}

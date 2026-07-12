@@ -57,6 +57,15 @@ pub struct LoweringContext {
     /// a generic param TypeExpr (`Boxed<T>`) against an already-mangled
     /// concrete struct/enum name.
     mono_instance_args: HashMap<String, Vec<MirType>>,
+    /// (base struct, method) -> (impl generic names, self-param TypeExpr,
+    /// return TypeExpr). Lets a generic method's return be resolved to the
+    /// receiver's CONCRETE type at an inference site: bind the impl generics
+    /// by matching the self param against the monomorphized receiver
+    /// (`extract_type_bindings`), then substitute the return. Without it,
+    /// `to_string(box_of_f64.get())` inferred the erased i64 slot (the method
+    /// is lowered once under the base name) and printed raw f64 bits.
+    impl_method_generic_info:
+        HashMap<(String, String), (Vec<String>, Option<ast::TypeExpr>, Option<ast::TypeExpr>)>,
     /// Generic enum templates: enum_name -> (generic_params, AST enum variants).
     generic_enum_templates: HashMap<String, GenericEnumTemplate>,
     /// Already-monomorphized specializations, to avoid duplicate lowering.
@@ -240,6 +249,7 @@ impl LoweringContext {
             generic_templates: HashMap::new(),
             generic_struct_templates: HashMap::new(),
             mono_instance_args: HashMap::new(),
+            impl_method_generic_info: HashMap::new(),
             generic_enum_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
@@ -1135,13 +1145,34 @@ pub fn lower_module_with_lambda_params(
 
                 // Register mangled method names in func_ret_types.
                 for method in methods {
-                    if let ast::Decl::Function { name, ret_ty, .. } = method {
+                    if let ast::Decl::Function {
+                        name, ret_ty, params, ..
+                    } = method
+                    {
                         let mangled = format!("{target}__{name}");
                         let mir_ret = match ret_ty {
                             Some(ty) => ctx.resolve_type(ty),
                             None => MirType::Void,
                         };
                         ctx.func_ret_types.insert(mangled, mir_ret);
+                        // Record the self-param + return TypeExprs so an
+                        // inference site can resolve a generic return to the
+                        // receiver's concrete monomorphized arg. Only useful
+                        // when the impl has generics.
+                        if !impl_generics.is_empty() {
+                            let self_te = params
+                                .iter()
+                                .find(|p| p.name == "self")
+                                .and_then(|p| p.ty.clone());
+                            ctx.impl_method_generic_info.insert(
+                                (target.clone(), name.clone()),
+                                (
+                                    impl_generics.iter().map(|g| g.name.clone()).collect(),
+                                    self_te,
+                                    ret_ty.clone(),
+                                ),
+                            );
+                        }
                     }
                 }
                 // Track which methods belong to which type for method call resolution.
@@ -5780,6 +5811,60 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 // a Void result mis-types the value).
                 let base = type_name.split("___").next().unwrap_or(type_name.as_str());
                 if base != type_name {
+                    // If the method returns a bare/compound generic parameter,
+                    // resolve it to the receiver's CONCRETE monomorphized arg by
+                    // binding the impl generics from the self param (the same
+                    // machinery monomorphization uses), then substituting the
+                    // return. Fixes `to_string(box_of_f64.get())` reporting the
+                    // erased i64 slot; field access already sees the concrete
+                    // type via the monomorphized struct def.
+                    if let Some((gp_names, self_te, ret_te)) = ctx
+                        .impl_method_generic_info
+                        .get(&(base.to_string(), method.clone()))
+                        .cloned()
+                    {
+                        // Only resolve a return that is a BARE generic parameter
+                        // (`-> T`). Such a value is a single i64 slot that
+                        // reinterprets safely as its concrete type (f64 bits,
+                        // or a str/array pointer). A COMPOUND return that merely
+                        // MENTIONS the parameter -- `(T, i64)`, `[T]`,
+                        // `Option<T>` -- must NOT be substituted: its value is
+                        // built with erased i64-slot layout, so typing the inner
+                        // as f64 makes the AOT aggregate (`{double, i64}`)
+                        // mismatch the constructed `{i64, i64}` and clang
+                        // rejects the module. Those keep the erased type.
+                        let ret_is_bare_param = matches!(
+                            &ret_te,
+                            Some(ast::TypeExpr::Simple { name, .. })
+                                if gp_names.iter().any(|g| g == name)
+                        );
+                        if ret_is_bare_param {
+                            if let (Some(self_te), Some(ret_te)) = (self_te, ret_te) {
+                                let receiver = MirType::Struct(type_name.clone());
+                                let mut bindings: HashMap<String, MirType> = HashMap::new();
+                                extract_type_bindings(
+                                    ctx, &self_te, &receiver, &gp_names, &mut bindings,
+                                );
+                                if !bindings.is_empty() {
+                                    let resolved =
+                                        substitute_type_expr_to_mir(ctx, &ret_te, &bindings);
+                                    // Only override for a FLOAT concrete type.
+                                    // That is the exact case that was broken:
+                                    // the erased i64 slot holds f64 bits, and
+                                    // without the real f64 type `to_string`
+                                    // inlined the integer dispatch and printed
+                                    // raw bits. str/array/struct returns are
+                                    // pointer-shaped and already resolve through
+                                    // their existing paths (and a struct return
+                                    // here would diverge on AOT). Narrowest
+                                    // correct scope.
+                                    if matches!(resolved, MirType::F64 | MirType::F32) {
+                                        return resolved;
+                                    }
+                                }
+                            }
+                        }
+                    }
                     let base_mangled = format!("{base}__{method}");
                     if let Some(ret_ty) = ctx.func_ret_types.get(&base_mangled) {
                         return ret_ty.clone();

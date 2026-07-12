@@ -39,6 +39,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cryptic clang error. Temp files are now unique per process + build.
 
 ### Fixed — generic method instantiation
+- **A bare `-> T` generic method return resolves to the receiver's concrete
+  type (gotcha #17 closed for scalars).** `to_string(box_of_f64.get())`
+  reported the erased i64 slot and printed raw bits; MIR inference now binds
+  the impl generics by matching the `self` param against the monomorphized
+  receiver (the same `extract_type_bindings` machinery monomorphization
+  uses) and substitutes the return, resolving it to the real `f64`. Scoped
+  to a FLOAT concrete type from a bare-parameter return — the narrowest
+  correct fix. Compound returns (`-> (T, i64)`, `-> [T]`) keep the erased
+  slot (their value has i64-slot aggregate layout; substituting would make
+  the AOT `{double, i64}` mismatch the constructed `{i64, i64}` and break
+  the build). Verified byte-identical bootstrap; 700-program fuzz clean.
 - **Cross-instantiation contamination in generic methods.** An impl
   method's return-type variable was shared across every call site (impl
   method sigs carried empty `generic_var_ids`, so `instantiate_sig` never
