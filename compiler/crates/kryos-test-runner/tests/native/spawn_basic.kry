@@ -1,12 +1,20 @@
+// spawn runs a function body on a new thread. The spawned output and a
+// bare `println` after the spawn have NO ordering guarantee, so this test
+// synchronizes with a channel handshake for a deterministic total order:
+// main blocks on `recv` until the spawned thread has done its work and
+// signaled, then prints "after". (The previous version asserted
+// "after" before "spawned work", which was a thread-scheduling race --
+// it passed on Linux/Windows by luck and failed on macOS.)
 // expect-stdout: before
-// expect-stdout: after
 // expect-stdout: spawned work
-fn do_work() {
-    println("spawned work")
-}
-
+// expect-stdout: after
 fn main() {
     println("before")
-    spawn do_work()
+    let done = chan()
+    spawn {
+        println("spawned work")
+        send(done, 1)
+    }
+    recv(done)
     println("after")
 }
