@@ -211,7 +211,7 @@ pub fn resolve_module_path(
         loop {
             let redirect = ancestor.join(".kryos").join("deps").join(format!("{pkg}.redirect"));
             if redirect.is_file() {
-                if let Ok(content) = fs::read_to_string(&redirect) {
+                if let Ok(content) = crate::read_source(&redirect) {
                     // Parse simple `path = "..."` line.
                     for line in content.lines() {
                         let line = line.trim();
@@ -303,7 +303,7 @@ pub fn extract_imports(module: &Module) -> Vec<(ImportPath, kryos_errors::Span)>
 
 /// Parse a module file and return its AST.
 fn parse_module_file(path: &Path) -> Result<(Module, kryos_errors::SourceMap), ResolveError> {
-    let source = fs::read_to_string(path).map_err(|e| ResolveError::ReadError {
+    let source = crate::read_source(path).map_err(|e| ResolveError::ReadError {
         path: path.to_path_buf(),
         error: e.to_string(),
     })?;

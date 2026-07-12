@@ -146,6 +146,12 @@ jobs:
         # The dotenv selftest is what exposed the map-value use-after-free.
         run: bash tests/package_selftests.sh
 
+      - name: Encoding robustness (BOM/CRLF accepted, UTF-16 diagnosed)
+        # Windows Notepad saves UTF-8 with a BOM; PowerShell `>` writes
+        # UTF-16. Sources in real-editor encodings must compile or get an
+        # actionable message — a BOM previously produced token soup.
+        run: bash tests/encoding_check.sh
+
       - name: Differential fuzz smoke (JIT vs AOT, 60 random programs)
         working-directory: compiler
         # Generates 60 random type-correct programs and diffs Cranelift-JIT

@@ -115,8 +115,11 @@ class Gen:
                 return r.choice(self.sv)
             return '"' + "".join(r.choice("abcxyz_") for _ in range(r.randint(1, 6))) + '"'
         k = r.random()
-        if k < 0.55:
+        if k < 0.45:
             return f"({self.se(d+1)} + {self.se(d+1)})"
+        if k < 0.6 and getattr(self, "sfn", None):
+            # string through a call boundary (param in, return out)
+            return f"{self.sfn}({self.se(d+1)})"
         return f"to_string({self.ie(d+1)})"
 
     # ----- statements --------------------------------------------------
@@ -232,6 +235,26 @@ class Gen:
             self.indent -= 1
             self.w("}")
             self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
+        elif k < 0.87 and d < 2:
+            # loop with break/continue on a data-dependent condition
+            v = self.nm("l"); n = r.randint(3, 7)
+            acc = self.nm("acc")
+            self.w(f"let mut {acc} = 0")
+            self.w(f"let mut {v} = 0")
+            self.w(f"while {v} < {n} {{")
+            self.w(f"    {v} = {v} + 1")
+            if r.random() < 0.5:
+                self.w(f"    if {v} == {r.randint(1, n)} {{")
+                self.w("        break")
+                self.w("    }")
+            else:
+                self.w(f"    if {v} == {r.randint(1, n)} {{")
+                self.w("        continue")
+                self.w("    }")
+            self.w(f"    {acc} = {acc} + {v}")
+            self.w("}")
+            self.w(f'println("loopacc=" + to_string({acc}))')
+            self.iv.append(acc)
         elif k < 0.885 and self.have_enum:
             # enum match producing an int
             n = self.ie()
@@ -266,11 +289,13 @@ class Gen:
                 self.w("}")
                 self.w(f'println("iter=" + {acc})')
             else:
-                # struct literal holding a built string; field read later
+                # struct literal holding a built string; field read + mutate
                 if self.have_struct:
                     p = self.nm("p")
-                    self.w(f"let {p} = Pair {{ a: {self.ie()}, b: {self.ie()} }}")
-                    self.w(f'println("pair=" + to_string({p}.a + {p}.b))')
+                    self.w(f"let mut {p} = SBox {{ tag: {self.se()}, n: {self.ie()} }}")
+                    self.w(f'println("sb=" + {p}.tag + to_string({p}.n))')
+                    self.w(f"{p}.tag = {self.se()}")
+                    self.w(f'println("sb2=" + {p}.tag)')
         elif k < 0.95:
             self.w(f'println("v=" + to_string({self.ie()}))')
         else:
@@ -308,10 +333,17 @@ class Gen:
                 body = f"(p0 {r.choice(IBIN)} p1)"
             out += [f"fn {fn}({params}) -> i64 {{", f"    return {body}", "}", ""]
             self.fns.append((fn, ar))
+        # str-taking/returning helper (call-boundary container ownership)
+        self.sfn = self.nm("sh")
+        out += [f"fn {self.sfn}(p: str) -> str {{",
+                f'    return p + "-{self.sfn}"', "}", ""]
         # optional struct
         if r.random() < 0.5:
             self.have_struct = True
             out += ["struct Pair { a: i64, b: i64 }", ""]
+            # str-field struct: container-in-aggregate through construction,
+            # field read, and field reassignment
+            out += ["struct SBox { tag: str, n: i64 }", ""]
         # optional enum + classifier
         if r.random() < 0.6:
             self.have_enum = True

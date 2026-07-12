@@ -2015,6 +2015,33 @@ impl Parser {
                     };
                     continue;
                 }
+                // Chained tuple access `t.0.1`: the lexer greedily reads
+                // `0.1` as a FLOAT token, so the second index arrives glued
+                // to the first. Split it into two consecutive tuple-index
+                // accesses (rustc resolves the same ambiguity the same way).
+                if self.check(TokenKind::Float) {
+                    let tok = self.peek().clone();
+                    let parts: Vec<&str> = tok.text.split('.').collect();
+                    if parts.len() == 2
+                        && !parts[0].is_empty()
+                        && !parts[1].is_empty()
+                        && parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+                    {
+                        self.advance();
+                        let start = lhs.span();
+                        let inner = Expr::FieldAccess {
+                            object: Box::new(lhs),
+                            field: parts[0].to_string(),
+                            span: start.merge(tok.span),
+                        };
+                        lhs = Expr::FieldAccess {
+                            object: Box::new(inner),
+                            field: parts[1].to_string(),
+                            span: start.merge(tok.span),
+                        };
+                        continue;
+                    }
+                }
                 let (field, field_span) = self.expect_name();
                 let start = lhs.span();
 

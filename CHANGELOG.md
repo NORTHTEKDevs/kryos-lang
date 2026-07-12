@@ -38,6 +38,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build server) could read each other's half-written IR and fail with a
   cryptic clang error. Temp files are now unique per process + build.
 
+### Fixed — editor-reality + parser pass
+- **UTF-8 BOM sources compile.** Windows Notepad's default save prefixes
+  a BOM, which reached the lexer and produced "unexpected token error"
+  on line 1. The source loader now strips it (rustc/clang/go behavior).
+  UTF-16 files (what PowerShell `>` writes) are detected — by BOM, or by
+  NUL-byte ratio for BOM-less files — and rejected with an actionable
+  message instead of token soup. A stray raw NUL inside a string literal
+  (the wasm magic `"\0asm"`) stays legal. CRLF, tabs, and missing
+  trailing newlines were verified already working.
+  `tests/encoding_check.sh` gates all of it in CI.
+- **Chained tuple access `t.0.1` parses.** The lexer greedily reads
+  `0.1` as a float token; the parser now splits a float following `.`
+  into two tuple-index accesses (rustc's resolution of the same
+  ambiguity). Previously a cryptic parse error.
+
+### Added — semantics corners battery
+- `test_semantics_corners.kry`: tuple destructuring/nesting/returns,
+  type-changing shadowing, closure capture mutation visibility,
+  break/continue including inner-loop-only break — identical on both
+  backends. Fuzzer vocabulary round 3: string-taking/returning helper
+  calls, str-field struct construction + field reassignment,
+  break/continue in generated loops — 1,200-program campaign clean.
+
 ### Fixed — whole-language hole hunt (post-matrix sweep)
 - **`let mut out = push(a, x)` result carries its array type.** The MIR
   builtin table typed push's result as a bare i64 handle, so on AOT,

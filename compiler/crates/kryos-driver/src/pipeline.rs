@@ -310,7 +310,7 @@ pub fn compile_file_with_backend(
     backend: Option<&dyn Backend>,
 ) -> CompileResult {
     // 1. Read source
-    let source = match fs::read_to_string(path) {
+    let source = match crate::read_source(path) {
         Ok(s) => s,
         Err(e) => {
             return CompileResult::from_error(format!("failed to read {}: {e}", path.display()));
@@ -1149,7 +1149,7 @@ pub fn compile_project_with_backend(
 ///
 /// Returns `(diagnostics, source_map)` so the caller can render errors.
 pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
-    let source = match fs::read_to_string(path) {
+    let source = match crate::read_source(path) {
         Ok(s) => s,
         Err(e) => {
             return (
@@ -1244,7 +1244,7 @@ pub fn check_file_with_options_full(
     skip_ownership: bool,
     cap_mode: CapabilityMode,
 ) -> (Vec<Diagnostic>, SourceMap) {
-    let source = match fs::read_to_string(path) {
+    let source = match crate::read_source(path) {
         Ok(s) => s,
         Err(e) => {
             return (
