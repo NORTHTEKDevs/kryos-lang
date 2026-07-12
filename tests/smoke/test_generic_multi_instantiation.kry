@@ -1,0 +1,45 @@
+// Regression: a multi-parameter generic used at two DIFFERENT concrete
+// instantiations in one program. Before the fresh-per-call instantiation
+// fix, the impl methods' return-type vars were shared, so the second
+// instantiation was contaminated by the first: `let c: str = q.get_first()`
+// failed with "expected str, found i64" after `p.get_first()` returned i64.
+// Identical on both backends.
+// expect-stdout: a=10 b=hello
+// expect-stdout: c=world d=99
+// expect-stdout: e=1 f=2 g=3
+
+struct Pair2<A, B> { first: A, second: B }
+impl<A, B> Pair2<A, B> {
+    fn get_first(self: Pair2<A, B>) -> A { return self.first }
+    fn get_second(self: Pair2<A, B>) -> B { return self.second }
+}
+
+struct Cell<T> { val: T }
+impl<T> Cell<T> {
+    fn read(self: Cell<T>) -> T { return self.val }
+}
+
+fn main() {
+    let p = Pair2 { first: 10, second: "hello" }
+    let a: i64 = p.get_first()
+    let b: str = p.get_second()
+    println("a=" + to_string(a) + " b=" + b)
+
+    // swapped instantiation must not inherit p's bindings
+    let q = Pair2 { first: "world", second: 99 }
+    let c: str = q.get_first()
+    let d: i64 = q.get_second()
+    println("c=" + c + " d=" + to_string(d))
+
+    // three int Cells + one str Cell interleaved: the str read must not
+    // poison the int reads and vice versa
+    let c1 = Cell { val: 1 }
+    let cs = Cell { val: "str" }
+    let c2 = Cell { val: 2 }
+    let c3 = Cell { val: 3 }
+    let e: i64 = c1.read()
+    let _s: str = cs.read()
+    let f: i64 = c2.read()
+    let g: i64 = c3.read()
+    println("e=" + to_string(e) + " f=" + to_string(f) + " g=" + to_string(g))
+}

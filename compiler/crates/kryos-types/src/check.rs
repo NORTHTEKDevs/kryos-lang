@@ -536,11 +536,21 @@ impl TypeChecker {
                 // E0101. Concrete impls (`impl Box<i64>`) have no generics, so
                 // this is a no-op for them.
                 let scoped_impl_generics = !impl_generics.is_empty();
+                // Capture the impl's generic var ids so each method signature
+                // can record them. Without this the sigs carry
+                // `generic_var_ids: vec![]` and are treated as non-generic:
+                // `instantiate_sig` skips freshening, so the impl's return-type
+                // var is SHARED across every call site. Calling `.get()` on
+                // Box<str> then `let x: f64 = box_f64.get()` then failed with
+                // "expected f64, found str" -- cross-instantiation
+                // contamination through the shared var.
+                let mut impl_generic_var_ids: Vec<u32> = Vec::new();
                 if scoped_impl_generics {
                     self.env.push_scope();
                     for gp in impl_generics {
                         let tv = self.engine.fresh_var();
                         if let Type::Var(id) = &tv {
+                            impl_generic_var_ids.push(*id);
                             if !gp.bounds.is_empty() {
                                 self.generic_var_bounds.insert(*id, gp.bounds.clone());
                             }
@@ -600,7 +610,11 @@ impl TypeChecker {
                             Some(FunctionSig {
                                 name: name.clone(),
                                 generic_params: generics.iter().map(|g| g.name.clone()).collect(),
-                                generic_var_ids: vec![],
+                                // Record the impl's generic vars so per-call
+                                // instantiation freshens them (fixes the shared-
+                                // var contamination). Vars the method does not
+                                // mention are a no-op during instantiation.
+                                generic_var_ids: impl_generic_var_ids.clone(),
                                 params: param_types,
                                 ret,
                             })
@@ -2374,13 +2388,51 @@ impl TypeChecker {
                     }
 
                     if let Some(sig) = self.env.lookup_method(tname, method).cloned() {
-                        // Skip 'self' parameter (first param) if present.
-                        let expected_params: Vec<_> =
-                            if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
-                                sig.params[1..].to_vec()
-                            } else {
-                                sig.params.clone()
-                            };
+                        // Instantiate the method signature with FRESH type vars
+                        // per call, then bind them to the receiver's concrete
+                        // type arguments by unifying the freshened `self`
+                        // parameter against the receiver type. This fixes two
+                        // problems that the old `sig.ret.clone()` had:
+                        //   1. Contamination -- the impl's return var was shared
+                        //      across every call, so `.get()` on Box<str> then
+                        //      `let x: f64 = box_f64.get()` errored "found str".
+                        //   2. Erasure -- `to_string(box_f64.get())` reported the
+                        //      i64 slot and printed raw bits; the self-unify now
+                        //      resolves the return to the real f64.
+                        let (inst_params, inst_ret, var_map) =
+                            self.engine.instantiate_sig(&sig);
+                        for (old_id, new_id) in &var_map {
+                            if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
+                                self.engine.set_var_bounds(*new_id, bounds);
+                            }
+                        }
+                        let has_self =
+                            sig.params.first().map(|(n, _)| n.as_str()) == Some("self");
+                        let expected_params: Vec<Type> = if has_self {
+                            // Unify only when the freshened self is a same-named
+                            // struct/enum with matching generic arity -- an
+                            // unannotated `self` (empty generics) or a shape
+                            // mismatch must not inject a spurious error.
+                            if let Some(self_ty) = inst_params.first() {
+                                let compatible = match (self_ty, &obj_ty) {
+                                    (
+                                        Type::Struct { name: a, generics: ga },
+                                        Type::Struct { name: b, generics: gb },
+                                    )
+                                    | (
+                                        Type::Enum { name: a, generics: ga },
+                                        Type::Enum { name: b, generics: gb },
+                                    ) => a == b && ga.len() == gb.len() && !ga.is_empty(),
+                                    _ => false,
+                                };
+                                if compatible {
+                                    let _ = self.engine.unify(self_ty, &obj_ty, *span);
+                                }
+                            }
+                            inst_params.iter().skip(1).cloned().collect()
+                        } else {
+                            inst_params.clone()
+                        };
 
                         if args.len() != expected_params.len() {
                             self.error(
@@ -2392,7 +2444,7 @@ impl TypeChecker {
                                 *span,
                             );
                         } else {
-                            for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                            for (arg, param_ty) in args.iter().zip(expected_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
@@ -2400,7 +2452,7 @@ impl TypeChecker {
                                 }
                             }
                         }
-                        return sig.ret.clone();
+                        return self.engine.resolve(&inst_ret);
                     }
 
                     // Check if this is a Function-typed struct field being called

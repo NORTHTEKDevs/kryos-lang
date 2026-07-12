@@ -38,6 +38,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build server) could read each other's half-written IR and fail with a
   cryptic clang error. Temp files are now unique per process + build.
 
+### Fixed — generic method instantiation
+- **Cross-instantiation contamination in generic methods.** An impl
+  method's return-type variable was shared across every call site (impl
+  method sigs carried empty `generic_var_ids`, so `instantiate_sig` never
+  freshened them). Using one generic method at two concrete types in a
+  single program then failed to compile: after `p.get_first()` returned
+  `i64`, `let c: str = q.get_first()` errored "expected str, found i64";
+  likewise `.get()` on `Box<str>` poisoned a later `let x: f64 =
+  box_f64.get()`. The checker now records the impl's generic vars on each
+  method sig, instantiates fresh vars per call, and unifies the freshened
+  `self` against the receiver so each instantiation is independent (and
+  the return resolves to the receiver's concrete type). Verified on both
+  backends; the byte-identical self-host bootstrap is unaffected. Residual
+  (gotcha #17, narrowed): an inline unannotated `to_string(box_f64.get())`
+  still reports the erased i64 slot; field access, annotated locals, and
+  every non-f64 instantiation resolve correctly.
+
 ### Fixed — editor-reality + parser pass
 - **UTF-8 BOM sources compile.** Windows Notepad's default save prefixes
   a BOM, which reached the lexer and produced "unexpected token error"

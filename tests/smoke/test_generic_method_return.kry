@@ -1,0 +1,43 @@
+// Generic struct instantiation across multiple concrete types in one
+// program. Identical on both backends.
+//
+// REGRESSION GUARD (cross-instantiation contamination): the impl method's
+// return type var used to be SHARED across every call site, so calling
+// `.get()` on Box<str> and then `let x: f64 = box_f64.get()` failed with
+// "expected f64, found str". The checker now instantiates fresh vars per
+// call and unifies the freshened `self` against the receiver, so each
+// instantiation is independent. The `str` then `f64-annot` sequence below
+// is exactly that scenario.
+//
+// RESIDUAL (gotcha #17, narrowed): an INLINE unannotated f64 method return
+// in a polymorphic context -- `to_string(box_f64.get())` -- still reports
+// the erased i64 slot and prints raw bits. Direct field access, an
+// annotated local, and any non-f64 instantiation all resolve correctly.
+// expect-stdout: int=42 str=hello nested=7
+// expect-stdout: f64-field=2.5 f64-annot=2.5
+// expect-stdout: str-method=world
+
+struct Box2<T> { v: T }
+impl<T> Box2<T> {
+    fn get(self: Box2<T>) -> T { return self.v }
+}
+
+fn main() {
+    // i64 through the method
+    let bi = Box2 { v: 42 }
+    // str through the method (str is pointer-shaped, so it survives erasure)
+    let bs = Box2 { v: "hello" }
+    // nested generic via field access
+    let bb = Box2 { v: Box2 { v: 7 } }
+    println("int=" + to_string(bi.get()) + " str=" + bs.get()
+        + " nested=" + to_string(bb.v.v))
+
+    // f64: direct field access and annotated local both resolve correctly
+    let bf = Box2 { v: 2.5 }
+    let annot: f64 = bf.get()
+    println("f64-field=" + to_string(bf.v) + " f64-annot=" + to_string(annot))
+
+    // str method return used directly (parity check for the working case)
+    let bs2 = Box2 { v: "wor" + "ld" }
+    println("str-method=" + bs2.get())
+}
