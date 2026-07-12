@@ -1,0 +1,67 @@
+// Stdlib breadth battery: modules the spot battery didn't cover —
+// strext, numfmt, hash, semver, deque, heap, mathx (+ base64 builtins).
+// Deterministic paths only (no clock reads). Identical on both backends.
+// expect-stdout: strext=KRYOS kryos occ=2 trim=[x y]
+// expect-stdout: numfmt=0xff 0b1010 pad=00042 bytes0=0 B bytes=1 KB
+// expect-stdout: b64=aGVsbG8= b64rt=hello
+// expect-stdout: hash-stable=true hash-distinct=true crc-stable=true
+// expect-stdout: semver-lt=-1 semver-eq=0 semver-gt=1
+// expect-stdout: deque-front=0 deque-back=2 after-popf-front=1
+// expect-stdout: heap-min=2 heap-next=5
+// expect-stdout: gcd=6 lcm=36 isqrt=9 ilog2=6 prime97=true prime91=false
+
+use std::strext::{to_upper, to_lower, count_occurrences, trim}
+use std::numfmt::{hex, bin, decimal_padded, bytes}
+use std::hash::{fnv1a64, djb2, crc32}
+use std::semver::{parse, compare}
+use std::deque::{push_back, push_front, pop_front, front, back}
+use std::heap::{push_min, pop_min, peek_min}
+use std::mathx::{gcd, lcm, isqrt, ilog2, is_prime}
+
+fn main() {
+    println("strext=" + to_upper("kryos") + " " + to_lower("KRYOS")
+        + " occ=" + to_string(count_occurrences("abcabc", "bc"))
+        + " trim=[" + trim("  x y  ") + "]")
+
+    println("numfmt=" + hex(255) + " " + bin(10)
+        + " pad=" + decimal_padded(42, 5)
+        + " bytes0=" + bytes(0) + " bytes=" + bytes(1024))
+
+    let b = base64_encode("hello")
+    println("b64=" + b + " b64rt=" + base64_decode(b))
+
+    let h1 = fnv1a64("kryos")
+    let h2 = fnv1a64("kryos")
+    let h3 = fnv1a64("kryoz")
+    let c1 = crc32("kryos")
+    let c2 = crc32("kryos")
+    println("hash-stable=" + to_string(h1 == h2)
+        + " hash-distinct=" + to_string(h1 != h3)
+        + " crc-stable=" + to_string(c1 == c2))
+
+    let v1 = parse("1.2.3")
+    let v2 = parse("1.10.0")
+    let v3 = parse("1.2.3")
+    println("semver-lt=" + to_string(compare(v1, v2))
+        + " semver-eq=" + to_string(compare(v1, v3))
+        + " semver-gt=" + to_string(compare(v2, v1)))
+
+    let mut d: [i64] = []
+    d = push_back(d, 1)
+    d = push_back(d, 2)
+    d = push_front(d, 0)
+    println("deque-front=" + to_string(front(d)) + " deque-back=" + to_string(back(d))
+        + " after-popf-front=" + to_string(front(pop_front(d))))
+
+    let mut hp: [i64] = []
+    hp = push_min(hp, 9)
+    hp = push_min(hp, 2)
+    hp = push_min(hp, 5)
+    let m1 = peek_min(hp)
+    let hp2 = pop_min(hp)
+    println("heap-min=" + to_string(m1) + " heap-next=" + to_string(peek_min(hp2)))
+
+    println("gcd=" + to_string(gcd(54, 24)) + " lcm=" + to_string(lcm(12, 18))
+        + " isqrt=" + to_string(isqrt(99)) + " ilog2=" + to_string(ilog2(64))
+        + " prime97=" + to_string(is_prime(97)) + " prime91=" + to_string(is_prime(91)))
+}

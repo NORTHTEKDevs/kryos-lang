@@ -5701,6 +5701,22 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
+                    // push(arr: [T], v) -> [T] — array-typed result. The i64
+                    // table entry mis-typed `let mut out = push(a, x)`: with
+                    // `out` typed as a bare handle, `out[i]` on AOT indexed
+                    // relative to the array HEADER (reads returned len/cap,
+                    // e.g. "2,4") and element writes vanished — std::heap's
+                    // push_min was silently insertion-ordered on release
+                    // builds. The self-form `a = push(a, x)` never hit it
+                    // because `a` keeps its declared Array type. Same
+                    // fall-through guard as pop for the self-host's own push.
+                    if name.as_str() == "push" {
+                        if let Some(first_arg) = args.first() {
+                            if let arr_ty @ MirType::Array(..) = infer_expr_type(ctx, first_arg) {
+                                return arr_ty;
+                            }
+                        }
+                    }
                     return ret_ty;
                 }
                 // Check if callee is a function-typed local (indirect call).

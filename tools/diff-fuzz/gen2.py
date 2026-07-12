@@ -34,6 +34,7 @@ class Gen:
         self.bv = []          # bool vars
         self.mv = []          # map<str, str> vars
         self.sav = []         # [str] vars
+        self.fv = []          # f64 vars
         self.tmp = 0
         self.budget = 0
         self.fns = []         # (name, arity) user int helpers
@@ -85,6 +86,28 @@ class Gen:
             return f"({base}) {joiner} ({self.ie(d)} {r.choice(CMP)} {self.ie(d)})"
         return base
 
+    def fe(self, d=0):
+        """Float expression. Division guards against literal zero but not
+        computed zero -- inf/nan propagation is part of what we diff."""
+        r = self.r
+        if d > 2 or r.random() < 0.4:
+            if self.fv and r.random() < 0.6:
+                return r.choice(self.fv)
+            return f"{r.randint(-30, 60)}.{r.randint(0, 99)}"
+        k = r.random()
+        if k < 0.35:
+            op = r.choice(["+", "-", "*"])
+            return f"({self.fe(d+1)} {op} {self.fe(d+1)})"
+        if k < 0.5:
+            return f"({self.fe(d+1)} / {r.randint(1, 9)}.5)"
+        if k < 0.62:
+            return f"({self.ie(d+1)} as f64)"
+        if k < 0.74:
+            return f"sqrt(abs({self.fe(d+1)}))"
+        if k < 0.86:
+            return f"abs({self.fe(d+1)})"
+        return f"({self.fe(d+1)} * -1.0)"
+
     def se(self, d=0):
         r = self.r
         if d > 1 or r.random() < 0.45:
@@ -111,17 +134,41 @@ class Gen:
             v = self.nm("a")
             elems = ", ".join(self.ie() for _ in range(r.randint(1, 4)))
             self.w(f"let mut {v} = [{elems}]"); self.av.append(v)
-        elif k < 0.42:
+        elif k < 0.39:
             v = self.nm("b"); self.w(f"let mut {v} = {self.be()}"); self.bv.append(v)
+        elif k < 0.42:
+            # float domain: declare, mutate, compare, cast, print
+            sub = r.random()
+            if self.fv and sub < 0.35:
+                f = r.choice(self.fv)
+                self.w(f"{f} = {self.fe()}")
+            elif self.fv and sub < 0.55:
+                self.w(f'println("fcmp=" + to_string({self.fe()} < {self.fe()}))')
+            elif self.fv and sub < 0.7:
+                self.w(f'println("f2i=" + to_string({r.choice(self.fv)} as i64))')
+            else:
+                v = self.nm("f")
+                self.w(f"let mut {v} = {self.fe()}")
+                self.fv.append(v)
         elif k < 0.50 and self.iv:
             self.w(f"{r.choice(self.iv)} = {self.ie()}")
         elif k < 0.55 and self.av:
             a = r.choice(self.av); self.w(f"{a} = push({a}, {self.ie()})")
-        elif k < 0.60 and self.av:
+        elif k < 0.58 and self.av:
             # independent-copy rebind (exercises array_dup)
             src = r.choice(self.av); b = self.nm("a")
             self.w(f"let mut {b} = {src}"); self.w(f"{b} = push({b}, {self.ie()})")
             self.av.append(b)
+        elif k < 0.60 and self.av:
+            # CROSS-VARIABLE push + element write: `let mut out = push(a, x)`
+            # types out from push's return; a bare-handle mis-type made AOT
+            # index relative to the array HEADER (std::heap read len/cap as
+            # elements). Element writes then must land.
+            src = r.choice(self.av); out = self.nm("o")
+            self.w(f"let mut {out} = push({src}, {self.ie()})")
+            self.w(f"{out}[0] = {self.ie()}")
+            self.w(f'println("xw=" + to_string({out}[0]) + "," + to_string(len({out})))')
+            self.av.append(out)
         elif k < 0.63 and self.sv:
             # string share-in-loop was the seed-14 class; keep exercising
             src = r.choice(self.sv); c = self.nm("s")
@@ -153,15 +200,15 @@ class Gen:
                 self.sav.append(a)
         elif k < 0.76 and d < 2:
             snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv),
-                    list(self.mv), list(self.sav))
+                    list(self.mv), list(self.sav), list(self.fv))
             self.w(f"if {self.be()} {{")
             self.indent += 1
             for _ in range(r.randint(1, 3)):
                 self.stmt(d + 1)
             self.w(f'println("t" + to_string({self.ie()}))')
-            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = (
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = (
                 list(snap[0]), list(snap[1]), list(snap[2]), list(snap[3]),
-                list(snap[4]), list(snap[5]))
+                list(snap[4]), list(snap[5]), list(snap[6]))
             self.indent -= 1
             self.w("} else {")
             self.indent += 1
@@ -169,7 +216,7 @@ class Gen:
             self.w(f'println("f" + to_string({self.ie()}))')
             self.indent -= 1
             self.w("}")
-            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = snap
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
         elif k < 0.85 and d < 2:
             v = self.nm("l"); n = r.randint(2, 6)
             self.w(f"let mut {v} = 0")
@@ -177,14 +224,14 @@ class Gen:
             # never pick it as an assignment target -- otherwise a random
             # `{v} = <expr>` in the body breaks termination (infinite loop).
             snap = (list(self.iv), list(self.sv), list(self.av), list(self.bv),
-                    list(self.mv), list(self.sav))
+                    list(self.mv), list(self.sav), list(self.fv))
             self.w(f"while {v} < {n} {{")
             self.indent += 1
             self.stmt(d + 1)
             self.w(f"{v} = {v} + 1")
             self.indent -= 1
             self.w("}")
-            self.iv, self.sv, self.av, self.bv, self.mv, self.sav = snap
+            self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
         elif k < 0.885 and self.have_enum:
             # enum match producing an int
             n = self.ie()
@@ -239,6 +286,8 @@ class Gen:
             self.w(f'println("{v}.len=" + to_string(len({v})))')
         for v in self.bv:
             self.w(f'if {v} {{ println("{v}=T") }} else {{ println("{v}=F") }}')
+        for v in self.fv:
+            self.w(f'println("{v}=" + to_string({v}))')
         for v in self.mv:
             # read back the seeded key — dangling values print recycled junk
             self.w(f'println("{v}.seed=" + {v}["seed"] + " len=" + to_string(len({v})))')

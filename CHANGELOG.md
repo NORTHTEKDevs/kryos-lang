@@ -39,6 +39,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cryptic clang error. Temp files are now unique per process + build.
 
 ### Fixed — whole-language hole hunt (post-matrix sweep)
+- **`let mut out = push(a, x)` result carries its array type.** The MIR
+  builtin table typed push's result as a bare i64 handle, so on AOT,
+  indexing the result of a push bound to a NEW variable read memory
+  relative to the array HEADER — `out[0], out[1]` returned len/cap
+  ("2,4") and element writes vanished. Real-world casualty: `std::heap`
+  was silently insertion-ordered on release builds (`peek_min` after
+  pushing 9,2,5 returned 9). The ubiquitous self-form `a = push(a, x)`
+  never hit it because `a` keeps its declared type — which is why 15k
+  fuzz programs missed it until the generator learned the cross-variable
+  form. push now infers `[T]` from its argument, exactly like pop's
+  element-type inference.
 - **`float(s)` / `int(s)` on STRING arguments parse instead of converting
   the heap pointer.** The LLVM backend routed `float(str)` to the
   int-to-float conversion, so every number parsed by `std::json` came back
@@ -58,6 +69,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0 non-idempotent.
 
 ### Added — robustness + semantics batteries
+- **Float domain in the differential fuzzer**: f64 variables, arithmetic,
+  comparisons, casts (`as f64` / `as i64`), sqrt/abs, inf/NaN
+  propagation — 1,200-program campaign clean. Cross-variable push +
+  element-write forms added (the class that exposed the push-type bug).
+- **Stdlib breadth battery** (`test_stdlib_breadth.kry`): strext, numfmt,
+  hash (fnv1a64/crc32 stability), semver compare, deque, heap, mathx —
+  deterministic paths, byte-identical across backends.
+- **Stress limits** (`test_stress_limits.kry`): 10k-deep non-tail
+  recursion, 128 KB doubling-built string, 100k-element array sum,
+  1024-node nested expression, 20-live-locals register pressure — all
+  identical on both backends.
 - **ICE hunt** (`tools/diff-fuzz/ice_hunt.py`): mutates valid corpus
   programs (truncation, byte flips, bracket vandalism, junk splices) and
   requires `kryos check` to answer with diagnostics — never a compiler

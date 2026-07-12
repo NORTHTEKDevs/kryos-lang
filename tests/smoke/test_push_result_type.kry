@@ -1,0 +1,33 @@
+// Regression: `let mut out = push(a, x)` — the push RESULT bound to a
+// NEW variable must carry the array type. The MIR builtin table typed
+// push as a bare i64 handle, so `out[i]` on AOT indexed relative to the
+// array HEADER (reads returned len/cap — "2,4" — and element writes
+// vanished). std::heap's push_min was silently insertion-ordered on
+// release builds. The self-form `a = push(a, x)` never hit it.
+// expect-stdout: direct=9 two=9,2 write=55,2
+// expect-stdout: heap=2,5,9
+
+use std::heap::{push_min, pop_min, peek_min}
+
+fn main() {
+    let mut a: [i64] = []
+    let mut out = push(a, 9)
+    println("direct=" + to_string(out[0]))
+    out = push(out, 2)
+    let two = to_string(out[0]) + "," + to_string(out[1])
+    out[0] = 55
+    println("two=" + two)
+    println("write=" + to_string(out[0]) + "," + to_string(out[1]))
+
+    // the real-world casualty: std::heap ordering
+    let mut hp: [i64] = []
+    hp = push_min(hp, 9)
+    hp = push_min(hp, 2)
+    hp = push_min(hp, 5)
+    let m1 = peek_min(hp)
+    let hp2 = pop_min(hp)
+    let m2 = peek_min(hp2)
+    let hp3 = pop_min(hp2)
+    let m3 = peek_min(hp3)
+    println("heap=" + to_string(m1) + "," + to_string(m2) + "," + to_string(m3))
+}
