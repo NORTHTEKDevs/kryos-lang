@@ -4307,8 +4307,29 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {as_i64} = ptrtoint ptr {val} to i64"));
                             ("kryos_builtin_to_string", format!("i64 {as_i64}"))
                         } else {
-                            let coerced = self.coerce_value(&val, &val_ty, "i64");
-                            ("kryos_builtin_to_string", format!("i64 {coerced}"))
+                            // Integer types: coerce to i64 for the string formatter.
+                            // Unsigned narrow ints must ZERO-extend -- coerce_value's
+                            // sext arm would print a direct `println(u8=200)` as -56,
+                            // a JIT/AOT divergence (Cranelift zero-extends here). A
+                            // 64-bit unsigned value additionally uses the unsigned
+                            // formatter. Mirrors the explicit to_string() builtin path.
+                            let is_unsigned = Self::operand_is_unsigned(&args[0], func);
+                            let coerced = if is_unsigned
+                                && matches!(val_ty.as_str(), "i8" | "i16" | "i32")
+                            {
+                                let tmp = self.next_temp();
+                                self.emit_line(&format!("  {tmp} = zext {val_ty} {val} to i64"));
+                                self.track_type(&tmp, "i64");
+                                tmp
+                            } else {
+                                self.coerce_value(&val, &val_ty, "i64")
+                            };
+                            let fmt_fn = if is_unsigned {
+                                "kryos_u64_to_string"
+                            } else {
+                                "kryos_builtin_to_string"
+                            };
+                            (fmt_fn, format!("i64 {coerced}"))
                         };
                         let handle_i64 = self.next_temp();
                         self.emit_line(&format!(

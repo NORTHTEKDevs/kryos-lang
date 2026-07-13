@@ -1,0 +1,18 @@
+// Regression: println(unsigned) direct-arg must not sign-extend on AOT.
+// The LLVM backend sign-extended the narrow int in the non-string println path
+// (u8 200 -> -56, u32 3e9 -> negative), diverging from Cranelift's zero-extend.
+// Both backends must now print the unsigned value. (launch-hardening 2026-07-13)
+// expect-stdout: 200
+// expect-stdout: 40000
+// expect-stdout: 3000000000
+// expect-stdout: 18446744073709551615
+fn main() {
+    let a: u8 = 200
+    println(a)
+    let b: u16 = 40000
+    println(b)
+    let c: u32 = 3000000000
+    println(c)
+    let d: u64 = 18446744073709551615
+    println(d)
+}

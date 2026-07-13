@@ -3641,17 +3641,26 @@ fn translate_rvalue<M: Module>(
                     } else if is_float_operand(&args[0], &translator.mir_func.locals) {
                         "kryos_f64_to_string"
                     } else {
-                        // Integer: widen to i64 for kryos_builtin_to_string.
-                        // Unsigned narrow ints zero-extend (sextend would
-                        // print u8 200 as -56).
+                        // Integer: widen to i64 for the string formatter. Unsigned
+                        // narrow ints zero-extend (sextend would print u8 200 as
+                        // -56); a 64-bit unsigned value additionally uses the
+                        // unsigned formatter so u64::MAX prints 18446744073709551615,
+                        // not -1 (matches the explicit to_string() path + the AOT
+                        // backend).
+                        let is_unsigned =
+                            is_unsigned_operand(&args[0], &translator.mir_func.locals);
                         if val_ty.is_int() && val_ty.bits() < 64 {
-                            val = if is_unsigned_operand(&args[0], &translator.mir_func.locals) {
+                            val = if is_unsigned {
                                 builder.ins().uextend(types::I64, val)
                             } else {
                                 builder.ins().sextend(types::I64, val)
                             };
                         }
-                        "kryos_builtin_to_string"
+                        if is_unsigned {
+                            "kryos_u64_to_string"
+                        } else {
+                            "kryos_builtin_to_string"
+                        }
                     };
 
                     let to_str_ref =
