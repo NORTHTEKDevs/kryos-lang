@@ -3017,7 +3017,16 @@ impl TypeChecker {
                 };
                 if !type_name.is_empty() {
                     let enum_def = self.env.lookup_enum(&type_name).cloned();
-                    let pats: Vec<&kryos_ast::Pattern> = arms.iter().map(|a| &a.pattern).collect();
+                    // Only GUARD-FREE arms guarantee coverage. An arm with a guard
+                    // (`Pos(x) if x > 100`) may not match at runtime, so it must
+                    // NOT count its variant/value as covered -- otherwise a
+                    // guard-narrowed arm silently made the match look exhaustive
+                    // and `Pos(5)` hit no arm at runtime. (P-03/P-04)
+                    let pats: Vec<&kryos_ast::Pattern> = arms
+                        .iter()
+                        .filter(|a| a.guard.is_none())
+                        .map(|a| &a.pattern)
+                        .collect();
                     let warnings = crate::exhaustive::check_exhaustive(
                         &type_name,
                         &pats,
