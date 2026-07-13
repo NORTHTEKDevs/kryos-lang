@@ -530,6 +530,31 @@ impl TypeChecker {
                 // Set Self type for the duration of this impl block registration.
                 let prev_self = self.current_self_type.take();
 
+                // Detect a method-name collision with a method already registered
+                // on this type from ANOTHER impl block (two same-named methods --
+                // from two traits, or a trait impl + an inherent impl -- mangle to
+                // the same symbol `Type__method` and fail at codegen with an
+                // internal DuplicateDefinition). Report it cleanly at check time.
+                // (No prior impl's methods for THIS block are registered yet, so
+                // lookup_method only sees earlier impls.)
+                for m in methods {
+                    if let Decl::Function {
+                        name: mname,
+                        span: mspan,
+                        ..
+                    } = m
+                    {
+                        if self.env.lookup_method(target, mname).is_some() {
+                            self.error(
+                                format!(
+                                    "type `{target}` already has a method named `{mname}` from another impl block; a type cannot define the same method name twice (both mangle to the same symbol). Rename one, or merge the impls"
+                                ),
+                                *mspan,
+                            );
+                        }
+                    }
+                }
+
                 // Bring the impl's own type parameters (`impl<T> Box<T>`) into
                 // scope as fresh type vars so method signatures that mention
                 // them (`self: Box<T>`, `-> T`) resolve instead of raising
