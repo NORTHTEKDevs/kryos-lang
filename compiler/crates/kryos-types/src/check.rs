@@ -1351,7 +1351,33 @@ impl TypeChecker {
                 }
             }
             Stmt::Throw { expr, .. } => {
-                self.infer_expr(expr);
+                let ty = self.infer_expr(expr);
+                let resolved = self.engine.resolve(&ty);
+                // The thrown value is stringified at the throw site and `catch`
+                // always binds a `str`. Codegen only stringifies str/bool/char/
+                // int/float; an aggregate (struct/enum/array/map/set/tuple/option/
+                // result/fn) was coerced to a raw pointer and concatenated as
+                // GARBAGE. Reject those so a rich error type fails at compile time
+                // rather than producing a corrupt catch value at runtime.
+                if matches!(
+                    resolved,
+                    Type::Struct { .. }
+                        | Type::Enum { .. }
+                        | Type::Array { .. }
+                        | Type::Tuple { .. }
+                        | Type::Map { .. }
+                        | Type::Set { .. }
+                        | Type::Option { .. }
+                        | Type::Result { .. }
+                        | Type::Function { .. }
+                ) {
+                    self.error(
+                        format!(
+                            "cannot throw a value of type `{resolved}`: the thrown value is stringified and `catch` binds a `str`, but this type has no string form -- build an error string first (e.g. `throw \"...\" + to_string(x)`)"
+                        ),
+                        expr.span(),
+                    );
+                }
             }
             Stmt::TryCatch {
                 try_block,

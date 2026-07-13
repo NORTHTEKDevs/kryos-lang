@@ -1,0 +1,25 @@
+// Regression: throwing an aggregate (struct/enum/array/map/tuple) was coerced to
+// a raw pointer and concatenated as GARBAGE into the catch str. Now rejected at
+// compile time; primitive throws (str/int/float/bool) still stringify correctly.
+// expect-stdout: caught: boom
+// expect-stdout: caught: 42
+fn thr(n: i64) -> i64 {
+    if n == 0 {
+        throw "boom"
+    }
+    throw n
+}
+fn main() {
+    try {
+        let a = thr(0)
+        println(to_string(a))
+    } catch e {
+        println("caught: " + e)
+    }
+    try {
+        let b = thr(42)
+        println(to_string(b))
+    } catch e {
+        println("caught: " + e)
+    }
+}
