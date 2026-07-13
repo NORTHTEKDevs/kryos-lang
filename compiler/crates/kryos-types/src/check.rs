@@ -982,6 +982,61 @@ impl TypeChecker {
 
                 let _ = span; // suppress unused warning
             }
+            Decl::Actor {
+                name,
+                state_fields,
+                handlers,
+                ..
+            } => {
+                // register_decl builds the actor's state struct + handler
+                // signatures for CALL-SITE typing, but the handler BODIES were
+                // never type-checked -- any type error, undefined variable/
+                // function, or bad field access inside a handler silently passed
+                // `kryos check`. Check each body here, exactly like an impl
+                // method, with `self` (the actor's state struct) and the message
+                // params in scope.
+                let actor_ty = Type::Struct {
+                    name: name.clone(),
+                    generics: vec![],
+                };
+                let prev_self = self.current_self_type.take();
+                self.current_self_type = Some(actor_ty.clone());
+                for h in handlers {
+                    self.env.push_scope();
+                    // Actor state fields are accessible (and mutable) by BARE
+                    // name inside a handler (implicit self), e.g. `count = count + 1`.
+                    for sf in state_fields {
+                        let ft = self.resolve_type_expr(&sf.ty);
+                        self.env.define_var_mut(sf.name.clone(), ft);
+                    }
+                    for p in &h.params {
+                        let pty = if p.name == "self" {
+                            actor_ty.clone()
+                        } else {
+                            p.ty
+                                .as_ref()
+                                .map(|t| self.resolve_type_expr(t))
+                                .unwrap_or_else(|| self.engine.fresh_var())
+                        };
+                        self.env.define_var(p.name.clone(), pty);
+                    }
+                    // `self` is available even in the bare-name handler style
+                    // (no explicit `self` param).
+                    if !h.params.iter().any(|p| p.name == "self") {
+                        self.env.define_var("self".to_string(), actor_ty.clone());
+                    }
+                    let prev_ret = self.current_return_type.take();
+                    // Handlers are fire-and-forget (registered return = Void).
+                    self.current_return_type = Some(Type::Void);
+                    let prev_fn = self.current_function_name.take();
+                    self.current_function_name = Some(h.name.clone());
+                    self.check_block(&h.body);
+                    self.current_function_name = prev_fn;
+                    self.current_return_type = prev_ret;
+                    self.env.pop_scope();
+                }
+                self.current_self_type = prev_self;
+            }
             Decl::Impl {
                 target,
                 methods,
