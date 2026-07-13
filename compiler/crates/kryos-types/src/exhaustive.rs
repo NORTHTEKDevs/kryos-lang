@@ -33,10 +33,42 @@ pub fn check_exhaustive(
 
     match subject_type_name {
         "bool" => check_bool(patterns, span),
+        // Builtin Option/Result have fixed variant sets but no user EnumDef, so
+        // check their required variants directly.
+        "Option" => check_known_variants(patterns, &["None", "Some"], span),
+        "Result" => check_known_variants(patterns, &["Ok", "Err"], span),
         _ if enum_def.is_some() => check_enum(patterns, enum_def.unwrap(), span),
         // Integer, string, and other infinite types require a wildcard/catch-all.
         _ => check_requires_wildcard(subject_type_name, span),
     }
+}
+
+/// Check that `patterns` name every variant in `required` (used for the builtin
+/// Option/Result types, which have no user-defined EnumDef). Mirrors check_enum
+/// but with a hard-coded variant set.
+fn check_known_variants(patterns: &[&Pattern], required: &[&str], span: Span) -> Vec<Diagnostic> {
+    let mut covered: HashSet<&str> = HashSet::new();
+    for pat in patterns {
+        collect_enum_variants(pat, &mut covered);
+    }
+    let mut missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|v| !covered.contains(v))
+        .collect();
+    if missing.is_empty() {
+        return vec![];
+    }
+    missing.sort_unstable();
+    let names = missing
+        .iter()
+        .map(|v| format!("`{v}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    vec![
+        Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}"))
+            .with_label(span, "add the missing variant(s) or a wildcard `_`"),
+    ]
 }
 
 /// Returns true if any pattern is a wildcard `_` or an identifier binding.

@@ -2962,6 +2962,14 @@ impl TypeChecker {
                     Type::Str => "str".to_string(),
                     Type::Char => "char".to_string(),
                     Type::Struct { name, .. } | Type::Enum { name, .. } => name.clone(),
+                    // Option/Result are distinct builtin Type variants, not
+                    // Type::Enum, so they were falling through to "" and skipping
+                    // exhaustiveness entirely -- a match on Option/Result missing
+                    // a None/Err arm (no wildcard) compiled clean and hit an
+                    // unhandled case at runtime. Route them to the finite-variant
+                    // exhaustiveness check.
+                    Type::Option { .. } => "Option".to_string(),
+                    Type::Result { .. } => "Result".to_string(),
                     _ => String::new(),
                 };
                 if !type_name.is_empty() {

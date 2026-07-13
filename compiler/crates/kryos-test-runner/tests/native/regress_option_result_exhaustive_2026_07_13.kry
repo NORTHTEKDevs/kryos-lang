@@ -1,0 +1,29 @@
+// Regression: Option/Result match exhaustiveness was entirely unchecked (their
+// Type variants fell through the exhaustiveness type-name map), so a match
+// missing None/Err with no wildcard compiled clean and hit an unhandled case at
+// runtime. This exercises the EXHAUSTIVE forms that must keep working; the
+// non-exhaustive rejection is covered by a kryos-types unit test. (2026-07-13)
+// expect-stdout: some 5
+// expect-stdout: none
+// expect-stdout: ok 3
+// expect-stdout: err bad
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+fn d(o: Option<i64>) -> str {
+    match o {
+        Some(x) => "some " + to_string(x),
+        None() => "none",
+    }
+}
+fn dr(r: Result<i64, str>) -> str {
+    match r {
+        Ok(v) => "ok " + to_string(v),
+        Err(e) => "err " + e,
+    }
+}
+fn main() {
+    println(d(Some(5)))
+    println(d(None()))
+    println(dr(Ok(3)))
+    println(dr(Err("bad")))
+}
