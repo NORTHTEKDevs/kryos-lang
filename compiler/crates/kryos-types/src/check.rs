@@ -1513,12 +1513,29 @@ impl TypeChecker {
                 }
             }
             Pattern::Or { patterns, .. } => {
+                // Or-pattern alternatives must be NON-BINDING (literals or bare
+                // enum variants) -- CLAUDE.md gotcha #14. A binding alternative
+                // was silently accepted and each alt overwrote the binding with
+                // its OWN field type: `Num(x) | Label(x)` (i64 vs str) produced
+                // type confusion, and `Pos(x) | Neg(y)` bound both names so the
+                // non-matching path read an uninitialized value. Reject them.
+                for alt in patterns.iter() {
+                    if pattern_is_binding(alt) {
+                        self.error(
+                            "or-pattern alternatives must be non-binding: use literals (`1 | 2`) or bare enum variants (`Red | Green`); a pattern that binds a variable is not allowed here because alternatives may bind different names or types"
+                                .to_string(),
+                            alt.span(),
+                        );
+                    }
+                }
                 for pat in patterns {
                     self.bind_pattern_with_mut(pat, subject_ty, outer_mut);
                 }
             }
         }
     }
+
+    // (free-fn `pattern_is_binding` is defined at module scope below)
 
     // ── Expression type inference ────────────────────────────────────
 
@@ -5528,6 +5545,22 @@ pub fn type_check_with_lambda_params(
 }
 
 // ── Missing return analysis ─────────────────────────────────────────
+
+/// A pattern is "binding" if it introduces any variable binding — an identifier
+/// pattern, or a compound pattern (tuple/struct/enum/or) containing one. Used to
+/// enforce that or-pattern alternatives are non-binding (CLAUDE.md gotcha #14):
+/// binding alternatives silently produced type confusion or uninitialized reads.
+fn pattern_is_binding(p: &kryos_ast::Pattern) -> bool {
+    use kryos_ast::Pattern;
+    match p {
+        Pattern::Ident { .. } => true,
+        Pattern::Wildcard { .. } | Pattern::Literal { .. } => false,
+        Pattern::Tuple { elements, .. } => elements.iter().any(pattern_is_binding),
+        Pattern::Struct { fields, .. } => fields.iter().any(|(_, sp)| pattern_is_binding(sp)),
+        Pattern::Enum { fields, .. } => fields.iter().any(pattern_is_binding),
+        Pattern::Or { patterns, .. } => patterns.iter().any(pattern_is_binding),
+    }
+}
 
 /// Returns `true` if the block is guaranteed to return a value on all
 /// control flow paths. This is a conservative check — it may produce

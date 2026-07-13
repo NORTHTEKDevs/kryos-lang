@@ -1,0 +1,27 @@
+// Regression: or-pattern alternatives that BIND (Num(x)|Label(x) with diff types,
+// or Pos(x)|Neg(y) with diff names) were silently accepted -> type confusion /
+// uninitialized read. Now rejected at check time. This exercises the VALID
+// non-binding forms (literals, bare variants) that must keep working. (2026-07-13)
+// expect-stdout: low
+// expect-stdout: high
+// expect-stdout: warm
+// expect-stdout: cool
+enum Color { Red, Green, Blue }
+fn kind(n: i64) -> str {
+    match n {
+        1 | 2 | 3 => "low",
+        _ => "high",
+    }
+}
+fn temp(c: Color) -> str {
+    match c {
+        Color.Red | Color.Green => "warm",
+        Color.Blue => "cool",
+    }
+}
+fn main() {
+    println(kind(2))
+    println(kind(9))
+    println(temp(Color.Green))
+    println(temp(Color.Blue))
+}
