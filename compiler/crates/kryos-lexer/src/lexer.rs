@@ -337,8 +337,32 @@ impl<'src> Lexer<'src> {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => self.scan_identifier(start),
 
             _ => {
-                let text = String::from(ch as char);
-                self.emit(TokenKind::Error, start, self.pos, text);
+                if ch >= 0x80 {
+                    // A non-ASCII byte where a token is expected (e.g. an
+                    // identifier that STARTS with non-ASCII like `日本語`).
+                    // advance() above took the lead byte; finish this UTF-8
+                    // scalar and absorb any adjacent non-ASCII run so we emit
+                    // ONE clear diagnostic rather than a per-byte Latin-1
+                    // mojibake cascade.
+                    while !self.at_end() && (self.bytes[self.pos] & 0xC0) == 0x80 {
+                        self.advance();
+                    }
+                    while !self.at_end() && self.bytes[self.pos] >= 0x80 {
+                        self.advance_utf8();
+                    }
+                    let text = self.src[start..self.pos].to_string();
+                    let span = Span::new(self.file_id, start as u32, self.pos as u32);
+                    let diag = Diagnostic::error("non-ASCII character in source")
+                        .with_label(span, "not valid outside a string or char literal")
+                        .with_note(
+                            "Kryos identifiers and source tokens must be ASCII; put non-ASCII text inside a string or char literal",
+                        );
+                    self.emit_diag(diag);
+                    self.emit(TokenKind::Error, start, self.pos, text);
+                } else {
+                    let text = String::from(ch as char);
+                    self.emit(TokenKind::Error, start, self.pos, text);
+                }
             }
         }
     }
@@ -644,11 +668,39 @@ impl<'src> Lexer<'src> {
     }
 
     fn scan_identifier(&mut self, start: usize) {
-        while !self.at_end() && (self.peek().is_ascii_alphanumeric() || self.peek() == b'_') {
-            self.advance();
+        let mut has_non_ascii = false;
+        loop {
+            if self.at_end() {
+                break;
+            }
+            let b = self.peek();
+            if b.is_ascii_alphanumeric() || b == b'_' {
+                self.advance();
+            } else if b >= 0x80 {
+                // A non-ASCII byte mid-identifier (e.g. the `é` in `café`).
+                // Absorb the whole UTF-8 char so we report ONE clean error for
+                // the identifier instead of a per-byte Latin-1-misdecoded
+                // cascade (previously ~24 mojibake errors for one identifier).
+                has_non_ascii = true;
+                self.advance_utf8();
+            } else {
+                break;
+            }
         }
 
         let word = &self.src[start..self.pos];
+
+        if has_non_ascii {
+            let span = Span::new(self.file_id, start as u32, self.pos as u32);
+            let diag = Diagnostic::error("identifier contains non-ASCII characters")
+                .with_label(span, "identifiers must be ASCII")
+                .with_note(
+                    "Kryos identifiers use ASCII letters, digits, and `_`; put non-ASCII text inside a string or char literal",
+                );
+            self.emit_diag(diag);
+            self.emit(TokenKind::Error, start, self.pos, word.to_string());
+            return;
+        }
 
         let kind = if let Some(kw) = keyword_lookup(word) {
             kw

@@ -777,3 +777,20 @@ fn test_brace_json_gotcha_note() {
         "expected interpolation note in {diags:?}"
     );
 }
+
+// ===== Non-ASCII identifier: one clean Error token, not a per-byte cascade (2026-07-13) =====
+#[test]
+fn non_ascii_identifier_is_one_error_not_a_byte_cascade() {
+    // café / 日本 previously produced ~24 Latin-1-misdecoded Error tokens
+    // (one per raw UTF-8 byte). Each bad identifier must now be a SINGLE Error
+    // token with its full UTF-8 text preserved (no mojibake).
+    let e: Vec<_> = lex("café").into_iter().filter(|t| t.kind == TokenKind::Error).collect();
+    assert_eq!(e.len(), 1, "ascii-starting non-ascii ident must be one Error, got {}", e.len());
+    assert_eq!(e[0].text, "café");
+    let e2: Vec<_> = lex("日本").into_iter().filter(|t| t.kind == TokenKind::Error).collect();
+    assert_eq!(e2.len(), 1, "non-ascii-starting ident must be one Error, got {}", e2.len());
+    assert_eq!(e2[0].text, "日本");
+    // Non-ASCII inside a string literal is fine -- no Error tokens.
+    let e3: Vec<_> = lex("\"café 日本\"").into_iter().filter(|t| t.kind == TokenKind::Error).collect();
+    assert!(e3.is_empty(), "non-ascii inside a string must not error");
+}
