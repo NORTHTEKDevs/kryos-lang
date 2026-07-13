@@ -129,4 +129,47 @@ impl Stmt {
             | Self::DenyBlock { span, .. } => *span,
         }
     }
+
+    /// If this is a trailing `if ... else ...` in a value-position block,
+    /// return the equivalent `IfExpr` so the block can use it as its tail
+    /// VALUE. A trailing `if` parses as `Stmt::If`, and block-value logic
+    /// only recognized `Stmt::Expr`, so `let x = { if c { a } else { b } }`
+    /// (and a match arm `x => { if ... }`) mis-typed as `void`/printed
+    /// empty. `elif` clauses fold into nested IfExprs. Returns `None` for an
+    /// `if` without an `else` (a side-effecting statement whose value is
+    /// `void`) or any non-`if` statement, preserving existing behavior.
+    pub fn as_value_if_expr(&self) -> Option<Expr> {
+        let Self::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block: Some(final_else),
+            span,
+        } = self
+        else {
+            return None;
+        };
+        let mut else_branch: Option<Block> = Some(final_else.clone());
+        for (econd, eblock) in elif_clauses.iter().rev() {
+            let nested = Expr::IfExpr {
+                condition: Box::new(econd.clone()),
+                then_branch: eblock.clone(),
+                else_branch: else_branch.take(),
+                span: *span,
+            };
+            else_branch = Some(Block {
+                stmts: vec![Stmt::Expr {
+                    expr: nested,
+                    span: *span,
+                }],
+                span: *span,
+            });
+        }
+        Some(Expr::IfExpr {
+            condition: Box::new(condition.clone()),
+            then_branch: then_block.clone(),
+            else_branch,
+            span: *span,
+        })
+    }
 }

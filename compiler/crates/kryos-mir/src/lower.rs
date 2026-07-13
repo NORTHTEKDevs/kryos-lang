@@ -6102,17 +6102,15 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             // the Void catch-all typed `let x = { 40 + 2 }` (and the
             // `unsafe { ... }` form) as a void slot -- a `store void` codegen
             // error on AOT.
-            block
-                .stmts
-                .last()
-                .and_then(|s| {
-                    if let ast::Stmt::Expr { expr, .. } = s {
-                        Some(infer_expr_type(ctx, expr))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(MirType::Void)
+            match block.stmts.last() {
+                Some(ast::Stmt::Expr { expr, .. }) => infer_expr_type(ctx, expr),
+                // A trailing `if ... else ...` is the block's tail value.
+                Some(s) => s
+                    .as_value_if_expr()
+                    .map(|e| infer_expr_type(ctx, &e))
+                    .unwrap_or(MirType::Void),
+                None => MirType::Void,
+            }
         }
 
         _ => MirType::Void,
@@ -7388,6 +7386,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if i == block.stmts.len() - 1 {
                     if let ast::Stmt::Expr { expr, .. } = stmt {
                         return lower_expr_to_rvalue(ctx, expr);
+                    }
+                    // A trailing `if ... else ...` is the block's tail VALUE
+                    // (parsed as Stmt::If). Without this it lowered as a
+                    // side-effecting statement and the block yielded
+                    // ConstNone -- `let x = { if c { a } else { b } }` and a
+                    // match arm `x => { if ... }` produced empty.
+                    if let Some(if_expr) = stmt.as_value_if_expr() {
+                        return lower_expr_to_rvalue(ctx, &if_expr);
                     }
                 }
                 lower_stmt(ctx, stmt);

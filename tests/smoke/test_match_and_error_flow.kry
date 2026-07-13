@@ -1,0 +1,100 @@
+// Match depth + error-propagation control flow: block-valued match arms
+// (with a tail if), enum destructuring, `?` in a loop (success + early
+// error return), nested try/catch with rethrow, and or-patterns.
+// Identical on both backends.
+// expect-stdout: c=zero,negative,small,big
+// expect-stdout: d=leaf:7,node:7,empty
+// expect-stdout: sum-ok=12
+// expect-stdout: sum-err=divzero
+// expect-stdout: nested-catch=caught-inner then rethrown-inner
+// expect-stdout: orpat=even odd even odd even odd
+
+use std::result::{Result, Ok, Err}
+
+enum Tree {
+    Leaf(i64),
+    Node(i64, i64),
+    Empty,
+}
+
+fn classify(n: i64) -> str {
+    return match n {
+        0 => "zero",
+        x => {
+            if x < 0 {
+                "negative"
+            } elif x > 100 {
+                "big"
+            } else {
+                "small"
+            }
+        },
+    }
+}
+
+fn describe(t: Tree) -> str {
+    return match t {
+        Tree.Leaf(v) => "leaf:" + to_string(v),
+        Tree.Node(a, b) => "node:" + to_string(a + b),
+        Tree.Empty => "empty",
+    }
+}
+
+fn safe_div(a: i64, b: i64) -> Result<i64, str> {
+    if b == 0 {
+        return Err("divzero")
+    }
+    return Ok(a / b)
+}
+
+fn sum_divs(xs: [i64], d: i64) -> Result<i64, str> {
+    let mut total = 0
+    let mut i = 0
+    while i < len(xs) {
+        let q = safe_div(xs[i], d)?
+        total = total + q
+        i = i + 1
+    }
+    return Ok(total)
+}
+
+fn main() {
+    println("c=" + classify(0) + "," + classify(0 - 5) + "," + classify(50) + "," + classify(200))
+    println("d=" + describe(Tree.Leaf(7)) + "," + describe(Tree.Node(3, 4)) + "," + describe(Tree.Empty))
+
+    match sum_divs([10, 20, 30], 5) {
+        Ok(v) => println("sum-ok=" + to_string(v)),
+        Err(e) => println("sum-ok=err:" + e),
+    }
+    match sum_divs([10, 0, 30], 0) {
+        Ok(v) => println("sum-err=ok:" + to_string(v)),
+        Err(e) => println("sum-err=" + e),
+    }
+
+    let mut r = ""
+    try {
+        try {
+            throw "inner"
+        } catch e1 {
+            r = "caught-" + e1
+            throw "rethrown-" + e1
+        }
+    } catch e2 {
+        r = r + " then " + e2
+    }
+    println("nested-catch=" + r)
+
+    let mut i = 0
+    let mut labels = ""
+    while i < 6 {
+        let lab = match i {
+            0 | 2 | 4 => "even",
+            1 | 3 | 5 => "odd",
+            _ => "?",
+        }
+        labels = labels + lab + " "
+        i = i + 1
+    }
+    // trim trailing space
+    println("orpat=" + substr(labels, 0, len(labels) - 1))
+}

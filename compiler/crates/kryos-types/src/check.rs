@@ -1175,13 +1175,25 @@ impl TypeChecker {
                     }
                 };
 
-                // Record unannotated empty-array bindings so the MIR can type
-                // them from the element type unified by later `push` calls.
+                // Record the checker's authoritative type for unannotated
+                // bindings the MIR's static inference gets wrong:
+                //   - empty-array `let a = []` (element type comes from later
+                //     `push` calls);
+                //   - block-valued `let z = { ...; tail }` whose tail
+                //     references a block-local -- MIR's infer_expr_type can't
+                //     resolve a local declared earlier in the same block, so
+                //     it defaulted to i64 and mis-coerced a str/ptr value into
+                //     an `inttoptr` on AOT (clang rejected the module).
+                // `concrete_type_to_type_expr` (applied when the map is
+                // consumed) keeps only fully-resolved concrete types.
                 if ty.is_none() {
-                    if let Some(Expr::ArrayLiteral { elements, .. }) = value.as_ref() {
-                        if elements.is_empty() {
-                            self.resolved_let_types.insert(*span, final_ty.clone());
-                        }
+                    let record = match value.as_ref() {
+                        Some(Expr::ArrayLiteral { elements, .. }) => elements.is_empty(),
+                        Some(Expr::Block { .. }) => true,
+                        _ => false,
+                    };
+                    if record {
+                        self.resolved_let_types.insert(*span, final_ty.clone());
                     }
                 }
 
@@ -3102,6 +3114,13 @@ impl TypeChecker {
                     if i == last_idx {
                         if let Stmt::Expr { expr, .. } = stmt {
                             block_ty = self.infer_expr(expr);
+                            continue;
+                        }
+                        // A trailing `if ... else ...` is the block's tail
+                        // VALUE (mirrors a bare if-expression). It parses as
+                        // Stmt::If, so synthesize the equivalent IfExpr.
+                        if let Some(if_expr) = stmt.as_value_if_expr() {
+                            block_ty = self.infer_expr(&if_expr);
                             continue;
                         }
                     }

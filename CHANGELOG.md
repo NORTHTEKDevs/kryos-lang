@@ -38,6 +38,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build server) could read each other's half-written IR and fail with a
   cryptic clang error. Temp files are now unique per process + build.
 
+### Fixed — a trailing `if` is a block's value
+- **`let x = { if c { a } else { b } }` and match arms `x => { if ... }`
+  now yield the `if`'s value.** A trailing `if` parses as `Stmt::If`, and
+  block-value logic (checker + MIR) only recognized `Stmt::Expr`, so such a
+  block mis-typed as `void` / printed empty — e.g. `match n { 0 => "zero",
+  x => { if x < 0 { "neg" } else { "pos" } } }` returned empty for the
+  non-zero arm. A trailing `if ... else ...` (with `elif` clauses folded
+  into nested IfExprs) is now the block's tail value in the checker, MIR
+  block lowering, and MIR block type inference. A bare `let x = if ...`
+  already worked; this brings block-wrapped `if`s to parity. Verified
+  identical on both backends (simple let, match arm, elif chain, function
+  body, nested block); bootstrap byte-identical.
+- **Block-valued `let` uses the checker's authoritative type.** MIR's
+  static inference can't resolve a block-local referenced in a block's
+  tail (`let z = { let inner = ...; inner + "!" }`), defaulting to i64 and
+  mis-coercing a str/ptr into an `inttoptr` on AOT. The checker now records
+  the resolved type for block-valued lets so MIR uses it.
+
+  Known remaining edge (documented, gotcha added): a block-local bound to a
+  RUNTIME string and used in a compound tail —
+  `{ let inner = to_string(x) + "y"; inner + "!" }` — still diverges on AOT
+  (a block-local lifetime issue, distinct from the typing fixes above; a
+  string-literal `inner` works). Surfaced by the differential fuzzer's new
+  block-value vocabulary; scoped out of the CI fuzz smoke pending a fix.
+
 ### Fixed — generic method instantiation
 - **A bare `-> T` generic method return resolves to the receiver's concrete
   type (gotcha #17 closed for scalars).** `to_string(box_of_f64.get())`

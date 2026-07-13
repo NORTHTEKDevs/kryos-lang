@@ -220,7 +220,7 @@ class Gen:
             self.indent -= 1
             self.w("}")
             self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
-        elif k < 0.85 and d < 2:
+        elif k < 0.80 and d < 2:
             v = self.nm("l"); n = r.randint(2, 6)
             self.w(f"let mut {v} = 0")
             # The counter is NOT added to self.iv, so body statements can
@@ -235,6 +235,19 @@ class Gen:
             self.indent -= 1
             self.w("}")
             self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
+        elif k < 0.85 and d < 2:
+            # block-tail `if` as a value: `let v = { if b { x } else { y } }`
+            # (the trailing-if-is-the-block-value class). NOTE: a block-local
+            # bound to a RUNTIME string then used in a compound tail
+            # (`{ let inner = to_string(x) + "y"; inner + "!" }`) is a KNOWN
+            # separate AOT bug (block-local lifetime), deliberately NOT
+            # generated here so this vocabulary stays green.
+            v = self.nm("bt")
+            self.w(f"let {v} = {{")
+            self.w(f"    if {self.be()} {{ {self.ie()} }} else {{ {self.ie()} }}")
+            self.w("}")
+            self.w(f'println("bt=" + to_string({v}))')
+            self.iv.append(v)
         elif k < 0.87 and d < 2:
             # loop with break/continue on a data-dependent condition
             v = self.nm("l"); n = r.randint(3, 7)

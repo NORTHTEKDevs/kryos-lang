@@ -1,0 +1,61 @@
+// Regression: a trailing `if ... else ...` is a block's tail VALUE. It
+// parses as Stmt::If, and block-value logic only recognized Stmt::Expr,
+// so `let x = { if c { a } else { b } }` mis-typed as void and a match arm
+// `x => { if ... }` printed empty. Now the trailing if (with elif folding)
+// is the block value in both the checker and MIR. Identical on both
+// backends.
+// expect-stdout: let-if=yes
+// expect-stdout: match-arm=neg,pos
+// expect-stdout: elif=mid
+// expect-stdout: fn-tail=positive
+// expect-stdout: nested=inner!
+
+fn classify(x: i64) -> str {
+    return match x {
+        0 => "zero",
+        n => {
+            if n < 0 { "neg" } else { "pos" }
+        },
+    }
+}
+
+fn grade(n: i64) -> str {
+    // trailing if with elif chain as a block value
+    let r = {
+        if n < 0 {
+            "low"
+        } elif n < 100 {
+            "mid"
+        } else {
+            "high"
+        }
+    }
+    return r
+}
+
+fn tail_return(n: i64) -> str {
+    // function-body tail if (implicit return)
+    if n > 0 { "positive" } else { "nonpos" }
+}
+
+fn main() {
+    let y = {
+        if 1 < 2 { "yes" } else { "no" }
+    }
+    println("let-if=" + y)
+
+    println("match-arm=" + classify(0 - 4) + "," + classify(9))
+
+    println("elif=" + grade(50))
+
+    println("fn-tail=" + tail_return(7))
+
+    // nested block whose inner tail is an if
+    let z = {
+        let inner = {
+            if 3 > 2 { "inner" } else { "x" }
+        }
+        inner + "!"
+    }
+    println("nested=" + z)
+}
