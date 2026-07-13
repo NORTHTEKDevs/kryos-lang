@@ -3657,14 +3657,18 @@ pub fn type_check_with_lambda_params(
         ret: Type::Bool,
     });
 
-    // map_delete(m, key: str) -> map
+    // map_delete(m, key) -> map. The key is lenient (Type::Error) like
+    // `contains`, so it works on BOTH str- and int-keyed maps (a hardcoded
+    // `key: str` rejected `map_delete(int_map, 1)` with E0100, even though
+    // the MIR dispatches to kryos_map_delete / _str by the map's key type).
+    // Returns the map handle for `m = map_delete(m, k)`.
     checker.env.define_function(FunctionSig {
         name: "map_delete".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![
             ("m".to_string(), Type::Error),
-            ("key".to_string(), Type::Str),
+            ("key".to_string(), Type::Error),
         ],
         ret: Type::Error,
     });

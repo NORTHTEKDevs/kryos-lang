@@ -400,8 +400,12 @@ pub extern "C" fn kryos_map_has_str(map: i64, key: i64) -> i64 {
 /// Uses tombstone-free backward-shift deletion for open-addressing.
 #[no_mangle]
 pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
+    // Deletes in place and RETURNS THE MAP HANDLE (the checker types
+    // `map_delete(m, k) -> map`, and idiomatic use is `m = map_delete(m, k)`).
+    // Returning the old value here made `m = map_delete(m, k)` overwrite `m`
+    // with an i64, and the next map op dereferenced it -> segfault.
     if map == 0 {
-        return 0;
+        return map;
     }
     unsafe {
         let header = map as *mut MapHeader;
@@ -412,10 +416,9 @@ pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
         for _ in 0..capacity {
             let entry = &*entries.add(idx);
             if !entry.occupied {
-                return 0;
+                return map;
             }
             if entry.key == key {
-                let old_value = entry.value;
                 // Mark as empty and backward-shift subsequent entries.
                 (*entries.add(idx)).occupied = false;
                 (*header).len -= 1;
@@ -441,19 +444,20 @@ pub extern "C" fn kryos_map_delete(map: i64, key: i64) -> i64 {
                     }
                     j = (j + 1) & (capacity - 1);
                 }
-                return old_value;
+                return map;
             }
             idx = (idx + 1) & (capacity - 1);
         }
-        0
+        map
     }
 }
 
 /// Delete a string key from the map. Returns the old value, or 0 if not found.
 #[no_mangle]
 pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
+    // Deletes in place and RETURNS THE MAP HANDLE (see kryos_map_delete).
     if map == 0 {
-        return 0;
+        return map;
     }
     unsafe {
         let header = map as *mut MapHeader;
@@ -465,13 +469,12 @@ pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
         for _ in 0..capacity {
             let entry = &*entries.add(idx);
             if !entry.occupied {
-                return 0;
+                return map;
             }
             if crate::string::kryos_string_eq(
                 entry.key as *const crate::string::KryosString,
                 key as *const crate::string::KryosString,
             ) {
-                let old_value = entry.value;
                 (*entries.add(idx)).occupied = false;
                 (*header).len -= 1;
                 // Backward-shift for string-keyed entries.
@@ -498,11 +501,11 @@ pub extern "C" fn kryos_map_delete_str(map: i64, key: i64) -> i64 {
                     }
                     j = (j + 1) & (capacity - 1);
                 }
-                return old_value;
+                return map;
             }
             idx = (idx + 1) & (capacity - 1);
         }
-        0
+        map
     }
 }
 

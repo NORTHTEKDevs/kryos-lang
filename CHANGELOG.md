@@ -56,6 +56,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mis-coercing a str/ptr into an `inttoptr` on AOT. The checker now records
   the resolved type for block-valued lets so MIR uses it.
 
+### Fixed — `map_delete` segfaulted and rejected int keys
+- **`m = map_delete(m, key)` no longer segfaults.** The checker types
+  `map_delete(m, k) -> map` and the idiomatic use threads the map back, but
+  the runtime returned the DELETED VALUE (an i64), not the map. So
+  `m = map_delete(m, k)` overwrote `m` with a scalar, and the next map
+  operation dereferenced it — a segmentation fault (exit 139) on both
+  backends. Both `kryos_map_delete` and `kryos_map_delete_str` now return
+  the map handle (deletion is still in place).
+- **`map_delete` works on int-keyed maps.** The checker signature hardcoded
+  `key: str`, so `map_delete(int_map, 1)` failed with E0100 even though the
+  MIR already dispatches to `kryos_map_delete` / `_str` by the map's key
+  type. The key parameter is now lenient (like `contains`), accepting both
+  str- and int-keyed maps.
+
 ### Fixed — string-temp double-free in nested statements
 - **A string temp created in a nested statement is no longer double-freed.**
   `drop_unescaped_str_temps` runs at the end of every `lower_stmt` over the

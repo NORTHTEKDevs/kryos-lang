@@ -1,0 +1,38 @@
+// Regression: `map_delete` returns the MAP handle (the checker types it
+// `-> map`, idiomatic use is `m = map_delete(m, k)`). The runtime returned
+// the deleted VALUE instead, so `m = map_delete(m, k)` overwrote `m` with
+// an i64 and the next map op dereferenced it -> SEGFAULT. Both str- and
+// int-keyed maps. Identical on both backends.
+// expect-stdout: str: len=1 has-b=false has-a=true a=1
+// expect-stdout: str-readd: b=20 len=2
+// expect-stdout: int: len=1 has-2=false has-1=false has-3=true
+// expect-stdout: del-missing: len=1 (unchanged)
+
+fn main() {
+    // str-keyed delete
+    let mut m: map<str, i64> = {}
+    m["a"] = 1
+    m["b"] = 2
+    m = map_delete(m, "b")
+    println("str: len=" + to_string(len(m)) + " has-b=" + to_string(contains(m, "b"))
+        + " has-a=" + to_string(contains(m, "a")) + " a=" + to_string(m["a"]))
+    // re-add after delete
+    m["b"] = 20
+    println("str-readd: b=" + to_string(m["b"]) + " len=" + to_string(len(m)))
+
+    // int-keyed delete
+    let mut n: map<i64, i64> = {}
+    n[1] = 10
+    n[2] = 20
+    n[3] = 30
+    n = map_delete(n, 1)
+    n = map_delete(n, 2)
+    println("int: len=" + to_string(len(n)) + " has-2=" + to_string(contains(n, 2))
+        + " has-1=" + to_string(contains(n, 1)) + " has-3=" + to_string(contains(n, 3)))
+
+    // deleting a missing key leaves the map usable (returns the map)
+    let mut p: map<str, i64> = {}
+    p["k"] = 5
+    p = map_delete(p, "absent")
+    println("del-missing: len=" + to_string(len(p)) + " (unchanged)")
+}
