@@ -201,11 +201,22 @@ fn split(s: str, delimiter: str) -> [str] {
     let dlen = len(delimiter)
 
     if dlen == 0 {
-        // Split into individual characters
+        // Split into individual characters (whole UTF-8 codepoints). Byte-wise
+        // `s[i]` split multibyte characters into invalid single-byte fragments,
+        // so replace(s, "", x) / split(s, "") corrupted any non-ASCII input.
         let mut i = 0
         while i < slen {
-            push(result, s[i])
-            i = i + 1
+            let b = char_code(substr(s, i, i + 1))
+            let mut step = 1
+            if b >= 240 {
+                step = 4
+            } elif b >= 224 {
+                step = 3
+            } elif b >= 192 {
+                step = 2
+            }
+            result = push(result, substr(s, i, i + step))
+            i = i + step
         }
         return result
     }
