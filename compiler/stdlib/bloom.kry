@@ -8,7 +8,12 @@
 /// Create an empty filter with `bits` bit capacity. The actual i64
 /// array length is ceil(bits / 64).
 fn new_filter(bits: i64) -> [i64] {
-    let words = (bits + 63) / 64
+    // A non-positive bit count produced an EMPTY backing array; add() then did
+    // `x % bits` with bits=0 and panicked (integer division by zero). Clamp to at
+    // least one word so a misconfigured (e.g. dynamically-sized-to-0) filter
+    // degenerates safely instead of crashing.
+    let safe_bits = if bits < 1 { 1 } else { bits }
+    let words = (safe_bits + 63) / 64
     let mut out: [i64] = []
     let mut i: i64 = 0
     while i < words {
@@ -60,6 +65,10 @@ fn hash_fnv(s: str, salt: i64) -> i64 {
 }
 
 fn abs_mod(x: i64, m: i64) -> i64 {
+    // Defensive: a non-positive modulus (a 0-bit filter) would panic on `x % m`.
+    if m <= 0 {
+        return 0
+    }
     let r = x % m
     if r < 0 { return r + m }
     return r

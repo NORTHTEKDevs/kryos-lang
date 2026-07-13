@@ -294,6 +294,14 @@ fn float_fixed(n: f64, decimals: i64) -> str {
         frac_str = "0" + frac_str
     }
 
+    // With 0 decimals there is no fractional part -- the old code still appended
+    // "." + frac_str, so float_fixed(3.0, 0) returned "3.0" instead of "3".
+    if decimals <= 0 {
+        if negative {
+            return "-" + int_str
+        }
+        return int_str
+    }
     let mut result = int_str + "." + frac_str
     if negative {
         result = "-" + result

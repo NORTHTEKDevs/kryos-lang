@@ -335,24 +335,56 @@ fn reverse(s: str) -> str {
 
 // --- Character access --------------------------------------------------------
 
-/// Split a string into an array of single characters.
+/// Split a string into an array of single characters (whole UTF-8 codepoints).
 fn chars(s: str) -> [str] {
     let mut result = []
     let slen = len(s)
     let mut i = 0
     while i < slen {
-        push(result, s[i])
-        i = i + 1
+        let b = char_code(substr(s, i, i + 1))
+        let mut step = 1
+        if b >= 240 {
+            step = 4
+        } elif b >= 224 {
+            step = 3
+        } elif b >= 192 {
+            step = 2
+        }
+        // Byte-wise `s[i]` split multibyte characters into invalid single-byte
+        // fragments (café -> 5 elements, é broken in half). Push whole codepoints.
+        result = push(result, substr(s, i, i + step))
+        i = i + step
     }
     return result
 }
 
-/// Get the character at index i, or empty string if out of bounds.
+/// Get the character (whole UTF-8 codepoint) at codepoint index i, or empty
+/// string if out of bounds. Byte-wise `s[i]` returned an invalid fragment for
+/// any index landing inside a multibyte character.
 fn char_at(s: str, i: i64) -> str {
-    if i < 0 or i >= len(s) {
+    if i < 0 {
         return ""
     }
-    return s[i]
+    let slen = len(s)
+    let mut bytepos = 0
+    let mut cp = 0
+    while bytepos < slen {
+        let b = char_code(substr(s, bytepos, bytepos + 1))
+        let mut step = 1
+        if b >= 240 {
+            step = 4
+        } elif b >= 224 {
+            step = 3
+        } elif b >= 192 {
+            step = 2
+        }
+        if cp == i {
+            return substr(s, bytepos, bytepos + step)
+        }
+        cp = cp + 1
+        bytepos = bytepos + step
+    }
+    return ""
 }
 
 /// Extract a substring from start (inclusive) to end (exclusive).
