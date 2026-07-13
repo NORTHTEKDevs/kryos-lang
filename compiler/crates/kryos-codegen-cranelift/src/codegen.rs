@@ -6929,6 +6929,17 @@ fn emit_exception_cleanup_drops<M: Module>(
         .locals
         .iter()
         .filter(|l| !param_ids.contains(&l.id.0))
+        // Skip unnamed compiler temporaries. A temp (e.g. the `to_string(x)`
+        // result inside `"pre-" + to_string(x)`) is CONSUMED within its own
+        // statement -- string concat frees its operands inline -- so at any
+        // LATER throw point its variable holds a stale (already-freed) pointer
+        // and the null guard below cannot tell. Re-dropping it here is a
+        // double-free (KRYOS_FREE_DIAG-confirmed on the JIT). Named user locals
+        // are retained before consumption (refcount-protected), so they drop
+        // exactly once and stay in the set. Worst case of skipping a temp is a
+        // bounded leak if it was genuinely owned at an intra-statement throw --
+        // memory-safe, unlike the double-free it replaces.
+        .filter(|l| l.name.is_some())
         .filter(|l| {
             matches!(
                 l.ty,

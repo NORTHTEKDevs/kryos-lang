@@ -1,0 +1,25 @@
+// Regression: a heap temporary (to_string(x) inside a concat) is freed inline,
+// then a callee throws. The Cranelift exception-cleanup re-dropped the stale
+// temp pointer -> KRYOS_FREE_DIAG double-free. Output was correct, so silent.
+// This fixture guards observable behavior on both backends; the memsafety
+// fuzzer (KRYOS_FREE_DIAG) covers the over-free angle. (launch-hardening 2026-07-13)
+// expect-stdout: caught: boom
+// expect-stdout: done
+fn risky(x: i64) -> str {
+    if x == 0 { throw "boom" }
+    return "ok"
+}
+fn build(x: i64) -> str {
+    let first: str = "pre-" + to_string(x)
+    let second: str = risky(x)
+    return first + second
+}
+fn main() {
+    try {
+        let r = build(0)
+        println(r)
+    } catch e {
+        println("caught: {e}")
+    }
+    println("done")
+}
