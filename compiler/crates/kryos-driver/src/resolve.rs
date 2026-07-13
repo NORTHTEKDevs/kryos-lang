@@ -358,12 +358,31 @@ fn record_origin(fn_name: &str, module_last: &str) {
 /// the receiver identifier exactly matches an imported module's last segment.
 pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
-    let (origins, modules): (std::collections::HashMap<String, String>, std::collections::HashSet<String>) =
+    let (origins, mut modules): (std::collections::HashMap<String, String>, std::collections::HashSet<String>) =
         IMPORT_ORIGINS.with(|o| {
             let m = o.borrow();
             let mods = m.values().cloned().collect();
             (m.clone(), mods)
         });
+    // Treat every real stdlib module as a module qualifier even if nothing was
+    // imported from it, so `csv::parse` (csv is a real module the caller did not
+    // import) is validated against `parse`'s actual origin instead of silently
+    // binding to whatever `parse` is in scope. Without this, only qualifiers
+    // naming an already-imported-from module were checked. (Type static-method
+    // receivers like `Point::new` are CamelCase and never match a lowercase
+    // stdlib module name, so they are still skipped.)
+    if let Some(dir) = resolve_stdlib_dir_for_diagnostics() {
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.extension().and_then(|x| x.to_str()) == Some("kry") {
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        modules.insert(stem.to_string());
+                    }
+                }
+            }
+        }
+    }
     if modules.is_empty() {
         return diags;
     }
@@ -604,8 +623,12 @@ pub fn resolve_imports(
                 .filter_map(decl_name_of)
                 .collect();
             // Enum VARIANTS are importable by name (`use std::result::{Ok,
-            // Err}` is the documented pattern), and extern items are callable
-            // exports; neither is a top-level named decl, so include both.
+            // Err}` is the documented pattern). Extern items are NOT: they are
+            // the raw primitives behind `pub fn` wrappers, so importing one
+            // directly bypasses the wrapper's invariants (a visibility gap).
+            // Track them separately so we can give a clear "private/internal"
+            // error rather than silently allowing the import.
+            let mut extern_item_names: HashSet<String> = HashSet::new();
             for decl in &imported_module.declarations {
                 match decl {
                     Decl::Enum { variants, .. } => {
@@ -616,7 +639,7 @@ pub fn resolve_imports(
                     Decl::Extern { items, .. } => {
                         for item in items {
                             if let Some(n) = decl_name_of(item) {
-                                exported.insert(n);
+                                extern_item_names.insert(n);
                             }
                         }
                     }
@@ -625,6 +648,22 @@ pub fn resolve_imports(
             }
             let mut missing: Vec<Diagnostic> = Vec::new();
             for name in &selected {
+                // Underscore-prefixed names are the stdlib's private-helper
+                // convention; extern items are backing primitives. Neither is
+                // public API -- reject a direct import even though the symbol
+                // exists in the module, so internal helpers stay encapsulated.
+                if name.starts_with('_') || extern_item_names.contains(name) {
+                    missing.push(
+                        Diagnostic::error(format!(
+                            "`{name}` is a private/internal member of module `{module_name}` and cannot be imported"
+                        ))
+                        .with_label(span, "imported here")
+                        .with_note(
+                            "only public (non-underscore) functions, types, constants, and enum variants are importable",
+                        ),
+                    );
+                    continue;
+                }
                 if !exported.contains(name) {
                     // Suggest a close match to catch typos.
                     let suggestion = exported
