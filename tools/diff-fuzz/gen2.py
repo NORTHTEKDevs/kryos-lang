@@ -237,17 +237,22 @@ class Gen:
             self.iv, self.sv, self.av, self.bv, self.mv, self.sav, self.fv = snap
         elif k < 0.85 and d < 2:
             # block-tail `if` as a value: `let v = { if b { x } else { y } }`
-            # (the trailing-if-is-the-block-value class). NOTE: a block-local
-            # bound to a RUNTIME string then used in a compound tail
-            # (`{ let inner = to_string(x) + "y"; inner + "!" }`) is a KNOWN
-            # separate AOT bug (block-local lifetime), deliberately NOT
-            # generated here so this vocabulary stays green.
+            # (the trailing-if-is-the-block-value class), AND a block-local
+            # bound to a RUNTIME string used in a compound tail
+            # (`{ let inner = to_string(x) + "y"; inner + "!" }`) -- the
+            # str-temp double-free class, now fixed.
             v = self.nm("bt")
             self.w(f"let {v} = {{")
             self.w(f"    if {self.be()} {{ {self.ie()} }} else {{ {self.ie()} }}")
             self.w("}")
-            self.w(f'println("bt=" + to_string({v}))')
             self.iv.append(v)
+            sv = self.nm("bs")
+            self.w(f"let {sv} = {{")
+            self.w(f"    let inner = to_string({self.ie()}) + {self.se()}")
+            self.w(f'    inner + "!"')
+            self.w("}")
+            self.w(f'println("bt=" + to_string({v}) + " " + {sv})')
+            self.sv.append(sv)
         elif k < 0.87 and d < 2:
             # loop with break/continue on a data-dependent condition
             v = self.nm("l"); n = r.randint(3, 7)

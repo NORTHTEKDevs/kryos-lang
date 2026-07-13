@@ -1,0 +1,48 @@
+// Regression: a string temp created in a NESTED statement must not be
+// double-freed. `drop_unescaped_str_temps` runs at the end of every
+// lower_stmt over locals created during that statement; a nested
+// statement's window overlaps its enclosing statement's window, so the
+// `to_string(x)` temp inside `let bs = { let inner = to_string(x) + "y";
+// inner + "!" }` was dropped twice -- a heap double-free that corrupted
+// the block value (empty on AOT). Identical on both backends.
+// expect-stdout: bs=25ay!
+// expect-stdout: nested=A5B
+// expect-stdout: loop=w0!,w1!,w2!
+
+fn main() {
+    // the exact failing shape: to_string + concat as a block-local, used
+    // in a compound block tail
+    let x = 5
+    let bs = {
+        let inner = to_string(x * x) + "ay"
+        inner + "!"
+    }
+    println("bs=" + bs)
+
+    // deeper nesting: to_string temps at multiple levels
+    let nested = {
+        let a = "A" + to_string(x)
+        let b = {
+            let c = a + "B"
+            c
+        }
+        b
+    }
+    println("nested=" + nested)
+
+    // block-local to_string+concat built repeatedly in a loop
+    let mut out = ""
+    let mut i = 0
+    while i < 3 {
+        let piece = {
+            let w = "w" + to_string(i)
+            w + "!"
+        }
+        if i > 0 {
+            out = out + ","
+        }
+        out = out + piece
+        i = i + 1
+    }
+    println("loop=" + out)
+}

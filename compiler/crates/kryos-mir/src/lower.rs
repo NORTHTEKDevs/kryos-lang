@@ -2171,8 +2171,20 @@ fn drop_unescaped_str_temps(
         }
     }
     for id in to_drop {
+        // Guard against a DOUBLE drop: this pass runs at the end of every
+        // `lower_stmt`, and a nested statement's window overlaps its
+        // enclosing statement's window. For `let bs = { let inner =
+        // to_string(x) + "y"; inner + "!" }`, the inner `let inner` pass
+        // drops the `to_string` temp, then the outer `let bs` pass -- whose
+        // window still contains that temp -- dropped it AGAIN (a heap
+        // double-free that corrupted the block value on AOT). Record each
+        // drop so a later overlapping window skips it.
+        if ctx.dropped_locals.contains(&id.0) {
+            continue;
+        }
         drop_tag(ctx, "str-temp-drop");
         ctx.emit(Instruction::Drop { local: id });
+        ctx.dropped_locals.insert(id.0);
     }
 }
 

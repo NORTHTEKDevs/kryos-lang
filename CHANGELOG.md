@@ -56,12 +56,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mis-coercing a str/ptr into an `inttoptr` on AOT. The checker now records
   the resolved type for block-valued lets so MIR uses it.
 
-  Known remaining edge (documented, gotcha added): a block-local bound to a
-  RUNTIME string and used in a compound tail —
-  `{ let inner = to_string(x) + "y"; inner + "!" }` — still diverges on AOT
-  (a block-local lifetime issue, distinct from the typing fixes above; a
-  string-literal `inner` works). Surfaced by the differential fuzzer's new
-  block-value vocabulary; scoped out of the CI fuzz smoke pending a fix.
+### Fixed — string-temp double-free in nested statements
+- **A string temp created in a nested statement is no longer double-freed.**
+  `drop_unescaped_str_temps` runs at the end of every `lower_stmt` over the
+  string temps created during that statement, but a nested statement's
+  window overlaps its enclosing statement's window. For `let bs = { let
+  inner = to_string(x) + "y"; inner + "!" }`, the inner `let inner` pass
+  dropped the `to_string` temp, then the outer `let bs` pass -- whose
+  window still contained that temp -- dropped it AGAIN, a heap double-free
+  that corrupted the block value (empty output on AOT). The pass now guards
+  each drop with `dropped_locals` and records it, so an overlapping window
+  skips it. This was the "known remaining edge" from the block-value fix;
+  it turned out to be a general nested-statement double-free, not specific
+  to block values. Verified: 0 double-frees under `KRYOS_FREE_DIAG`,
+  bootstrap byte-identical, 1000-program fuzz (with block-value vocabulary
+  restored) 0 flagged.
 
 ### Fixed — generic method instantiation
 - **A bare `-> T` generic method return resolves to the receiver's concrete
