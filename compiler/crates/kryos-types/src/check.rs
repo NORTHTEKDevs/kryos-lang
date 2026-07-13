@@ -1465,7 +1465,7 @@ impl TypeChecker {
                 name,
                 variant,
                 fields,
-                ..
+                span: enum_pat_span,
             } => {
                 // Resolve the subject first so type variables don't slip through.
                 let resolved_subject = self.engine.resolve(subject_ty);
@@ -1479,6 +1479,30 @@ impl TypeChecker {
                     (Type::Option { .. }, "None") => vec![],
                     (Type::Result { ok, .. }, "Ok") => vec![(**ok).clone()],
                     (Type::Result { err, .. }, "Err") => vec![(**err).clone()],
+                    // Cross-type mismatches. These previously fell to the enum
+                    // fallback, found no user enum named Result/Option, and bound
+                    // the payload to a fresh var with NO diagnostic. The `?`
+                    // operator desugars to a `Result.Ok/Err` match, so applying
+                    // `?` to an Option value hit exactly this silent hole (an
+                    // Option matched against Result patterns -> type confusion).
+                    (Type::Option { .. }, "Ok") | (Type::Option { .. }, "Err") => {
+                        self.error(
+                            format!(
+                                "pattern `{variant}` matches a `Result`, but this value is an `Option` -- use `Some`/`None` (note: `?` desugars to a `Result` match, so it cannot be applied to an `Option`)"
+                            ),
+                            *enum_pat_span,
+                        );
+                        vec![]
+                    }
+                    (Type::Result { .. }, "Some") | (Type::Result { .. }, "None") => {
+                        self.error(
+                            format!(
+                                "pattern `{variant}` matches an `Option`, but this value is a `Result` -- use `Ok`/`Err`"
+                            ),
+                            *enum_pat_span,
+                        );
+                        vec![]
+                    }
                     _ => {
                         // Bare (unqualified) variant patterns carry an empty
                         // enum name; resolve it from the matched subject type

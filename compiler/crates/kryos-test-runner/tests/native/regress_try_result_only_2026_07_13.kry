@@ -1,0 +1,38 @@
+// Regression: `?` desugars to a Result.Ok/Err match, so applying it to an Option
+// value bound the payload against Result patterns with NO diagnostic (type
+// confusion). Now an Option/Result pattern on the wrong subject type errors.
+// This exercises the VALID `?`-on-Result path + Option matching. (2026-07-13)
+// expect-stdout: got 43
+// expect-stdout: err bad input
+// expect-stdout: some 7
+// expect-stdout: none
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+fn pp(s: str) -> Result<i64, str> {
+    if s == "bad" {
+        return Err("bad input")
+    }
+    return Ok(42)
+}
+fn proc(s: str) -> Result<i64, str> {
+    let v = pp(s)?
+    return Ok(v + 1)
+}
+fn desc(o: Option<i64>) -> str {
+    match o {
+        Some(x) => "some " + to_string(x),
+        None() => "none",
+    }
+}
+fn main() {
+    match proc("ok") {
+        Ok(v) => println("got " + to_string(v)),
+        Err(e) => println("err " + e),
+    }
+    match proc("bad") {
+        Ok(v) => println("got " + to_string(v)),
+        Err(e) => println("err " + e),
+    }
+    println(desc(Some(7)))
+    println(desc(None()))
+}
