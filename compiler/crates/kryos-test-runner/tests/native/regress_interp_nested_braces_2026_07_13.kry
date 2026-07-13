@@ -1,0 +1,16 @@
+// Regression: the string-interpolation scanner had no brace-depth counter, so a
+// `{...}` block inside an interpolated expression (a `if c { a } else { b }`
+// value -- CLAUDE.md gotcha #3's own documented idiom -- a closure body, or a
+// map/struct literal) terminated the interpolation at its FIRST inner `}`,
+// giving a parse error. Now only a depth-0 `}` closes the interpolation. (2026-07-13)
+// expect-stdout: value: 1
+// expect-stdout: big
+// expect-stdout: hello world
+fn main() {
+    let x = 5
+    println("value: {if x > 0 { 1 } else { 0 }}")
+    let items = [1, 2, 3]
+    println("{if len(items) > 2 { "big" } else { "small" }}")
+    let name = "world"
+    println("hello {name}")
+}

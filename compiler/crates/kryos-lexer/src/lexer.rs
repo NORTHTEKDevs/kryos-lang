@@ -418,11 +418,28 @@ impl<'src> Lexer<'src> {
                 self.advance();
                 self.emit(TokenKind::InterpStart, brace_start, self.pos, "{".into());
 
-                while !self.at_end() && self.peek() != b'}' {
+                // Track brace nesting so a `{...}` block inside the interpolated
+                // expression (a `if c { a } else { b }` value, a closure body,
+                // a map/struct literal) does not terminate the interpolation at
+                // its FIRST inner `}`. Only a `}` at depth 0 closes it. Braces
+                // inside a nested string literal are consumed atomically by
+                // scan_token and never seen here, so they don't affect the depth.
+                let mut brace_depth: i32 = 0;
+                while !self.at_end() {
                     self.skip_whitespace_and_comments();
-                    if !self.at_end() && self.peek() != b'}' {
-                        self.scan_token();
+                    if self.at_end() {
+                        break;
                     }
+                    let c = self.peek();
+                    if c == b'}' && brace_depth == 0 {
+                        break;
+                    }
+                    if c == b'{' {
+                        brace_depth += 1;
+                    } else if c == b'}' {
+                        brace_depth -= 1;
+                    }
+                    self.scan_token();
                 }
                 if !self.at_end() {
                     let end_start = self.pos;
