@@ -162,6 +162,16 @@ jobs:
         run: |
           python3 ../tools/diff-fuzz/gen2.py --count 60 --seed-base 777000             --kryos target/release/kryos
 
+      - name: Memory-safety fuzz smoke (KRYOS_FREE_DIAG, 40 programs)
+        working-directory: compiler
+        # Runs random programs under the runtime's free-diagnostics and
+        # fails on any DOUBLE-FREE. Catches heap over-frees that corrupt
+        # memory WITHOUT changing observable output -- the class the
+        # nested-statement str-temp double-free fell in (which the
+        # output-diff smoke above cannot see).
+        run: |
+          python3 ../tools/diff-fuzz/memsafety_fuzz.py --count 40 --seed-base 888000             --kryos target/release/kryos
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload
