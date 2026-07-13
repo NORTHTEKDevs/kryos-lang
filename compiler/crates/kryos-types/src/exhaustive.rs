@@ -26,35 +26,60 @@ pub fn check_exhaustive(
     enum_def: Option<&EnumDef>,
     span: Span,
 ) -> Vec<Diagnostic> {
-    // A wildcard or identifier binding covers everything.
-    if has_wildcard_or_ident(patterns) {
-        return vec![];
-    }
-
     match subject_type_name {
-        "bool" => check_bool(patterns, span),
-        // Builtin Option/Result have fixed variant sets but no user EnumDef, so
-        // check their required variants directly.
-        "Option" => check_known_variants(patterns, &["None", "Some"], span),
-        "Result" => check_known_variants(patterns, &["Ok", "Err"], span),
-        _ if enum_def.is_some() => check_enum(patterns, enum_def.unwrap(), span),
+        "bool" => {
+            // A wildcard or plain identifier binding covers both bool values.
+            if has_wildcard_or_ident(patterns) {
+                return vec![];
+            }
+            check_bool(patterns, span)
+        }
+        // Builtin Option/Result have fixed variant sets but no user EnumDef.
+        "Option" => check_variant_exhaustive(patterns, &["None", "Some"], span),
+        "Result" => check_variant_exhaustive(patterns, &["Ok", "Err"], span),
+        _ if enum_def.is_some() => {
+            let variants: Vec<&str> = enum_def
+                .unwrap()
+                .variants
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect();
+            check_variant_exhaustive(patterns, &variants, span)
+        }
         // Integer, string, and other infinite types require a wildcard/catch-all.
-        _ => check_requires_wildcard(subject_type_name, span),
+        _ => {
+            if has_wildcard_or_ident(patterns) {
+                return vec![];
+            }
+            check_requires_wildcard(subject_type_name, span)
+        }
     }
 }
 
-/// Check that `patterns` name every variant in `required` (used for the builtin
-/// Option/Result types, which have no user-defined EnumDef). Mirrors check_enum
-/// but with a hard-coded variant set.
-fn check_known_variants(patterns: &[&Pattern], required: &[&str], span: Span) -> Vec<Diagnostic> {
-    let mut covered: HashSet<&str> = HashSet::new();
+/// Variant-aware exhaustiveness for enum / Option / Result. Kryos lets a nullary
+/// variant be matched by its BARE name (`Zero`, `None`), which the parser emits
+/// as a `Pattern::Ident` -- so a plain identifier is a catch-all binding ONLY
+/// when its name is not a variant. The old generic `has_wildcard_or_ident`
+/// early-out treated every bare-variant-ident as a catch-all and silently
+/// disabled exhaustiveness for any match touching a nullary variant (a missing
+/// variant then compiled clean and hit no arm at runtime).
+fn check_variant_exhaustive(
+    patterns: &[&Pattern],
+    variants: &[&str],
+    span: Span,
+) -> Vec<Diagnostic> {
+    let mut covered: HashSet<String> = HashSet::new();
+    let mut has_catchall = false;
     for pat in patterns {
-        collect_enum_variants(pat, &mut covered);
+        collect_variant_coverage(pat, variants, &mut covered, &mut has_catchall);
     }
-    let mut missing: Vec<&str> = required
+    if has_catchall {
+        return vec![];
+    }
+    let mut missing: Vec<&str> = variants
         .iter()
         .copied()
-        .filter(|v| !covered.contains(v))
+        .filter(|v| !covered.contains(*v))
         .collect();
     if missing.is_empty() {
         return vec![];
@@ -69,6 +94,35 @@ fn check_known_variants(patterns: &[&Pattern], required: &[&str], span: Span) ->
         Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}"))
             .with_label(span, "add the missing variant(s) or a wildcard `_`"),
     ]
+}
+
+/// Collect variant coverage, distinguishing a bare-variant identifier (which
+/// covers that variant) from a genuine binding or wildcard (a catch-all).
+fn collect_variant_coverage(
+    pat: &Pattern,
+    variants: &[&str],
+    covered: &mut HashSet<String>,
+    has_catchall: &mut bool,
+) {
+    match pat {
+        Pattern::Wildcard { .. } => *has_catchall = true,
+        Pattern::Ident { name, .. } => {
+            if variants.contains(&name.as_str()) {
+                covered.insert(name.clone());
+            } else {
+                *has_catchall = true;
+            }
+        }
+        Pattern::Enum { variant, .. } => {
+            covered.insert(variant.clone());
+        }
+        Pattern::Or { patterns, .. } => {
+            for p in patterns {
+                collect_variant_coverage(p, variants, covered, has_catchall);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Returns true if any pattern is a wildcard `_` or an identifier binding.
@@ -130,54 +184,6 @@ fn check_bool(patterns: &[&Pattern], span: Span) -> Vec<Diagnostic> {
     ]
 }
 
-/// Enum: must cover all variants.
-fn check_enum(patterns: &[&Pattern], enum_def: &EnumDef, span: Span) -> Vec<Diagnostic> {
-    let all_variants: HashSet<&str> = enum_def
-        .variants
-        .iter()
-        .map(|(name, _)| name.as_str())
-        .collect();
-
-    let mut covered: HashSet<&str> = HashSet::new();
-
-    for pat in patterns {
-        collect_enum_variants(pat, &mut covered);
-    }
-
-    let missing: Vec<&str> = all_variants.difference(&covered).copied().collect();
-
-    if missing.is_empty() {
-        return vec![];
-    }
-
-    let mut missing_sorted: Vec<&str> = missing;
-    missing_sorted.sort_unstable();
-    let names = missing_sorted
-        .iter()
-        .map(|v| format!("`{v}`"))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    vec![
-        Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}"))
-            .with_label(span, "add the missing variant(s) or a wildcard `_`"),
-    ]
-}
-
-/// Collect covered enum variant names from a pattern (handles Or-patterns).
-fn collect_enum_variants<'a>(pattern: &'a Pattern, covered: &mut HashSet<&'a str>) {
-    match pattern {
-        Pattern::Enum { variant, .. } => {
-            covered.insert(variant.as_str());
-        }
-        Pattern::Or { patterns, .. } => {
-            for p in patterns {
-                collect_enum_variants(p, covered);
-            }
-        }
-        _ => {}
-    }
-}
 
 /// For integer, string, and other infinite types, require a wildcard or
 /// identifier catch-all.

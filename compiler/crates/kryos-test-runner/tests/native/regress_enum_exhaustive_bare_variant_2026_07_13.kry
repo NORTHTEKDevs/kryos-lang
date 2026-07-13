@@ -1,0 +1,22 @@
+// Regression: a bare nullary enum variant (Zero) in a match pattern parses as an
+// identifier, which the exhaustiveness checker treated as a CATCH-ALL -- so any
+// enum match touching a nullary variant was considered exhaustive regardless of
+// missing variants (a missing variant compiled clean and hit no arm at runtime).
+// Now variant-aware: a bare ident matching a variant covers it. This exercises
+// the EXHAUSTIVE forms (bare variant + all covered) that must keep working. (2026-07-13)
+// expect-stdout: pos
+// expect-stdout: neg
+// expect-stdout: zero
+enum Sign { Pos(i64), Neg(i64), Zero }
+fn d(s: Sign) -> str {
+    match s {
+        Pos(x) => "pos",
+        Neg(x) => "neg",
+        Zero => "zero",
+    }
+}
+fn main() {
+    println(d(Pos(5)))
+    println(d(Neg(3)))
+    println(d(Zero))
+}
