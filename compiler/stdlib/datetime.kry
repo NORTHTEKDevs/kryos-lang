@@ -316,6 +316,16 @@ fn from_timestamp(epoch_secs: i64) -> DateTime {
 
     // Calculate year
     let mut year = 1970
+    // Pre-epoch (negative) timestamps: walk years backward, borrowing a full
+    // year of seconds each step, until `remaining` is non-negative. Without this
+    // the forward loop below exited immediately at 1970 and propagated a negative
+    // `remaining` into month/day/hour/second, yielding garbage fields (e.g.
+    // second=-1) for any timestamp before 1970-01-01.
+    while remaining < 0 {
+        year = year - 1
+        let days_back = if _is_leap_year(year) { 366 } else { 365 }
+        remaining = remaining + days_back * 86400
+    }
     let mut done = false
     while not done {
         let days_in_year = if _is_leap_year(year) { 366 } else { 365 }

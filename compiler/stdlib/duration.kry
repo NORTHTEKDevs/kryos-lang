@@ -27,8 +27,13 @@ fn from_hours(h: i64) -> i64 {
 /// Human-readable string for `nanos`. Picks unit by magnitude:
 /// ns, us, ms, s, min, h.
 fn format(nanos: i64) -> str {
-    let abs = if nanos < 0 { -nanos } else { nanos }
-    let sign = if nanos < 0 { "-" } else { "" }
+    // i64::MIN has no representable positive magnitude: -nanos overflows back to
+    // i64::MIN (still negative), which broke the abs<1000 branch and produced a
+    // double-negative string ("--9223372036854775808ns"). Clamp by one ns (lost
+    // in the unit-scale truncation anyway) so the magnitude is representable.
+    let n = if nanos == -9223372036854775807 - 1 { nanos + 1 } else { nanos }
+    let abs = if n < 0 { -n } else { n }
+    let sign = if n < 0 { "-" } else { "" }
     if abs < 1000 {
         return sign + to_string(abs) + "ns"
     }

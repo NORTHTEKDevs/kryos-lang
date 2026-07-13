@@ -34,6 +34,22 @@ fn codepoint_count(s: str) -> i64 {
         } else {
             return -1
         }
+        // Validate that the continuation bytes actually exist and are in the
+        // 0x80..0xBF range. Without this, a truncated multi-byte sequence (a lead
+        // byte at end-of-string, or a lead byte followed by a non-continuation
+        // byte) was silently counted as a valid codepoint, so is_valid() returned
+        // true for invalid UTF-8 like a bare 0xC2.
+        if i + step > n {
+            return -1
+        }
+        let mut j = i + 1
+        while j < i + step {
+            let cb = char_code(substr(s, j, j + 1))
+            if cb < 128 or cb >= 192 {
+                return -1
+            }
+            j = j + 1
+        }
         count = count + 1
         i = i + step
     }

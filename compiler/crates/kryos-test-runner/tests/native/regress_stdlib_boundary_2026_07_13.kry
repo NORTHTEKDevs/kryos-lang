@@ -1,0 +1,25 @@
+// Regression: stdlib boundary fixes (launch-hardening 2026-07-13).
+// - math::gcd used f64 internally -> wrong for large coprime i64 values.
+// - duration::format(i64::MIN): -nanos overflowed -> double-negative string.
+// - datetime::from_timestamp(negative): garbage pre-1970 fields.
+// - utf8 valid multibyte must still validate (guard vs over-rejection).
+// expect-stdout: 1
+// expect-stdout: 6
+// expect-stdout: -2562047h47min
+// expect-stdout: 1969-12-31-23-59-59
+// expect-stdout: 4
+// expect-stdout: true
+use std::math::{gcd}
+use std::duration::{format}
+use std::datetime::{from_timestamp}
+use std::utf8::{codepoint_count, is_valid}
+fn main() {
+    println(to_string(gcd(9223372036854775807, 9223372036854775806)))
+    println(to_string(gcd(12, 18)))
+    println(format(-9223372036854775807 - 1))
+    let d = from_timestamp(-1)
+    println(to_string(d.year) + "-" + to_string(d.month) + "-" + to_string(d.day) + "-" + to_string(d.hour) + "-" + to_string(d.minute) + "-" + to_string(d.second))
+    let cafe = "café"
+    println(to_string(codepoint_count(cafe)))
+    println(to_string(is_valid(cafe)))
+}

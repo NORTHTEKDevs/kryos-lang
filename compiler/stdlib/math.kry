@@ -456,14 +456,18 @@ fn is_inf(x: f64) -> bool {
 
 /// Greatest common divisor (Euclidean algorithm).
 fn gcd(a: i64, b: i64) -> i64 {
-    let mut x = abs(float(a))
-    let mut y = abs(float(b))
-    while y > 0.0 {
+    // Integer Euclid. The previous implementation went through f64
+    // (floor(x/y)*y), which loses precision above 2^53 -- gcd of two large
+    // consecutive i64 values (coprime, answer 1) returned garbage because both
+    // operands rounded to the same f64. Pure i64 modulo is exact.
+    let mut x = if a < 0 { -a } else { a }
+    let mut y = if b < 0 { -b } else { b }
+    while y != 0 {
         let temp = y
-        y = x - floor(x / y) * y
+        y = x % y
         x = temp
     }
-    return int(x)
+    return x
 }
 
 /// Least common multiple.
