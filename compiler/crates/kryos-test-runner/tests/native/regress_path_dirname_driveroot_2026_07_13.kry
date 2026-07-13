@@ -1,0 +1,14 @@
+// Regression: dirname of a Windows drive-root path dropped the trailing slash
+// ("C:/foo.txt" -> "C:" [drive current-dir] instead of "C:/" [drive root], a
+// different location). (launch-hardening 2026-07-13)
+// expect-stdout: C:/
+// expect-stdout: C:/foo
+// expect-stdout: /usr
+// expect-stdout: D:/
+use std::path::{dirname}
+fn main() {
+    println(dirname("C:/foo.txt"))
+    println(dirname("C:/foo/bar"))
+    println(dirname("/usr/bin"))
+    println(dirname("D:/only.txt"))
+}

@@ -102,6 +102,13 @@ fn dirname(p: str) -> str {
     if end == 0 {
         return "/"
     }
+    // Windows drive root: the parent of "C:/foo.txt" is the drive ROOT "C:/",
+    // not "C:" -- a bare "C:" means "the current directory on drive C", a
+    // different location. Keep the trailing slash when the parent collapses to
+    // a bare drive letter + colon.
+    if end == 2 and normalized[1] == ":" {
+        return substr(normalized, 0, 3)
+    }
     return substr(normalized, 0, end)
 }
 
