@@ -1,0 +1,21 @@
+// Regression: a closure capturing a map or tuple reconstructed its param type
+// as None (mir_type_to_type_expr had no Map/Tuple arm) -> i64 default, so a
+// map index-read m[k] inside the closure mis-lowered to ARRAY indexing (string
+// key pointer used as an index) and crashed with an out-of-bounds panic. Tuple
+// field access had the same gap. (launch-hardening 2026-07-13)
+// expect-stdout: mapval=captured
+// expect-stdout: tup=7 hi
+// expect-stdout: milen=1
+fn main() {
+    let mut m: map<str, str> = {}
+    m["k"] = "captured"
+    let t: (i64, str) = (7, "hi")
+    let mut mi: map<i64, i64> = {}
+    mi[5] = 100
+    let c = || {
+        println("mapval=" + m["k"])
+        println("tup=" + to_string(t.0) + " " + t.1)
+        println("milen=" + to_string(len(mi)))
+    }
+    c()
+}

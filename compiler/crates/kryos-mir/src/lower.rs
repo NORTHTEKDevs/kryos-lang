@@ -8015,6 +8015,42 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
             trait_name: name.clone(),
             span,
         }),
+        // Map/Tuple were missing here, so a closure that CAPTURES a map (or
+        // tuple) reconstructed its param type as None (-> i64 default). Inside
+        // the closure `m[k]` then mis-lowered to ARRAY indexing (string key
+        // pointer used as an index -> out-of-bounds crash). Round-trip the real
+        // type so index/field access dispatches correctly (resolve_type accepts
+        // Generic{"map",[k,v]} and Tuple{..}).
+        MirType::Map { key, value } => {
+            let key_ty = mir_type_to_type_expr(key).unwrap_or_else(|| ast::TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
+            });
+            let value_ty = mir_type_to_type_expr(value).unwrap_or_else(|| ast::TypeExpr::Simple {
+                name: "i64".to_string(),
+                span,
+            });
+            Some(ast::TypeExpr::Generic {
+                name: "map".to_string(),
+                args: vec![key_ty, value_ty],
+                span,
+            })
+        }
+        MirType::Tuple(elems) => {
+            let elem_tys: Vec<ast::TypeExpr> = elems
+                .iter()
+                .map(|e| {
+                    mir_type_to_type_expr(e).unwrap_or_else(|| ast::TypeExpr::Simple {
+                        name: "i64".to_string(),
+                        span,
+                    })
+                })
+                .collect();
+            Some(ast::TypeExpr::Tuple {
+                elements: elem_tys,
+                span,
+            })
+        }
         _ => None, // fall back to default i64
     }
 }
