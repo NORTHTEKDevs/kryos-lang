@@ -305,13 +305,17 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
     match name {
         // Filesystem — read / stat (fs:read)
         "file_read" | "read_file" => Some(Capability::FsRead),
-        "path_exists" | "is_file" | "is_dir" | "file_size" | "list_dir" | "walk_dir" => {
-            Some(Capability::FsRead)
-        }
+        // `file_exists` is a documented global builtin (stat/existence probe) and
+        // leaks the presence of secrets/config/other-user files; it belongs with
+        // the other fs:read stat ops, which it was missing from (gate-enumeration gap).
+        "path_exists" | "file_exists" | "is_file" | "is_dir" | "file_size" | "list_dir"
+        | "walk_dir" => Some(Capability::FsRead),
 
-        // Filesystem — write / create / mutate (fs:write)
-        "file_write" | "write_file" | "create_dir" | "remove_file" | "remove_dir"
-        | "copy_file" | "rename_file" => Some(Capability::FsWrite),
+        // Filesystem — write / create / mutate (fs:write). `append_file` (creates
+        // and appends) and `buf_write_to_file` (writes a byte buffer to a path)
+        // are real write authority that were UNGATED — a deny-by-default escape.
+        "file_write" | "write_file" | "append_file" | "buf_write_to_file" | "create_dir"
+        | "remove_file" | "remove_dir" | "copy_file" | "rename_file" => Some(Capability::FsWrite),
 
         // Process — running OTHER programs (exec/spawn) and reading/writing the
         // environment (which can exfiltrate secrets) are real authority.
@@ -326,13 +330,18 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
 
         // Network — HTTP(S) client/server (net:http). `http_request` /
         // `https_get` are real callable builtins that were UNGATED.
-        "http_get" | "http_post" | "http_request" | "https_get"
+        // `fetch_text` is a convenience wrapper that calls `https_get` on native —
+        // identical outbound-HTTP authority under a different bare name the gate
+        // never checked (SSRF/exfiltration escape). Gated with the rest of net:http.
+        "http_get" | "http_post" | "http_request" | "https_get" | "fetch_text"
         | "http2_get" | "http2_post" | "http2_request" => Some(Capability::NetHttp),
 
         // Network — raw TCP / sockets / TLS / unix-domain sockets (net:tcp).
         // The non-blocking variants (tcp_bind/set_nonblocking/try_accept/
         // try_recv) are network authority too and were UNGATED.
-        "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send" | "tcp_recv"
+        // `tcp_close` closes an OS socket fd — real net:tcp authority that was
+        // ungated even though its siblings `tls_close`/`uds_close` were gated.
+        "tcp_connect" | "tcp_listen" | "tcp_accept" | "tcp_send" | "tcp_recv" | "tcp_close"
         | "tcp_bind" | "tcp_set_nonblocking" | "tcp_try_accept" | "tcp_try_recv"
         | "tls_server_config" | "tls_accept" | "tls_send" | "tls_recv" | "tls_close"
         | "uds_connect" | "uds_bind" | "uds_accept" | "uds_send" | "uds_recv"
@@ -769,6 +778,35 @@ mod tests {
         assert_eq!(required_capability_for_builtin("time_now"), None);
         assert_eq!(required_capability_for_builtin("time_millis"), None);
         assert_eq!(required_capability_for_builtin("sleep"), None);
+    }
+
+    #[test]
+    fn previously_ungated_authority_builtins_are_gated() {
+        // Regression: these 5 authority builtins are dispatched by codegen but
+        // were MISSING from the gate, so unannotated code could call them under
+        // deny-by-default (inferred) mode -- a capability escape. (launch-hardening
+        // 2026-07-13: fetch_text=SSRF/exfil, append_file/buf_write_to_file=fs:write,
+        // file_exists=fs:read probe, tcp_close=net:tcp.)
+        assert_eq!(
+            required_capability_for_builtin("fetch_text"),
+            Some(Capability::NetHttp)
+        );
+        assert_eq!(
+            required_capability_for_builtin("append_file"),
+            Some(Capability::FsWrite)
+        );
+        assert_eq!(
+            required_capability_for_builtin("buf_write_to_file"),
+            Some(Capability::FsWrite)
+        );
+        assert_eq!(
+            required_capability_for_builtin("file_exists"),
+            Some(Capability::FsRead)
+        );
+        assert_eq!(
+            required_capability_for_builtin("tcp_close"),
+            Some(Capability::NetTcp)
+        );
     }
 
     #[test]
