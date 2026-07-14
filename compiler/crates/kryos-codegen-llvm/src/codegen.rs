@@ -3915,6 +3915,189 @@ impl LlvmCodegen {
         Ok(())
     }
 
+    /// Byte size of an LLVM type string as emitted by `sig_ty_to_llvm` /
+    /// `mir_type_to_llvm` for a struct field (scalars, named structs, and
+    /// inline tuple aggregates -- the only shapes that appear there).
+    /// Recurses through named struct types so a single-field wrapper struct
+    /// whose own field is exactly one scalar slot (e.g. `Nest<T>` erased to
+    /// `Nest___i64 = { i64 }`) is correctly sized at 8 bytes, NOT treated as
+    /// "wide" merely because its LLVM spelling is a named `%Type` rather than
+    /// a bare scalar -- that distinction (spelling vs real size) is exactly
+    /// what `needs_field_repack` must get right.
+    fn llvm_type_byte_size(&self, ty: &str) -> u64 {
+        match ty {
+            "i64" | "ptr" | "double" => 8,
+            "i32" => 4,
+            "i16" => 2,
+            "i8" | "i1" => 1,
+            _ => {
+                if let Some(name) = ty.strip_prefix('%') {
+                    self.struct_defs
+                        .get(name)
+                        .map(|fields| {
+                            fields
+                                .iter()
+                                .map(|(_, t)| {
+                                    let fty = self.sig_ty_to_llvm(t);
+                                    self.llvm_type_byte_size(&fty)
+                                })
+                                .sum()
+                        })
+                        .unwrap_or(8)
+                } else if let Some(inner) =
+                    ty.strip_prefix('{').and_then(|s| s.strip_suffix('}'))
+                {
+                    inner
+                        .split(',')
+                        .map(|p| self.llvm_type_byte_size(p.trim()))
+                        .sum()
+                } else {
+                    // Unknown/array spelling -- conservatively assume pointer-sized.
+                    8
+                }
+            }
+        }
+    }
+
+    /// True when `actual_ty` (a real, monomorphized struct) and `agg_ty` (the
+    /// callee's declared aggregate param type -- typically a generically
+    /// ERASED self/param type where every field is a uniform i64 slot) have
+    /// the same field COUNT but differ in per-field REAL BYTE SIZE at some
+    /// position: the real struct has a genuinely wide (>8-byte, multi-slot)
+    /// field where the erased target expects a single 8-byte slot. That
+    /// mismatch is the precise signature of a monomorphized generic struct
+    /// whose OWN generic argument resolves to a multi-field aggregate
+    /// (`Pair<Pair<i64,i64>, i64>` -- the `first` field is 16 bytes, but the
+    /// erased template's `first` slot is one i64). A named struct field that
+    /// happens to be exactly 8 bytes (e.g. `Nest<T>`'s single-field wrapper)
+    /// is NOT wide despite its `%Name` spelling, and genuinely identical-
+    /// layout cases (e.g. a forward-declared struct name vs its literal body)
+    /// never trip this either, since sizes match at every position.
+    fn needs_field_repack(&self, actual_ty: &str, agg_ty: &str) -> bool {
+        let Some(a_name) = actual_ty.strip_prefix('%') else {
+            return false;
+        };
+        let Some(e_name) = agg_ty.strip_prefix('%') else {
+            return false;
+        };
+        let Some(a_fields) = self.struct_defs.get(a_name) else {
+            return false;
+        };
+        let Some(e_fields) = self.struct_defs.get(e_name) else {
+            return false;
+        };
+        if a_fields.len() != e_fields.len() {
+            return false;
+        }
+        a_fields.iter().zip(e_fields.iter()).any(|((_, aty), (_, ety))| {
+            let a_llvm = self.sig_ty_to_llvm(aty);
+            let e_llvm = self.sig_ty_to_llvm(ety);
+            self.llvm_type_byte_size(&a_llvm) > 8 && self.llvm_type_byte_size(&e_llvm) <= 8
+        })
+    }
+
+    /// Repack a real (possibly wider) aggregate value field-by-field into a
+    /// freshly allocated buffer shaped like the callee's erased `agg_ty`,
+    /// boxing any field that is itself an aggregate (>8 bytes in the real
+    /// struct) into a pointer slot instead of raw-reinterpreting bytes.
+    /// Returns the new buffer's SSA name (a `ptr`) to pass as the byval arg.
+    fn emit_repacked_erased_arg(&mut self, val: &str, actual_ty: &str, agg_ty: &str) -> String {
+        let a_name = actual_ty.strip_prefix('%').unwrap_or(actual_ty).to_string();
+        let e_name = agg_ty.strip_prefix('%').unwrap_or(agg_ty).to_string();
+        let rbuf = self.next_temp();
+        self.emit_line(&format!("  {rbuf} = alloca {actual_ty}"));
+        self.emit_line(&format!("  store {actual_ty} {val}, ptr {rbuf}"));
+        let ebuf = self.next_temp();
+        self.emit_line(&format!("  {ebuf} = alloca {agg_ty}"));
+        let a_field_llvm_tys: Vec<String> = self
+            .struct_defs
+            .get(&a_name)
+            .map(|fs| fs.iter().map(|(_, t)| self.sig_ty_to_llvm(t)).collect())
+            .unwrap_or_default();
+        let e_field_llvm_tys: Vec<String> = self
+            .struct_defs
+            .get(&e_name)
+            .map(|fs| fs.iter().map(|(_, t)| self.sig_ty_to_llvm(t)).collect())
+            .unwrap_or_default();
+        let field_count = a_field_llvm_tys.len();
+        for i in 0..field_count {
+            let a_fty = a_field_llvm_tys[i].clone();
+            let e_fty = e_field_llvm_tys
+                .get(i)
+                .cloned()
+                .unwrap_or_else(|| "i64".to_string());
+            let fptr = self.next_temp();
+            self.emit_line(&format!(
+                "  {fptr} = getelementptr {actual_ty}, ptr {rbuf}, i32 0, i32 {i}"
+            ));
+            let is_wide = self.llvm_type_byte_size(&a_fty) > 8;
+            let slot_val = if is_wide {
+                // Box: the erased slot holds a POINTER to the field's storage,
+                // which lives inside rbuf -- valid for the synchronous
+                // duration of the call about to be emitted.
+                let p = self.next_temp();
+                self.emit_line(&format!("  {p} = ptrtoint ptr {fptr} to i64"));
+                p
+            } else if matches!(a_fty.as_str(), "i64" | "ptr" | "double" | "i1")
+                || (!a_fty.starts_with('%')
+                    && !a_fty.starts_with('{')
+                    && !a_fty.starts_with('['))
+            {
+                let loaded = self.next_temp();
+                self.emit_line(&format!("  {loaded} = load {a_fty}, ptr {fptr}"));
+                match a_fty.as_str() {
+                    "i64" => loaded,
+                    "ptr" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = ptrtoint ptr {loaded} to i64"));
+                        t
+                    }
+                    "double" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = bitcast double {loaded} to i64"));
+                        t
+                    }
+                    "i1" => {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = zext i1 {loaded} to i64"));
+                        t
+                    }
+                    _ => {
+                        // Narrow ints (i8/i16/i32): widen to the uniform i64
+                        // slot the erased generic representation expects.
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = sext {a_fty} {loaded} to i64"));
+                        t
+                    }
+                }
+            } else {
+                // A named struct / inline-tuple field that is narrow (<=8
+                // bytes total, e.g. a single-field wrapper like `Nest<T>`
+                // erased to `{ i64 }`) is bit-for-bit compatible with the
+                // erased i64 slot -- read the underlying bytes directly as
+                // i64 rather than through its own (aggregate) LLVM type,
+                // which cannot be sign-extended.
+                let t = self.next_temp();
+                self.emit_line(&format!("  {t} = load i64, ptr {fptr}"));
+                t
+            };
+            let eptr = self.next_temp();
+            self.emit_line(&format!(
+                "  {eptr} = getelementptr {agg_ty}, ptr {ebuf}, i32 0, i32 {i}"
+            ));
+            // The erased field is declared i64 in the overwhelming common
+            // case (every unresolved generic param erases to I64); coerce
+            // defensively if the callee's own struct_defs disagrees.
+            if e_fty == "i64" {
+                self.emit_line(&format!("  store i64 {slot_val}, ptr {eptr}"));
+            } else {
+                let coerced = self.coerce_value(&slot_val, "i64", &e_fty);
+                self.emit_line(&format!("  store {e_fty} {coerced}, ptr {eptr}"));
+            }
+        }
+        ebuf
+    }
+
     /// Emit a call to a user-defined function that uses byval/sret aggregate ABI.
     /// `ret_agg`: Some(llvm_ty) if return is aggregate (callee uses sret).
     /// `param_aggs[i]`: Some(llvm_ty) if arg i should be passed byval.
@@ -3954,6 +4137,27 @@ impl LlvmCodegen {
                     let buf = self.next_temp();
                     self.emit_line(&format!("  {buf} = alloca {agg_ty}"));
                     self.emit_line(&format!("  store {agg_ty} {val}, ptr {buf}"));
+                    arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
+                } else if self.needs_field_repack(&actual_ty, &agg_ty) {
+                    // Passing a REAL (possibly-inlined-aggregate) monomorphized
+                    // struct into a generically-ERASED callee param (e.g. a
+                    // generic impl method's `self: Pair<A, B>`, compiled ONCE
+                    // with every field flattened to a uniform i64 slot). When
+                    // a generic argument itself resolves to a multi-slot
+                    // aggregate (`Pair<Pair<i64,i64>, i64>`'s `first` field),
+                    // the real struct is WIDER than the erased target and the
+                    // two layouts are NOT byte-compatible -- naively spilling
+                    // under the real type and reinterpreting via the erased
+                    // byval annotation reads a TRAILING field at the wrong
+                    // offset (silently returns an inner field's value instead
+                    // -- AOT-only miscompile; JIT is correct because Cranelift
+                    // always represents an aggregate struct field as a single
+                    // boxed pointer slot, never inlined). Repack field-by-field
+                    // into a fresh erased-shape buffer, boxing any field that
+                    // is itself an aggregate into a pointer slot -- the same
+                    // idiom already used for every other generic-erasure
+                    // boundary (returns, HOF closures, array elements).
+                    let buf = self.emit_repacked_erased_arg(&val, &actual_ty, &agg_ty);
                     arg_parts.push(format!("ptr byval({agg_ty}) {buf}"));
                 } else if actual_ty.starts_with('%')
                     || actual_ty.starts_with('{')

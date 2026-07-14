@@ -47,6 +47,17 @@ impl<A, B> Pair<A, B> {
     fn swap(self: Pair<A, B>) -> Pair<B, A> {
         return Pair { first: self.second, second: self.first }
     }
+    // Reads a TRAILING field. When the FIRST field is itself an aggregate
+    // (`Pair<Pair<i64,i64>, i64>`), AOT used to read `second` at the wrong
+    // byte offset -- the erased single-compiled `self: Pair<i64,i64>` template
+    // assumed every field was one 8-byte slot, so a wide inlined `first`
+    // pushed `second` to the wrong offset (silently returned the inner pair's
+    // `second`). Fixed by repacking the real arg into the erased shape,
+    // boxing the wide field. (JIT was always correct: Cranelift boxes every
+    // aggregate field.)
+    fn second_of(self: Pair<A, B>) -> B {
+        return self.second
+    }
 }
 
 // Generic struct with a NESTED-generic field (map<str, Option<V>>) built inside a
@@ -173,6 +184,16 @@ fn main() {
     // Chained generic method result of str type keeps its pointer type.
     let ns: Nest<Nest<str>> = Nest { inner: Nest { inner: "deep" } }
     expect(ns.get().get() == "deep", "un-annotated chained generic method (str leaf)")
+
+    // Nested multi-param generic struct whose FIRST field is an aggregate:
+    // reading a trailing field must use the real offset (AOT byte-offset fix).
+    let np: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 1, second: 2 }, second: 3 }
+    expect(np.second_of() == 3, "nested generic aggregate-first: trailing field offset")
+    let mut nm: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 10, second: 20 }, second: 30 }
+    nm.second = 99
+    expect(nm.second_of() == 99, "nested generic aggregate-first: trailing field mutation")
+    let ninner: Pair<i64, i64> = nm.first
+    expect(ninner.second_of() == 20, "nested generic aggregate-first: inner untouched by outer mutation")
 
     // Generic struct with a nested-generic map<str,Option<V>> field, two
     // concrete instantiations coexisting (must not collide/segfault).
