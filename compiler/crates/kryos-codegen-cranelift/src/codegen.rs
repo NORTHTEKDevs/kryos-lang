@@ -3439,6 +3439,33 @@ fn translate_rvalue<M: Module>(
                 }
             }
 
+            // Reconcile the ACTUAL Cranelift value class (int vs float)
+            // against `is_float`, the dispatch decision derived purely from
+            // the left operand's MIR type hint. The hint can be stale for a
+            // generic method's erased return: a multi-param generic method
+            // whose receiver is itself the result of ANOTHER generic method
+            // call that permutes type params (e.g. `swap(self: Pair<A,B>)
+            // -> Pair<B,A>`) keeps its declared return as the pre-generic
+            // placeholder (i64) even when the concrete field is f64 -- so
+            // `pair.get_first() == 2.5` hints the call i64 while the RHS
+            // literal is genuinely f64. Cranelift's verifier is strict about
+            // matching operand classes for icmp/fcmp (unlike the LLVM
+            // backend, whose `coerce_value` already bitcasts every mismatched
+            // binop operand pair the same way), so bitcast whichever actual
+            // value disagrees with `is_float` to match. This is a raw bit
+            // reinterpretation -- not a numeric convert -- consistent with
+            // the erased-slot representation used throughout the generic
+            // value model, and only ever fires on a class mismatch that
+            // would otherwise trip the verifier, so it cannot change the
+            // result of an already-well-typed comparison.
+            for v in [&mut lhs, &mut rhs] {
+                let actual = builder.func.dfg.value_type(*v);
+                if actual.is_float() != is_float && actual.bits() == 64 {
+                    let target = if is_float { types::F64 } else { types::I64 };
+                    *v = builder.ins().bitcast(target, MemFlags::new(), *v);
+                }
+            }
+
             // String operations: dispatch to runtime instead of integer ops.
             let is_string = is_string_operand(left, &translator.mir_func.locals)
                 || is_string_operand(right, &translator.mir_func.locals);

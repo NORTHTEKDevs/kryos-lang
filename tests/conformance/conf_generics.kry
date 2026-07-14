@@ -15,6 +15,24 @@ fn call_on(f: fn(i64) -> i64, x: i64) -> i64 {
     return f(x)
 }
 
+// Multi-param generic whose method returns a PERMUTED instantiation (Pair<B,A>).
+// A generic method's erased return kept the i64 placeholder, so
+// `pair.get_first() == 2.5` hinted the call i64 while the literal was f64 -- the
+// Cranelift verifier rejected the mismatched-class icmp.
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A, B> Pair<A, B> {
+    fn get_first(self: Pair<A, B>) -> A {
+        return self.first
+    }
+    fn swap(self: Pair<A, B>) -> Pair<B, A> {
+        return Pair { first: self.second, second: self.first }
+    }
+}
+
 struct Boxed<T> {
     value: T,
     label: str,
@@ -63,6 +81,12 @@ fn main() {
     let applied = map(fns, |f| f(10))
     expect(applied[0] == 11 and applied[1] == 20, "map over array of functions")
     expect(call_on(inc, 7) == 8, "named-fn function param call")
+
+    // Generic method returning a permuted instantiation, then an f64 compare.
+    let pr = Pair { first: true, second: 2.5 }
+    let sw = pr.swap()
+    expect(sw.get_first() == 2.5, "swapped generic method f64 return compare")
+    expect(sw.get_first() > 2.4, "swapped generic method f64 ordering")
 
     println("conformance generics: PASS")
 }
