@@ -230,5 +230,26 @@ fn main() {
     expect(quadrant(0, 0) == "origin", "tuple literal arm")
     expect(quadrant(0, 9) == "y-axis", "tuple wildcard arm")
 
+    // Enum-with-payload VALUES stored in a map, then matched DIRECTLY on the
+    // map-index expression. The map-index subject type did not surface as an
+    // enum, so the match emitted a switch with zero cases and every value fell
+    // to the None/default arm (a stored Some read back as None).
+    let mut mopt: map<str, Option<i64>> = {}
+    mopt["a"] = Some(90)
+    mopt["b"] = None()
+    match mopt["a"] {
+        Some(v) => expect(v == 90, "map<str,Option> Some payload survives"),
+        None() => expect(false, "map Some read back as None"),
+    }
+    match mopt["b"] {
+        Some(v) => expect(false, "map None read back as Some {v}"),
+        None() => expect(true, "map None ok"),
+    }
+    if let Some(v) = mopt["a"] {
+        expect(v == 90, "if-let on map-index enum")
+    } else {
+        expect(false, "if-let map-index took else")
+    }
+
     println("conformance data: PASS")
 }

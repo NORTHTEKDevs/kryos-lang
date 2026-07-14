@@ -4918,7 +4918,25 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let subj_enum_name = match &subj_ty {
         MirType::Enum(name) => Some(name.clone()),
         _ => None,
-    };
+    }
+    .or_else(|| {
+        // The subject type may not surface as MirType::Enum even when it IS an
+        // enum -- e.g. `match m[k] { Some(v) => .. }` where m: map<_, Option<_>>.
+        // infer_expr_type returns the map's value type, which the enum-arm target
+        // collection could not key on, so the switch was emitted with ZERO cases
+        // and every value fell to the default arm (a map-stored Some/Ok read back
+        // as None/Err). Fall back to the enum named by the first enum-pattern arm.
+        arms.iter().find_map(|a| match &a.pattern {
+            ast::Pattern::Enum { name, variant, .. } => {
+                if !name.is_empty() {
+                    Some(name.clone())
+                } else {
+                    find_enum_variant(ctx, variant).map(|(en, _)| en)
+                }
+            }
+            _ => None,
+        })
+    });
     let is_enum_match = arms.iter().any(|a| match &a.pattern {
         ast::Pattern::Enum { .. } => true,
         // Or-patterns whose alternatives are enum variants must also trigger
