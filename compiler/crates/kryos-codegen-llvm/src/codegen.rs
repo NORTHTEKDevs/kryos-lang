@@ -3996,6 +3996,40 @@ impl LlvmCodegen {
         })
     }
 
+    /// Return-side twin of `needs_field_repack`. A generic impl method whose
+    /// return type is a bare generic param (`-> A`) is compiled ONCE with
+    /// that param erased to a scalar (`i64` in the overwhelming common
+    /// case) -- its `define` really returns a narrow scalar. When the CALL
+    /// SITE resolves `A` to a genuinely wide (>8-byte, multi-slot)
+    /// aggregate, the callee's returned scalar is not the value itself but
+    /// a boxed POINTER into the callee's caller-side argument storage
+    /// (mirroring the boxing `emit_repacked_erased_arg` already does for
+    /// wide byval fields). Returns the callee's real (narrow) LLVM return
+    /// type when this applies, so the call site can use the CORRECT scalar
+    /// ABI and then unbox, instead of emitting a `call <wide-agg-ty>` that
+    /// doesn't match what the callee actually returns (the ABI-mismatch
+    /// silent miscompile). Byte-size gated, not name-gated, so single-slot
+    /// wrapper generics (`Nest<T>` erased to `{ i64 }`, whose resolved
+    /// non-wide return already flows through the normal scalar path) are
+    /// NOT affected.
+    fn needs_return_unbox(&self, fname: &str, dest_ty: &str) -> Option<String> {
+        let callee_ret = self.func_ret_types.get(fname)?;
+        // Erasure always flattens an unresolved generic param to `i64` (see
+        // `emit_repacked_erased_arg`'s field-slot convention) -- restrict to
+        // that exact shape so `inttoptr` below is always well-typed and this
+        // never misfires on a callee that genuinely returns some other
+        // narrow scalar (e.g. a real `-> bool`/`-> i32` function, which is
+        // not an erased-generic boundary and must keep the normal path).
+        if callee_ret != "i64" {
+            return None;
+        }
+        if self.llvm_type_byte_size(dest_ty) > 8 {
+            Some(callee_ret.clone())
+        } else {
+            None
+        }
+    }
+
     /// Repack a real (possibly wider) aggregate value field-by-field into a
     /// freshly allocated buffer shaped like the callee's erased `agg_ty`,
     /// boxing any field that is itself an aggregate (>8 bytes in the real
@@ -4211,6 +4245,32 @@ impl LlvmCodegen {
             }
         } else if dest_ty == "void" {
             self.emit_line(&format!("  call void @{fname}({arg_list})"));
+        } else if let Some(callee_ret_ty) = self.needs_return_unbox(fname, dest_ty) {
+            // The callee's actual `define` returns a narrow erased scalar
+            // (`callee_ret_ty`), but the call site's resolved `dest_ty` is a
+            // wide aggregate -- call with the callee's REAL scalar ABI (not
+            // `dest_ty`, which would mismatch the callee's true signature),
+            // then unbox: the returned scalar is a pointer into the
+            // caller's own byval-repack buffer (`emit_repacked_erased_arg`'s
+            // `rbuf`, alloca'd above for this same call), valid through this
+            // call and this immediate load. Load copies the aggregate out of
+            // that buffer into the destination right away, before `rbuf`
+            // could be reused.
+            let raw = self.next_temp();
+            self.emit_line(&format!(
+                "  {raw} = call {callee_ret_ty} @{fname}({arg_list})"
+            ));
+            let ptr_tmp = self.next_temp();
+            self.emit_line(&format!(
+                "  {ptr_tmp} = inttoptr {callee_ret_ty} {raw} to ptr"
+            ));
+            if is_mutable {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = load {dest_ty}, ptr {ptr_tmp}"));
+                self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
+            } else {
+                self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {ptr_tmp}", dest.0));
+            }
         } else if is_mutable {
             let tmp = self.next_temp();
             self.emit_line(&format!("  {tmp} = call {dest_ty} @{fname}({arg_list})"));

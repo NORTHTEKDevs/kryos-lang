@@ -58,6 +58,14 @@ impl<A, B> Pair<A, B> {
     fn second_of(self: Pair<A, B>) -> B {
         return self.second
     }
+    // RETURNS the FIRST field. When A resolves to a wide (>8-byte) aggregate,
+    // the callee is compiled once with the return erased to scalar i64 and
+    // actually returns a boxed pointer; the call site must use the scalar
+    // return ABI then unbox (inttoptr + load), not `call %WideAgg` (which
+    // mismatched the callee's real signature -> AOT garbage).
+    fn first_of(self: Pair<A, B>) -> A {
+        return self.first
+    }
 }
 
 // Generic struct with a NESTED-generic field (map<str, Option<V>>) built inside a
@@ -194,6 +202,13 @@ fn main() {
     expect(nm.second_of() == 99, "nested generic aggregate-first: trailing field mutation")
     let ninner: Pair<i64, i64> = nm.first
     expect(ninner.second_of() == 20, "nested generic aggregate-first: inner untouched by outer mutation")
+
+    // Generic method RETURNING a wide aggregate field (return-side unbox).
+    let wr: Pair<i64, i64> = np.first_of()
+    expect(wr.first == 1 and wr.second == 2, "generic method returns wide aggregate (return unbox)")
+    // Recursive multi-level wide chain: return-unbox composes with itself.
+    let deep: Pair<Pair<Pair<i64, i64>, i64>, i64> = Pair { first: Pair { first: Pair { first: 7, second: 8 }, second: 9 }, second: 10 }
+    expect(deep.first_of().first_of().second_of() == 8, "recursive wide-return chain")
 
     // Generic struct with a nested-generic map<str,Option<V>> field, two
     // concrete instantiations coexisting (must not collide/segfault).
