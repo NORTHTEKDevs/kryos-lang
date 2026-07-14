@@ -15,6 +15,18 @@ fn call_on(f: fn(i64) -> i64, x: i64) -> i64 {
     return f(x)
 }
 
+// Stateful (mutating) closure -- the captured var is mutated and the mutation
+// must PERSIST across calls (counter/accumulator idiom). Previously the JIT
+// re-read the outer value each call (1,1,1) and AOT failed to build (invalid SSA
+// redefinition of the moved-capture param).
+fn make_counter() -> fn() -> i64 {
+    let mut c = 0
+    return || {
+        c = c + 1
+        c
+    }
+}
+
 // Multi-param generic whose method returns a PERMUTED instantiation (Pair<B,A>).
 // A generic method's erased return kept the i64 placeholder, so
 // `pair.get_first() == 2.5` hinted the call i64 while the literal was f64 -- the
@@ -149,6 +161,19 @@ fn main() {
     mf["x"] = 3.5
     let x: f64 = mf["x"]
     expect(x > 3.4 and x < 3.6, "map<str,f64> value read (RAX coercion)")
+
+    // Stateful closures: mutation persists across calls.
+    let mut sum = 0
+    let acc = |v| {
+        sum = sum + v
+        sum
+    }
+    expect(acc(5) == 5, "accumulator call 1")
+    expect(acc(3) == 8, "accumulator persists across calls")
+    expect(acc(2) == 10, "accumulator call 3")
+    let cnt = make_counter()
+    expect(cnt() == 1, "factory counter 1")
+    expect(cnt() == 2, "factory counter persists")
 
     println("conformance generics: PASS")
 }

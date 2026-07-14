@@ -432,7 +432,14 @@ pub fn compile_module_with_options(
     // Step 48 (overnight): BTreeMap for deterministic iteration order.
     // HashMap's randomized hash seed produced non-deterministic emit order
     // across builds, breaking reproducible-build hygiene for stage-1.
-    let mut closure_info: BTreeMap<String, (usize, usize, Vec<Option<MirType>>)> = BTreeMap::new();
+    // 4th tuple field: env-slot index (among captures) whose value must be
+    // refreshed with the call's return value, copied from `MirFunction::
+    // attributes.mutated_capture_slot` (kryos-mir/src/lower.rs). This is
+    // what makes a mutating counter/accumulator closure's state persist
+    // across calls instead of resetting to the initial capture value every
+    // time -- see the thunk-body loop below.
+    let mut closure_info: BTreeMap<String, (usize, usize, Vec<Option<MirType>>, Option<u32>)> =
+        BTreeMap::new();
     for mir_func in &module.functions {
         for bb in &mir_func.blocks {
             for inst in &bb.instructions {
@@ -446,11 +453,15 @@ pub fn compile_module_with_options(
                 } = inst
                 {
                     if !closure_info.contains_key(func_name.as_str()) {
-                        let user_params = if let Some(f) = mir_func_map.get(func_name.as_str()) {
-                            f.params.len().saturating_sub(captures.len())
-                        } else {
-                            0
-                        };
+                        let (user_params, mutated_slot) =
+                            if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                                (
+                                    f.params.len().saturating_sub(captures.len()),
+                                    f.attributes.mutated_capture_slot,
+                                )
+                            } else {
+                                (0, None)
+                            };
                         let cap_types: Vec<Option<MirType>> = captures
                             .iter()
                             .map(|cap| match cap {
@@ -462,8 +473,10 @@ pub fn compile_module_with_options(
                                 _ => None,
                             })
                             .collect();
-                        closure_info
-                            .insert(func_name.clone(), (captures.len(), user_params, cap_types));
+                        closure_info.insert(
+                            func_name.clone(),
+                            (captures.len(), user_params, cap_types, mutated_slot),
+                        );
                     }
                 }
             }
@@ -474,7 +487,7 @@ pub fn compile_module_with_options(
     let mut thunk_ids: HashMap<String, FuncId> = HashMap::new();
     {
         let call_conv = object_module.isa().default_call_conv();
-        for (func_name, (_, user_param_count, _)) in &closure_info {
+        for (func_name, (_, user_param_count, _, _)) in &closure_info {
             let env_thunk_name = format!("{func_name}_env");
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // env pointer
@@ -493,7 +506,7 @@ pub fn compile_module_with_options(
     let mut dropper_ids: HashMap<String, FuncId> = HashMap::new();
     {
         let call_conv = object_module.isa().default_call_conv();
-        for (func_name, (_, _, cap_types)) in &closure_info {
+        for (func_name, (_, _, cap_types, _)) in &closure_info {
             let has_heap_caps = cap_types.iter().any(|ct| {
                 matches!(
                     ct,
@@ -1616,7 +1629,7 @@ pub fn compile_module_with_options(
     }
 
     // Generate env-wrapper (thunk) function bodies for closures.
-    for (func_name, (num_captures, user_param_count, _)) in &closure_info {
+    for (func_name, (num_captures, user_param_count, _, mutated_slot)) in &closure_info {
         let env_thunk_id = thunk_ids[func_name.as_str()];
         let call_conv = object_module.isa().default_call_conv();
 
@@ -1711,6 +1724,22 @@ pub fn compile_module_with_options(
                 }
             };
 
+            // Write the return value back into the closure's own env slot
+            // when this lambda mutates exactly one capture and provably
+            // returns that same capture's value (`mutated_capture_slot` in
+            // kryos-mir/src/lower.rs). Env layout is `[fn_ptr, cap0, cap1,
+            // ...]`, so capture index `slot` lives at `env[slot + 1]`.
+            // Without this, a stateful counter/accumulator closure's
+            // mutation never survives past the current call -- the next
+            // call reloads the ORIGINAL capture value from env and the
+            // counter silently resets instead of advancing.
+            if let Some(slot) = mutated_slot {
+                let offset = ((slot + 1) * 8) as i32;
+                builder
+                    .ins()
+                    .store(MemFlags::new(), ret_val, env_val, offset);
+            }
+
             builder.ins().return_(&[ret_val]);
             builder.seal_all_blocks();
             builder.finalize();
@@ -1757,7 +1786,7 @@ pub fn compile_module_with_options(
             }
         }
     }
-    for (func_name, (_, _, cap_types)) in &closure_info {
+    for (func_name, (_, _, cap_types, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
             let call_conv = object_module.isa().default_call_conv();
             let mut sig = Signature::new(call_conv);

@@ -91,6 +91,13 @@ pub struct LlvmCodegen {
     /// Closure call signatures: func_name -> (user_param_count, ret_ty_llvm).
     /// Used to emit `{name}_env` thunks and to dispatch CallIndirect via env.
     closure_user_sig: HashMap<String, (usize, String)>,
+    /// func_name -> env-slot index (0-based among captures) whose value
+    /// must be refreshed after each call, copied from `MirFunction::
+    /// attributes.mutated_capture_slot` (see kryos-mir/src/lower.rs). The
+    /// `{name}_env` thunk stores the call's return value into that slot so
+    /// a mutating counter/accumulator closure's state persists across
+    /// calls instead of resetting -- see `emit_closure_thunks`.
+    closure_mutated_slot: HashMap<String, u32>,
     /// Trait vtable map from MIR: (concrete_type, trait_name) -> ordered list
     /// of mangled method names. Used to materialize trait objects and
     /// dispatch VtableCall.
@@ -142,6 +149,7 @@ impl LlvmCodegen {
             module_can_throw: true,
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
+            closure_mutated_slot: HashMap::new(),
             trait_vtables: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
@@ -205,6 +213,7 @@ impl LlvmCodegen {
         // function signatures, and collect closure capture types.
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
+        self.closure_mutated_slot.clear();
         self.module_can_throw = module_has_throw(&module.functions);
         for func in &module.functions {
             self.prescan_function(func);
@@ -262,6 +271,9 @@ impl LlvmCodegen {
                                     func_name.clone(),
                                     (user_params, ret_ty_llvm),
                                 );
+                                if let Some(slot) = mf.attributes.mutated_capture_slot {
+                                    self.closure_mutated_slot.insert(func_name.clone(), slot);
+                                }
                             }
                         }
                     }
@@ -372,6 +384,7 @@ impl LlvmCodegen {
         self.trait_vtables = header.trait_vtables.clone();
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
+        self.closure_mutated_slot.clear();
         self.module_can_throw = module_has_throw(functions);
 
         for func in functions {
@@ -427,6 +440,9 @@ impl LlvmCodegen {
                                     func_name.clone(),
                                     (user_params, ret_ty_llvm),
                                 );
+                                if let Some(slot) = mf.attributes.mutated_capture_slot {
+                                    self.closure_mutated_slot.insert(func_name.clone(), slot);
+                                }
                             }
                         }
                     }
@@ -1687,6 +1703,12 @@ impl LlvmCodegen {
                 .get(func_name.as_str())
                 .cloned()
                 .unwrap_or_else(|| ret_ty.clone());
+            // Env-slot index (if any) whose stored value must be refreshed
+            // with this call's return value -- see `closure_mutated_slot`
+            // and `MirAttributes::mutated_capture_slot`. This is what makes
+            // a mutating counter/accumulator closure's state persist across
+            // calls instead of resetting to the initial capture value.
+            let mutated_slot = self.closure_mutated_slot.get(func_name.as_str()).copied();
 
             if underlying_ret == "void" {
                 self.emit_line(&format!(
@@ -1699,11 +1721,11 @@ impl LlvmCodegen {
                     "  {r} = call {underlying_ret} @{func_name}({arg_list})"
                 ));
                 if underlying_ret == "i64" {
-                    self.emit_line(&format!("  ret i64 {r}"));
+                    self.emit_closure_thunk_return(mutated_slot, &r);
                 } else if underlying_ret == "ptr" {
                     let i = self.next_temp();
                     self.emit_line(&format!("  {i} = ptrtoint ptr {r} to i64"));
-                    self.emit_line(&format!("  ret i64 {i}"));
+                    self.emit_closure_thunk_return(mutated_slot, &i);
                 } else if underlying_ret.starts_with('{')
                     || underlying_ret.starts_with('%')
                     || underlying_ret.starts_with('[')
@@ -1725,15 +1747,34 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  store {underlying_ret} {r}, ptr {buf}"));
                     let i = self.next_temp();
                     self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
-                    self.emit_line(&format!("  ret i64 {i}"));
+                    self.emit_closure_thunk_return(mutated_slot, &i);
                 } else {
                     let coerced = self.coerce_value(&r, &underlying_ret, "i64");
-                    self.emit_line(&format!("  ret i64 {coerced}"));
+                    self.emit_closure_thunk_return(mutated_slot, &coerced);
                 }
             }
             self.emit_line("}");
             self.emit_blank();
         }
+    }
+
+    /// Emit the thunk's return, writing `val` (the i64-widened result of
+    /// calling the underlying lambda function) back into the closure's env
+    /// at `mutated_slot` first when present. Env layout is `[fn_ptr, cap0,
+    /// cap1, ...]`, so capture index `slot` lives at `env[slot + 1]`. This
+    /// is how a mutating counter/accumulator closure's new value survives
+    /// past this call instead of the next call re-reading the stale
+    /// original capture value.
+    fn emit_closure_thunk_return(&mut self, mutated_slot: Option<u32>, val: &str) {
+        if let Some(slot) = mutated_slot {
+            let slot_ptr = self.next_temp();
+            self.emit_line(&format!(
+                "  {slot_ptr} = getelementptr i64, ptr %env, i64 {}",
+                slot + 1
+            ));
+            self.emit_line(&format!("  store i64 {val}, ptr {slot_ptr}"));
+        }
+        self.emit_line(&format!("  ret i64 {val}"));
     }
 
     // -----------------------------------------------------------------------
@@ -2802,7 +2843,21 @@ impl LlvmCodegen {
                 (Some(&db), Some(ubs)) => ubs.iter().any(|&ub| ub != db),
                 _ => false,
             };
-            if local.mutable || count > 1 || cross_block {
+            // A function PARAMETER's first "definition" comes from the ABI
+            // entry (no MIR `Assign` instruction backs it), so `count` only
+            // tallies REASSIGNMENTS after entry. For an ordinary local, one
+            // Assign is the initial definition (fine as a plain SSA value);
+            // for a param, that same single Assign redefines the register
+            // the entry already bound -- e.g. a closure's captured-by-move
+            // mutable variable becomes a synthesized param that the lambda
+            // body reassigns (`count = count + 1`), which emitted `%_0 =
+            // add i64 %_0, 1` and failed LLVM verification with "multiple
+            // definition of local value" on `build --release`. Any
+            // reassigned param needs the alloca/store/load treatment
+            // regardless of how many times it's reassigned.
+            let is_reassigned_param =
+                count > 0 && func.params.iter().any(|p| p.local.0 == id);
+            if local.mutable || count > 1 || cross_block || is_reassigned_param {
                 self.mutable_locals.insert(id);
             }
         }

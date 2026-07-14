@@ -90,6 +90,18 @@ pub struct LoweringContext {
     try_catch_target: Option<TryCatchTarget>,
     /// Tracks locals that are closures with captures: local_name -> (func_name, capture_operands).
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    /// Underlying lambda function names (e.g. `__lambda_0`) whose body
+    /// mutates at least one of its captured variables. A mutating closure
+    /// captures its state BY MOVE and must own a single persistent copy
+    /// across calls, so it can never use the direct-call optimization that
+    /// `closure_locals` enables (that shortcut re-reads the CURRENT value of
+    /// the outer captured variable at every call site, which silently
+    /// resets a counter/accumulator back to its initial value instead of
+    /// threading the mutation forward). Populated when a Lambda is lowered;
+    /// consulted when a `let` binds that lambda to decide whether to
+    /// register it in `closure_locals` at all. Global for the whole
+    /// compilation (like `func_ret_types`), not per-function scratch state.
+    mutating_closures: HashSet<String>,
     /// Pending closure-local re-registrations for the next `lower_function`
     /// call. Used when lowering nested lambdas that capture other closures:
     /// the outer frame stages entries here so that after the inner frame
@@ -260,6 +272,7 @@ impl LoweringContext {
             type_aliases: HashMap::new(),
             try_catch_target: None,
             closure_locals: HashMap::new(),
+            mutating_closures: HashSet::new(),
             pending_closure_regs: Vec::new(),
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
@@ -2322,12 +2335,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 );
 
                 // Track closures with captures for direct-call optimization.
+                // NEVER for a closure that mutates one of its captures: it
+                // captures by move and owns persistent state, so the
+                // direct-call shortcut (re-read the outer variable's
+                // CURRENT value at each call site) would silently reset
+                // that state to the outer value every call instead of
+                // threading the mutation forward (see `mutating_closures`).
                 let closure_info = if let RValue::Closure {
                     ref func_name,
                     ref captures,
                 } = rvalue
                 {
-                    if !captures.is_empty() {
+                    if !captures.is_empty() && !ctx.mutating_closures.contains(func_name.as_str())
+                    {
                         Some((func_name.clone(), captures.clone()))
                     } else {
                         None
@@ -7891,6 +7911,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Analyze free variables in the lambda body (captures from enclosing scope).
             let captures = find_free_variables(ctx, body, params);
 
+            // Which of those captures does this lambda mutate? A mutating
+            // closure captures BY MOVE (gotcha #11) and must own a single
+            // persistent copy across calls, so it can never use the
+            // direct-call optimization in `closure_locals` -- see
+            // `find_mutated_captures` for why. Recorded now (before the
+            // capture-derived params below get built) so the check runs
+            // against the ORIGINAL capture list.
+            let mutated_captures = find_mutated_captures(body, &captures);
+
             // Stage closure_locals re-registrations for the inner frame.
             // For each captured variable that is itself a tracked closure
             // with captures, record (closure_name, real_func, capture_names).
@@ -8048,9 +8077,32 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             };
 
-            let mir_func =
+            let mut mir_func =
                 lower_function(ctx, &lambda_name, &all_params, effective_ret, &body_block);
             ctx.restore_function_state(saved);
+
+            // Record mutation info for the codegen backends. ANY mutated
+            // capture disables the direct-call optimization for this
+            // lambda (see `mutating_closures` doc comment) since it is
+            // never safe once the closure owns mutable state by move. When
+            // there is EXACTLY ONE mutated capture, additionally mark its
+            // env-slot index so the env-thunk can write the call's return
+            // value back into persistent storage (the standard
+            // mutate-then-return-it counter/accumulator idiom). Closures
+            // mutating more than one capture keep working exactly as
+            // before this fix (no worse), they just don't get the
+            // persistence fix -- a documented residual limitation rather
+            // than risking a wrong value written to the wrong slot.
+            if !mutated_captures.is_empty() {
+                ctx.mutating_closures.insert(lambda_name.clone());
+                if mutated_captures.len() == 1
+                    && tail_value_is_identifier(body, &mutated_captures[0])
+                {
+                    if let Some(idx) = captures.iter().position(|c| c == &mutated_captures[0]) {
+                        mir_func.attributes.mutated_capture_slot = Some(idx as u32);
+                    }
+                }
+            }
             ctx.monomorphized_functions.push(mir_func);
 
             // Register the lambda's return type.
@@ -8621,6 +8673,250 @@ fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)>
 // ---------------------------------------------------------------------------
 // Lambda / Closure helpers
 // ---------------------------------------------------------------------------
+
+/// Returns the subset of `capture_names` that the lambda `body` reassigns
+/// via a bare `Stmt::Assign` (`name = ...`) anywhere inside its own body --
+/// including inside `if`/`while`/`for`/`match`/`try` blocks, but NOT
+/// descending into a nested `Lambda` (a nested closure's captures follow
+/// its own independent capture-by-move/by-ref rule; see gotcha #11).
+///
+/// A closure that mutates a captured variable captures it BY MOVE: it owns
+/// a single persistent copy of that variable across calls (the standard
+/// counter/accumulator idiom). The direct-call optimization in
+/// `closure_locals` is only correct for captures read (never written)
+/// inside the closure -- it works by re-reading the CURRENT value of the
+/// outer variable at each call site, which is exactly wrong for a mutated
+/// capture (it silently resets the closure's state to the outer variable's
+/// value every call instead of threading the mutation forward). Callers use
+/// this to withhold that optimization whenever it would apply.
+///
+/// This is a deliberate over-approximation: it does not track lexical
+/// shadowing, so a nested `let mut` that reuses a capture's name also
+/// counts as "mutated". That only costs the direct-call optimization for a
+/// rare name collision -- never a correctness issue.
+fn find_mutated_captures(body: &ast::Expr, capture_names: &[String]) -> Vec<String> {
+    if capture_names.is_empty() {
+        return Vec::new();
+    }
+    let names: std::collections::HashSet<&str> =
+        capture_names.iter().map(|s| s.as_str()).collect();
+    let mut mutated: std::collections::HashSet<String> = std::collections::HashSet::new();
+    expr_mutates_names(body, &names, &mut mutated);
+    // Preserve the original capture order for deterministic env-slot indexing.
+    capture_names
+        .iter()
+        .filter(|n| mutated.contains(n.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// True if the lambda body's effective return value is exactly a bare
+/// reference to `name` -- the "mutate then return the same variable" idiom
+/// (`|| { count = count + 1  count }`, `|| { total = total + x  total }`).
+///
+/// Used to gate `MirAttributes::mutated_capture_slot`: it is only safe for
+/// the env-thunk to write a closure call's return value back into a
+/// mutated capture's persistent env slot when the return value on every
+/// path IS that capture's current value. Without this check, a closure
+/// that mutates a capture but returns something unrelated (`|| { count =
+/// count + 1  return 99 }`) would have 99 silently written into count's
+/// slot instead of the incremented value -- a real miscompile, not just an
+/// unoptimized case. Deliberately conservative: only the flat "last
+/// statement is the bare identifier" and "single bare-identifier body"
+/// shapes are recognized; anything branchier (if/match tails) returns
+/// false and falls back to the pre-fix behavior (no write-back).
+fn tail_value_is_identifier(body: &ast::Expr, name: &str) -> bool {
+    match body {
+        ast::Expr::Identifier { name: n, .. } => n == name,
+        ast::Expr::Block { block, .. } => match block.stmts.last() {
+            Some(ast::Stmt::Expr { expr, .. }) => tail_value_is_identifier(expr, name),
+            Some(ast::Stmt::Return {
+                value: Some(expr), ..
+            }) => tail_value_is_identifier(expr, name),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn expr_mutates_names(
+    expr: &ast::Expr,
+    names: &std::collections::HashSet<&str>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    match expr {
+        ast::Expr::Block { block, .. } => block_mutates_names(&block.stmts, names, out),
+        ast::Expr::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_mutates_names(condition, names, out);
+            block_mutates_names(&then_branch.stmts, names, out);
+            if let Some(eb) = else_branch {
+                block_mutates_names(&eb.stmts, names, out);
+            }
+        }
+        ast::Expr::MatchExpr { subject, arms, .. } => {
+            expr_mutates_names(subject, names, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    expr_mutates_names(guard, names, out);
+                }
+                expr_mutates_names(&arm.body, names, out);
+            }
+        }
+        ast::Expr::ComptimeBlock { body, .. }
+        | ast::Expr::QuantumBlock { body, .. }
+        | ast::Expr::UnsafeBlock { body, .. } => block_mutates_names(&body.stmts, names, out),
+        // A nested lambda has its own independent capture rule; whether IT
+        // mutates something is that closure's own concern, not this one's.
+        ast::Expr::Lambda { .. } => {}
+        ast::Expr::BinaryOp { left, right, .. } | ast::Expr::PipeExpr { left, right, .. } => {
+            expr_mutates_names(left, names, out);
+            expr_mutates_names(right, names, out);
+        }
+        ast::Expr::UnaryOp { operand, .. } => expr_mutates_names(operand, names, out),
+        ast::Expr::FnCall { callee, args, .. } => {
+            expr_mutates_names(callee, names, out);
+            for a in args {
+                expr_mutates_names(a, names, out);
+            }
+        }
+        ast::Expr::MethodCall { object, args, .. } => {
+            expr_mutates_names(object, names, out);
+            for a in args {
+                expr_mutates_names(a, names, out);
+            }
+        }
+        ast::Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                expr_mutates_names(a, names, out);
+            }
+        }
+        ast::Expr::FieldAccess { object, .. } => expr_mutates_names(object, names, out),
+        ast::Expr::IndexAccess { object, index, .. } => {
+            expr_mutates_names(object, names, out);
+            expr_mutates_names(index, names, out);
+        }
+        ast::Expr::Borrow { inner, .. }
+        | ast::Expr::Deref { inner, .. }
+        | ast::Expr::SharedExpr { inner, .. }
+        | ast::Expr::MoveExpr { inner, .. }
+        | ast::Expr::WeakExpr { inner, .. } => expr_mutates_names(inner, names, out),
+        ast::Expr::Cast { expr, .. } => expr_mutates_names(expr, names, out),
+        ast::Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                expr_mutates_names(v, names, out);
+            }
+        }
+        ast::Expr::ArrayLiteral { elements, .. } | ast::Expr::TupleLiteral { elements, .. } => {
+            for e in elements {
+                expr_mutates_names(e, names, out);
+            }
+        }
+        ast::Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                expr_mutates_names(k, names, out);
+                expr_mutates_names(v, names, out);
+            }
+        }
+        ast::Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                expr_mutates_names(s, names, out);
+            }
+            if let Some(e) = end {
+                expr_mutates_names(e, names, out);
+            }
+        }
+        ast::Expr::Await { value, .. } => expr_mutates_names(value, names, out),
+        ast::Expr::InterpolatedString { parts, .. } => {
+            for part in parts {
+                if let ast::StringPart::Expr(e) = part {
+                    expr_mutates_names(e, names, out);
+                }
+            }
+        }
+        // Leaf / no-sub-expression nodes -- nothing to recurse into.
+        ast::Expr::IntLiteral { .. }
+        | ast::Expr::FloatLiteral { .. }
+        | ast::Expr::StringLiteral { .. }
+        | ast::Expr::CharLiteral { .. }
+        | ast::Expr::BoolLiteral { .. }
+        | ast::Expr::NoneLiteral { .. }
+        | ast::Expr::Identifier { .. } => {}
+    }
+}
+
+fn block_mutates_names(
+    stmts: &[ast::Stmt],
+    names: &std::collections::HashSet<&str>,
+    out: &mut std::collections::HashSet<String>,
+) {
+    for stmt in stmts {
+        match stmt {
+            ast::Stmt::Assign { target, value, .. } => {
+                if let ast::Expr::Identifier { name, .. } = target {
+                    if names.contains(name.as_str()) {
+                        out.insert(name.clone());
+                    }
+                }
+                expr_mutates_names(target, names, out);
+                expr_mutates_names(value, names, out);
+            }
+            ast::Stmt::Let { value: Some(v), .. } => expr_mutates_names(v, names, out),
+            ast::Stmt::Let { value: None, .. } => {}
+            ast::Stmt::Return { value: Some(v), .. } => expr_mutates_names(v, names, out),
+            ast::Stmt::Return { value: None, .. } => {}
+            ast::Stmt::Expr { expr, .. } | ast::Stmt::Spawn { expr, .. } => {
+                expr_mutates_names(expr, names, out)
+            }
+            ast::Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                expr_mutates_names(condition, names, out);
+                block_mutates_names(&then_block.stmts, names, out);
+                for (cond, blk) in elif_clauses {
+                    expr_mutates_names(cond, names, out);
+                    block_mutates_names(&blk.stmts, names, out);
+                }
+                if let Some(eb) = else_block {
+                    block_mutates_names(&eb.stmts, names, out);
+                }
+            }
+            ast::Stmt::While { condition, body, .. } => {
+                expr_mutates_names(condition, names, out);
+                block_mutates_names(&body.stmts, names, out);
+            }
+            ast::Stmt::For { iterable, body, .. } => {
+                expr_mutates_names(iterable, names, out);
+                block_mutates_names(&body.stmts, names, out);
+            }
+            ast::Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
+                block_mutates_names(&try_block.stmts, names, out);
+                block_mutates_names(&catch_block.stmts, names, out);
+            }
+            ast::Stmt::Throw { expr, .. } => expr_mutates_names(expr, names, out),
+            ast::Stmt::Select { branches, .. } => {
+                for b in branches {
+                    expr_mutates_names(&b.channel, names, out);
+                    block_mutates_names(&b.body.stmts, names, out);
+                }
+            }
+            ast::Stmt::DenyBlock { body, .. } => block_mutates_names(&body.stmts, names, out),
+            ast::Stmt::Break { .. } | ast::Stmt::Continue { .. } => {}
+        }
+    }
+}
 
 /// Find free variables in a lambda body that refer to locals in the enclosing scope.
 ///

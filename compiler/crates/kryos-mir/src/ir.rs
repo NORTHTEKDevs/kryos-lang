@@ -221,6 +221,19 @@ pub struct MirAttributes {
     /// Function is declared `async fn` — eligible for state-machine
     /// lowering by `kryos_mir::async_lower`.
     pub is_async: bool,
+    /// Set on a synthesized lambda function that mutates EXACTLY ONE of its
+    /// captured (by-move) parameters and whose body's return value is that
+    /// same mutated local. The value is the 0-based index of that capture
+    /// among the lambda's captures (matching env slot `index + 1`, since
+    /// slot 0 holds the thunk function pointer). Both codegen backends use
+    /// this to make the closure's env-thunk write the call's return value
+    /// back into the persistent env slot, so a stateful counter/accumulator
+    /// closure's mutation survives across calls instead of resetting every
+    /// time. `None` for ordinary functions and for closures that don't fit
+    /// this single-mutated-capture-returned pattern (multiple mutated
+    /// captures, or a mutation whose new value isn't the return value, are
+    /// a known remaining limitation — see lower.rs `find_mutated_captures`).
+    pub mutated_capture_slot: Option<u32>,
 }
 
 /// A single MIR function.
