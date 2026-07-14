@@ -105,6 +105,23 @@ fn unwrap_label<T>(b: Boxed<T>) -> str {
     return b.label
 }
 
+// Chained generic-method call ON the result of a generic method, with NO
+// intermediate annotation. A generic method whose return is a bare `-> T`
+// resolving to a Struct/Enum concrete type used to keep the erased i64 slot,
+// so the follow-on `.get()`/field access fell back to an unmangled lookup
+// (JIT: unresolved external `get`; AOT: `extractvalue operand must be
+// aggregate` / void store). The call result must now carry its real
+// monomorphized type so the chain infers + codegens on both backends.
+struct Nest<T> {
+    inner: T,
+}
+
+impl<T> Nest<T> {
+    fn get(self: Nest<T>) -> T {
+        return self.inner
+    }
+}
+
 fn main() {
     // Through generic-fn returns (the path that mistyped fields as i64:
     // Boxed<str>.value printed its handle before the fix).
@@ -146,6 +163,16 @@ fn main() {
     let sw = pr.swap()
     expect(sw.get_first() == 2.5, "swapped generic method f64 return compare")
     expect(sw.get_first() > 2.4, "swapped generic method f64 ordering")
+
+    // Un-annotated chained generic-method calls (gotcha #17).
+    let n2: Nest<Nest<i64>> = Nest { inner: Nest { inner: 99 } }
+    let cv = n2.get().get()
+    expect(cv == 99, "un-annotated chained generic method (2 levels)")
+    let n3: Nest<Nest<Nest<i64>>> = Nest { inner: Nest { inner: Nest { inner: 7 } } }
+    expect(n3.get().get().get() == 7, "un-annotated chained generic method (3 levels)")
+    // Chained generic method result of str type keeps its pointer type.
+    let ns: Nest<Nest<str>> = Nest { inner: Nest { inner: "deep" } }
+    expect(ns.get().get() == "deep", "un-annotated chained generic method (str leaf)")
 
     // Generic struct with a nested-generic map<str,Option<V>> field, two
     // concrete instantiations coexisting (must not collide/segfault).

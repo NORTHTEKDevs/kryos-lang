@@ -6340,17 +6340,35 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                                 if !bindings.is_empty() {
                                     let resolved =
                                         substitute_type_expr_to_mir(ctx, &ret_te, &bindings);
-                                    // Only override for a FLOAT concrete type.
-                                    // That is the exact case that was broken:
-                                    // the erased i64 slot holds f64 bits, and
+                                    // Override for a FLOAT concrete type (the
+                                    // erased i64 slot holds f64 bits, and
                                     // without the real f64 type `to_string`
                                     // inlined the integer dispatch and printed
-                                    // raw bits. str/array/struct returns are
-                                    // pointer-shaped and already resolve through
-                                    // their existing paths (and a struct return
-                                    // here would diverge on AOT). Narrowest
-                                    // correct scope.
-                                    if matches!(resolved, MirType::F64 | MirType::F32) {
+                                    // raw bits), OR a Struct/Enum concrete type
+                                    // (chained generic method calls / an
+                                    // un-annotated `let` of a generic method's
+                                    // result -- CLAUDE.md gotcha #17(b)). Both
+                                    // the generic method body and the
+                                    // monomorphized struct layout represent
+                                    // every field uniformly as an 8-byte slot
+                                    // (scalar bits or a pointer), so retyping
+                                    // the call result here changes nothing
+                                    // about the runtime bytes -- it only lets
+                                    // a FOLLOW-ON `.method()`/`.field` on the
+                                    // result resolve against the real
+                                    // monomorphized type instead of falling
+                                    // back to an unmangled/erased lookup.
+                                    // (A compound return merely mentioning T --
+                                    // `(T, i64)`, `[T]` -- is excluded above by
+                                    // `ret_is_bare_param` and keeps the erased
+                                    // type; only a bare `-> T` reaches here.)
+                                    if matches!(
+                                        resolved,
+                                        MirType::F64
+                                            | MirType::F32
+                                            | MirType::Struct(_)
+                                            | MirType::Enum(_)
+                                    ) {
                                         return resolved;
                                     }
                                 }
