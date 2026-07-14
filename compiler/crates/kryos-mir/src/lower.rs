@@ -4936,15 +4936,29 @@ fn lower_refutable_bind(
     }
 }
 
-fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
-    let subj_op = lower_expr_to_operand(ctx, subject);
-    // Infer the result type from the first arm's body expression.
-    // For enum arms where the body is a simple identifier that will be bound
-    // from a field extraction, look up the field type directly -- the local
-    // does not exist yet when infer_expr_type runs, so it would fall back to
-    // I64 even for f64 fields (e.g. `JsonValue::Number(n) => n`).
-    let result_ty = arms
-        .first()
+/// Infer the value-type a `match` expression produces, from its first arm's
+/// body expression.
+///
+/// For enum arms where the body is a simple identifier that will be bound
+/// from a field extraction, look up the field type directly -- the local
+/// does not exist yet when `infer_expr_type` runs on the body alone, so it
+/// would fall back to I64 even for a non-i64 field (e.g. `JsonValue::Number(n)
+/// => n`, or a match-bound `str` payload used in a chained concatenation).
+///
+/// Shared by `lower_match` (which needs it to size the real result local)
+/// and `infer_expr_type`'s own `MatchExpr` arm (used when a match expression
+/// is nested inside a larger expression, e.g. `let name = match u { .. }`
+/// sizes the `name` local via this same path) -- both must agree, or the
+/// `name` local and the match's own result local can end up with different
+/// declared types for the same value, one of which is used as an operand of
+/// a chained string concat that discovers only at LLVM codegen time it grew
+/// a `ptr` value under an `i64` label.
+fn infer_match_result_type(
+    ctx: &mut LoweringContext,
+    subject: &ast::Expr,
+    arms: &[ast::MatchArm],
+) -> MirType {
+    arms.first()
         .map(|arm| {
             if let ast::Pattern::Enum {
                 name: enum_name,
@@ -4957,7 +4971,29 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     name: body_name, ..
                 } = &*arm.body
                 {
-                    if let Some(variants) = ctx.enum_defs.get(enum_name.as_str()) {
+                    // Resolve the enum definition to consult. A QUALIFIED
+                    // pattern (`Option.Some(n)` / `Opt::Some(n)`) carries the
+                    // enum name directly. A BARE pattern (`Some(n)`) leaves
+                    // `enum_name` empty by parser convention (parser.rs:
+                    // "the enum is left empty and resolved from the matched
+                    // value's type during lowering") -- looking that empty
+                    // name up in `ctx.enum_defs` silently misses, falling
+                    // through to `infer_expr_type(&arm.body)` below, which
+                    // can't see `body_name` (not bound yet) and defaults to
+                    // I64. Prefer the SUBJECT's own inferred type when it
+                    // names a (possibly monomorphized, e.g. `Option___str`)
+                    // enum, so the payload field type is the real concrete
+                    // type rather than the generic stub's i64 placeholder;
+                    // fall back to the pattern's name, then to a bare-variant
+                    // lookup.
+                    let resolved_enum_name = match infer_expr_type(ctx, subject) {
+                        MirType::Enum(n) => Some(n),
+                        _ if !enum_name.is_empty() => Some(enum_name.clone()),
+                        _ => find_enum_variant(ctx, variant).map(|(en, _)| en),
+                    };
+                    if let Some(variants) =
+                        resolved_enum_name.and_then(|en| ctx.enum_defs.get(en.as_str()).cloned())
+                    {
                         if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
                             for (field_idx, pat) in fields.iter().enumerate() {
                                 if let ast::Pattern::Ident {
@@ -4977,7 +5013,12 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             }
             infer_expr_type(ctx, &arm.body)
         })
-        .unwrap_or(MirType::I64);
+        .unwrap_or(MirType::I64)
+}
+
+fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
+    let subj_op = lower_expr_to_operand(ctx, subject);
+    let result_ty = infer_match_result_type(ctx, subject, arms);
     let result_local = ctx.alloc_temp(result_ty);
     let merge_bb = ctx.alloc_block();
 
@@ -6367,11 +6408,8 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
         ast::Expr::RangeExpr { .. } => MirType::I64,
 
-        ast::Expr::MatchExpr { arms, .. } => {
-            // Infer the type from the first arm's body expression.
-            arms.first()
-                .map(|arm| infer_expr_type(ctx, &arm.body))
-                .unwrap_or(MirType::I64)
+        ast::Expr::MatchExpr { subject, arms, .. } => {
+            infer_match_result_type(ctx, subject, arms)
         }
 
         ast::Expr::IfExpr { then_branch, .. } => {

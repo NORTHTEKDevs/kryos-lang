@@ -115,6 +115,27 @@ fn shelf_label(s: Shelf) -> str {
     }
 }
 
+fn find_name(id: i64) -> Option<str> {
+    if id == 1 {
+        return Some("alice")
+    }
+    return None()
+}
+
+// match-as-VALUE whose first arm is a bare str-payload binding, feeding a CHAINED
+// concat. The match result local was mis-sized as i64 (bare-variant enum name is
+// empty; the field-type special-case missed), so the chained concat poisoned the
+// SSA type and the AOT build failed with `ptr but expected i64`.
+fn describe_user(id: i64) -> str {
+    let name = match find_name(id) {
+        Some(n) => n,
+        None() => {
+            return "unknown"
+        }
+    }
+    return name + " is " + "here"
+}
+
 enum Sig {
     On(i64),
     Off,
@@ -298,6 +319,10 @@ fn main() {
     expect(drive(Sig.On(99), 2) == "big 99 2", "tuple nested-enum guard arm")
     expect(drive(Sig.On(4), 3) == "on 4 3", "tuple nested-enum payload extracted")
     expect(drive(Sig.Off, 7) == "off 7", "tuple nested-enum other variant not stolen")
+
+    // match-as-value str payload feeding a chained concat.
+    expect(describe_user(1) == "alice is here", "match-value str payload chained concat")
+    expect(describe_user(2) == "unknown", "match-value diverging arm")
 
     println("conformance data: PASS")
 }
