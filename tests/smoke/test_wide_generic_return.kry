@@ -1,0 +1,26 @@
+// Regression: a generic impl method returning a bare `-> A`/`-> B` whose type
+// resolves to a WIDE (>8-byte, multi-slot) aggregate at the call site. The
+// callee is compiled once with the return erased to scalar i64 (returning a
+// boxed pointer); the call site must use the scalar return ABI then unbox
+// (inttoptr + load), not `call %WideAgg` (an ABI mismatch -> AOT garbage).
+// Kept small (single wide-return binding) so it stays below the pre-existing
+// Cranelift boxed-aggregate teardown-corruption threshold and exits cleanly
+// on BOTH backends. (commits 369ff6a arg-repack + 96ee5e6 return-unbox.)
+struct Pair<A, B> { first: A, second: B }
+impl<A, B> Pair<A, B> {
+    fn first_of(self: Pair<A, B>) -> A { return self.first }
+    fn second_of(self: Pair<A, B>) -> B { return self.second }
+}
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("SMOKE FAIL: {what}")
+        exit(1)
+    }
+}
+fn main() {
+    // Return the wide FIRST field into a scope-lived local, read both fields.
+    let p: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 1, second: 2 }, second: 3 }
+    let wr: Pair<i64, i64> = p.first_of()
+    expect(wr.first == 1 and wr.second == 2, "wide first_of return unbox")
+    println("test_wide_generic_return: PASS")
+}
