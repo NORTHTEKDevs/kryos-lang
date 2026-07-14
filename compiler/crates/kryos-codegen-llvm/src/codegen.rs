@@ -3074,7 +3074,20 @@ impl LlvmCodegen {
                 continue;
             }
             if self.mutable_locals.contains(&param.local.0) {
-                let ty = mir_type_to_llvm(&param.ty);
+                // Use the resolved local type (from `self.local_types`, built
+                // up-front in emit_function_as), NOT the raw `mir_type_to_llvm`
+                // mapping. `mir_type_to_llvm` falls back to a bare "i64" for
+                // MirType::Enum (it has no enum-def context to size the
+                // payload), while the alloca just above (and the incoming
+                // %_N SSA value itself) use the real enum aggregate type
+                // (e.g. `{ i64, i64, i64, i64 }` for a 3-field variant). A
+                // mutable enum-typed parameter -- e.g. the recursion subject
+                // of a function that calls itself with a nested match binding
+                // (BST inorder-traversal style) -- hit this exact mismatch:
+                // `store i64 %_0, ptr %_0.addr` where both %_0 and %_0.addr
+                // were actually the 4-field aggregate, an AOT-only build
+                // failure (JIT has no such type-string mismatch).
+                let ty = self.local_type(param.local);
                 if ty != "void" {
                     self.emit_line(&format!(
                         "  store {ty} %_{}, ptr %_{}.addr",

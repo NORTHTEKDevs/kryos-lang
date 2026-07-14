@@ -141,6 +141,23 @@ enum Sig {
     Off,
 }
 
+// Recursive enum (auto-boxed) + recursive fn. Dotted `Enum.Variant(args)`
+// construction with heap-local args (`Btree.Node(a, b)`) didn't drop-suppress
+// those args (only the bare `Variant(args)` path did), double-freeing the child
+// cells at scope exit -> Windows __fastfail -> JIT exit 127. The conformance
+// runner's exit-code check catches a regression here.
+enum Btree {
+    Leaf(i64),
+    Node(Btree, Btree),
+}
+
+fn tree_sum(t: Btree) -> i64 {
+    match t {
+        Btree.Leaf(v) => return v,
+        Btree.Node(l, r) => return tree_sum(l) + tree_sum(r),
+    }
+}
+
 // Tuple pattern with a NESTED ENUM element `(On(v), q)`. The switch path tested
 // neither the nested tag (Off took the On arm) nor extracted the payload (v
 // bound 0); the ordered path now handles both, incl. guards.
@@ -364,6 +381,14 @@ fn main() {
     expect(nested_tuple_cls(1, 0, 9) == "yzero 1 9", "nested-tuple literal element")
     expect(nested_tuple_cls(2, 8, 3) == "gt 2 8 3", "nested-tuple guard on inner binding")
     expect(nested_tuple_cls(3, 4, 5) == "def 3 4 5", "nested-tuple default arm")
+
+    // Recursive enum built with dotted construction from heap-locals, recursed.
+    let la = Btree.Leaf(3)
+    let lb = Btree.Leaf(4)
+    let branch = Btree.Node(la, lb)
+    let lc = Btree.Leaf(10)
+    let root = Btree.Node(branch, lc)
+    expect(tree_sum(root) == 17, "recursive enum tree_sum (no double-free)")
 
     println("conformance data: PASS")
 }

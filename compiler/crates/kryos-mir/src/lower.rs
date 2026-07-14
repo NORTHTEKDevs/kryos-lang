@@ -7181,29 +7181,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 // pre-fix behaviour (a use-after-free of the single owner). A
                 // fully-refcounted fix (retain str/array/map fields on enum
                 // construction) would also plug the leak; tracked separately.
-                for a in args {
-                    if let ast::Expr::Identifier { name: an, .. } = a {
-                        if let Some(l) = ctx
-                            .locals
-                            .iter()
-                            .rev()
-                            .find(|l| l.name.as_deref() == Some(an.as_str()))
-                        {
-                            if matches!(
-                                l.ty,
-                                MirType::Str
-                                    | MirType::Array(..)
-                                    | MirType::Map { .. }
-                                    | MirType::Struct(_)
-                                    | MirType::Enum(_)
-                                    | MirType::Shared(_)
-                            ) {
-                                let id = l.id.0;
-                                ctx.dropped_locals.insert(id);
-                            }
-                        }
-                    }
-                }
+                suppress_enum_field_arg_drops(ctx, args);
                 return RValue::EnumVariant {
                     enum_name,
                     variant_idx,
@@ -7356,6 +7334,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     {
                         let fields: Vec<Operand> =
                             args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                        // See suppress_enum_field_arg_drops: a bare heap-local
+                        // arg is moved into the enum; without this, dotted
+                        // `Enum.Variant(args)` double-frees a heap-owning
+                        // (e.g. recursive enum) field at scope exit.
+                        suppress_enum_field_arg_drops(ctx, args);
                         return RValue::EnumVariant {
                             enum_name: name.clone(),
                             variant_idx: idx as u32,
@@ -7529,6 +7512,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 {
                     let fields: Vec<Operand> =
                         args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    // See suppress_enum_field_arg_drops: a bare heap-local arg
+                    // is moved into the enum; without this, Rust-style
+                    // `Enum::Variant(args)` double-frees a heap-owning (e.g.
+                    // recursive enum) field at scope exit.
+                    suppress_enum_field_arg_drops(ctx, args);
                     return RValue::EnumVariant {
                         enum_name: type_name.clone(),
                         variant_idx: idx as u32,
@@ -8774,6 +8762,52 @@ fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)>
         rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0))
     });
     Some(matches[0].clone())
+}
+
+/// A bare heap-local passed directly as an enum-variant field is moved into
+/// the enum -- the field is a bit-copy with no retain. Mark the local
+/// drop-suppressed so its scope-end drop does not free the payload the
+/// constructed enum now owns.
+///
+/// Without this, constructing an enum from a named local holding a heap
+/// value (str/array/map/struct/enum/shared) double-frees at scope exit: the
+/// enum's own recursive drop frees the embedded field pointer, AND the
+/// untouched source local is separately dropped since it was never marked
+/// consumed. For a recursive enum (e.g. a tree node built from child enum
+/// locals) this corrupts the heap (Windows: STATUS_HEAP_CORRUPTION fail-fast,
+/// surfaced as a silent abnormal exit) even though program output up to that
+/// point is correct.
+///
+/// This must run for EVERY syntax that constructs an enum variant with
+/// arguments: bare `Variant(args)` (FnCall), dotted `Enum.Variant(args)`
+/// (MethodCall), and Rust-style `Enum::Variant(args)` (StaticMethodCall).
+/// Historically only the FnCall path had this; the other two leaked the
+/// suppression, causing the double-free above for any recursive/heap-payload
+/// enum built via those spellings.
+fn suppress_enum_field_arg_drops(ctx: &mut LoweringContext, args: &[ast::Expr]) {
+    for a in args {
+        if let ast::Expr::Identifier { name: an, .. } = a {
+            if let Some(l) = ctx
+                .locals
+                .iter()
+                .rev()
+                .find(|l| l.name.as_deref() == Some(an.as_str()))
+            {
+                if matches!(
+                    l.ty,
+                    MirType::Str
+                        | MirType::Array(..)
+                        | MirType::Map { .. }
+                        | MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Shared(_)
+                ) {
+                    let id = l.id.0;
+                    ctx.dropped_locals.insert(id);
+                }
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
