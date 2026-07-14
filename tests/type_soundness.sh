@@ -158,6 +158,72 @@ fn main() {
 }
 '
 
+# --- actor request-response: no synchronous reply channel exists in the ----
+# runtime (each actor runs on its own OS thread, kryos_actor_send just
+# enqueues into a mailbox), so a handler declaring a non-void return must be
+# rejected at the CALL site rather than silently threading back 0 -- or
+# crashing for f64 (Cranelift verifier "entered unreachable code" / LLVM
+# `add double 0, 0`). The handler BODY still type-checks against its declared
+# return (declaring the actor alone must NOT fail); only calling it does.
+
+want_reject actor_nonvoid_handler_call_rejected '
+actor Calc {
+    memory: i64
+    fn add(x: i64) -> i64 {
+        memory = memory + x
+        return memory
+    }
+}
+fn main() {
+    let c = Calc()
+    let r = c.add(5)
+    println(to_string(r))
+}
+'
+
+want_reject actor_nonvoid_handler_bare_call_rejected '
+actor Calc {
+    memory: f64
+    fn add(x: f64) -> f64 {
+        memory = memory + x
+        return memory
+    }
+}
+fn main() {
+    let c = Calc()
+    c.add(5.0)
+    println("done")
+}
+'
+
+want_pass actor_nonvoid_handler_body_typechecks_undeclared '
+actor Calc {
+    memory: i64
+    fn add(x: i64) -> i64 {
+        memory = memory + x
+        return memory
+    }
+}
+fn main() {
+    let c = Calc()
+    println("actor with non-void handler declared but not called: ok")
+}
+'
+
+want_pass actor_void_handler_still_works '
+actor Calc {
+    memory: i64
+    fn add(x: i64) {
+        memory = memory + x
+    }
+}
+fn main() {
+    let c = Calc()
+    c.add(5)
+    println("void actor handler: ok")
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

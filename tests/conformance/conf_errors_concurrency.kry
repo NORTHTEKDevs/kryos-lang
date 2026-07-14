@@ -10,15 +10,21 @@ fn expect(cond: bool, what: str) {
     }
 }
 
-// Actor with a NON-VOID (request-response) handler -- the documented primary
-// pattern. A handler body was type-checked against a hardcoded Void return, so a
-// declared `-> f64` handler failed with "declared to return void, found f64".
+// Actor handlers are dispatched asynchronously: each actor runs on its own OS
+// thread and `send` just enqueues a message into its mailbox -- there is no
+// reply channel, so a handler's return value can never reach the call site.
+// `add` is therefore declared VOID (fire-and-forget), which is the only kind
+// of handler that can be called correctly today. (A handler whose BODY
+// declares a non-void return, e.g. `fn add(x: f64) -> f64 { return memory }`,
+// still type-checks on its own -- see tests/type_soundness.sh -- but CALLING
+// it is a compile error: request-response needs runtime support that doesn't
+// exist yet, so the checker rejects the call loudly instead of silently
+// returning 0.)
 actor Calc {
     memory: f64
 
-    fn add(x: f64) -> f64 {
+    fn add(x: f64) {
         memory = memory + x
-        return memory
     }
 
     fn clear(self) {
@@ -121,7 +127,8 @@ fn main() {
         Err(e) => expect(e == "negative: -3", "catch->Err(e) tail message survives"),
     }
 
-    // Actor with a non-void handler must type-check, construct, and run.
+    // Actor with a void (fire-and-forget) handler must construct and run,
+    // updating state correctly via message sends.
     let calc = Calc()
     calc.add(5.0)
     calc.clear()

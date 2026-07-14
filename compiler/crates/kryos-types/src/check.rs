@@ -61,6 +61,18 @@ pub struct TypeChecker {
     /// Nesting depth of enclosing `unsafe { }` blocks. Raw-pointer dereference
     /// is only permitted when this is > 0 (else E0500).
     unsafe_depth: u32,
+    /// Actor handlers declared with a non-void return type, keyed by
+    /// (actor name, handler name) -> declared return type. Actor dispatch is
+    /// genuinely asynchronous (each actor runs on its own OS thread; sends
+    /// enqueue into a mailbox with no reply channel -- see
+    /// kryos-rt/src/actor.rs), so a handler's return value can never reach
+    /// the call site. The handler BODY still type-checks against its
+    /// declared return (so `fn add(x: i64) -> i64 { return memory }` is
+    /// valid Kryos, matching docs/09-concurrency.md), but calling it is
+    /// rejected here rather than silently threading back 0 (the previous
+    /// bug: the call-site FunctionSig.ret was wrongly set to the declared
+    /// type even though codegen discards the actual return).
+    actor_nonvoid_handlers: std::collections::HashMap<(String, String), Type>,
 }
 
 impl Default for TypeChecker {
@@ -87,6 +99,7 @@ impl TypeChecker {
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
             unsafe_depth: 0,
+            actor_nonvoid_handlers: std::collections::HashMap::new(),
         }
     }
 
@@ -878,20 +891,28 @@ impl TypeChecker {
                                 }
                             })
                             .collect();
-                        // Call-site return type is the handler's declared return
-                        // (request-response handlers return a value); default Void
-                        // for fire-and-forget handlers with no declared return.
-                        let ret = h
-                            .ret_ty
-                            .as_ref()
-                            .map(|t| self.resolve_type_expr(t))
-                            .unwrap_or(Type::Void);
+                        // Call-site return type is ALWAYS Void: actor dispatch is
+                        // genuinely asynchronous (each actor runs on its own OS
+                        // thread; `kryos_actor_send` just enqueues a message into
+                        // a mailbox -- there is no reply channel in the runtime),
+                        // so a handler's return value can never reach the call
+                        // site. A declared non-void return (`-> i64`, `-> f64`,
+                        // ...) is recorded in `actor_nonvoid_handlers` so a call
+                        // to it is rejected with a loud, precise error instead of
+                        // silently threading back 0 (or crashing for f64).
+                        if let Some(t) = h.ret_ty.as_ref() {
+                            let declared = self.resolve_type_expr(t);
+                            if declared != Type::Void {
+                                self.actor_nonvoid_handlers
+                                    .insert((name.clone(), h.name.clone()), declared);
+                            }
+                        }
                         FunctionSig {
                             name: h.name.clone(),
                             generic_params: vec![],
                             generic_var_ids: vec![],
                             params,
-                            ret,
+                            ret: Type::Void,
                         }
                     })
                     .collect();
@@ -2525,6 +2546,32 @@ impl TypeChecker {
                     Type::Error => return Type::Error,
                     _ => None,
                 };
+
+                // Reject calling an actor handler that declares a non-void
+                // return type -- actor sends are fire-and-forget (no reply
+                // channel exists in the runtime), so the value can never
+                // reach the caller. Loud failure here beats the old silent-0
+                // (or f64-crash) behavior. See `actor_nonvoid_handlers` above.
+                if let Some(ref tname) = type_name {
+                    if let Some(ret_ty) = self
+                        .actor_nonvoid_handlers
+                        .get(&(tname.clone(), method.clone()))
+                        .cloned()
+                    {
+                        self.error(
+                            format!(
+                                "actor handler `{method}` declares return type `{ret_ty}`, \
+                                 but actor sends are asynchronous fire-and-forget: there is no \
+                                 synchronous reply channel, so the return value can never reach \
+                                 this call site (see docs/09-concurrency.md). Request-response \
+                                 actors are not supported yet -- declare `{method}` with no \
+                                 return type (fire-and-forget) instead."
+                            ),
+                            *span,
+                        );
+                        return Type::Error;
+                    }
+                }
 
                 if let Some(ref tname) = type_name {
                     // Check if this is an enum variant constructor (e.g. Shape.Circle(3)).
