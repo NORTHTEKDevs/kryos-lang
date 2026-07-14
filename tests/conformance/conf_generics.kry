@@ -33,6 +33,35 @@ impl<A, B> Pair<A, B> {
     }
 }
 
+// Generic struct with a NESTED-generic field (map<str, Option<V>>) built inside a
+// generic function. This (a) failed to build on AOT (a phantom Option___V
+// monomorphization -> undefined __kryos_drop_V) and (b) segfaulted when two
+// concrete instantiations coexisted (field-type inference fell back to i64 for
+// every V, colliding the layouts).
+struct Reg<V> {
+    entries: map<str, Option<V>>,
+}
+
+fn mk_reg<V>(k: str, v: Option<V>) -> Reg<V> {
+    let mut m: map<str, Option<V>> = {}
+    m[k] = v
+    return Reg { entries: m }
+}
+
+fn reg_geti(r: Reg<i64>, k: str) -> i64 {
+    match r.entries[k] {
+        Some(v) => return v,
+        None() => return -1,
+    }
+}
+
+fn reg_gets(r: Reg<str>, k: str) -> str {
+    match r.entries[k] {
+        Some(v) => return v,
+        None() => return "?",
+    }
+}
+
 struct Boxed<T> {
     value: T,
     label: str,
@@ -87,6 +116,13 @@ fn main() {
     let sw = pr.swap()
     expect(sw.get_first() == 2.5, "swapped generic method f64 return compare")
     expect(sw.get_first() > 2.4, "swapped generic method f64 ordering")
+
+    // Generic struct with a nested-generic map<str,Option<V>> field, two
+    // concrete instantiations coexisting (must not collide/segfault).
+    let ri = mk_reg("a", Some(42))
+    let rs = mk_reg("b", Some("hello"))
+    expect(reg_geti(ri, "a") == 42, "Reg<i64> nested-generic field")
+    expect(reg_gets(rs, "b") == "hello", "Reg<str> nested-generic field (no layout collision)")
 
     println("conformance generics: PASS")
 }

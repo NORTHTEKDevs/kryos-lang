@@ -310,16 +310,36 @@ impl LoweringContext {
         }
 
         // Handle generic struct/enum instantiation before calling lower_type_expr.
+        // The args are resolved LAZILY, only inside the branch that actually
+        // needs them (struct or enum template) -- NOT unconditionally up
+        // front. `map<str, Option<V>>` reaches this arm with name = "map",
+        // which is neither a struct nor enum template, so the eager
+        // resolution used to be pure waste; its result was discarded and
+        // `ty` was re-lowered from scratch via the `lower_type_expr`
+        // fallback below. But resolving an arg is NOT side-effect-free: an
+        // arg like `Option<V>`, where `V` is a generic function's OWN type
+        // parameter that hasn't been substituted at this point (a function
+        // template's BODY is lowered as-is; only its param/return types are
+        // pre-substituted per instantiation), resolves "V" as an unresolved
+        // struct reference and permanently monomorphizes a garbage
+        // `Option___V` instance into `enum_defs` as a side effect --
+        // reachable only via this discarded, unnecessary computation. The
+        // LLVM backend then emits a drop helper for every registered enum,
+        // including this phantom one, whose own payload field is ALSO the
+        // bogus `V` placeholder, producing a call to an undefined
+        // `__kryos_drop_V`. Deferring resolution until we know it is
+        // actually needed removes the wasted (and harmful) computation
+        // entirely.
         if let ast::TypeExpr::Generic { name, args, .. } = ty {
-            let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
-
             // Check if this is a generic struct.
             if self.generic_struct_templates.contains_key(name) {
+                let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
                 return MirType::Struct(monomorphize_struct(self, name, &type_args));
             }
 
             // Check if this is a generic enum.
             if self.generic_enum_templates.contains_key(name) {
+                let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
                 return MirType::Enum(monomorphize_enum(self, name, &type_args));
             }
         }
@@ -6037,16 +6057,19 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     let template_params = template.params.clone();
                     let template_ret_ty = template.ret_ty.clone();
                     // Build type map by recursively matching each parameter's
-                    // declared TypeExpr against the inferred concrete argument
-                    // type. Handles `[T]`, `(A, B)`, `fn(T) -> U`, `&T`, etc.
+                    // declared TypeExpr against the argument EXPRESSION (not
+                    // just its inferred type -- see
+                    // extract_type_bindings_from_arg). Handles `[T]`, `(A,
+                    // B)`, `fn(T) -> U`, `&T`, and an enum-variant-constructor
+                    // argument like `Some(x)` whose static type alone would
+                    // erase the payload type.
                     let mut type_map: HashMap<String, MirType> = HashMap::new();
                     for (i, param) in template_params.iter().enumerate() {
                         if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
-                            let arg_ty = infer_expr_type(ctx, arg);
-                            extract_type_bindings(
+                            extract_type_bindings_from_arg(
                                 ctx,
                                 param_ty,
-                                &arg_ty,
+                                arg,
                                 &generic_params,
                                 &mut type_map,
                             );
@@ -7098,9 +7121,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Check if this is a call to a generic function — monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
-                let arg_types: Vec<MirType> =
-                    args.iter().map(|a| infer_expr_type(ctx, a)).collect();
-                let mangled = monomorphize(ctx, &func_name, &arg_types);
+                let mangled = monomorphize(ctx, &func_name, args);
                 let mir_args: Vec<Operand> =
                     args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
                 return RValue::Call {
@@ -9124,6 +9145,80 @@ fn extract_type_bindings(
     }
 }
 
+/// Like `extract_type_bindings`, but takes the call-site ARGUMENT EXPRESSION
+/// instead of its already-inferred `MirType`. This recovers bindings that
+/// `extract_type_bindings` cannot: a generic function parameter typed
+/// `Option<V>` (or `Result<V, E>`, or any user generic enum) matched against
+/// an argument that is an enum-variant CONSTRUCTOR CALL (`Some(42)`, `Ok(x)`)
+/// -- `infer_expr_type` types that call as the bare, un-monomorphized enum
+/// name (`Option`, not `Option___i64`), which loses the concrete payload type
+/// entirely, so the ordinary type-based matching in `extract_type_bindings`
+/// has nothing to recover `V` from and silently leaves it unbound. Without
+/// this, an unbound `V` propagated into `substitute_type_expr`/
+/// `resolve_type`, which treat the raw, still-unsubstituted parameter name
+/// as an unresolved struct reference (`Struct("V")`) -- corrupting any
+/// struct/enum monomorphized from that binding (leaking an opaque `%V` LLVM
+/// type on the AOT backend). Falls back to the ordinary type-based
+/// extraction for every shape it doesn't specifically recognize, so existing
+/// behavior for non-enum-constructor arguments is unchanged.
+fn extract_type_bindings_from_arg(
+    ctx: &mut LoweringContext,
+    param_ty: &ast::TypeExpr,
+    arg_expr: &ast::Expr,
+    generic_params: &[String],
+    out: &mut HashMap<String, MirType>,
+) {
+    if let (ast::TypeExpr::Generic { name: pname, args: pargs, .. }, ast::Expr::FnCall { callee, args: cargs, .. }) =
+        (param_ty, arg_expr)
+    {
+        if let ast::Expr::Identifier { name: vname, .. } = callee.as_ref() {
+            if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, vname) {
+                // Only trust this recovery when the param's declared generic
+                // name actually matches the constructed enum (or is itself a
+                // known generic enum template) -- avoids misfiring on an
+                // unrelated same-shaped call.
+                if &enum_name == pname || ctx.generic_enum_templates.contains_key(pname) {
+                    if let Some(template) = ctx.generic_enum_templates.get(&enum_name).cloned() {
+                        if let Some(variant) = template.variants.get(variant_idx as usize).cloned() {
+                            let enum_generic_params = template.generic_params.clone();
+                            let mut local_map: HashMap<String, MirType> = HashMap::new();
+                            for (field_ty, cexpr) in variant.fields.iter().zip(cargs.iter()) {
+                                extract_type_bindings_from_arg(
+                                    ctx,
+                                    field_ty,
+                                    cexpr,
+                                    &enum_generic_params,
+                                    &mut local_map,
+                                );
+                            }
+                            // Unify the enum's own generic params (in order)
+                            // against `pargs` (the param type's own type
+                            // args, e.g. the `V` in `Option<V>`).
+                            for (egp, pty_arg) in enum_generic_params.iter().zip(pargs.iter()) {
+                                if let Some(bound) = local_map.get(egp) {
+                                    if let ast::TypeExpr::Simple { name, .. } = pty_arg {
+                                        if generic_params.iter().any(|g| g == name) {
+                                            out.entry(name.clone()).or_insert_with(|| bound.clone());
+                                            continue;
+                                        }
+                                    }
+                                    extract_type_bindings(ctx, pty_arg, bound, generic_params, out);
+                                }
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // No enum-constructor shape recognized -- fall back to the ordinary
+    // type-based extraction using the argument's inferred (possibly erased)
+    // MirType.
+    let arg_ty = infer_expr_type(ctx, arg_expr);
+    extract_type_bindings(ctx, param_ty, &arg_ty, generic_params, out);
+}
+
 /// Apply a generic-parameter type map to a TypeExpr-shaped return type
 /// and produce a concrete MirType. Recurses through compound shapes so that
 /// `[T]`, `(A, B)`, `fn(T) -> U`, and `&T` are all substituted, not just
@@ -9139,7 +9234,34 @@ fn substitute_type_expr_to_mir(
             if let Some(concrete) = type_map.get(name) {
                 return concrete.clone();
             }
-            ctx.resolve_type(ty)
+            let resolved = ctx.resolve_type(ty);
+            // `type_map` may be missing this name because the caller's own
+            // argument-based inference couldn't recover it (e.g. a generic
+            // fn's type param bound only through an enum-variant-constructor
+            // argument like `Some(x)`, whose static type erases to the bare
+            // `Option` tag rather than a monomorphized `Option___i64` --
+            // extract_type_bindings then has nothing to match against and
+            // leaves the param unbound). `ctx.resolve_type` has no notion of
+            // "unbound generic param" and its catch-all (`lower_type_expr`)
+            // echoes an unrecognized Simple name back as `Struct(name)`,
+            // treating the raw parameter identifier as if it were a real
+            // struct name. If nothing in the program actually defines a
+            // struct/enum by this name, it can only be a leaked, unbound
+            // type parameter -- fall back to the same erased-i64-slot model
+            // used everywhere else in this file for an unresolved generic
+            // param, instead of propagating a bogus `Struct("V")` that the
+            // LLVM backend then emits as an undefined opaque type.
+            if let MirType::Struct(ref resolved_name) = resolved {
+                if resolved_name == name
+                    && !ctx.struct_defs.contains_key(name)
+                    && !ctx.generic_struct_templates.contains_key(name)
+                    && !ctx.enum_defs.contains_key(name)
+                    && !ctx.generic_enum_templates.contains_key(name)
+                {
+                    return MirType::I64;
+                }
+            }
+            resolved
         }
         ast::TypeExpr::Array { element, size, .. } => MirType::Array(
             Box::new(substitute_type_expr_to_mir(ctx, element, type_map)),
@@ -9235,10 +9357,38 @@ fn resolve_struct_literal_name(
         .get(name)
         .expect("template exists")
         .clone();
+
+    // If the enclosing function's declared return type is ALREADY a
+    // monomorphized instance of THIS SAME struct template (e.g. this literal
+    // is the direct `return` value of a generic fn `-> Registry<V>`), keep
+    // its recorded concrete type args on hand as a per-param FALLBACK.
+    // Field-based inference below cannot recover a param nested inside a
+    // generic container it doesn't specifically special-case (its `Generic`
+    // arm only unwraps `map<K, V>`; a param nested one level deeper, e.g.
+    // `entries: map<str, Option<V>>`, is invisible to it and silently
+    // resolves to `None` for every instantiation). Falling back to the
+    // default I64 binding in that case is wrong whenever the real V isn't
+    // i64: a second instantiation (e.g. `Registry<str>` alongside an
+    // existing `Registry<i64>`) then collided with the first, sharing its
+    // struct layout/drop glue and corrupting memory on the AOT backend.
+    // This hint is consulted ONLY per-param, after field-based inference has
+    // already failed to bind that param, so it changes nothing for the
+    // (already-working) cases where field inference succeeds.
+    let ret_hint: Option<Vec<MirType>> = if let MirType::Struct(ref ret_name) = ctx.current_ret_ty {
+        if ret_name.starts_with(&format!("{name}___")) {
+            ctx.mono_instance_args.get(ret_name).cloned()
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
     let type_args: Vec<MirType> = template
         .generic_params
         .iter()
-        .map(|gp| {
+        .enumerate()
+        .map(|(idx, gp)| {
             // Find a field whose declared type mentions this param, infer the
             // type of the corresponding field expression, then structurally
             // peel the param's concrete binding out of that inferred type. A
@@ -9262,6 +9412,7 @@ fn resolve_struct_literal_name(
                             extract_param_binding(&f.ty, &inferred, gp)
                         })
                 })
+                .or_else(|| ret_hint.as_ref().and_then(|args| args.get(idx).cloned()))
                 .unwrap_or(MirType::I64)
         })
         .collect();
@@ -9461,6 +9612,19 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
     let mangled = mono_mangled_name(enum_name, &concrete_ordered);
+    // Mirror monomorphize_struct: register this instance's concrete type args
+    // so extract_type_bindings can recover a generic fn's type param from an
+    // argument whose static type is this monomorphized enum (e.g. binding V
+    // from an `Option<V>`-typed param matched against an `Option___i64`
+    // argument). Without this, the enum branch of extract_type_bindings's
+    // lookup into mono_instance_args always misses, the param silently stays
+    // unbound, and callers fall through resolve_type's ctx-less path, which
+    // treats the bare param name as an unresolved struct (`MirType::Struct("V")`)
+    // -- corrupting any struct monomorphized from that binding (e.g. leaking
+    // an opaque `%V` into `Registry<V>`'s LLVM type on the AOT backend).
+    ctx.mono_instance_args
+        .entry(mangled.clone())
+        .or_insert_with(|| concrete_ordered.clone());
 
     // If already monomorphized, just return the name.
     if ctx.enum_defs.contains_key(&mangled) {
@@ -9491,12 +9655,14 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
     mangled
 }
 
-/// Monomorphize a generic function template with concrete argument types.
+/// Monomorphize a generic function template with concrete call-site argument
+/// expressions.
 ///
-/// Infers type parameter bindings from argument types, substitutes them
-/// in the parameter/return type annotations, lowers the specialized copy,
-/// and returns the mangled name.
-fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType]) -> String {
+/// Infers type parameter bindings from the argument expressions (not just
+/// their already-inferred types -- see `extract_type_bindings_from_arg`),
+/// substitutes them in the parameter/return type annotations, lowers the
+/// specialized copy, and returns the mangled name.
+fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) -> String {
     // Build type param → concrete type mapping by matching args to params.
     let template = ctx
         .generic_templates
@@ -9509,8 +9675,8 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, arg_types: &[MirType
 
     let mut type_map: HashMap<String, MirType> = HashMap::new();
     for (i, param) in template_params.iter().enumerate() {
-        if let (Some(param_ty), Some(concrete)) = (&param.ty, arg_types.get(i)) {
-            extract_type_bindings(ctx, param_ty, concrete, &generic_params, &mut type_map);
+        if let (Some(param_ty), Some(arg_expr)) = (&param.ty, args.get(i)) {
+            extract_type_bindings_from_arg(ctx, param_ty, arg_expr, &generic_params, &mut type_map);
         }
     }
 
