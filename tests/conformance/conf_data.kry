@@ -324,5 +324,27 @@ fn main() {
     expect(describe_user(1) == "alice is here", "match-value str payload chained concat")
     expect(describe_user(2) == "unknown", "match-value diverging arm")
 
+    // Build [Struct] with a str field via push() in a loop. A bare-identifier
+    // struct-literal field (`Rec{tag: tag}`) wasn't retained, so the loop's
+    // scope-drop of `tag` freed the string the array element still held -- a
+    // double-free / silent data corruption on AOT at scale. Read every element
+    // back to catch corruption.
+    let mut recs2: [Rec] = []
+    let mut ri2 = 0
+    while ri2 < 12 {
+        let tag = "row-" + to_string(ri2)
+        recs2 = push(recs2, Rec { name: tag, n: ri2, f: 0.0 })
+        ri2 = ri2 + 1
+    }
+    let mut all_ok = true
+    let mut rj = 0
+    while rj < 12 {
+        if recs2[rj].name != "row-" + to_string(rj) {
+            all_ok = false
+        }
+        rj = rj + 1
+    }
+    expect(all_ok, "push-built [Struct] str fields intact (no double-free corruption)")
+
     println("conformance data: PASS")
 }

@@ -7484,15 +7484,53 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // same string (STATUS_HEAP_CORRUPTION at exit). Fresh
                     // temps (literals, calls, concats) are NOT retained --
                     // they hand over their own +1.
+                    //
+                    // A BARE IDENTIFIER field (`Rec { tag: tag, .. }`) is the
+                    // same hazard: the field's value is the source local's
+                    // pointer, shallow-copied with no retain, while the
+                    // source local ALSO gets an ordinary scope-end `Drop` (in
+                    // a loop, every iteration). `push`ing the literal into an
+                    // array boxes that shallow copy, so the array element and
+                    // the source local end up decrementing the same
+                    // refcount: a premature free that either corrupts the
+                    // element on next reuse of the freed slot, or -- if nothing
+                    // reallocates that exact memory before it's read back --
+                    // silently "looks correct" by allocator-timing luck.
+                    // Repro: `while i < n { let tag = ..; arr = push(arr,
+                    // Rec{tag: tag, n: i}) }` double-frees `tag`'s buffer on
+                    // AOT (kryos.dev heap-struct-array-str double-free hunt).
+                    // Skip the retain for a PARAM/borrowed source: those never
+                    // get a scope-end Drop, so retaining would leak instead
+                    // (the ownership already transferred once at the call
+                    // boundary / borrow site).
+                    let source_undropped = matches!(&op, Operand::Local(id)
+                        if ctx.param_locals.contains(&id.0) || ctx.borrowed_locals.contains(&id.0));
+                    let is_bare_ident = matches!(e, ast::Expr::Identifier { .. }) && !source_undropped;
                     let aliases = matches!(
                         e,
                         ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
-                    );
+                    ) || is_bare_ident;
                     if aliases {
                         let ty = infer_expr_type(ctx, e);
                         let retain_fn = match ty {
                             MirType::Str => Some("kryos_string_retain"),
-                            MirType::Array(_, _) => Some("kryos_array_retain"),
+                            // NOT Array here for the bare-identifier case: the
+                            // LLVM backend's `emit_aggregate_struct` ALREADY
+                            // unconditionally clones every Array-typed struct
+                            // field (`kryos_array_clone`, a pre-existing fix
+                            // for a DIFFERENT bug -- two fields sharing one
+                            // buffer). The struct ends up holding an
+                            // independent copy, never this operand, so
+                            // retaining `op` here has no consumer and leaks
+                            // (verified: retain added, then only ONE matching
+                            // release ever fires -- confirmed via a
+                            // repeated build+drop stress run ballooning to
+                            // 100s of MB where the pre-fix / str-field
+                            // equivalent stayed flat). FieldAccess/IndexAccess
+                            // aliasing (the pre-existing branch below) is left
+                            // as-is; only the new bare-identifier path skips
+                            // Array to avoid compounding with that clone.
+                            MirType::Array(_, _) if !is_bare_ident => Some("kryos_array_retain"),
                             MirType::Map { .. } => Some("kryos_map_retain"),
                             _ => None,
                         };
@@ -7505,6 +7543,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                     args: vec![op.clone()],
                                 },
                             });
+                        } else if is_bare_ident && matches!(ty, MirType::Struct(_) | MirType::Enum(_))
+                        {
+                            // Non-@copy struct/enum sourced from a bare
+                            // identifier: there's no refcounted box to retain
+                            // (structs are raw aggregate values whose heap-
+                            // owning subfields get shallow-copied by value),
+                            // so mirror the array-literal-of-struct-
+                            // identifiers fix (`partial_moved_locals`
+                            // elsewhere in this file): mark the source
+                            // local's own scope-end drop as already
+                            // accounted for -- the value's ownership (and
+                            // that of any heap fields it carries) moved into
+                            // this new struct literal.
+                            if let Operand::Local(id) = &op {
+                                ctx.partial_moved_locals.insert(id.0);
+                            }
                         }
                     }
                     (n.clone(), op)
