@@ -1,4 +1,5 @@
 // Conformance: try/catch/throw semantics + spawn/channels. (Reference
+use std::option::{Option, Some, None}
 // chapters 7 (errors), 9 (concurrency).)
 
 use std::result::{Result, Ok, Err}
@@ -32,10 +33,28 @@ actor Calc {
     }
 }
 
-// try/catch as a TAIL expression whose catch block wraps the caught string in
-// Err(e). The caught string is moved into the Result; previously the catch
-// binding was still scope-dropped, freeing the payload out from under the
-// returned Err -- the message came back empty on AOT and corrupt on JIT.
+// A match INSIDE a try block, and a nested-enum-in-tuple match with early-return
+// arms from fn params -- both created void-but-mutable placeholder locals whose
+// entry alloca was skipped, so AOT failed to build (`undefined value %_N.addr`).
+fn match_in_try(n: i64) -> i64 {
+    try {
+        match n {
+            0 => return 100,
+            _ => return n * 2,
+        }
+    } catch e {
+        return -1
+    }
+    return 0
+}
+
+fn nested_enum_tuple(o: Option<i64>, b: i64) -> i64 {
+    match (1, (o, b), 9) {
+        (n, (Some(v), bb), t) => return n + v + bb + t,
+        (n, (None(), bb), t) => return 0 - (n + bb + t),
+    }
+}
+
 fn to_result(n: i64) -> Result<i64, str> {
     try {
         if n < 0 {
@@ -116,6 +135,13 @@ fn main() {
         got = got + 1
     }
     expect(grand == 55 + 5050 + 500500, "spawn + channel totals")
+
+    // match-in-try + nested-enum-in-tuple with early returns (void-but-mutable
+    // placeholder locals previously got no entry alloca -> AOT `undefined %_N.addr`).
+    expect(match_in_try(0) == 100, "match inside try builds (AOT)")
+    expect(match_in_try(5) == 10, "match inside try wildcard arm")
+    expect(nested_enum_tuple(Some(9), 2) == 21, "nested-enum-in-tuple early-return some")
+    expect(nested_enum_tuple(None(), 2) == 0 - 12, "nested-enum-in-tuple early-return none")
 
     // catch -> Err(e) tail expression: the caught message must survive.
     match to_result(5) {

@@ -2932,7 +2932,29 @@ impl LlvmCodegen {
         let _param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
         for local in &func.locals {
             if self.mutable_locals.contains(&local.id.0) {
-                let ty = self.local_type(local.id);
+                let mut ty = self.local_type(local.id);
+                // A local whose MIR-declared type is `void` normally gets no
+                // slot here -- there is nothing to back. But a void-typed
+                // local can still be MUTABLE (assigned on more than one path,
+                // e.g. a match-desugaring placeholder that's set in several
+                // mutually-exclusive arms/fallback blocks and read once at
+                // the merge point) and `emit_assign`'s `RValue::Use` arm
+                // recovers a REAL LLVM type from the source operand for a
+                // void dest (its `effective_dest_ty`), then stores through
+                // `%_N.addr` when the local is mutable. If we skip the alloca
+                // here because the DECLARED type is void, that store targets
+                // a slot that was never allocated -- LLVM's "use of
+                // undefined value '%_N.addr'" on `build --release` (JIT
+                // never validates SSA/dominance so it never sees this).
+                // Resolve the same effective type statically (from MIR
+                // operand types only -- no codegen has run yet, so this
+                // mirrors but does not depend on `emit_assign`) and back the
+                // local with a real alloca instead of dropping it.
+                if ty == "void" {
+                    if let Some(effective) = self.void_local_effective_type(local.id.0, func) {
+                        ty = effective;
+                    }
+                }
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
                     // Zero-init mutable HEAP/pointer-typed locals so the
@@ -8260,6 +8282,65 @@ impl LlvmCodegen {
             Operand::Constant(Constant::Str(_)) => true,
             _ => false,
         }
+    }
+
+    /// For a local whose MIR-declared type resolves to `void`, statically
+    /// recover the real LLVM backing type it needs -- if any -- by scanning
+    /// every assignment to it. Two `RValue` arms are known to store a REAL
+    /// value through `%_N.addr` for a mutable local even when its declared
+    /// type is void (both confirmed by AOT build failures -- `emit_assign`
+    /// never checks the entry alloca actually exists):
+    ///   - `Use(op)`: recovers `effective_dest_ty` from the operand, falling
+    ///     back to `ptr` if the operand is ALSO void-typed (chained
+    ///     placeholders, e.g. one match-fallback local copied into another).
+    ///   - `ConstNone`: always stores a null `ptr` (`None()`/unit sentinel),
+    ///     unconditionally, with no dest-type check at all.
+    /// Every other `RValue` arm either has a genuine non-void dest type
+    /// already, or explicitly skips the store when `dest_ty == "void"` (the
+    /// safe pattern) -- so no override is needed there, and this function
+    /// deliberately does NOT guess a size for them (guessing wrong for an
+    /// aggregate would under-allocate the slot, trading a build error for a
+    /// stack-memory bug -- worse). Returns `None` when neither arm applies.
+    /// See the call site in `emit_function_as` for why this exists: it lets
+    /// the entry-alloca pass back these locals with a real slot instead of
+    /// skipping them outright.
+    fn void_local_effective_type(&self, id: u32, func: &MirFunction) -> Option<String> {
+        let is_aggregate = |t: &str| t.starts_with('{') || t.starts_with('[') || t.starts_with('%');
+        let mut found: Option<String> = None;
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                let Instruction::Assign { dest, value } = inst else {
+                    continue;
+                };
+                if dest.0 != id {
+                    continue;
+                }
+                let effective = match value {
+                    RValue::Use(op) => {
+                        let val_ty = self.operand_type(op, func);
+                        if val_ty == "void" {
+                            "ptr".to_string()
+                        } else {
+                            val_ty
+                        }
+                    }
+                    RValue::ConstNone => "ptr".to_string(),
+                    _ => continue,
+                };
+                match &found {
+                    None => found = Some(effective),
+                    // Prefer an aggregate type over a scalar/ptr one if
+                    // different assigns disagree -- the aggregate needs
+                    // the larger slot; a scalar/ptr slot is a strict
+                    // subset in size on every supported 64-bit target.
+                    Some(cur) if !is_aggregate(cur) && is_aggregate(&effective) => {
+                        found = Some(effective)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        found
     }
 
     /// Get the LLVM type for a local from the cached map.
