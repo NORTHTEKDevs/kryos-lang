@@ -115,6 +115,23 @@ fn shelf_label(s: Shelf) -> str {
     }
 }
 
+enum Sig {
+    On(i64),
+    Off,
+}
+
+// Tuple pattern with a NESTED ENUM element `(On(v), q)`. The switch path tested
+// neither the nested tag (Off took the On arm) nor extracted the payload (v
+// bound 0); the ordered path now handles both, incl. guards.
+fn drive(s: Sig, q: i64) -> str {
+    match (s, q) {
+        (On(v), 0) => return "on-zero {v}",
+        (On(v), n) if v > 10 => return "big {v} {n}",
+        (On(v), n) => return "on {v} {n}",
+        (Off, n) => return "off {n}",
+    }
+}
+
 fn quadrant(x: i64, y: i64) -> str {
     match (x, y) {
         (0, 0) => return "origin",
@@ -275,6 +292,12 @@ fn main() {
         None() => expect(false, "bare Some misresolved"),
     }
     expect(shelf_label(Shelf.Some("book")) == "has:book", "qualified user variant still resolves")
+
+    // Tuple-of-nested-enum matching (tag tested + payload extracted).
+    expect(drive(Sig.On(5), 0) == "on-zero 5", "tuple nested-enum literal arm")
+    expect(drive(Sig.On(99), 2) == "big 99 2", "tuple nested-enum guard arm")
+    expect(drive(Sig.On(4), 3) == "on 4 3", "tuple nested-enum payload extracted")
+    expect(drive(Sig.Off, 7) == "off 7", "tuple nested-enum other variant not stolen")
 
     println("conformance data: PASS")
 }

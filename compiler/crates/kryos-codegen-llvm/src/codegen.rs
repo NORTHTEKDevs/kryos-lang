@@ -5770,6 +5770,53 @@ impl LlvmCodegen {
 
                 // Resolve field index from struct definitions.
                 let field_idx = self.resolve_field_index(object, field, func);
+
+                // Boxed-aggregate element of an anonymous struct / TUPLE. A tuple
+                // stores every element in an i64 slot, so extracting an element
+                // whose dest is itself an aggregate (an enum/struct/tuple, e.g.
+                // `o` in `match (o, y) { (Yes(x), q) => .. }`) yields the boxed
+                // i64 POINTER, not the {tag,payload} aggregate the dest expects
+                // -- clang then rejects `%dest{aggregate} = extractvalue .. -> i64`.
+                // Deref it (inttoptr + load), mirroring the array RValue::Index
+                // is_aggregate branch and the Call->Enum coercion. Named structs
+                // (obj_ty "%Foo") store inline aggregates, where extractvalue
+                // already yields the aggregate -- so gate strictly on an anon
+                // "{..}" object whose extracted slot is i64.
+                let field_slot_ty = obj_ty
+                    .strip_prefix('{')
+                    .and_then(|s| s.strip_suffix('}'))
+                    .map(|inner| {
+                        inner
+                            .split(',')
+                            .map(|p| p.trim().to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .and_then(|parts| parts.get(field_idx).cloned());
+                let dest_is_aggregate = dest_ty.starts_with('{')
+                    || dest_ty.starts_with('%')
+                    || dest_ty.starts_with('[');
+                if obj_ty.starts_with('{')
+                    && field_slot_ty.as_deref() == Some("i64")
+                    && dest_is_aggregate
+                {
+                    let raw = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {raw} = extractvalue {obj_ty} {obj_val}, {field_idx} ; .{field}"
+                    ));
+                    let p = self.next_temp();
+                    self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                    if is_mutable {
+                        let v = self.next_temp();
+                        self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {v}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {p}", dest.0));
+                    }
+                    return Ok(());
+                }
                 // Narrow-int fields (i8/i16/i32 in the named struct type)
                 // extract at their declared width, but the destination local
                 // is an i64 slot. Without a sext the extract result flows
