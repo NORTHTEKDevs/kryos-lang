@@ -1956,13 +1956,31 @@ impl LlvmCodegen {
                 continue;
             }
             if !has_heap_fields(fields) {
-                // A struct with no heap fields needs no per-field drop work, but
-                // it may still be used as an array/collection element whose drop
-                // path calls `@__kryos_drop_<name>`. Emit an empty helper so that
-                // reference links (the array buffer free reclaims the inline
-                // element storage; matching the @copy no-op above).
+                // A struct with no heap FIELDS needs no per-field drop work, but
+                // `__kryos_drop_<name>` is still the helper called on the
+                // struct's own heap BOX -- e.g. emit_aggregate_array boxes every
+                // aggregate array element via `kryos_calloc` (see
+                // emit_aggregate_array's `{elem_ty} starts_with('{'|'['|'%')`
+                // branch) and emit_array_drop calls this helper per element, and
+                // enum-variant fields of Struct/Enum type are boxed the same way
+                // and freed the same way (see the enum-variant field drop loop
+                // above). Previously this branch emitted a bare `ret void`,
+                // never freeing that box -- a leak for every all-scalar-field
+                // struct used as an array element or boxed enum-variant payload
+                // (confirmed via emitted IR: `kryos_calloc` per element paired
+                // with an empty `__kryos_drop_<Flat>` stub, contrasted with a
+                // struct that HAS heap fields, whose helper frees its own box
+                // after dropping fields). Free the box here too -- there are no
+                // fields to drop first, so this is just the final
+                // `kryos_free(%ptr)` that the heap-fields branch below also
+                // does. This is NOT called on stack allocas (drop_local calls
+                // emit_struct_drop directly, not this helper -- see its callers)
+                // and NOT called on @copy structs (handled by the branch above,
+                // which is unconditionally a no-op since @copy fields are
+                // shallow-shared), so there is no double-free/alloca-free risk.
                 self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
                 self.emit_line("entry:");
+                self.emit_line("  call void @kryos_free(ptr %ptr)");
                 self.emit_line("  ret void");
                 self.emit_line("}");
                 self.emit_blank();
