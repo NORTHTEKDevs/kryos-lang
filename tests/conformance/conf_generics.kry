@@ -62,6 +62,20 @@ fn reg_gets(r: Reg<str>, k: str) -> str {
     }
 }
 
+// Bare (no-Option) map<str, V> generic-struct field. The generic-fn body's local
+// `map<str, V>` resolved to a placeholder Struct("V"), which extract_param_binding
+// blindly trusted -> a spurious Reg2___V struct distinct from the call-site
+// Reg2___i64, so the sret store was `undef` and the value read back as 0 on AOT.
+struct Reg2<V> {
+    entries: map<str, V>,
+}
+
+fn mk_reg2<V>(k: str, v: V) -> Reg2<V> {
+    let mut m: map<str, V> = {}
+    m[k] = v
+    return Reg2 { entries: m }
+}
+
 struct Boxed<T> {
     value: T,
     label: str,
@@ -123,6 +137,18 @@ fn main() {
     let rs = mk_reg("b", Some("hello"))
     expect(reg_geti(ri, "a") == 42, "Reg<i64> nested-generic field")
     expect(reg_gets(rs, "b") == "hello", "Reg<str> nested-generic field (no layout collision)")
+
+    // Bare map<str,V> generic-struct field at two value types (incl f64, which
+    // additionally needs the RAX-not-XMM0 map-get return coercion).
+    let r2i = mk_reg2("a", 42)
+    let r2f = mk_reg2("b", 7.25)
+    expect(r2i.entries["a"] == 42, "Reg2<i64> map<str,V> field")
+    let fv: f64 = r2f.entries["b"]
+    expect(fv > 7.2 and fv < 7.3, "Reg2<f64> map<str,V> field f64 value")
+    let mut mf: map<str, f64> = {}
+    mf["x"] = 3.5
+    let x: f64 = mf["x"]
+    expect(x > 3.4 and x < 3.6, "map<str,f64> value read (RAX coercion)")
 
     println("conformance generics: PASS")
 }

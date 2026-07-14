@@ -5456,6 +5456,16 @@ impl LlvmCodegen {
                                     // calling as `call double` reads XMM0,
                                     // which the callee never set: parse_float
                                     // printed 0 on AOT while JIT was correct.
+                                    // kryos_map_get/kryos_map_get_str are the
+                                    // same shape: both `declare i64 @kryos_map_get*`
+                                    // (the map stores every value as raw i64
+                                    // bits, floats included), but a map<_, f64>
+                                    // read's dest_ty is "double", so without
+                                    // this the fallback below emitted `call
+                                    // double @kryos_map_get_str(...)` reading
+                                    // XMM0 -- garbage, since the runtime
+                                    // returned the bits in RAX (kryos: 0.0...074
+                                    // printed on AOT while JIT was correct).
                                     if matches!(
                                         runtime_fname,
                                         "kryos_builtin_parse_float"
@@ -5465,6 +5475,8 @@ impl LlvmCodegen {
                                             | "kryos_tensor_sum"
                                             | "kryos_tensor_mean"
                                             | "kryos_f64_to_bits"
+                                            | "kryos_map_get"
+                                            | "kryos_map_get_str"
                                     ) {
                                         return "i64".to_string();
                                     }

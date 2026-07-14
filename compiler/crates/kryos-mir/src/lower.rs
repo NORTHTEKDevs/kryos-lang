@@ -9409,7 +9409,7 @@ fn resolve_struct_literal_name(
                         .find(|(fn_, _)| fn_ == &f.name)
                         .and_then(|(_, fexpr)| {
                             let inferred = infer_expr_type(ctx, fexpr);
-                            extract_param_binding(&f.ty, &inferred, gp)
+                            extract_param_binding(ctx, &f.ty, &inferred, gp)
                         })
                 })
                 .or_else(|| ret_hint.as_ref().and_then(|args| args.get(idx).cloned()))
@@ -9428,6 +9428,7 @@ fn resolve_struct_literal_name(
 /// erased slot). This keeps the struct-literal mangling identical to the
 /// `-> Type<T>` return-type mangling, which the LLVM backend requires.
 fn extract_param_binding(
+    ctx: &LoweringContext,
     field_ty: &ast::TypeExpr,
     inferred: &MirType,
     param: &str,
@@ -9435,6 +9436,36 @@ fn extract_param_binding(
     match field_ty {
         ast::TypeExpr::Simple { name, .. } => {
             if name == param {
+                // `inferred` came from `infer_expr_type` on the field
+                // EXPRESSION (e.g. the local `m` in `let mut m: map<str, V>
+                // = {}` inside a generic fn body). A generic function
+                // template's body is lowered as-is -- only its param/return
+                // types are pre-substituted per instantiation -- so a local
+                // variable's OWN declared type that mentions the enclosing
+                // function's type parameter is never substituted and still
+                // resolves (via resolve_type's lower_type_expr catch-all) to
+                // the literal placeholder `MirType::Struct(param)`. Trusting
+                // that placeholder as if it were a real concrete binding
+                // mangles a SEPARATE, bogus struct instance (e.g.
+                // `Reg___V`) distinct from the correctly-derived instance
+                // the call site already registered (`Reg___i64`) -- the
+                // struct literal's LLVM type then mismatches the function's
+                // declared sret return type, and the codegen's type-mismatch
+                // guard silently stores `undef` (reads back as 0 on AOT).
+                // Treat this specific self-referential, unresolved shape as
+                // "no binding found" so the caller's `ret_hint` fallback
+                // (the enclosing fn's already-correct return-type
+                // instantiation) supplies the real concrete type instead.
+                if let MirType::Struct(ref inferred_name) = inferred {
+                    if inferred_name == name
+                        && !ctx.struct_defs.contains_key(name)
+                        && !ctx.generic_struct_templates.contains_key(name)
+                        && !ctx.enum_defs.contains_key(name)
+                        && !ctx.generic_enum_templates.contains_key(name)
+                    {
+                        return None;
+                    }
+                }
                 Some(inferred.clone())
             } else {
                 None
@@ -9442,7 +9473,7 @@ fn extract_param_binding(
         }
         ast::TypeExpr::Array { element, .. } => {
             if let MirType::Array(elem, _) = inferred {
-                extract_param_binding(element, elem, param)
+                extract_param_binding(ctx, element, elem, param)
             } else {
                 None
             }
@@ -9452,7 +9483,7 @@ fn extract_param_binding(
                 elements
                     .iter()
                     .zip(items.iter())
-                    .find_map(|(te, mt)| extract_param_binding(te, mt, param))
+                    .find_map(|(te, mt)| extract_param_binding(ctx, te, mt, param))
             } else {
                 None
             }
@@ -9462,10 +9493,10 @@ fn extract_param_binding(
                 if let MirType::Map { key, value } = inferred {
                     return args
                         .first()
-                        .and_then(|a| extract_param_binding(a, key, param))
+                        .and_then(|a| extract_param_binding(ctx, a, key, param))
                         .or_else(|| {
                             args.get(1)
-                                .and_then(|a| extract_param_binding(a, value, param))
+                                .and_then(|a| extract_param_binding(ctx, a, value, param))
                         });
                 }
             }
@@ -9473,21 +9504,21 @@ fn extract_param_binding(
         }
         ast::TypeExpr::Reference { inner, .. } => {
             if let MirType::Ref { inner: mi, .. } = inferred {
-                extract_param_binding(inner, mi, param)
+                extract_param_binding(ctx, inner, mi, param)
             } else {
                 None
             }
         }
         ast::TypeExpr::Shared { inner, .. } => {
             if let MirType::Shared(mi) = inferred {
-                extract_param_binding(inner, mi, param)
+                extract_param_binding(ctx, inner, mi, param)
             } else {
                 None
             }
         }
         ast::TypeExpr::Pointer { inner, .. } => {
             if let MirType::Ptr(mi) = inferred {
-                extract_param_binding(inner, mi, param)
+                extract_param_binding(ctx, inner, mi, param)
             } else {
                 None
             }
