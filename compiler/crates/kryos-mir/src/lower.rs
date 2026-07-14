@@ -6794,7 +6794,21 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     .iter()
                     .rev()
                     .find(|l| l.name.as_deref() == Some(&func_name))
-                    .map(|l| matches!(l.ty, MirType::Function { .. }))
+                    .map(|l| {
+                        // A local whose MIR type is Function is obviously an
+                        // indirect callee. But a lambda param whose function type
+                        // flowed through a generic HOF over an array of functions
+                        // (`map(fs, |f| f(x))`, element type `fn(i64)->i64`) gets
+                        // its type ERASED to i64 -- yet it is still a closure value.
+                        // If a local with this name exists and it shadows no
+                        // top-level function, calling it MUST be an indirect call
+                        // through that local (the type checker already proved the
+                        // value is callable); a direct call emitted a reference to
+                        // an undefined external symbol named after the param
+                        // (LNK2001 unresolved external `f`).
+                        matches!(l.ty, MirType::Function { .. })
+                            || !ctx.func_ret_types.contains_key(&func_name)
+                    })
                     .unwrap_or(false);
                 if is_fn_local {
                     // If this local is a tracked closure with captures,

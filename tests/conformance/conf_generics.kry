@@ -2,11 +2,17 @@
 // direct annotation, generic-fn returns, generic-fn params, compound args.
 // (Reference chapter 8; regression for the step-240 field-typing fix.)
 
+use std::iter::{map}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
         exit(1)
     }
+}
+
+fn call_on(f: fn(i64) -> i64, x: i64) -> i64 {
+    return f(x)
 }
 
 struct Boxed<T> {
@@ -45,6 +51,18 @@ fn main() {
     expect(len(arr.value) == 3 and arr.value[2] == 3, "Boxed<[i64]> direct index")
     let items = arr.value
     expect(items[0] == 1, "copied-out generic array field")
+
+    // Higher-order over an ARRAY OF FUNCTIONS: the un-annotated closure param
+    // `f` is itself a function (element type `fn(i64)->i64`). Its type is erased
+    // to i64 through the generic HOF, but calling it must still lower to an
+    // indirect closure call -- a direct call emitted an undefined external
+    // symbol named after the param (LNK2001 unresolved external `f`).
+    let inc = |x| x + 1
+    let dbl = |x| x * 2
+    let fns: [fn(i64) -> i64] = [inc, dbl]
+    let applied = map(fns, |f| f(10))
+    expect(applied[0] == 11 and applied[1] == 20, "map over array of functions")
+    expect(call_on(inc, 7) == 8, "named-fn function param call")
 
     println("conformance generics: PASS")
 }
