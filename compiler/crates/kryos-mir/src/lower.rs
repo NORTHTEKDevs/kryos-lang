@@ -4475,6 +4475,79 @@ fn lower_match_sequential(
                     acc
                 }
             }
+            ast::Pattern::Tuple { elements, .. } => {
+                // Simple-tuple pattern in the ordered path: extract each element,
+                // bind idents, AND together the literal-element equality tests.
+                // Bindings are emitted in this block so a following guard sees
+                // them. Returns None (always structurally matches) when every
+                // element is an ident/wildcard -- the guard then discriminates.
+                let elem_tys = ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == subj_local)
+                    .and_then(|l| match &l.ty {
+                        MirType::Tuple(e) => Some(e.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                let mut acc: Option<Operand> = None;
+                for (ei, epat) in elements.iter().enumerate() {
+                    let ety = elem_tys.get(ei).cloned().unwrap_or(MirType::I64);
+                    match epat {
+                        ast::Pattern::Wildcard { .. } => {}
+                        ast::Pattern::Ident { name, mutable, .. } => {
+                            let bound = ctx.alloc_local(Some(name.clone()), ety.clone(), *mutable);
+                            ctx.emit(Instruction::Assign {
+                                dest: bound,
+                                value: RValue::Field {
+                                    object: Operand::Local(subj_local),
+                                    field: ei.to_string(),
+                                },
+                            });
+                        }
+                        ast::Pattern::Literal { expr, .. } => {
+                            let elem = ctx.alloc_temp(ety.clone());
+                            ctx.emit(Instruction::Assign {
+                                dest: elem,
+                                value: RValue::Field {
+                                    object: Operand::Local(subj_local),
+                                    field: ei.to_string(),
+                                },
+                            });
+                            let lit = lower_expr_to_operand(ctx, expr);
+                            let cmp = ctx.alloc_temp(MirType::Bool);
+                            ctx.emit(Instruction::Assign {
+                                dest: cmp,
+                                value: RValue::BinOp {
+                                    op: MirBinOp::Eq,
+                                    left: Operand::Local(elem),
+                                    right: lit,
+                                },
+                            });
+                            let this = Operand::Local(cmp);
+                            acc = match acc.take() {
+                                None => Some(this),
+                                Some(prev) => {
+                                    let combined = ctx.alloc_temp(MirType::Bool);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: combined,
+                                        value: RValue::BinOp {
+                                            op: MirBinOp::And,
+                                            left: prev,
+                                            right: this,
+                                        },
+                                    });
+                                    Some(Operand::Local(combined))
+                                }
+                            };
+                        }
+                        // Nested refutable elements are excluded by the routing
+                        // gate (tuple_seq_safe); treat defensively as always-match.
+                        _ => {}
+                    }
+                }
+                acc
+            }
             // Wildcard and anything else: always matches, binds nothing.
             _ => None,
         };
@@ -4800,17 +4873,38 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     // exhaustiveness of this gate going first).
     {
         let subj_ty_early = infer_expr_type(ctx, subject);
-        let structured = matches!(subj_ty_early, MirType::Enum(_))
+        // Enum/struct matches must stay on the tag-dispatch switch path.
+        let is_enum_or_struct = matches!(subj_ty_early, MirType::Enum(_))
             || arms.iter().any(|a| {
                 matches!(
                     &a.pattern,
-                    ast::Pattern::Enum { .. } | ast::Pattern::Struct { .. } | ast::Pattern::Tuple { .. }
+                    ast::Pattern::Enum { .. } | ast::Pattern::Struct { .. }
                 )
             });
+        // A tuple match is sequential-safe only when every element sub-pattern is
+        // simple (literal / ident / wildcard). A nested refutable element
+        // (`(Some(x), y)`) still needs the switch path's refinement machinery.
+        let tuple_seq_safe = arms.iter().all(|a| match &a.pattern {
+            ast::Pattern::Tuple { elements, .. } => elements.iter().all(|e| {
+                matches!(
+                    e,
+                    ast::Pattern::Literal { .. }
+                        | ast::Pattern::Ident { .. }
+                        | ast::Pattern::Wildcard { .. }
+                )
+            }),
+            _ => true,
+        });
         let needs_sequential = arms.iter().any(|a| {
             a.guard.is_some() || matches!(&a.pattern, ast::Pattern::Ident { .. })
         });
-        if needs_sequential && !structured {
+        // Route to the sequential (ordered test-chain) path for scalar AND
+        // simple-tuple matches. Previously tuple matches were forced onto the
+        // switch path, which could not chain multiple same-shape guarded arms:
+        // `match (x,y) { (a,b) if a>0 && b>0 => .., (a,b) if a<0 && b>0 => .. }`
+        // routed every `(a,b)` to the first arm's block, so a failed guard fell
+        // to the default instead of the next guarded arm (silent wrong output).
+        if needs_sequential && !is_enum_or_struct && tuple_seq_safe {
             return lower_match_sequential(ctx, subj_op, subj_ty_early, arms, result_local, merge_bb);
         }
     }

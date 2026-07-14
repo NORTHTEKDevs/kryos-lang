@@ -101,6 +101,18 @@ fn apply(mode: i64, c: Cmd) -> i64 {
     }
 }
 
+fn quadrant(x: i64, y: i64) -> str {
+    match (x, y) {
+        (0, 0) => return "origin",
+        (0, _) => return "y-axis",
+        (_, 0) => return "x-axis",
+        (a, b) if a > 0 and b > 0 => return "Q1",
+        (a, b) if a < 0 and b > 0 => return "Q2",
+        (a, b) if a < 0 and b < 0 => return "Q3",
+        _ => return "Q4",
+    }
+}
+
 fn main() {
     // Structs + methods + field mutation.
     let mut p = Point { x: 3.0, y: 0.0 - 4.0 }
@@ -206,6 +218,17 @@ fn main() {
     recs[0] = recs[1]
     recs[1] = tmp
     expect(recs[0].name == "b" and recs[1].name == "z", "struct-array swap")
+
+    // Tuple match with MULTIPLE binding+guard arms of the same shape. These were
+    // stuck on the switch path, which routed every `(a,b)` to the first arm's
+    // block -- a failed guard fell to the default instead of the next guarded
+    // arm, silently returning the wrong (empty) result.
+    expect(quadrant(3, 4) == "Q1", "tuple guard Q1")
+    expect(quadrant(-3, 4) == "Q2", "tuple guard Q2")
+    expect(quadrant(-3, -4) == "Q3", "tuple guard Q3")
+    expect(quadrant(3, -4) == "Q4", "tuple guard Q4")
+    expect(quadrant(0, 0) == "origin", "tuple literal arm")
+    expect(quadrant(0, 9) == "y-axis", "tuple wildcard arm")
 
     println("conformance data: PASS")
 }
