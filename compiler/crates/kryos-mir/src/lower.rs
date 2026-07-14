@@ -167,6 +167,25 @@ pub struct LoweringContext {
     /// These must NOT be dropped by scope cleanup — the moved fields already
     /// own (and will free) their heap data; a full struct drop would double-free.
     partial_moved_locals: HashSet<u32>,
+    /// Ref-captured scalar variable name -> every heap box (`RValue::ArcAlloc`
+    /// cell) created for it so far in the CURRENT function. Populated when a
+    /// struct-literal-field closure literal (see `pending_box_scalar_captures`)
+    /// boxes one of its non-mutated captures instead of snapshotting it by
+    /// value. `Stmt::Assign` to a plain identifier consults this map and
+    /// additionally writes the new value through every box on file, so a
+    /// struct-field closure invoked LATER sees a mutation made to the outer
+    /// variable AFTER the closure was constructed -- gotcha #11's by-reference
+    /// promise, otherwise only honored for the `closure_locals` direct-call
+    /// fast path (see `n01_closure_field_vs_local`-class bugs). Scoped like
+    /// `closure_locals`: saved/restored around a nested lambda's own frame.
+    capture_boxes: HashMap<String, Vec<LocalId>>,
+    /// Set by a struct-literal field whose value is directly a `Lambda`
+    /// expression, immediately before lowering that expression, and consumed
+    /// (reset to `false`) at the top of the Lambda arm. Tells that ONE lambda
+    /// lowering to box its non-mutated scalar captures instead of the default
+    /// value-snapshot capture (see `capture_boxes`). Never sees a nested
+    /// lambda: the Lambda arm resets it before lowering its own body.
+    pending_box_scalar_captures: bool,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -291,6 +310,8 @@ impl LoweringContext {
             copy_structs: HashSet::new(),
             hidden_locals: HashSet::new(),
             partial_moved_locals: HashSet::new(),
+            capture_boxes: HashMap::new(),
+            pending_box_scalar_captures: false,
         }
     }
 
@@ -504,6 +525,7 @@ impl LoweringContext {
             loop_exits: std::mem::take(&mut self.loop_exits),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
             closure_locals: std::mem::take(&mut self.closure_locals),
+            capture_boxes: std::mem::take(&mut self.capture_boxes),
             // A nested function body (lambda/spawn/monomorphized fn) must
             // NOT inherit the enclosing function's try context — its blocks
             // and locals live in a different function.
@@ -523,6 +545,7 @@ impl LoweringContext {
         self.loop_exits = state.loop_exits;
         self.hidden_locals = state.hidden_locals;
         self.closure_locals = state.closure_locals;
+        self.capture_boxes = state.capture_boxes;
         self.try_catch_target = state.try_catch_target;
     }
 }
@@ -539,6 +562,7 @@ struct FunctionState {
     loop_exits: Vec<BlockId>,
     hidden_locals: HashSet<u32>,
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    capture_boxes: HashMap<String, Vec<LocalId>>,
     try_catch_target: Option<TryCatchTarget>,
 }
 
@@ -2777,6 +2801,25 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             }
                             // The local now holds a fresh owned value.
                             ctx.dropped_locals.remove(&dest.0);
+                            // Box-capture sync: if a struct-literal-field
+                            // closure ref-captured this variable (see
+                            // `capture_boxes` / `pending_box_scalar_captures`
+                            // in the Lambda RValue arm), also write the new
+                            // value through every box on file for this name
+                            // so a LATER call to that closure observes this
+                            // mutation -- gotcha #11's "sees a mutation made
+                            // after construction" promise, which was
+                            // otherwise only honored for the `closure_locals`
+                            // direct-call fast path (n01_closure_field_vs_local
+                            // -class bugs).
+                            if let Some(boxes) = ctx.capture_boxes.get(name.as_str()).cloned() {
+                                for box_id in boxes {
+                                    ctx.emit(Instruction::StoreDeref {
+                                        ptr: Operand::Local(box_id),
+                                        value: Operand::Local(dest),
+                                    });
+                                }
+                            }
                         } else if let ast::Expr::IndexAccess { object, index, .. } = target {
                             // Map/array index assignment: m["key"] = value → kryos_map_insert_str(m, key, value)
                             let obj_ty = infer_expr_type(ctx, object);
@@ -7588,6 +7631,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let mir_fields: Vec<(String, Operand)> = fields
                 .iter()
                 .map(|(n, e)| {
+                    // A closure literal stored DIRECTLY in a struct field
+                    // (`Holder { f: |x| x * k }`) is never `let`-bound, so
+                    // `closure_locals`'s direct-call optimization (the ONLY
+                    // thing currently giving non-mutated captures correct
+                    // by-reference semantics -- see gotcha #11) can never
+                    // apply to it. Flag it so the Lambda RValue arm boxes its
+                    // non-mutated scalar captures instead of the default
+                    // value-snapshot-at-construction capture.
+                    if matches!(e, ast::Expr::Lambda { .. }) {
+                        ctx.pending_box_scalar_captures = true;
+                    }
                     let op = lower_expr_to_operand(ctx, e);
                     // A refcounted value (str/array/map) read out of ANOTHER
                     // struct's field and stored into this literal creates a
@@ -8014,6 +8068,13 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // against the ORIGINAL capture list.
             let mutated_captures = find_mutated_captures(body, &captures);
 
+            // Consume the "box read-only scalar captures" request set by a
+            // struct-literal field whose value is this exact Lambda (see the
+            // StructLiteral RValue arm). Reset immediately so a NESTED lambda
+            // inside THIS one's body does not inherit the request.
+            let box_scalar_captures = ctx.pending_box_scalar_captures;
+            ctx.pending_box_scalar_captures = false;
+
             // Stage closure_locals re-registrations for the inner frame.
             // For each captured variable that is itself a tracked closure
             // with captures, record (closure_name, real_func, capture_names).
@@ -8175,6 +8236,84 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 lower_function(ctx, &lambda_name, &all_params, effective_ret, &body_block);
             ctx.restore_function_state(saved);
 
+            // Box non-mutated SCALAR captures behind an ARC-managed heap
+            // cell (reusing the SAME `RValue::ArcAlloc`/`RValue::Deref`
+            // machinery that already backs `&x` borrows) when this lambda
+            // literal is a struct-literal field's direct value. Rationale:
+            // a struct-field closure's env is populated ONCE at construction
+            // and never re-read, so (unlike a `let`-bound closure invoked by
+            // name, which gets a direct-call substitution that re-reads the
+            // outer variable's CURRENT value at every call site --
+            // `closure_locals`) it silently sees a STALE snapshot of any
+            // capture mutated after construction, even though it was never
+            // mutated INSIDE the closure -- gotcha #11 promises by-reference
+            // semantics unconditionally for those. A heap cell (not a raw
+            // stack address) is required because a struct literal holding
+            // this closure can itself be returned from the defining function
+            // (`make_handler` in t06_closure_struct_field.kry) -- the
+            // variable's OWN stack slot would then be popped/reused while
+            // the closure still holds a pointer to it.
+            //
+            // Deliberately narrow: only struct-literal-field lambdas (a
+            // `let`-bound closure keeps the existing, already-correct
+            // `closure_locals` path -- boxing it too would require that fast
+            // path to ALSO pass a pointer, a wider change this fix avoids);
+            // only NON-mutated captures (a mutated capture keeps the
+            // existing move + `mutated_capture_slot` write-back machinery
+            // from commit 150ea0e untouched -- seperate bug, see
+            // `t05_closure_mutable_hof`); only scalar types (str/array/map/
+            // struct captures are not boxed here -- their existing capture
+            // behavior is left exactly as before).
+            let mut boxed_capture_names: HashSet<String> = HashSet::new();
+            if box_scalar_captures {
+                for (idx, cap_name) in captures.iter().enumerate() {
+                    if mutated_captures.contains(cap_name) {
+                        continue;
+                    }
+                    let Some(param) = mir_func.params.get(idx) else {
+                        continue;
+                    };
+                    let orig_id = param.local;
+                    let orig_ty = param.ty.clone();
+                    if !is_boxable_scalar(&orig_ty) {
+                        continue;
+                    }
+                    let ptr_id = LocalId(
+                        mir_func
+                            .locals
+                            .iter()
+                            .map(|l| l.id.0)
+                            .max()
+                            .map(|m| m + 1)
+                            .unwrap_or(0),
+                    );
+                    mir_func.locals.push(MirLocal {
+                        id: ptr_id,
+                        name: None,
+                        ty: MirType::Shared(Box::new(orig_ty.clone())),
+                        mutable: false,
+                    });
+                    mir_func.params[idx] = MirParam {
+                        local: ptr_id,
+                        ty: MirType::Shared(Box::new(orig_ty)),
+                    };
+                    // Prologue: dereference the box once at function entry
+                    // into the ORIGINAL param local -- the body already
+                    // reads that id normally everywhere, so no substitution
+                    // is needed anywhere else in the function.
+                    mir_func.blocks[0].instructions.insert(
+                        0,
+                        Instruction::Assign {
+                            dest: orig_id,
+                            value: RValue::Deref {
+                                operand: Operand::Local(ptr_id),
+                            },
+                        },
+                    );
+                    boxed_capture_names.insert(cap_name.clone());
+                }
+            }
+
             // Record mutation info for the codegen backends. ANY mutated
             // capture disables the direct-call optimization for this
             // lambda (see `mutating_closures` doc comment) since it is
@@ -8208,14 +8347,40 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             ctx.func_ret_types.insert(lambda_name.clone(), mir_ret);
 
             // Emit the closure RValue with captured variable operands.
-            let capture_ops: Vec<Operand> = captures
-                .iter()
-                .map(|name| {
-                    let local = find_local_by_name(ctx, name)
-                        .expect("internal: lambda capture local not found");
-                    Operand::Local(local)
-                })
-                .collect();
+            let mut capture_ops: Vec<Operand> = Vec::with_capacity(captures.len());
+            for name in &captures {
+                let local = find_local_by_name(ctx, name)
+                    .expect("internal: lambda capture local not found");
+                if boxed_capture_names.contains(name) {
+                    // Ref-captured scalar: allocate the box HERE (at
+                    // construction time, in the ENCLOSING function's own
+                    // instruction stream -- `ctx` was already restored above)
+                    // seeded with the capture's CURRENT value, and remember it
+                    // so a later plain assignment to `name` in this same
+                    // function (see the `Stmt::Assign` arm) also writes
+                    // through it.
+                    let local_ty = ctx
+                        .locals
+                        .iter()
+                        .find(|l| l.id == local)
+                        .map(|l| l.ty.clone())
+                        .unwrap_or(MirType::I64);
+                    let box_id = ctx.alloc_temp(MirType::Shared(Box::new(local_ty)));
+                    ctx.emit(Instruction::Assign {
+                        dest: box_id,
+                        value: RValue::ArcAlloc {
+                            inner: Operand::Local(local),
+                        },
+                    });
+                    ctx.capture_boxes
+                        .entry(name.clone())
+                        .or_default()
+                        .push(box_id);
+                    capture_ops.push(Operand::Local(box_id));
+                } else {
+                    capture_ops.push(Operand::Local(local));
+                }
+            }
 
             RValue::Closure {
                 func_name: lambda_name,
@@ -8834,6 +8999,31 @@ fn suppress_enum_field_arg_drops(ctx: &mut LoweringContext, args: &[ast::Expr]) 
 /// shadowing, so a nested `let mut` that reuses a capture's name also
 /// counts as "mutated". That only costs the direct-call optimization for a
 /// rare name collision -- never a correctness issue.
+/// True for the small set of scalar `MirType`s that both codegen backends'
+/// `RValue::ArcAlloc` lower via the simple "allocate 8 bytes, store the
+/// value at offset 0" path (see `kryos-codegen-{llvm,cranelift}::codegen.rs`)
+/// rather than the aggregate/sizeof(T) path used for structs/arrays/etc.
+/// Used to decide which struct-literal-field closure captures are safe to
+/// box (see `box_scalar_captures` in the Lambda RValue arm) -- restricted to
+/// this set to keep the fix's blast radius small; str/array/map/struct/enum
+/// captures keep their existing (unboxed) capture behavior untouched.
+fn is_boxable_scalar(ty: &MirType) -> bool {
+    matches!(
+        ty,
+        MirType::I8
+            | MirType::I16
+            | MirType::I32
+            | MirType::I64
+            | MirType::U8
+            | MirType::U16
+            | MirType::U32
+            | MirType::U64
+            | MirType::F64
+            | MirType::Bool
+            | MirType::Char
+    )
+}
+
 fn find_mutated_captures(body: &ast::Expr, capture_names: &[String]) -> Vec<String> {
     if capture_names.is_empty() {
         return Vec::new();

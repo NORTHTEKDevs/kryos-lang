@@ -27,6 +27,10 @@ fn make_counter() -> fn() -> i64 {
     }
 }
 
+struct Holder {
+    hf: fn(i64) -> i64,
+}
+
 // Multi-param generic whose method returns a PERMUTED instantiation (Pair<B,A>).
 // A generic method's erased return kept the i64 placeholder, so
 // `pair.get_first() == 2.5` hinted the call i64 while the literal was f64 -- the
@@ -174,6 +178,17 @@ fn main() {
     let cnt = make_counter()
     expect(cnt() == 1, "factory counter 1")
     expect(cnt() == 2, "factory counter persists")
+
+    // A closure stored in a STRUCT FIELD must capture by reference like a
+    // let-bound closure (gotcha #11): a later mutation of the captured var is
+    // visible through the field. Previously the field-stored closure froze the
+    // capture at construction (stale value, silent wrong).
+    let mut kf = 4
+    let gg = |x| x * kf
+    let mach = Holder { hf: |x| x * kf }
+    kf = 50
+    expect(gg(2) == 100, "let-bound closure sees mutation")
+    expect(mach.hf(2) == 100, "struct-field closure sees mutation")
 
     println("conformance generics: PASS")
 }
