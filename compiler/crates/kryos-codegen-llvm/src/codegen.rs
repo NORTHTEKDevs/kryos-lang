@@ -1972,86 +1972,32 @@ impl LlvmCodegen {
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
 
-            for (field_idx, (_, field_ty)) in fields.iter().enumerate() {
-                let needs_drop = matches!(
-                    field_ty,
-                    MirType::Str
-                        | MirType::Array(_, _)
-                        | MirType::Struct(_)
-                        | MirType::Function { .. }
-                        | MirType::Enum(_)
-                        | MirType::Shared(_)
-                        | MirType::Map { .. }
-                );
-                if !needs_drop {
-                    continue;
-                }
-
-                let gep = self.next_temp();
-                self.emit_line(&format!(
-                    "  {gep} = getelementptr i64, ptr %ptr, i32 {field_idx}"
-                ));
-                let fv = self.next_temp();
-
-                match field_ty {
-                    MirType::Str => {
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                        self.emit_line(&format!("  call void @kryos_string_free(ptr {fv})"));
-                    }
-                    MirType::Array(_, _) => {
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                        self.emit_line(&format!("  call void @kryos_array_free(ptr {fv})"));
-                    }
-                    MirType::Map { .. } => {
-                        self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
-                        self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
-                    }
-                    MirType::Function { .. } | MirType::Shared(_) => {
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                        self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
-                    }
-                    MirType::Struct(n) => {
-                        let nested_drop = format!("__kryos_drop_{n}");
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                        // Check if nested struct has a drop helper; fall back to free.
-                        let has_nested = struct_defs
-                            .iter()
-                            .any(|(sn, sf)| sn == n && sn != "Map" && has_heap_fields(sf));
-                        if has_nested {
-                            self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
-                        } else {
-                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
-                        }
-                    }
-                    MirType::Enum(n) => {
-                        let nested_drop = format!("__kryos_drop_{n}");
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
-                        let has_nested = enum_defs.iter().any(|(en, evs)| {
-                            en == n
-                                && evs.iter().any(|v| {
-                                    v.fields.iter().any(|f| {
-                                        matches!(
-                                            f,
-                                            MirType::Str
-                                                | MirType::Array(_, _)
-                                                | MirType::Struct(_)
-                                                | MirType::Function { .. }
-                                                | MirType::Enum(_)
-                                                | MirType::Shared(_)
-                                                | MirType::Map { .. }
-                                        )
-                                    })
-                                })
-                        });
-                        if has_nested {
-                            self.emit_line(&format!("  call void @{nested_drop}(ptr {fv})"));
-                        } else {
-                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            // Delegate to emit_struct_drop, which uses struct-indexed GEP
+            // (`getelementptr %Name, ptr val, i32 0, i32 idx`) so multi-word
+            // fields (inline enums, nested non-copy structs) are addressed at
+            // their real byte offset -- and treats nested struct/enum fields
+            // as the INLINE sub-objects they actually are, not boxed pointers.
+            // This used to be a hand-rolled loop here with a flat i64-stride
+            // GEP (wrong offset once any field is >1 slot) that ALSO loaded a
+            // `ptr` for nested Struct fields and freed it as if it were a
+            // separate allocation -- for `[Outer]` where `Outer` has a
+            // non-copy nested struct field, that read the nested struct's own
+            // field bytes (e.g. a str pointer) as a fake base pointer and
+            // freed garbage, segfaulting at array-element teardown. Reusing
+            // emit_struct_drop (already exercised by the arc-drop helpers)
+            // fixes both the offset and the boxing bug in one place instead
+            // of duplicating (and re-diverging) the field-drop logic.
+            let dummy = MirFunction {
+                name: String::new(),
+                params: Vec::new(),
+                ret_ty: MirType::I64,
+                blocks: Vec::new(),
+                locals: Vec::new(),
+                attributes: MirAttributes::default(),
+                source_file: None,
+                source_line: 0,
+            };
+            self.emit_struct_drop("%ptr", name, &dummy);
 
             self.emit_line("  call void @kryos_free(ptr %ptr)");
             self.emit_line("  ret void");
@@ -8981,15 +8927,28 @@ impl LlvmCodegen {
                     // pointers with their source; skip recursive drop to avoid
                     // double-free. The original owner handles cleanup.
                     if !self.copy_structs.contains(inner_name) {
+                        // Nested struct fields are stored INLINE (by value) in
+                        // the parent's LLVM aggregate layout: emit_aggregate_struct
+                        // inserts the field using its real `%Inner` type, and
+                        // emit_struct_type_decls declares the parent as
+                        // `%Outer = type { %Inner, ... }` -- not `{ ptr, ... }`.
+                        // The struct-indexed GEP below already yields a pointer
+                        // DIRECTLY to the embedded Inner sub-object. Loading a
+                        // `ptr` from it and treating that as "the address of a
+                        // separately-boxed Inner" (the old code) read the nested
+                        // struct's own first field bytes (e.g. a str pointer) as
+                        // if they were a struct base pointer, then freed garbage
+                        // derived from that misread -- a segfault/invalid-free at
+                        // teardown for any `Outer` with a non-copy nested struct
+                        // field. Recurse directly on the GEP (no load, no extra
+                        // kryos_free): the nested struct's storage is part of
+                        // THIS allocation, not a separate one.
                         let gep = self.next_temp();
-                        let fv = self.next_temp();
                         self.emit_line(&format!(
                             "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                         ));
-                        self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                         let inner = inner_name.clone();
-                        self.emit_struct_drop(&fv, &inner, _func);
-                        self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
+                        self.emit_struct_drop(&gep, &inner, _func);
                     }
                 }
                 MirType::Enum(inner_name) => {

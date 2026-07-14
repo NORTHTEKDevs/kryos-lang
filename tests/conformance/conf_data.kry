@@ -62,6 +62,18 @@ struct Rec {
     f: f64,
 }
 
+// A struct with a NON-COPY nested-struct field. The struct-drop helper mis-read
+// the inline nested-struct field as a boxed pointer and freed garbage -> segfault
+// at [Nest]-array teardown. (Runner's exit-code check catches a regression.)
+struct Leafy {
+    s: str,
+}
+
+struct Nest {
+    leaf: Leafy,
+    n: i64,
+}
+
 // Or-pattern arm FOLLOWED by a guard arm: the guard forces the sequential
 // lowering path, where the or-pattern `1 | 2 | 3` previously fell through to
 // "always matches" and matched every value.
@@ -389,6 +401,17 @@ fn main() {
     let lc = Btree.Leaf(10)
     let root = Btree.Node(branch, lc)
     expect(tree_sum(root) == 17, "recursive enum tree_sum (no double-free)")
+
+    // Array of structs with a non-copy nested-struct field: build, read, teardown
+    // (must not segfault when the array drops at scope exit).
+    let mut nests: [Nest] = []
+    let mut ni = 0
+    while ni < 6 {
+        nests = push(nests, Nest { leaf: Leafy { s: "leaf-" + to_string(ni) }, n: ni })
+        ni = ni + 1
+    }
+    expect(nests[0].leaf.s == "leaf-0" and nests[5].leaf.s == "leaf-5", "nested-struct-field array read")
+    expect(nests[3].n == 3, "nested-struct outer field")
 
     println("conformance data: PASS")
 }
