@@ -1,0 +1,20 @@
+// Regression: std::iter::find returned a hand-rolled {"tag":"Some","value":x}
+// dict (a string-keyed map), not a real Option. Assigning it to an Option<T>
+// binding and matching Some(x)/None() read a mismatched byte layout and CRASHED
+// (segfault). find now returns a real Option. (launch-hardening 2026-07-13)
+// expect-stdout: found 3
+// expect-stdout: none
+use std::iter::{find}
+use std::option::{Option, Some, None}
+fn main() {
+    let r: Option<i64> = find([1, 2, 3, 4], |x| x > 2)
+    match r {
+        Some(x) => println("found " + to_string(x)),
+        None() => println("none"),
+    }
+    let r2: Option<i64> = find([1, 2], |x| x > 9)
+    match r2 {
+        Some(x) => println("found " + to_string(x)),
+        None() => println("none"),
+    }
+}

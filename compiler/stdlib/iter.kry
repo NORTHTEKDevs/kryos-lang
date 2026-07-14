@@ -8,6 +8,8 @@
 // Usage: std.iter.map(arr, fn(x) { return x * 2 })
 // ============================================================
 
+use std::option::{Option, Some, None}
+
 // --- Generators --------------------------------------------------------------
 
 /// Generate a range [start, end) as an array.
@@ -223,16 +225,20 @@ fn all(arr: [any], pred: fn) -> bool {
 }
 
 /// Find the first element satisfying pred, or None.
-fn find(arr: [any], pred: fn) -> any {
+fn find(arr: [any], pred: fn) -> Option<any> {
+    // Return a REAL Option, not a hand-rolled {"tag":"Some",...} dict. Assigning
+    // the old dict to an `Option<T>` binding and matching `Some(x)/None()` read a
+    // mismatched byte layout and CRASHED (the dict is a string-keyed map, not the
+    // compiled Option enum).
     let alen = len(arr)
     let mut i = 0
     while i < alen {
         if pred(arr[i]) {
-            return {"tag": "Some", "value": arr[i]}
+            return Some(arr[i])
         }
         i = i + 1
     }
-    return {"tag": "None"}
+    return None()
 }
 
 /// Find the index of the first element satisfying pred, or -1.
