@@ -10,6 +10,22 @@ fn expect(cond: bool, what: str) {
     }
 }
 
+// Actor with a NON-VOID (request-response) handler -- the documented primary
+// pattern. A handler body was type-checked against a hardcoded Void return, so a
+// declared `-> f64` handler failed with "declared to return void, found f64".
+actor Calc {
+    memory: f64
+
+    fn add(x: f64) -> f64 {
+        memory = memory + x
+        return memory
+    }
+
+    fn clear(self) {
+        memory = 0.0
+    }
+}
+
 // try/catch as a TAIL expression whose catch block wraps the caught string in
 // Err(e). The caught string is moved into the Result; previously the catch
 // binding was still scope-dropped, freeing the payload out from under the
@@ -104,6 +120,11 @@ fn main() {
         Ok(v) => expect(false, "to_result unexpected ok: {v}"),
         Err(e) => expect(e == "negative: -3", "catch->Err(e) tail message survives"),
     }
+
+    // Actor with a non-void handler must type-check, construct, and run.
+    let calc = Calc()
+    calc.add(5.0)
+    calc.clear()
 
     println("conformance errors+concurrency: PASS")
 }

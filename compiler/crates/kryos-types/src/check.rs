@@ -878,12 +878,20 @@ impl TypeChecker {
                                 }
                             })
                             .collect();
+                        // Call-site return type is the handler's declared return
+                        // (request-response handlers return a value); default Void
+                        // for fire-and-forget handlers with no declared return.
+                        let ret = h
+                            .ret_ty
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or(Type::Void);
                         FunctionSig {
                             name: h.name.clone(),
                             generic_params: vec![],
                             generic_var_ids: vec![],
                             params,
-                            ret: Type::Void,
+                            ret,
                         }
                     })
                     .collect();
@@ -1026,8 +1034,17 @@ impl TypeChecker {
                         self.env.define_var("self".to_string(), actor_ty.clone());
                     }
                     let prev_ret = self.current_return_type.take();
-                    // Handlers are fire-and-forget (registered return = Void).
-                    self.current_return_type = Some(Type::Void);
+                    // Check the handler body against its DECLARED return type, not
+                    // a hardcoded Void -- a request-response handler
+                    // (`fn add(x: f64) -> f64 { .. return memory }`, the documented
+                    // primary actor pattern) otherwise failed to type-check
+                    // ("declared to return void, but body evaluates to f64").
+                    self.current_return_type = Some(
+                        h.ret_ty
+                            .as_ref()
+                            .map(|t| self.resolve_type_expr(t))
+                            .unwrap_or(Type::Void),
+                    );
                     let prev_fn = self.current_function_name.take();
                     self.current_function_name = Some(h.name.clone());
                     self.check_block(&h.body);
