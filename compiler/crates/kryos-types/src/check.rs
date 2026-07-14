@@ -2079,6 +2079,13 @@ impl TypeChecker {
                     // String indexing: str[i] -> str (single character)
                     Type::Str => Type::Str,
                     Type::Error => Type::Error,
+                    // Object type not yet resolved -- e.g. a generic HOF param
+                    // `T` bound from a `[any]`-returning function (zip/enumerate)
+                    // whose element type isn't known when the closure body is
+                    // checked. Defer: treat as indexable, yielding a fresh element
+                    // var unified by later use, instead of a spurious
+                    // "not indexable" error on the common zip-then-map idiom.
+                    Type::Var(_) => self.engine.fresh_var(),
                     _ => {
                         self.error(format!("type `{obj_ty}` is not indexable"), *span);
                         Type::Error

@@ -124,5 +124,20 @@ fn main() {
     }
     expect(kind == "five", "match guard")
 
+    // `[any]`-erased array-of-arrays indexing (the shape zip/enumerate produce).
+    // Regression: on AOT the erased `any` handle was indexed as an inline
+    // aggregate (direct GEP on the header), so `p[0]` returned the array's
+    // `len` field instead of element 0 -- a silent wrong-output miscompile on
+    // release builds only. Both backends must now agree via array_get.
+    let anyrows: [any] = [[10, 20], [30, 40]]
+    let r0: any = anyrows[0]
+    let r1: any = anyrows[1]
+    expect(r0[0] == 10 and r0[1] == 20, "any-array index row0")
+    expect(r1[0] == 30 and r1[1] == 40, "any-array index row1")
+    // Float element read through an f64 target must bitcast, not read raw bits.
+    let anyf: [any] = [1.5, 2.5]
+    let fx: f64 = anyf[1]
+    expect(fx > 2.4 and fx < 2.6, "any-array float element")
+
     println("conformance data: PASS")
 }

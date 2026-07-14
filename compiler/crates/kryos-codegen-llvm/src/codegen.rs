@@ -5855,9 +5855,25 @@ impl LlvmCodegen {
                 let idx_val = self.operand_to_llvm(index, func);
                 let idx_ty = self.operand_type(index, func);
 
-                if obj_ty == "ptr" {
+                if obj_ty == "ptr" || obj_ty == "i64" {
                     // Dynamic KryosArray — use kryos_array_get(ptr, i64) -> i64.
                     // The element is stored as i64; convert back to ptr if dest is ptr.
+                    //
+                    // obj_ty == "i64" means an `any`-erased array handle (e.g. an
+                    // element of a `[any]` read back into an `any` local, as zip/
+                    // enumerate produce). At runtime it is a KryosArray pointer, so
+                    // it must be dereferenced via array_get (header->data), NOT the
+                    // inline-aggregate direct-GEP in the else branch — that read the
+                    // header, so `p[0]` returned `len` (a silent wrong-output
+                    // miscompile on AOT only). Mirror Cranelift, which uses
+                    // array_get uniformly for every indexable handle.
+                    let obj_ptr = if obj_ty == "ptr" {
+                        obj_val.clone()
+                    } else {
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = inttoptr i64 {obj_val} to ptr"));
+                        t
+                    };
                     let idx_i64 = if idx_ty != "i64" {
                         let t = self.next_temp();
                         self.emit_line(&format!("  {t} = sext {idx_ty} {idx_val} to i64"));
@@ -5867,7 +5883,7 @@ impl LlvmCodegen {
                     };
                     let raw = self.next_temp();
                     self.emit_line(&format!(
-                        "  {raw} = call i64 @__kryos_array_get_inline(ptr {obj_val}, i64 {idx_i64})"
+                        "  {raw} = call i64 @__kryos_array_get_inline(ptr {obj_ptr}, i64 {idx_i64})"
                     ));
                     // Borrow-to-own: an element read of a container-typed
                     // element hands out the array's own handle; retain so the
