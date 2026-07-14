@@ -4698,6 +4698,97 @@ fn lower_match_sequential(
                                 }
                             }
                         }
+                        ast::Pattern::Tuple {
+                            elements: sub_elements,
+                            ..
+                        } => {
+                            // Nested tuple element, e.g.
+                            // `match (n, (a, b), tag) { (n, (a, b), tag) => .. }`.
+                            // Extract the element (a boxed-aggregate slot -- same
+                            // codegen path as a nested enum/struct element; see
+                            // RValue::Field's anon-struct/tuple unboxing in
+                            // kryos-codegen-llvm), then recursively bind/test its
+                            // own sub-elements into the SAME acc chain used for
+                            // the outer tuple's literal tests. Previously this
+                            // case was excluded from tuple_seq_safe and this
+                            // handler, so it routed to the switch path, which
+                            // only binds top-level Ident elements (see the
+                            // tuple_binding loop in lower_match) -- inner
+                            // bindings (a, b) silently read 0.
+                            let elem = ctx.alloc_temp(ety.clone());
+                            ctx.emit(Instruction::Assign {
+                                dest: elem,
+                                value: RValue::Field {
+                                    object: Operand::Local(subj_local),
+                                    field: ei.to_string(),
+                                },
+                            });
+                            let sub_elem_tys = match &ety {
+                                MirType::Tuple(e) => e.clone(),
+                                _ => Vec::new(),
+                            };
+                            for (sei, sepat) in sub_elements.iter().enumerate() {
+                                let sety =
+                                    sub_elem_tys.get(sei).cloned().unwrap_or(MirType::I64);
+                                match sepat {
+                                    ast::Pattern::Wildcard { .. } => {}
+                                    ast::Pattern::Ident { name, mutable, .. } => {
+                                        let bound = ctx.alloc_local(
+                                            Some(name.clone()),
+                                            sety.clone(),
+                                            *mutable,
+                                        );
+                                        ctx.emit(Instruction::Assign {
+                                            dest: bound,
+                                            value: RValue::Field {
+                                                object: Operand::Local(elem),
+                                                field: sei.to_string(),
+                                            },
+                                        });
+                                    }
+                                    ast::Pattern::Literal { expr, .. } => {
+                                        let sub = ctx.alloc_temp(sety.clone());
+                                        ctx.emit(Instruction::Assign {
+                                            dest: sub,
+                                            value: RValue::Field {
+                                                object: Operand::Local(elem),
+                                                field: sei.to_string(),
+                                            },
+                                        });
+                                        let lit = lower_expr_to_operand(ctx, expr);
+                                        let cmp = ctx.alloc_temp(MirType::Bool);
+                                        ctx.emit(Instruction::Assign {
+                                            dest: cmp,
+                                            value: RValue::BinOp {
+                                                op: MirBinOp::Eq,
+                                                left: Operand::Local(sub),
+                                                right: lit,
+                                            },
+                                        });
+                                        let this = Operand::Local(cmp);
+                                        acc = match acc.take() {
+                                            None => Some(this),
+                                            Some(prev) => {
+                                                let combined = ctx.alloc_temp(MirType::Bool);
+                                                ctx.emit(Instruction::Assign {
+                                                    dest: combined,
+                                                    value: RValue::BinOp {
+                                                        op: MirBinOp::And,
+                                                        left: prev,
+                                                        right: this,
+                                                    },
+                                                });
+                                                Some(Operand::Local(combined))
+                                            }
+                                        };
+                                    }
+                                    // Any other nested sub-pattern: excluded by
+                                    // tuple_seq_safe; treat defensively as
+                                    // always-match.
+                                    _ => {}
+                                }
+                            }
+                        }
                         // Any other nested pattern: excluded by the routing gate;
                         // treat defensively as always-match.
                         _ => {}
@@ -5094,23 +5185,38 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 ast::Pattern::Enum { fields, .. } => fields.iter().all(|f| {
                     matches!(f, ast::Pattern::Ident { .. } | ast::Pattern::Wildcard { .. })
                 }),
+                // A nested TUPLE element (`(n, (a, b), tag)`) is sequential-safe
+                // when its own sub-elements are simple (literal/ident/wildcard);
+                // the ordered path extracts it and recursively tests/binds its
+                // sub-elements. Deeper nesting (a sub-element that is itself
+                // refutable/compound) stays on the switch path.
+                ast::Pattern::Tuple { elements: sub, .. } => sub.iter().all(|f| {
+                    matches!(
+                        f,
+                        ast::Pattern::Literal { .. }
+                            | ast::Pattern::Ident { .. }
+                            | ast::Pattern::Wildcard { .. }
+                    )
+                }),
                 _ => false,
             }),
             _ => true,
         });
-        // A tuple match with a nested-enum element MUST use the sequential path
-        // even without guards: the switch path tested neither the nested tag nor
-        // extracted its payload (`(No, q)` took the `(Yes(x), q)` arm; `x` bound
+        // A tuple match with a nested-enum OR nested-tuple element MUST use the
+        // sequential path even without guards: the switch path only binds
+        // top-level Ident elements (see the tuple_binding loop below) -- it
+        // tested neither a nested enum's tag (`No` took the `Yes` arm; payload
+        // bound 0) nor extracted a nested tuple's own elements (`a`, `b` bound
         // 0) -- silent wrong output on both backends.
-        let has_nested_enum_tuple = arms.iter().any(|a| match &a.pattern {
-            ast::Pattern::Tuple { elements, .. } => elements
-                .iter()
-                .any(|e| matches!(e, ast::Pattern::Enum { .. })),
+        let has_nested_refutable_tuple = arms.iter().any(|a| match &a.pattern {
+            ast::Pattern::Tuple { elements, .. } => elements.iter().any(|e| {
+                matches!(e, ast::Pattern::Enum { .. } | ast::Pattern::Tuple { .. })
+            }),
             _ => false,
         });
         let needs_sequential = arms.iter().any(|a| {
             a.guard.is_some() || matches!(&a.pattern, ast::Pattern::Ident { .. })
-        }) || has_nested_enum_tuple;
+        }) || has_nested_refutable_tuple;
         // Route to the sequential (ordered test-chain) path for scalar AND
         // simple-tuple matches. Previously tuple matches were forced onto the
         // switch path, which could not chain multiple same-shape guarded arms:

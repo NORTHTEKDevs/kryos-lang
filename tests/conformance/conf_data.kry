@@ -153,6 +153,16 @@ fn drive(s: Sig, q: i64) -> str {
     }
 }
 
+// Tuple pattern with a NESTED-TUPLE element. The inner tuple's bindings were
+// never assigned (read as 0) -- the switch path binds only top-level idents.
+fn nested_tuple_cls(x: i64, y: i64, z: i64) -> str {
+    match (x, (y, z), 0) {
+        (a, (0, c), _) => return "yzero {a} {c}",
+        (a, (b, c), _) if b > c => return "gt {a} {b} {c}",
+        (a, (b, c), _) => return "def {a} {b} {c}",
+    }
+}
+
 fn quadrant(x: i64, y: i64) -> str {
     match (x, y) {
         (0, 0) => return "origin",
@@ -345,6 +355,15 @@ fn main() {
         rj = rj + 1
     }
     expect(all_ok, "push-built [Struct] str fields intact (no double-free corruption)")
+
+    // Nested-tuple pattern element: inner bindings + literal test + guard.
+    let ntp = (7, (2, 3), 9)
+    match ntp {
+        (n, (a, b), tag) => expect(n == 7 and a == 2 and b == 3 and tag == 9, "nested-tuple inner bindings"),
+    }
+    expect(nested_tuple_cls(1, 0, 9) == "yzero 1 9", "nested-tuple literal element")
+    expect(nested_tuple_cls(2, 8, 3) == "gt 2 8 3", "nested-tuple guard on inner binding")
+    expect(nested_tuple_cls(3, 4, 5) == "def 3 4 5", "nested-tuple default arm")
 
     println("conformance data: PASS")
 }
