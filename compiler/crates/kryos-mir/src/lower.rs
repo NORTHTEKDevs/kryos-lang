@@ -4457,6 +4457,231 @@ struct TupleBinding {
 }
 
 
+/// True when a tuple ELEMENT sub-pattern is safe for the ordered
+/// (sequential test-chain) path, at ANY nesting depth: a bare
+/// literal/ident/wildcard, an enum whose own fields are all simple
+/// (ident/wildcard), or a nested tuple whose own elements are all
+/// (recursively) safe. Anything else -- an or-pattern, an enum with a
+/// compound field, a nested struct pattern -- is excluded and the whole
+/// match stays on the switch path. This recursion is what lets
+/// `tuple_seq_safe` admit arbitrarily deep tuple nesting (previously it only
+/// checked one level down, so `(n, (a, (c, d)), t)` was excluded and routed
+/// to the switch path, which mis-executed it).
+fn tuple_elem_seq_safe(pat: &ast::Pattern) -> bool {
+    match pat {
+        ast::Pattern::Literal { .. }
+        | ast::Pattern::Ident { .. }
+        | ast::Pattern::Wildcard { .. } => true,
+        ast::Pattern::Enum { fields, .. } => fields
+            .iter()
+            .all(|f| matches!(f, ast::Pattern::Ident { .. } | ast::Pattern::Wildcard { .. })),
+        ast::Pattern::Tuple { elements, .. } => elements.iter().all(tuple_elem_seq_safe),
+        _ => false,
+    }
+}
+
+/// AND a new boolean test into the running arm-condition accumulator chain
+/// (shared by every element/sub-element test in a tuple pattern's ordered
+/// binder so a literal or enum-tag test at any nesting depth still narrows
+/// the same arm condition).
+fn and_into_acc(ctx: &mut LoweringContext, acc: &mut Option<Operand>, this: Operand) {
+    *acc = match acc.take() {
+        None => Some(this),
+        Some(prev) => {
+            let combined = ctx.alloc_temp(MirType::Bool);
+            ctx.emit(Instruction::Assign {
+                dest: combined,
+                value: RValue::BinOp {
+                    op: MirBinOp::And,
+                    left: prev,
+                    right: this,
+                },
+            });
+            Some(Operand::Local(combined))
+        }
+    };
+}
+
+/// Recursively bind/test a tuple pattern's elements against an
+/// already-materialized tuple-typed local (`tuple_local`). Wildcards are
+/// skipped, idents are bound via `RValue::Field`, literals are extracted and
+/// AND-tested into `acc`, enum elements get a tag test + payload extraction
+/// (mirroring 6bec772's nested-enum treatment), and a nested TUPLE element is
+/// extracted into its own local and this function RECURSES on it -- this is
+/// what makes 2+ levels of tuple nesting (`(n, (a, (c, d)), t)`) bind every
+/// leaf correctly instead of silently reading zero below depth 1 (the prior
+/// one-level-only version of this logic, added in 95a6cb6, only recursed
+/// one level and hit a catch-all `_ => {}` for a sub-element that was itself
+/// a tuple).
+fn bind_tuple_pattern(
+    ctx: &mut LoweringContext,
+    tuple_local: LocalId,
+    elements: &[ast::Pattern],
+    elem_tys: &[MirType],
+    acc: &mut Option<Operand>,
+) {
+    for (ei, epat) in elements.iter().enumerate() {
+        let ety = elem_tys.get(ei).cloned().unwrap_or(MirType::I64);
+        match epat {
+            ast::Pattern::Wildcard { .. } => {}
+            ast::Pattern::Ident { name, mutable, .. } => {
+                let bound = ctx.alloc_local(Some(name.clone()), ety.clone(), *mutable);
+                ctx.emit(Instruction::Assign {
+                    dest: bound,
+                    value: RValue::Field {
+                        object: Operand::Local(tuple_local),
+                        field: ei.to_string(),
+                    },
+                });
+            }
+            ast::Pattern::Literal { expr, .. } => {
+                let elem = ctx.alloc_temp(ety.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(tuple_local),
+                        field: ei.to_string(),
+                    },
+                });
+                let lit = lower_expr_to_operand(ctx, expr);
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(elem),
+                        right: lit,
+                    },
+                });
+                and_into_acc(ctx, acc, Operand::Local(cmp));
+            }
+            ast::Pattern::Enum {
+                name: pname,
+                variant,
+                fields,
+                ..
+            } => {
+                // Nested enum element, e.g. `match (o, y) { (Yes(x), q) => .. }`,
+                // possibly itself nested inside a deeper tuple. Extract the
+                // element, AND its tag-equality test into acc, and extract
+                // payload fields into idents.
+                let elem = ctx.alloc_temp(ety.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(tuple_local),
+                        field: ei.to_string(),
+                    },
+                });
+                let enum_name = if !pname.is_empty() {
+                    pname.clone()
+                } else {
+                    match &ety {
+                        MirType::Enum(n) => n.clone(),
+                        _ => find_enum_variant(ctx, variant)
+                            .map(|(n, _)| n)
+                            .unwrap_or_default(),
+                    }
+                };
+                let vidx = ctx
+                    .enum_defs
+                    .get(enum_name.as_str())
+                    .and_then(|vs| vs.iter().position(|v| v.name == *variant));
+                if let Some(vidx) = vidx {
+                    let tag = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: tag,
+                        value: RValue::EnumTag {
+                            operand: Operand::Local(elem),
+                        },
+                    });
+                    let cmp = ctx.alloc_temp(MirType::Bool);
+                    ctx.emit(Instruction::Assign {
+                        dest: cmp,
+                        value: RValue::BinOp {
+                            op: MirBinOp::Eq,
+                            left: Operand::Local(tag),
+                            right: Operand::Constant(Constant::Int(vidx as i64)),
+                        },
+                    });
+                    and_into_acc(ctx, acc, Operand::Local(cmp));
+                    for (fi, fpat) in fields.iter().enumerate() {
+                        if let ast::Pattern::Ident {
+                            name: fname,
+                            mutable,
+                            ..
+                        } = fpat
+                        {
+                            let field_type = ctx
+                                .enum_defs
+                                .get(enum_name.as_str())
+                                .and_then(|vs| vs.get(vidx))
+                                .and_then(|v| v.fields.get(fi))
+                                .cloned()
+                                .unwrap_or(MirType::I64);
+                            let field_type = match field_type {
+                                MirType::Struct(n)
+                                    if ctx.enum_defs.contains_key(&n) =>
+                                {
+                                    MirType::Enum(n)
+                                }
+                                other => other,
+                            };
+                            let bound = ctx.alloc_local(
+                                Some(fname.clone()),
+                                field_type.clone(),
+                                *mutable,
+                            );
+                            if !is_copy_type(ctx, &field_type) {
+                                ctx.dropped_locals.insert(bound.0);
+                            }
+                            ctx.emit(Instruction::Assign {
+                                dest: bound,
+                                value: RValue::EnumPayload {
+                                    operand: Operand::Local(elem),
+                                    enum_name: enum_name.clone(),
+                                    variant_idx: vidx as u32,
+                                    field_idx: fi as u32,
+                                },
+                            });
+                        }
+                    }
+                }
+            }
+            ast::Pattern::Tuple {
+                elements: sub_elements,
+                ..
+            } => {
+                // Nested tuple element, e.g.
+                // `match (n, (a, (c, d)), tag) { (n, (a, (c, d)), tag) => .. }`.
+                // Extract the element (a boxed-aggregate slot -- same codegen
+                // path as a nested enum/struct element; see RValue::Field's
+                // anon-struct/tuple unboxing in kryos-codegen-llvm), then
+                // RECURSE into its own sub-elements against the SAME acc
+                // chain used for the outer tuple's tests -- this is what
+                // makes arbitrarily deep nesting bind correctly instead of
+                // stopping at one level.
+                let elem = ctx.alloc_temp(ety.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(tuple_local),
+                        field: ei.to_string(),
+                    },
+                });
+                let sub_elem_tys = match &ety {
+                    MirType::Tuple(e) => e.clone(),
+                    _ => Vec::new(),
+                };
+                bind_tuple_pattern(ctx, elem, sub_elements, &sub_elem_tys, acc);
+            }
+            // Any other nested sub-pattern: excluded by tuple_seq_safe;
+            // treat defensively as always-match.
+            _ => {}
+        }
+    }
+}
+
 /// Sequential lowering for scalar matches with guards and/or binding arms:
 /// each arm becomes test -> (guard ->) body, falling through to the next
 /// arm's test. Non-exhaustive matches fall through to a zero result, the
@@ -4562,8 +4787,9 @@ fn lower_match_sequential(
                 }
             }
             ast::Pattern::Tuple { elements, .. } => {
-                // Simple-tuple pattern in the ordered path: extract each element,
-                // bind idents, AND together the literal-element equality tests.
+                // Tuple pattern in the ordered path: recursively extract each
+                // element (including through arbitrarily deep nested tuples),
+                // bind idents, AND together literal/enum-tag equality tests.
                 // Bindings are emitted in this block so a following guard sees
                 // them. Returns None (always structurally matches) when every
                 // element is an ident/wildcard -- the guard then discriminates.
@@ -4577,266 +4803,7 @@ fn lower_match_sequential(
                     })
                     .unwrap_or_default();
                 let mut acc: Option<Operand> = None;
-                for (ei, epat) in elements.iter().enumerate() {
-                    let ety = elem_tys.get(ei).cloned().unwrap_or(MirType::I64);
-                    match epat {
-                        ast::Pattern::Wildcard { .. } => {}
-                        ast::Pattern::Ident { name, mutable, .. } => {
-                            let bound = ctx.alloc_local(Some(name.clone()), ety.clone(), *mutable);
-                            ctx.emit(Instruction::Assign {
-                                dest: bound,
-                                value: RValue::Field {
-                                    object: Operand::Local(subj_local),
-                                    field: ei.to_string(),
-                                },
-                            });
-                        }
-                        ast::Pattern::Literal { expr, .. } => {
-                            let elem = ctx.alloc_temp(ety.clone());
-                            ctx.emit(Instruction::Assign {
-                                dest: elem,
-                                value: RValue::Field {
-                                    object: Operand::Local(subj_local),
-                                    field: ei.to_string(),
-                                },
-                            });
-                            let lit = lower_expr_to_operand(ctx, expr);
-                            let cmp = ctx.alloc_temp(MirType::Bool);
-                            ctx.emit(Instruction::Assign {
-                                dest: cmp,
-                                value: RValue::BinOp {
-                                    op: MirBinOp::Eq,
-                                    left: Operand::Local(elem),
-                                    right: lit,
-                                },
-                            });
-                            let this = Operand::Local(cmp);
-                            acc = match acc.take() {
-                                None => Some(this),
-                                Some(prev) => {
-                                    let combined = ctx.alloc_temp(MirType::Bool);
-                                    ctx.emit(Instruction::Assign {
-                                        dest: combined,
-                                        value: RValue::BinOp {
-                                            op: MirBinOp::And,
-                                            left: prev,
-                                            right: this,
-                                        },
-                                    });
-                                    Some(Operand::Local(combined))
-                                }
-                            };
-                        }
-                        ast::Pattern::Enum {
-                            name: pname,
-                            variant,
-                            fields,
-                            ..
-                        } => {
-                            // Nested enum element, e.g. `match (o, y) { (Yes(x), q) => .. }`.
-                            // Extract the element, AND its tag-equality test into
-                            // acc, and extract payload fields into idents. The
-                            // extraction is unconditional (the bindings are read
-                            // only in the arm body, which runs only when the tag
-                            // test + guard pass), mirroring lower_refutable_bind's
-                            // drop handling for non-copy payloads. Previously these
-                            // were routed to the switch path, which tested neither
-                            // the nested tag (No took the Yes arm) nor extracted the
-                            // payload (x bound 0) -- silent wrong output.
-                            let elem = ctx.alloc_temp(ety.clone());
-                            ctx.emit(Instruction::Assign {
-                                dest: elem,
-                                value: RValue::Field {
-                                    object: Operand::Local(subj_local),
-                                    field: ei.to_string(),
-                                },
-                            });
-                            let enum_name = if !pname.is_empty() {
-                                pname.clone()
-                            } else {
-                                match &ety {
-                                    MirType::Enum(n) => n.clone(),
-                                    _ => find_enum_variant(ctx, variant)
-                                        .map(|(n, _)| n)
-                                        .unwrap_or_default(),
-                                }
-                            };
-                            let vidx = ctx
-                                .enum_defs
-                                .get(enum_name.as_str())
-                                .and_then(|vs| vs.iter().position(|v| v.name == *variant));
-                            if let Some(vidx) = vidx {
-                                let tag = ctx.alloc_temp(MirType::I64);
-                                ctx.emit(Instruction::Assign {
-                                    dest: tag,
-                                    value: RValue::EnumTag {
-                                        operand: Operand::Local(elem),
-                                    },
-                                });
-                                let cmp = ctx.alloc_temp(MirType::Bool);
-                                ctx.emit(Instruction::Assign {
-                                    dest: cmp,
-                                    value: RValue::BinOp {
-                                        op: MirBinOp::Eq,
-                                        left: Operand::Local(tag),
-                                        right: Operand::Constant(Constant::Int(vidx as i64)),
-                                    },
-                                });
-                                let this = Operand::Local(cmp);
-                                acc = match acc.take() {
-                                    None => Some(this),
-                                    Some(prev) => {
-                                        let combined = ctx.alloc_temp(MirType::Bool);
-                                        ctx.emit(Instruction::Assign {
-                                            dest: combined,
-                                            value: RValue::BinOp {
-                                                op: MirBinOp::And,
-                                                left: prev,
-                                                right: this,
-                                            },
-                                        });
-                                        Some(Operand::Local(combined))
-                                    }
-                                };
-                                for (fi, fpat) in fields.iter().enumerate() {
-                                    if let ast::Pattern::Ident {
-                                        name: fname,
-                                        mutable,
-                                        ..
-                                    } = fpat
-                                    {
-                                        let field_type = ctx
-                                            .enum_defs
-                                            .get(enum_name.as_str())
-                                            .and_then(|vs| vs.get(vidx))
-                                            .and_then(|v| v.fields.get(fi))
-                                            .cloned()
-                                            .unwrap_or(MirType::I64);
-                                        let field_type = match field_type {
-                                            MirType::Struct(n)
-                                                if ctx.enum_defs.contains_key(&n) =>
-                                            {
-                                                MirType::Enum(n)
-                                            }
-                                            other => other,
-                                        };
-                                        let bound = ctx.alloc_local(
-                                            Some(fname.clone()),
-                                            field_type.clone(),
-                                            *mutable,
-                                        );
-                                        if !is_copy_type(ctx, &field_type) {
-                                            ctx.dropped_locals.insert(bound.0);
-                                        }
-                                        ctx.emit(Instruction::Assign {
-                                            dest: bound,
-                                            value: RValue::EnumPayload {
-                                                operand: Operand::Local(elem),
-                                                enum_name: enum_name.clone(),
-                                                variant_idx: vidx as u32,
-                                                field_idx: fi as u32,
-                                            },
-                                        });
-                                    }
-                                }
-                            }
-                        }
-                        ast::Pattern::Tuple {
-                            elements: sub_elements,
-                            ..
-                        } => {
-                            // Nested tuple element, e.g.
-                            // `match (n, (a, b), tag) { (n, (a, b), tag) => .. }`.
-                            // Extract the element (a boxed-aggregate slot -- same
-                            // codegen path as a nested enum/struct element; see
-                            // RValue::Field's anon-struct/tuple unboxing in
-                            // kryos-codegen-llvm), then recursively bind/test its
-                            // own sub-elements into the SAME acc chain used for
-                            // the outer tuple's literal tests. Previously this
-                            // case was excluded from tuple_seq_safe and this
-                            // handler, so it routed to the switch path, which
-                            // only binds top-level Ident elements (see the
-                            // tuple_binding loop in lower_match) -- inner
-                            // bindings (a, b) silently read 0.
-                            let elem = ctx.alloc_temp(ety.clone());
-                            ctx.emit(Instruction::Assign {
-                                dest: elem,
-                                value: RValue::Field {
-                                    object: Operand::Local(subj_local),
-                                    field: ei.to_string(),
-                                },
-                            });
-                            let sub_elem_tys = match &ety {
-                                MirType::Tuple(e) => e.clone(),
-                                _ => Vec::new(),
-                            };
-                            for (sei, sepat) in sub_elements.iter().enumerate() {
-                                let sety =
-                                    sub_elem_tys.get(sei).cloned().unwrap_or(MirType::I64);
-                                match sepat {
-                                    ast::Pattern::Wildcard { .. } => {}
-                                    ast::Pattern::Ident { name, mutable, .. } => {
-                                        let bound = ctx.alloc_local(
-                                            Some(name.clone()),
-                                            sety.clone(),
-                                            *mutable,
-                                        );
-                                        ctx.emit(Instruction::Assign {
-                                            dest: bound,
-                                            value: RValue::Field {
-                                                object: Operand::Local(elem),
-                                                field: sei.to_string(),
-                                            },
-                                        });
-                                    }
-                                    ast::Pattern::Literal { expr, .. } => {
-                                        let sub = ctx.alloc_temp(sety.clone());
-                                        ctx.emit(Instruction::Assign {
-                                            dest: sub,
-                                            value: RValue::Field {
-                                                object: Operand::Local(elem),
-                                                field: sei.to_string(),
-                                            },
-                                        });
-                                        let lit = lower_expr_to_operand(ctx, expr);
-                                        let cmp = ctx.alloc_temp(MirType::Bool);
-                                        ctx.emit(Instruction::Assign {
-                                            dest: cmp,
-                                            value: RValue::BinOp {
-                                                op: MirBinOp::Eq,
-                                                left: Operand::Local(sub),
-                                                right: lit,
-                                            },
-                                        });
-                                        let this = Operand::Local(cmp);
-                                        acc = match acc.take() {
-                                            None => Some(this),
-                                            Some(prev) => {
-                                                let combined = ctx.alloc_temp(MirType::Bool);
-                                                ctx.emit(Instruction::Assign {
-                                                    dest: combined,
-                                                    value: RValue::BinOp {
-                                                        op: MirBinOp::And,
-                                                        left: prev,
-                                                        right: this,
-                                                    },
-                                                });
-                                                Some(Operand::Local(combined))
-                                            }
-                                        };
-                                    }
-                                    // Any other nested sub-pattern: excluded by
-                                    // tuple_seq_safe; treat defensively as
-                                    // always-match.
-                                    _ => {}
-                                }
-                            }
-                        }
-                        // Any other nested pattern: excluded by the routing gate;
-                        // treat defensively as always-match.
-                        _ => {}
-                    }
-                }
+                bind_tuple_pattern(ctx, subj_local, elements, &elem_tys, &mut acc);
                 acc
             }
             // Wildcard and anything else: always matches, binds nothing.
@@ -5213,44 +5180,30 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     ast::Pattern::Enum { .. } | ast::Pattern::Struct { .. }
                 )
             });
-        // A tuple match is sequential-safe only when every element sub-pattern is
-        // simple (literal / ident / wildcard). A nested refutable element
-        // (`(Some(x), y)`) still needs the switch path's refinement machinery.
+        // A tuple match is sequential-safe when every element sub-pattern is
+        // safe at ANY nesting depth (literal / ident / wildcard, an enum with
+        // simple fields, or a nested tuple whose own elements are all
+        // recursively safe) -- see tuple_elem_seq_safe. A nested refutable
+        // element that isn't (e.g. `(Some(x), y)` with a compound payload, or
+        // an or-pattern anywhere) still needs the switch path's refinement
+        // machinery.
         let tuple_seq_safe = arms.iter().all(|a| match &a.pattern {
-            ast::Pattern::Tuple { elements, .. } => elements.iter().all(|e| match e {
-                ast::Pattern::Literal { .. }
-                | ast::Pattern::Ident { .. }
-                | ast::Pattern::Wildcard { .. } => true,
-                // A nested ENUM element is sequential-safe when its own fields
-                // are all simple (ident/wildcard); the ordered path tests its
-                // tag and extracts its payload. Deeper nesting (a field that is
-                // itself refutable) stays on the switch path.
-                ast::Pattern::Enum { fields, .. } => fields.iter().all(|f| {
-                    matches!(f, ast::Pattern::Ident { .. } | ast::Pattern::Wildcard { .. })
-                }),
-                // A nested TUPLE element (`(n, (a, b), tag)`) is sequential-safe
-                // when its own sub-elements are simple (literal/ident/wildcard);
-                // the ordered path extracts it and recursively tests/binds its
-                // sub-elements. Deeper nesting (a sub-element that is itself
-                // refutable/compound) stays on the switch path.
-                ast::Pattern::Tuple { elements: sub, .. } => sub.iter().all(|f| {
-                    matches!(
-                        f,
-                        ast::Pattern::Literal { .. }
-                            | ast::Pattern::Ident { .. }
-                            | ast::Pattern::Wildcard { .. }
-                    )
-                }),
-                _ => false,
-            }),
+            ast::Pattern::Tuple { elements, .. } => {
+                elements.iter().all(tuple_elem_seq_safe)
+            }
             _ => true,
         });
-        // A tuple match with a nested-enum OR nested-tuple element MUST use the
-        // sequential path even without guards: the switch path only binds
-        // top-level Ident elements (see the tuple_binding loop below) -- it
-        // tested neither a nested enum's tag (`No` took the `Yes` arm; payload
-        // bound 0) nor extracted a nested tuple's own elements (`a`, `b` bound
-        // 0) -- silent wrong output on both backends.
+        // A tuple match with a nested-enum OR nested-tuple element (at ANY
+        // depth) MUST use the sequential path even without guards: the switch
+        // path only binds top-level Ident elements (see the tuple_binding
+        // loop below) -- it tested neither a nested enum's tag (`No` took the
+        // `Yes` arm; payload bound 0) nor extracted a nested tuple's own
+        // elements (`a`, `b` bound 0) -- silent wrong output on both backends.
+        // Checking only the immediate elements is depth-agnostic by
+        // construction: a sub-element that is itself a Tuple (however deeply
+        // IT nests further) already matches `Pattern::Tuple { .. }` here, so
+        // `(n, (a, (c, d)), t)` is flagged by its immediate middle element
+        // without needing to recurse into `(a, (c, d))`.
         let has_nested_refutable_tuple = arms.iter().any(|a| match &a.pattern {
             ast::Pattern::Tuple { elements, .. } => elements.iter().any(|e| {
                 matches!(e, ast::Pattern::Enum { .. } | ast::Pattern::Tuple { .. })

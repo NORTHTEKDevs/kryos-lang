@@ -394,6 +394,14 @@ fn main() {
     expect(nested_tuple_cls(2, 8, 3) == "gt 2 8 3", "nested-tuple guard on inner binding")
     expect(nested_tuple_cls(3, 4, 5) == "def 3 4 5", "nested-tuple default arm")
 
+    // 3-level tuple nesting: bindings below depth 1 were silently zeroed.
+    let deep3 = (1, (2, (3, 4)), 5)
+    match deep3 {
+        (dn, (da, (dc, dd)), dt) => {
+            expect(dn == 1 and da == 2 and dc == 3 and dd == 4 and dt == 5, "3-level tuple bindings")
+        }
+    }
+
     // Recursive enum built with dotted construction from heap-locals, recursed.
     let la = Btree.Leaf(3)
     let lb = Btree.Leaf(4)
