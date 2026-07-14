@@ -211,12 +211,30 @@ impl TypeEnv {
     /// (-> Option) and `Ok(v)` (-> Result). Returns the first match; the
     /// qualified `Enum.Variant` form disambiguates name collisions.
     pub fn find_enum_by_variant(&self, variant: &str) -> Option<&EnumDef> {
+        // DETERMINISTIC resolution. `scope.enums` is a HashMap, so `.values()`
+        // iterates in per-process-randomized order. An ambiguous bare variant --
+        // a user enum sharing a variant name with std `Option`/`Result` (e.g.
+        // `enum MyBox { Some(str) }` alongside `Option::Some`) -- previously
+        // resolved to whichever enum the hasher visited first, so the SAME source
+        // compiled differently (and to a permanently-wrong binary) across runs.
+        // Within each scope (innermost first) collect every candidate, then prefer
+        // stdlib Option/Result on a collision, else the lexicographically-first
+        // enum name. Fully deterministic; qualified `Enum.Variant` still resolves
+        // exactly and bypasses this bare-name path.
         for scope in self.scopes.iter().rev() {
-            for def in scope.enums.values() {
-                if def.variants.iter().any(|(v, _)| v == variant) {
-                    return Some(def);
-                }
+            let mut matches: Vec<&EnumDef> = scope
+                .enums
+                .values()
+                .filter(|def| def.variants.iter().any(|(v, _)| v == variant))
+                .collect();
+            if matches.is_empty() {
+                continue;
             }
+            matches.sort_by(|a, b| {
+                let rank = |n: &str| if n == "Option" || n == "Result" { 0 } else { 1 };
+                rank(&a.name).cmp(&rank(&b.name)).then(a.name.cmp(&b.name))
+            });
+            return Some(matches[0]);
         }
         None
     }

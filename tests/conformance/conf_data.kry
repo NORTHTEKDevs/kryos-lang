@@ -101,6 +101,20 @@ fn apply(mode: i64, c: Cmd) -> i64 {
     }
 }
 
+// A user enum that deliberately reuses the `Some` variant name to exercise
+// deterministic bare-variant resolution against std Option.
+enum Shelf {
+    Some(str),
+    Bare,
+}
+
+fn shelf_label(s: Shelf) -> str {
+    match s {
+        Shelf.Some(t) => return "has:" + t,
+        Shelf.Bare => return "bare",
+    }
+}
+
 fn quadrant(x: i64, y: i64) -> str {
     match (x, y) {
         (0, 0) => return "origin",
@@ -250,6 +264,17 @@ fn main() {
     } else {
         expect(false, "if-let map-index took else")
     }
+
+    // Ambiguous bare variant: a user enum (Shelf) also defines `Some`. A bare
+    // `Some(..)` in an Option context must DETERMINISTICALLY resolve to Option,
+    // not to whichever enum a randomized HashMap happens to visit first (the
+    // same source used to compile differently across runs).
+    let so: Option<i64> = Some(11)
+    match so {
+        Some(v) => expect(v == 11, "bare Some resolves to Option under collision"),
+        None() => expect(false, "bare Some misresolved"),
+    }
+    expect(shelf_label(Shelf.Some("book")) == "has:book", "qualified user variant still resolves")
 
     println("conformance data: PASS")
 }

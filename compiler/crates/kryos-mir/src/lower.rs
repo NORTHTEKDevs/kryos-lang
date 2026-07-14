@@ -6848,15 +6848,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, &func_name) {
                 let mir_args: Vec<Operand> =
                     args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
-                // A bare heap-local passed directly as a variant field is MOVED
+                // A bare heap-local passed directly as a variant field is moved
                 // into the enum -- the field is a bit-copy with no retain. Mark
                 // the local drop-suppressed so its scope-end drop does not free
                 // the payload the returned Result/Option now owns. Without this,
                 // `Err(e)` / `Some(s)` / `Ok(v)` built from a named local (most
                 // visibly the catch binding in `catch e { Err(e) }`, in tail,
                 // `let`, and return positions) returned a freed string: empty on
-                // AOT, corrupt on JIT. A move makes any later use of the local a
-                // compile error (E0300), so suppressing the drop is always safe.
+                // AOT, corrupt on JIT.
+                //
+                // NOTE: the ownership pass currently treats enum-variant/call
+                // args as a use (borrow), not a move, so `Err(e)` followed by a
+                // second `Ok(e)` (aliasing one local into two enums) is not
+                // rejected. Suppressing the drop there LEAKS the extra reference
+                // rather than double-freeing it -- strictly safer than the
+                // pre-fix behaviour (a use-after-free of the single owner). A
+                // fully-refcounted fix (retain str/array/map fields on enum
+                // construction) would also plug the leak; tracked separately.
                 for a in args {
                     if let ast::Expr::Identifier { name: an, .. } = a {
                         if let Some(l) = ctx
@@ -8346,14 +8354,26 @@ fn find_enum_variant(ctx: &LoweringContext, name: &str) -> Option<(String, u32)>
         }
         return None;
     }
+    // DETERMINISTIC bare-variant resolution. `ctx.enum_defs` is a HashMap, so
+    // iterating it returns the first name-match in per-process-randomized order;
+    // a user enum sharing a variant name with std Option/Result made the SAME
+    // source lower (and compile) differently across runs. Collect all matches,
+    // then prefer stdlib Option/Result on a collision, else the
+    // lexicographically-first enum name. (Mirrors env.rs find_enum_by_variant.)
+    let mut matches: Vec<(String, u32)> = Vec::new();
     for (enum_name, variants) in &ctx.enum_defs {
-        for (idx, v) in variants.iter().enumerate() {
-            if v.name == name {
-                return Some((enum_name.clone(), idx as u32));
-            }
+        if let Some((idx, _)) = variants.iter().enumerate().find(|(_, v)| v.name == name) {
+            matches.push((enum_name.clone(), idx as u32));
         }
     }
-    None
+    if matches.is_empty() {
+        return None;
+    }
+    matches.sort_by(|a, b| {
+        let rank = |n: &str| if n == "Option" || n == "Result" { 0 } else { 1 };
+        rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0))
+    });
+    Some(matches[0].clone())
 }
 
 // ---------------------------------------------------------------------------
