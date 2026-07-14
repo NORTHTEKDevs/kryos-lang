@@ -56,6 +56,51 @@ fn find_even(xs: [i64]) -> Option<i64> {
     return None()
 }
 
+struct Rec {
+    name: str,
+    n: i64,
+    f: f64,
+}
+
+// Or-pattern arm FOLLOWED by a guard arm: the guard forces the sequential
+// lowering path, where the or-pattern `1 | 2 | 3` previously fell through to
+// "always matches" and matched every value.
+fn classify(n: i64) -> str {
+    match n {
+        1 | 2 | 3 => return "low",
+        x if x < 0 => return "neg",
+        _ => return "high",
+    }
+}
+
+enum Cmd {
+    Inc,
+    Dec,
+    Nop,
+}
+
+// Nested match on the SAME value `c` across mutually-exclusive outer arms.
+// The move checker previously leaked `c`'s moved state from arm 0 into arm 1
+// and reported a false E0300 use-after-move.
+fn apply(mode: i64, c: Cmd) -> i64 {
+    match mode {
+        0 => {
+            match c {
+                Inc => return 1,
+                Dec => return -1,
+                Nop => return 0,
+            }
+        }
+        _ => {
+            match c {
+                Inc => return 10,
+                Dec => return -10,
+                Nop => return 0,
+            }
+        }
+    }
+}
+
 fn main() {
     // Structs + methods + field mutation.
     let mut p = Point { x: 3.0, y: 0.0 - 4.0 }
@@ -138,6 +183,29 @@ fn main() {
     let anyf: [any] = [1.5, 2.5]
     let fx: f64 = anyf[1]
     expect(fx > 2.4 and fx < 2.6, "any-array float element")
+
+    // Or-pattern followed by a guard arm.
+    expect(classify(2) == "low", "or-pattern+guard low")
+    expect(classify(5) == "high", "or-pattern+guard high")
+    expect(classify(-5) == "neg", "or-pattern+guard guard")
+
+    // Nested match on the same value across mutually-exclusive outer arms.
+    expect(apply(0, Cmd.Inc) == 1, "nested match arm0")
+    expect(apply(1, Cmd.Dec) == -10, "nested match arm1")
+    expect(apply(0, Cmd.Nop) == 0, "nested match nop")
+
+    // Overwriting a struct element of an array (index-assign) then dropping the
+    // array must not crash: the element must be heap-owned, not a stack alloca.
+    let mut recs: [Rec] = [
+        Rec { name: "a", n: 1, f: 1.0 },
+        Rec { name: "b", n: 2, f: 2.0 },
+    ]
+    recs[0] = Rec { name: "z", n: 9, f: 9.0 }
+    expect(recs[0].name == "z" and recs[1].name == "b", "struct-array overwrite")
+    let tmp = recs[0]
+    recs[0] = recs[1]
+    recs[1] = tmp
+    expect(recs[0].name == "b" and recs[1].name == "z", "struct-array swap")
 
     println("conformance data: PASS")
 }

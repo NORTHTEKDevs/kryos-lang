@@ -1215,7 +1215,21 @@ impl OwnershipAnalyzer {
             }
             Expr::MatchExpr { subject, arms, .. } => {
                 self.analyze_expr_move(subject);
-                for arm in arms {
+                // Match arms are mutually exclusive, so each arm must start from
+                // the same pre-arm ownership state -- a move performed inside one
+                // arm must NOT leak into a sibling arm. Without this isolation,
+                // `match outer { A => { match e {..} } B => { match e {..} } }`
+                // falsely reported `e` used-after-move in arm B (arm A's inner
+                // `match e` consumed it and the moved state bled across arms).
+                // Mirrors the if/elif/else snapshot-restore-merge pattern.
+                let before = self.snapshot_full();
+                let mut branch_states: Vec<HashMap<String, OwnershipState>> = Vec::new();
+                for (i, arm) in arms.iter().enumerate() {
+                    if i > 0 {
+                        for (name, (state, mf)) in &before {
+                            self.restore_full(name, *state, mf);
+                        }
+                    }
                     self.push_scope();
                     self.bind_pattern(&arm.pattern);
                     if let Some(guard) = &arm.guard {
@@ -1223,6 +1237,27 @@ impl OwnershipAnalyzer {
                     }
                     self.analyze_expr_use(&arm.body);
                     self.pop_scope();
+                    branch_states.push(self.snapshot_states());
+                }
+                // Merge: a match is exhaustive, so a variable moved in ALL arms is
+                // moved afterwards; moved in only some arms -> conservatively keep
+                // owned (a legal program cannot observe the difference).
+                for (name, (pre_state, _)) in &before {
+                    if *pre_state != OwnershipState::Owned {
+                        continue;
+                    }
+                    let moved_in_all = !branch_states.is_empty()
+                        && branch_states
+                            .iter()
+                            .all(|s| s.get(name) == Some(&OwnershipState::Moved));
+                    let moved_in_some = branch_states
+                        .iter()
+                        .any(|s| s.get(name) == Some(&OwnershipState::Moved));
+                    if moved_in_all {
+                        self.restore_state(name, OwnershipState::Moved);
+                    } else if moved_in_some {
+                        self.restore_state(name, OwnershipState::Owned);
+                    }
                 }
             }
             Expr::Borrow { inner, .. } => {

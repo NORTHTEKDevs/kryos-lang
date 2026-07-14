@@ -4368,8 +4368,40 @@ impl LlvmCodegen {
                             .cloned()
                             .unwrap_or_else(|| actual_ty.clone());
                         let val = self.operand_to_llvm(a, func);
-                        // Coerce value type to match callee's expected parameter type.
-                        let coerced = self.coerce_value(&val, &actual_ty, &expected_ty);
+                        // kryos_array_set stores an OWNED element that the array
+                        // later frees via __kryos_drop_<T> at teardown. When the
+                        // element is an aggregate (struct/enum/tuple >8 bytes),
+                        // heap-box it: coerce_value would spill the by-value
+                        // aggregate to a STACK alloca and pass that stack pointer,
+                        // so the array's drop kryos_free'd a non-heap pointer
+                        // (garbage size-class -> allocator panic at teardown on
+                        // `arr[i] = Struct{..}`). Mirrors emit_aggregate_array's
+                        // per-element boxing and the Cranelift heap-pointer model.
+                        let coerced = if fname == "kryos_array_set"
+                            && i == 2
+                            && (actual_ty.starts_with('{')
+                                || actual_ty.starts_with('[')
+                                || actual_ty.starts_with('%'))
+                        {
+                            let size_ptr = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_ptr} = getelementptr {actual_ty}, ptr null, i32 1"
+                            ));
+                            let size_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                            ));
+                            let buf = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
+                            ));
+                            self.emit_line(&format!("  store {actual_ty} {val}, ptr {buf}"));
+                            let t = self.next_temp();
+                            self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
+                            t
+                        } else {
+                            self.coerce_value(&val, &actual_ty, &expected_ty)
+                        };
                         arg_parts.push(format!("{expected_ty} {coerced}"));
                     }
                     let arg_list = arg_parts.join(", ");

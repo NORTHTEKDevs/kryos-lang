@@ -4425,6 +4425,56 @@ fn lower_match_sequential(
                 });
                 None // always matches
             }
+            ast::Pattern::Or { patterns, .. } => {
+                // Build `subj == alt1 || subj == alt2 || ...` for the (non-binding,
+                // validated) alternatives. Previously an or-pattern fell through to
+                // the `_ => None` "always matches" case below, so `1 | 2 | 3` (in a
+                // match that also had a guard arm, forcing this sequential path)
+                // matched EVERY value -- a real miscompile. The comparisons are
+                // pure, so eager (non-short-circuit) OR is correct.
+                let mut acc: Option<Operand> = None;
+                let mut any_always = false;
+                for sub in patterns {
+                    match sub {
+                        ast::Pattern::Literal { expr, .. } => {
+                            let lit_op = lower_expr_to_operand(ctx, expr);
+                            let cmp = ctx.alloc_temp(MirType::Bool);
+                            ctx.emit(Instruction::Assign {
+                                dest: cmp,
+                                value: RValue::BinOp {
+                                    op: MirBinOp::Eq,
+                                    left: Operand::Local(subj_local),
+                                    right: lit_op,
+                                },
+                            });
+                            let this = Operand::Local(cmp);
+                            match acc.take() {
+                                None => acc = Some(this),
+                                Some(prev) => {
+                                    let combined = ctx.alloc_temp(MirType::Bool);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: combined,
+                                        value: RValue::BinOp {
+                                            op: MirBinOp::Or,
+                                            left: prev,
+                                            right: this,
+                                        },
+                                    });
+                                    acc = Some(Operand::Local(combined));
+                                }
+                            }
+                        }
+                        // A wildcard/ident alternative matches anything, so the
+                        // whole or-pattern always matches.
+                        _ => any_always = true,
+                    }
+                }
+                if any_always {
+                    None
+                } else {
+                    acc
+                }
+            }
             // Wildcard and anything else: always matches, binds nothing.
             _ => None,
         };
