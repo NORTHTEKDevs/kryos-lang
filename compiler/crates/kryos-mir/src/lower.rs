@@ -1962,6 +1962,9 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
                     ctx.dropped_locals.insert(id);
                 }
             }
+            // (Enum-variant-wrapped tail moves like `catch e { Err(e) }` are
+            // handled generally at the EnumVariant construction site, which
+            // drop-suppresses bare heap-local fields in every context.)
         }
         ast::Stmt::If {
             condition,
@@ -6827,6 +6830,38 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             if let Some((enum_name, variant_idx)) = find_enum_variant(ctx, &func_name) {
                 let mir_args: Vec<Operand> =
                     args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                // A bare heap-local passed directly as a variant field is MOVED
+                // into the enum -- the field is a bit-copy with no retain. Mark
+                // the local drop-suppressed so its scope-end drop does not free
+                // the payload the returned Result/Option now owns. Without this,
+                // `Err(e)` / `Some(s)` / `Ok(v)` built from a named local (most
+                // visibly the catch binding in `catch e { Err(e) }`, in tail,
+                // `let`, and return positions) returned a freed string: empty on
+                // AOT, corrupt on JIT. A move makes any later use of the local a
+                // compile error (E0300), so suppressing the drop is always safe.
+                for a in args {
+                    if let ast::Expr::Identifier { name: an, .. } = a {
+                        if let Some(l) = ctx
+                            .locals
+                            .iter()
+                            .rev()
+                            .find(|l| l.name.as_deref() == Some(an.as_str()))
+                        {
+                            if matches!(
+                                l.ty,
+                                MirType::Str
+                                    | MirType::Array(..)
+                                    | MirType::Map { .. }
+                                    | MirType::Struct(_)
+                                    | MirType::Enum(_)
+                                    | MirType::Shared(_)
+                            ) {
+                                let id = l.id.0;
+                                ctx.dropped_locals.insert(id);
+                            }
+                        }
+                    }
+                }
                 return RValue::EnumVariant {
                     enum_name,
                     variant_idx,

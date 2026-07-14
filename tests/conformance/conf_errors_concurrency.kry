@@ -1,10 +1,27 @@
 // Conformance: try/catch/throw semantics + spawn/channels. (Reference
 // chapters 7 (errors), 9 (concurrency).)
 
+use std::result::{Result, Ok, Err}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
         exit(1)
+    }
+}
+
+// try/catch as a TAIL expression whose catch block wraps the caught string in
+// Err(e). The caught string is moved into the Result; previously the catch
+// binding was still scope-dropped, freeing the payload out from under the
+// returned Err -- the message came back empty on AOT and corrupt on JIT.
+fn to_result(n: i64) -> Result<i64, str> {
+    try {
+        if n < 0 {
+            throw "negative: {n}"
+        }
+        Ok(n * 2)
+    } catch e {
+        Err(e)
     }
 }
 
@@ -77,6 +94,16 @@ fn main() {
         got = got + 1
     }
     expect(grand == 55 + 5050 + 500500, "spawn + channel totals")
+
+    // catch -> Err(e) tail expression: the caught message must survive.
+    match to_result(5) {
+        Ok(v) => expect(v == 10, "to_result ok"),
+        Err(e) => expect(false, "to_result unexpected err: {e}"),
+    }
+    match to_result(-3) {
+        Ok(v) => expect(false, "to_result unexpected ok: {v}"),
+        Err(e) => expect(e == "negative: -3", "catch->Err(e) tail message survives"),
+    }
 
     println("conformance errors+concurrency: PASS")
 }
