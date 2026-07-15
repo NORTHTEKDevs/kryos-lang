@@ -66,6 +66,30 @@ actor Adder {
     }
 }
 
+// Actor-to-actor delegation: a method call on an actor stored in ANOTHER
+// actor's FIELD (`self.target.tick(..)`). The field's actor type was erased to
+// i64 at registration, so the receiver's type read back as i64, the actor-
+// dispatch (mailbox enqueue) branch never fired, and the call emitted a bare
+// unmangled `tick` symbol -> link failure on both backends. Now the field's
+// logical actor type is recovered for dispatch. Delegation must deliver.
+actor Worker2 {
+    total: i64
+    fn tick(self, n: i64, reply: i64) {
+        total = total + n
+        send(reply, total)
+    }
+}
+
+actor Dispatcher {
+    worker: Worker2
+    fn wire(self, w: Worker2) {
+        self.worker = w
+    }
+    fn relay(self, n: i64, reply: i64) {
+        self.worker.tick(n, reply)
+    }
+}
+
 // A match INSIDE a try block, and a nested-enum-in-tuple match with early-return
 // arms from fn params -- both created void-but-mutable placeholder locals whose
 // entry alloca was skipped, so AOT failed to build (`undefined value %_N.addr`).
@@ -223,6 +247,18 @@ fn main() {
     let r1 = recv(ach)
     let r2 = recv(ach)
     expect(r1 + r2 == 5 + 15, "actor recovers from uncaught throw, processes later messages")
+
+    // Actor-to-actor delegation via an actor-typed field: Dispatcher.relay
+    // delegates to its Worker2 field, which replies its running total.
+    let dch = chan()
+    let w = Worker2()
+    let disp = Dispatcher()
+    disp.wire(w)
+    disp.relay(7, dch)
+    disp.relay(3, dch)
+    let d1 = recv(dch)
+    let d2 = recv(dch)
+    expect(d1 + d2 == 7 + 10, "actor delegates to an actor-typed field (7, then 10)")
 
     println("conformance errors+concurrency: PASS")
 }

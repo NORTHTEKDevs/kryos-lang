@@ -139,6 +139,15 @@ pub struct LoweringContext {
     /// inside a handler resolves against this (actor VALUES erase to i64, so the
     /// old "self's type is Struct(actor)" check no longer identifies them).
     current_actor: Option<String>,
+    /// Fields (of any struct OR actor) whose declared type names an actor:
+    /// (owner_type_name, field_name) -> actor_type_name. Captured at
+    /// struct/actor field-registration time, BEFORE `resolve_type`'s
+    /// actor-erasure rule turns the field's MirType into a bare `I64` slot.
+    /// Consulted by `infer_type_name` so a method call on an actor-typed
+    /// FIELD (`self.target.bump(..)` where `target: Counter`) is still
+    /// recognized as an actor receiver and routed through actor dispatch,
+    /// even though the field's physical (erased) type no longer says so.
+    field_actor_types: HashMap<(String, String), String>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
     /// Top-level mutable globals: name -> (MirType, init expression).
@@ -338,6 +347,7 @@ impl LoweringContext {
             actor_defs: HashMap::new(),
             actor_state_fields: HashMap::new(),
             current_actor: None,
+            field_actor_types: HashMap::new(),
             const_defs: HashMap::new(),
             mutable_globals: HashMap::new(),
             mutable_global_order: Vec::new(),
@@ -1080,6 +1090,21 @@ pub fn lower_module_with_lambda_params(
                         .iter()
                         .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
                         .collect();
+                    // Record fields whose declared type names an actor before
+                    // that information is lost: `resolve_type` above erases an
+                    // actor-named field type to a bare `I64` slot (actor
+                    // VALUES are opaque handles), so a later method call on
+                    // such a field (`some_box.c.bump(..)`) would otherwise be
+                    // invisible to actor-dispatch detection. See
+                    // `field_actor_types`.
+                    for f in fields {
+                        if let ast::TypeExpr::Simple { name: tn, .. } = &f.ty {
+                            if ctx.actor_defs.contains_key(tn) {
+                                ctx.field_actor_types
+                                    .insert((name.clone(), f.name.clone()), tn.clone());
+                            }
+                        }
+                    }
                     ctx.struct_defs.insert(name.clone(), field_list);
                 }
                 if annotations.iter().any(|a| a.name == "copy") {
@@ -1422,6 +1447,22 @@ pub fn lower_module_with_lambda_params(
                     .map(|f| (f.name.clone(), ctx.resolve_type(&f.ty)))
                     .collect();
                 ctx.struct_defs.insert(name.clone(), fields);
+                // Record state fields whose declared type names ANOTHER
+                // actor (e.g. `target: Counter` inside `Relay`) before that
+                // information is lost: `resolve_type` above erased it to a
+                // bare `I64` slot (actor VALUES are opaque handles), so
+                // `self.target.bump(..)` inside a `Relay` handler would
+                // otherwise be invisible to actor-dispatch detection and
+                // fall through to a plain unmangled call. See
+                // `field_actor_types`.
+                for f in state_fields {
+                    if let ast::TypeExpr::Simple { name: tn, .. } = &f.ty {
+                        if ctx.actor_defs.contains_key(tn) {
+                            ctx.field_actor_types
+                                .insert((name.clone(), f.name.clone()), tn.clone());
+                        }
+                    }
+                }
                 // Register handler signatures and actor_defs.
                 let mut handler_info = Vec::new();
                 for handler in handlers {
@@ -9737,7 +9778,41 @@ fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
 fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String> {
     match infer_expr_type(ctx, expr) {
         MirType::Struct(name) | MirType::Enum(name) => Some(name),
-        _ => None,
+        _ => {
+            // An actor-typed FIELD erases to a bare `I64` (actor VALUES are
+            // opaque handles -- see `resolve_type`'s actor-erasure rule), so
+            // a method-call receiver that is itself a field access holding
+            // another actor (`self.target.bump(..)` where `target: Counter`
+            // is a field of the enclosing actor, or `some_box.c.bump(..)`
+            // where `c: Counter` is a field of an ordinary struct) is
+            // invisible to the Struct/Enum match above and would otherwise
+            // fall through to a plain unmangled call instead of the
+            // actor-dispatch mailbox send. Recover the logical actor type
+            // from `field_actor_types`, captured at field-registration time
+            // before the erasure. `self` inside an actor handler ALSO erases
+            // to I64 (same rule, applied to the handler's own `self` param),
+            // so its owner type is recovered via `current_actor` -- the same
+            // fallback `self.field` reads/writes already use.
+            if let ast::Expr::FieldAccess { object, field, .. } = expr {
+                let owner = if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                    if name == "self" {
+                        ctx.current_actor.clone()
+                    } else {
+                        infer_type_name(ctx, object)
+                    }
+                } else {
+                    infer_type_name(ctx, object)
+                };
+                if let Some(owner) = owner {
+                    if let Some(actor_ty) =
+                        ctx.field_actor_types.get(&(owner, field.clone())).cloned()
+                    {
+                        return Some(actor_ty);
+                    }
+                }
+            }
+            None
+        }
     }
 }
 
