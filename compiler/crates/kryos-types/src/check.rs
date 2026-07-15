@@ -2804,12 +2804,26 @@ impl TypeChecker {
                 }
                 // Look up the method on the type (mangled as TypeName__method).
                 if let Some(sig) = self.env.lookup_method(type_name, method).cloned() {
+                    // Instantiate with FRESH type vars per call site, mirroring
+                    // the instance-method fix above (and the free-function /
+                    // module-qualified-call paths). Without this, a generic
+                    // associated/static fn (no `self` receiver, e.g. `Box::new`)
+                    // reused the impl's shared generic vars across every call:
+                    // the first call's concrete type bound them permanently, so
+                    // a second call at a different concrete type unified against
+                    // an already-bound var and was wrongly rejected with E0100.
+                    let (inst_params, inst_ret, var_map) = self.engine.instantiate_sig(&sig);
+                    for (old_id, new_id) in &var_map {
+                        if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
+                            self.engine.set_var_bounds(*new_id, bounds);
+                        }
+                    }
                     // Static call — skip 'self' parameter.
-                    let expected_params: Vec<_> =
+                    let expected_params: Vec<Type> =
                         if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
-                            sig.params[1..].to_vec()
+                            inst_params.iter().skip(1).cloned().collect()
                         } else {
-                            sig.params.clone()
+                            inst_params.clone()
                         };
                     if args.len() != expected_params.len() {
                         self.error(
@@ -2821,14 +2835,14 @@ impl TypeChecker {
                             *span,
                         );
                     } else {
-                        for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter()) {
+                        for (arg, param_ty) in args.iter().zip(expected_params.iter()) {
                             let arg_ty = self.infer_expr(arg);
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
                         }
                     }
-                    sig.ret.clone()
+                    self.engine.resolve(&inst_ret)
                 } else if self.env.lookup_struct(type_name).is_none()
                     && self.env.lookup_enum(type_name).is_none()
                     && self.env.lookup_function(method).is_some()

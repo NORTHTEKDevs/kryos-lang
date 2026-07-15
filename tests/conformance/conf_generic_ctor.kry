@@ -1,0 +1,81 @@
+// Conformance: generic ASSOCIATED (no-self) functions -- constructors like
+// `Box.new(v)` on a generic struct/enum -- must instantiate their type
+// parameter FRESH per call site (bound from the argument types), and must
+// monomorphize a distinct specialized body per concrete instantiation on AOT
+// (the LLVM struct type Box___i64 = {i64} differs from Box___str = {ptr}).
+// Previously: the type checker locked T to the first call site (E0100 on the
+// second at a different type), and even once accepted, AOT built a single copy
+// -> `%_1 defined with type %Box___i64 but expected %Box___str`. Fixed by a
+// per-call instantiate_sig in the checker + a GenericImplFnTemplate /
+// monomorphize_impl_fn path in MIR lowering, mirroring generic free functions.
+
+use std::option::{Option, Some, None}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Box<T> {
+    value: T,
+}
+
+impl<T> Box<T> {
+    fn new(v: T) -> Box<T> {
+        return Box { value: v }
+    }
+}
+
+struct Pair<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A, B> Pair<A, B> {
+    fn make(a: A, b: B) -> Pair<A, B> {
+        return Pair { first: a, second: b }
+    }
+}
+
+enum Maybe<T> {
+    Just(T),
+    Nothing,
+}
+
+impl<T> Maybe<T> {
+    fn wrap(v: T) -> Maybe<T> {
+        return Just(v)
+    }
+}
+
+fn main() {
+    // Same associated fn at three concrete types in one program.
+    let bi: Box<i64> = Box.new(42)
+    let bs: Box<str> = Box.new("hello")
+    let bf: Box<f64> = Box::new(2.5)
+    expect(bi.value == 42, "Box.new<i64>")
+    expect(bs.value == "hello", "Box.new<str> (fresh instantiation, not locked to i64)")
+    expect(bf.value > 2.4 and bf.value < 2.6, "Box::new<f64> (colon spelling)")
+
+    // Multi-param associated fn at two different (A,B) pairs.
+    let p1: Pair<i64, str> = Pair.make(7, "seven")
+    let p2: Pair<str, i64> = Pair::make("eight", 8)
+    expect(p1.first == 7 and p1.second == "seven", "Pair.make<i64,str>")
+    expect(p2.first == "eight" and p2.second == 8, "Pair::make<str,i64>")
+
+    // Enum-constructing associated fn (Just(v) inside the method body must
+    // monomorphize per instantiation). A single instantiation is matched here
+    // -- matching two instantiations of the SAME generic enum with concrete
+    // payload constraints in one program currently contaminates the match
+    // payload type (a separate pre-existing checker bug, logged; not what this
+    // file certifies; the struct ctors above already cover multi-instantiation).
+    let ms: Maybe<str> = Maybe.wrap("z")
+    match ms {
+        Just(v) => expect(v == "z", "Maybe.wrap<str> enum-constructing associated fn"),
+        Nothing => expect(false, "Maybe.wrap<str> took Nothing"),
+    }
+
+    println("conformance generic-ctor: PASS")
+}

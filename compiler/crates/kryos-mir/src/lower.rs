@@ -50,6 +50,18 @@ pub struct LoweringContext {
     /// Generic function templates: func_name -> (generic_params, AST function decl).
     /// These are not lowered immediately; they are instantiated on demand at call sites.
     generic_templates: HashMap<String, GenericTemplate>,
+    /// Generic impl ASSOCIATED-function templates: (target, method) -> template.
+    /// Populated for a `self`-less method inside a generic `impl<T> Target<T>`
+    /// block. Mirrors `generic_templates` for free functions: an associated
+    /// fn that constructs and returns the generic struct/enum BY VALUE (e.g.
+    /// `Box::new(v: T) -> Box<T>`) must be lowered ONCE PER concrete
+    /// instantiation, because the struct literal inside its body picks the
+    /// monomorphized layout from the (now-concrete) param types. Lowering it
+    /// exactly once (the old behavior) always built the FIRST call site's
+    /// concrete type, so a second instantiation at a different concrete type
+    /// mismatched on the strict LLVM AOT backend (Cranelift JIT tolerated it
+    /// since it only checks byte-size, not nominal struct type).
+    generic_impl_fn_templates: HashMap<(String, String), GenericImplFnTemplate>,
     /// Generic struct templates: struct_name -> (generic_params, AST struct decl fields).
     generic_struct_templates: HashMap<String, GenericStructTemplate>,
     /// Mangled monomorphized name -> the concrete type args it was built
@@ -245,6 +257,16 @@ struct GenericTemplate {
     body: ast::Block,
 }
 
+/// Stores a generic impl associated (no-`self`) function's AST for deferred
+/// monomorphization, analogous to `GenericTemplate`.
+struct GenericImplFnTemplate {
+    /// Impl-level generic parameter names (e.g. `["T"]` for `impl<T> Box<T>`).
+    generic_params: Vec<String>,
+    params: Vec<ast::Param>,
+    ret_ty: Option<ast::TypeExpr>,
+    body: ast::Block,
+}
+
 /// Stores a generic struct's AST for deferred monomorphization.
 #[derive(Clone)]
 struct GenericStructTemplate {
@@ -278,6 +300,7 @@ impl LoweringContext {
             trait_default_methods: HashMap::new(),
             impl_map: HashMap::new(),
             generic_templates: HashMap::new(),
+            generic_impl_fn_templates: HashMap::new(),
             generic_struct_templates: HashMap::new(),
             mono_instance_args: HashMap::new(),
             impl_method_generic_info: HashMap::new(),
@@ -1203,15 +1226,52 @@ pub fn lower_module_with_lambda_params(
                 // Register mangled method names in func_ret_types.
                 for method in methods {
                     if let ast::Decl::Function {
-                        name, ret_ty, params, ..
+                        name,
+                        ret_ty,
+                        params,
+                        body,
+                        ..
                     } = method
                     {
                         let mangled = format!("{target}__{name}");
-                        let mir_ret = match ret_ty {
-                            Some(ty) => ctx.resolve_type(ty),
-                            None => MirType::Void,
-                        };
-                        ctx.func_ret_types.insert(mangled, mir_ret);
+                        let has_self = params.iter().any(|p| p.name == "self");
+                        // A no-`self` (associated) method inside a generic
+                        // impl block must be registered as a monomorphization
+                        // TEMPLATE, not lowered/resolved once here: resolving
+                        // `ret_ty` now would erase the impl's own type params
+                        // to i64 (see `resolve_type`'s current_impl_generics
+                        // rule) and permanently fix e.g. `Box::new`'s return
+                        // as `Box___i64` for every call site. Mirror the
+                        // free-function template registration (`generics.is_empty()`
+                        // check above) instead: use a placeholder return type
+                        // here (never read -- the base mangled name is never
+                        // lowered or called once templated, see below and the
+                        // second Decl::Impl pass) and defer the real
+                        // instantiation to call sites via
+                        // `monomorphize_impl_fn`.
+                        if !impl_generics.is_empty() && !has_self {
+                            if let Some(body) = body {
+                                ctx.generic_impl_fn_templates.insert(
+                                    (target.clone(), name.clone()),
+                                    GenericImplFnTemplate {
+                                        generic_params: impl_generics
+                                            .iter()
+                                            .map(|g| g.name.clone())
+                                            .collect(),
+                                        params: params.clone(),
+                                        ret_ty: ret_ty.clone(),
+                                        body: body.clone(),
+                                    },
+                                );
+                            }
+                            ctx.func_ret_types.insert(mangled, MirType::I64);
+                        } else {
+                            let mir_ret = match ret_ty {
+                                Some(ty) => ctx.resolve_type(ty),
+                                None => MirType::Void,
+                            };
+                            ctx.func_ret_types.insert(mangled, mir_ret);
+                        }
                         // Record the self-param + return TypeExprs so an
                         // inference site can resolve a generic return to the
                         // receiver's concrete monomorphized arg. Only useful
@@ -1430,8 +1490,23 @@ pub fn lower_module_with_lambda_params(
                         let m_is_async = *is_async;
                         let mangled = format!("{target}__{name}");
                         impl_method_names.push(mangled.clone());
-                        let mut all_params = Vec::new();
                         let has_self = params.iter().any(|p| p.name == "self");
+                        // A no-`self` method inside a generic impl block is
+                        // registered as a `generic_impl_fn_templates` entry
+                        // (see the metadata pass above) and lowered ON DEMAND
+                        // per concrete instantiation by `monomorphize_impl_fn`
+                        // at its call sites -- mirroring how a generic free
+                        // function is skipped here (`generics.is_empty()`
+                        // check for `Decl::Function`) and lowered lazily by
+                        // `monomorphize`. Lowering it here too would compile
+                        // an orphaned, uncallable `{target}__{name}` body
+                        // whose generic params are erased to i64 (dead code,
+                        // and if it were ever called by name it would be the
+                        // SAME single-instantiation bug this fix removes).
+                        if !impl_generics.is_empty() && !has_self {
+                            continue;
+                        }
+                        let mut all_params = Vec::new();
                         if has_self {
                             // Ensure the `self` param has the target type even if
                             // the user wrote just `self` without `: TypeName`.
@@ -6264,11 +6339,22 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             MirType::I64
         }
 
-        ast::Expr::MethodCall { object, method, .. } => {
+        ast::Expr::MethodCall { object, method, args, .. } => {
             // Check if this is an enum variant constructor.
             if let ast::Expr::Identifier { name, .. } = object.as_ref() {
                 if ctx.enum_defs.contains_key(name.as_str()) {
                     return MirType::Enum(name.clone());
+                }
+                // Static method call via dot syntax: `Type.method(args)`.
+                // A generic associated fn (no `self`, e.g. `Box.new(v)`)
+                // must resolve its return type PER instantiation from the
+                // call's own args -- the base mangled name's registered
+                // type is a placeholder (see `generic_impl_fn_templates`),
+                // not the real per-call concrete type.
+                if let Some(mir_ty) =
+                    infer_generic_impl_fn_ret(ctx, name.as_str(), method.as_str(), args)
+                {
+                    return mir_ty;
                 }
                 // Static method call via dot syntax: `Type.method(args)`.
                 // Resolve the mangled function's return type.
@@ -6421,7 +6507,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
         }
 
         ast::Expr::StaticMethodCall {
-            type_name, method, ..
+            type_name, method, args, ..
         } => {
             // `Enum::Variant(..)` constructs an enum value (see the matching branch
             // in lower_expr_to_rvalue); its type is the enum, not Void. Returning
@@ -6430,6 +6516,13 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 if variants.iter().any(|v| v.name == *method) {
                     return MirType::Enum(type_name.clone());
                 }
+            }
+            // Rust-style spelling of the same generic-associated-fn case
+            // handled in the `MethodCall` (dotted) arm above.
+            if let Some(mir_ty) =
+                infer_generic_impl_fn_ret(ctx, type_name.as_str(), method.as_str(), args)
+            {
+                return mir_ty;
             }
             let mangled = format!("{type_name}__{method}");
             if let Some(ret_ty) = ctx.func_ret_types.get(&mangled) {
@@ -7402,6 +7495,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
 
                 // Static method call via dot syntax: `TypeName.method(args)`.
+                // A generic associated fn (no `self`) inside a generic impl
+                // block must monomorphize a fresh specialization per call --
+                // see `monomorphize_impl_fn`. Must run BEFORE the plain
+                // `method_owners` lookup below, which always resolves to the
+                // single base-name copy (the bug this fixes).
+                if ctx
+                    .generic_impl_fn_templates
+                    .contains_key(&(name.clone(), method.clone()))
+                {
+                    let mangled = monomorphize_impl_fn(ctx, name, method, args);
+                    let mir_args: Vec<Operand> =
+                        args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                    return RValue::Call {
+                        func: mangled,
+                        args: mir_args,
+                    };
+                }
                 // If the receiver is an identifier naming a struct or enum
                 // (not a value), treat the call as a static/associated
                 // function call. This mirrors the checker behavior and lets
@@ -7577,6 +7687,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         fields,
                     };
                 }
+            }
+            // Rust-style spelling of the generic-associated-fn call handled
+            // in the `MethodCall` (dotted) arm above -- see
+            // `monomorphize_impl_fn`. Must run BEFORE the plain
+            // `method_owners` lookup below.
+            if ctx
+                .generic_impl_fn_templates
+                .contains_key(&(type_name.clone(), method.clone()))
+            {
+                let mangled = monomorphize_impl_fn(ctx, type_name, method, args);
+                let mir_args: Vec<Operand> =
+                    args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                return RValue::Call {
+                    func: mangled,
+                    args: mir_args,
+                };
             }
             let mir_args: Vec<Operand> =
                 args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
@@ -10458,6 +10584,162 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
 
     // Restore the caller's function state.
     ctx.restore_function_state(saved);
+
+    // Store the monomorphized function for collection by lower_module.
+    ctx.monomorphized_functions.push(mir_func);
+
+    mangled
+}
+
+/// Peek at a generic impl associated-function call's per-instantiation
+/// return type WITHOUT lowering/monomorphizing it -- for `infer_expr_type`
+/// sites (the dotted `MethodCall` and `::`-style `StaticMethodCall` arms),
+/// which only need the correctly-specialized MirType to type the call's
+/// result (e.g. so a chained `.field` access or an outer struct-literal
+/// field infers correctly). Returns `None` when `(target, method)` is not a
+/// templated generic associated fn, so the caller falls through to the
+/// ordinary (non-generic) lookup.
+///
+/// Mirrors the free-function generic-template peek a few lines up in
+/// `infer_expr_type`'s `FnCall` arm (`ctx.generic_templates.get(name)` +
+/// `substitute_type_expr_to_mir`), but keyed by `(target, method)` and
+/// sourced from `generic_impl_fn_templates` instead.
+fn infer_generic_impl_fn_ret(
+    ctx: &mut LoweringContext,
+    target: &str,
+    method: &str,
+    args: &[ast::Expr],
+) -> Option<MirType> {
+    let key = (target.to_string(), method.to_string());
+    let template = ctx.generic_impl_fn_templates.get(&key)?;
+    let generic_params = template.generic_params.clone();
+    let template_params = template.params.clone();
+    let template_ret_ty = template.ret_ty.clone();
+
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param) in template_params.iter().enumerate() {
+        if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
+            extract_type_bindings_from_arg(ctx, param_ty, arg, &generic_params, &mut type_map);
+        }
+    }
+    Some(match &template_ret_ty {
+        Some(ret_ty) => substitute_type_expr_to_mir(ctx, ret_ty, &type_map),
+        None => MirType::Void,
+    })
+}
+
+/// Monomorphize a generic impl ASSOCIATED function (no `self` receiver, e.g.
+/// `Box::new`) with concrete call-site argument expressions. Mirrors
+/// `monomorphize` (the free-function version) exactly -- infers the impl's
+/// type-parameter bindings from the argument expressions, substitutes them
+/// into the specialized params/return, lowers ONE specialized copy per
+/// distinct concrete instantiation (cached in `ctx.monomorphized` under a
+/// mangled name derived from the base `{target}__{method}`), and returns the
+/// mangled name for the caller to invoke.
+///
+/// Without this, an associated fn that constructs and returns the generic
+/// struct/enum BY VALUE was lowered exactly once (see the `Decl::Impl`
+/// pass): its struct-literal body always bound the impl's type params from
+/// whichever concrete type reached it first (or i64 if none), so a second
+/// call at a different concrete type built the WRONG monomorphized struct
+/// layout -- functionally harmless on the byte-size-only Cranelift JIT, but
+/// a hard LLVM AOT type mismatch (the two instantiations are distinct named
+/// struct types, e.g. `Box___i64 = { i64 }` vs `Box___str = { ptr }`).
+fn monomorphize_impl_fn(
+    ctx: &mut LoweringContext,
+    target: &str,
+    method: &str,
+    args: &[ast::Expr],
+) -> String {
+    let key = (target.to_string(), method.to_string());
+    let template = ctx
+        .generic_impl_fn_templates
+        .get(&key)
+        .expect("impl fn template exists");
+    let generic_params = template.generic_params.clone();
+    let template_params = template.params.clone();
+    let template_ret_ty = template.ret_ty.clone();
+    let template_body = template.body.clone();
+
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param) in template_params.iter().enumerate() {
+        if let (Some(param_ty), Some(arg_expr)) = (&param.ty, args.get(i)) {
+            extract_type_bindings_from_arg(ctx, param_ty, arg_expr, &generic_params, &mut type_map);
+        }
+    }
+
+    // Build the list of concrete types in generic_params order for the
+    // mangled name, matching the free-function scheme exactly (e.g.
+    // "Box__new" + [Str] -> "Box__new___str").
+    let concrete_ordered: Vec<MirType> = generic_params
+        .iter()
+        .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
+        .collect();
+    let base_mangled = format!("{target}__{method}");
+    let mangled = mono_mangled_name(&base_mangled, &concrete_ordered);
+
+    // If already monomorphized, just return the name.
+    if ctx.monomorphized.contains_key(&mangled) {
+        return mangled;
+    }
+    ctx.monomorphized.insert(mangled.clone(), true);
+
+    // Register the return type for the specialized function.
+    let specialized_ret = if let Some(ret_ty) = &template_ret_ty {
+        substitute_type_expr_to_mir(ctx, ret_ty, &type_map)
+    } else {
+        MirType::Void
+    };
+    ctx.func_ret_types.insert(mangled.clone(), specialized_ret);
+
+    // Substitute type params in the parameter list.
+    let specialized_params: Vec<ast::Param> = template_params
+        .iter()
+        .map(|p| {
+            let new_ty =
+                p.ty.as_ref()
+                    .map(|ty_expr| substitute_type_expr(ty_expr, &type_map));
+            ast::Param {
+                name: p.name.clone(),
+                ty: new_ty,
+                default: p.default.clone(),
+                span: p.span,
+            }
+        })
+        .collect();
+
+    let specialized_ret_ty = template_ret_ty
+        .as_ref()
+        .map(|ty| substitute_type_expr(ty, &type_map));
+
+    // Set impl context (Self / current_impl_generics) for the duration of
+    // lowering this specialization, matching what the original single-compile
+    // `Decl::Impl` pass set while processing this impl block's methods (a
+    // local `let x: T = ..` inside the body -- unsubstituted, since only
+    // params/return are pre-substituted per instantiation, same as the
+    // free-function template -- relies on `current_impl_generics` to erase
+    // `T` to i64 via `resolve_type` rather than leak an unresolved `Struct("T")`).
+    let prev_self = ctx.current_self_type.take();
+    ctx.current_self_type = Some(target.to_string());
+    let prev_impl_generics =
+        std::mem::replace(&mut ctx.current_impl_generics, generic_params.clone());
+
+    // Save the current function state — lower_function will call reset().
+    let saved = ctx.save_function_state();
+
+    // Lower the specialized function.
+    let mir_func = lower_function(
+        ctx,
+        &mangled,
+        &specialized_params,
+        &specialized_ret_ty,
+        &template_body,
+    );
+
+    // Restore the caller's function AND impl state.
+    ctx.restore_function_state(saved);
+    ctx.current_self_type = prev_self;
+    ctx.current_impl_generics = prev_impl_generics;
 
     // Store the monomorphized function for collection by lower_module.
     ctx.monomorphized_functions.push(mir_func);
