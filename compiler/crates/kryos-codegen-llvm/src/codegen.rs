@@ -1634,6 +1634,25 @@ impl LlvmCodegen {
                         // param, pass as-is; otherwise coerce to i64.
                         if expected_ty == "ptr" {
                             call_args.push(format!("ptr {raw}"));
+                        } else if matches!(cap_ty, Some(MirType::Struct(_)))
+                            && expected_ty.starts_with('%')
+                        {
+                            // Struct captures: the underlying function's
+                            // aggregate param uses the byval-pointer ABI
+                            // (`ptr byval(%Agg)`, matching every other
+                            // aggregate param -- see the user-arg loop
+                            // below). `raw` is already the pointer to the
+                            // heap-boxed struct copy (see the
+                            // Struct/Enum/Tuple box arm in RValue::Closure),
+                            // so pass it directly as byval instead of
+                            // round-tripping through ptrtoint + coerce_value.
+                            // The old path loaded the struct BY VALUE and
+                            // passed it as a bare aggregate operand -- a
+                            // call-site ABI mismatch against the
+                            // byval-pointer callee that corrupted the
+                            // argument registers/stack and segfaulted on
+                            // AOT (the Cranelift JIT tolerated it).
+                            call_args.push(format!("ptr byval({expected_ty}) {raw}"));
                         } else {
                             let i = self.next_temp();
                             self.emit_line(&format!(

@@ -1,0 +1,53 @@
+// Conformance: an ESCAPING closure (returned from a function) that CAPTURES a
+// struct by value and reads its fields. The AOT env-thunk unpacked the captured
+// struct as a bare aggregate VALUE (`%Struct %v`) while the underlying lambda's
+// ABI expects a byval pointer (`ptr byval(%Struct)`) like every other aggregate
+// param -- an ABI mismatch that segfaulted at runtime (LLVM opaque pointers hid
+// it at build time). JIT was correct. Fix: pass `ptr byval(%Name)` for struct
+// captures. Reading only the i64 field was a milder silent-wrong of the same bug.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Counter { label: str, count: i64 }
+fn make_labeler(c: Counter) -> fn(i64) -> str {
+    return |n| c.label + "-" + to_string(n) + "-" + to_string(c.count)
+}
+
+struct Data { vals: [i64], name: str }
+fn make_summer(d: Data) -> fn() -> i64 {
+    return || d.vals[0] + d.vals[1] + d.vals[2]
+}
+fn make_namer(d: Data) -> fn() -> str {
+    return || d.name
+}
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    return |x| x + n
+}
+
+fn main() {
+    // Escaping closure capturing a struct, reading a str field and an i64 field.
+    let c: Counter = Counter { label: "job", count: 42 }
+    let labeler: fn(i64) -> str = make_labeler(c)
+    expect(labeler(1) == "job-1-42", "escaping closure captures struct, reads str+i64 fields")
+    expect(labeler(2) == "job-2-42", "escaping closure reused")
+
+    // Escaping closure capturing a struct with an ARRAY field.
+    let d: Data = Data { vals: [10, 20, 30], name: "grid" }
+    let summer: fn() -> i64 = make_summer(d)
+    expect(summer() == 60, "escaping closure captures struct with array field")
+    let d2: Data = Data { vals: [1, 2, 3], name: "second" }
+    let namer: fn() -> str = make_namer(d2)
+    expect(namer() == "second", "escaping closure captures struct, reads str field only")
+
+    // Non-struct capture (regression -- must still work).
+    let add10: fn(i64) -> i64 = make_adder(10)
+    expect(add10(5) == 15, "escaping closure captures i64 (non-struct regression)")
+
+    println("conformance closures: PASS")
+}
