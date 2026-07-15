@@ -193,6 +193,19 @@ fn main() {
     let ns: Nest<Nest<str>> = Nest { inner: Nest { inner: "deep" } }
     expect(ns.get().get() == "deep", "un-annotated chained generic method (str leaf)")
 
+    // A generic bare `-> T` method whose T resolves to a POINTER-shaped type
+    // (str / [T] / map) must return the real type, not the erased i64 slot --
+    // else println/concat/len/index dispatch the integer path on a heap
+    // pointer and print/index garbage (was broken for str/array/map; F64 and
+    // Struct/Enum already worked).
+    let bxs: Nest<str> = Nest { inner: "leaf" }
+    expect(bxs.get() == "leaf", "generic method bare -> T returns str (not erased i64)")
+    let bxa: Nest<[i64]> = Nest { inner: [10, 20, 30] }
+    expect(bxa.get()[1] == 20, "generic method bare -> T returns array")
+    let bxm: Nest<map<str, i64>> = Nest { inner: {"k": 5} }
+    let gm = bxm.get()
+    expect(gm["k"] == 5, "generic method bare -> T returns map")
+
     // Nested multi-param generic struct whose FIRST field is an aggregate:
     // reading a trailing field must use the real offset (AOT byte-offset fix).
     let np: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 1, second: 2 }, second: 3 }

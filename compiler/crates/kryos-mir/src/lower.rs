@@ -6344,30 +6344,52 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                                     // erased i64 slot holds f64 bits, and
                                     // without the real f64 type `to_string`
                                     // inlined the integer dispatch and printed
-                                    // raw bits), OR a Struct/Enum concrete type
+                                    // raw bits), a Struct/Enum concrete type
                                     // (chained generic method calls / an
                                     // un-annotated `let` of a generic method's
-                                    // result -- CLAUDE.md gotcha #17(b)). Both
-                                    // the generic method body and the
-                                    // monomorphized struct layout represent
-                                    // every field uniformly as an 8-byte slot
-                                    // (scalar bits or a pointer), so retyping
-                                    // the call result here changes nothing
-                                    // about the runtime bytes -- it only lets
-                                    // a FOLLOW-ON `.method()`/`.field` on the
-                                    // result resolve against the real
-                                    // monomorphized type instead of falling
-                                    // back to an unmangled/erased lookup.
+                                    // result -- CLAUDE.md gotcha #17(b)), or a
+                                    // Str concrete type (the erased i64 slot
+                                    // holds the string's heap pointer bits,
+                                    // and without the real Str type println/
+                                    // to_string/concat all mis-dispatched the
+                                    // integer path and printed/operated on the
+                                    // raw pointer value instead of the string
+                                    // -- worst-class silent miscompile, same
+                                    // root cause as the float/struct case).
+                                    // The generic method body, the
+                                    // monomorphized struct layout, AND a str
+                                    // value all represent an 8-byte slot
+                                    // uniformly (scalar bits or a pointer), so
+                                    // retyping the call result here changes
+                                    // nothing about the runtime bytes -- it
+                                    // only lets the result (and any FOLLOW-ON
+                                    // `.method()`/`.field`) resolve against
+                                    // the real monomorphized type instead of
+                                    // falling back to an unmangled/erased
+                                    // lookup.
                                     // (A compound return merely mentioning T --
                                     // `(T, i64)`, `[T]` -- is excluded above by
                                     // `ret_is_bare_param` and keeps the erased
                                     // type; only a bare `-> T` reaches here.)
+                                    // `MirType::Array`/`MirType::Map` are
+                                    // likewise pointer/handle-shaped bare-T
+                                    // returns (a heap array/map is a runtime
+                                    // handle, same 8-byte-slot shape as a str
+                                    // pointer) -- confirmed the identical
+                                    // latent bug via `Box<[str]>.get()`
+                                    // (element read printed pointer bits) and
+                                    // `Box<map<str,i64>>.get()` (index lookup
+                                    // panicked on the erased type), so both
+                                    // are included here too.
                                     if matches!(
                                         resolved,
                                         MirType::F64
                                             | MirType::F32
                                             | MirType::Struct(_)
                                             | MirType::Enum(_)
+                                            | MirType::Str
+                                            | MirType::Array(_, _)
+                                            | MirType::Map { .. }
                                     ) {
                                         return resolved;
                                     }
