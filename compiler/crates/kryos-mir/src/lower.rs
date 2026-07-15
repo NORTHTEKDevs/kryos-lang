@@ -619,6 +619,29 @@ impl LoweringContext {
             // and locals live in a different function.
             try_catch_target: self.try_catch_target.take(),
             local_actor_types: std::mem::take(&mut self.local_actor_types),
+            // `lower_function` calls `ctx.reset()`, which unconditionally
+            // clears these three sets. Local ids restart at 0 for every
+            // function, so WITHOUT saving/restoring them here, a nested
+            // monomorphization (triggered mid-lowering of the caller, e.g. a
+            // generic method call like `bi.set(999)`) wipes any
+            // already-established bookkeeping for the CALLER's own
+            // already-declared locals -- e.g. a local marked
+            // `partial_moved_locals` because its value was shared (aliased,
+            // no ref_count) into a containing struct literal
+            // (`Box{value: inner}`) loses that marker, so the caller's own
+            // later scope-end drop loop wrongly re-emits a Drop for it. On
+            // Cranelift (raw struct pointers, no inherent copy-on-read) that
+            // re-drop double-frees the SAME block the containing struct's
+            // own recursive field-drop already freed -> exit 127 at teardown
+            // (LLVM is immune: a struct-typed field read there is an
+            // inherent value copy, so the two drops target independent
+            // blocks). Root-caused via a runtime pointer trace: the
+            // aliased block was freed twice, once via the containing
+            // struct's recursive field-drop and once via the source local's
+            // own (should-have-stayed-suppressed) drop.
+            dropped_locals: std::mem::take(&mut self.dropped_locals),
+            param_locals: std::mem::take(&mut self.param_locals),
+            partial_moved_locals: std::mem::take(&mut self.partial_moved_locals),
         }
     }
 
@@ -637,6 +660,9 @@ impl LoweringContext {
         self.capture_boxes = state.capture_boxes;
         self.try_catch_target = state.try_catch_target;
         self.local_actor_types = state.local_actor_types;
+        self.dropped_locals = state.dropped_locals;
+        self.param_locals = state.param_locals;
+        self.partial_moved_locals = state.partial_moved_locals;
     }
 }
 
@@ -655,6 +681,9 @@ struct FunctionState {
     capture_boxes: HashMap<String, Vec<LocalId>>,
     try_catch_target: Option<TryCatchTarget>,
     local_actor_types: HashMap<u32, String>,
+    dropped_locals: HashSet<u32>,
+    param_locals: HashSet<u32>,
+    partial_moved_locals: HashSet<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -8172,34 +8201,57 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .map(|(i, a)| {
                     let operand = lower_expr_to_operand(ctx, a);
                     // push(dest_arr, struct_index_or_field_read): on the
-                    // Cranelift backend, structs are uniformly raw heap
-                    // pointers (no by-value SSA aggregate like LLVM's `load
-                    // %S`), so handing this read straight to push aliases
-                    // the SAME heap block between the SOURCE container
-                    // (still holding it, e.g. `students`) and the new
-                    // destination array (`passing`). Both containers'
-                    // scope-end drops then free it once each -> double-free
-                    // (Cranelift-only exit 127 at teardown; LLVM is immune
-                    // because reading a struct-typed element there is
-                    // inherently a value copy). Insert an explicit clone
-                    // call between the read and the push so the destination
-                    // owns an independent instance -- gated to exactly this
-                    // aliasing-read shape (Index/Field arg to push), NOT
-                    // fresh struct literals or constructor-call results:
-                    // those already own their sole allocation, and
-                    // `consume_call_args` below unconditionally suppresses
-                    // a pushed struct arg's own scope-end drop, so cloning a
-                    // fresh value here would leak the original (nothing else
-                    // would ever free it).
+                    // Cranelift backend, structs AND enums are uniformly raw
+                    // heap pointers with no ref_count of their own (no
+                    // by-value SSA aggregate like LLVM's `load %S`), so
+                    // handing this read straight to push aliases the SAME
+                    // heap block between the SOURCE container (still holding
+                    // it, e.g. `students`) and the new destination array
+                    // (`passing`). Both containers' scope-end drops then
+                    // free it once each -> double-free (Cranelift-only exit
+                    // 127 at teardown; LLVM is immune because reading a
+                    // struct/enum-typed element there is inherently a value
+                    // copy). Insert an explicit clone call between the read
+                    // and the push so the destination owns an independent
+                    // instance.
+                    //
+                    // Two aliasing shapes reach push() this way:
+                    //   (1) the arg IS the aliasing read directly:
+                    //       `push(dest, arr[i])` / `push(dest, s.field)`.
+                    //   (2) the arg is a bare identifier bound one level back
+                    //       via `let s = arr[i]` -- `s` is already tracked in
+                    //       `borrowed_locals` (it never took ownership, see
+                    //       the Let-lowering above) and then handed to push
+                    //       unmodified: `push(dest, s)`. This is the common
+                    //       match/filter-into-a-second-array shape (`let s =
+                    //       shapes[i]; if cond { big = push(big, s) }`) and
+                    //       was NOT covered by shape (1) alone.
+                    // Gated to exactly these aliasing shapes, NOT fresh
+                    // struct/enum literals or constructor-call results: those
+                    // already own their sole allocation, and
+                    // `consume_call_args` below unconditionally suppresses a
+                    // pushed struct/enum arg's own scope-end drop, so cloning
+                    // a fresh value here would leak the original (nothing
+                    // else would ever free it).
+                    let is_direct_alias_read = matches!(
+                        a,
+                        ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
+                    );
+                    let is_borrowed_bare_ident = if let ast::Expr::Identifier {
+                        name: id_name, ..
+                    } = a
+                    {
+                        find_local_by_name(ctx, id_name)
+                            .is_some_and(|l| ctx.borrowed_locals.contains(&l.0))
+                    } else {
+                        false
+                    };
                     let operand = if func_name == "push"
                         && i == 1
-                        && matches!(
-                            a,
-                            ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
-                        )
+                        && (is_direct_alias_read || is_borrowed_bare_ident)
                     {
-                        if let MirType::Struct(ref sname) = infer_expr_type(ctx, a) {
-                            if ctx.struct_defs.contains_key(sname) {
+                        match infer_expr_type(ctx, a) {
+                            MirType::Struct(ref sname) if ctx.struct_defs.contains_key(sname) => {
                                 let cloned = ctx.alloc_temp(MirType::Struct(sname.clone()));
                                 ctx.emit(Instruction::Assign {
                                     dest: cloned,
@@ -8209,11 +8261,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                     },
                                 });
                                 Operand::Local(cloned)
-                            } else {
-                                operand
                             }
-                        } else {
-                            operand
+                            MirType::Enum(ref ename) if ctx.enum_defs.contains_key(ename) => {
+                                let cloned = ctx.alloc_temp(MirType::Enum(ename.clone()));
+                                ctx.emit(Instruction::Assign {
+                                    dest: cloned,
+                                    value: RValue::Call {
+                                        func: "__kryos_enum_index_clone".to_string(),
+                                        args: vec![operand],
+                                    },
+                                });
+                                Operand::Local(cloned)
+                            }
+                            _ => operand,
                         }
                     } else {
                         operand

@@ -4745,15 +4745,19 @@ impl LlvmCodegen {
                         ));
                         self.emit_line(&format!("  call void @{print_fn}(ptr {handle_ptr})"));
                     }
-                } else if fname == "__kryos_struct_index_clone" && args.len() == 1 {
+                } else if (fname == "__kryos_struct_index_clone"
+                    || fname == "__kryos_enum_index_clone")
+                    && args.len() == 1
+                {
                     // Synthetic marker MIR lowering inserts for `push(dest_arr,
-                    // struct_index_or_field_read)` (see kryos-mir/src/lower.rs
-                    // and the Cranelift codegen's handling of the same call
-                    // name). Cranelift needs an explicit deep-copy there
-                    // because it represents structs uniformly as raw heap
-                    // pointers; LLVM already produces an INDEPENDENT value
-                    // when it reads a struct-typed array element (`load %S,
-                    // ptr p` copies the aggregate's bytes into a fresh SSA
+                    // struct_or_enum_index_or_field_read)` (see
+                    // kryos-mir/src/lower.rs and the Cranelift codegen's
+                    // handling of the same call names). Cranelift needs an
+                    // explicit deep-copy there because it represents structs
+                    // AND enums uniformly as raw heap pointers; LLVM already
+                    // produces an INDEPENDENT value when it reads a
+                    // struct/enum-typed array element (`load %S, ptr p`
+                    // copies the aggregate's bytes into a fresh SSA
                     // value/alloca, not just a pointer), so this is a pure
                     // passthrough here -- no additional copy needed.
                     let val = self.operand_to_llvm(&args[0], func);

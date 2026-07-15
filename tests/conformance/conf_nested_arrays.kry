@@ -96,5 +96,19 @@ fn main() {
     expect(len(passing) == 3, "filter struct-array into 2nd array")
     expect(passing[0].cells[0] == "p" and table[0].cells[0] == "p", "both source and copy valid after filter")
 
+    // Indirect filter via a `let` intermediate, for BOTH an enum and a struct
+    // element: `let s = arr[i]; push(dest, s)`. Cranelift aliases the element
+    // (raw shared pointer), so without a clone both arrays double-free it at
+    // teardown -> exit 127 (correct stdout). The clone gate now covers the
+    // let-indirect shape and enum elements, not just a direct `push(dest,arr[i])`.
+    let mut evens: [Row] = []
+    let mut ei: i64 = 0
+    while ei < len(table) {
+        let r = table[ei]
+        evens = push(evens, r)
+        ei = ei + 1
+    }
+    expect(len(evens) == 3 and evens[0].cells[0] == "p" and table[2].cells[1] == "q", "indirect let filter (struct), both valid, no teardown crash")
+
     println("conformance nested-arrays: PASS")
 }

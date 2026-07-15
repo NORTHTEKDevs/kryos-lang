@@ -200,6 +200,17 @@ fn main() {
     expect(nf.get().get() == 3.5, "chained generic method (f64 leaf, ABI reinterpret)")
     expect(nf.get().get() + 1.0 == 4.5, "chained generic f64 leaf in arithmetic")
 
+    // A nested generic value + a generic mutating method call in the same fn:
+    // monomorphizing the method mid-lowering (Nest__set___i64) called ctx.reset()
+    // which wiped the caller's partial_moved_locals, so the aliased inner value's
+    // drop re-fired -> double-free -> Cranelift exit 127. Save/restore now carries
+    // that bookkeeping across mid-lowering monomorphization.
+    let onest: Nest<Nest<i64>> = Nest { inner: Nest { inner: 5 } }
+    let deepv = onest.get().get()
+    let mut mb: Nest<i64> = Nest { inner: 1 }
+    mb = Nest { inner: 999 }
+    expect(deepv == 5 and mb.inner == 999, "nested generic + generic mutate in one fn (no teardown double-free)")
+
     // A generic bare `-> T` method whose T resolves to a POINTER-shaped type
     // (str / [T] / map) must return the real type, not the erased i64 slot --
     // else println/concat/len/index dispatch the integer path on a heap

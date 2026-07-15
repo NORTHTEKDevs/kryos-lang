@@ -2388,6 +2388,175 @@ fn emit_struct_deep_copy<M: Module>(
     Ok(new_ptr)
 }
 
+/// Deep-copy an enum value so an alias created by array-index/field aliasing
+/// (`push(dest, enum_index_or_field_read)`, directly or via one intermediate
+/// `let s = arr[i]`) doesn't hand `dest` the SAME raw pointer the source
+/// container still holds. Mirrors `emit_struct_deep_copy`: Cranelift
+/// represents enums uniformly as raw malloc'd blocks with NO ref_count of
+/// their own (`[tag, field0, field1, ...]`, all i64-slotted -- see
+/// `RValue::EnumVariant`'s construction and `emit_drop_for_value`'s Enum
+/// arm), so two arrays that end up pointing at the same block both free it
+/// at teardown -> double-free (Cranelift-only exit 127, correct stdout up to
+/// that point; LLVM is immune because reading an enum-typed array element
+/// there is inherently a value copy).
+///
+/// Raw-copies every slot first (already correct on its own for scalar-only
+/// variants), then runtime-dispatches on the tag to clone/retain any
+/// heap-owning payload field for the ACTIVE variant only -- mirrors
+/// `emit_drop_for_value`'s enum arm exactly, but clones instead of frees.
+fn emit_enum_deep_copy<M: Module>(
+    enum_name: &str,
+    val: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let variants = translator
+        .enum_defs
+        .get(enum_name)
+        .cloned()
+        .expect("emit_enum_deep_copy: caller verified enum_defs membership");
+    let max_fields = variants.iter().map(|v| v.fields.len()).max().unwrap_or(0);
+    let total_size = (1 + max_fields) as u32 * 8;
+
+    let one_val = builder.ins().iconst(types::I64, 1);
+    let size_val = builder.ins().iconst(types::I64, total_size as i64);
+    let calloc_ref = ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+    let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
+    let new_ptr = builder.inst_results(alloc_call)[0];
+
+    // Raw-copy every 8-byte slot (tag + all payload slots): correct on its
+    // own for scalar (i64/f64/bool) fields, and gives the tag-dispatch below
+    // a starting value to overwrite for heap-owning fields.
+    for i in 0..(1 + max_fields) {
+        let offset = (i * 8) as i32;
+        let slot = builder.ins().load(types::I64, MemFlags::new(), val, offset);
+        builder.ins().store(MemFlags::new(), slot, new_ptr, offset);
+    }
+
+    let is_droppable_field = |f: &MirType| {
+        matches!(
+            f,
+            MirType::Str
+                | MirType::Array(_, _)
+                | MirType::Map { .. }
+                | MirType::Struct(_)
+                | MirType::Function { .. }
+                | MirType::Enum(_)
+                | MirType::Shared(_)
+        )
+    };
+    let has_droppable = variants
+        .iter()
+        .any(|v| v.fields.iter().any(is_droppable_field));
+
+    if has_droppable {
+        let tag = builder.ins().load(types::I64, MemFlags::new(), val, 0);
+        let merge_block = builder.create_block();
+
+        for (idx, variant) in variants.iter().enumerate() {
+            let clone_fields: Vec<(usize, &MirType)> = variant
+                .fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| is_droppable_field(f))
+                .collect();
+            if clone_fields.is_empty() {
+                continue;
+            }
+
+            let variant_block = builder.create_block();
+            let skip_block = builder.create_block();
+            let tag_const = builder.ins().iconst(types::I64, idx as i64);
+            let is_match = builder.ins().icmp(
+                cranelift_codegen::ir::condcodes::IntCC::Equal,
+                tag,
+                tag_const,
+            );
+            builder
+                .ins()
+                .brif(is_match, variant_block, &[], skip_block, &[]);
+            builder.seal_block(variant_block);
+            builder.switch_to_block(variant_block);
+
+            for (field_idx, field_ty) in &clone_fields {
+                let offset = ((*field_idx + 1) * 8) as i32;
+                // Slot already holds the raw-copied (aliased) pointer from
+                // the block copy above; clone/retain it into an independent
+                // instance and overwrite the new block's slot with that.
+                let field_val = builder
+                    .ins()
+                    .load(types::I64, MemFlags::new(), new_ptr, offset);
+                let cloned = match field_ty {
+                    MirType::Str => {
+                        let clone_ref = ensure_func_ref_with_args(
+                            "kryos_string_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(clone_ref, &[field_val]);
+                        builder.inst_results(call)[0]
+                    }
+                    MirType::Array(_, _) => {
+                        let clone_ref = ensure_func_ref_with_args(
+                            "kryos_array_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(clone_ref, &[field_val]);
+                        builder.inst_results(call)[0]
+                    }
+                    MirType::Map { .. } => {
+                        let clone_ref = ensure_func_ref_with_args(
+                            "kryos_map_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let call = builder.ins().call(clone_ref, &[field_val]);
+                        builder.inst_results(call)[0]
+                    }
+                    MirType::Function { .. } | MirType::Shared(_) => {
+                        let retain_ref = ensure_func_ref_with_args(
+                            "kryos_arc_retain",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        builder.ins().call(retain_ref, &[field_val]);
+                        field_val
+                    }
+                    // Nested @copy struct field: shared, not cloned (mirrors
+                    // emit_struct_deep_copy's own H21 rule for nested Struct
+                    // fields).
+                    MirType::Struct(_) => field_val,
+                    MirType::Enum(ref inner_name) => {
+                        emit_enum_deep_copy(inner_name, field_val, builder, translator, module)?
+                    }
+                    _ => field_val,
+                };
+                builder
+                    .ins()
+                    .store(MemFlags::new(), cloned, new_ptr, offset);
+            }
+            builder.ins().jump(merge_block, &[]);
+            builder.seal_block(skip_block);
+            builder.switch_to_block(skip_block);
+        }
+        builder.ins().jump(merge_block, &[]);
+        builder.seal_block(merge_block);
+        builder.switch_to_block(merge_block);
+    }
+
+    Ok(new_ptr)
+}
+
 /// Translate a MIR function body into Cranelift IR instructions.
 pub fn translate_function<M: Module>(
     mir_func: &MirFunction,
@@ -3765,6 +3934,26 @@ fn translate_rvalue<M: Module>(
                     if translator.struct_defs.contains_key(&sname) {
                         let new_ptr =
                             emit_struct_deep_copy(&sname, val, builder, translator, module)?;
+                        return Ok(Some(new_ptr));
+                    }
+                }
+                return Ok(Some(val));
+            }
+
+            // Enum analog of the marker above -- see kryos-mir/src/lower.rs
+            // (same push-arg gate, extended to MirType::Enum) and
+            // `emit_enum_deep_copy`'s doc comment for the full rationale.
+            if func == "__kryos_enum_index_clone" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let ename = dest
+                    .and_then(|d| translator.mir_func.locals.iter().find(|l| l.id == d))
+                    .and_then(|l| match &l.ty {
+                        MirType::Enum(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                if let Some(ename) = ename {
+                    if translator.enum_defs.contains_key(&ename) {
+                        let new_ptr = emit_enum_deep_copy(&ename, val, builder, translator, module)?;
                         return Ok(Some(new_ptr));
                     }
                 }
