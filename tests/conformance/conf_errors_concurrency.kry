@@ -90,6 +90,27 @@ actor Dispatcher {
     }
 }
 
+// An actor collection field REASSIGNED from a LOCAL variable must PERSIST across
+// messages. `self.data = someLocal` did a raw ARC-unaware store: it never
+// released the old value AND aliased the still-live local, whose scope-end drop
+// then freed the actor's persistent state (silent use-after-free / lost write).
+// The push-chain form persisted only by luck (fresh RHS, no other owner).
+actor Bag {
+    data: [i64]
+    fn fill(self, n: i64) {
+        let mut fresh: [i64] = []
+        let mut i: i64 = 0
+        while i < n {
+            fresh = push(fresh, i)
+            i = i + 1
+        }
+        self.data = fresh
+    }
+    fn size(self, reply: i64) {
+        send(reply, len(self.data))
+    }
+}
+
 // A match INSIDE a try block, and a nested-enum-in-tuple match with early-return
 // arms from fn params -- both created void-but-mutable placeholder locals whose
 // entry alloca was skipped, so AOT failed to build (`undefined value %_N.addr`).
@@ -259,6 +280,17 @@ fn main() {
     let d1 = recv(dch)
     let d2 = recv(dch)
     expect(d1 + d2 == 7 + 10, "actor delegates to an actor-typed field (7, then 10)")
+
+    // Actor collection field reassigned from a local persists across messages.
+    let bch = chan()
+    let bag = Bag()
+    bag.fill(5)
+    bag.size(bch)
+    let bsz = recv(bch)
+    bag.fill(2)
+    bag.size(bch)
+    let bsz2 = recv(bch)
+    expect(bsz == 5 and bsz2 == 2, "actor field reassigned from local persists (5, then 2)")
 
     println("conformance errors+concurrency: PASS")
 }

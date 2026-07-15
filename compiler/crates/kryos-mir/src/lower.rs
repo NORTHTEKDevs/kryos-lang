@@ -3183,12 +3183,86 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // Actor state field assignment.
                 match op {
                     ast::AssignOp::Assign => {
-                        let val = lower_expr_to_operand(ctx, value);
+                        // ARC bookkeeping for a heap-owning field (str/array/map)
+                        // being overwritten wholesale. Without this, `self.items
+                        // = newitems` silently corrupted persistent actor state:
+                        // ActorStateStore is a raw i64-slot store with no ARC
+                        // awareness, so (a) the OLD field value was never
+                        // released (a leak), and (b) if the RHS was a bare
+                        // reference to a surviving named local, the actor state
+                        // and that local ended up aliasing the SAME heap block
+                        // with no extra retain -- the local's ordinary
+                        // end-of-scope Drop then freed memory the actor's
+                        // persistent state still pointed to, so the NEXT
+                        // message observed freed/corrupted memory (the
+                        // `reassign_fresh` -> `report` UAF). The push-chain form
+                        // (`self.items = push(self.items, v)`) never hit this:
+                        // its RHS is a fresh call result with no other owner,
+                        // so no retain/release was needed and it "happened" to
+                        // persist correctly.
+                        let release_fn = release_if_ne_fn(&field_ty);
+                        let old_snapshot = release_fn.map(|_| {
+                            let old = ctx.alloc_temp(field_ty.clone());
+                            ctx.emit(Instruction::ActorStateLoad {
+                                dest: old,
+                                state_ptr,
+                                field_offset,
+                            });
+                            old
+                        });
+                        let rvalue = lower_expr_to_rvalue(ctx, value);
+                        // Mirror the plain-local-reassignment rule: retain only
+                        // when the RHS reduces to a bare reference to an
+                        // existing local (so the actor state becomes a second
+                        // owner alongside it); a non-container non-copy source
+                        // (struct/enum) instead has its ownership transferred
+                        // by marking it dropped so scope-cleanup no longer
+                        // frees it. A fresh rvalue (call, literal, binop, ...)
+                        // needs neither -- it has no other owner.
+                        let mut retain_src: Option<&'static str> = None;
+                        if let RValue::Use(Operand::Local(src)) = &rvalue {
+                            let src_ty = ctx
+                                .locals
+                                .iter()
+                                .find(|l| l.id == *src)
+                                .map(|l| l.ty.clone())
+                                .unwrap_or(MirType::I64);
+                            if let Some(rf) = retain_for_ty(&src_ty) {
+                                retain_src = Some(rf);
+                            } else if !is_copy_type(ctx, &src_ty) {
+                                ctx.dropped_locals.insert(src.0);
+                            }
+                        }
+                        let val = ctx.alloc_temp(field_ty.clone());
+                        ctx.emit(Instruction::Assign {
+                            dest: val,
+                            value: rvalue,
+                        });
                         ctx.emit(Instruction::ActorStateStore {
                             state_ptr,
                             field_offset,
-                            value: val,
+                            value: Operand::Local(val),
                         });
+                        if let Some(rf) = retain_src {
+                            let sink = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: sink,
+                                value: RValue::Call {
+                                    func: rf.to_string(),
+                                    args: vec![Operand::Local(val)],
+                                },
+                            });
+                        }
+                        if let (Some(rel), Some(old)) = (release_fn, old_snapshot) {
+                            let sink = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: sink,
+                                value: RValue::Call {
+                                    func: rel.to_string(),
+                                    args: vec![Operand::Local(old), Operand::Local(val)],
+                                },
+                            });
+                        }
                     }
                     _ => {
                         // Compound assignment (+=, -=, etc.): load current, compute, store back.
