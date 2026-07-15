@@ -5061,13 +5061,28 @@ impl LlvmCodegen {
                                 self.emit_line(&format!(
                                     "  {tmp} = call i64 @kryos_builtin_pop(i64 {arr_val})"
                                 ));
+                                // Narrow scalar element (i1/i8/i16/i32): the slot
+                                // carries raw i64 bits; coerce to the destination
+                                // width before storing, mirroring the RValue::Index
+                                // read path. Without this, `store i64 %tmp, ptr
+                                // %_N.addr` writes 8 bytes into an `alloca i1`/i8/
+                                // i16/i32 (1/1/2/4-byte) slot -- a stack buffer
+                                // overflow that corrupts adjacent locals on AOT
+                                // (Cranelift has no equivalent narrow alloca, so
+                                // this only miscompiles/crashes on LLVM).
+                                let coerced = self.coerce_value(&tmp, "i64", &dest_ty);
                                 self.emit_line(&format!(
-                                    "  store i64 {tmp}, ptr %_{}.addr",
+                                    "  store {dest_ty} {coerced}, ptr %_{}.addr",
                                     dest.0
                                 ));
                             } else {
+                                let tmp = self.next_temp();
                                 self.emit_line(&format!(
-                                    "  %_{} = call i64 @kryos_builtin_pop(i64 {arr_val})",
+                                    "  {tmp} = call i64 @kryos_builtin_pop(i64 {arr_val})"
+                                ));
+                                let coerced = self.coerce_value(&tmp, "i64", &dest_ty);
+                                self.emit_line(&format!(
+                                    "  %_{} = add {dest_ty} {coerced}, 0",
                                     dest.0
                                 ));
                             }

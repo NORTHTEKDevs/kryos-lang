@@ -35,5 +35,17 @@ fn main() {
 
     expect(sum_dup([1, 2, 9]) == 27, "pop-Copy reuse inside a fn param body (9*3)")
 
+    // pop() of a NARROW scalar element (bool/u8/i32) must width-coerce the
+    // i64-slot result to the element type on AOT -- the pop path skipped the
+    // coercion the array-index path already did, so a bool pop stored 8 bytes
+    // into a 1-byte alloca (stack corruption, AOT exit 3) and u8/i32 pop failed
+    // to build. Now pop coerces like indexing.
+    let mut sbool: [bool] = [true, false, true]
+    let pb = pop(sbool)
+    expect(pb and pb, "pop([bool]) narrow-scalar coercion (was AOT crash)")
+    let mut su8: [u8] = [200, 5]
+    let pu = pop(su8)
+    expect(pu == 5, "pop([u8]) narrow-scalar coercion (was AOT build-fail)")
+
     println("conformance copy-reuse: PASS")
 }
