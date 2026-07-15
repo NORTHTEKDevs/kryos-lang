@@ -8149,10 +8149,39 @@ impl LlvmCodegen {
             // was immune. Shallow clone (new buffer, shared elements), so no
             // per-element recursion and no O(N^2) blow-up; big collections live
             // in module-globals, not struct fields.
-            if let Some(MirType::Array(_, _)) = field_mir_tys.get(def_i) {
+            //
+            // A plain header clone (`kryos_array_clone`) is NOT enough when the
+            // array's OWN elements are themselves heap-owning (str/array/map):
+            // it copies the raw element pointers into the new buffer without
+            // bumping their ref_count, so the new field-owned array and the
+            // SOURCE array (e.g. a named local `let cells: [str] = ...; Row {
+            // cells: cells }`) both end up pointing at the same element data
+            // with no compensating reference. The source local's ordinary
+            // scope-end drop then frees that shared data out from under the
+            // struct's field the moment the loop iteration ends -- silent
+            // AOT-only corruption (kryos-lang struct-literal-from-named-local
+            // hunt; Cranelift locals alias without a destructive per-scope
+            // free, so JIT never showed it). `kryos_array_dup(ptr, elem_kind)`
+            // is the existing (previously-unused) element-refcount-aware
+            // sibling of `kryos_array_clone`: elem_kind=0 degenerates to the
+            // exact same plain clone (no behavior change for scalar-element
+            // arrays), elem_kind=1 additionally retains each non-null element
+            // once so both the source local's drop and this new field's
+            // eventual drop each release their own reference safely.
+            if let Some(MirType::Array(elem_ty, _)) = field_mir_tys.get(def_i) {
                 if coerced_val != "null" && coerced_val != "zeroinitializer" {
+                    let elem_kind: i64 = match elem_ty.as_ref() {
+                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                        _ => 0,
+                    };
                     let cl = self.next_temp();
-                    self.emit_line(&format!("  {cl} = call ptr @kryos_array_clone(ptr {coerced_val})"));
+                    if elem_kind == 0 {
+                        self.emit_line(&format!("  {cl} = call ptr @kryos_array_clone(ptr {coerced_val})"));
+                    } else {
+                        self.emit_line(&format!(
+                            "  {cl} = call ptr @kryos_array_dup(ptr {coerced_val}, i64 {elem_kind})"
+                        ));
+                    }
                     coerced_val = cl;
                 }
             }
@@ -9395,6 +9424,7 @@ impl LlvmCodegen {
             self.temp_counter += 1;
 
             let null_ck_label = format!("arr_nullck_{uid}");
+            let rc_ck_label = format!("arr_rcck_{uid}");
             let pre_label = format!("arr_pre_{uid}");
             let hdr_label = format!("arr_hdr_{uid}");
             let body_label = format!("arr_body_{uid}");
@@ -9410,7 +9440,37 @@ impl LlvmCodegen {
             let null_cmp = self.next_temp();
             self.emit_line(&format!("  {null_cmp} = icmp ne ptr {val}, null"));
             self.emit_line(&format!(
-                "  br i1 {null_cmp}, label %{pre_label}, label %{skip_label}"
+                "  br i1 {null_cmp}, label %{rc_ck_label}, label %{skip_label}"
+            ));
+
+            // Refcount guard: element contents are owned exactly ONCE, by
+            // whichever drop is the array's LAST reference -- this must mirror
+            // kryos_array_free's own decrement-then-free-at-zero contract.
+            // A named local of array/map/str-in-array element type that was
+            // retained (kryos_array_retain_opt) before being aliased into an
+            // outer array/struct/map still runs its own scope-end drop() on
+            // the local; that drop only owns ONE of the (now >=2) references
+            // to the header. Without this guard, every drop() unconditionally
+            // freed every element regardless of ref_count, so pushing a named
+            // `[str]` local into a `[[str]]` (by reference, not deep clone)
+            // freed the inner strings out from under the surviving `rows`
+            // owner the instant the pushed-from local's scope ended -- a
+            // silent AOT-only miscompile (Cranelift locals alias without a
+            // destructive per-scope free, so JIT never showed it). Skip the
+            // element-free loop whenever another owner still holds the array
+            // (ref_count > 1); only the final drop (ref_count <= 1, including
+            // the already-freed sentinel) actually releases element data.
+            self.emit_line(&format!("{rc_ck_label}:"));
+            let rc_gep = self.next_temp();
+            self.emit_line(&format!(
+                "  {rc_gep} = getelementptr i8, ptr {val}, i64 24"
+            ));
+            let rc_val = self.next_temp();
+            self.emit_line(&format!("  {rc_val} = load i64, ptr {rc_gep}"));
+            let rc_shared = self.next_temp();
+            self.emit_line(&format!("  {rc_shared} = icmp sgt i64 {rc_val}, 1"));
+            self.emit_line(&format!(
+                "  br i1 {rc_shared}, label %{skip_label}, label %{pre_label}"
             ));
 
             // Pre-block: load array length and data pointer.

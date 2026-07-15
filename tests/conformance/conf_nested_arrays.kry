@@ -1,0 +1,84 @@
+// Conformance: a NAMED heap-typed local (array/map/str/struct-with-heap-field)
+// pushed into an OUTER collection, then falling out of scope, must not free the
+// data the outer collection still owns. MIR retains the pushed local (rc 1->2)
+// then emits its scope-end drop; but emit_array_drop freed all element data
+// UNCONDITIONALLY regardless of the array header's ref_count, so the first drop
+// of a shared array freed elements a second owner (rows) still referenced ->
+// silent AOT corruption (the freed strings reused by a later concat buffer).
+// Fixed by gating the element-free loop on ref_count <= 1 (only the last owner
+// frees elements). JIT was correct (aliases, no destructive free).
+
+use std::string::{split_lines}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn split_char(s: str, sep: str) -> [str] {
+    let mut parts: [str] = []
+    let mut cur: str = ""
+    let mut i: i64 = 0
+    while i < len(s) {
+        let c: str = substr(s, i, i + 1)
+        if c == sep {
+            parts = push(parts, cur)
+            cur = ""
+        } else {
+            cur = cur + c
+        }
+        i = i + 1
+    }
+    parts = push(parts, cur)
+    return parts
+}
+
+struct Row { cells: [str] }
+
+fn main() {
+    // Array-of-arrays via a NAMED local, with an intervening allocation
+    // (the "parsed:" concat) that would reuse freed string memory if broken.
+    let lines: [str] = ["name,age,city", "alice,30,nyc", "bob,25,la"]
+    let mut rows: [[str]] = []
+    let mut i: i64 = 0
+    while i < len(lines) {
+        let fields: [str] = split_char(lines[i], ",")
+        rows = push(rows, fields)
+        i = i + 1
+    }
+    let parsed = "parsed: " + to_string(len(rows))  // intervening heap alloc
+    expect(parsed == "parsed: 3", "intervening concat")
+    expect(rows[0][0] == "name" and rows[0][2] == "city", "row 0 nested strings intact")
+    expect(rows[1][0] == "alice" and rows[1][1] == "30", "row 1 nested strings intact")
+    expect(rows[2][0] == "bob", "row 2 nested strings intact")
+
+    // Named map local pushed into [map].
+    let mut maps: [map<str, i64>] = []
+    let mut k: i64 = 0
+    while k < 3 {
+        let mut m: map<str, i64> = {}
+        m["v"] = k * 10
+        maps = push(maps, m)
+        k = k + 1
+    }
+    let filler = "x" + to_string(len(maps))  // intervening alloc
+    expect(filler == "x3", "map filler")
+    expect(maps[0]["v"] == 0 and maps[2]["v"] == 20, "named map local pushed survives")
+
+    // Named struct-with-array-field local pushed into [Row].
+    let mut table: [Row] = []
+    let mut r: i64 = 0
+    while r < 3 {
+        let cells: [str] = split_char("p,q", ",")
+        let row: Row = Row { cells: cells }
+        table = push(table, row)
+        r = r + 1
+    }
+    let f2 = "n=" + to_string(len(table))  // intervening alloc
+    expect(f2 == "n=3", "struct filler")
+    expect(table[0].cells[0] == "p" and table[2].cells[1] == "q", "struct-with-array field intact")
+
+    println("conformance nested-arrays: PASS")
+}
