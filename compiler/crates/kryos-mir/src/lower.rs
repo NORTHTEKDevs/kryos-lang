@@ -8096,6 +8096,91 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // A bare `-> T` generic INSTANCE method (`Nest<T>.get() -> T`,
+            // `Box<T>.get() -> T`) is compiled ONCE as a single erased body
+            // (see `instance_ret_needs_monomorphization`'s doc) that does a
+            // bare `extractvalue self, 0; ret` -- it cannot retain the field
+            // it hands out because it does not know, at that single shared
+            // compile site, whether T is a heap type. `self` is passed byval
+            // (caller-owned; the callee never drops it), so returning the
+            // field bit-for-bit hands the CALLER's own reference out a
+            // second time with no compensating increment: when T resolves to
+            // a container (str/[T]/map) at THIS call site, the receiver's
+            // own eventual drop AND the destination's eventual drop each
+            // free the SAME handle -- an AOT-only double-free (JIT/Cranelift
+            // boxes every field as a pointer uniformly, so this class of bug
+            // never surfaces there; confirmed via `KRYOS_FREE_DIAG=1` on
+            // `Nest<map<str,i64>>.get()` -- "map DOUBLE-FREE rc=0"). Resolve
+            // the receiver's concrete binding the same way `infer_expr_type`
+            // already does to TYPE this call's result correctly, and where
+            // that resolves to a container type, give the destination its
+            // own "borrow-to-own" reference -- mirrors
+            // `emit_param_source_retain`/`retain_for_ty`, used for the
+            // analogous param-source and match-bind cases.
+            if let Some(ref tn) = type_name {
+                let base = tn.split("___").next().unwrap_or(tn.as_str()).to_string();
+                if let Some((gp_names, self_te, ret_te)) = ctx
+                    .impl_method_generic_info
+                    .get(&(base.clone(), method.clone()))
+                    .cloned()
+                {
+                    let ret_is_bare_param = matches!(
+                        &ret_te,
+                        Some(ast::TypeExpr::Simple { name, .. })
+                            if gp_names.iter().any(|g| g == name)
+                    );
+                    if ret_is_bare_param {
+                        if let (Some(self_te), Some(ret_te)) = (self_te, ret_te) {
+                            let receiver = MirType::Struct(tn.clone());
+                            let mut bindings: HashMap<String, MirType> = HashMap::new();
+                            extract_type_bindings(ctx, &self_te, &receiver, &gp_names, &mut bindings);
+                            if !bindings.is_empty() {
+                                let resolved =
+                                    substitute_type_expr_to_mir(ctx, &ret_te, &bindings);
+                                if let Some(rf) = retain_for_ty(&resolved) {
+                                    let obj = lower_expr_to_operand(ctx, object);
+                                    let mut mir_args: Vec<Operand> = vec![obj];
+                                    for a in args {
+                                        mir_args.push(lower_expr_to_operand(ctx, a));
+                                    }
+                                    let func_name = ctx
+                                        .method_owners
+                                        .get(&(tn.clone(), method.clone()))
+                                        .cloned()
+                                        .or_else(|| {
+                                            if base != *tn {
+                                                ctx.method_owners
+                                                    .get(&(base.clone(), method.clone()))
+                                                    .cloned()
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                        .unwrap_or_else(|| method.clone());
+                                    let call_tmp = ctx.alloc_temp(resolved.clone());
+                                    ctx.emit(Instruction::Assign {
+                                        dest: call_tmp,
+                                        value: RValue::Call {
+                                            func: func_name,
+                                            args: mir_args,
+                                        },
+                                    });
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rf.to_string(),
+                                            args: vec![Operand::Local(call_tmp)],
+                                        },
+                                    });
+                                    return RValue::Use(Operand::Local(call_tmp));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             let obj = lower_expr_to_operand(ctx, object);
             let mut mir_args: Vec<Operand> = vec![obj];
             for a in args {
