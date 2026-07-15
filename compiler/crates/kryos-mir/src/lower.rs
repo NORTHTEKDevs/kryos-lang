@@ -2416,9 +2416,38 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     let inst_mark = ctx.current_instructions.len();
     let block_mark = ctx.next_block;
     let locals_mark = ctx.locals.len();
+    // Snapshot of partial-moved locals BEFORE this statement lowers, so the
+    // spurious-partial-move undo below (see `drop_unescaped_str_temps`'s
+    // field_source handling) can tell "this statement's own field-read just
+    // marked src" apart from "an earlier statement genuinely moved a field
+    // out of src" -- only the former is safe to reverse.
+    let partial_moved_before = ctx.partial_moved_locals.clone();
     lower_stmt_inner(ctx, stmt);
-    drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark);
+    drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before);
 }
+
+/// Calls that read a heap-typed argument and neither store nor free it --
+/// shared by `drop_unescaped_str_temps` (safe to drop a temp fed only to
+/// one of these) and `consume_call_args` (safe NOT to suppress the caller's
+/// own scope-end Drop of an arg fed only to one of these). Deliberately
+/// small and conservative: an unlisted callee (including any user-defined
+/// function) keeps the existing consume-on-call-argument behavior.
+const BORROWING_CALL_ARGS: &[&str] = &[
+    "len",
+    "to_string",
+    "println",
+    "print",
+    "eprintln",
+    "eprint",
+    "contains",
+    "substr",
+    "char_code",
+    "parse_int",
+    "parse_float",
+    // Reads both operands, returns a fresh allocation; never stores or
+    // frees its inputs (the binary `+` runtime path).
+    "kryos_string_concat",
+];
 
 /// Statement-end cleanup for string expression TEMPORARIES (leak fix).
 ///
@@ -2439,11 +2468,25 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 ///   BinOp operands, or arguments to builtins known to borrow. Appearing
 ///   anywhere else (Use into another slot, aggregate init, user call,
 ///   store, ...) disqualifies it.
+///
+/// Also undoes a SPURIOUS `partial_moved_locals` mark on a struct source: a
+/// bare field read (`r.name`) taken by `lower_expr_to_rvalue`'s FieldAccess
+/// arm unconditionally marks the struct local `r` as partially-moved (so its
+/// own scope-end Drop is suppressed), on the theory that the field's heap
+/// data was moved out. That theory only holds when the read result escapes
+/// (is stored, returned, bound to a name); a read whose result is used
+/// exclusively by a borrowing call/operator in this same straight-line
+/// statement (e.g. `len(r.name)`) never escapes, so `r` was never actually
+/// partially moved -- suppressing its Drop leaked the whole struct (every
+/// field, not just the one read) forever after the first field read
+/// anywhere in the function. See `consume_call_args` for the analogous fix
+/// on the "passed as a call argument" side of the same over-eager-move bug.
 fn drop_unescaped_str_temps(
     ctx: &mut LoweringContext,
     inst_mark: usize,
     block_mark: u32,
     locals_mark: usize,
+    partial_moved_before: &std::collections::HashSet<u32>,
 ) {
     // Diagnostic kill-switch (KRYOS_NO_TEMP_DROPS=1) for bisecting runtime
     // faults to this pass without a rebuild.
@@ -2461,23 +2504,6 @@ fn drop_unescaped_str_temps(
     if candidates.is_empty() {
         return;
     }
-    // Builtins that read their string argument and neither store nor free it.
-    const BORROWING_BUILTINS: &[&str] = &[
-        "len",
-        "to_string",
-        "println",
-        "print",
-        "eprintln",
-        "eprint",
-        "contains",
-        "substr",
-        "char_code",
-        "parse_int",
-        "parse_float",
-        // Reads both operands, returns a fresh allocation; never stores or
-        // frees its inputs (the binary `+` runtime path).
-        "kryos_string_concat",
-    ];
     // Whole-window guard: only instruction shapes we fully model.
     for inst in &ctx.current_instructions[inst_mark..] {
         match inst {
@@ -2492,16 +2518,27 @@ fn drop_unescaped_str_temps(
     let mut to_drop: Vec<LocalId> = Vec::new();
     'cand: for id in candidates {
         let mut owns = false;
+        // Set when `id`'s definition is `RValue::Field { object: Local(src), .. }`
+        // -- a borrowed field read, not a fresh allocation. If `id` survives the
+        // whole escape walk below (every use, if any, is a known-borrowing call
+        // arg), the field read never escaped and `src`'s spurious partial-move
+        // mark (see this function's doc comment) is safe to undo.
+        let mut field_source: Option<LocalId> = None;
         for inst in &ctx.current_instructions[inst_mark..] {
             let (dest, value) = match inst {
                 Instruction::Assign { dest, value } => (dest, value),
                 _ => continue,
             };
             if *dest == id {
-                // Only temps whose DEFINITION allocates a fresh owned string
-                // may be dropped. Index/Field reads are BORROWED views of an
-                // element that the container still owns (dropping one freed
-                // `parts[0]` through the array -- split_join regression).
+                // Temps whose DEFINITION allocates a fresh owned string may
+                // be dropped directly (`owns`). A struct-FIELD read is
+                // handled separately below via `field_source`: both backends
+                // retain it unconditionally, so (unlike a plain alias) it is
+                // safe to drop once proven non-escaping. Array/tuple INDEX
+                // reads are deliberately left alone here -- dropping one
+                // previously freed a still-shared element out from under the
+                // container (the split_join regression) and that path's
+                // retain/consume accounting has not been re-audited.
                 owns = match value {
                     RValue::StringConcat(_) => true,
                     // Binary `+` on strings is MIR BinOp::Add with Str
@@ -2514,6 +2551,9 @@ fn drop_unescaped_str_temps(
                     }
                     _ => false,
                 };
+                if let RValue::Field { object: Operand::Local(src), .. } = value {
+                    field_source = Some(*src);
+                }
                 continue; // its own definition consumes other values, not itself
             }
             let used_here: bool = match value {
@@ -2521,7 +2561,7 @@ fn drop_unescaped_str_temps(
                 RValue::BinOp { left, right, .. } => mentions(left, id) || mentions(right, id),
                 RValue::Call { func, args } => {
                     if args.iter().any(|a| mentions(a, id)) {
-                        if BORROWING_BUILTINS.contains(&func.as_str()) {
+                        if BORROWING_CALL_ARGS.contains(&func.as_str()) {
                             true
                         } else {
                             continue 'cand; // unknown callee may take ownership
@@ -2543,6 +2583,26 @@ fn drop_unescaped_str_temps(
         }
         if owns {
             to_drop.push(id);
+        } else if let Some(src) = field_source {
+            // Both backends unconditionally RETAIN a struct-field read of a
+            // heap-typed field (Cranelift's "step 44" field-read retain /
+            // LLVM's "Borrow-to-own" kryos_string_retain(_opt) etc.) -- `id`
+            // now holds its OWN independently-retained reference, matching
+            // the source struct's. Since `id` never escaped this straight-
+            // line statement (the walk above didn't bail), that retain must
+            // be balanced by dropping `id` here same as any other owned
+            // temp -- this is true regardless of the source's own drop
+            // status, since the retain always fires.
+            to_drop.push(id);
+            // Separately: undo a partial-move mark THIS statement's field
+            // read put on `src`, so the struct's own scope-end Drop (which
+            // frees its other fields too) isn't left spuriously suppressed.
+            // Only undo if this exact statement set it -- an earlier
+            // statement's genuine move of a different field must stay
+            // suppressed.
+            if !partial_moved_before.contains(&src.0) {
+                ctx.partial_moved_locals.remove(&src.0);
+            }
         }
     }
     for id in to_drop {
@@ -6286,6 +6346,18 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 /// but `dest` is reassigned with the call's return value, which is a fresh
 /// owned value that still needs to be dropped at scope end.
 fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args: &[Operand]) {
+    // Calls that only READ a heap-typed argument (never store or free it)
+    // must not suppress the caller's own scope-end Drop. Before this check,
+    // ANY call -- including e.g. `len(s)` -- marked its non-copy args
+    // consumed, so a loop-body `let s: str = ...` that was ever read by such
+    // a call (an extremely common pattern) never got its per-iteration Drop
+    // at all: unbounded leak on every backend, worst on AOT where nothing
+    // else masked it (measured: a 3M-iteration `len(s)` loop leaked ~215MB).
+    // BORROWING_CALL_ARGS is the same conservative, already-audited allowlist
+    // `drop_unescaped_str_temps` trusts for the equivalent temp-drop case.
+    if BORROWING_CALL_ARGS.contains(&func) {
+        return;
+    }
     // `push` transfers ownership of its value argument into the array: the
     // array stores the (pointer-sized) value and later drops it when the
     // array itself is dropped. This includes @copy STRUCTS, which despite
