@@ -10137,13 +10137,22 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
     // Comparison result.
     let cmp_local = alloc_local(Some("__cmp"), MirType::Bool, false);
 
+    // Post-handler exception plumbing (reused across every handler block —
+    // see the recovery comment below).
+    let exc_flag_local = alloc_local(Some("__exc_flag"), MirType::I64, true);
+    let exc_val_local = alloc_local(Some("__exc_val"), MirType::I64, true);
+    let exc_report_local = alloc_local(Some("__exc_report"), MirType::I64, false);
+
     // Pre-allocate block IDs.
     let bb_poll = alloc_block(); // bb0
     let bb_switch = alloc_block(); // bb1
     let bb_exit = alloc_block(); // bb2
 
-    // Allocate handler blocks (one per handler).
+    // Allocate handler blocks (one per handler), plus one exception-recovery
+    // block per handler (one per handler so the diagnostic can name the
+    // specific handler that threw).
     let handler_blocks: Vec<BlockId> = handlers.iter().map(|_| alloc_block()).collect();
+    let exc_blocks: Vec<BlockId> = handlers.iter().map(|_| alloc_block()).collect();
 
     // Pre-allocate argument locals for the handler with the most params.
     let max_args = handlers.iter().map(|(_, n)| *n).max().unwrap_or(0);
@@ -10205,7 +10214,23 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
         terminator: Terminator::Return(None),
     });
 
-    // Handler blocks: recv args, call handler, goto poll
+    // Handler blocks: recv args, call handler, check for an uncaught throw.
+    //
+    // A `throw` inside a handler that isn't caught by an internal try/catch
+    // sets the thread-local exception flag and returns early from the
+    // handler function (kryos-rt exception.rs). Left unchecked, the codegen
+    // backends' *automatic* post-call exception check would fire on this
+    // call instead (it fires after every user-function call) and return
+    // from THIS dispatch function — silently killing the actor's mailbox
+    // loop for good, with no diagnostic (the actor thread just exits).
+    //
+    // Explicitly checking here — with the check call placed immediately
+    // after the handler call — suppresses the backends' automatic check
+    // (both backends special-case "next instruction is a call to
+    // `kryos_exception_check`", the same signal `emit_exception_check`
+    // uses for try/catch) and lets us recover instead: take the exception,
+    // report it to stderr, and loop back to `bb_poll` for the next message.
+    // One bad message aborts only itself; the actor and its state survive.
     for (i, (handler_name, param_count)) in handlers.iter().enumerate() {
         let mut instructions = Vec::new();
 
@@ -10234,9 +10259,49 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
             },
         });
 
+        // Check for a pending exception left by the handler call above.
+        instructions.push(Instruction::Assign {
+            dest: exc_flag_local,
+            value: RValue::Call {
+                func: "kryos_exception_check".into(),
+                args: vec![],
+            },
+        });
+
         blocks.push(BasicBlock {
             id: handler_blocks[i],
             instructions,
+            terminator: Terminator::Branch {
+                cond: Operand::Local(exc_flag_local),
+                then_block: exc_blocks[i],
+                else_block: bb_poll,
+            },
+        });
+
+        // Exception-recovery block: take + report the exception (naming
+        // the actor and handler), then continue the loop.
+        let label = format!("{actor_name}.{handler_name}");
+        blocks.push(BasicBlock {
+            id: exc_blocks[i],
+            instructions: vec![
+                Instruction::Assign {
+                    dest: exc_val_local,
+                    value: RValue::Call {
+                        func: "kryos_exception_take".into(),
+                        args: vec![],
+                    },
+                },
+                Instruction::Assign {
+                    dest: exc_report_local,
+                    value: RValue::Call {
+                        func: "kryos_actor_report_exception".into(),
+                        args: vec![
+                            Operand::Constant(Constant::Str(label)),
+                            Operand::Local(exc_val_local),
+                        ],
+                    },
+                },
+            ],
             terminator: Terminator::Goto(bb_poll),
         });
     }

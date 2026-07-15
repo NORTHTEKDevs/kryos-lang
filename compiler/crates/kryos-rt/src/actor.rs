@@ -79,6 +79,15 @@ pub extern "C" fn kryos_actor_spawn(entry_fn: extern "C" fn(*mut u8), state_ptr:
         let ptr = state_addr as *mut u8;
         entry_fn(ptr);
 
+        // Defense in depth: the generated dispatch loop (`ActorName__dispatch`,
+        // see `generate_actor_dispatch` in kryos-mir) already catches and
+        // recovers from an uncaught throw per-message, so `entry_fn` should
+        // only return here with no exception pending (mailbox closed).
+        // Mirrors `kryos_spawn`'s report call so that IF an exception ever
+        // does escape the dispatch loop (e.g. a future codegen change),
+        // it is reported instead of silently vanishing with the thread.
+        crate::exception::kryos_exception_report_thread_if_pending();
+
         // Mark mailbox closed after actor function returns.
         {
             let mut mb = match entry_for_thread.mailbox.lock() {

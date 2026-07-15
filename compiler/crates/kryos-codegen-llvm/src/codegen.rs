@@ -898,6 +898,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_actor_recv_i64()");
         self.emit_line("declare i64 @kryos_actor_lock_i64(i64)");
         self.emit_line("declare i64 @kryos_actor_unlock_i64(i64)");
+        self.emit_line("declare i64 @kryos_actor_report_exception(i64, i64)");
         // Tensor runtime
         self.emit_line("declare i64 @kryos_tensor_zeros(ptr, i64)");
         self.emit_line("declare i64 @kryos_tensor_ones(ptr, i64)");

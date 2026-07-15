@@ -105,6 +105,59 @@ pub extern "C" fn kryos_exception_report_thread_if_pending() -> i64 {
     1
 }
 
+/// Report an exception caught by an actor's mailbox-dispatch loop after a
+/// handler call (see `generate_actor_dispatch` in kryos-mir, which places
+/// an explicit `kryos_exception_check`/`kryos_exception_take` pair right
+/// after every handler call so it can recover instead of dying silently).
+///
+/// `label` is a compile-time constant KryosString like "Worker.process"
+/// (`<actor>.<handler>`), not user data. `exc_val` is the exception value
+/// already taken via `kryos_exception_take` (ownership transferred to this
+/// call). Mirrors `kryos_exception_report_thread_if_pending`'s wording for
+/// the `spawn` path, so both surfaces read the same way in logs. Unlike the
+/// `spawn`/`main` report paths, this does NOT kill the caller — the actor's
+/// dispatch loop continues to the next message after this returns.
+#[no_mangle]
+pub extern "C" fn kryos_actor_report_exception(label: i64, exc_val: i64) -> i64 {
+    let label_text = if label != 0 {
+        let s = label as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                std::str::from_utf8(slice)
+                    .unwrap_or("<invalid utf-8>")
+                    .to_string()
+            } else {
+                "<actor>".to_string()
+            }
+        }
+    } else {
+        "<actor>".to_string()
+    };
+
+    let mut printed = false;
+    if exc_val != 0 {
+        let s = exc_val as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                if let Ok(text) = std::str::from_utf8(slice) {
+                    eprintln!("[actor error] {label_text}: uncaught exception: {text}");
+                    printed = true;
+                }
+            }
+        }
+    }
+    if !printed {
+        eprintln!("[actor error] {label_text}: uncaught exception (value: {exc_val})");
+    }
+    1
+}
+
 /// If an exception is pending, print it to stderr and exit nonzero.
 ///
 /// Compiled code inserts a call to this before every `return` in `main`,

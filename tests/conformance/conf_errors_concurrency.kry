@@ -49,6 +49,23 @@ actor Collector {
     }
 }
 
+// An uncaught `throw` inside an actor handler must NOT silently kill the actor:
+// it is logged ([actor error] ...) and the actor RECOVERS to process later
+// messages. A negative amount throws (no reply); good amounts accumulate and
+// reply their running total. Sending good/bad/good must yield 2 replies whose
+// second reflects BOTH good messages -- proving the actor survived the throw.
+actor Adder {
+    sum: i64
+
+    fn add(self, x: i64, reply: i64) {
+        if x < 0 {
+            throw "negative"
+        }
+        sum = sum + x
+        send(reply, sum)
+    }
+}
+
 // A match INSIDE a try block, and a nested-enum-in-tuple match with early-return
 // arms from fn params -- both created void-but-mutable placeholder locals whose
 // entry alloca was skipped, so AOT failed to build (`undefined value %_N.addr`).
@@ -191,6 +208,21 @@ fn main() {
         rgot = rgot + 1
     }
     expect(lensum == 6, "actor [str]/map state persists (1+2+3), not null-init")
+
+    // Actor recovers from an uncaught throw in a handler: send good(5),
+    // bad(-1 throws, no reply), good(10). We must get exactly 2 replies; the
+    // second is 15 (5+10), proving the actor survived the throw and its state
+    // is intact. A regression (actor dies on throw) would never send the 2nd
+    // reply. The throw is logged to stderr as `[actor error] ...` (not asserted
+    // here since it's stderr), but it is NOT silent and NOT fatal.
+    let ach = chan()
+    let adder = Adder()
+    adder.add(5, ach)
+    adder.add(-1, ach)
+    adder.add(10, ach)
+    let r1 = recv(ach)
+    let r2 = recv(ach)
+    expect(r1 + r2 == 5 + 15, "actor recovers from uncaught throw, processes later messages")
 
     println("conformance errors+concurrency: PASS")
 }

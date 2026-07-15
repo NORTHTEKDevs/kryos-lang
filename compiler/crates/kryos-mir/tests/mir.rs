@@ -2666,10 +2666,13 @@ fn actor_generates_dispatch_and_handlers() {
         .unwrap();
     assert!(dispatch.params.len() == 1, "dispatch takes 1 param (state)");
     assert!(dispatch.ret_ty == MirType::Void, "dispatch returns void");
-    // Should have: bb_poll, bb_switch, bb_exit, bb_h1 (increment), bb_h2 (reset)
+    // Should have: bb_poll, bb_switch, bb_exit, bb_h1 (increment), bb_h2
+    // (reset), plus one exception-recovery block per handler (bb_exc1,
+    // bb_exc2) so an uncaught throw inside a handler is reported and the
+    // dispatch loop recovers instead of dying silently.
     assert!(
-        dispatch.blocks.len() == 5,
-        "expected 5 blocks in dispatch, got {}",
+        dispatch.blocks.len() == 7,
+        "expected 7 blocks in dispatch, got {}",
         dispatch.blocks.len()
     );
 
