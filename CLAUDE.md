@@ -140,15 +140,15 @@ fn area(s: Shape) -> f64 {
 }
 ```
 
-## Ownership (the part Rust users will find familiar)
+## Value semantics (ARC-backed — reuse-after-pass is safe)
 
-Each value has exactly one owner. Passing a value to a function moves it; you can't use the original variable afterward. To keep using a value, either return it or take it by reference (current ergonomics: clone explicitly when in doubt — the compiler will tell you).
+`str`, `[T]`, `map<K, V>`, and structs/enums are reference-counted heap handles; primitives (`i64`, `f64`, `bool`) are `Copy`. Passing a value to a function **shares** the underlying data (a cheap refcount bump), so **reusing the original variable afterward is safe and allowed** — there is no destructive move, and you do **not** need `.clone()` to keep using a value after passing it:
 
 ```kryos
 fn main() {
     let s: str = "hello"
     consume(s)
-    // println(s)  // ERROR: `s` moved into consume
+    println(s)   // OK — `s` is still valid; the data is shared, not consumed
 }
 
 fn consume(x: str) {
@@ -156,9 +156,9 @@ fn consume(x: str) {
 }
 ```
 
-Strings and arrays are owned heap values. Primitives (`i64`, `f64`, `bool`) are `Copy` — they don't move. Structs containing only `Copy` fields are also `Copy`.
+The compiler runs an advisory ownership/borrow analysis and may surface move/borrow *diagnostics*, but it does **not** block reuse of ARC-backed values — programs that pass then reuse a value compile and run correctly on both backends. (This is deliberate: the self-host compiler threads shared handles through its passes under this model.)
 
-If you see `error[E0300]: use of moved value`, you need to either clone (`x.clone()` where available), pass by reference, or restructure to consume the value once.
+For an **independent** copy (so a later mutation of one does not affect the other), copy into a `let mut` local and mutate that — see gotcha #23 for the exact copy/mutation semantics. `.clone()` is not currently a method; assignment (`let b = a`) already deep-copies heap fields per gotcha #23.
 
 ## Error handling
 
@@ -318,7 +318,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 
 - `E0101` — unknown type. Did you misspell `i64` / `str` / etc.?
 - `E0102` — undefined variable. Likely typo or missing `use` import.
-- `E0300` — use of moved value. Clone, restructure, or return ownership.
+- `E0300` — advisory move diagnostic. ARC-backed values (`str`, `[T]`, `map`, structs) may be reused after being passed; this is a lint, not a hard error, and does not block compilation of reuse-after-pass.
 - `E0100` — type mismatch. Expected one type, found another.
 - Capability violations use `E0501`-`E0507` (import/missing/attenuation/escalation/builtin/FFI/propagation); unsafe-block misuse is `E0500`. Ownership: moved value `E0300`, uninitialized `E0301`, immutable assign `E0302`, partial move `E0303`, conditional-move warning `W0300`. (`E0382` is a Rust code, not Kryos.) All are explainable via `kryos explain <code>`.
 
