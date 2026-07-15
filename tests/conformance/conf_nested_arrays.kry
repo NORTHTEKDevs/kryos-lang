@@ -80,5 +80,21 @@ fn main() {
     expect(f2 == "n=3", "struct filler")
     expect(table[0].cells[0] == "p" and table[2].cells[1] == "q", "struct-with-array field intact")
 
+    // Filter/partition: a struct read via array index and pushed into a SECOND
+    // array. On Cranelift structs are raw shared pointers (no ref_count), so
+    // both arrays aliased the same element and double-freed it at teardown
+    // (exit 127). Fixed by cloning a struct index/field read that flows into a
+    // push. Both source and destination arrays must stay valid.
+    let mut passing: [Row] = []
+    let mut fi: i64 = 0
+    while fi < len(table) {
+        if len(table[fi].cells) == 2 {
+            passing = push(passing, table[fi])
+        }
+        fi = fi + 1
+    }
+    expect(len(passing) == 3, "filter struct-array into 2nd array")
+    expect(passing[0].cells[0] == "p" and table[0].cells[0] == "p", "both source and copy valid after filter")
+
     println("conformance nested-arrays: PASS")
 }

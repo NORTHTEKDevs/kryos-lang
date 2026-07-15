@@ -3738,6 +3738,39 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
+            // Synthetic marker inserted by MIR lowering for `push(dest_arr,
+            // struct_index_or_field_read)`: Cranelift represents structs
+            // uniformly as raw heap pointers (unlike LLVM, which loads a
+            // struct-typed array element as an SSA aggregate VALUE -- an
+            // inherent copy), so handing the raw pointer straight to push
+            // would alias the SAME heap block between the source container
+            // (still holding it) and the new destination array; both sides'
+            // scope-end drops then free it once each -> double-free (exit
+            // 127 at teardown, correct stdout up to that point). Deep-copy
+            // (malloc + field copy, cloning/retaining heap-owning subfields)
+            // so the destination array owns an independent instance, mirroring
+            // the by-value semantics LLVM gets for free. Falls back to the
+            // raw pointer if the struct has no known layout (defensive; the
+            // MIR lowering only emits this call for a real Struct(name) type
+            // present in struct_defs, so this should not trigger).
+            if func == "__kryos_struct_index_clone" && args.len() == 1 {
+                let val = translate_operand(&args[0], builder, translator, module)?;
+                let sname = dest
+                    .and_then(|d| translator.mir_func.locals.iter().find(|l| l.id == d))
+                    .and_then(|l| match &l.ty {
+                        MirType::Struct(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                if let Some(sname) = sname {
+                    if translator.struct_defs.contains_key(&sname) {
+                        let new_ptr =
+                            emit_struct_deep_copy(&sname, val, builder, translator, module)?;
+                        return Ok(Some(new_ptr));
+                    }
+                }
+                return Ok(Some(val));
+            }
+
             // Handle sleep() specially: convert f64 arg to bits (i64).
             if func == "sleep" && args.len() == 1 {
                 // `sleep(ms: i64)` -- the type checker declares an i64
@@ -4980,6 +5013,27 @@ fn translate_rvalue<M: Module>(
                             // drop only frees its elements when refcount==1,
                             // so views remain valid while the array lives.
                             // For independent copies, mark the struct @copy.
+                            //
+                            // NOTE: a plain Index read is intentionally left
+                            // as an alias (no copy) here -- copying
+                            // unconditionally on every read leaked one struct
+                            // block per read that was never stored anywhere
+                            // else (nothing in MIR's drop-tracking expects an
+                            // Index-read temp to own fresh heap memory, so a
+                            // codegen-only copy here is never freed). The
+                            // double-free this comment used to describe
+                            // (push(dest_arr, src_arr[i]) sharing
+                            // src_arr[i]'s block with dest_arr) is fixed at
+                            // the MIR level instead: `push`'s lowering
+                            // (kryos-mir/src/lower.rs, FnCall arg lowering)
+                            // detects a struct-typed Index/Field argument and
+                            // inserts an explicit `__kryos_struct_index_clone`
+                            // call (handled in this file's RValue::Call arm)
+                            // between the read and the push, so only that
+                            // specific aliasing-into-a-second-container shape
+                            // pays for a copy -- ordinary reads (loop
+                            // iteration, field access, printing) stay
+                            // alias-only and leak-free.
                             _ => raw_result,
                         }
                     } else {

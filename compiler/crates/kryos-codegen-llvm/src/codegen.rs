@@ -4705,6 +4705,29 @@ impl LlvmCodegen {
                         ));
                         self.emit_line(&format!("  call void @{print_fn}(ptr {handle_ptr})"));
                     }
+                } else if fname == "__kryos_struct_index_clone" && args.len() == 1 {
+                    // Synthetic marker MIR lowering inserts for `push(dest_arr,
+                    // struct_index_or_field_read)` (see kryos-mir/src/lower.rs
+                    // and the Cranelift codegen's handling of the same call
+                    // name). Cranelift needs an explicit deep-copy there
+                    // because it represents structs uniformly as raw heap
+                    // pointers; LLVM already produces an INDEPENDENT value
+                    // when it reads a struct-typed array element (`load %S,
+                    // ptr p` copies the aggregate's bytes into a fresh SSA
+                    // value/alloca, not just a pointer), so this is a pure
+                    // passthrough here -- no additional copy needed.
+                    let val = self.operand_to_llvm(&args[0], func);
+                    let val_ty = self.operand_type(&args[0], func);
+                    let coerced = self.coerce_value(&val, &val_ty, &dest_ty);
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        let name = format!("%_{}", dest.0);
+                        self.emit_identity_copy(&name, &dest_ty, &coerced);
+                    }
                 } else {
                     // If the callee uses aggregate (byval/sret) ABI, emit specialized call.
                     if let Some((ret_agg, param_aggs)) =

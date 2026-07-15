@@ -7987,6 +7987,53 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .enumerate()
                 .map(|(i, a)| {
                     let operand = lower_expr_to_operand(ctx, a);
+                    // push(dest_arr, struct_index_or_field_read): on the
+                    // Cranelift backend, structs are uniformly raw heap
+                    // pointers (no by-value SSA aggregate like LLVM's `load
+                    // %S`), so handing this read straight to push aliases
+                    // the SAME heap block between the SOURCE container
+                    // (still holding it, e.g. `students`) and the new
+                    // destination array (`passing`). Both containers'
+                    // scope-end drops then free it once each -> double-free
+                    // (Cranelift-only exit 127 at teardown; LLVM is immune
+                    // because reading a struct-typed element there is
+                    // inherently a value copy). Insert an explicit clone
+                    // call between the read and the push so the destination
+                    // owns an independent instance -- gated to exactly this
+                    // aliasing-read shape (Index/Field arg to push), NOT
+                    // fresh struct literals or constructor-call results:
+                    // those already own their sole allocation, and
+                    // `consume_call_args` below unconditionally suppresses
+                    // a pushed struct arg's own scope-end drop, so cloning a
+                    // fresh value here would leak the original (nothing else
+                    // would ever free it).
+                    let operand = if func_name == "push"
+                        && i == 1
+                        && matches!(
+                            a,
+                            ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
+                        )
+                    {
+                        if let MirType::Struct(ref sname) = infer_expr_type(ctx, a) {
+                            if ctx.struct_defs.contains_key(sname) {
+                                let cloned = ctx.alloc_temp(MirType::Struct(sname.clone()));
+                                ctx.emit(Instruction::Assign {
+                                    dest: cloned,
+                                    value: RValue::Call {
+                                        func: "__kryos_struct_index_clone".to_string(),
+                                        args: vec![operand],
+                                    },
+                                });
+                                Operand::Local(cloned)
+                            } else {
+                                operand
+                            }
+                        } else {
+                            operand
+                        }
+                    } else {
+                        operand
+                    };
                     // Check if this param expects a dyn Trait.
                     if let Some(ref ptypes) = param_types {
                         if let Some(MirType::DynTrait(ref trait_name)) = ptypes.get(i) {
