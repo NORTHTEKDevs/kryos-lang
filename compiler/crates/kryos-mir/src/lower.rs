@@ -1843,6 +1843,195 @@ fn emit_param_source_retain(ctx: &mut LoweringContext, holder: LocalId, src: Loc
     }
 }
 
+/// Give a struct-typed local its OWN independent reference to each of its
+/// directly-declared str/array/map fields. Used when a struct VALUE is
+/// extracted (bit-copy, no retain) from a container that still owns its
+/// own drop -- e.g. an enum match-arm payload bind (`Ok(next) => ..`)
+/// pulled out of a named `let result = f(..)` subject. Without this,
+/// `next`'s heap-owned fields alias the exact same buffers `result`'s own
+/// (un-suppressed) scope-end Drop frees, a use-after-free the next use of
+/// `next` (or whatever it's reassigned into) corrupts or crashes on.
+///
+/// A `str`/`map` field is handled with a plain container retain
+/// (`kryos_string_retain_opt`/`kryos_map_retain_opt`): both `next`'s copy
+/// and `result`'s copy then share one buffer with a correctly-balanced
+/// refcount, each releasing it exactly once at their own scope end.
+///
+/// An `array` field needs MORE than a container retain: `result`'s
+/// recursive struct-drop (dropping a STRUCT field, unlike dropping a bare
+/// array-typed variable) walks the array's OWN ELEMENTS and releases each
+/// one -- confirmed via KRYOS_STR_TRACE/KRYOS_ARR_TRACE: an element created
+/// two iterations ago accumulates one release per SUBSEQUENT iteration's
+/// `result`-drop (each iteration re-clones the whole history array,
+/// including old elements, into a fresh `result`), while it was only ever
+/// retained once (at push time) -- net negative, so an early element (e.g.
+/// history[0]) reaches refcount 0 and is freed while still live in
+/// `next`/`current`, well before a LATER element (history[len-1], touched
+/// by only one iteration's drop so far) shows the same symptom. A plain
+/// container retain does not compensate for this because it only protects
+/// the ARRAY HEADER, not each element inside it. `kryos_array_dup` (used
+/// elsewhere for the identical `let mut b = a` aliasing hazard) allocates
+/// an independent header+buffer AND bumps every non-null element's own
+/// refcount once, fully decoupling `next`'s copy from `result`'s -- so
+/// `result`'s per-iteration recursive drop only ever touches `result`'s OWN
+/// (now-independent) copy and its elements, never `next`'s.
+///
+/// One level deep only (does not recurse into a nested struct/enum field);
+/// that matches this fix's scope (a struct with scalar/str/array/map
+/// fields) and keeps the blast radius small.
+///
+/// Implementation note: this REBUILDS the whole struct value via a fresh
+/// `RValue::Struct` and reassigns `holder` in one shot, rather than
+/// reading one field and writing it back in place with `StoreField`. The
+/// StoreField version worked on AOT (LLVM materializes struct locals in
+/// memory either way) but NOT on the Cranelift JIT: a partial field
+/// mutation into an already-bound match-arm local did not reliably
+/// propagate to the arm body's later use of that local (the freshly
+/// duplicated array was allocated, then freed again immediately --
+/// matching the ORIGINAL bug's signature, meaning the arm body still saw
+/// the un-duplicated, subject-owned field). A full reassignment
+/// (`Instruction::Assign` with a complete `RValue::Struct`) is the same
+/// shape codegen already handles correctly for every other struct
+/// construction site, so it does not depend on cross-block field-mutation
+/// support this backend doesn't have.
+fn retain_struct_heap_fields(ctx: &mut LoweringContext, holder: LocalId, struct_name: String) {
+    let fields = ctx
+        .struct_defs
+        .get(struct_name.as_str())
+        .cloned()
+        .unwrap_or_default();
+    if fields.is_empty() {
+        return;
+    }
+    let mut new_fields: Vec<(String, Operand)> = Vec::with_capacity(fields.len());
+    for (field_name, field_ty) in &fields {
+        let field_val = ctx.alloc_temp(field_ty.clone());
+        ctx.emit(Instruction::Assign {
+            dest: field_val,
+            value: RValue::Field {
+                object: Operand::Local(holder),
+                field: field_name.clone(),
+            },
+        });
+        match field_ty {
+            MirType::Array(elem_ty, _) => {
+                // Independent header+buffer AND a per-element retain (see
+                // doc comment above) -- decouples this copy's array from
+                // the subject's, element-for-element.
+                let kind = array_elem_dup_kind(elem_ty);
+                let dup_tmp = ctx.alloc_temp(field_ty.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: dup_tmp,
+                    value: RValue::Call {
+                        func: "kryos_array_dup".to_string(),
+                        args: vec![Operand::Local(field_val), Operand::Constant(Constant::Int(kind))],
+                    },
+                });
+                new_fields.push((field_name.clone(), Operand::Local(dup_tmp)));
+            }
+            _ => {
+                if let Some(rf) = retain_for_ty(field_ty) {
+                    let sink = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: sink,
+                        value: RValue::Call {
+                            func: rf.to_string(),
+                            args: vec![Operand::Local(field_val)],
+                        },
+                    });
+                }
+                // Scalars (and str/map, retained above) pass through as-is:
+                // the field VALUE itself (an i64/f64/bool bit pattern, or a
+                // now independently-retained str/map handle) is reused
+                // directly in the rebuilt struct.
+                new_fields.push((field_name.clone(), Operand::Local(field_val)));
+            }
+        }
+    }
+    ctx.emit(Instruction::Assign {
+        dest: holder,
+        value: RValue::Struct {
+            name: struct_name,
+            fields: new_fields,
+        },
+    });
+}
+
+/// The pointer-inequality-guarded release function for a directly-owned
+/// container type. Mirrors `retain_for_ty` for the release side.
+fn release_if_ne_fn(ty: &MirType) -> Option<&'static str> {
+    match ty {
+        MirType::Str => Some("kryos_string_release_if_ne"),
+        MirType::Array(..) => Some("kryos_array_release_if_ne"),
+        MirType::Map { .. } => Some("kryos_map_release_if_ne"),
+        _ => None,
+    }
+}
+
+/// Release the OLD value's heap-owned fields (one level deep) when a
+/// STRUCT-typed local is overwritten by plain reassignment (`current =
+/// next`), guarded per-field by pointer inequality so an in-place mutator
+/// or a field the new value happens to still share is never freed out
+/// from under it.
+///
+/// Plain reassignment of a struct-typed local has no equivalent of the
+/// existing Str/Array/Map "reassignment release" (see `release_if_ne_fn`
+/// above and its call site) -- `release_fn` there is `None` for
+/// `MirType::Struct`, so overwriting a struct-typed local NEVER frees its
+/// previous heap-owned fields. That's an accepted pre-existing leak for a
+/// program that reassigns a struct only a handful of times. It stops being
+/// negligible once a fix gives each reassignment its OWN fresh
+/// independent array (see `retain_struct_heap_fields`'s `kryos_array_dup`)
+/// inside a hot loop: each iteration's now-orphaned independent copy (the
+/// OLD `current`'s fields, superseded by `next`'s) was never reclaimed,
+/// compounding into a multi-GB leak on a long-running loop (measured:
+/// several GB/s of RSS growth on a 40M-iteration soak before this was
+/// added). This closes that gap for the struct case specifically, using
+/// the SAME guarded release primitives the Str/Array/Map case already
+/// uses, so an in-place mutator or a field shared between old and new
+/// (pointer-equal) is still left alone.
+fn release_struct_heap_fields_if_ne(
+    ctx: &mut LoweringContext,
+    old_holder: LocalId,
+    new_holder: LocalId,
+    struct_name: &str,
+) {
+    let fields = ctx
+        .struct_defs
+        .get(struct_name)
+        .cloned()
+        .unwrap_or_default();
+    for (field_name, field_ty) in fields {
+        let Some(rf) = release_if_ne_fn(&field_ty) else {
+            continue;
+        };
+        let old_field = ctx.alloc_temp(field_ty.clone());
+        ctx.emit(Instruction::Assign {
+            dest: old_field,
+            value: RValue::Field {
+                object: Operand::Local(old_holder),
+                field: field_name.clone(),
+            },
+        });
+        let new_field = ctx.alloc_temp(field_ty.clone());
+        ctx.emit(Instruction::Assign {
+            dest: new_field,
+            value: RValue::Field {
+                object: Operand::Local(new_holder),
+                field: field_name,
+            },
+        });
+        let sink = ctx.alloc_temp(MirType::I64);
+        ctx.emit(Instruction::Assign {
+            dest: sink,
+            value: RValue::Call {
+                func: rf.to_string(),
+                args: vec![Operand::Local(old_field), Operand::Local(new_field)],
+            },
+        });
+    }
+}
+
 pub fn lower_function(
     ctx: &mut LoweringContext,
     name: &str,
@@ -2839,8 +3028,21 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 Some(MirType::Map { .. }) => Some("kryos_map_release_if_ne"),
                                 _ => None,
                             };
-                            let old_snapshot = match (release_fn, &dest_ty) {
-                                (Some(_), Some(ty)) if !ctx.dropped_locals.contains(&dest.0) => {
+                            // A non-copy STRUCT dest also needs its previous
+                            // heap-owned fields released on reassignment (see
+                            // `release_struct_heap_fields_if_ne`'s doc comment) --
+                            // tracked separately from `release_fn` since it's a
+                            // per-field recursive release, not a single call.
+                            let dest_struct_name = match &dest_ty {
+                                Some(MirType::Struct(n)) if !is_copy_type(ctx, dest_ty.as_ref().unwrap()) => {
+                                    Some(n.clone())
+                                }
+                                _ => None,
+                            };
+                            let old_snapshot = match &dest_ty {
+                                Some(ty) if (release_fn.is_some() || dest_struct_name.is_some())
+                                    && !ctx.dropped_locals.contains(&dest.0) =>
+                                {
                                     let t = ctx.alloc_temp(ty.clone());
                                     ctx.emit(Instruction::Assign {
                                         dest: t,
@@ -2924,6 +3126,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         ],
                                     },
                                 });
+                            } else if let (Some(struct_name), Some(old)) =
+                                (&dest_struct_name, old_snapshot)
+                            {
+                                drop_tag(ctx, "reassign-release-struct");
+                                release_struct_heap_fields_if_ne(ctx, old, dest, struct_name);
                             }
                             // The local now holds a fresh owned value.
                             ctx.dropped_locals.remove(&dest.0);
@@ -5869,8 +6076,20 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
                     other => other,
                 };
+                // A Struct payload gets its array/map fields REPLACED in
+                // place below (retain_struct_heap_fields -> StoreField), so
+                // its binding must be a MUTABLE local: an immutable local
+                // may be kept purely in an SSA value on the Cranelift JIT
+                // (no backing memory slot), silently dropping a StoreField
+                // into one of its fields, or letting the write land on a
+                // copy that the SUBJECT's payload (still aliased) also
+                // sees -- confirmed by JIT-only corruption (a slot that
+                // should hold an INDEPENDENT array clone was freed
+                // immediately after creation, matching the SUBJECT's own
+                // drop rather than staying owned by this binding).
+                let needs_mutable = matches!(&field_type, MirType::Struct(n) if !is_copy_type(ctx, &MirType::Struct(n.clone())));
                 let dest = if let ast::Pattern::Ident { name, .. } = pat {
-                    let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), false);
+                    let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), needs_mutable);
                     // Pre-mark non-copy payload bindings as consumed: they will be
                     // moved into the arm result, not dropped by scope cleanup.
                     if !is_copy_type(ctx, &field_type) {
@@ -5895,6 +6114,53 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                         field_idx: field_idx as u32,
                     },
                 });
+                // The payload bind above is a bit-copy (RValue::EnumPayload
+                // does not retain anything -- confirmed no retain/clone call
+                // in either backend's codegen). The match SUBJECT (e.g. a
+                // named `let result = f(..)`) still gets its own normal
+                // scope-end Drop, which -- when the subject is declared
+                // inside a loop body -- fires at the end of EVERY iteration
+                // and frees the payload's heap-owned data, including a
+                // STRUCT payload's nested str/array/map fields. `dest` (and
+                // whatever it's later reassigned into, e.g. `current =
+                // next`) still points at that same data: a genuine
+                // use-after-free the following iteration's mutation
+                // corrupts or crashes on (confirmed via KRYOS_ARR_TRACE
+                // instrumentation: a struct's array field is allocated,
+                // freed almost immediately by the subject's drop, then
+                // retained+pushed as a zombie/freed-sentinel header on the
+                // next iteration -- AOT panics inside kryos_array_push with
+                // ref_count=1 data=null; JIT segfaults at teardown).
+                //
+                // Fix: give `dest` its OWN independent reference to every
+                // heap-owned field it (transitively, one level, via a
+                // Struct payload) now holds, by retaining each one here.
+                // This must be a RETAIN (not a "suppress the subject's
+                // drop") because some fields (e.g. a plain `str` field
+                // sourced from a FieldAccess/bare-ident at the struct
+                // literal's OWN construction site) are already correctly,
+                // independently retained there -- blanket-suppressing the
+                // subject's drop instead would leak those (measured: ~1GB
+                // RSS growth per 2s over a 40M-iteration loop before this
+                // was corrected to a per-field retain).
+                match &field_type {
+                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => {
+                        if let Some(rf) = retain_for_ty(&field_type) {
+                            let sink = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: sink,
+                                value: RValue::Call {
+                                    func: rf.to_string(),
+                                    args: vec![Operand::Local(dest)],
+                                },
+                            });
+                        }
+                    }
+                    MirType::Struct(struct_name) if !is_copy_type(ctx, &field_type) => {
+                        retain_struct_heap_fields(ctx, dest, struct_name.clone());
+                    }
+                    _ => {}
+                }
                 if !matches!(pat, ast::Pattern::Ident { .. }) {
                     // Fail target: next same-tag arm / default / synthetic
                     // no-match (computed above; present whenever the arm has
