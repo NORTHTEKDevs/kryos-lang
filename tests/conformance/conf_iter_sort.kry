@@ -1,0 +1,50 @@
+// Conformance: std::iter::sort_by / sort_by_key must infer the array element
+// type into their comparator/key closures. They were declared `[any]` + bare
+// `fn` (no generic linking array element to closure params), so a struct-field
+// access in the comparator (`|a, b| b.salary - a.salary`) left the params as
+// unresolved type vars -> E0110. Now `sort_by<T>(arr:[T], cmp: fn(T,T)->i64)`
+// and `sort_by_key<T,K>(arr:[T], key_fn: fn(T)->K)`, matching filter/map/fold.
+
+use std::iter::{sort_by, sort_by_key, filter, map, fold}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Emp {
+    name: str,
+    salary: i64,
+}
+
+fn main() {
+    let es: [Emp] = [
+        Emp { name: "a", salary: 30 },
+        Emp { name: "bb", salary: 50 },
+        Emp { name: "ccc", salary: 40 },
+    ]
+    // Comparator closure accessing a struct field (the E0110 case).
+    let desc = sort_by(es, |a, b| b.salary - a.salary)
+    expect(desc[0].salary == 50 and desc[2].salary == 30, "sort_by struct field descending")
+    let asc = sort_by(es, |a, b| a.salary - b.salary)
+    expect(asc[0].salary == 30 and asc[2].salary == 50, "sort_by struct field ascending")
+    // Comparator using a str field.
+    let byname = sort_by(es, |a, b| len(a.name) - len(b.name))
+    expect(byname[0].name == "a" and byname[2].name == "ccc", "sort_by str-field length")
+    // sort_by_key (built atop sort_by) at a struct field.
+    let bykey = sort_by_key(es, |e| e.salary)
+    expect(bykey[0].salary == 30, "sort_by_key struct field")
+    // Plain [i64] sort still works.
+    let nums: [i64] = [9, 1, 5, 3]
+    let sn = sort_by(nums, |a, b| a - b)
+    expect(sn[0] == 1 and sn[3] == 9, "sort_by [i64]")
+    // filter/map/fold on the same struct array (regression).
+    let hi = filter(es, |e| e.salary > 35)
+    let names = map(es, |e| e.name)
+    let total = fold(es, 0, |acc, e| acc + e.salary)
+    expect(len(hi) == 2 and names[1] == "bb" and total == 120, "filter/map/fold on struct array")
+
+    println("conformance iter-sort: PASS")
+}

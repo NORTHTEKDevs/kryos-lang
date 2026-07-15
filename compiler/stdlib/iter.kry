@@ -441,7 +441,7 @@ fn sort(arr: [any]) -> [any] {
 
 /// Sort by a custom comparator. cmp(a, b) returns negative/zero/positive.
 /// Stable, iterative bottom-up merge sort (O(n log n)).
-fn sort_by(arr: [any], cmp: fn) -> [any] {
+fn sort_by<T>(arr: [T], cmp: fn(T, T) -> i64) -> [T] {
     let n = len(arr)
     let mut src = []
     let mut buf = []
@@ -488,7 +488,7 @@ fn sort_by(arr: [any], cmp: fn) -> [any] {
 }
 
 /// Sort by a key function: sort_by_key(users, fn(u) { return u.age }).
-fn sort_by_key(arr: [any], key_fn: fn) -> [any] {
+fn sort_by_key<T, K>(arr: [T], key_fn: fn(T) -> K) -> [T] {
     return sort_by(arr, fn(a, b) {
         let ka = key_fn(a)
         let kb = key_fn(b)
