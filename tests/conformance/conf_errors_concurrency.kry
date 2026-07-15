@@ -95,6 +95,18 @@ actor Dispatcher {
 // released the old value AND aliased the still-live local, whose scope-end drop
 // then freed the actor's persistent state (silent use-after-free / lost write).
 // The push-chain form persisted only by luck (fresh RHS, no other owner).
+// An actor method called from INSIDE a `spawn { }` block: the spawn body
+// re-materializes captured vars as params, whose actor type was erased to i64,
+// so `sink.absorb(..)` emitted a bare unmangled symbol -> link failure both
+// backends. Now a captured actor's logical type is recovered for dispatch.
+actor Sink {
+    acc: i64
+    fn absorb(self, v: i64, reply: i64) {
+        self.acc = self.acc + v
+        send(reply, self.acc)
+    }
+}
+
 actor Bag {
     data: [i64]
     fn fill(self, n: i64) {
@@ -291,6 +303,14 @@ fn main() {
     bag.size(bch)
     let bsz2 = recv(bch)
     expect(bsz == 5 and bsz2 == 2, "actor field reassigned from local persists (5, then 2)")
+
+    // Actor method invoked from inside a spawn { } block (worker -> collector).
+    let sjobs = chan()
+    let sdone = chan()
+    let sink = Sink()
+    spawn { let sv = recv(sjobs)  sink.absorb(sv, sdone) }
+    send(sjobs, 42)
+    expect(recv(sdone) == 42, "actor method called from inside a spawn block delivers")
 
     println("conformance errors+concurrency: PASS")
 }

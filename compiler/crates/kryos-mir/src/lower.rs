@@ -148,6 +148,23 @@ pub struct LoweringContext {
     /// recognized as an actor receiver and routed through actor dispatch,
     /// even though the field's physical (erased) type no longer says so.
     field_actor_types: HashMap<(String, String), String>,
+    /// Locals (function/closure/spawn-body PARAMS, and explicitly-annotated
+    /// `let`s) whose declared type names an actor: LocalId.0 -> actor_type_name.
+    /// Captured at param/let registration time, BEFORE `resolve_type`'s
+    /// actor-erasure rule turns the param's MirType into a bare `I64` slot.
+    /// Sibling of `field_actor_types`: that map recovers an actor's logical
+    /// type for a FIELD access; this one recovers it for a plain identifier
+    /// bound to an actor value that arrived via an explicit type annotation
+    /// (e.g. a `spawn { }` block's captured-variable parameter, or `let c:
+    /// Counter = ...`). Without it, `infer_type_name` on a bare identifier
+    /// sees only the erased `I64` and a method call on the actor lowers to a
+    /// plain unmangled call instead of the ActorSend/mailbox dispatch — this
+    /// is exactly what broke calling an actor method on a variable CAPTURED
+    /// by a `spawn { }` block (the capture is re-materialized as a typed
+    /// param, which goes through `resolve_type`, unlike the outer scope's
+    /// unannotated `let col = Collector()` whose type is inferred directly
+    /// from the constructor call and never erased).
+    local_actor_types: HashMap<u32, String>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
     /// Top-level mutable globals: name -> (MirType, init expression).
@@ -364,6 +381,7 @@ impl LoweringContext {
             actor_state_fields: HashMap::new(),
             current_actor: None,
             field_actor_types: HashMap::new(),
+            local_actor_types: HashMap::new(),
             const_defs: HashMap::new(),
             mutable_globals: HashMap::new(),
             mutable_global_order: Vec::new(),
@@ -577,6 +595,7 @@ impl LoweringContext {
         self.hidden_locals.clear();
         self.partial_moved_locals.clear();
         self.try_catch_target = None;
+        self.local_actor_types.clear();
     }
 
     /// Save the per-function state so we can restore it after monomorphization.
@@ -599,6 +618,7 @@ impl LoweringContext {
             // NOT inherit the enclosing function's try context — its blocks
             // and locals live in a different function.
             try_catch_target: self.try_catch_target.take(),
+            local_actor_types: std::mem::take(&mut self.local_actor_types),
         }
     }
 
@@ -616,6 +636,7 @@ impl LoweringContext {
         self.closure_locals = state.closure_locals;
         self.capture_boxes = state.capture_boxes;
         self.try_catch_target = state.try_catch_target;
+        self.local_actor_types = state.local_actor_types;
     }
 }
 
@@ -633,6 +654,7 @@ struct FunctionState {
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     capture_boxes: HashMap<String, Vec<LocalId>>,
     try_catch_target: Option<TryCatchTarget>,
+    local_actor_types: HashMap<u32, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2125,6 +2147,18 @@ pub fn lower_function(
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
             // Mark as parameter — callee must NOT drop/free these; the caller owns them.
             ctx.param_locals.insert(local.0);
+            // If the param's declared type names an actor, `resolve_type` just
+            // erased `ty` to a bare `I64` handle (actor VALUES are opaque
+            // handles). Record the logical actor name in `local_actor_types`
+            // BEFORE that information is lost, so a method call on this param
+            // inside the function body (e.g. a `spawn { }` wrapper's captured
+            // actor variable) still resolves through `infer_type_name` to the
+            // ActorSend/mailbox dispatch instead of a bare unmangled call.
+            if let Some(ast::TypeExpr::Simple { name: tn, .. }) = p.ty.as_ref() {
+                if ctx.actor_defs.contains_key(tn) {
+                    ctx.local_actor_types.insert(local.0, tn.clone());
+                }
+            }
             MirParam { local, ty }
         })
         .collect();
@@ -9934,6 +9968,21 @@ fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String
                     if let Some(actor_ty) =
                         ctx.field_actor_types.get(&(owner, field.clone())).cloned()
                     {
+                        return Some(actor_ty);
+                    }
+                }
+            }
+            // A bare identifier bound to an actor value via an explicit type
+            // annotation (a function/closure/spawn-body PARAM, or an
+            // annotated `let c: Counter = ...`) erases the same way through
+            // `resolve_type`. Recover the logical actor type from
+            // `local_actor_types`, captured at param/let registration time
+            // before the erasure -- sibling of the field recovery above, for
+            // the "actor captured by a `spawn { }` block" case (backlog:
+            // spawn-captured-actor dispatch).
+            if let ast::Expr::Identifier { name, .. } = expr {
+                if let Some(local_id) = find_local_by_name(ctx, name) {
+                    if let Some(actor_ty) = ctx.local_actor_types.get(&local_id.0).cloned() {
                         return Some(actor_ty);
                     }
                 }
