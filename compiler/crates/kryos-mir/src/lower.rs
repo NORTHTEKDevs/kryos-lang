@@ -7348,18 +7348,53 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             args: vec![Operand::Constant(Constant::Int(alloc_size))],
                         },
                     });
-                    // Initialize each state field to its default value (0).
+                    // Initialize each state field to its default value.
                     // Clone the field layout to avoid borrow conflict with ctx.
                     let fields = ctx
                         .actor_state_fields
                         .get(&func_name)
                         .cloned()
                         .unwrap_or_default();
-                    for (_field_name, field_idx) in &fields {
+                    // Field types (same declaration order/names as `fields`), used to
+                    // give collection-typed fields ([T] / map<K,V>) a valid EMPTY
+                    // handle instead of a raw 0. A 0 there is a NULL array/map
+                    // pointer: push/len/index/contains on it then either silently
+                    // no-op on the JIT (kryos_builtin_push short-circuits `arr_handle
+                    // == 0` and returns it unchanged, so the field never grows and
+                    // len() always reads 0) or panic "array is null" on AOT (LLVM
+                    // calls kryos_array_push directly, which null-checks and
+                    // diverges). Scalar fields (i64/f64/bool/str) are correctly
+                    // zero/null-safe by default, so only Array/Map get special init.
+                    let field_types = ctx
+                        .struct_defs
+                        .get(&func_name)
+                        .cloned()
+                        .unwrap_or_default();
+                    for (field_name, field_idx) in &fields {
+                        let field_ty = field_types.iter().find(|(n, _)| n == field_name).map(|(_, t)| t.clone());
+                        let init_value = match field_ty {
+                            Some(ty @ MirType::Array(..)) => {
+                                let tmp = ctx.alloc_temp(ty);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::Array(vec![]),
+                                });
+                                Operand::Local(tmp)
+                            }
+                            Some(ty @ MirType::Map { .. }) => {
+                                let tmp = ctx.alloc_temp(ty);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::Map(vec![]),
+                                });
+                                Operand::Local(tmp)
+                            }
+                            _ => Operand::Constant(Constant::Int(0)),
+                        };
                         ctx.emit(Instruction::ActorStateStore {
                             state_ptr,
                             field_offset: *field_idx,
-                            value: Operand::Constant(Constant::Int(0)),
+                            value: init_value,
                         });
                     }
                     Operand::Local(state_ptr)

@@ -33,6 +33,22 @@ actor Calc {
     }
 }
 
+// Actor with COLLECTION-typed state ([str] + map). These fields must be
+// initialized to real empty handles at construction (not a null 0-handle), or
+// push/index no-ops on the JIT (len stays 0) and panics `array is null` on AOT.
+// The handler replies its current length over a channel so main can assert
+// deterministically (no sleep race): after 3 pushes the lengths are 1,2,3.
+actor Collector {
+    items: [str]
+    seen: map<str, i64>
+
+    fn record(self, k: str, reply: i64) {
+        self.items = push(self.items, k)
+        self.seen[k] = len(self.items)
+        send(reply, len(self.items))
+    }
+}
+
 // A match INSIDE a try block, and a nested-enum-in-tuple match with early-return
 // arms from fn params -- both created void-but-mutable placeholder locals whose
 // entry alloca was skipped, so AOT failed to build (`undefined value %_N.addr`).
@@ -158,6 +174,23 @@ fn main() {
     let calc = Calc()
     calc.add(5.0)
     calc.clear()
+
+    // Actor with collection state: push into a [str] field across 3 messages;
+    // each handler replies its length over a channel. Lengths must be 1,2,3
+    // (sum 6) -- a null-initialized collection field would keep len at 0 (JIT)
+    // or panic (AOT). Deterministic via blocking recv, no sleep.
+    let rch = chan()
+    let col = Collector()
+    col.record("x", rch)
+    col.record("y", rch)
+    col.record("z", rch)
+    let mut lensum = 0
+    let mut rgot = 0
+    while rgot < 3 {
+        lensum = lensum + recv(rch)
+        rgot = rgot + 1
+    }
+    expect(lensum == 6, "actor [str]/map state persists (1+2+3), not null-init")
 
     println("conformance errors+concurrency: PASS")
 }
