@@ -39,6 +39,22 @@ impl<A, B> Pair<A, B> {
     }
 }
 
+// Instance method (has self) that CONSTRUCTS and returns a DIFFERENT generic
+// by value. Its `Box<T>` return is a named monomorphized aggregate, so the
+// body must be specialized per instantiation (T bound from the receiver's
+// concrete type) -- else AOT built one `Box___i64` copy and mismatched the
+// caller's `Box___str` (failed even single-instantiation). The bare `-> T`
+// field-return fast path (Box::get etc, self-host-critical) is untouched.
+struct Foo<T> {
+    inner: T,
+}
+
+impl<T> Foo<T> {
+    fn to_box(self: Foo<T>) -> Box<T> {
+        return Box { value: self.inner }
+    }
+}
+
 enum Maybe<T> {
     Just(T),
     Nothing,
@@ -72,6 +88,14 @@ fn main() {
     // matches: the first match (Maybe<i64>, v==99) permanently bound it to i64,
     // so the second (Maybe<str>, v=="z") failed E0100. The pattern payload now
     // instantiates fresh per match from the scrutinee's concrete type args.
+    // Instance method returning a constructed different generic, at two types.
+    let fi: Foo<i64> = Foo { inner: 7 }
+    let boxi: Box<i64> = fi.to_box()
+    expect(boxi.value == 7, "Foo<i64>.to_box() -> Box<i64>")
+    let fs: Foo<str> = Foo { inner: "converted" }
+    let boxs: Box<str> = fs.to_box()
+    expect(boxs.value == "converted", "Foo<str>.to_box() -> Box<str> (per-instantiation body)")
+
     let mi: Maybe<i64> = Maybe.wrap(99)
     let ms: Maybe<str> = Maybe.wrap("z")
     match mi {
