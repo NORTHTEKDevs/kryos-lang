@@ -2447,7 +2447,99 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     // Reads both operands, returns a fresh allocation; never stores or
     // frees its inputs (the binary `+` runtime path).
     "kryos_string_concat",
+    // Map/string accessor calls the surface builtins (`m[k]`, `contains`,
+    // `keys`, `map_delete`, `s[i]`) get rewritten to at lowering time --
+    // consume_call_args/drop_unescaped_str_temps see THIS name, not the
+    // surface one. All of these read or mutate-in-place the container
+    // (map/string) handle passed as arg 0 -- none of them take ownership of
+    // it or free it, so the container must keep its own scope-end Drop.
+    // (Array reads/writes use `RValue::Index`, not a Call, so they never
+    // reach consume_call_args in the first place -- no entry needed here.)
+    "kryos_map_get",
+    "kryos_map_get_str",
+    "kryos_map_has",
+    "kryos_map_has_str",
+    "kryos_map_keys",
+    "kryos_map_keys_str",
+    "kryos_map_delete",
+    "kryos_map_delete_str",
+    "kryos_string_char_at",
+    // `m[k] = v` (IndexAssign) lowers to kryos_map_insert(_str)(map, key, val)
+    // directly -- it never reaches consume_call_args at all (a separate
+    // lowering site, not the generic call path), so listing these here only
+    // affects drop_unescaped_str_temps's treatment of the VALUE argument.
+    // That site already compensates: it emits its OWN retain
+    // (kryos_string_retain_opt/kryos_array_retain_opt) on a container-typed
+    // value right after the insert call, giving the map an independent
+    // share. The caller's original value temp therefore still owns its OWN
+    // (un-retained) reference and must still get ITS OWN normal drop --
+    // without these entries the temp-drop walk bailed on the unrecognized
+    // callee and never dropped it, leaking one reference's worth of content
+    // per iteration (measured: a `map<i64,str>` loop leaked ~225 MB/3M despite
+    // the map's own container Drop already firing correctly). The KEY
+    // argument is unconditionally safe too: `insert_str` deep-copies the key
+    // into its own new allocation (see kryos_map_insert_str, kryos-rt) rather
+    // than aliasing the caller's, so the caller's key temp was never at risk
+    // either.
+    "kryos_map_insert",
+    "kryos_map_insert_str",
+    // Compiler-emitted compensating retains (kryos_map_insert(_str)'s value-
+    // arg retain, "let copy = container" bindings, borrow-to-own wrapping,
+    // etc.) always just bump a refcount and return the SAME handle -- they
+    // never store the argument elsewhere or free it, so passing a temp to
+    // one is never an escape. Without this, the retain call itself (which
+    // sits between a temp's definition and its otherwise-provably-safe use)
+    // made the temp-drop walk bail on an "unrecognized callee", leaking the
+    // caller's own share even after the container-side entry above let the
+    // caller's use of the temp survive.
+    "kryos_string_retain",
+    "kryos_string_retain_opt",
+    "kryos_array_retain",
+    "kryos_array_retain_opt",
+    "kryos_map_retain",
+    "kryos_map_retain_opt",
 ];
+
+/// Does `src`'s definition, within this instruction window, match the
+/// "Borrow-to-own" container-get pattern -- `src = call kryos_map_get(_str)`
+/// (a map read whose VALUE type is itself str/array/map) immediately
+/// compensated by a retain call on `src`? Both codegen backends emit this
+/// exact pair (`lower_expr_to_rvalue`'s Map IndexAccess arm) whenever a map's
+/// value type is a container, precisely so the destination independently
+/// owns a reference instead of aliasing the map's own entry. If so, whatever
+/// this value is subsequently `Use`d into inherits that owned reference.
+fn is_retained_container_get(instructions: &[Instruction], src: LocalId) -> bool {
+    const RETAIN_FNS: &[&str] = &[
+        "kryos_string_retain",
+        "kryos_string_retain_opt",
+        "kryos_array_retain",
+        "kryos_array_retain_opt",
+        "kryos_map_retain",
+        "kryos_map_retain_opt",
+    ];
+    let mut defined_by_map_get = false;
+    let mut retained = false;
+    for inst in instructions {
+        if let Instruction::Assign { dest, value } = inst {
+            if *dest == src {
+                if let RValue::Call { func, .. } = value {
+                    if func == "kryos_map_get" || func == "kryos_map_get_str" {
+                        defined_by_map_get = true;
+                    }
+                }
+                continue;
+            }
+            if let RValue::Call { func, args } = value {
+                if RETAIN_FNS.contains(&func.as_str())
+                    && args.iter().any(|a| matches!(a, Operand::Local(l) if *l == src))
+                {
+                    retained = true;
+                }
+            }
+        }
+    }
+    defined_by_map_get && retained
+}
 
 /// Statement-end cleanup for string expression TEMPORARIES (leak fix).
 ///
@@ -2548,6 +2640,19 @@ fn drop_unescaped_str_temps(
                     RValue::BinOp { op: MirBinOp::Add, .. } => true,
                     RValue::Call { func, .. } => {
                         func == "to_string" || func == "kryos_string_concat"
+                    }
+                    // `id = src` where `src`'s OWN definition in this same
+                    // window is a map-get of a container-typed value,
+                    // immediately compensated by a "Borrow-to-own" retain on
+                    // `src` (lower_expr_to_rvalue's Map IndexAccess arm).
+                    // That retain already gave `src` an independently-owned
+                    // reference; this Use is `src`'s ONLY mention besides its
+                    // own definition and the retain call (checked by the
+                    // escape walk below, which bails `src` out of `to_drop`
+                    // for exactly this reason), so `id` is now the sole
+                    // holder of that retained reference, not a bare alias.
+                    RValue::Use(Operand::Local(src)) => {
+                        is_retained_container_get(&ctx.current_instructions[inst_mark..], *src)
                     }
                     _ => false,
                 };

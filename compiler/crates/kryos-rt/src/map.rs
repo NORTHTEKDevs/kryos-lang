@@ -630,6 +630,99 @@ pub extern "C" fn kryos_map_free(map: i64) {
     }
 }
 
+/// Type-aware free for a map whose key and/or value is itself a heap type
+/// (str/array/map). `kryos_map_free` above is fully type-erased -- an
+/// occupied `MapEntry`'s `key`/`value` are opaque `i64`s to it, so even
+/// though it correctly frees the entries buffer + header, it has NO WAY to
+/// know one of those i64s is actually a pointer to heap data (e.g. the
+/// per-entry deep-copied key string `kryos_map_insert_str` stores). That
+/// content leaked unconditionally -- measured on a str-keyed `map<str,i64>`
+/// rebuilt fresh every loop iteration: ~470 bytes/iter even after the map's
+/// OWN header+entries were correctly freed every iteration.
+///
+/// Codegen calls this instead of `kryos_map_free` when the MIR-declared key
+/// or value type is heap-typed, passing simple kind flags resolved at
+/// compile time (0=scalar, 1=str, 2=array, 3=map). One level deep only --
+/// matches `retain_struct_heap_fields`'s established scope: a nested
+/// container's OWN heap-typed contents (e.g. a `map<str, [str]>` value's
+/// string elements) are not walked recursively here.
+///
+/// Maps only ever have a scalar or Str key (the `_str`-suffixed runtime
+/// entry points are the only two shapes `kryos_map_insert*`/`kryos_map_get*`
+/// come in), so `key_kind` is effectively boolean (0 or 1) in practice, but
+/// takes the same 0..=3 encoding as `value_kind` for symmetry with the
+/// caller's dispatch.
+#[no_mangle]
+pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64) {
+    if map == 0 {
+        return;
+    }
+    if crate::leak_on_zero() {
+        return;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        if crate::free_diag() {
+            // Diagnostic mode: never dealloc; report over-frees. Mirrors
+            // kryos_map_free's diag branch exactly -- entry content is not
+            // walked in diag mode either (nothing is ever freed in this
+            // mode, so there is nothing to leak-check here beyond the
+            // header's own rc, which is already covered by kryos_map_free's
+            // reporting path when this same map is also dropped there).
+            let rc = (*header).ref_count;
+            if rc <= 0 {
+                crate::diag_report(&format!(
+                    "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
+                return;
+            }
+            (*header).ref_count = rc - 1;
+            return;
+        }
+        let rc = (*header).ref_count;
+        if rc <= 0 {
+            return;
+        }
+        let new_rc = rc - 1;
+        (*header).ref_count = new_rc;
+        if new_rc > 0 {
+            return;
+        }
+        // Last reference: free each occupied entry's heap-typed key/value
+        // BEFORE the entries buffer itself is deallocated below.
+        if key_kind != 0 || value_kind != 0 {
+            let capacity = (*header).capacity as usize;
+            let entries = (*header).entries;
+            for i in 0..capacity {
+                let entry = &*entries.add(i);
+                if entry.occupied {
+                    free_entry_slot(entry.key, key_kind);
+                    free_entry_slot(entry.value, value_kind);
+                }
+            }
+        }
+        let capacity = (*header).capacity as usize;
+        free_entries((*header).entries, capacity);
+        (*header).len = 0;
+        (*header).capacity = 0;
+        (*header).entries = std::ptr::null_mut();
+        (*header).ref_count = 0;
+        MAP_HDR_POOL.put(header as *mut u8);
+    }
+}
+
+/// Free one entry slot's key or value handle according to its compile-time
+/// kind (0=scalar: no-op, 1=str, 2=array, 3=map). Used only by
+/// `kryos_map_free_typed`, which has already confirmed the map itself is
+/// dropping its LAST reference before calling this.
+unsafe fn free_entry_slot(handle: i64, kind: i64) {
+    match kind {
+        1 => crate::string::kryos_string_free(handle as *mut crate::string::KryosString),
+        2 => crate::array::kryos_array_free(handle as *mut crate::array::KryosArray),
+        3 => kryos_map_free(handle),
+        _ => {}
+    }
+}
+
 /// Reassignment release: free `old` unless it is the SAME handle as `new`.
 /// Map handles are i64; 0 = uninitialized. Emitted by the compiler before
 /// storing a new value into a mutable map local.

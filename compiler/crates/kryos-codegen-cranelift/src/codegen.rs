@@ -2817,6 +2817,16 @@ fn translate_instruction<M: Module>(
                             // Drop array elements, then free the array.
                             emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
+                        kryos_mir::ir::MirType::Map { .. } => {
+                            // `emit_drop_for_value` already handles Map (calls
+                            // kryos_map_free) but this outer match never routed
+                            // to it -- a map-typed local's Drop silently did
+                            // NOTHING on Cranelift (fell into the `_ => {}`
+                            // catch-all below), so its header+entries buffer
+                            // was never freed at all on this backend regardless
+                            // of MIR-level drop-insertion correctness.
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
+                        }
                         _ => {}
                     }
                 }
@@ -6650,11 +6660,48 @@ fn emit_drop_for_value<M: Module>(
                 ensure_func_ref_with_args("kryos_arc_release", builder, translator, module, 1)?;
             builder.ins().call(release_ref, &[val]);
         }
-        MirType::Map { .. } => {
-            // Maps use their own allocator — call kryos_map_free directly.
-            let free_ref =
-                ensure_func_ref_with_args("kryos_map_free", builder, translator, module, 1)?;
-            builder.ins().call(free_ref, &[val]);
+        MirType::Map { key, value } => {
+            // Maps use their own allocator. `kryos_map_free` alone is type-
+            // erased: it frees the entries buffer + header but has no idea
+            // an occupied entry's key/value i64 is actually a heap pointer
+            // (e.g. the string `kryos_map_insert_str` deep-copies per key)
+            // -- that content leaked unconditionally. Route through the
+            // type-aware free whenever key or value is heap-typed;
+            // scalar-only maps keep calling the plain free (identical
+            // codegen to before).
+            let kind_of = |t: &MirType| -> i64 {
+                match t {
+                    MirType::Str => 1,
+                    MirType::Array(_, _) => 2,
+                    MirType::Map { .. } => 3,
+                    _ => 0,
+                }
+            };
+            let key_kind = kind_of(key.as_ref());
+            let value_kind = kind_of(value.as_ref());
+            if key_kind == 0 && value_kind == 0 {
+                let free_ref = ensure_func_ref_with_args(
+                    "kryos_map_free",
+                    builder,
+                    translator,
+                    module,
+                    1,
+                )?;
+                builder.ins().call(free_ref, &[val]);
+            } else {
+                let free_ref = ensure_func_ref_with_args(
+                    "kryos_map_free_typed",
+                    builder,
+                    translator,
+                    module,
+                    3,
+                )?;
+                let key_kind_val = builder.ins().iconst(types::I64, key_kind);
+                let value_kind_val = builder.ins().iconst(types::I64, value_kind);
+                builder
+                    .ins()
+                    .call(free_ref, &[val, key_kind_val, value_kind_val]);
+            }
         }
         MirType::Struct(ref name) => {
             // Guard: a struct local can legitimately hold null — a callee that

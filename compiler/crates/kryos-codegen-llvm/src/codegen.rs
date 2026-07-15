@@ -801,6 +801,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_map_get_str(i64, i64)");
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
+        self.emit_line("declare void @kryos_map_free_typed(i64, i64, i64)");
         self.emit_line("declare i64 @kryos_map_clone(i64)");
         self.emit_line("declare ptr @kryos_string_clone(ptr)");
         self.emit_line("declare ptr @kryos_array_clone(ptr)");
@@ -3413,11 +3414,36 @@ impl LlvmCodegen {
                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
                     }
-                    Some(MirType::Map { .. }) => {
+                    Some(MirType::Map { key, value }) => {
                         // A map local is already an i64 handle (MirType::Map -> i64),
                         // so pass it straight to free; ptrtoint-ing it would treat an
                         // i64 as a ptr and fail LLVM verification.
-                        self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
+                        //
+                        // `kryos_map_free` alone is type-erased: it frees the
+                        // entries buffer + header but has no idea an occupied
+                        // entry's key/value i64 is actually a heap pointer
+                        // (e.g. the string `kryos_map_insert_str` deep-copies
+                        // per key) -- that content leaked unconditionally.
+                        // Route through the type-aware free whenever key or
+                        // value is heap-typed; scalar-only maps keep calling
+                        // the plain free (identical codegen to before).
+                        let kind_of = |t: &MirType| -> i64 {
+                            match t {
+                                MirType::Str => 1,
+                                MirType::Array(_, _) => 2,
+                                MirType::Map { .. } => 3,
+                                _ => 0,
+                            }
+                        };
+                        let key_kind = kind_of(key.as_ref());
+                        let value_kind = kind_of(value.as_ref());
+                        if key_kind == 0 && value_kind == 0 {
+                            self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
+                        } else {
+                            self.emit_line(&format!(
+                                "  call void @kryos_map_free_typed(i64 {val}, i64 {key_kind}, i64 {value_kind})"
+                            ));
+                        }
                     }
                     Some(MirType::Struct(name)) => {
                         // @copy structs are passed by value and share field pointers;
