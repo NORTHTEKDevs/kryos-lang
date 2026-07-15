@@ -11427,6 +11427,21 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
         return mangled;
     }
 
+    // Insert a placeholder BEFORE substituting variant field types. A
+    // self-referential generic enum (e.g. `List<T> { Nil, Cons(T, List<T>) }`)
+    // has a variant field that is itself `List<T>` — substituting it below
+    // calls back into `monomorphize_enum(ctx, "List", [i64])` for the SAME
+    // mangled name while this outer call is still running. Without an entry
+    // present yet, the "already monomorphized" check above never short-
+    // circuits that reentrant call, which recurses the same way again, ad
+    // infinitum, overflowing the stack (in both the JIT and AOT pipelines,
+    // since both lower through this fn). Reserving the slot first lets the
+    // reentrant call see it and return immediately, exactly as it does for a
+    // second, wholly separate `monomorphize_enum` call after this one
+    // finishes. The placeholder is overwritten with the real definition
+    // once field substitution completes.
+    ctx.enum_defs.insert(mangled.clone(), Vec::new());
+
     // Substitute type parameters in the variant field types.
     let variant_defs: Vec<EnumVariantDef> = variants
         .iter()
@@ -11445,7 +11460,7 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
         })
         .collect();
 
-    // Insert the monomorphized enum definition.
+    // Insert the monomorphized enum definition (overwrites the placeholder).
     ctx.enum_defs.insert(mangled.clone(), variant_defs);
 
     mangled

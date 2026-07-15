@@ -1973,11 +1973,30 @@ impl TypeChecker {
                         params,
                         ret: Box::new(ret),
                     }
-                } else if self.env.lookup_enum(name).is_some() {
+                } else if let Some(edef) = self.env.lookup_enum(name).cloned() {
                     // Enum name used as a namespace (e.g., `Color` in `Color.Red`).
+                    // Instantiate FRESH generics matching the enum's declared
+                    // arity here too -- this type flows straight into the dot
+                    // FieldAccess arm below for a NULLARY variant (`Box.Empty`),
+                    // which used to inherit a hardcoded EMPTY generics vec no
+                    // matter the enum's arity. That made `Box.Empty` type as
+                    // bare `Box` (0 generics) instead of `Box<?T>`, so it could
+                    // never unify with an expected concrete instantiation like
+                    // `Box<i64>` (the unify arm below requires equal generics
+                    // length) -- a nullary variant of a user generic enum was
+                    // wrongly rejected (E0100) in a `let`/return/match context
+                    // that the same-shaped `Box::Empty` (qualified path just
+                    // below) and bare `Empty` (further down) already handled
+                    // correctly via this same fresh-var-per-generic-param
+                    // instantiation.
+                    let fresh_generics: Vec<Type> = edef
+                        .generic_var_ids
+                        .iter()
+                        .map(|_| self.engine.fresh_var())
+                        .collect();
                     Type::Enum {
                         name: name.clone(),
-                        generics: vec![],
+                        generics: fresh_generics,
                     }
                 } else if let Some((ename, edef)) = name.split_once("::").and_then(|(e, v)| {
                     // Qualified NULLARY enum variant, e.g. `Opt::None`. The parser

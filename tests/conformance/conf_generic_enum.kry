@@ -1,0 +1,60 @@
+// Conformance: a NULLARY variant of a user-defined GENERIC enum used against an
+// explicit concrete type. `Box.Empty` (dot-namespace form) always produced an
+// empty generics list, so it typed as bare `Box` (0 generics) and could not
+// unify with `Box<i64>` (1 generic) -> false E0100. Option/Result::None are a
+// distinct special-cased Type variant, so they never hit this. The enum-
+// namespace branch now instantiates fresh generic vars matching the enum's
+// arity, like every other variant-reference path. (Self-referential recursive
+// generic enums like List<T> additionally work on AOT; the Cranelift-JIT
+// runtime for them is a separate follow-up, so this file uses a non-recursive
+// generic enum to stay clean on both backends.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+enum Box<T> {
+    Empty,
+    Full(T),
+}
+
+fn describe(b: Box<i64>) -> str {
+    match b {
+        Empty => return "empty",
+        Full(v) => return "full:" + to_string(v),
+    }
+}
+
+fn make_empty() -> Box<i64> {
+    return Box.Empty
+}
+
+fn main() {
+    // Nullary variant against a let annotation, both spellings.
+    let e: Box<i64> = Box.Empty
+    let e2: Box<i64> = Box::Empty
+    let f: Box<i64> = Box.Full(42)
+    expect(describe(e) == "empty", "nullary generic-enum variant Box.Empty (dot)")
+    expect(describe(e2) == "empty", "nullary generic-enum variant Box::Empty (colon)")
+    expect(describe(f) == "full:42", "generic-enum payload variant")
+
+    // Nullary variant from a fn return type.
+    expect(describe(make_empty()) == "empty", "nullary generic-enum variant from fn return")
+
+    // Different instantiation (Box<str>) in the same program -- no contamination.
+    let s: Box<str> = Box.Empty
+    match s {
+        Empty => expect(true, "Box<str>.Empty"),
+        Full(v) => expect(false, "Box<str> unexpected Full"),
+    }
+    let sf: Box<str> = Box.Full("hi")
+    match sf {
+        Empty => expect(false, "Box<str> unexpected Empty"),
+        Full(v) => expect(v == "hi", "Box<str>.Full payload"),
+    }
+
+    println("conformance generic-enum: PASS")
+}
