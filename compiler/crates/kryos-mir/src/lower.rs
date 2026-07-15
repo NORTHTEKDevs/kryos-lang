@@ -6863,6 +6863,24 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
             let inferred_ty = infer_expr_type(ctx, expr);
             let rvalue = lower_expr_to_rvalue(ctx, expr);
             let temp = ctx.alloc_temp(inferred_ty);
+            // If this call's result is being embedded directly in a larger
+            // expression (array/tuple/struct literal element, binary-op
+            // operand, nested call argument, ...) rather than bound by a
+            // top-level `let`, mark its non-copy args consumed exactly as the
+            // `let`-binding path does below. Without this, a by-value method
+            // receiver used as e.g. `[recv.method(), ...]` was never added to
+            // `dropped_locals`: the receiver got its own ordinary scope-end
+            // Drop AND the field the callee returned/extracted from it (which
+            // aliases the same box on the Cranelift backend, since a non-
+            // `@copy` struct receiver is passed by the caller's own pointer,
+            // not a defensive copy) was independently owned and dropped a
+            // second time by whatever now holds it -- a double-free of the
+            // same box (JIT-only: `pp.first_of()` embedded in an array
+            // literal froze then double-freed `pp`'s boxed field, silent
+            // heap corruption -> bare exit 127 with correct stdout).
+            if let RValue::Call { ref func, ref args } = rvalue {
+                consume_call_args(ctx, temp, func, args);
+            }
             ctx.emit(Instruction::Assign {
                 dest: temp,
                 value: rvalue,

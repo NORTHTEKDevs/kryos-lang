@@ -1,0 +1,29 @@
+// Regression: a by-value method call whose result is EMBEDDED directly in a
+// larger expression (array/tuple/struct-literal element, binary operand,
+// nested call arg) rather than bound by a top-level `let`. The embedded path
+// in lower_expr_to_operand never marked the (moved) receiver consumed, so the
+// receiver got its own scope-end drop AND the field it returned (aliasing the
+// same box on Cranelift) was dropped again -> silent box double-free, JIT
+// exit 127 with correct stdout. Fixed by calling consume_call_args on the
+// embedded RValue::Call, mirroring the let-binding path.
+struct Pair<A, B> { first: A, second: B }
+impl<A, B> Pair<A, B> { fn first_of(self: Pair<A, B>) -> A { return self.first } }
+struct Wrap { w: Pair<i64, i64> }
+fn take(p: Pair<i64, i64>) -> i64 { return p.first + p.second }
+fn expect(cond: bool, what: str) {
+    if not cond { println("SMOKE FAIL: {what}") exit(1) }
+}
+fn main() {
+    // array-literal element
+    let p1: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 1, second: 2 }, second: 3 }
+    let a: [Pair<i64, i64>] = [p1.first_of(), Pair { first: 40, second: 50 }]
+    expect(a[0].second == 2 and a[1].first == 40, "method result as array element")
+    // struct-literal field
+    let p2: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 7, second: 8 }, second: 9 }
+    let w: Wrap = Wrap { w: p2.first_of() }
+    expect(w.w.first == 7 and w.w.second == 8, "method result as struct field")
+    // nested call argument
+    let p3: Pair<Pair<i64, i64>, i64> = Pair { first: Pair { first: 5, second: 6 }, second: 9 }
+    expect(take(p3.first_of()) == 11, "method result as call argument")
+    println("test_embedded_method_call: PASS")
+}
