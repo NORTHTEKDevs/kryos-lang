@@ -70,5 +70,21 @@ fn main() {
     }
     expect(pick(true) == 1 and pick(false) == 2, "early return")
 
+    // A nested (local) fn that calls ITSELF recursively. A nested fn desugars to
+    // `let name = |..|`, and a Let's value is checked/lowered before its name is
+    // bound, so a self-call raised E0102 (undefined). The name is now pre-bound
+    // before its own body. (Non-capturing self-recursion; mutual recursion and
+    // capturing recursion between nested fns remain unsupported by design.)
+    fn nfact(n: i64) -> i64 {
+        if n <= 1 { return 1 }
+        return n * nfact(n - 1)
+    }
+    expect(nfact(5) == 120, "nested fn self-recursion")
+    fn nsum(a: [i64], i: i64) -> i64 {
+        if i >= len(a) { return 0 }
+        return a[i] + nsum(a, i + 1)
+    }
+    expect(nsum([1, 2, 3, 4], 0) == 10, "nested fn recursion over an array")
+
     println("conformance functions: PASS")
 }

@@ -73,6 +73,16 @@ pub struct TypeChecker {
     /// bug: the call-site FunctionSig.ret was wrongly set to the declared
     /// type even though codegen discards the actual return).
     actor_nonvoid_handlers: std::collections::HashMap<(String, String), Type>,
+    /// Set by `Stmt::Let` just before checking a Lambda-valued initializer
+    /// (`let name = |...| { ... }`, which is also what a nested/local named
+    /// `fn name(...) { ... }` desugars to in the parser). Consumed once by
+    /// the very next `Expr::Lambda` check, which pre-binds `name` to its own
+    /// (still-inferring) Function type in the ENCLOSING scope before pushing
+    /// the lambda's body scope -- so a self-recursive call inside the body
+    /// resolves instead of raising E0102 "undefined variable". Mirrors the
+    /// top-level two-pass model (signatures collected before any body is
+    /// checked) for this one nested/let-bound case.
+    pending_self_recursive_name: Option<String>,
 }
 
 impl Default for TypeChecker {
@@ -100,6 +110,7 @@ impl TypeChecker {
             resolved_let_types: std::collections::HashMap::new(),
             unsafe_depth: 0,
             actor_nonvoid_handlers: std::collections::HashMap::new(),
+            pending_self_recursive_name: None,
         }
     }
 
@@ -1295,6 +1306,14 @@ impl TypeChecker {
                 pattern,
             } => {
                 let declared_ty = ty.as_ref().map(|t| self.resolve_type_expr(t));
+                // A plain `let name = |...| { ... }` binding (no destructuring
+                // pattern) may recurse through its own name -- this is exactly
+                // what a nested/local `fn name(...) { ... }` desugars to in the
+                // parser. Flag it so the upcoming `Expr::Lambda` check can
+                // pre-bind `name` before checking its own body.
+                if pattern.is_none() && matches!(value, Some(Expr::Lambda { .. })) {
+                    self.pending_self_recursive_name = Some(name.clone());
+                }
                 let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
 
                 let final_ty = match (declared_ty, inferred_ty) {
@@ -3136,6 +3155,28 @@ impl TypeChecker {
                 // lambda body are validated against the declared return type.
                 let prev_ret = self.current_return_type.take();
                 self.current_return_type = Some(ret.clone());
+
+                // Pre-bind a pending self-recursive name (set by `Stmt::Let`
+                // just before this lambda was checked) to this lambda's own
+                // Function type, in the CURRENT (enclosing) scope -- i.e.
+                // BEFORE pushing the body's scope below. `TypeEnv::lookup_var`
+                // walks scopes innermost-to-outermost, so a call to `name`
+                // inside the body falls through the body scope (which only
+                // has the params) and finds this binding in the enclosing
+                // scope. Consumed (take) so a nested lambda inside this body
+                // does not also pick it up. The immediately-following
+                // `Stmt::Let` in the caller redefines `name` in this same
+                // scope with the fully-resolved type once this lambda
+                // finishes checking, so nothing needs cleanup here.
+                if let Some(self_name) = self.pending_self_recursive_name.take() {
+                    self.env.define_var(
+                        self_name,
+                        Type::Function {
+                            params: param_types.clone(),
+                            ret: Box::new(ret.clone()),
+                        },
+                    );
+                }
 
                 self.env.push_scope();
                 for (param, ty) in params.iter().zip(param_types.iter()) {

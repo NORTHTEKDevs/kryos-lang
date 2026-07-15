@@ -207,6 +207,22 @@ pub struct LoweringContext {
     /// value-snapshot capture (see `capture_boxes`). Never sees a nested
     /// lambda: the Lambda arm resets it before lowering its own body.
     pending_box_scalar_captures: bool,
+    /// Set by `Stmt::Let` just before lowering a Lambda-valued initializer
+    /// (`let name = |...| { ... }` -- also what a nested/local named
+    /// `fn name(...) { ... }` desugars to in the parser), immediately before
+    /// the RHS is lowered. Consumed (reset to `None`) at the top of the
+    /// `Expr::Lambda` arm, AFTER `save_function_state()` has swapped in a
+    /// fresh `closure_locals` map for the lambda's own body frame: registers
+    /// `name -> (this lambda's mangled fn name, no captures)` in that fresh
+    /// map so a self-recursive call to `name` inside the body resolves to a
+    /// direct call of the lambda's own hoisted function, instead of falling
+    /// through to a call to a top-level function literally named `name`
+    /// (which does not exist -- the hoisted function is `__lambda_N` --
+    /// and previously either linked to a bogus symbol or, worse, silently
+    /// allocated a fresh uninitialized local named `name`). Scoped like
+    /// `closure_locals`: discarded when `restore_function_state` runs, so it
+    /// never leaks past this one lambda's own body.
+    pending_self_recursive_name: Option<String>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -364,6 +380,7 @@ impl LoweringContext {
             partial_moved_locals: HashSet::new(),
             capture_boxes: HashMap::new(),
             pending_box_scalar_captures: false,
+            pending_self_recursive_name: None,
         }
     }
 
@@ -2873,6 +2890,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 }
 
                 let is_shared = matches!(expr, ast::Expr::SharedExpr { .. });
+                // A plain `let name = |...| { ... }` (no destructuring
+                // pattern) may recurse through its own name -- see
+                // `pending_self_recursive_name` doc comment. Set it just
+                // before lowering the RHS so the `Expr::Lambda` arm can
+                // register the self-call mapping for its own body frame.
+                if pattern.is_none() && matches!(expr, ast::Expr::Lambda { .. }) {
+                    ctx.pending_self_recursive_name = Some(name.clone());
+                }
                 let rvalue = lower_expr_to_rvalue(ctx, expr);
                 let mark_non_owning = matches!(
                     expr,
@@ -7992,7 +8017,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         matches!(l.ty, MirType::Function { .. })
                             || !ctx.func_ret_types.contains_key(&func_name)
                     })
-                    .unwrap_or(false);
+                    .unwrap_or(false)
+                    // A self-recursive call from INSIDE a `let name = |...| {..}`
+                    // lambda's own body: `name` has no local yet at this point
+                    // (the enclosing `let` only allocates it AFTER the RHS is
+                    // fully lowered), but the `Expr::Lambda` arm pre-registered
+                    // `name` in `closure_locals` for exactly this case. Without
+                    // this, the call fell through to the plain-function-call
+                    // fallback below and referenced a top-level symbol literally
+                    // named `name`, which does not exist (the hoisted function
+                    // is `__lambda_N`).
+                    || ctx.closure_locals.contains_key(&func_name);
                 if is_fn_local {
                     // If this local is a tracked closure with captures,
                     // emit a direct call with captures prepended.
@@ -9091,6 +9126,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Save state, lower the lambda as a standalone function.
             let saved = ctx.save_function_state();
+
+            // If a `Stmt::Let` just above flagged this lambda as the value of
+            // `let name = |...| { ... }` (see `pending_self_recursive_name`),
+            // register `name` in the FRESH `closure_locals` map that
+            // `save_function_state` just swapped in for this lambda's own
+            // body frame -- so a self-recursive call to `name` inside the
+            // body (which cannot see the enclosing `let`'s not-yet-allocated
+            // local) resolves via the direct-call path in the `FnCall` arm
+            // below to THIS lambda's own hoisted function, instead of
+            // falling through to an undefined top-level symbol literally
+            // named `name`. No captures: this only covers non-capturing
+            // self-recursion (a captured variable would need to be
+            // re-threaded through the recursive call as well, which is not
+            // attempted here).
+            if let Some(self_name) = ctx.pending_self_recursive_name.take() {
+                ctx.closure_locals
+                    .insert(self_name, (lambda_name.clone(), Vec::new()));
+            }
 
             // Create a block from the body expression.
             let body_block = ast::Block {
