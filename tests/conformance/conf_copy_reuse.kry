@@ -26,6 +26,22 @@ struct Rec {
     tags: i64,
 }
 
+struct Alloc {
+    heap: [i64],
+}
+
+// A COPY element of a tuple whose sibling is a heap-bearing struct, reused
+// multiple times -- both as a tuple PARAMETER and a tuple LOCAL. The ownership
+// checker marked any tuple-field access as a partial move without checking the
+// FIELD's own type, so a Copy element (i64) got move-tracked and reuse raised a
+// false E0303. Now a Copy tuple/struct field access is a `use`, never a move.
+fn reuse_tuple_param(t: (Alloc, str, i64)) -> i64 {
+    let mut n: i64 = t.2
+    n = n + t.2
+    n = n + t.2
+    return n + len(t.1)
+}
+
 fn main() {
     let mut si: [i64] = [10, 42]
     let a = pop(si)
@@ -73,6 +89,13 @@ fn main() {
     mm1["k"] = 42
     let mm2: map<str, i64> = mm1
     expect(mm1["k"] == 42 and mm2["k"] == 42, "map assignment reuse (both valid)")
+
+    // Copy tuple-field reuse: as a param, and as a local (sibling is heap struct).
+    expect(reuse_tuple_param((Alloc { heap: [1] }, "hi", 10)) == 32, "Copy tuple-field reuse via param (10*3 + 2)")
+    let pr: (Alloc, i64) = (Alloc { heap: [9] }, 5)
+    let mut s: i64 = pr.1
+    s = s + pr.1
+    expect(s == 10, "Copy tuple-field reuse via local (not partial-moved)")
 
     println("conformance copy-reuse: PASS")
 }

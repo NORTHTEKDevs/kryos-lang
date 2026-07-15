@@ -101,6 +101,23 @@ pub struct OwnershipAnalyzer {
     /// builtin-return whitelist, so reusing `a` (a genuine i64) triggered
     /// a false "use of moved value" (E0300).
     var_elem_is_copy: HashMap<String, bool>,
+    /// Function name → declared tuple return-type element TypeExprs (if any).
+    /// Mirrors `fn_return_struct_names` for tuple returns, so a direct field
+    /// access on a call result (`make_pair(a).1`) can resolve the specific
+    /// element's type rather than falling back to the whole tuple's copy-ness.
+    fn_return_tuple_elems: HashMap<String, Vec<kryos_ast::TypeExpr>>,
+    /// Variable name → tuple element TypeExprs, populated from tuple-typed
+    /// `let` bindings (annotation, or inferred from a tuple-returning call).
+    /// Needed because a tuple's OWN copy-ness (`is_type_expr_copy` for
+    /// `TypeExpr::Tuple`) requires ALL elements to be Copy, but an individual
+    /// FIELD access (`pair.1`) must be judged by that field's own element
+    /// type: a Copy field (`i64`/`f64`/`bool`) of a tuple with a non-Copy
+    /// sibling (e.g. `(Alloc, i64)`) is itself always Copy and can never be
+    /// "moved". Without this map, `pair.1` fell back to `pair`'s overall
+    /// copy-ness (false), so the first move of the Copy field wrongly marked
+    /// it in `moved_fields`, and reusing it a second time raised a false
+    /// "use of partially moved value" (E0303).
+    var_tuple_elem_types: HashMap<String, Vec<kryos_ast::TypeExpr>>,
 }
 
 impl Default for OwnershipAnalyzer {
@@ -122,6 +139,8 @@ impl OwnershipAnalyzer {
             enum_variant_fields: HashMap::new(),
             var_struct_names: HashMap::new(),
             var_elem_is_copy: HashMap::new(),
+            fn_return_tuple_elems: HashMap::new(),
+            var_tuple_elem_types: HashMap::new(),
         }
     }
 
@@ -564,6 +583,29 @@ impl OwnershipAnalyzer {
                         return self.is_type_expr_copy(field_ty);
                     }
                 }
+                // Tuple field access (`t.0`, `t.1`, ...): look up the specific
+                // element's own type rather than falling back to the whole
+                // tuple's copy-ness. `is_type_expr_copy` for `TypeExpr::Tuple`
+                // requires ALL elements to be Copy, so a Copy field (e.g.
+                // `i64`) of a tuple with a non-Copy sibling (e.g. `(Alloc,
+                // i64)`) would otherwise be misjudged as non-copy — see
+                // `var_tuple_elem_types` doc comment.
+                let tuple_elems_opt: Option<&Vec<kryos_ast::TypeExpr>> = match object.as_ref() {
+                    Expr::Identifier { name, .. } => self.var_tuple_elem_types.get(name.as_str()),
+                    Expr::FnCall { callee, .. } => {
+                        if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                            self.fn_return_tuple_elems.get(fname.as_str())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(elems) = tuple_elems_opt {
+                    if let Some(elem_ty) = field.parse::<usize>().ok().and_then(|i| elems.get(i)) {
+                        return self.is_type_expr_copy(elem_ty);
+                    }
+                }
                 // If the field is a known primitive type by name and the
                 // object is a struct (any struct, copy or not), the field
                 // result is copy. Without knowing the struct name we cannot
@@ -687,6 +729,10 @@ impl OwnershipAnalyzer {
                         self.fn_return_struct_names
                             .insert(name.clone(), sn.clone());
                     }
+                    if let Some(kryos_ast::TypeExpr::Tuple { elements, .. }) = ret_ty.as_ref() {
+                        self.fn_return_tuple_elems
+                            .insert(name.clone(), elements.clone());
+                    }
                 }
                 Decl::Enum { name, variants, .. } => {
                     for variant in variants {
@@ -715,6 +761,11 @@ impl OwnershipAnalyzer {
                         {
                             self.fn_return_struct_names
                                 .insert(name.clone(), sn.clone());
+                        }
+                        if let Some(kryos_ast::TypeExpr::Tuple { elements, .. }) = ret_ty.as_ref()
+                        {
+                            self.fn_return_tuple_elems
+                                .insert(name.clone(), elements.clone());
                         }
                     }
                 }
@@ -774,6 +825,22 @@ impl OwnershipAnalyzer {
                         let is_elem_copy = self.is_type_expr_copy(element);
                         self.var_elem_is_copy
                             .insert(param.name.clone(), is_elem_copy);
+                    }
+                    // Track tuple-typed params' element types too (see
+                    // `var_tuple_elem_types` doc comment), so a field access
+                    // like `t.2` on a tuple PARAMETER resolves that specific
+                    // element's copy-ness rather than the whole tuple's.
+                    // Without this, `t: (Alloc, str, i64)` had no entry in
+                    // `var_tuple_elem_types` (only tuple-typed `let` locals
+                    // were registered), so `t.2` fell back to `t`'s overall
+                    // copy status (false, since `Alloc` isn't copy) and got
+                    // wrongly move-tracked on first use — reusing it raised
+                    // a false E0303. This mirrors the `let`-binding case and
+                    // applies equally to methods (`Decl::Impl` methods are
+                    // dispatched back through this same function branch).
+                    if let Some(kryos_ast::TypeExpr::Tuple { elements, .. }) = param.ty.as_ref() {
+                        self.var_tuple_elem_types
+                            .insert(param.name.clone(), elements.clone());
                     }
                 }
                 self.analyze_block(body);
@@ -958,6 +1025,35 @@ impl OwnershipAnalyzer {
                             if self.struct_fields.contains_key(&sn) {
                                 self.var_struct_names.insert(name.clone(), sn);
                             }
+                        }
+
+                        // Record this variable's tuple element types (see
+                        // `var_tuple_elem_types` doc comment) so a later
+                        // `name.N` field access can be judged by that specific
+                        // element's own copy-ness rather than the whole
+                        // tuple's. Prefer the declared annotation; fall back
+                        // to a tuple-returning call's declared return type.
+                        let tuple_elems_from_ty = match ty.as_ref() {
+                            Some(kryos_ast::TypeExpr::Tuple { elements, .. }) => {
+                                Some(elements.clone())
+                            }
+                            _ => None,
+                        };
+                        let tuple_elems_from_init = match init_expr {
+                            Expr::FnCall { callee, .. } => {
+                                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                                    self.fn_return_tuple_elems.get(fname.as_str()).cloned()
+                                } else {
+                                    None
+                                }
+                            }
+                            Expr::MethodCall { method, .. } => {
+                                self.fn_return_tuple_elems.get(method.as_str()).cloned()
+                            }
+                            _ => None,
+                        };
+                        if let Some(elems) = tuple_elems_from_ty.or(tuple_elems_from_init) {
+                            self.var_tuple_elem_types.insert(name.clone(), elems);
                         }
 
                         // Track this array's element copy-ness (see
@@ -1479,7 +1575,7 @@ impl OwnershipAnalyzer {
                 field,
                 span,
             } => {
-                // Partial move of a struct field.
+                // Partial move of a struct/tuple field.
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     self.check_usable(name, *span);
                     // @copy structs: field access copies the value,
@@ -1488,6 +1584,20 @@ impl OwnershipAnalyzer {
                         if info.is_copy || info.state == OwnershipState::Shared {
                             return;
                         }
+                    }
+                    // A Copy-typed FIELD (e.g. `pair.1: i64` on a tuple whose
+                    // sibling field `pair.0: Alloc` is heap-bearing, or a
+                    // primitive field on a non-@copy struct) is never actually
+                    // moved — the whole-object `is_copy` check above only
+                    // catches the case where EVERY field is Copy. Consult
+                    // `expr_is_copy` (which resolves the specific field's
+                    // type via `struct_fields` / `var_tuple_elem_types`) and
+                    // treat a Copy field as a use, not a move: it must not be
+                    // recorded in `moved_fields`, or a later access of that
+                    // same field is wrongly flagged as "use of partially
+                    // moved value" (E0303 false positive).
+                    if self.expr_is_copy(expr) {
+                        return;
                     }
                     if let Some(info) = self.lookup_var_mut(name) {
                         info.moved_fields.insert(field.clone());
@@ -1570,6 +1680,14 @@ impl OwnershipAnalyzer {
                     moved_fields: HashSet::new(),
                 },
             );
+            // Track tuple-typed closure params' element types too (see
+            // `var_tuple_elem_types` doc comment / the matching Decl::Function
+            // param handling), so a Copy field of a tuple-typed lambda
+            // parameter isn't wrongly move-tracked on reuse inside the body.
+            if let Some(kryos_ast::TypeExpr::Tuple { elements, .. }) = param.ty.as_ref() {
+                self.var_tuple_elem_types
+                    .insert(param.name.clone(), elements.clone());
+            }
         }
         // Lambda body is an expression.
         self.analyze_expr_use(body);
