@@ -1635,11 +1635,66 @@ impl TypeChecker {
                         };
                         // Look up the enum variant's field types by variant name.
                         if let Some(edef) = self.env.lookup_enum(&resolved_name).cloned() {
-                            edef.variants
+                            let raw_field_types: Vec<Type> = edef
+                                .variants
                                 .iter()
                                 .find(|(v, _)| v == variant)
                                 .map(|(_, tys)| tys.clone())
-                                .unwrap_or_default()
+                                .unwrap_or_default();
+                            // The declared field types reference the enum's
+                            // SHARED generic_var_ids, allocated ONCE at
+                            // `enum Foo<T> { .. }` declaration time. Binding
+                            // the pattern payload straight from
+                            // `raw_field_types` (as before) reused those
+                            // shared var ids across EVERY match in the
+                            // program: matching a `Maybe<i64>` local bound
+                            // the shared var to i64 for good, so a later
+                            // match on a `Maybe<str>` local unified its `str`
+                            // payload against the same already-i64-bound var
+                            // and was wrongly rejected (E0100). Mirror the
+                            // fresh-per-use instantiation already used for
+                            // enum-variant CONSTRUCTION (the MethodCall /
+                            // StaticMethodCall variant-constructor arms
+                            // above) and for generic methods/static fns
+                            // (`instantiate_sig`): allocate fresh vars for
+                            // THIS match, substitute them into the field
+                            // types, then bind them to the scrutinee's
+                            // already-known concrete type arguments (e.g.
+                            // `mi: Maybe<i64>` resolves to
+                            // `Type::Enum{generics: [i64]}`) via unify --
+                            // never touching the shared declaration var ids.
+                            if edef.generic_var_ids.is_empty() {
+                                raw_field_types
+                            } else {
+                                let mut var_map = std::collections::HashMap::new();
+                                let mut fresh_generics =
+                                    Vec::with_capacity(edef.generic_var_ids.len());
+                                for &old_id in &edef.generic_var_ids {
+                                    let fresh = self.engine.fresh_var();
+                                    if let Type::Var(new_id) = &fresh {
+                                        var_map.insert(old_id, *new_id);
+                                    }
+                                    fresh_generics.push(fresh);
+                                }
+                                let instantiated: Vec<Type> = raw_field_types
+                                    .iter()
+                                    .map(|t| self.engine.instantiate(t, &var_map))
+                                    .collect();
+                                if let Type::Enum {
+                                    generics: concrete, ..
+                                } = &resolved_subject
+                                {
+                                    if concrete.len() == fresh_generics.len() {
+                                        for (fresh, conc) in
+                                            fresh_generics.iter().zip(concrete.iter())
+                                        {
+                                            let _ =
+                                                self.engine.unify(fresh, conc, *enum_pat_span);
+                                        }
+                                    }
+                                }
+                                instantiated
+                            }
                         } else {
                             vec![]
                         }

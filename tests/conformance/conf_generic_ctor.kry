@@ -66,14 +66,20 @@ fn main() {
     expect(p2.first == "eight" and p2.second == 8, "Pair::make<str,i64>")
 
     // Enum-constructing associated fn (Just(v) inside the method body must
-    // monomorphize per instantiation). A single instantiation is matched here
-    // -- matching two instantiations of the SAME generic enum with concrete
-    // payload constraints in one program currently contaminates the match
-    // payload type (a separate pre-existing checker bug, logged; not what this
-    // file certifies; the struct ctors above already cover multi-instantiation).
+    // monomorphize per instantiation), matched at TWO instantiations in one
+    // scope with concrete payload constraints. This also regresses a checker
+    // bug where the enum's declaration-time generic Type::Var was shared across
+    // matches: the first match (Maybe<i64>, v==99) permanently bound it to i64,
+    // so the second (Maybe<str>, v=="z") failed E0100. The pattern payload now
+    // instantiates fresh per match from the scrutinee's concrete type args.
+    let mi: Maybe<i64> = Maybe.wrap(99)
     let ms: Maybe<str> = Maybe.wrap("z")
+    match mi {
+        Just(v) => expect(v == 99, "Maybe.wrap<i64> match"),
+        Nothing => expect(false, "Maybe.wrap<i64> took Nothing"),
+    }
     match ms {
-        Just(v) => expect(v == "z", "Maybe.wrap<str> enum-constructing associated fn"),
+        Just(v) => expect(v == "z", "Maybe.wrap<str> match (payload not locked to i64)"),
         Nothing => expect(false, "Maybe.wrap<str> took Nothing"),
     }
 
