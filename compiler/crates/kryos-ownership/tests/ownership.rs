@@ -142,13 +142,18 @@ fn non_copy_val(tag: &str) -> Expr {
     call(&format!("make_{}", tag), vec![])
 }
 
-// ── Test: Move on assignment ────────────────────────────────────
+// ── Test: Bare-variable assignment reuse (was: move on assignment) ─
 
 #[test]
-fn move_on_assignment_error() {
+fn bare_var_assignment_does_not_move() {
     // let x = make_obj()   (non-copy)
-    // let a = x            ← moves x
-    // use(x)               ← error: use of moved value
+    // let a = x            ← bare-variable RHS shares the ARC handle,
+    //                        it does NOT hard-move `x` (see kryos-mir's
+    //                        Stmt::Let, which retains/suppresses the
+    //                        source's own drop instead of aliasing then
+    //                        double-freeing) -- mirrors how `str`/`[T]`
+    //                        bare-variable reuse already never moved.
+    // use(x)               ← must NOT be a use-after-move error
     let module = module_with_fn(vec![
         let_move("x", non_copy_val("obj")),
         let_move("a", ident("x")),
@@ -156,11 +161,11 @@ fn move_on_assignment_error() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result
+        !result
             .errors
             .iter()
             .any(|e| e.message.contains("use of moved value")),
-        "expected 'use of moved value' error, got: {:?}",
+        "bare-variable assignment reuse must not be a hard move, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
@@ -361,8 +366,12 @@ fn uninitialized_use_error() {
 #[test]
 fn conditional_move_warning() {
     // let x = make_obj()   (non-copy)
-    // if cond { let a = x } else { /* x not moved */ }
+    // if cond { spawn x } else { /* x not moved */ }
     //
+    // `spawn` still hard-moves its operand (unlike a bare-variable
+    // assignment RHS, which is now advisory-only -- see
+    // `bare_var_assignment_does_not_move` -- so this uses `spawn` to
+    // keep exercising the conditional-move-detection machinery itself).
     // Since we need a condition variable, define `cond` first.
     let module = module_with_fn(vec![
         let_typed(
@@ -377,7 +386,10 @@ fn conditional_move_warning() {
         Stmt::If {
             condition: ident("cond"),
             then_block: Block {
-                stmts: vec![let_move("a", ident("x"))],
+                stmts: vec![Stmt::Spawn {
+                    expr: ident("x"),
+                    span: dummy_span(),
+                }],
                 span: dummy_span(),
             },
             elif_clauses: vec![],
@@ -723,12 +735,21 @@ fn actor_state_arc_boundary() {
 #[test]
 fn double_move_error() {
     // let x = make_obj()   (non-copy)
-    // let a = x            ← moves x
-    // let b = x            ← error: already moved
+    // spawn x              ← moves x (bare-variable ASSIGNMENT no longer
+    //                        moves -- see `bare_var_assignment_does_not_move`
+    //                        -- so `spawn` is used here to keep this test
+    //                        exercising an actual hard-move site)
+    // spawn x              ← error: already moved
     let module = module_with_fn(vec![
         let_move("x", non_copy_val("obj")),
-        let_move("a", ident("x")),
-        let_move("b", ident("x")),
+        Stmt::Spawn {
+            expr: ident("x"),
+            span: dummy_span(),
+        },
+        Stmt::Spawn {
+            expr: ident("x"),
+            span: dummy_span(),
+        },
     ]);
     let result = analyze_ownership(&module);
     assert!(
@@ -960,15 +981,18 @@ fn fn_call_with_copy_return_type() {
     );
 }
 
-// ── Test: FnCall with non-copy return type still moves ─────────
+// ── Test: FnCall with non-copy return, bare-var reuse allowed ──
 
 #[test]
-fn fn_call_with_non_copy_return_moves() {
+fn fn_call_with_non_copy_return_reuse_allowed() {
     // fn create() -> MyStruct { ... }
     // fn main() {
     //   let x = create()   ← returns MyStruct (non-copy)
-    //   let a = x           ← moves x
-    //   use(x)              ← error: x was moved
+    //   let a = x           ← bare-variable RHS shares the ARC handle,
+    //                          does NOT hard-move `x` (struct/enum/map now
+    //                          get the same advisory treatment str/[T]
+    //                          already had)
+    //   use(x)              ← must NOT be a use-after-move error
     // }
     let module = Module {
         name: "test".into(),
@@ -1018,11 +1042,11 @@ fn fn_call_with_non_copy_return_moves() {
     };
     let result = analyze_ownership(&module);
     assert!(
-        result
+        !result
             .errors
             .iter()
             .any(|e| e.message.contains("use of moved value")),
-        "fn call returning non-copy type should move, got: {:?}",
+        "bare-variable reuse of a non-copy fn-call result must not be a hard move, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }

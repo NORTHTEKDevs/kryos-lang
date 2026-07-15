@@ -890,8 +890,29 @@ impl OwnershipAnalyzer {
                                 .map(|t| self.is_type_expr_copy(t))
                                 .unwrap_or(false);
 
-                        if is_copy {
-                            // Copy: source remains owned.
+                        // A bare-variable RHS (`let x2 = x1`) shares an
+                        // ARC-backed heap handle, exactly like `str`/`[T]`
+                        // already do above (those resolve `is_copy = true`
+                        // because ArrayLiteral/StringLiteral are
+                        // unconditionally treated as copy-handle types, and
+                        // that flag propagates through `x1`'s own VarInfo).
+                        // Structs/enums/maps have no such literal-level
+                        // blanket, so `x1` fell through to a hard Move here
+                        // even though MIR lowering (`kryos-mir`'s
+                        // `Stmt::Let`) already retains a Map's handle and
+                        // suppresses a Struct/Enum source's own scope-end
+                        // drop on this exact RHS shape -- reuse of `x1` is
+                        // memory-safe. Hard-moving it was a false E0300 that
+                        // contradicted the documented ARC value semantics
+                        // ("reusing a value after sharing it is safe").
+                        // Scope this narrowly to the bare-identifier shape
+                        // only -- it does not touch `expr_is_copy` globally,
+                        // so partial-move field tracking and other move
+                        // sites are unaffected.
+                        let is_bare_var_reuse_safe = matches!(init_expr, Expr::Identifier { .. });
+
+                        if is_copy || is_bare_var_reuse_safe {
+                            // Copy/shared handle: source remains owned.
                             self.analyze_expr_use(init_expr);
                         } else {
                             // Move: source becomes Moved.
@@ -991,7 +1012,15 @@ impl OwnershipAnalyzer {
             } => {
                 // Analyze the RHS value (move/copy).
                 let rhs_copy = self.expr_is_copy(value);
-                if rhs_copy {
+                // See the matching comment in `Stmt::Let`: a bare-variable
+                // RHS (`x2 = x1`) reassignment aliases an ARC-backed heap
+                // handle just like the `let` case, and MIR lowering's
+                // `Stmt::Assign` arm already retains a Map's handle and
+                // suppresses a Struct/Enum source's own scope-end drop on
+                // this exact shape -- reuse of `x1` is memory-safe, so this
+                // must not hard-move it either.
+                let is_bare_var_reuse_safe = matches!(value, Expr::Identifier { .. });
+                if rhs_copy || is_bare_var_reuse_safe {
                     self.analyze_expr_use(value);
                 } else {
                     self.analyze_expr_move(value);

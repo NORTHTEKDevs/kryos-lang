@@ -62,5 +62,17 @@ fn main() {
     expect(r1.name == "keep" and r1.tags == 3, "struct reuse after push (ARC, not E0300)")
     expect(recs[0].tags == 3, "pushed struct genuinely entered the array")
 
+    // Variable-to-variable assignment reuse (`let b2 = b1; use b1`) for
+    // struct/enum/map. str and [T] already allowed this; struct/enum/map hard-
+    // blocked it with E0300 despite the ARC model. Now advisory; the source
+    // stays valid, and the aliasing is memory-safe (shared drop, no double-free).
+    let sb1: Rec = Rec { name: "share", tags: 7 }
+    let sb2: Rec = sb1
+    expect(sb1.tags == 7 and sb2.tags == 7, "struct assignment reuse (both valid)")
+    let mut mm1: map<str, i64> = {}
+    mm1["k"] = 42
+    let mm2: map<str, i64> = mm1
+    expect(mm1["k"] == 42 and mm2["k"] == 42, "map assignment reuse (both valid)")
+
     println("conformance copy-reuse: PASS")
 }
