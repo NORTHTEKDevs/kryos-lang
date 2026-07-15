@@ -21,6 +21,11 @@ fn sum_dup(arr: [i64]) -> i64 {
     return top + top + top
 }
 
+struct Rec {
+    name: str,
+    tags: i64,
+}
+
 fn main() {
     let mut si: [i64] = [10, 42]
     let a = pop(si)
@@ -46,6 +51,16 @@ fn main() {
     let mut su8: [u8] = [200, 5]
     let pu = pop(su8)
     expect(pu == 5, "pop([u8]) narrow-scalar coercion (was AOT build-fail)")
+
+    // Reusing a STRUCT value after push(arr, struct) is allowed under ARC (the
+    // array becomes the owner; the source local stays valid). push was the one
+    // path that hard-move-blocked a struct element (E0300), unlike str/map
+    // elements and ordinary fn args. Read-only reuse must compile + run.
+    let mut recs: [Rec] = []
+    let r1: Rec = Rec { name: "keep", tags: 3 }
+    recs = push(recs, r1)
+    expect(r1.name == "keep" and r1.tags == 3, "struct reuse after push (ARC, not E0300)")
+    expect(recs[0].tags == 3, "pushed struct genuinely entered the array")
 
     println("conformance copy-reuse: PASS")
 }

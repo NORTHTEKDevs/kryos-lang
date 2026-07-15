@@ -324,6 +324,36 @@ impl OwnershipAnalyzer {
         }
     }
 
+    /// Determine if an expression's inferred type is ANY struct — `@copy`
+    /// or not — as opposed to `expr_is_copy_struct` which only matches
+    /// `@copy`-annotated ones. Shares the same struct-name resolution.
+    ///
+    /// Used by the `push` builtin arm: `kryos-mir`'s `consume_call_args`
+    /// (see `lower.rs`) already suppresses a pushed struct LOCAL's own
+    /// scope-end drop unconditionally, for every struct — `@copy` or
+    /// plain — not just `@copy` ones. The array ends up the sole owner
+    /// that frees the body. So reusing the source local after `push` is
+    /// memory-safe under ARC for any struct, exactly like passing one to
+    /// an ordinary function (the `FnCall` arm below always treats struct
+    /// args as a `use`, never a hard move). Marking a struct element as
+    /// moved here for the non-`@copy` case was a false E0300 on a safe
+    /// reuse; this predicate lets the `push` arm treat all structs alike.
+    fn expr_is_any_struct(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::StructLiteral { .. } => true,
+            Expr::Identifier { name, .. } => self.var_struct_names.contains_key(name.as_str()),
+            Expr::FnCall { callee, .. } => {
+                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                    self.fn_return_struct_names.contains_key(fname.as_str())
+                } else {
+                    false
+                }
+            }
+            Expr::MoveExpr { inner, .. } => self.expr_is_any_struct(inner),
+            _ => false,
+        }
+    }
+
     /// Determine if an expression's inferred type is a copy type.
     /// Returns true when the result is provably a primitive copy type
     /// (i64, f64, bool, char, etc.), even through compound expressions
@@ -1186,11 +1216,19 @@ impl OwnershipAnalyzer {
                     // (mutated in-place), not moved. Only the value is moved.
                     if name == "push" && args.len() == 2 {
                         self.analyze_expr_use(&args[0]); // array is used, not moved
-                        // A @copy struct is heap-allocated and pushed by
-                        // pointer, so the array captures it: MOVE it (suppress
-                        // the source's drop) to avoid a use-after-free. Only
-                        // primitive copy types (no heap body) stay as `use`.
-                        if self.expr_is_copy(&args[1]) && !self.expr_is_copy_struct(&args[1]) {
+                        // Primitive/handle copy types (i64, str, array, map,
+                        // ...) stay as `use`. Struct elements — `@copy` or
+                        // not — are ALSO a `use`: MIR already suppresses the
+                        // source local's own drop unconditionally when a
+                        // struct is pushed (see `expr_is_any_struct` doc),
+                        // so the array becomes the sole owner and reuse of
+                        // the local afterward is safe. Do not hard-move it
+                        // here (that produced a false E0300); mirror the
+                        // ordinary FnCall arg arm below, which never moves
+                        // struct arguments either.
+                        if (self.expr_is_copy(&args[1]) && !self.expr_is_copy_struct(&args[1]))
+                            || self.expr_is_any_struct(&args[1])
+                        {
                             self.analyze_expr_use(&args[1]);
                         } else {
                             self.analyze_expr_move(&args[1]); // value is moved into array
