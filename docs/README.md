@@ -42,7 +42,7 @@ kryos run hello.kry
 - [Functions](03-functions.md) -- `fn` declarations, first-class functions, closures, lambdas, recursion
 - [Control Flow](04-control-flow.md) -- `if`/`elif`/`else`, `while`, `for`/`in`/`range`, `break`, `continue`, `match`
 - [Structs and Enums](05-structs-and-enums.md) -- Data modeling, field access, `impl` blocks, methods, enum variants
-- [Ownership](06-ownership.md) -- Move semantics, ownership tracking, use-after-move prevention
+- [Ownership](06-ownership.md) -- ARC-backed value semantics, Copy types, reuse-after-pass, advisory ownership diagnostics
 - [Error Handling](07-error-handling.md) -- `try`/`catch`/`throw`, error propagation
 - [Traits and Generics](08-traits-and-generics.md) -- Trait declarations, generic types, trait bounds, `impl` for traits
 - [Concurrency](09-concurrency.md) -- `spawn`, actors, channels, message passing

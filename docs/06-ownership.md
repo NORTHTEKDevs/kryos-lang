@@ -1,39 +1,37 @@
 # Ownership
 
-> **Implementation Status:** Move semantics and use-after-move detection are fully implemented in the compiler. The ownership analyzer runs after type checking and reports errors for moved values. Shared references (`&T`) and mutable references (`&mut T`) are parsed, type-checked, and tracked through MIR with mutability preserved (`MirType::Ref { inner, mutable }`). Auto-deref works for field access through references. Borrow checking (preventing overlapping `&mut`) is not yet implemented -- Kryos uses ownership-based memory safety for now. Full borrow checking with lifetime enforcement is planned for a future release. ARC (automatic reference counting) insertions are implemented for values that escape their scope.
+> **Implementation Status:** Kryos uses ARC (automatic reference counting) for heap-backed values (`str`, `[T]`, `map<K, V>`, structs/enums) and `Copy` semantics for primitives (`i64`, `f64`, `bool`, ...). Passing a value to a function **shares** it (a refcount bump), not a destructive move — reusing the original binding afterward is safe and compiles cleanly on both backends. The compiler runs an advisory ownership/borrow analyzer that surfaces move/borrow *diagnostics* (`E0300` and friends) for signal, but it does **not** block reuse of ARC-backed values. Shared references (`&T`) and mutable references (`&mut T`) are parsed and type-checked; full borrow-checking enforcement (preventing overlapping `&mut`) is not yet implemented.
 
-This is the most important chapter in the manual. Ownership is how Kryos gives you memory safety without a garbage collector. Once you internalize the rules, they become second nature -- and the compiler catches the mistakes before your code runs.
+This chapter explains how Kryos manages memory without a garbage collector and without forcing you to think about destructive moves the way Rust does.
 
-## Why ownership exists
+## Why ARC instead of GC or manual management
 
 Most languages handle memory in one of two ways:
 
 1. **Garbage collection** (Go, Java, C#) -- a runtime process scans for unused memory and frees it. Simple for the programmer but adds latency and uses more memory.
 2. **Manual management** (C, C++) -- the programmer allocates and frees memory. Fast but riddled with bugs: dangling pointers, double frees, use-after-free, data races.
 
-Kryos takes a third path: **compile-time ownership tracking**. The compiler proves at build time that every value is used correctly. No runtime cost, no GC pauses, no dangling pointers.
+Kryos takes a third path, closer to Swift than to Rust: **automatic reference counting (ARC)**. Every heap-backed value (`str`, `[T]`, `map<K, V>`, structs, enums) carries a refcount. Passing it around bumps the count; when the count hits zero, the runtime frees it. No GC pauses, no manual `free()`, and -- unlike Rust -- no destructive moves to track in your head. Primitives (`i64`, `f64`, `bool`, and friends) are `Copy` and don't participate in refcounting at all.
 
-## The ownership rules
+## Value semantics: passing shares, it doesn't consume
 
-There are three rules. Everything else follows from these.
+Passing a value to a function **shares** the underlying data. The callee gets its own handle to the same refcounted allocation; the caller's binding stays valid and can be used again afterward:
 
-1. **Every value has exactly one owner** -- the variable that holds it.
-2. **When the owner goes out of scope, the value is cleaned up.**
-3. **Assigning or passing a value to another variable transfers ownership** (a "move").
+```kryos
+fn main() {
+    let s: str = "hello"
+    consume(s)
+    println(s)   // OK -- s is still valid; the data is shared, not consumed
+}
 
-## Move semantics
-
-When you assign a variable to another variable, the value moves:
-
-```
-let a = "hello"
-let b = a
-// a is now moved -- the string belongs to b
+fn consume(x: str) {
+    println(x)
+}
 ```
 
-The same happens when you pass a value to a function:
+This compiles and runs cleanly on both backends. There is no destructive move in Kryos and no `.clone()` method to call before reuse -- reuse after passing already works.
 
-```
+```kryos
 struct Point {
     x: i32,
     y: i32
@@ -45,68 +43,59 @@ fn manhattan(p: Point) -> i32 {
 
 let p = Point { x: 2, y: 3 }
 println(manhattan(p))  // 5
-// p is moved into manhattan -- it no longer exists here
+println(manhattan(p))  // 5 -- p is still valid, this is not an error
 ```
-
-After the call to `manhattan`, the variable `p` is gone. The function took ownership of the Point.
-
-## Use-after-move
-
-If you try to use a value after it has been moved, the compiler rejects your code:
-
-```
-let p = Point { x: 2, y: 3 }
-println(manhattan(p))  // p moves into manhattan
-println(manhattan(p))  // ERROR: use of moved value 'p'
-```
-
-The error message tells you where the value was moved:
-
-```
-ownership error at line 4, col 1: use of moved value 'p'
-  note: value moved at line 3
-```
-
-This is a compile-time error, not a runtime crash. The program never runs with invalid state.
 
 ## Copy types
 
-Not every value moves. Small, stack-allocated types are **copied** instead of moved. These are called Copy types:
+Primitives are `Copy`: they duplicate on assignment or when passed, and the original stays valid too. Everything else is an ARC-backed heap handle:
 
-| Copy types | Non-Copy types |
-|------------|---------------|
-| `i8`, `i16`, `i32`, `i64`, `i128` | `str` (heap-allocated) |
-| `u8`, `u16`, `u32`, `u64`, `u128` | Arrays |
-| `f32`, `f64` | Structs |
-| `bool` | Tuples |
-| `char` | Tensors |
-| `int`, `float` | |
+| Copy types (duplicated) | ARC-backed heap handles (shared) |
+|------------------------|-----------------------------------|
+| `i8`, `i16`, `i32`, `i64`, `i128` | `str` |
+| `u8`, `u16`, `u32`, `u64`, `u128` | Arrays (`[T]`) |
+| `f32`, `f64` | `map<K, V>` |
+| `bool` | Structs |
+| `char` | Enums |
+| `int`, `float` | Tuples containing any of the above |
 
-When you assign or pass a Copy type, the original stays valid:
-
-```
+```kryos
 let x = 42
 let y = x
-println(x)  // fine -- integers are Copy
+println(x)  // fine -- integers are Copy, x and y are independent
 println(y)  // also fine
 ```
 
-Compare with a non-Copy type:
+For a heap-backed value, both bindings stay valid too -- they just point at shared data rather than independent copies at the moment of the call:
 
-```
+```kryos
 let s = "hello"
 let t = s
-// println(s)  -- ERROR: use of moved value 's'
-println(t)     // fine
+println(s)  // fine -- s is still valid
+println(t)  // fine
 ```
 
-The rule of thumb: if it is a number or a boolean, it copies. Everything else moves.
+The rule of thumb: everything reuses safely after being passed or assigned. The distinction between Copy and ARC-backed types is about *how* the value is represented (duplicated bits vs. a shared refcounted handle), not about whether you're allowed to keep using the original.
+
+## Independent copies
+
+`let b = a` for a heap-backed value doesn't just alias -- it **deep-copies** the heap fields, so `a` and `b` start out as independent values. If you then want to mutate one without affecting the other, assign into a `let mut` local and mutate that local:
+
+```kryos
+let mut scores = [90, 85, 92]
+let mut backup = scores   // backup is an independent copy (heap fields deep-copied)
+backup[0] = 100
+println(scores[0])  // 90 -- unaffected
+println(backup[0])  // 100
+```
+
+`.clone()` is not currently a method in Kryos -- you don't need it. Assignment already gives you an independent copy of heap fields; see gotcha #23 in `CLAUDE.md` for the exact copy/mutation semantics and the residual per-backend caveats around mutating a struct-typed *function parameter* in place (the portable pattern there is the same: copy into a `let mut` local before mutating, or return the modified value).
 
 ## Mutability: `let` vs `let mut`
 
 Variables are immutable by default. Use `let mut` when you need to reassign:
 
-```
+```kryos
 let x = 10
 // x = 20     -- ERROR: cannot assign to immutable variable 'x'
 
@@ -121,74 +110,61 @@ ownership error: cannot assign to immutable variable 'x'
   note: consider declaring with 'let mut'
 ```
 
-## Borrowing (partially implemented)
+This is a real, hard error (`E0302`) -- it's unrelated to the ARC/move-diagnostic story above.
 
-> **Status:** References (`&T`, `&mut T`) are parsed, type-checked, and tracked through MIR. Auto-deref works for field access through references. Full borrow checking (preventing overlapping `&mut`) is not yet enforced. Kryos currently relies on move semantics for memory safety. Full borrow checking with lifetime enforcement is planned for a future release.
+## The advisory ownership analyzer
 
-Sometimes you want to read a value without taking ownership. This is called borrowing. The planned borrow checker will enforce these rules:
+The compiler still runs an ownership/borrow analysis pass after type checking, and it can surface diagnostics tagged `E0300` ("use of moved value") when a value is passed and then read again. **This is advisory, not a hard error** -- ARC-backed values may be reused after being passed, and programs that do so compile and run correctly on both backends:
 
-1. **You can have multiple immutable borrows** -- any number of readers.
-2. **You can have one mutable borrow** -- exactly one writer.
-3. **You cannot have immutable and mutable borrows at the same time.**
+```kryos
+fn main() {
+    let s: str = "hi"
+    consume(s)
+    println(s)   // compiles fine -- s is shared, not consumed
+}
 
-These rules will prevent data races at compile time.
-
-### What counts as a borrow
-
-In the current Kryos model, borrowing happens implicitly. When you read from a variable in an expression, you are borrowing it. When a variable holds a reference to another variable's data, the borrow checker tracks the relationship.
-
-### Cannot mutate while borrowed
-
-If other code is reading from a value, you cannot change it:
-
-```
-let mut data = [1, 2, 3]
-let view = data       // view borrows from data
-// data[0] = 99       -- ERROR: cannot mutate 'data' because it is borrowed
-```
-
-The borrow is released when the borrowing variable goes out of scope (exits its block).
-
-### Cannot borrow mutably more than once
-
-```
-// ERROR: cannot borrow 'data' as mutable more than once at a time
-```
-
-This prevents two parts of your code from modifying the same data simultaneously, which is the root cause of most concurrency bugs.
-
-## Ownership in loops
-
-The ownership analyzer is extra careful inside loops because the body executes multiple times. Moving a value inside a loop body means the second iteration would use a moved value:
-
-```
-let s = "hello"
-for i in range(0, 3) {
-    println(s)  // ERROR: value 's' moved inside loop body --
-                //        would be used-after-move on next iteration
+fn consume(x: str) {
+    println(x)
 }
 ```
 
-The compiler catches this at compile time, even though the first iteration would work fine. The fix depends on the situation -- clone the value, or restructure the code to avoid the move.
+Run `kryos explain E0300` for the long-form description of the diagnostic. Treat it the way you'd treat a linter hint, not the way you'd treat a Rust borrow-check error -- it does not block `kryos check`, `kryos run`, or `kryos build` from succeeding on reuse-after-pass code.
+
+## Borrowing (partially implemented)
+
+Shared references (`&T`) and mutable references (`&mut T`) are parsed and type-checked, and tracked through MIR with mutability preserved. Auto-deref works for field access through references. Full borrow-checking enforcement (preventing overlapping `&mut` borrows) is **not yet implemented** -- Kryos's memory safety today comes from ARC (heap values are freed when their refcount hits zero), not from a Rust-style borrow checker.
+
+In practice this means you rarely need `&`/`&mut` syntax for the everyday case of "use a value, then use it again" -- ARC sharing plus reuse-after-pass already covers that. Reach for references when you specifically want to avoid a refcount bump/deep copy in a hot path, or when interfacing with `unsafe` code that expects pointer-like semantics.
+
+## Ownership in loops
+
+Because reuse-after-pass is safe, using an ARC-backed value repeatedly inside a loop body is fine -- the loop doesn't consume it on the first iteration:
+
+```kryos
+let s = "hello"
+for i in range(0, 3) {
+    println(s)  // fine on every iteration -- s is shared, not consumed
+}
+```
 
 ## Ownership with function parameters
 
-Values move into function parameters:
+Passing a value into a function parameter shares it; the caller's binding stays valid after the call returns:
 
-```
+```kryos
 fn process(data: str) -> str {
     return data + " processed"
 }
 
 let input = "raw"
 let result = process(input)
-// input is moved -- it belongs to process now
+println(input)   // "raw" -- still valid
 println(result)  // "raw processed"
 ```
 
-Copy types are copied into parameters, so the original remains valid:
+Copy types are duplicated into parameters, so the original remains valid too -- same outcome, different mechanism:
 
-```
+```kryos
 fn double(x: i32) -> i32 {
     return x * 2
 }
@@ -200,167 +176,93 @@ println(n)          // 21 -- still valid, integers are Copy
 
 ## Ownership with return values
 
-Returning a value moves it out of the function:
+Returning a value hands the caller a handle to it (for ARC-backed types) or a duplicate (for Copy types) -- either way the caller ends up with a valid value, and nothing about the return path requires you to give up the original if it came from an argument you already hold elsewhere:
 
-```
+```kryos
 fn make_point() -> Point {
     let p = Point { x: 1, y: 2 }
-    return p  // p moves out to the caller
-}
-
-let result = make_point()  // result now owns the Point
-```
-
-This is how you transfer ownership back to the caller. The value is not copied -- it is moved.
-
-## Ownership with arrays and structs
-
-Arrays and structs are non-Copy. They follow all the same move rules:
-
-```
-let mut scores = [90, 85, 92]
-let backup = scores
-// scores is moved -- backup owns the array now
-```
-
-Struct fields are accessed through the owning variable:
-
-```
-let p = Point { x: 2, y: 3 }
-let q = p
-// p is moved
-println(q.x)  // 2
-```
-
-## Re-assignment restores ownership
-
-If a variable was moved, assigning a new value to it brings it back:
-
-```
-let mut s = "first"
-let t = s          // s is moved
-s = "second"       // s is owned again with a new value
-println(s)         // "second"
-```
-
-This is tracked by the ownership analyzer -- the variable transitions from `moved` back to `owned`.
-
-## Patterns for avoiding ownership issues
-
-### Pattern 1: Restructure to avoid the move
-
-Instead of passing a struct, pass its fields if they are Copy:
-
-```
-// Instead of this (moves p):
-fn manhattan(p: Point) -> i32 {
-    return abs(p.x) + abs(p.y)
-}
-
-// Consider this (copies x and y):
-fn manhattan_xy(x: i32, y: i32) -> i32 {
-    return abs(x) + abs(y)
-}
-
-let p = Point { x: 2, y: 3 }
-println(manhattan_xy(p.x, p.y))  // p is not moved
-println(p.x)                     // still valid
-```
-
-### Pattern 2: Return the value back
-
-If a function needs temporary ownership, have it return the value when done:
-
-```
-fn inspect_and_return(p: Point) -> Point {
-    println("Point: " + to_string(p.x) + ", " + to_string(p.y))
     return p
 }
 
-let mut p = Point { x: 1, y: 2 }
-p = inspect_and_return(p)  // p moves in, then moves back out
-println(p.x)               // still valid
+let result = make_point()  // result owns a valid handle to the Point
 ```
 
-### Pattern 3: Create new values
+## Ownership with arrays and structs
 
-Instead of trying to reuse a moved value, create a fresh one:
+Arrays and structs are ARC-backed. Assigning one to another binding deep-copies the heap fields, so both bindings are valid and independent:
 
+```kryos
+let mut scores = [90, 85, 92]
+let backup = scores
+println(scores[0])  // 90 -- still valid
+println(backup[0])  // 90 -- independent copy
 ```
-let p1 = Point { x: 1, y: 2 }
-println(manhattan(p1))  // p1 moves
 
-let p2 = Point { x: 1, y: 2 }  // new Point with same values
-println(manhattan(p2))  // p2 moves
+Struct fields are accessed through the owning variable as usual, and reuse after copying/passing is fine:
+
+```kryos
+let p = Point { x: 2, y: 3 }
+let q = p
+println(p.x)  // 2 -- still valid
+println(q.x)  // 2
 ```
 
 ## How Kryos differs from Rust
 
-Kryos ownership is inspired by Rust but deliberately simpler.
+Kryos's memory model is inspired by Rust's ownership vocabulary but lands closer to Swift/Objective-C ARC in practice.
 
 | Concept | Rust | Kryos |
 |---------|------|-------|
-| Move semantics | Yes | Yes |
-| Use-after-move detection | Yes | Yes |
-| Borrow checker | Yes | Partial -- planned for future release |
-| `&T` reference syntax | Yes | No -- move semantics replace most uses |
-| `&mut T` mutable references | Yes | No -- mutation checked via ownership |
+| Memory safety mechanism | Ownership + borrow checker | ARC (refcounting) + advisory diagnostics |
+| Destructive move semantics | Yes -- reuse after move is a hard error | No -- reuse after passing/assigning is safe |
+| Use-after-move detection | Hard compile error | Advisory diagnostic (`E0300`), does not block compilation |
+| Borrow checker | Yes, enforced | References parsed/type-checked; enforcement not yet implemented |
+| `&T` / `&mut T` reference syntax | Yes, required for zero-copy sharing | Exists, but rarely needed -- ARC sharing covers the common case |
 | Lifetime annotations (`'a`) | Yes | No -- not needed |
-| `Clone` / `Copy` traits | Explicit traits | Built-in based on type |
-| `Rc`, `Arc`, `Box` | Smart pointer types | Not needed |
+| `Clone` / `Copy` traits | Explicit traits | `Copy` is built-in based on type; no `Clone`/`.clone()` today (not needed -- assignment already deep-copies heap fields) |
+| `Rc`, `Arc`, `Box` | Smart pointer types you opt into | Every heap-backed value is ARC'd by default; no wrapper types needed |
 
-The core guarantee is the same: no use-after-free, no data races, no dangling pointers. Kryos achieves this with fewer concepts. You do not need to learn lifetime syntax, reference types, or smart pointers. The trade-off is less fine-grained control over borrowing -- but for most programs, the simpler model is sufficient.
+The core guarantee is the same: no use-after-free, no double-free, no dangling pointers. Kryos gets there with refcounting plus deep-copy-on-assign instead of a borrow checker, which trades some of Rust's zero-copy guarantees for a model where "just reuse the value" always works.
 
 ## Coming from Rust
 
-If you already know Rust's ownership system, Kryos will feel familiar with these differences:
+If you already know Rust's ownership system, the important differences:
 
-- No `&` or `&mut` in the syntax. You do not write reference types.
+- Passing or assigning a value does **not** consume it. There's no equivalent of Rust's "value moved here" error for the common case -- reuse the original binding freely.
+- No `Clone::clone()` method to reach for. `let b = a` already gives you an independent copy of heap fields for `str`/`[T]`/`map`/structs.
+- No `&` or `&mut` in typical code. The syntax exists and type-checks, but you don't need it just to reuse a value.
 - No lifetime annotations. The analyzer does not require `'a` parameters.
-- No `Clone::clone()` method. (Future versions may add this.)
 - Copy types are determined by the type name, not by a trait implementation.
-- The ownership analyzer is conservative -- it may reject some valid programs that Rust would accept. This is by design; false positives are preferred over false negatives.
-
-The mental model is the same: values have one owner, moves transfer ownership, and simultaneous mutable access is forbidden. You just write less syntax to express it.
+- The ownership analyzer's `E0300`/`E0301`/`E0302`/`E0303` diagnostics exist and are worth reading, but only `E0301` (use of uninitialized value), `E0302` (assignment to an immutable binding), and capability violations are hard errors that block compilation today. `E0300` (move diagnostic) is advisory.
 
 ## Common mistakes
 
-**Using a value after passing it to a function**
-
-```
-let data = [1, 2, 3]
-println(find_max(data))  // data moves into find_max
-println(sum_array(data)) // ERROR: use of moved value 'data'
-```
-
-Fix: store the data you need before passing, or restructure the code.
-
 **Mutating an immutable binding**
 
-```
+```kryos
 let x = 10
 x = 20  // ERROR: cannot assign to immutable variable 'x'
 ```
 
 Fix: declare with `let mut x = 10`.
 
-**Moving a value inside a loop**
+**Expecting a mutation to propagate without a `let mut` local**
 
-```
-let msg = "hello"
-for i in range(0, 5) {
-    println(msg)  // ERROR: moved inside loop body
-}
-```
-
-The compiler knows the loop runs more than once and the move on iteration 1 would leave `msg` invalid for iteration 2.
-
-**Assigning to a borrowed variable**
-
-```
-let mut data = [1, 2, 3]
-let view = data
-data[0] = 99  // ERROR: cannot assign to 'data' because it is borrowed
+```kryos
+let mut scores = [90, 85, 92]
+let backup = scores
+backup[0] = 100          // mutates backup's own copy
+println(scores[0])       // 90 -- backup was an independent copy, not a view
 ```
 
-Fix: limit the scope of the borrow, or do the mutation before creating the borrow.
+If you wanted `backup` to observe mutations made through `scores` (or vice versa), that's not what assignment gives you -- assignment deep-copies heap fields. Restructure to pass the same handle explicitly (e.g. mutate through a function that takes and returns the value) if you need shared mutable state across two names in one scope.
+
+**Assuming you need `.clone()` before reusing a value**
+
+```kryos
+let s = "hello"
+consume(s)
+println(s)   // fine -- no .clone() needed, this is not an error
+```
+
+This is the opposite of a Rust habit worth unlearning: in Kryos, reuse-after-pass just works.

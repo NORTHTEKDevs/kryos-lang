@@ -17,7 +17,7 @@ None of these languages treat AI as a first-class concern. Tensor operations, ag
 
 ### Ownership Without the PhD
 
-Kryos uses ARC-backed move semantics enforced at compile time. Values move when passed to functions. The compiler tracks ownership and catches use-after-move and double-free errors. No lifetime annotations. No borrow checker complexity.
+Kryos values are ARC-backed (reference-counted) heap handles for `str`, `[T]`, `map<K, V>`, and structs/enums; primitives are `Copy`. Passing a value to a function shares it -- there's no destructive move, so reusing the original binding afterward just works. No lifetime annotations. No borrow checker complexity. No `.clone()` needed to keep using a value after passing it.
 
 ```kryos
 fn process(data: [i64]) -> [i64] {
@@ -27,7 +27,7 @@ fn process(data: [i64]) -> [i64] {
 
 fn main() {
     let nums = [1, 2, 3]
-    let nums = process(nums)   // move in, move back out -- no copies
+    let nums = process(nums)   // shared in, returned out -- no copies
     println(to_string(len(nums)))
 }
 ```

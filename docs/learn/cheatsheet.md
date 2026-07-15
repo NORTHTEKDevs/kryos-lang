@@ -171,7 +171,7 @@ kryos build --backend wasm hello.kry
 kryos check hello.kry            # type-check only, fast
 kryos fmt hello.kry              # format in place
 kryos test                       # run tests/
-kryos explain E0382              # explain error code
+kryos explain E0300              # explain error code
 kryos doc                        # generate HTML docs
 kryos lsp                        # language server (stdio)
 ```

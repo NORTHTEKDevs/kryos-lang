@@ -363,13 +363,23 @@ it.
 
 ### 7.1 Ownership rules
 
-1.  Every value has exactly one **owning** binding.
+1.  `str`, `[T]`, `map<K, V>`, and structs/enums are ARC-backed
+    (reference-counted) heap handles. Primitives (`i8`-`i64`, `u8`-`u64`,
+    `f32`, `f64`, `bool`, ...) are `Copy`.
 2.  Passing a value to a function or assigning to another binding
-    transfers ownership (a **move**), unless the type is `Copy`.
-3.  After a move, the source binding is **uninitialized** — reading it
-    is `E0300: use of moved value`.
-4.  References (`&T`, `&mut T`) borrow without moving. Standard borrow
-    checker rules: any number of `&T` *or* exactly one `&mut T` at a time.
+    **shares** it for ARC-backed types (a refcount bump) or duplicates it
+    for `Copy` types. Neither is a destructive move — the source binding
+    stays valid and can be reused.
+3.  The compiler runs an advisory ownership/borrow analyzer after type
+    checking. It may surface `E0300: use of moved value` as a
+    diagnostic when a value is passed and then read again, but this is
+    a **lint, not a hard error** — it does not block compilation, and
+    programs that pass then reuse an ARC-backed value compile and run
+    correctly on both backends.
+4.  References (`&T`, `&mut T`) are parsed and type-checked, and tracked
+    through MIR with mutability preserved. Full borrow-checker
+    enforcement (any number of `&T` *or* exactly one `&mut T` at a time)
+    is not yet implemented — ARC is what provides memory safety today.
 
 ### 7.2 Copy types
 
@@ -381,7 +391,12 @@ The following are `Copy`:
 - `repr(C)` structs whose fields are all `Copy`.
 
 Strings, arrays, maps, channels, and user-defined structs *not* marked
-`repr(C)` (or containing non-Copy fields) are **moved**, not copied.
+`repr(C)` (or containing non-Copy fields) are ARC-backed heap handles:
+passing or assigning **shares** the handle rather than copying the
+underlying data. `let b = a` deep-copies heap fields (see `CLAUDE.md`
+gotcha #23), so `a` and `b` end up as independent values; there is no
+`.clone()` method because assignment already does this. Neither passing
+nor assigning invalidates the source binding.
 
 ### 7.3 Drop order
 
@@ -595,8 +610,8 @@ What "implemented" means in 1.0.0-beta.5:
 | Generics                    | Monomorphized       |
 | Traits + impls              | Implemented         |
 | Pattern matching            | Implemented         |
-| Ownership + move semantics  | Implemented         |
-| Borrow checking (basic)     | Implemented         |
+| Ownership (ARC + advisory move/borrow lint) | Implemented — advisory, does not block reuse-after-pass |
+| Borrow checking (`&T`/`&mut T` enforcement) | Not yet — references parse/type-check, exclusivity not enforced |
 | Drop order                  | Reverse declaration |
 | Integer overflow builtins   | Implemented         |
 | Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |

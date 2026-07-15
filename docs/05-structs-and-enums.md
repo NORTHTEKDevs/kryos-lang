@@ -36,7 +36,7 @@ println(p.y)   // 3
 
 ### Passing structs to functions
 
-Structs are non-Copy types. When you pass a struct to a function, ownership moves into the function. See the [Ownership](06-ownership.md) chapter for details.
+Structs are ARC-backed heap handles, not `Copy`. When you pass a struct to a function, the handle is **shared** (a refcount bump) -- the caller's binding stays valid and can be reused afterward. See the [Ownership](06-ownership.md) chapter for details.
 
 ```
 struct Point {
@@ -50,7 +50,7 @@ fn manhattan(p: Point) -> i32 {
 
 let p = Point { x: 2, y: 3 }
 println(manhattan(p))  // 5
-// p is moved -- using it again here would be a compile error
+println(manhattan(p))  // 5 -- p is still valid, reuse is fine
 ```
 
 ### Real-world example: 3D vectors
@@ -332,13 +332,13 @@ let p = Point { x: 1 }
 let p = Point { x: 1, y: 0 }
 ```
 
-**Trying to use a struct after passing it to a function**
+**Expecting a struct assignment to alias instead of copy**
 
 ```
 let p = Point { x: 2, y: 3 }
-println(manhattan(p))
-// p has been moved -- this is a compile error:
-// println(manhattan(p))
+let q = p
+// q.x = 99          -- mutates q's own copy, does not affect p
+println(p.x)          // 2, still 2
 ```
 
-Structs are non-Copy. Passing one to a function transfers ownership. See the [Ownership](06-ownership.md) chapter for how to work with this.
+Structs are ARC-backed heap handles: `let q = p` deep-copies the fields, so `p` and `q` are independent afterward (and both remain valid -- passing `p` to a function, e.g. `println(manhattan(p))`, doesn't consume it either; you can call `manhattan(p)` again right after). See the [Ownership](06-ownership.md) chapter for the full model.

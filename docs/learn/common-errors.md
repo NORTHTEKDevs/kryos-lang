@@ -86,25 +86,20 @@ Suggestion fires here too.
 
 ## Ownership
 
-### `E0382: use of moved value`
+### Reusing a value after passing it is fine
+
+Kryos values are ARC-backed (reference-counted) heap handles for `str`, `[T]`, `map<K, V>`, and structs/enums; primitives (`i64`, `f64`, `bool`) are `Copy`. Passing a value to a function **shares** it (a refcount bump), so reusing the original binding afterward is safe and allowed — this is not an error:
 
 ```kryos
 fn main() {
     let s: str = "hi"
     consume(s)
-    println(s)          //  ERROR — s moved into consume
+    println(s)          //  OK — s is still valid, the data is shared
 }
 fn consume(x: str) { println(x) }
 ```
 
-Either restructure to consume the value once, or clone before moving:
-
-<!-- docs-example: skip -->
-```kryos
-consume(s.clone())     //  s still owned afterward
-```
-
-Strings, arrays, and structs containing them are not `Copy`. Primitives (`i64`, `f64`, `bool`) and small `Copy` structs duplicate freely.
+The compiler runs an advisory move/borrow analyzer that may surface an `E0300` diagnostic here, but it's a lint, not a hard error — it does not block compilation, and `.clone()` is not a method in Kryos today (it isn't needed: `let b = a` already deep-copies heap fields, giving you an independent copy when you actually want one). See [chapter 6](../06-ownership.md) for the full model. (`E0382` is a Rust error code, not a Kryos one.)
 
 ## Capability errors
 

@@ -21,7 +21,7 @@ Source code goes through eight stages to become a native binary:
   Type Checker    -> type-annotated AST (inference + checking)
     |
     v
-  Ownership       -> verified ownership/borrowing
+  Ownership       -> advisory ownership/borrow diagnostics
     |
     v
   Capabilities    -> capability audit (deny-by-default)
