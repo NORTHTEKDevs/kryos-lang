@@ -26,6 +26,18 @@ pub struct LinkerConfig {
     /// Object files (.o) produced by codegen.
     pub object_files: Vec<PathBuf>,
     /// Path to the Kryos runtime library (libkryos_rt.a).
+    ///
+    /// NOTE: `kryos-stdlib-native` is built as a `staticlib` that depends on
+    /// `kryos-rt` (also a `staticlib`), so cargo bundles a full copy of
+    /// every `kryos-rt` compiled object — including all of its
+    /// `#[no_mangle] extern "C"` runtime symbols (`kryos_coop_*`,
+    /// `kryos_sleep`, `kryos_array_*`, ...) — directly into
+    /// `libkryos_stdlib_native.a` / `kryos_stdlib_native.lib`. That makes
+    /// `stdlib_native` a strict superset of `runtime_lib`'s public C ABI.
+    /// See `push_runtime_libs` below: when both are present, only
+    /// `stdlib_native` is emitted on the link line to avoid duplicate-symbol
+    /// link errors (MSVC LNK2005 et al.) from linking the same runtime
+    /// symbols twice.
     pub runtime_lib: Option<PathBuf>,
     /// Path to the Kryos native stdlib library (libkryos_stdlib_native.a).
     pub stdlib_native: Option<PathBuf>,
@@ -182,6 +194,30 @@ pub fn build_command(linker_path: &Path, config: &LinkerConfig) -> Command {
     cmd
 }
 
+/// Push the runtime/stdlib-native static libraries onto the link line.
+///
+/// `kryos_stdlib_native.lib` (a `staticlib` depending on `kryos-rt`, also a
+/// `staticlib`) bundles a full copy of every `kryos-rt` compiled object,
+/// including all of `kryos-rt`'s `#[no_mangle] extern "C"` runtime symbols.
+/// Passing both `runtime_lib` and `stdlib_native` on the same link line
+/// therefore defines every shared runtime symbol twice, which MSVC's
+/// link.exe rejects with LNK2005 whenever archive-member extraction pulls
+/// in a `stdlib_native` object that shares a codegen unit with one of the
+/// duplicated symbols (e.g. any program that imports a native-FFI stdlib
+/// module such as `std::re` or `std::datetime`).
+///
+/// Since `stdlib_native` is a confirmed strict superset of `runtime_lib`'s
+/// public C ABI, only one is ever linked: prefer `stdlib_native` when
+/// present (it also satisfies every symbol `runtime_lib` would have
+/// provided), falling back to `runtime_lib` alone otherwise.
+fn push_runtime_libs(cmd: &mut Command, config: &LinkerConfig) {
+    if let Some(ref stdlib) = config.stdlib_native {
+        cmd.arg(stdlib);
+    } else if let Some(ref rt) = config.runtime_lib {
+        cmd.arg(rt);
+    }
+}
+
 /// Build a command line for Unix-like linkers (cc, gcc, clang).
 fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
     // Output path
@@ -204,12 +240,7 @@ fn build_unix_command(cmd: &mut Command, config: &LinkerConfig) {
     }
 
     // Runtime and stdlib libraries
-    if let Some(ref rt) = config.runtime_lib {
-        cmd.arg(rt);
-    }
-    if let Some(ref stdlib) = config.stdlib_native {
-        cmd.arg(stdlib);
-    }
+    push_runtime_libs(cmd, config);
 
     // Extra library search directories
     for dir in &config.extra_lib_dirs {
@@ -294,12 +325,7 @@ fn build_msvc_command(cmd: &mut Command, config: &LinkerConfig) {
     }
 
     // Runtime and stdlib libraries
-    if let Some(ref rt) = config.runtime_lib {
-        cmd.arg(rt);
-    }
-    if let Some(ref stdlib) = config.stdlib_native {
-        cmd.arg(stdlib);
-    }
+    push_runtime_libs(cmd, config);
 
     // Add MSVC CRT and Windows SDK library paths.
     //
@@ -522,12 +548,7 @@ fn build_wasm_command(cmd: &mut Command, config: &LinkerConfig) {
     }
 
     // Runtime and stdlib libraries
-    if let Some(ref rt) = config.runtime_lib {
-        cmd.arg(rt);
-    }
-    if let Some(ref stdlib) = config.stdlib_native {
-        cmd.arg(stdlib);
-    }
+    push_runtime_libs(cmd, config);
 
     // Extra library search directories
     for dir in &config.extra_lib_dirs {

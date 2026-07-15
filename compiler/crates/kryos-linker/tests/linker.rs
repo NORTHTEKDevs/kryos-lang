@@ -190,7 +190,12 @@ fn unix_dynamic_command_line() {
     assert!(args.contains(&"output_binary".to_string()));
     assert!(args.contains(&"main.o".to_string()));
     assert!(args.contains(&"utils.o".to_string()));
-    assert!(args.contains(&"libkryos_rt.a".to_string()));
+    // stdlib_native is a staticlib that bundles a full copy of kryos-rt's
+    // compiled objects (including every #[no_mangle] extern "C" runtime
+    // symbol), so when both are configured only stdlib_native should be
+    // emitted -- passing both defines every shared runtime symbol twice
+    // and MSVC's link.exe rejects that as LNK2005. See push_runtime_libs.
+    assert!(!args.contains(&"libkryos_rt.a".to_string()));
     assert!(args.contains(&"libkryos_stdlib_native.a".to_string()));
     assert!(args.contains(&"-lm".to_string()));
     assert!(args.contains(&"-lpthread".to_string()));
@@ -351,6 +356,64 @@ fn command_without_optional_libs() {
     assert_eq!(args[1], "-o");
     assert_eq!(args[2], "a.out");
     assert_eq!(args[3], "main.o");
+}
+
+// ─── runtime_lib / stdlib_native duplicate-symbol regression ──────
+
+#[test]
+fn stdlib_native_wins_when_both_present_unix() {
+    // Regression test: kryos_stdlib_native.lib bundles a full copy of
+    // kryos-rt's compiled objects (staticlib depending on staticlib), so
+    // passing both libs on the link line duplicate-defines every shared
+    // runtime symbol (LNK2005 on MSVC). Only stdlib_native should ever be
+    // emitted when both are configured.
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
+    let config = make_test_config(target, LinkType::Dynamic);
+    let linker_path = PathBuf::from("/usr/bin/cc");
+    let cmd = build_command(&linker_path, &config);
+    let args = command_to_args(&cmd);
+
+    assert!(!args.contains(&"libkryos_rt.a".to_string()));
+    assert!(args.contains(&"libkryos_stdlib_native.a".to_string()));
+}
+
+#[test]
+fn runtime_lib_used_when_stdlib_native_absent() {
+    // When stdlib_native isn't available (e.g. minimal build), runtime_lib
+    // must still be linked -- the fallback must not silently drop it.
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Linux,
+        env: Env::Gnu,
+    };
+    let mut config = make_test_config(target, LinkType::Dynamic);
+    config.stdlib_native = None;
+    let linker_path = PathBuf::from("/usr/bin/cc");
+    let cmd = build_command(&linker_path, &config);
+    let args = command_to_args(&cmd);
+
+    assert!(args.contains(&"libkryos_rt.a".to_string()));
+    assert!(!args.contains(&"libkryos_stdlib_native.a".to_string()));
+}
+
+#[test]
+fn stdlib_native_wins_when_both_present_msvc() {
+    let target = Target {
+        arch: Arch::X86_64,
+        os: Os::Windows,
+        env: Env::Msvc,
+    };
+    let config = make_test_config(target, LinkType::Dynamic);
+    let linker_path = PathBuf::from("link.exe");
+    let cmd = build_command(&linker_path, &config);
+    let args = command_to_args(&cmd);
+
+    assert!(!args.contains(&"libkryos_rt.a".to_string()));
+    assert!(args.contains(&"libkryos_stdlib_native.a".to_string()));
 }
 
 // ─── find_system_linker ────────────────────────────────────────────
