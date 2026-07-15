@@ -1,0 +1,50 @@
+// Conformance: a GENERIC trait `trait Foo<T>` must bring its own type
+// parameter into scope for its method signatures. The Decl::Trait checker arm
+// was the one generic construct missing the push_scope/define_var(gp) step that
+// functions/structs/enums/impls all do, so `T` in `fn convert(self) -> T`
+// resolved as an unknown type -> E0101 (the documented example failed to
+// compile). Now T is a scoped type var while checking the trait's method sigs.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// T in return position.
+trait Convertible<T> {
+    fn convert(self: Self) -> T
+}
+struct Cel { v: f64 }
+impl Convertible<f64> for Cel {
+    fn convert(self: Cel) -> f64 { return self.v * 1.8 + 32.0 }
+}
+// Same generic trait at a DIFFERENT concrete T in the same program.
+struct Tag { s: str }
+impl Convertible<str> for Tag {
+    fn convert(self: Tag) -> str { return "#" + self.s }
+}
+
+// T in both parameter and return position.
+trait Container<T> {
+    fn first(self: Self) -> T
+    fn combine(self: Self, x: T) -> T
+}
+struct Bin { n: i64 }
+impl Container<i64> for Bin {
+    fn first(self: Bin) -> i64 { return self.n }
+    fn combine(self: Bin, x: i64) -> i64 { return x + self.n }
+}
+
+fn main() {
+    let c: Cel = Cel { v: 100.0 }
+    expect(c.convert() == 212.0, "generic trait -> T return (f64)")
+    let t: Tag = Tag { s: "hot" }
+    expect(t.convert() == "#hot", "same generic trait at different T (str)")
+    let b: Bin = Bin { n: 5 }
+    expect(b.first() == 5, "generic trait T param+return: first")
+    expect(b.combine(10) == 15, "generic trait T param+return: combine")
+
+    println("conformance generic-trait: PASS")
+}

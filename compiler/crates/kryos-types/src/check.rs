@@ -752,6 +752,24 @@ impl TypeChecker {
                     trait_name: name.clone(),
                 });
 
+                // Bring the trait's own declared type parameters
+                // (`trait Foo<T>`) into scope as fresh type vars so method
+                // signatures that mention them (`fn convert(self: Self) -> T`)
+                // resolve instead of raising E0101 -- mirrors the same
+                // push_scope/define_var/pop_scope pattern already used for
+                // Decl::Struct, Decl::Enum, Decl::Function, and the impl's own
+                // generics in Decl::Impl above. Previously this scope was
+                // never pushed, so a generic trait's `T` resolved as an
+                // unknown concrete type name.
+                let scoped_trait_generics = !generics.is_empty();
+                if scoped_trait_generics {
+                    self.env.push_scope();
+                    for gp in generics {
+                        let tv = self.engine.fresh_var();
+                        self.env.define_var(gp.name.clone(), tv);
+                    }
+                }
+
                 let method_sigs: Vec<FunctionSig> = methods
                     .iter()
                     .filter_map(|m| {
@@ -789,6 +807,11 @@ impl TypeChecker {
                         }
                     })
                     .collect();
+
+                if scoped_trait_generics {
+                    self.env.pop_scope();
+                }
+
                 self.env.define_trait(crate::env::TraitDef {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
