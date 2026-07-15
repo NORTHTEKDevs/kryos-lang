@@ -5765,6 +5765,24 @@ impl LlvmCodegen {
                                 "ptr_read_i64" => "kryos_ptr_read_i64",
                                 "ptr_write_i64" => "kryos_ptr_write_i64",
                                 "handle_to_str" => "kryos_handle_to_str",
+                                // Overflow-aware integer arithmetic (i64, i64) -> i64.
+                                // Cranelift maps these through its own builtin-name
+                                // table (kryos-codegen-cranelift/src/codegen.rs) to
+                                // the same kryos_rt symbols; this map lacked the
+                                // cases, so the fallback `other => other` emitted a
+                                // bare `call @wrapping_add(...)` -- undefined value
+                                // at link time (the runtime declares are already
+                                // present above; the call site names alone were
+                                // wrong). Only the call-site name was missing here.
+                                "wrapping_add" => "kryos_wrapping_add_i64",
+                                "wrapping_sub" => "kryos_wrapping_sub_i64",
+                                "wrapping_mul" => "kryos_wrapping_mul_i64",
+                                "checked_add" => "kryos_checked_add_i64",
+                                "checked_sub" => "kryos_checked_sub_i64",
+                                "checked_mul" => "kryos_checked_mul_i64",
+                                "saturating_add" => "kryos_saturating_add_i64",
+                                "saturating_sub" => "kryos_saturating_sub_i64",
+                                "saturating_mul" => "kryos_saturating_mul_i64",
                                 other => other,
                             };
                             // User-defined shadow wins over builtin mapping.

@@ -1,0 +1,42 @@
+// Conformance: the integer overflow-builtin family (wrapping/saturating/checked
+// _add/_sub/_mul). All nine were missing from the LLVM backend's name->runtime-
+// symbol map, so JIT worked but AOT failed to link (`use of undefined value
+// @wrapping_add`). They share one runtime (kryos_*_i64) -- the LLVM dispatch
+// just needed the cases. Semantics: wrapping = two's complement wrap,
+// saturating = clamp to i64::MIN/MAX, checked = plain i64 on success (panics on
+// overflow). This file exercises the non-panicking paths on BOTH backends.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let imax: i64 = 9223372036854775807
+    let imin: i64 = -9223372036854775808
+
+    // wrapping: two's complement
+    expect(wrapping_add(imax, 1) == imin, "wrapping_add MAX+1 -> MIN")
+    expect(wrapping_sub(imin, 1) == imax, "wrapping_sub MIN-1 -> MAX")
+    expect(wrapping_mul(imax, 2) == -2, "wrapping_mul MAX*2 -> -2")
+    expect(wrapping_add(3, 4) == 7, "wrapping_add normal")
+
+    // saturating: clamp
+    expect(saturating_add(imax, 1) == imax, "saturating_add clamps to MAX")
+    expect(saturating_sub(imin, 1) == imin, "saturating_sub clamps to MIN")
+    expect(saturating_mul(imin, 2) == imin, "saturating_mul clamps to MIN")
+    expect(saturating_add(10, 20) == 30, "saturating_add normal")
+
+    // checked: plain i64 on the non-overflow path
+    expect(checked_add(5, 3) == 8, "checked_add non-overflow")
+    expect(checked_sub(10, 4) == 6, "checked_sub non-overflow")
+    expect(checked_mul(6, 7) == 42, "checked_mul non-overflow")
+
+    // mixed with normal arithmetic
+    let r = 100 + wrapping_add(1, 2) + saturating_mul(3, 4)
+    expect(r == 115, "overflow builtins compose with normal arithmetic")
+
+    println("conformance overflow: PASS")
+}
