@@ -192,6 +192,13 @@ fn main() {
     // Chained generic method result of str type keeps its pointer type.
     let ns: Nest<Nest<str>> = Nest { inner: Nest { inner: "deep" } }
     expect(ns.get().get() == "deep", "un-annotated chained generic method (str leaf)")
+    // Chained generic method with an f64 leaf: the erased method returns an i64
+    // slot; the call site must reinterpret it as double (bitcast) instead of
+    // emitting `call double` against the i64-returning callee (ABI mismatch ->
+    // RAX vs XMM0 -> silently 0 on AOT). i64/str leaves already worked.
+    let nf: Nest<Nest<f64>> = Nest { inner: Nest { inner: 3.5 } }
+    expect(nf.get().get() == 3.5, "chained generic method (f64 leaf, ABI reinterpret)")
+    expect(nf.get().get() + 1.0 == 4.5, "chained generic f64 leaf in arithmetic")
 
     // A generic bare `-> T` method whose T resolves to a POINTER-shaped type
     // (str / [T] / map) must return the real type, not the erased i64 slot --

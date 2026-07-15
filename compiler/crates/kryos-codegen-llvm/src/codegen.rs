@@ -4335,6 +4335,46 @@ impl LlvmCodegen {
             } else {
                 self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {ptr_tmp}", dest.0));
             }
+        } else if self
+            .func_ret_types
+            .get(fname)
+            .is_some_and(|t| t != dest_ty)
+        {
+            // Narrow-return twin of the `needs_return_unbox` case above. A
+            // generic impl method with a bare `-> T` return is compiled ONCE
+            // with `T` erased to a scalar `i64` slot -- its `define` really
+            // returns `i64` (RAX). When a chained/doubly-nested call site
+            // resolves `T` to a DIFFERENT narrow (<=8-byte) type -- `f64`
+            // (returned in XMM0, not RAX) or a single-field newtype struct
+            // wrapping one -- `dest_ty` diverges from the callee's true
+            // return type without being "wide" enough to trip
+            // `needs_return_unbox`. Emitting `call dest_ty @fname(...)`
+            // directly (the old fallback below) asks LLVM to fetch the
+            // return value from the ABI location for `dest_ty`, which the
+            // callee never wrote: on AOT this silently read stale/zeroed
+            // XMM0 instead of the real bits in RAX (`Box<Box<f64>>.get()
+            // .get()` printed `0` instead of `3.5`; the JIT was unaffected
+            // since Cranelift always dispatches on the call site's own
+            // type). Call with the callee's REAL scalar return type, then
+            // reinterpret via `coerce_value` (bitcast for float, an
+            // insertvalue rebuild for a narrow single-field struct) so the
+            // actual returned bits are what get read, not a different
+            // register.
+            let actual_ret_ty = self.func_ret_types.get(fname).cloned().unwrap();
+            let raw = self.next_temp();
+            self.emit_line(&format!(
+                "  {raw} = call {actual_ret_ty} @{fname}({arg_list})"
+            ));
+            let coerced = self.coerce_value(&raw, &actual_ret_ty, dest_ty);
+            if is_mutable {
+                self.emit_line(&format!(
+                    "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                    dest.0
+                ));
+            } else {
+                let name = format!("%_{}", dest.0);
+                self.emit_identity_copy(&name, dest_ty, &coerced);
+            }
         } else if is_mutable {
             let tmp = self.next_temp();
             self.emit_line(&format!("  {tmp} = call {dest_ty} @{fname}({arg_list})"));
