@@ -1,0 +1,39 @@
+// Conformance: a Copy-typed local inferred from an UNANNOTATED generic builtin
+// return (`let a = pop(arr)`) must be classified Copy so reusing it does NOT
+// spuriously trip error[E0300]. Previously the ownership analysis' Copy check
+// had no case for pop's generic `-> T` return and defaulted to non-Copy, so
+// `a` was move-tracked and a second use was wrongly rejected -- only an
+// explicit `let a: i64` worked. Now the element-copy-ness of the array is
+// tracked and pop(arr) inherits it. (Kryos is ARC-based: reuse-after-pass is
+// always allowed; this is about not BLOCKING a valid Copy-scalar reuse.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn sum_dup(arr: [i64]) -> i64 {
+    let mut a = arr
+    let top = pop(a)
+    // reuse `top` (a Copy i64) multiple times without annotation
+    return top + top + top
+}
+
+fn main() {
+    let mut si: [i64] = [10, 42]
+    let a = pop(si)
+    push(si, a)
+    push(si, a)
+    expect(a == 42, "unannotated pop(i64) result is Copy, reusable")
+    expect(len(si) == 3, "pushes with reused Copy value")
+
+    let mut sf: [f64] = [3.5]
+    let b = pop(sf)
+    expect(b + b > 6.9 and b + b < 7.1, "unannotated pop(f64) result reusable")
+
+    expect(sum_dup([1, 2, 9]) == 27, "pop-Copy reuse inside a fn param body (9*3)")
+
+    println("conformance copy-reuse: PASS")
+}

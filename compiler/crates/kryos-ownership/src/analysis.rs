@@ -92,6 +92,15 @@ pub struct OwnershipAnalyzer {
     enum_variant_fields: HashMap<(String, String), Vec<kryos_ast::TypeExpr>>,
     /// Variable name → struct type name, populated from let bindings.
     var_struct_names: HashMap<String, String>,
+    /// Variable name → whether the array's ELEMENT type is a copy type,
+    /// populated from array-typed let bindings and params. Lets generic
+    /// builtins like `pop<T>(arr: [T]) -> T` be classified correctly when
+    /// their result is bound to an unannotated local (`let a = pop(stack)`
+    /// where `stack: [i64]`): without this, `a`'s is_copy defaulted to
+    /// false for any array whose element type wasn't in the hardcoded
+    /// builtin-return whitelist, so reusing `a` (a genuine i64) triggered
+    /// a false "use of moved value" (E0300).
+    var_elem_is_copy: HashMap<String, bool>,
 }
 
 impl Default for OwnershipAnalyzer {
@@ -112,6 +121,7 @@ impl OwnershipAnalyzer {
             struct_fields: HashMap::new(),
             enum_variant_fields: HashMap::new(),
             var_struct_names: HashMap::new(),
+            var_elem_is_copy: HashMap::new(),
         }
     }
 
@@ -350,7 +360,7 @@ impl OwnershipAnalyzer {
             Expr::UnaryOp { operand, .. } => self.expr_is_copy(operand),
 
             // Function calls: check builtins, then declared function return types.
-            Expr::FnCall { callee, .. } => {
+            Expr::FnCall { callee, args, .. } => {
                 if let Expr::Identifier { name, .. } = callee.as_ref() {
                     // Known builtins that return copy types.  String-returning
                     // builtins (to_string, substr, etc.) are copy because they
@@ -388,6 +398,23 @@ impl OwnershipAnalyzer {
                             | "buf_write_to_file"
                     ) {
                         return true;
+                    }
+                    // `pop<T>(arr: [T]) -> T` is generic — its copy-ness
+                    // depends on the array's element type, which isn't a
+                    // static builtin fact. Look up the element type tracked
+                    // for the array variable at its declaration/param site
+                    // (see `var_elem_is_copy`) rather than defaulting to
+                    // non-copy, which caused a false use-after-move when
+                    // popping a Copy scalar (`i64`/`f64`/`bool`/copy struct)
+                    // off an array into an unannotated local.
+                    if name == "pop" && args.len() == 1 {
+                        if let Expr::Identifier { name: arr_name, .. } = &args[0] {
+                            if let Some(&is_copy) = self.var_elem_is_copy.get(arr_name.as_str())
+                            {
+                                return is_copy;
+                            }
+                        }
+                        return false;
                     }
                     // Check user-defined function return type annotations.
                     if let Some(&is_copy) = self.fn_copy_returns.get(name.as_str()) {
@@ -710,6 +737,14 @@ impl OwnershipAnalyzer {
                         self.var_struct_names
                             .insert(param.name.clone(), sn.clone());
                     }
+                    // Track array-typed params' element copy-ness too, so
+                    // `let a = pop(param_array)` inside the function body
+                    // classifies `a` correctly (see `var_elem_is_copy`).
+                    if let Some(kryos_ast::TypeExpr::Array { element, .. }) = param.ty.as_ref() {
+                        let is_elem_copy = self.is_type_expr_copy(element);
+                        self.var_elem_is_copy
+                            .insert(param.name.clone(), is_elem_copy);
+                    }
                 }
                 self.analyze_block(body);
                 self.pop_scope();
@@ -872,6 +907,30 @@ impl OwnershipAnalyzer {
                             if self.struct_fields.contains_key(&sn) {
                                 self.var_struct_names.insert(name.clone(), sn);
                             }
+                        }
+
+                        // Track this array's element copy-ness (see
+                        // `var_elem_is_copy` doc comment) so a later
+                        // `pop(name)` classifies its result correctly.
+                        // Prefer the declared annotation; fall back to
+                        // inferring from the first element of an array
+                        // literal initializer when unannotated.
+                        let elem_is_copy_from_ty = ty.as_ref().and_then(|t| match t {
+                            kryos_ast::TypeExpr::Array { element, .. } => {
+                                Some(self.is_type_expr_copy(element))
+                            }
+                            _ => None,
+                        });
+                        let elem_is_copy_from_init = match init_expr {
+                            Expr::ArrayLiteral { elements, .. } if !elements.is_empty() => {
+                                Some(self.expr_is_copy(&elements[0]))
+                            }
+                            _ => None,
+                        };
+                        if let Some(is_elem_copy) =
+                            elem_is_copy_from_ty.or(elem_is_copy_from_init)
+                        {
+                            self.var_elem_is_copy.insert(name.clone(), is_elem_copy);
                         }
                     }
                 } else {
