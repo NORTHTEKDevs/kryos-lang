@@ -272,6 +272,21 @@ fn main() {
     }
     expect(grand == 55 + 5050 + 500500, "spawn + channel totals")
 
+    // A `spawn { }` body capturing a CLOSURE, a str, and an array marshals each
+    // into the uniform i64 spawn-env slot array. Pointer-shaped captures
+    // (closure/str/array) were stored with a `store i64 <ptr>` type mismatch
+    // ("defined with type 'ptr' but expected 'i64'" -> AOT build-fail; JIT is
+    // untyped so it slipped through). Each is now ptrtoint'd before the store.
+    let cap_ch = chan()
+    let mult = |x: i64| x * 3
+    let label = "cap"
+    let vals = [4, 5, 6]
+    spawn {
+        let m = mult(len(vals))          // 3 * 3 = 9
+        send(cap_ch, m + len(label))     // 9 + 3 = 12
+    }
+    expect(recv(cap_ch) == 12, "spawn captures closure+str+array (uniform i64 marshalling)")
+
     // match-in-try + nested-enum-in-tuple with early returns (void-but-mutable
     // placeholder locals previously got no entry alloca -> AOT `undefined %_N.addr`).
     expect(match_in_try(0) == 100, "match inside try builds (AOT)")

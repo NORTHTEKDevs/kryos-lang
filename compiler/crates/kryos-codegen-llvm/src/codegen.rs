@@ -3589,20 +3589,35 @@ impl LlvmCodegen {
                                 .map(|l| l.ty.clone()),
                             _ => None,
                         };
+                        // The spawn env is a uniform `[i64]` slot array, so every
+                        // captured value is marshalled to i64. The pointer-shaped
+                        // captures (str/array clone results, and a retained
+                        // closure/shared handle) are `ptr` SSA values -- they must
+                        // be `ptrtoint`'d to i64 or the trailing `store i64` fails
+                        // LLVM verification (`'%_N' defined with type 'ptr' but
+                        // expected 'i64'` -> AOT build fail; JIT is untyped so it
+                        // slipped through). The wrapper reads each slot back as
+                        // i64 and inttoptr's it. Map/Struct/Tuple/Enum already
+                        // yield i64 (map_clone returns i64; aggregates box to a
+                        // ptrtoint'd i64 below).
                         let store_val = match arg_ty.as_ref() {
                             Some(MirType::Str) => {
                                 let cl = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {cl} = call ptr @kryos_string_clone(ptr {val})"
                                 ));
-                                cl
+                                let ci = self.next_temp();
+                                self.emit_line(&format!("  {ci} = ptrtoint ptr {cl} to i64"));
+                                ci
                             }
                             Some(MirType::Array(_, _)) => {
                                 let cl = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {cl} = call ptr @kryos_array_clone(ptr {val})"
                                 ));
-                                cl
+                                let ci = self.next_temp();
+                                self.emit_line(&format!("  {ci} = ptrtoint ptr {cl} to i64"));
+                                ci
                             }
                             Some(MirType::Map { .. }) => {
                                 let cl = self.next_temp();
@@ -3615,7 +3630,9 @@ impl LlvmCodegen {
                                 self.emit_line(&format!(
                                     "  call void @kryos_arc_retain(ptr {val})"
                                 ));
-                                val
+                                let fi = self.next_temp();
+                                self.emit_line(&format!("  {fi} = ptrtoint ptr {val} to i64"));
+                                fi
                             }
                             Some(t @ (MirType::Struct(_) | MirType::Tuple(_) | MirType::Enum(_))) => {
                                 // Box an aggregate capture: heap-copy the struct/
