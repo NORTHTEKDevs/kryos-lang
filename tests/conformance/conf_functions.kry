@@ -11,6 +11,21 @@ fn classify_pos(x: i64) -> str {
     return r
 }
 
+// The THEN branch diverges (throw/return) and the ELSE is the live value. The
+// if-result type must come from the else branch, not the divergent then arm --
+// else `let r = if c { throw } else { "s" }` typed `r` as i64 and the str read
+// back as its raw pointer bits (str printed a big number). Complements
+// classify_pos (which diverges in the else branch).
+fn classify_nonneg(x: i64) -> str {
+    let r = if x < 0 { throw "was negative" } else { "nonneg" }
+    return r
+}
+
+fn pick_or_return(x: i64) -> f64 {
+    let v = if x > 100 { return 0.0 } else { 2.5 }
+    return v
+}
+
 fn all_block_match(tag: i64) -> i64 {
     return match tag {
         0 => { let a = 10  a + 1 },
@@ -119,6 +134,16 @@ fn main() {
     }
     expect(early_ret(true) == 6, "if with a return branch types as the value branch")
     expect(early_ret(false) == 0, "if-return branch returns early when taken")
+    // The DIVERGENT branch is the THEN branch (not the else): the result type
+    // must still come from the live else branch, for str and f64 alike.
+    expect(classify_nonneg(5) == "nonneg", "if with a throw THEN-branch types as the else value (str, not a raw pointer)")
+    try {
+        let bad = classify_nonneg(-1)
+        expect(false, "classify_nonneg(-1) should throw")
+    } catch e {
+        expect(e == "was negative", "throw then-branch actually throws when taken")
+    }
+    expect(pick_or_return(5) > 2.4 and pick_or_return(5) < 2.6, "if with a return THEN-branch types as the else value (f64)")
 
     println("conformance functions: PASS")
 }

@@ -6965,7 +6965,10 @@ fn infer_branch_value_type(ctx: &mut LoweringContext, block: &ast::Block) -> Opt
     let last = block.stmts.last()?;
     match last {
         ast::Stmt::Expr { expr, .. } => Some(infer_expr_type(ctx, expr)),
-        ast::Stmt::Return { value: Some(expr), .. } => Some(infer_expr_type(ctx, expr)),
+        // `return`/`throw` DIVERGE -- they exit the function/unwind and never
+        // yield the block's VALUE, so they contribute no type. An if/match whose
+        // one branch diverges must take its result type from the LIVE sibling
+        // branch (`let x = if c { throw } else { "s" }` is a str, not void/i64).
         _ => None,
     }
 }
@@ -7618,18 +7621,17 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             infer_match_result_type(ctx, subject, arms)
         }
 
-        ast::Expr::IfExpr { then_branch, .. } => {
-            // Infer from the last expression of the then branch.
-            then_branch
-                .stmts
-                .last()
-                .and_then(|s| {
-                    if let ast::Stmt::Expr { expr, .. } = s {
-                        Some(infer_expr_type(ctx, expr))
-                    } else {
-                        None
-                    }
-                })
+        ast::Expr::IfExpr { then_branch, else_branch, .. } => {
+            // Type from the first branch that PRODUCES a value; a divergent
+            // (throw/return) branch yields no type and is skipped. This MUST
+            // match the if-expression lowering (which uses the same
+            // infer_branch_value_type + else fallback) -- otherwise the `let`
+            // binding and the if's own result local disagree, e.g.
+            // `let f = if c { throw } else { "s" }` typed `f` as I64 (the throw
+            // arm) while the str "s" was stored, so println(f) printed the raw
+            // pointer bits. (Was: looked only at the then-branch's Stmt::Expr.)
+            infer_branch_value_type(ctx, then_branch)
+                .or_else(|| else_branch.as_ref().and_then(|b| infer_branch_value_type(ctx, b)))
                 .unwrap_or(MirType::I64)
         }
 
