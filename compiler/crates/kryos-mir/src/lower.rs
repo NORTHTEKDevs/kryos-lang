@@ -4019,11 +4019,37 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Evaluate channel expressions ONCE before the poll loop.
             let mut ch_locals = Vec::new();
             for branch in branches.iter() {
+                let ch_ty = infer_expr_type(ctx, &branch.channel);
                 let ch_op = lower_expr_to_operand(ctx, &branch.channel);
+                // A branch channel may be a std::chan::Channel STRUCT
+                // ({raw, capacity, is_closed}) rather than a raw i64 handle.
+                // `select` polls raw handles, so extract `.raw` -- otherwise the
+                // aggregate value was reinterpreted as a pointer and the runtime
+                // dereferenced garbage (segfault on JIT, hang on AOT). A raw i64
+                // operand (from the low-level `chan()` builtin) is used as-is.
+                let raw_op = match &ch_ty {
+                    MirType::Struct(sname)
+                        if ctx
+                            .struct_defs
+                            .get(sname)
+                            .is_some_and(|fs| fs.iter().any(|(n, _)| n == "raw")) =>
+                    {
+                        let raw = ctx.alloc_temp(MirType::I64);
+                        ctx.emit(Instruction::Assign {
+                            dest: raw,
+                            value: RValue::Field {
+                                object: ch_op,
+                                field: "raw".to_string(),
+                            },
+                        });
+                        Operand::Local(raw)
+                    }
+                    _ => ch_op,
+                };
                 let ch_local = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
                     dest: ch_local,
-                    value: RValue::Use(ch_op),
+                    value: RValue::Use(raw_op),
                 });
                 ch_locals.push(ch_local);
             }

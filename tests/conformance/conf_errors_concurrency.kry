@@ -324,6 +324,20 @@ fn main() {
     let fsrc_closed = close(fsrc)
     expect(ftotal == 24, "fan_out 2 workers double all inputs 2*(3+4+5); terminates on source close (no exit hang)")
 
+    // `select` over std::chan::Channel STRUCTS (not just raw chan() handles):
+    // select polls raw i64 handles, so a Channel-struct branch operand must have
+    // its `.raw` extracted. Previously the aggregate was reinterpreted as a
+    // pointer and the runtime dereferenced garbage -- JIT segfault, AOT hang.
+    let sa: Channel = new_channel()
+    let sb: Channel = new_channel()
+    send_val(sb, 222)
+    let mut selected = 0
+    select {
+        v sa => { selected = 1000 + v }
+        v sb => { selected = 2000 + v }
+    }
+    expect(selected == 2222, "select over std::chan::Channel structs picks the ready channel (.raw extracted)")
+
     // match-in-try + nested-enum-in-tuple with early returns (void-but-mutable
     // placeholder locals previously got no entry alloca -> AOT `undefined %_N.addr`).
     expect(match_in_try(0) == 100, "match inside try builds (AOT)")
