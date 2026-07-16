@@ -28,6 +28,23 @@ fn consume(s: str) -> i64 {
     return len(s)
 }
 
+enum Tag { X, Y, Z }
+
+// An if-EXPRESSION bound to a `let`, whose two MUTUALLY-EXCLUSIVE branches each
+// match the SAME enum param, must not falsely report `t` used-after-move in the
+// second branch. The ownership analysis walked if-expression branches
+// SEQUENTIALLY (a move in the then branch leaked into the else branch) -> a
+// false E0300 that HARD-BLOCKED valid code. Now if-expr branches fork/merge the
+// move-state like match arms and Stmt::If already did.
+fn branch_classify(n: i64, t: Tag) -> str {
+    let r = if n > 0 {
+        match t { Tag.X => "x1", _ => "o1" }
+    } else {
+        match t { Tag.X => "x2", _ => "o2" }
+    }
+    return r
+}
+
 fn main() {
     // Primitives are Copy: usable after passing.
     let n = 5
@@ -56,6 +73,11 @@ fn main() {
     expect(len(b1.items) == 1, "@copy deep: source array unaffected")
     expect(len(b2.items) == 2, "@copy deep: copy keeps its push")
     expect(b1.name == "orig" and b2.name == "copy", "@copy deep: str slots decouple")
+
+    // if-expression whose branches each match the same param (was a false
+    // E0300 use-after-move that blocked compilation).
+    expect(branch_classify(5, Tag.X) == "x1", "if-expr then-branch match on param")
+    expect(branch_classify(-1, Tag.Y) == "o2", "if-expr else-branch match on same param (no false use-after-move)")
 
     println("conformance ownership: PASS")
 }

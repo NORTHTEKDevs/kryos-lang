@@ -1426,13 +1426,48 @@ impl OwnershipAnalyzer {
                 ..
             } => {
                 self.analyze_expr_use(condition);
+                // then/else are MUTUALLY EXCLUSIVE: a move performed in one
+                // branch must NOT leak into the sibling. Snapshot the pre-branch
+                // state, analyze each branch from it, then merge (moved in BOTH
+                // branches -> moved afterwards; moved in only one -> keep owned).
+                // Mirrors Expr::MatchExpr and Stmt::If. Without this isolation,
+                // an if-EXPRESSION `let r = if c { match t {..} } else { match t
+                // {..} }` analyzed the else branch with `t` already "moved" by
+                // the then branch -> a false E0300 that HARD-BLOCKED valid code
+                // (E0300 is meant to be advisory, but this path emits an error).
+                let before = self.snapshot_full();
                 self.push_scope();
                 self.analyze_block(then_branch);
                 self.pop_scope();
+                let mut branch_states: Vec<HashMap<String, OwnershipState>> =
+                    vec![self.snapshot_states()];
                 if let Some(else_blk) = else_branch {
+                    for (name, (state, mf)) in &before {
+                        self.restore_full(name, *state, mf);
+                    }
                     self.push_scope();
                     self.analyze_block(else_blk);
                     self.pop_scope();
+                    branch_states.push(self.snapshot_states());
+                }
+                let has_else = else_branch.is_some();
+                for (name, (pre_state, _)) in &before {
+                    if *pre_state != OwnershipState::Owned {
+                        continue;
+                    }
+                    // Only an if WITH an else can move a value on every path.
+                    let moved_in_all = has_else
+                        && branch_states
+                            .iter()
+                            .all(|s| s.get(name) == Some(&OwnershipState::Moved));
+                    let moved_in_some = branch_states
+                        .iter()
+                        .any(|s| s.get(name) == Some(&OwnershipState::Moved));
+                    if moved_in_all {
+                        self.restore_state(name, OwnershipState::Moved);
+                    } else if moved_in_some {
+                        self.restore_state(name, OwnershipState::Owned);
+                    }
                 }
             }
             Expr::MatchExpr { subject, arms, .. } => {
