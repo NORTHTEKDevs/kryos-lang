@@ -37,6 +37,10 @@ fn split_char(s: str, sep: str) -> [str] {
 
 struct Row { cells: [str] }
 
+struct Name { first: str }
+
+struct Contact { name: Name, id: i64 }
+
 fn main() {
     // Array-of-arrays via a NAMED local, with an intervening allocation
     // (the "parsed:" concat) that would reuse freed string memory if broken.
@@ -109,6 +113,31 @@ fn main() {
         ei = ei + 1
     }
     expect(len(evens) == 3 and evens[0].cells[0] == "p" and table[2].cells[1] == "q", "indirect let filter (struct), both valid, no teardown crash")
+
+    // A struct with a NESTED struct field that owns a heap field, filtered via
+    // index-read-push. The deep-copy of the outer struct must deep-copy the
+    // nested struct too (it's a separate allocation with its own heap str) --
+    // else the original and the copy share it and both free it at teardown
+    // (LLVM shallow-copied the pointer; Cranelift shared any nested struct
+    // unless @copy). Both source and filtered copy must stay valid.
+    let mut people: [Contact] = []
+    let mut ci: i64 = 0
+    while ci < 3 {
+        let nm: Name = Name { first: "f" + to_string(ci) }
+        let ct: Contact = Contact { name: nm, id: ci }
+        people = push(people, ct)
+        ci = ci + 1
+    }
+    let mut adults: [Contact] = []
+    let mut ai: i64 = 0
+    while ai < len(people) {
+        if people[ai].id >= 1 {
+            adults = push(adults, people[ai])
+        }
+        ai = ai + 1
+    }
+    expect(len(adults) == 2, "filter struct-with-nested-struct-heap-field")
+    expect(adults[0].name.first == "f1" and people[0].name.first == "f0", "nested-struct heap field intact in both source and copy")
 
     println("conformance nested-arrays: PASS")
 }

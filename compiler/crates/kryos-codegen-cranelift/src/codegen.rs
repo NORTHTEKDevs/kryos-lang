@@ -2386,8 +2386,41 @@ fn emit_struct_deep_copy<M: Module>(
                 let call = builder.ins().call(clone_ref, &[field_val]);
                 builder.inst_results(call)[0]
             }
-            // H21: share nested @copy struct fields.
-            Some(MirType::Struct(_)) => field_val,
+            // H21: share nested struct fields -- but ONLY when the inner
+            // struct is itself `@copy`. This must mirror `emit_drop_for_value`'s
+            // Struct-field arm exactly (search "@copy structs embedded in a
+            // containing struct share field pointers with their original
+            // source; skip recursive drop to avoid double-free"): that drop
+            // side skips freeing a nested field ONLY when
+            // `copy_structs.contains(inner_name)` -- for any NON-@copy nested
+            // struct it unconditionally recurses into a REAL free of that
+            // field's own malloc'd block. Cranelift represents EVERY struct,
+            // nested or not, as its own separate malloc'd block (unlike LLVM,
+            // which embeds a nested struct's bytes INLINE in the parent's
+            // aggregate -- no separate block to double-free there). So on
+            // Cranelift, sharing a NON-@copy nested struct field's pointer
+            // double-frees that field's own block when BOTH the original and
+            // this copy are later dropped -- regardless of whether the field
+            // has any heap CONTENT (a nested `Inner { n: i64 }` with no
+            // str/array/map field still crashes, exit 127, because its own
+            // block is freed twice). A NON-@copy nested struct that
+            // transitively owns heap (`Inner { tag: str }`) doubles-frees
+            // both the block AND the str/array/map content the same way.
+            // Recursing into `emit_struct_deep_copy` for any non-`@copy`
+            // nested struct closes both: it allocates an independent block
+            // AND clones/retains that struct's own heap fields (recursively,
+            // for structs nested more than one level deep). An `@copy`
+            // nested struct is left as a plain share: its drop is skipped
+            // entirely by `emit_drop_for_value` (the deliberate "leak on
+            // copy" @copy model, gotcha #23), so two copies safely sharing
+            // one pointer is exactly what the drop side already assumes.
+            Some(MirType::Struct(inner_name)) => {
+                if translator.copy_structs.contains(inner_name) {
+                    field_val
+                } else {
+                    emit_struct_deep_copy(inner_name, field_val, builder, translator, module)?
+                }
+            }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                 let retain_ref =
                     ensure_func_ref_with_args("kryos_arc_retain", builder, translator, module, 1)?;
