@@ -6,6 +6,8 @@
 // saturating = clamp to i64::MIN/MAX, checked = plain i64 on success (panics on
 // overflow). This file exercises the non-panicking paths on BOTH backends.
 
+use std::hash::{crc32}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -37,6 +39,15 @@ fn main() {
     // mixed with normal arithmetic
     let r = 100 + wrapping_add(1, 2) + saturating_mul(3, 4)
     expect(r == 115, "overflow builtins compose with normal arithmetic")
+
+    // std::hash::crc32 must produce the STANDARD IEEE 802.3 CRC-32 (matches
+    // zlib/binascii). The old impl used a signed -1 init + `crc / 2` (signed
+    // division) so a negative accumulator gave non-standard values; now the
+    // accumulator stays a positive 32-bit-masked value with a logical shift.
+    // Exercises hex literals, `>>`, `^`, `&` end-to-end on both backends.
+    expect(crc32("hello") == 907060870, "crc32(hello) matches reference IEEE CRC-32")
+    expect(crc32("") == 0, "crc32(empty) is 0")
+    expect(crc32("The quick brown fox jumps over the lazy dog") == 1095738169, "crc32(fox) matches reference")
 
     println("conformance overflow: PASS")
 }

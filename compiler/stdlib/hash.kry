@@ -36,7 +36,14 @@ fn djb2(s: str) -> i64 {
 
 /// CRC32 IEEE polynomial. Used by zip/png/ethernet.
 fn crc32(s: str) -> i64 {
-    let mut crc: i64 = -1   // 0xffffffff signed
+    // Standard IEEE 802.3 CRC-32 (zlib/binascii/png/zip). The accumulator MUST
+    // stay a POSITIVE, 32-bit-masked value: init 0xffffffff (not signed -1), and
+    // shift with a LOGICAL right shift. The old code used `crc: i64 = -1` and
+    // `crc / 2` (SIGNED division, truncates toward zero on a negative value), so
+    // once the accumulator went negative it diverged from the reference CRC32
+    // (`crc32("hello")` returned 472206115, not 907060870) -- backend-consistent
+    // but non-standard, breaking any real checksum interop.
+    let mut crc: i64 = 0xffffffff
     let n = len(s)
     let mut i: i64 = 0
     while i < n {
@@ -45,7 +52,7 @@ fn crc32(s: str) -> i64 {
         let mut j: i64 = 0
         while j < 8 {
             let bit = crc & 1
-            crc = crc / 2
+            crc = crc >> 1
             if bit == 1 {
                 crc = crc ^ 0xedb88320
             }
@@ -53,5 +60,5 @@ fn crc32(s: str) -> i64 {
         }
         i = i + 1
     }
-    return crc ^ -1   // bitwise NOT via xor
+    return (crc ^ 0xffffffff) & 0xffffffff
 }
