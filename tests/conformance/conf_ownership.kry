@@ -36,6 +36,32 @@ fn f1_run() -> i64 {
     return len(c.stack)
 }
 
+fn tag_len(s: str) -> i64 { return len(s) }
+
+// Regression for the F1-fix follow-up: a match-arm body whose LAST statement is
+// a CALL consuming a heap local `let`-bound earlier in the SAME arm must run the
+// call BEFORE the arm-scope drop frees that local. The F1 fix (emit_named_scope_
+// drops from the block-rvalue path) at first dropped the local before the caller
+// emitted the tail call's un-emitted rvalue, so `tag_len(tag)` / `println(tag)`
+// saw a freed (empty) string. Fixed by materializing the non-identifier tail
+// into a temp before the drops.
+fn f1_tail_call(n: i64) -> i64 {
+    let mut total = 0
+    let mut i = 0
+    while i < n {
+        let contrib = match 1 {
+            1 => {
+                let tag = "ab" + to_string(i)
+                tag_len(tag)
+            }
+            _ => { 0 }
+        }
+        total = total + contrib
+        i = i + 1
+    }
+    return total
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -144,6 +170,9 @@ fn main() {
     // must not crash (F1). A match-arm-local `let` is now dropped at its own
     // arm's scope end, not hoisted to the loop-body's shared post-match drop.
     expect(f1_run() == 2, "loop + nested-match struct-payload reassign (F1: no crash, correct value)")
+    // A match-arm tail CALL consuming an arm-local heap value must run before
+    // the arm-scope drop frees it (F1-fix follow-up: was freed-first -> empty).
+    expect(f1_tail_call(3) == 9, "match-arm tail call consumes arm-local before scope drop")
 
     println("conformance ownership: PASS")
 }

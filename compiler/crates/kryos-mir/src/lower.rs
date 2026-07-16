@@ -9715,13 +9715,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             for (i, stmt) in block.stmts.iter().enumerate() {
                 if i == block.stmts.len() - 1 {
                     if let ast::Stmt::Expr { expr, .. } = stmt {
-                        let rv = lower_expr_to_rvalue(ctx, expr);
                         // A bare-identifier tail MOVES the local into the
                         // result (Use is a bit-copy with no retain) -- mark
-                        // it dropped first so the scope cleanup below
-                        // doesn't free the value the result now owns
-                        // (mirrors `lower_block_as_value`'s identical guard).
+                        // it dropped so the scope cleanup below doesn't free
+                        // the value the result now owns, then drop the OTHER
+                        // locals and return Use(local) directly (mirrors
+                        // `lower_block_as_value`'s identical guard).
                         if let ast::Expr::Identifier { name, .. } = expr {
+                            let rv = lower_expr_to_rvalue(ctx, expr);
                             if let Some(l) = ctx
                                 .locals
                                 .iter()
@@ -9730,9 +9731,30 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             {
                                 ctx.dropped_locals.insert(l.id.0);
                             }
+                            emit_named_scope_drops(ctx, scope_start);
+                            return rv;
                         }
+                        // Any OTHER tail (a call, binop, ...) is returned as an
+                        // UN-EMITTED rvalue for the CALLER to store -- but it
+                        // may READ this block's named locals, so it must be
+                        // MATERIALIZED into a temp HERE, before the scope
+                        // drops, or the drops free those locals first: a tail
+                        // like `println(tag)` (a match-arm body `{ let tag =
+                        // ..  println(tag) }`) freed `tag` before the call ran
+                        // and printed blank -- a regression from the F1
+                        // arm-local-drop fix. (match/if tails already emit
+                        // their reads during lowering; the extra temp is
+                        // harmless there.) Mirrors `lower_block_as_value`,
+                        // which materializes its tail into `result_local`.
+                        let rv = lower_expr_to_rvalue(ctx, expr);
+                        let ty = infer_expr_type(ctx, expr);
+                        let tmp = ctx.alloc_temp(ty);
+                        ctx.emit(Instruction::Assign {
+                            dest: tmp,
+                            value: rv,
+                        });
                         emit_named_scope_drops(ctx, scope_start);
-                        return rv;
+                        return RValue::Use(Operand::Local(tmp));
                     }
                     // A trailing `if ... else ...` is the block's tail VALUE
                     // (parsed as Stmt::If). Without this it lowered as a
