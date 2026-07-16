@@ -143,5 +143,24 @@ fn main() {
     let u6b = parse_url("https://[fe80::1]/api")
     expect(u6b.host == "fe80::1" and u6b.port == 443, "parse_url IPv6 host, default https port")
 
+    // Narrow UNSIGNED ints (u8/u16/u32) must zero-extend, not sign-extend, on
+    // the AOT/LLVM backend: casts, shifts, and interpolation formatting all
+    // diverged from the JIT (u8 255 printed -1, u8 200 >> 1 gave 228 not 100).
+    let neg1: i8 = -1
+    let asu8: u8 = neg1 as u8
+    expect(asu8 == 255, "i8 -1 as u8 == 255 (zero-extend, not -1)")
+    expect("{asu8}" == "255", "u8 255 interpolates as 255 (unsigned formatter)")
+    let big: u8 = 200
+    expect(big >> 1 == 100, "u8 200 >> 1 == 100 (logical shift, not arithmetic 228)")
+    expect("{big >> 1}" == "100", "u8 shift result interpolates unsigned")
+    expect((big | 100) == 236, "u8 200 | 100 == 236")
+    let hw: u16 = 60000
+    expect(hw >> 2 == 15000 and "{hw}" == "60000", "u16 60000 zero-extends across shift + format")
+    let w: u32 = 4000000000
+    expect(w >> 1 == 2000000000 and "{w}" == "4000000000", "u32 4e9 zero-extends across shift + format")
+    // Signed narrow ints keep arithmetic shift + sign-extend (the control).
+    let sneg: i8 = -8
+    expect(sneg >> 1 == -4, "i8 -8 >> 1 == -4 (arithmetic shift retained for signed)")
+
     println("conformance overflow: PASS")
 }

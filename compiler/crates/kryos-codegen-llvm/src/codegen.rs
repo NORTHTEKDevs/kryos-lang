@@ -4658,13 +4658,21 @@ impl LlvmCodegen {
                     if !is_float {
                         if let (Some(lw), Some(rw)) = (int_w(&operand_ty), int_w(&right_ty)) {
                             if lw != rw {
+                                // Widen the narrower operand to the wider width.
+                                // Each operand extends per ITS OWN signedness: a
+                                // u8 must zero-extend (`u8 200 >> 1` = 100, not the
+                                // arithmetic-shift 228 a sign-extend produced) --
+                                // AOT diverged from the JIT on every narrow-unsigned
+                                // bitwise/shift op (Pass-18).
+                                let left_unsigned = Self::operand_is_unsigned(left, func);
+                                let right_unsigned = Self::operand_is_unsigned(right, func);
                                 let wide = if lw > rw { operand_ty.clone() } else { right_ty.clone() };
                                 if operand_ty != wide {
-                                    left_val = self.coerce_value(&left_val, &operand_ty, &wide);
+                                    left_val = self.coerce_value_ext(&left_val, &operand_ty, &wide, left_unsigned);
                                     operand_ty = wide.clone();
                                 }
                                 if right_ty != wide {
-                                    right_val = self.coerce_value(&right_val, &right_ty, &wide);
+                                    right_val = self.coerce_value_ext(&right_val, &right_ty, &wide, right_unsigned);
                                     right_ty = wide;
                                 }
                             }
@@ -7625,11 +7633,18 @@ impl LlvmCodegen {
                         || ty == "i16"
                         || ty == "i8"
                     {
-                        let widened = this.coerce_value(&val, &ty, "i64");
+                        // Unsigned values ZERO-extend and use the unsigned
+                        // formatter, else an interpolated `"{m}"` for u8 255
+                        // printed -1 (AOT) -- mirrors the println(u8) path.
+                        let is_unsigned = Self::operand_is_unsigned(op, func);
+                        let widened = this.coerce_value_ext(&val, &ty, "i64", is_unsigned);
+                        let fmt_fn = if is_unsigned {
+                            "kryos_u64_to_string"
+                        } else {
+                            "kryos_i64_to_string"
+                        };
                         let h = this.next_temp();
-                        this.emit_line(&format!(
-                            "  {h} = call i64 @kryos_i64_to_string(i64 {widened})"
-                        ));
+                        this.emit_line(&format!("  {h} = call i64 @{fmt_fn}(i64 {widened})"));
                         let p = this.next_temp();
                         this.emit_line(&format!("  {p} = inttoptr i64 {h} to ptr"));
                         return p;
@@ -8991,6 +9006,20 @@ impl LlvmCodegen {
     /// Coerce a value from one LLVM type to another, emitting the necessary
     /// conversion instruction. Returns the (possibly new) value name.
     fn coerce_value(&mut self, value: &str, from_type: &str, to_type: &str) -> String {
+        // Default (signedness-unaware) coercion sign-extends narrow ints, which
+        // is correct for signed sources and the historical behavior for every
+        // existing caller. Unsigned narrow sources must go through
+        // `coerce_value_ext(.., true)` so they ZERO-extend instead.
+        self.coerce_value_ext(value, from_type, to_type, false)
+    }
+
+    fn coerce_value_ext(
+        &mut self,
+        value: &str,
+        from_type: &str,
+        to_type: &str,
+        unsigned: bool,
+    ) -> String {
         // The caller's from_type comes from MIR, which carries booleans as
         // i64; the SSA value may really be an i1 (a stored comparison read
         // back from a bool local). Trust the tracked type across the
@@ -9045,7 +9074,10 @@ impl LlvmCodegen {
         if let (Some(rf), Some(rt)) = (int_rank(from_type), int_rank(to_type)) {
             let tmp = self.next_temp();
             if rf < rt {
-                self.emit_line(&format!("  {tmp} = sext {from_type} {value} to {to_type}"));
+                // Unsigned narrow sources ZERO-extend (u8 200 -> i64 stays 200,
+                // not -56); signed sources sign-extend as before.
+                let ext = if unsigned { "zext" } else { "sext" };
+                self.emit_line(&format!("  {tmp} = {ext} {from_type} {value} to {to_type}"));
             } else {
                 self.emit_line(&format!("  {tmp} = trunc {from_type} {value} to {to_type}"));
             }
