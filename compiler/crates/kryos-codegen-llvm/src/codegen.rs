@@ -4754,21 +4754,61 @@ impl LlvmCodegen {
                         ));
                         self.emit_line(&format!("  call void @{print_fn}(ptr {handle_ptr})"));
                     }
-                } else if (fname == "__kryos_struct_index_clone"
-                    || fname == "__kryos_enum_index_clone")
-                    && args.len() == 1
-                {
+                } else if fname == "__kryos_struct_index_clone" && args.len() == 1 {
                     // Synthetic marker MIR lowering inserts for `push(dest_arr,
-                    // struct_or_enum_index_or_field_read)` (see
-                    // kryos-mir/src/lower.rs and the Cranelift codegen's
-                    // handling of the same call names). Cranelift needs an
-                    // explicit deep-copy there because it represents structs
-                    // AND enums uniformly as raw heap pointers; LLVM already
-                    // produces an INDEPENDENT value when it reads a
-                    // struct/enum-typed array element (`load %S, ptr p`
-                    // copies the aggregate's bytes into a fresh SSA
-                    // value/alloca, not just a pointer), so this is a pure
-                    // passthrough here -- no additional copy needed.
+                    // struct_index_or_field_read)` (see kryos-mir/src/lower.rs
+                    // and the Cranelift codegen's handling of the same call
+                    // name via `emit_struct_deep_copy`). The struct AGGREGATE
+                    // itself is fine as a passthrough here: LLVM's `load %S,
+                    // ptr p` already yields an INDEPENDENT SSA value (a fresh
+                    // copy of the aggregate's bytes), unlike Cranelift's raw
+                    // shared struct pointer. But when a field's bytes ARE a
+                    // pointer to further heap data (str/array/map/fn/shared),
+                    // copying the aggregate only copies the POINTER VALUE --
+                    // the destination struct and the source container's
+                    // struct then both reference the SAME array/string/map,
+                    // and each one's ordinary drop frees it once -> a real
+                    // double-free at teardown (conf_nested_arrays.kry: a
+                    // `Row { cells: [str] }` filtered via `push(passing,
+                    // table[fi])` reported `str DOUBLE-FREE content="p"` +
+                    // `array DOUBLE-FREE` on the shared `cells` array/strings
+                    // -- AOT-only; Cranelift's own `emit_struct_deep_copy`
+                    // clones/retains these same fields). Deep-copy any
+                    // heap-owning field so the destination owns independent
+                    // references; scalar fields and nested-struct fields
+                    // (H21: shared, matching Cranelift) are untouched.
+                    let val = self.operand_to_llvm(&args[0], func);
+                    let val_ty = self.operand_type(&args[0], func);
+                    let coerced = self.coerce_value(&val, &val_ty, &dest_ty);
+                    let coerced = if let Some(sname) =
+                        func.locals.iter().find(|l| l.id == dest).and_then(|l| match &l.ty {
+                            MirType::Struct(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                    {
+                        self.deep_copy_struct_index_clone(&coerced, &sname, &dest_ty)
+                    } else {
+                        coerced
+                    };
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store {dest_ty} {coerced}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        let name = format!("%_{}", dest.0);
+                        self.emit_identity_copy(&name, &dest_ty, &coerced);
+                    }
+                } else if fname == "__kryos_enum_index_clone" && args.len() == 1 {
+                    // Enum analog of the marker above. Left as a pure
+                    // passthrough (unchanged from before this fix): LLVM's
+                    // enum-typed array-element read is likewise an inherent
+                    // value copy of the tag+payload aggregate, and no conf
+                    // test currently exercises an enum-with-heap-payload
+                    // variant through this path -- see the Cranelift-side
+                    // `emit_enum_deep_copy` doc comment for the equivalent
+                    // Cranelift-only rationale. Not touched by this fix
+                    // (scoped to the reported struct double-free only).
                     let val = self.operand_to_llvm(&args[0], func);
                     let val_ty = self.operand_type(&args[0], func);
                     let coerced = self.coerce_value(&val, &val_ty, &dest_ty);
@@ -9308,6 +9348,173 @@ impl LlvmCodegen {
             }
         }
         cur
+    }
+
+    /// Deep-copy the heap-owning fields of a struct value produced by the
+    /// `__kryos_struct_index_clone` marker (`push(dest_arr,
+    /// struct_index_or_field_read)` -- see the call site in `emit_assign`
+    /// and `kryos-mir/src/lower.rs`). Unlike `maybe_deep_copy_struct_fields`
+    /// (gated to `@copy` structs, whose OWN drop is a no-op -- so a shallow,
+    /// unretained field clone there merely leaks, never double-frees), this
+    /// runs for ANY struct (no `copy_structs` gate, matching Cranelift's
+    /// unconditional `emit_struct_deep_copy`) because an ordinary struct
+    /// really is dropped -- both the source container's copy and this one.
+    /// A bare aggregate `load`/`extractvalue` already gives `val` its own
+    /// independent SSA value, but a heap-owning field's bytes are a POINTER;
+    /// copying those bytes verbatim aliases the SAME array/string/map the
+    /// source struct still owns. Retain/clone each such field so the two
+    /// owners each hold an independent reference:
+    ///   - `str`/`map`: `kryos_string_clone`/`kryos_map_clone` are refcount
+    ///     retains (bump + return same pointer) -- always safe.
+    ///   - array: `kryos_array_dup` (NOT the bare `kryos_array_clone` used
+    ///     in `maybe_deep_copy_struct_fields`) -- it allocates an
+    ///     independent header AND retains the array's own elements per
+    ///     `elem_kind`, so a `[str]`/`[[T]]`/`[map]` field's inner elements
+    ///     don't alias between the two arrays (a plain header clone would
+    ///     leave both arrays' drops freeing the same un-retained elements
+    ///     -- the exact double-free this function closes).
+    ///   - `fn`/`Shared<T>`: `kryos_arc_retain`.
+    ///   - nested struct: recurse (see below) when the inner struct itself
+    ///     owns heap fields; otherwise untouched. Cranelift's H21 rule
+    ///     ("share nested @copy struct fields") is only safe when the
+    ///     nested struct's OWN drop is a no-op (`@copy`); an ordinary
+    ///     (non-`@copy`) nested struct with its own str/array/map field is
+    ///     dropped for real by BOTH the source's and destination's Big-level
+    ///     drop, so a bare inline-aggregate share aliases that nested
+    ///     field's heap data the exact same way the top-level fields did --
+    ///     recursing here closes that one-level-deeper instance of the same
+    ///     bug class instead of reproducing Cranelift's narrower rule.
+    fn deep_copy_struct_index_clone(&mut self, val: &str, sname: &str, dest_ty: &str) -> String {
+        if !dest_ty.starts_with('%') {
+            return val.to_string();
+        }
+        let Some(fields) = self.struct_defs.get(sname).cloned() else {
+            return val.to_string();
+        };
+        let needs_work = fields.iter().any(|(_, t)| match t {
+            MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. }
+            | MirType::Function { .. }
+            | MirType::Shared(_) => true,
+            MirType::Struct(inner) => self.struct_has_heap_fields(inner),
+            _ => false,
+        });
+        if !needs_work {
+            return val.to_string();
+        }
+        let mut cur = val.to_string();
+        for (idx, (_, fty)) in fields.iter().enumerate() {
+            let fty_ll = self.sig_ty_to_llvm(fty);
+            match fty {
+                MirType::Str => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fp = self.coerce_value(&fv, &fty_ll, "ptr");
+                    let cl = self.next_temp();
+                    self.emit_line(&format!("  {cl} = call ptr @kryos_string_clone(ptr {fp})"));
+                    let back = self.coerce_value(&cl, "ptr", &fty_ll);
+                    let nv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {back}, {idx}"
+                    ));
+                    cur = nv;
+                }
+                MirType::Array(elem_ty, _) => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fp = self.coerce_value(&fv, &fty_ll, "ptr");
+                    // Same elem_kind scheme as emit_aggregate_struct's
+                    // struct-literal array-field clone (4a804f2): 1 for
+                    // refcounted elements (str/array/map) that need their
+                    // own retain, 0 for scalars (kryos_array_dup degenerates
+                    // to a plain header clone in that case).
+                    let elem_kind: i64 = match elem_ty.as_ref() {
+                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                        _ => 0,
+                    };
+                    let cl = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {cl} = call ptr @kryos_array_dup(ptr {fp}, i64 {elem_kind})"
+                    ));
+                    let back = self.coerce_value(&cl, "ptr", &fty_ll);
+                    let nv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {back}, {idx}"
+                    ));
+                    cur = nv;
+                }
+                MirType::Map { .. } => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fh = self.coerce_value(&fv, &fty_ll, "i64");
+                    let cl = self.next_temp();
+                    self.emit_line(&format!("  {cl} = call i64 @kryos_map_clone(i64 {fh})"));
+                    let back = self.coerce_value(&cl, "i64", &fty_ll);
+                    let nv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {back}, {idx}"
+                    ));
+                    cur = nv;
+                }
+                MirType::Function { .. } | MirType::Shared(_) => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                    ));
+                    let fp = self.coerce_value(&fv, &fty_ll, "ptr");
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr {fp})"));
+                }
+                MirType::Struct(inner_name) => {
+                    // Inline-embedded nested struct (see emit_struct_drop's
+                    // layout comment): only recurse when it transitively
+                    // owns heap fields worth cloning; a scalar-only or
+                    // already-`@copy`-shared inner struct is left as a plain
+                    // by-value share (matching Cranelift H21 for that case).
+                    if self.struct_has_heap_fields(inner_name) {
+                        let fv = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
+                        ));
+                        let cloned_inner =
+                            self.deep_copy_struct_index_clone(&fv, inner_name, &fty_ll);
+                        let nv = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {nv} = insertvalue {dest_ty} {cur}, {fty_ll} {cloned_inner}, {idx}"
+                        ));
+                        cur = nv;
+                    }
+                }
+                _ => {}
+            }
+        }
+        cur
+    }
+
+    /// Transitively checks whether struct `sname` (or any struct nested
+    /// inline inside it) has a heap-owning field (str/array/map/fn/shared).
+    /// Struct field nesting cannot cycle (fields are embedded by VALUE, so a
+    /// struct containing itself would be infinite-sized and is rejected
+    /// earlier in the pipeline), so plain recursion terminates.
+    fn struct_has_heap_fields(&self, sname: &str) -> bool {
+        let Some(fields) = self.struct_defs.get(sname) else {
+            return false;
+        };
+        fields.iter().any(|(_, t)| match t {
+            MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. }
+            | MirType::Function { .. }
+            | MirType::Shared(_) => true,
+            MirType::Struct(inner) => self.struct_has_heap_fields(inner),
+            _ => false,
+        })
     }
 
     /// Emit a pending-exception check after a user-function call: if the
