@@ -97,5 +97,25 @@ fn main() {
     s = s + pr.1
     expect(s == 10, "Copy tuple-field reuse via local (not partial-moved)")
 
+    // Maps with heap VALUE types (array/nested-map) built in a loop then read
+    // back. The map free path is now type-aware for array/map values
+    // (kryos_map_free_typed + kryos_array_free_typed), and the map/array loop-
+    // locals reach that free -- so a `map<str,[i64]>` loop is bounded, not a
+    // ~260 MB leak. Correctness asserted here (RSS measured externally).
+    let mut avm: [map<str, [i64]>] = []
+    let mut mi: i64 = 0
+    while mi < 20 {
+        let mut mm: map<str, [i64]> = {}
+        mm["nums"] = [mi, mi + 1, mi + 2]
+        avm = push(avm, mm)
+        mi = mi + 1
+    }
+    expect(avm[0]["nums"][2] == 2 and avm[19]["nums"][0] == 19, "map<str,[i64]> array values built in a loop persist")
+    let mut nested: map<str, map<str, i64>> = {}
+    let mut inner: map<str, i64> = {}
+    inner["x"] = 7
+    nested["a"] = inner
+    expect(nested["a"]["x"] == 7, "map<str,map<str,i64>> nested value")
+
     println("conformance copy-reuse: PASS")
 }

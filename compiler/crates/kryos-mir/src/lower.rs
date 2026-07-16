@@ -1969,6 +1969,7 @@ fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
     }
 }
 
+
 fn emit_param_source_retain(ctx: &mut LoweringContext, holder: LocalId, src: LocalId) {
     if !ctx.param_locals.contains(&src.0) {
         return;
@@ -2748,9 +2749,23 @@ fn drop_unescaped_str_temps(
     if ctx.next_block != block_mark {
         return; // statement created blocks: temps may not dominate this point
     }
+    // Candidates were originally Str-only. Extended to Array/Map so a
+    // container-VALUED map (`map<str, [i64]>`, `map<K, map<...>>`, ...)
+    // gets the same unescaped-temp cleanup: the map-insert site always
+    // retains a container-typed value for the map's own share (see
+    // `BORROWING_CALL_ARGS`'s doc comment on `kryos_map_insert(_str)`), which
+    // means the ORIGINAL value temp still owns its pre-retain reference and
+    // needs its own drop here -- same requirement Str values already had,
+    // just never extended to Array/Map, so `map<str, [i64]>` leaked the
+    // array contents every loop iteration (measured ~260MB/2M iters) despite
+    // the map's own typed free (`kryos_map_free_typed`) working correctly.
     let candidates: Vec<LocalId> = ctx.locals[locals_mark..]
         .iter()
-        .filter(|l| l.name.is_none() && l.ty == MirType::Str && !l.mutable)
+        .filter(|l| {
+            l.name.is_none()
+                && matches!(l.ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+                && !l.mutable
+        })
         .map(|l| l.id)
         .collect();
     if candidates.is_empty() {
@@ -2793,13 +2808,34 @@ fn drop_unescaped_str_temps(
                 // retain/consume accounting has not been re-audited.
                 owns = match value {
                     RValue::StringConcat(_) => true,
+                    // A fresh array/map LITERAL (`[i, i+1, i+2]`, `{}`) is a
+                    // brand-new allocation with exactly one reference, same
+                    // as a StringConcat -- owned outright by this temp.
+                    RValue::Array(_) => true,
+                    RValue::Map(_) => true,
                     // Binary `+` on strings is MIR BinOp::Add with Str
                     // operands (the backend expands it to concat calls);
                     // candidates are pre-filtered to Str-typed temps, so an
                     // Add-defined one is a fresh concat allocation it owns.
                     RValue::BinOp { op: MirBinOp::Add, .. } => true,
                     RValue::Call { func, .. } => {
-                        func == "to_string" || func == "kryos_string_concat"
+                        func == "to_string"
+                            || func == "kryos_string_concat"
+                            // `id` IS the map-get destination itself (the
+                            // Borrow-to-own temp from `lower_expr_to_rvalue`'s
+                            // Map IndexAccess arm), immediately followed in
+                            // this same window by a retain call on `id` --
+                            // e.g. reading a container-typed map value via
+                            // `m["k"]` mid-expression (`m["k"][0]`,
+                            // `m["k"]["k2"]`). That retain already gave `id`
+                            // its own independent reference (one hop, not the
+                            // `Use(Local(src))` two-hop alias case below), so
+                            // it owns exactly what it holds.
+                            || ((func == "kryos_map_get" || func == "kryos_map_get_str")
+                                && is_retained_container_get(
+                                    &ctx.current_instructions[inst_mark..],
+                                    id,
+                                ))
                     }
                     // `id = src` where `src`'s OWN definition in this same
                     // window is a map-get of a container-typed value,
@@ -2835,6 +2871,15 @@ fn drop_unescaped_str_temps(
                         false
                     }
                 }
+                // Reading an ELEMENT out of the candidate (`tmp[0]`, the
+                // array half of `m["k"][0]`) is a pure borrow: it loads one
+                // element and never stores or frees the container pointer
+                // itself, so a mention here is not an escape. (This is
+                // distinct from the doc comment above about NOT marking an
+                // Index-DEFINED temp as owning -- this arm only concerns `id`
+                // appearing as the object/index of some OTHER instruction's
+                // read.)
+                RValue::Index { object, index } => mentions(object, id) || mentions(index, id),
                 // Any other rvalue shape touching this temp is a potential
                 // escape (Use copies the pointer, aggregate inits store it...).
                 other => {

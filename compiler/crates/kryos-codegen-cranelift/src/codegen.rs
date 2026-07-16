@@ -11,7 +11,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_codegen::settings::{self, Configurable};
 use cranelift_codegen::Context;
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext, Variable};
-use cranelift_module::{DataDescription, FuncId, Linkage, Module};
+use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 
 use kryos_mir::ir::{
@@ -1295,6 +1295,16 @@ pub fn compile_module_with_options(
 
     // Module-level string counter to avoid duplicate data section names.
     let mut global_str_counter: u32 = 0;
+    // Module-level cache of interned string-literal constants -> the DataId
+    // of their IMMORTAL KryosString header (leak fix, mirrors the LLVM
+    // backend's `string_constants`/`intern_string`: previously every
+    // evaluation of a string literal called `kryos_string_new`, a fresh heap
+    // copy each time -- a literal used in a hot loop (e.g. a repeated map key
+    // `m["k"] = ...`) leaked one allocation per iteration forever, since a
+    // bare `Operand::Constant`/`RValue::ConstString` has no MIR LocalId for
+    // any drop pass to ever target. Each unique literal now gets ONE static,
+    // never-freed header built once and reused for every occurrence.
+    let mut global_string_constants: HashMap<String, DataId> = HashMap::new();
 
     // Second pass: translate each function body.
     for mir_func in &module.functions {
@@ -1314,6 +1324,7 @@ pub fn compile_module_with_options(
                 &module.struct_defs,
                 &module.enum_defs,
                 &mut global_str_counter,
+                &mut global_string_constants,
                 &module.trait_vtables,
                 options.checked_arithmetic,
                 &module.copy_structs,
@@ -2285,6 +2296,10 @@ struct FuncTranslator<'a> {
     func_ids: &'a HashMap<String, FuncId>,
     /// Module-level counter for unique string data section names.
     string_counter: &'a mut u32,
+    /// Module-level cache of interned string-literal constants -> the DataId
+    /// of their immortal KryosString header. See the doc comment at the
+    /// `global_string_constants` declaration site in `compile_module_with_options`.
+    string_constants: &'a mut HashMap<String, DataId>,
     /// Struct definitions for layout computation.
     struct_defs: &'a HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions for tag/payload codegen.
@@ -2566,6 +2581,7 @@ pub fn translate_function<M: Module>(
     struct_defs: &HashMap<String, Vec<(String, MirType)>>,
     enum_defs: &HashMap<String, Vec<EnumVariantDef>>,
     string_counter: &mut u32,
+    string_constants: &mut HashMap<String, DataId>,
     trait_vtables: &HashMap<(String, String), Vec<String>>,
     checked_arithmetic: bool,
     copy_structs: &HashSet<String>,
@@ -2579,6 +2595,7 @@ pub fn translate_function<M: Module>(
         func_refs: HashMap::new(),
         func_ids,
         string_counter,
+        string_constants,
         struct_defs,
         enum_defs,
         borrow_slots: HashMap::new(),
@@ -3574,35 +3591,10 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::ConstString(s) => {
-            // Store the string bytes in the object file's data section with a
-            // null terminator, then call kryos_string_new to create a proper
-            // KryosString handle. This ensures all string values are uniform
-            // KryosString pointers, making concat/len/print work consistently.
-            let data_name = format!(".str.{}", translator.string_counter);
-            *translator.string_counter += 1;
-
-            let data_id = module
-                .declare_data(&data_name, Linkage::Local, false, false)
-                .map_err(CodegenError::Module)?;
-
-            let mut data_desc = DataDescription::new();
-            let mut bytes = s.as_bytes().to_vec();
-            let str_len = bytes.len();
-            bytes.push(0); // null terminator
-            data_desc.define(bytes.into_boxed_slice());
-            module
-                .define_data(data_id, &data_desc)
-                .map_err(CodegenError::Module)?;
-
-            let gv = module.declare_data_in_func(data_id, builder.func);
-            let data_ptr = builder.ins().global_value(types::I64, gv);
-            let len_val = builder.ins().iconst(types::I64, str_len as i64);
-
-            // Call kryos_string_new(data_ptr, len) to create a KryosString handle.
-            let string_new_ref =
-                ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
-            let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
-            let handle = builder.inst_results(call)[0];
+            // Immortal static header, interned by content -- see
+            // `emit_string_literal`'s doc comment (leak fix: this used to
+            // call kryos_string_new fresh on every evaluation).
+            let handle = emit_string_literal(s, builder, translator, module)?;
             Ok(Some(handle))
         }
 
@@ -4228,33 +4220,11 @@ fn translate_rvalue<M: Module>(
                 let s = mir_type_name_of_operand(&args[0], &translator.mir_func.locals);
 
                 // Emit the argument for side effects (unused), then return a
-                // string constant with the type name.
+                // string constant with the type name. Immortal/interned --
+                // see `emit_string_literal`'s doc comment.
                 let _ = translate_operand(&args[0], builder, translator, module)?;
-
-                let data_name = format!(".str.{}", translator.string_counter);
-                *translator.string_counter += 1;
-
-                let data_id = module
-                    .declare_data(&data_name, Linkage::Local, false, false)
-                    .map_err(CodegenError::Module)?;
-
-                let mut data_desc = DataDescription::new();
-                let mut bytes = s.as_bytes().to_vec();
-                let str_len = bytes.len();
-                bytes.push(0); // null terminator
-                data_desc.define(bytes.into_boxed_slice());
-                module
-                    .define_data(data_id, &data_desc)
-                    .map_err(CodegenError::Module)?;
-
-                let gv = module.declare_data_in_func(data_id, builder.func);
-                let data_ptr = builder.ins().global_value(types::I64, gv);
-                let len_val = builder.ins().iconst(types::I64, str_len as i64);
-
-                let string_new_ref =
-                    ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
-                let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
-                return Ok(Some(builder.inst_results(call)[0]));
+                let handle = emit_string_literal(s, builder, translator, module)?;
+                return Ok(Some(handle));
             }
 
             // Handle assert() with optional message and bool condition support.
@@ -4281,37 +4251,9 @@ fn translate_rvalue<M: Module>(
                 let message = if args.len() >= 2 {
                     translate_operand(&args[1], builder, translator, module)?
                 } else {
-                    // Create a default "assertion failed" message.
-                    let default_msg = "assertion failed";
-                    let data_name = format!(".str.{}", translator.string_counter);
-                    *translator.string_counter += 1;
-
-                    let data_id = module
-                        .declare_data(&data_name, Linkage::Local, false, false)
-                        .map_err(CodegenError::Module)?;
-
-                    let mut data_desc = DataDescription::new();
-                    let mut bytes = default_msg.as_bytes().to_vec();
-                    let str_len = bytes.len();
-                    bytes.push(0);
-                    data_desc.define(bytes.into_boxed_slice());
-                    module
-                        .define_data(data_id, &data_desc)
-                        .map_err(CodegenError::Module)?;
-
-                    let gv = module.declare_data_in_func(data_id, builder.func);
-                    let data_ptr = builder.ins().global_value(types::I64, gv);
-                    let len_val = builder.ins().iconst(types::I64, str_len as i64);
-
-                    let string_new_ref = ensure_func_ref_with_args(
-                        "kryos_string_new",
-                        builder,
-                        translator,
-                        module,
-                        2,
-                    )?;
-                    let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
-                    builder.inst_results(call)[0]
+                    // Create a default "assertion failed" message. Immortal/
+                    // interned -- see `emit_string_literal`'s doc comment.
+                    emit_string_literal("assertion failed", builder, translator, module)?
                 };
 
                 let assert_ref = ensure_func_ref_with_args(
@@ -5766,6 +5708,93 @@ fn translate_rvalue<M: Module>(
     }
 }
 
+/// Materialize a string LITERAL as a pointer to a static, IMMORTAL
+/// KryosString header, interning by content so each unique literal gets
+/// exactly one header for the whole module (leak fix, mirrors the LLVM
+/// backend's `intern_string`/`.hdr` global -- see the doc comment on
+/// `global_string_constants` in `compile_module_with_options`).
+///
+/// Previously every evaluation of a string constant (as a call argument via
+/// `translate_operand`, or as a direct `RValue::ConstString`/`type_of`/
+/// `assert`-default-message value) called `kryos_string_new`: a fresh heap
+/// allocation on EVERY evaluation. A literal is a bare `Operand::Constant`/
+/// `RValue::ConstString` with no MIR `LocalId`, so no drop pass (temp-drop or
+/// scope-end) can ever target it -- each evaluation leaked unconditionally.
+/// A literal map key evaluated twice per loop iteration (`m["k"] = ..;
+/// .. m["k"] ..`) leaked 2 heap strings/iteration, unbounded over the loop
+/// (measured: a 3M-iteration `map<str,i64>` loop with a literal key leaked
+/// ~357MB on this backend while the LLVM backend, which already had this fix,
+/// stayed flat at ~4MB).
+///
+/// The header's `ref_count` is a huge negative sentinel: `kryos_string_free`
+/// no-ops whenever `rc <= 0`, and an unconditional retain can increment it
+/// for eons without ever reaching a value that would trigger a free.
+fn emit_string_literal<M: Module>(
+    s: &str,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    let header_id = if let Some(id) = translator.string_constants.get(s) {
+        *id
+    } else {
+        let bytes_name = format!(".str.{}", translator.string_counter);
+        *translator.string_counter += 1;
+        let header_name = format!(".str.{}.hdr", translator.string_counter);
+        *translator.string_counter += 1;
+
+        let bytes_id = module
+            .declare_data(&bytes_name, Linkage::Local, false, false)
+            .map_err(CodegenError::Module)?;
+        let mut bytes_desc = DataDescription::new();
+        let mut bytes = s.as_bytes().to_vec();
+        let str_len = bytes.len() as i64;
+        bytes.push(0); // null terminator
+        bytes_desc.define(bytes.into_boxed_slice());
+        module
+            .define_data(bytes_id, &bytes_desc)
+            .map_err(CodegenError::Module)?;
+
+        // Immortal KryosString header: { len: i64, cap: i64, data: ptr,
+        // ref_count: i64 }, matching #[repr(C)] KryosString in kryos-rt.
+        // ref_count = i64::MIN / 2 (same sentinel the LLVM backend uses):
+        // deeply negative so `rc <= 0` checks always no-op the free/never
+        // reach zero even after an unbounded number of retains.
+        const IMMORTAL_RC: i64 = -4611686018427387904;
+        // `writable = true`: retain/release call sites read-modify-write the
+        // `ref_count` field in place (e.g. `kryos_string_retain_opt`). A
+        // read-only ("rodata") header segfaults the instant ANYTHING retains
+        // the literal -- e.g. passing it as an argument to a non-builtin
+        // function, which the compiler defensively retains before the call.
+        // (LLVM's equivalent is a plain `global` -- mutable by default, only
+        // `constant` globals go read-only -- so this divergence didn't show
+        // up there.)
+        let header_id = module
+            .declare_data(&header_name, Linkage::Local, true, false)
+            .map_err(CodegenError::Module)?;
+        let mut header_desc = DataDescription::new();
+        // `data` field (offset 16..24) is left zero here; write_data_addr
+        // below registers a relocation that patches it to point at the
+        // bytes object once addresses are resolved.
+        let mut header_bytes = vec![0u8; 32];
+        header_bytes[0..8].copy_from_slice(&str_len.to_le_bytes());
+        header_bytes[8..16].copy_from_slice(&str_len.to_le_bytes());
+        header_bytes[24..32].copy_from_slice(&IMMORTAL_RC.to_le_bytes());
+        header_desc.define(header_bytes.into_boxed_slice());
+        let bytes_gv_in_header = module.declare_data_in_data(bytes_id, &mut header_desc);
+        header_desc.write_data_addr(16, bytes_gv_in_header, 0);
+        module
+            .define_data(header_id, &header_desc)
+            .map_err(CodegenError::Module)?;
+
+        translator.string_constants.insert(s.to_string(), header_id);
+        header_id
+    };
+
+    let gv = module.declare_data_in_func(header_id, builder.func);
+    Ok(builder.ins().global_value(types::I64, gv))
+}
+
 // ---------------------------------------------------------------------------
 // Operand translation
 // ---------------------------------------------------------------------------
@@ -5790,32 +5819,13 @@ fn translate_operand<M: Module>(
             Constant::Float(n) => Ok(builder.ins().f64const(*n)),
             Constant::Bool(b) => Ok(builder.ins().iconst(types::I8, *b as i64)),
             Constant::Str(s) => {
-                // Store the string bytes in the data section, then call
-                // kryos_string_new to create a proper KryosString handle.
-                let data_name = format!(".str.{}", translator.string_counter);
-                *translator.string_counter += 1;
-
-                let data_id = module
-                    .declare_data(&data_name, Linkage::Local, false, false)
-                    .map_err(CodegenError::Module)?;
-
-                let mut data_desc = DataDescription::new();
-                let mut bytes = s.as_bytes().to_vec();
-                let str_len = bytes.len();
-                bytes.push(0); // null terminator
-                data_desc.define(bytes.into_boxed_slice());
-                module
-                    .define_data(data_id, &data_desc)
-                    .map_err(CodegenError::Module)?;
-
-                let gv = module.declare_data_in_func(data_id, builder.func);
-                let data_ptr = builder.ins().global_value(types::I64, gv);
-                let len_val = builder.ins().iconst(types::I64, str_len as i64);
-
-                let string_new_ref =
-                    ensure_func_ref_with_args("kryos_string_new", builder, translator, module, 2)?;
-                let call = builder.ins().call(string_new_ref, &[data_ptr, len_val]);
-                Ok(builder.inst_results(call)[0])
+                // Immortal static header, interned by content -- see
+                // `emit_string_literal`'s doc comment (leak fix: this used to
+                // call kryos_string_new fresh on every evaluation, so a
+                // literal used as a repeated call argument -- e.g. a map key
+                // `m["k"] = ..` inside a loop -- leaked one allocation per
+                // evaluation forever).
+                emit_string_literal(s, builder, translator, module)
             }
             Constant::None => Ok(builder.ins().iconst(types::I64, 0)),
         },
@@ -6912,6 +6922,14 @@ fn emit_drop_for_value<M: Module>(
             };
             let key_kind = kind_of(key.as_ref());
             let value_kind = kind_of(value.as_ref());
+            // When the value is itself an Array, the array's OWN element
+            // kind is needed so the runtime frees heap-typed elements (e.g.
+            // `map<K, [str]>`) instead of only the array's flat buffer +
+            // header -- see `kryos_map_free_typed`'s doc comment (kryos-rt).
+            let value_elem_kind = match value.as_ref() {
+                MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                _ => 0,
+            };
             if key_kind == 0 && value_kind == 0 {
                 let free_ref = ensure_func_ref_with_args(
                     "kryos_map_free",
@@ -6927,13 +6945,15 @@ fn emit_drop_for_value<M: Module>(
                     builder,
                     translator,
                     module,
-                    3,
+                    4,
                 )?;
                 let key_kind_val = builder.ins().iconst(types::I64, key_kind);
                 let value_kind_val = builder.ins().iconst(types::I64, value_kind);
-                builder
-                    .ins()
-                    .call(free_ref, &[val, key_kind_val, value_kind_val]);
+                let value_elem_kind_val = builder.ins().iconst(types::I64, value_elem_kind);
+                builder.ins().call(
+                    free_ref,
+                    &[val, key_kind_val, value_kind_val, value_elem_kind_val],
+                );
             }
         }
         MirType::Struct(ref name) => {

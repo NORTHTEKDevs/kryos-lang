@@ -652,8 +652,21 @@ pub extern "C" fn kryos_map_free(map: i64) {
 /// come in), so `key_kind` is effectively boolean (0 or 1) in practice, but
 /// takes the same 0..=3 encoding as `value_kind` for symmetry with the
 /// caller's dispatch.
+///
+/// `value_elem_kind` is consulted ONLY when `value_kind == 2` (the value is
+/// itself an Array): it names the ARRAY'S element kind (same 0..=3 encoding)
+/// so an array-of-heap-typed-elements value (`map<K, [str]>`, `map<K,
+/// [[i64]]>`, ...) routes through the element-aware `kryos_array_free_typed`
+/// instead of the type-erased `kryos_array_free`, which only freed the
+/// array's own flat data buffer + header and leaked every element's heap
+/// content unconditionally (measured: `map<i64, [str]>` leaked ~130MB/2M
+/// iters on both backends even though the map's own header+entries were
+/// freed correctly every iteration -- a plain named `[str]` local's own
+/// scope-end drop already used an element-aware path on both backends;
+/// only a map ENTRY's array value skipped it). Ignored (pass 0) for any
+/// other `value_kind`.
 #[no_mangle]
-pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64) {
+pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64, value_elem_kind: i64) {
     if map == 0 {
         return;
     }
@@ -695,8 +708,8 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64)
             for i in 0..capacity {
                 let entry = &*entries.add(i);
                 if entry.occupied {
-                    free_entry_slot(entry.key, key_kind);
-                    free_entry_slot(entry.value, value_kind);
+                    free_entry_slot(entry.key, key_kind, 0);
+                    free_entry_slot(entry.value, value_kind, value_elem_kind);
                 }
             }
         }
@@ -713,11 +726,23 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64)
 /// Free one entry slot's key or value handle according to its compile-time
 /// kind (0=scalar: no-op, 1=str, 2=array, 3=map). Used only by
 /// `kryos_map_free_typed`, which has already confirmed the map itself is
-/// dropping its LAST reference before calling this.
-unsafe fn free_entry_slot(handle: i64, kind: i64) {
+/// dropping its LAST reference before calling this. `elem_kind` is the
+/// array's element kind (see `kryos_map_free_typed`'s doc comment); only
+/// meaningful when `kind == 2`, ignored otherwise (the key call site always
+/// passes 0).
+unsafe fn free_entry_slot(handle: i64, kind: i64, elem_kind: i64) {
     match kind {
         1 => crate::string::kryos_string_free(handle as *mut crate::string::KryosString),
-        2 => crate::array::kryos_array_free(handle as *mut crate::array::KryosArray),
+        2 => {
+            if elem_kind != 0 {
+                crate::array::kryos_array_free_typed(
+                    handle as *mut crate::array::KryosArray,
+                    elem_kind,
+                )
+            } else {
+                crate::array::kryos_array_free(handle as *mut crate::array::KryosArray)
+            }
+        }
         3 => kryos_map_free(handle),
         _ => {}
     }

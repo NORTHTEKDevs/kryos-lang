@@ -12,7 +12,7 @@ use cranelift_codegen::Context;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_frontend::FunctionBuilderContext;
 use cranelift_jit::{JITBuilder, JITModule};
-use cranelift_module::{Linkage, Module};
+use cranelift_module::{DataId, Linkage, Module};
 
 use kryos_mir::ir::{Instruction, MirFunction, MirModule, RValue};
 
@@ -1590,6 +1590,12 @@ impl JitCompiler {
         // string_counter is module-wide so data section names are unique
         // across all functions (e.g. `.trace_name.0`, `.trace_name.1`, ...).
         let mut str_counter = 0u32;
+        // Interned string-literal cache for this compilation pass -- see the
+        // doc comment on `global_string_constants` in codegen.rs's
+        // `compile_module_with_options` (leak fix: a literal used repeatedly,
+        // e.g. a map key inside a loop, used to allocate a fresh heap string
+        // on every evaluation).
+        let mut string_constants: HashMap<String, DataId> = HashMap::new();
         for (mir_func, &func_id) in functions.iter().zip(declared.iter()) {
             let sig = build_signature(mir_func, call_conv);
             let func_index = self.func_counter;
@@ -1607,6 +1613,7 @@ impl JitCompiler {
                     struct_defs,
                     enum_defs,
                     &mut str_counter,
+                    &mut string_constants,
                     trait_vtables,
                     false,
                     copy_structs,
@@ -1812,6 +1819,7 @@ impl JitCompiler {
             let single_user_func_names: std::collections::HashSet<String> =
                 std::iter::once(mir_func.name.clone()).collect();
             let mut str_counter = 0u32;
+            let mut string_constants: HashMap<String, DataId> = HashMap::new();
             let mut builder = FunctionBuilder::new(&mut cl_func, &mut self.fb_ctx);
             crate::codegen::translate_function(
                 mir_func,
@@ -1821,6 +1829,7 @@ impl JitCompiler {
                 &empty_struct_defs,
                 &empty_enum_defs,
                 &mut str_counter,
+                &mut string_constants,
                 &empty_trait_vtables,
                 false, // no checked arithmetic in JIT/REPL
                 &empty_copy_structs,

@@ -801,7 +801,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_map_get_str(i64, i64)");
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
-        self.emit_line("declare void @kryos_map_free_typed(i64, i64, i64)");
+        self.emit_line("declare void @kryos_map_free_typed(i64, i64, i64, i64)");
         self.emit_line("declare i64 @kryos_map_clone(i64)");
         self.emit_line("declare ptr @kryos_string_clone(ptr)");
         self.emit_line("declare ptr @kryos_array_clone(ptr)");
@@ -3437,11 +3437,20 @@ impl LlvmCodegen {
                         };
                         let key_kind = kind_of(key.as_ref());
                         let value_kind = kind_of(value.as_ref());
+                        // When the value is itself an Array, the array's OWN
+                        // element kind is needed so the runtime frees
+                        // heap-typed elements (e.g. `map<K, [str]>`) instead
+                        // of only the array's flat buffer + header -- see
+                        // `kryos_map_free_typed`'s doc comment (kryos-rt).
+                        let value_elem_kind = match value.as_ref() {
+                            MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                            _ => 0,
+                        };
                         if key_kind == 0 && value_kind == 0 {
                             self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
                         } else {
                             self.emit_line(&format!(
-                                "  call void @kryos_map_free_typed(i64 {val}, i64 {key_kind}, i64 {value_kind})"
+                                "  call void @kryos_map_free_typed(i64 {val}, i64 {key_kind}, i64 {value_kind}, i64 {value_elem_kind})"
                             ));
                         }
                     }

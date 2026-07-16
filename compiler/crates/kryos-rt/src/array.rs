@@ -512,6 +512,79 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     ARR_HDR_POOL.put(arr as *mut u8);
 }
 
+/// Type-aware free for an array whose ELEMENT type is itself heap-typed
+/// (str/array/map) -- e.g. a `[str]` or `[[i64]]` value stored inside a map
+/// entry, freed via `kryos_map_free_typed`'s `free_entry_slot`.
+///
+/// `kryos_array_free` alone (like `kryos_map_free` before it) is type-erased:
+/// it frees the flat i64-slot data buffer + header but has no idea some of
+/// those slots are actually heap pointers -- content leaked unconditionally
+/// (measured: `map<i64, [str]>` leaked ~130MB/2M iters on BOTH backends even
+/// after the map's own header+entries were freed every iteration, since the
+/// array's OWN scope-end drop uses an element-aware path -- LLVM's
+/// `emit_array_drop` / an equivalent Cranelift element loop -- that a map
+/// ENTRY's array value never goes through).
+///
+/// `elem_kind` uses the same 0..=3 encoding as `kryos_map_free_typed`'s
+/// key/value kinds (0=scalar, 1=str, 2=array, 3=map). One level deep only,
+/// matching that function's documented scope: a `[[str]]` element's OWN
+/// string contents are not walked recursively here.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind: i64) {
+    if arr.is_null() {
+        return;
+    }
+    if crate::leak_on_zero() {
+        return;
+    }
+    if crate::free_diag() {
+        let rc = (*arr).ref_count;
+        if rc <= 0 {
+            crate::diag_report(&format!(
+                "array DOUBLE-FREE rc={rc} len={} cap={}", (*arr).len, (*arr).cap));
+            return;
+        }
+        (*arr).ref_count = rc - 1;
+        return;
+    }
+    crate::memstats::note_arr_free_call();
+    let rc = (*arr).ref_count;
+    if rc <= 0 {
+        return; // already freed (sentinel)
+    }
+    let new_rc = rc - 1;
+    (*arr).ref_count = new_rc;
+    if new_rc > 0 {
+        return;
+    }
+    // Last reference: free each element's heap-typed content BEFORE the data
+    // buffer itself is deallocated below. Only `len` slots are populated
+    // (`cap` may be larger for unused, still-zeroed capacity).
+    if elem_kind != 0 && !(*arr).data.is_null() {
+        let len = (*arr).len as usize;
+        let data = (*arr).data as *const i64;
+        for i in 0..len {
+            let handle = *data.add(i);
+            match elem_kind {
+                1 => crate::string::kryos_string_free(handle as *mut crate::string::KryosString),
+                2 => kryos_array_free(handle as *mut KryosArray),
+                3 => crate::map::kryos_map_free(handle),
+                _ => {}
+            }
+        }
+    }
+    let cap = (*arr).cap as usize;
+    if !(*arr).data.is_null() && cap > 0 {
+        crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
+    }
+    (*arr).len = 0;
+    (*arr).cap = 0;
+    (*arr).data = ptr::null_mut();
+    (*arr).ref_count = 0;
+    crate::memstats::note_arr_free((cap * ELEM_SIZE + 40) as i64);
+    ARR_HDR_POOL.put(arr as *mut u8);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
