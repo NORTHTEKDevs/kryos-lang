@@ -160,14 +160,18 @@ fn timeout(duration_ms: i64) -> Channel {
 }
 
 /// Create a channel that receives a tick every interval_ms milliseconds.
-/// Returns a channel that keeps producing values until the caller stops
-/// receiving (the spawned ticker has no termination signal).
+/// Returns a channel that keeps producing values until the caller `close()`s
+/// it. Shutdown: close the returned channel to stop the ticker (its spawned
+/// thread is joined at exit, so without a close it would hang the process).
 fn ticker(interval_ms: i64) -> Channel {
     let ch = buffered(1)
     let raw = ch.raw
     spawn {
         let mut tick_count = 0
         while true {
+            if chan_is_closed(raw) == 1 {
+                break
+            }
             sleep(interval_ms)
             tick_count = tick_count + 1
             send(raw, tick_count)
@@ -181,6 +185,13 @@ fn ticker(interval_ms: i64) -> Channel {
 /// Fan-out: distribute values from a source channel to N workers.
 /// Each worker calls handler(value) for each value it receives.
 /// Returns a channel that collects all handler results.
+///
+/// Shutdown: `close()` the SOURCE channel to terminate the workers. Spawned
+/// threads are joined at `main` exit (they are not daemons), so a worker that
+/// blocks forever on an infinite `recv` would HANG the process at exit. Each
+/// worker instead polls with `chan_try_recv` and exits when the source is
+/// closed and drained. If you never close the source, the program will still
+/// hang at exit -- close it once you have sent all the work.
 fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
     assert(workers > 0, "chan: fan_out requires at least 1 worker")
     let result_ch = buffered(workers * 4)
@@ -191,9 +202,16 @@ fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
     while i < workers {
         spawn {
             while true {
-                let v = recv(src_raw)
-                let r = handler(v)
-                send(dst_raw, r)
+                let status = chan_try_recv(src_raw)
+                if status == 1 {
+                    let v = chan_last_recv()
+                    let r = handler(v)
+                    send(dst_raw, r)
+                } elif status == -1 {
+                    break
+                } else {
+                    sleep(1)
+                }
             }
         }
         i = i + 1
@@ -203,6 +221,11 @@ fn fan_out(source: Channel, workers: i64, handler: fn) -> Channel {
 }
 
 /// Fan-in: merge multiple channels into a single output channel.
+///
+/// Shutdown: `close()` each source channel to terminate its forwarding worker
+/// (same rationale as `fan_out` -- spawned threads are joined at exit, so an
+/// infinite `recv` would hang). Each worker polls and exits when its source is
+/// closed and drained.
 fn fan_in(channels: [Channel]) -> Channel {
     let count = len(channels)
     assert(count > 0, "chan: fan_in requires at least 1 channel")
@@ -214,8 +237,15 @@ fn fan_in(channels: [Channel]) -> Channel {
         let src_raw = channels[i].raw
         spawn {
             while true {
-                let v = recv(src_raw)
-                send(dst_raw, v)
+                let status = chan_try_recv(src_raw)
+                if status == 1 {
+                    let v = chan_last_recv()
+                    send(dst_raw, v)
+                } elif status == -1 {
+                    break
+                } else {
+                    sleep(1)
+                }
             }
         }
         i = i + 1
@@ -345,11 +375,16 @@ fn call_once(once: Once, f: fn) -> i64 {
 // --- Producer/Consumer helpers -----------------------------------------------
 
 /// Create a producer that generates values and sends them on a channel.
+/// Shutdown: `close()` the returned channel to stop the producer (its spawned
+/// thread is joined at exit, so without a close it would hang the process).
 fn produce(generator: fn) -> Channel {
     let ch = buffered(16)
     let raw = ch.raw
     spawn {
         while true {
+            if chan_is_closed(raw) == 1 {
+                break
+            }
             let v = generator()
             send(raw, v)
         }

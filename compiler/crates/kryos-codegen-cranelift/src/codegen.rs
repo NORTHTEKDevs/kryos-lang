@@ -4403,6 +4403,11 @@ fn translate_rvalue<M: Module>(
                 "recv" => ("kryos_chan_recv_i64", 1),
                 "chan_try_recv" => ("kryos_chan_try_recv_status_i64", 1),
                 "chan_last_recv" => ("kryos_chan_last_recv_i64", 0),
+                // close_chan was mapped only in the LLVM backend, so
+                // `std::chan::close` failed to link on `kryos run`/Cranelift
+                // ("unresolved external symbol close_chan") while working on AOT.
+                "close_chan" => ("kryos_chan_close_i64", 1),
+                "chan_is_closed" => ("kryos_chan_is_closed_i64", 1),
                 "file_read" => ("kryos_builtin_file_read", 1),
                 "file_write" => ("kryos_builtin_file_write", 2),
                 // Legacy aliases (LLVM codegen uses these too)

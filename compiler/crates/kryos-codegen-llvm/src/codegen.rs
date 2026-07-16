@@ -5932,6 +5932,7 @@ impl LlvmCodegen {
                                 "coop_record" => "kryos_coop_record",
                                 "coop_order" => "kryos_coop_order",
                                 "close_chan" => "kryos_chan_close_i64",
+                                "chan_is_closed" => "kryos_chan_is_closed_i64",
                                 // Regex
                                 "regex_new" => "kryos_regex_new_ks",
                                 "regex_match" => "kryos_regex_is_match_ks",

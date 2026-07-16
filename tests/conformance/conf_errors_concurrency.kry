@@ -4,6 +4,12 @@ use std::option::{Option, Some, None}
 
 use std::result::{Result, Ok, Err}
 
+use std::chan::{new_channel, close, fan_out, send_val, receive, try_receive}
+
+fn double_it(x: i64) -> i64 {
+    return x * 2
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -286,6 +292,37 @@ fn main() {
         send(cap_ch, m + len(label))     // 9 + 3 = 12
     }
     expect(recv(cap_ch) == 12, "spawn captures closure+str+array (uniform i64 marshalling)")
+
+    // Channel close works on BOTH backends. `close_chan` was mapped only in the
+    // LLVM backend, so `std::chan::close` failed to LINK on `kryos run`/Cranelift
+    // ("unresolved external symbol close_chan") while working on AOT. A
+    // closed+drained channel's try_receive reports not-ok.
+    let cch = new_channel()
+    send_val(cch, 99)
+    let g1 = try_receive(cch)
+    expect(g1.ok and g1.value == 99, "try_receive gets the sent value")
+    let cch2 = close(cch)
+    let g2 = try_receive(cch2)
+    expect(not g2.ok, "try_receive on closed+drained channel is not-ok (close works on both backends)")
+
+    // fan_out distributes work to N workers and TERMINATES when the source is
+    // closed, so the exit-time join does not hang. The workers previously looped
+    // on an infinite blocking recv, so kryos_spawn_wait_all (which joins every
+    // spawned thread at exit -- spawned threads are NOT daemons) hung forever.
+    // They now poll with chan_try_recv and exit on source-close+drain.
+    let fsrc = new_channel()
+    let fout = fan_out(fsrc, 2, double_it)
+    send_val(fsrc, 3)
+    send_val(fsrc, 4)
+    send_val(fsrc, 5)
+    let mut ftotal = 0
+    let mut fgot = 0
+    while fgot < 3 {
+        ftotal = ftotal + receive(fout)
+        fgot = fgot + 1
+    }
+    let fsrc_closed = close(fsrc)
+    expect(ftotal == 24, "fan_out 2 workers double all inputs 2*(3+4+5); terminates on source close (no exit hang)")
 
     // match-in-try + nested-enum-in-tuple with early returns (void-but-mutable
     // placeholder locals previously got no entry alloca -> AOT `undefined %_N.addr`).

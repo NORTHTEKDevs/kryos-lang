@@ -4212,6 +4212,16 @@ pub fn type_check_with_lambda_params(
         ret: Type::Void,
     });
 
+    // chan_is_closed(ch: chan) -> i64 — 1 if the channel was closed, else 0.
+    // Lets a producer/worker stop when its driving channel is closed.
+    checker.env.define_function(FunctionSig {
+        name: "chan_is_closed".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("ch".to_string(), Type::I64)],
+        ret: Type::I64,
+    });
+
     // ---------------------------------------------------------------------
     // Low-level FFI helpers — used by stdlib `extern { ... }` blocks that
     // need raw byte access. All take/return i64 (handles or pointers cast

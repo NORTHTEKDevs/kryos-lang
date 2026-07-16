@@ -966,6 +966,7 @@ pub fn lower_module_with_lambda_params(
         ("coop_order", MirType::Str),
         ("coop_spawn", MirType::I64),
         ("close_chan", MirType::Void),
+        ("chan_is_closed", MirType::I64),
         ("contains", MirType::Bool),
         ("starts_with", MirType::Bool),
         ("ends_with", MirType::Bool),

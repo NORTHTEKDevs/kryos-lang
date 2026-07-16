@@ -448,6 +448,10 @@ impl JitCompiler {
             "kryos_chan_is_closed_i64",
             kryos_rt::builtins::kryos_chan_is_closed_i64 as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_chan_close_i64",
+            kryos_rt::builtins::kryos_chan_close_i64 as *const u8,
+        );
 
         // Actor runtime
         jit_builder.symbol(
