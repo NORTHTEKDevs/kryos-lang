@@ -7220,7 +7220,42 @@ fn emit_drop_for_value<M: Module>(
                             let offset = ((*field_idx + 1) * 8) as i32;
                             let field_val =
                                 builder.ins().load(types::I64, MemFlags::new(), val, offset);
-                            emit_drop_for_value(field_val, field_ty, builder, translator, module)?;
+                            // A monomorphized generic enum/struct field can be the
+                            // SAME type currently being dropped (e.g. `List<T>`'s
+                            // `Cons(T, List<T>)` -- the tail field is `List___i64`
+                            // again). Recursing straight into `emit_drop_for_value`
+                            // here re-enters this very match arm for the same type
+                            // name, which re-enters it again, ad infinitum: an
+                            // unbounded RUST-level (compile-time codegen) recursion
+                            // that overflows kryos.exe's own stack while emitting
+                            // JIT IR -- confirmed via instrumentation to happen
+                            // before any user code executes (codegen-time, not a
+                            // runtime drop looping over real, finitely-deep data).
+                            // Route Struct/Enum fields through the already-declared
+                            // named `__kryos_drop_<Type>` helper instead (the same
+                            // helper array-element drop already uses below, and the
+                            // one array-of-struct/enum drop was already fixed to use
+                            // for the identical reason) -- a genuine Cranelift
+                            // function CALL, safely recursive at runtime (bounded by
+                            // the real data depth) instead of at Rust compile time.
+                            let nested_helper = match field_ty {
+                                MirType::Struct(n) | MirType::Enum(n) => {
+                                    Some(format!("__kryos_drop_{n}"))
+                                }
+                                _ => None,
+                            };
+                            match nested_helper {
+                                Some(ref name) if translator.func_ids.contains_key(name) => {
+                                    let func_ref =
+                                        ensure_func_ref(name, builder, translator, module)?;
+                                    builder.ins().call(func_ref, &[field_val]);
+                                }
+                                _ => {
+                                    emit_drop_for_value(
+                                        field_val, field_ty, builder, translator, module,
+                                    )?;
+                                }
+                            }
                         }
                         builder.ins().jump(merge_block, &[]);
 

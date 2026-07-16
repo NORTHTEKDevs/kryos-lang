@@ -32,6 +32,37 @@ fn make_empty() -> Box<i64> {
     return Box.Empty
 }
 
+enum List<T> {
+    Nil,
+    Cons(T, List<T>),
+}
+
+enum Tree<T> {
+    Leaf,
+    Node(T, Tree<T>, Tree<T>),
+}
+
+fn lsum(l: List<i64>) -> i64 {
+    match l {
+        Nil => return 0,
+        Cons(h, t) => return h + lsum(t),
+    }
+}
+
+fn ljoin(l: List<str>) -> str {
+    match l {
+        Nil => return "",
+        Cons(h, t) => return h + ljoin(t),
+    }
+}
+
+fn tsum(t: Tree<i64>) -> i64 {
+    match t {
+        Leaf => return 0,
+        Node(v, l, r) => return v + tsum(l) + tsum(r),
+    }
+}
+
 fn main() {
     // Nullary variant against a let annotation, both spellings.
     let e: Box<i64> = Box.Empty
@@ -55,6 +86,23 @@ fn main() {
         Empty => expect(false, "Box<str> unexpected Empty"),
         Full(v) => expect(v == "hi", "Box<str>.Full payload"),
     }
+
+    // Self-referential generic enums (the fundamental recursive-data pattern).
+    // The enum drop-glue GENERATOR on both backends recursed on itself at
+    // codegen time for a monomorphized enum whose variant holds its own type
+    // (List___i64's Cons holding List___i64) -> Cranelift stack-overflowed at
+    // `kryos run` and the bare-constructor shape crashed `kryos build` itself.
+    // Nested Struct/Enum field drops now route through the memoized named
+    // __kryos_drop_<Name> helpers (bounded by real runtime depth).
+    let l: List<i64> = Cons(1, Cons(2, Cons(3, Cons(4, Nil))))
+    expect(lsum(l) == 10, "recursive generic enum List<i64> traversal")
+    let ls: List<str> = Cons("a", Cons("b", Cons("c", Nil)))
+    expect(ljoin(ls) == "abc", "recursive generic enum List<str> traversal")
+    let t: Tree<i64> = Node(1, Node(2, Leaf, Leaf), Node(3, Leaf, Node(4, Leaf, Leaf)))
+    expect(tsum(t) == 10, "recursive generic enum Tree<i64> traversal")
+    // Bare constructor with no match on the type (crashed the COMPILER).
+    let bare: List<i64> = Cons(9, List.Nil)
+    expect(true, "bare recursive-generic-enum constructor compiles + runs")
 
     println("conformance generic-enum: PASS")
 }

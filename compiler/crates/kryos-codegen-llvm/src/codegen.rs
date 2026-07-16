@@ -9817,15 +9817,33 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
                         }
                         MirType::Struct(name) => {
+                            // Route through the pre-generated named
+                            // `__kryos_drop_<name>` helper (see
+                            // emit_type_drop_helpers) instead of inlining
+                            // emit_struct_drop again here. A monomorphized
+                            // generic enum variant field can be the SAME
+                            // struct/enum type currently being dropped (e.g.
+                            // `List<T>`'s `Cons(T, List<T>)` -- the tail field
+                            // is `List___i64` again); recursing straight into
+                            // emit_struct_drop/emit_enum_drop re-enters this
+                            // exact generation logic for the same type name
+                            // forever -- an unbounded compile-time Rust
+                            // recursion that overflows the COMPILER's own
+                            // stack while emitting LLVM IR text (confirmed:
+                            // crashes `kryos build` itself, before any user
+                            // code runs). `__kryos_drop_<name>` is a real
+                            // standalone `define void @__kryos_drop_<name>`
+                            // that recurses via a genuine LLVM `call`, bounded
+                            // at runtime by the actual data depth, not by
+                            // Rust call-stack depth at compile time.
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             let inner = name.clone();
-                            self.emit_struct_drop(&fv, &inner, func);
-                            self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
+                            self.emit_line(&format!("  call void @__kryos_drop_{inner}(ptr {fv})"));
                         }
                         MirType::Enum(name) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             let inner = name.clone();
-                            self.emit_enum_drop(&fv, &inner, func);
+                            self.emit_line(&format!("  call void @__kryos_drop_{inner}(ptr {fv})"));
                         }
                         MirType::Shared(_) => {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
