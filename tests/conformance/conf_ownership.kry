@@ -45,6 +45,27 @@ fn branch_classify(n: i64, t: Tag) -> str {
     return r
 }
 
+// A BARE enum-variant pattern (`Data(p)`, not `Msg.Data(p)`) binding a STRUCT
+// payload, then copying one of its heap (ARC-shared) fields into a local and
+// reusing the original field, must compile. The bare pattern left the enum name
+// empty, so the ownership pass couldn't resolve the payload's field types,
+// registered no struct type for `p`, and move-tracked `p.tags` -> a FALSE E0303
+// on `p.tags[0]`. (Qualified `Msg.Data(p)` already worked -- it carries the enum
+// name.) ARC semantics: copying an array handle SHARES it; the source stays live.
+struct OwnPayload { tags: [str] }
+enum OwnMsg { Data(OwnPayload) }
+
+fn bare_pattern_field_reuse() -> str {
+    let m: OwnMsg = OwnMsg.Data(OwnPayload { tags: ["a", "b"] })
+    match m {
+        Data(p) => {
+            let mut copy = p.tags
+            copy[0] = "z"
+            return p.tags[0]
+        },
+    }
+}
+
 fn main() {
     // Primitives are Copy: usable after passing.
     let n = 5
@@ -78,6 +99,11 @@ fn main() {
     // E0300 use-after-move that blocked compilation).
     expect(branch_classify(5, Tag.X) == "x1", "if-expr then-branch match on param")
     expect(branch_classify(-1, Tag.Y) == "o2", "if-expr else-branch match on same param (no false use-after-move)")
+
+    // Bare enum-variant pattern binding a struct payload, heap field copied out
+    // and the original reused: must compile (was a false E0303) and share the
+    // handle (the local copy's mutation aliases the shared array).
+    expect(bare_pattern_field_reuse() == "z", "bare enum pattern struct-payload field reuse (no false E0303)")
 
     println("conformance ownership: PASS")
 }

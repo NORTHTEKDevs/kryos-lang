@@ -197,10 +197,30 @@ impl OwnershipAnalyzer {
                 }
             }
             P::Enum { name, variant, fields, span } => {
+                // A BARE variant pattern (`Data(p)` rather than `Msg.Data(p)`)
+                // leaves the enum name empty by parser convention, so the
+                // direct `(name, variant)` lookup misses -- the payload's field
+                // types stay unknown, its struct type is never registered in
+                // `var_struct_names`, and a heap field copied out of it (`let t
+                // = p.tags`) is move-tracked, raising a FALSE E0303 on reuse
+                // (`p.tags[0]`). Resolve an empty enum name by finding the enum
+                // that declares this variant (unambiguous for unique variant
+                // names; picks the first otherwise -- ARC-share reuse is
+                // memory-safe either way, so a mismatch can't cause unsoundness).
                 let field_tys = self
                     .enum_variant_fields
                     .get(&(name.clone(), variant.clone()))
-                    .cloned();
+                    .cloned()
+                    .or_else(|| {
+                        if name.is_empty() {
+                            self.enum_variant_fields
+                                .iter()
+                                .find(|((_, v), _)| v == variant)
+                                .map(|(_, tys)| tys.clone())
+                        } else {
+                            None
+                        }
+                    });
                 for (i, fpat) in fields.iter().enumerate() {
                     if let P::Ident { name: bname, mutable, span: bspan } = fpat {
                         let is_copy = field_tys
