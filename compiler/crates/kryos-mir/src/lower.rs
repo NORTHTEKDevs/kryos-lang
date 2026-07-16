@@ -7238,16 +7238,31 @@ fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
 /// tail isn't such an identifier, so the caller keeps its existing inference.
 fn block_tail_let_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
     let last = block.stmts.last()?;
-    let tail_name = match last {
-        ast::Stmt::Expr {
-            expr: ast::Expr::Identifier { name, .. },
-            ..
-        } => name.as_str(),
+    let tail_expr = match last {
+        ast::Stmt::Expr { expr, .. } => expr,
         _ => return None,
     };
-    // Build a name -> type overlay from this block's own `let` bindings, in
-    // order, so a chained tail (`let a = "x"  let b = a  b`) still resolves.
-    let mut local_types: HashMap<&str, MirType> = HashMap::new();
+    // If the block declares no `let`s, its tail can't reference a block-local,
+    // so no overlay is needed -- infer directly.
+    let has_let = block.stmts[..block.stmts.len() - 1]
+        .iter()
+        .any(|s| matches!(s, ast::Stmt::Let { pattern: None, .. }));
+    if !has_let {
+        return Some(infer_expr_type(ctx, tail_expr));
+    }
+    // This inference runs BEFORE the block is lowered, so the block's own `let`
+    // locals aren't in `ctx.locals` yet. Overlay them as SYNTHETIC locals so
+    // the tail expression -- an identifier, a binop, a call, a field access,
+    // anything referencing a block-local -- resolves to the right type. Without
+    // this, a value-position block/if/match arm whose tail is a HEAP-producing
+    // expression over a block-local (`{ let outer = "x"  outer + "-done" }`)
+    // mis-inferred as I64, so the if/match result slot was I64 while the branch
+    // stored a str pointer -> garbage output on both backends and an AOT
+    // `'ptr' but expected 'i64'` codegen failure on further use. (Generalizes
+    // the old identifier-only tail resolution.) Lookup in `infer_expr_type` is
+    // by NAME (reverse scan), so the synthetic id is irrelevant; truncated off
+    // afterward so nothing leaks into the real local table.
+    let mark = ctx.locals.len();
     for st in &block.stmts[..block.stmts.len() - 1] {
         if let ast::Stmt::Let {
             name,
@@ -7259,22 +7274,20 @@ fn block_tail_let_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<
         {
             let t = match (ty, value) {
                 (Some(te), _) => lower_type_expr(te),
-                (None, Some(v)) => {
-                    if let ast::Expr::Identifier { name: vn, .. } = v {
-                        match local_types.get(vn.as_str()) {
-                            Some(t) => t.clone(),
-                            None => infer_expr_type(ctx, v),
-                        }
-                    } else {
-                        infer_expr_type(ctx, v)
-                    }
-                }
+                (None, Some(v)) => infer_expr_type(ctx, v),
                 (None, None) => continue,
             };
-            local_types.insert(name.as_str(), t);
+            ctx.locals.push(MirLocal {
+                id: LocalId(u32::MAX),
+                name: Some(name.clone()),
+                ty: t,
+                mutable: false,
+            });
         }
     }
-    local_types.get(tail_name).cloned()
+    let result = infer_expr_type(ctx, tail_expr);
+    ctx.locals.truncate(mark);
+    Some(result)
 }
 
 fn infer_branch_value_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {

@@ -48,6 +48,31 @@ fn str_block_match(n: i64) -> str {
     return label
 }
 
+// A value-position `if`/`match` whose branch has a `let`-bound local followed by
+// a NON-identifier, HEAP-producing tail (`outer + suffix`) must infer the result
+// type as str, not i64. The branch's local isn't in scope during the pre-lower
+// result-type inference, so `outer + "-done"` defaulted to i64 -> the if/match
+// result slot was i64 while the branch stored a str pointer -> garbage on both
+// backends (and an AOT `'ptr' but expected 'i64'` codegen failure on further
+// use). Generalized block-tail inference (overlay the block's lets) fixes it.
+fn if_binop_tail(c: bool) -> str {
+    let r = if c {
+        let outer = "zero-in"
+        outer + "-done"
+    } else {
+        "skip"
+    }
+    return r
+}
+
+fn match_binop_tail(n: i64) -> str {
+    let r = match n {
+        1 => { let a = "aa"  a + "-x" }
+        _ => "skip"
+    }
+    return r
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -142,6 +167,12 @@ fn main() {
     expect(str_block_match(0) == "zero", "let-bound str block-match arm infers str tail (arm 0)")
     expect(str_block_match(1) == "one", "let-bound str block-match arm infers str tail (arm 1)")
     expect(str_block_match(7) == "many", "let-bound str block-match arm infers str tail (default arm)")
+    // Value-position if/match with a heap-producing binop tail over a block-local
+    // must infer str (was i64 -> garbage pointer / AOT ptr-vs-i64 codegen fail).
+    expect(if_binop_tail(true) == "zero-in-done", "if-as-value: local + heap binop tail infers str (then)")
+    expect(if_binop_tail(false) == "skip", "if-as-value: local + heap binop tail infers str (else)")
+    expect(match_binop_tail(1) == "aa-x", "match-as-value: local + heap binop tail infers str")
+    expect(match_binop_tail(0) == "skip", "match-as-value: heap binop tail, default arm")
     // An if/else whose OTHER branch diverges (throw/return) types as the live
     // branch, not void. A divergent branch contributes no type to unification.
     expect(classify_pos(5) == "pos", "if with a throw branch types as the value branch")
