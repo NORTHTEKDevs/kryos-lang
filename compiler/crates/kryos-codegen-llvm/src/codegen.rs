@@ -5185,7 +5185,19 @@ impl LlvmCodegen {
                                 "0".to_string()
                             };
                             let dest_ty = self.local_type(dest);
-                            if dest_ty.starts_with('{')
+                            if dest_ty == "void" {
+                                // Discarded result (`pop(a)` in statement
+                                // position): the mutation of the array is the
+                                // wanted side effect; emit the call and drop the
+                                // returned element. Binding it would emit an
+                                // invalid `%_N = add void ..` (AOT build fail;
+                                // JIT tolerates the void temp). `let _ = pop(a)`
+                                // was the workaround.
+                                let raw = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {raw} = call i64 @kryos_builtin_pop(i64 {arr_val})"
+                                ));
+                            } else if dest_ty.starts_with('{')
                                 || dest_ty.starts_with('%')
                                 || dest_ty.starts_with('[')
                             {

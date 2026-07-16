@@ -68,6 +68,23 @@ fn main() {
     let pu = pop(su8)
     expect(pu == 5, "pop([u8]) narrow-scalar coercion (was AOT build-fail)")
 
+    // pop() whose RESULT IS DISCARDED (statement position: `pop(a)`, not
+    // `let x = pop(a)`) must still shrink the array. The discarded dest is
+    // void; the scalar pop path emitted `%_N = add void ..` -> LLVM "void type
+    // only allowed for function results" (AOT build-fail; JIT tolerated it).
+    // `let _ = pop(a)` was the workaround. Now the call runs for its side
+    // effect and the returned element is dropped.
+    let mut dj: [i64] = [1, 2, 3, 4]
+    pop(dj)
+    pop(dj)
+    expect(len(dj) == 2, "discarded pop(i64) shrinks the array (was AOT build-fail)")
+    let mut ds: [str] = ["x", "y", "z"]
+    pop(ds)
+    expect(len(ds) == 2 and ds[0] == "x", "discarded pop(str) shrinks, survivors intact")
+    let mut df: [f64] = [1.5, 2.5, 3.5]
+    pop(df)
+    expect(len(df) == 2, "discarded pop(f64) shrinks the array")
+
     // Reusing a STRUCT value after push(arr, struct) is allowed under ARC (the
     // array becomes the owner; the source local stays valid). push was the one
     // path that hard-move-blocked a struct element (E0300), unlike str/map
