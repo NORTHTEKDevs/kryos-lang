@@ -70,3 +70,10 @@ LAUNCH.md
 STABILITY-v4.0.md
 summary.txt
 compiler/summary.txt
+
+# Working scratch + shift-engineer state (not part of the compiler)
+scratchpad/
+.shift/
+
+# Working scratch files (probes/repros), not part of the compiler
+scratchpad/

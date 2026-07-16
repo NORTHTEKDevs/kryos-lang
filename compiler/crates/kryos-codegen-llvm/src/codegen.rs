@@ -2989,13 +2989,28 @@ impl LlvmCodegen {
                 // operand types only -- no codegen has run yet, so this
                 // mirrors but does not depend on `emit_assign`) and back the
                 // local with a real alloca instead of dropping it.
+                let mut recovered_from_void = false;
                 if ty == "void" {
                     if let Some(effective) = self.void_local_effective_type(local.id.0, func) {
                         ty = effective;
+                        recovered_from_void = true;
                     }
                 }
                 if ty != "void" {
                     self.emit_line(&format!("  %_{}.addr = alloca {ty}", local.id.0));
+                    // A void-declared local whose slot we recovered (pointer or
+                    // aggregate) can be left unwritten on a diverging path (the
+                    // throw arm of `let r = match {..}`); zero-init so a scope-end
+                    // drop reads null, not garbage. The MirType-keyed block below
+                    // can't see this (local.ty is Void), so handle it here.
+                    if recovered_from_void
+                        && (ty == "ptr" || ty.starts_with('{') || ty.starts_with('['))
+                    {
+                        self.emit_line(&format!(
+                            "  store {ty} zeroinitializer, ptr %_{}.addr",
+                            local.id.0
+                        ));
+                    }
                     // Zero-init mutable HEAP/pointer-typed locals so the
                     // reassignment release helpers see null/0 on the first
                     // store, AND so a scope-end Drop of a local that was never
@@ -8831,6 +8846,16 @@ impl LlvmCodegen {
                         }
                     }
                     RValue::ConstNone => "ptr".to_string(),
+                    // A void-declared placeholder assigned a literal in one arm
+                    // (e.g. `let r = match x { 0 => throw .., _ => "s" }`) needs
+                    // its slot sized to that literal, or emit_assign stores into
+                    // an un-allocated `%_N.addr` -> LLVM "use of undefined value"
+                    // on build (the throw arm now lowers to a real unwind, not a
+                    // void assert call, so this placeholder path is newly live).
+                    RValue::ConstString(_) => "ptr".to_string(),
+                    RValue::ConstInt(_) => "i64".to_string(),
+                    RValue::ConstFloat(_) => "double".to_string(),
+                    RValue::ConstBool(_) => "i1".to_string(),
                     _ => continue,
                 };
                 match &found {

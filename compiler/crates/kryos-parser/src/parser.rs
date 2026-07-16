@@ -2925,10 +2925,12 @@ impl Parser {
             } else {
                 None
             };
-            // Allow `throw expr` in match arms by desugaring to a call to the
-            // `assert(false, msg)` builtin, which aborts the process with the
-            // message. This matches the diverging semantics callers expect
-            // (the arm value never returns) without requiring exceptions.
+            // `throw expr` as a match-arm body desugars to a Block containing
+            // `Stmt::Throw` (mirroring the `return expr` arm above). This routes
+            // through the real exception-unwind lowering so an enclosing
+            // try/catch catches it. It previously lowered to `assert(false, msg)`
+            // -- a hard process abort that no try/catch could intercept, and that
+            // predated working exceptions (regression: conf_functions throw arm).
             // Empty `{}` body in a match arm is a void block, not a map
             // literal. Detect this case so arms like `_ => {}` typecheck.
             let body = if self.check(TokenKind::LBrace)
@@ -2966,18 +2968,14 @@ impl Parser {
                 let msg_expr = self.parse_expr();
                 let end = msg_expr.span();
                 let merged = kw.span.merge(end);
-                Box::new(Expr::FnCall {
-                    callee: Box::new(Expr::Identifier {
-                        name: "assert".to_string(),
-                        span: kw.span,
-                    }),
-                    args: vec![
-                        Expr::BoolLiteral {
-                            value: false,
-                            span: kw.span,
-                        },
-                        msg_expr,
-                    ],
+                Box::new(Expr::Block {
+                    block: Block {
+                        stmts: vec![Stmt::Throw {
+                            expr: msg_expr,
+                            span: merged,
+                        }],
+                        span: merged,
+                    },
                     span: merged,
                 })
             } else {

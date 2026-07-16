@@ -167,6 +167,30 @@ fn boom(n: i64) -> i64 {
     return 0
 }
 
+// A `throw` as a match-ARM BODY must unwind to an enclosing try/catch, not
+// abort the process. It used to desugar to `assert(false, msg)` -- a hard
+// process abort (exit 127) that no catch could intercept, predating working
+// exceptions. Now it lowers to a real `Stmt::Throw`. Separately: BINDING a
+// match-with-a-throw-arm to a local must infer the LIVE arm's type (str/i64),
+// not void -- the throw arm is a Block whose value position is void, and
+// picking it as the whole match's result type made AOT store into a void slot
+// (`store void 42` / `undefined %_N.addr`). infer_match_result_type now skips
+// divergent arms.
+fn pick_or_throw(items: [i64], i: i64) -> i64 {
+    match i {
+        0 => throw "zero index",
+        _ => return items[i],
+    }
+}
+
+fn classify_sign(x: i64) -> str {
+    let r = match x {
+        0 => throw "no zero",
+        _ => "nonzero",
+    }
+    return r
+}
+
 fn worker(ch: i64, n: i64) {
     let mut total = 0
     let mut i = 1
@@ -207,6 +231,24 @@ fn main() {
     }
     path = path + "done"
     expect(path == "i(inner)o(outer)done", "nested rethrow order")
+
+    // throw as a match-arm body unwinds to try/catch (was an uncatchable abort).
+    try {
+        let v = pick_or_throw([10, 20], 0)
+        expect(false, "match-arm throw should unwind, not abort")
+    } catch e {
+        expect(e == "zero index", "match-arm throw caught by enclosing try")
+    }
+    expect(pick_or_throw([10, 20], 1) == 20, "match-arm non-throw arm returns value")
+    // A let-bound match with a throw arm infers the live arm's type (str), and
+    // the throw arm still unwinds when taken.
+    expect(classify_sign(5) == "nonzero", "let-bound match with throw arm infers str (not void)")
+    try {
+        let z = classify_sign(0)
+        expect(false, "classify_sign(0) should throw")
+    } catch e {
+        expect(e == "no zero", "let-bound match throw arm unwinds when taken")
+    }
 
     // No throw -> catch skipped.
     let mut ran = false

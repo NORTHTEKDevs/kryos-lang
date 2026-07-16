@@ -5902,12 +5902,31 @@ fn lower_refutable_bind(
 /// declared types for the same value, one of which is used as an operand of
 /// a chained string concat that discovers only at LLVM codegen time it grew
 /// a `ptr` value under an `i64` label.
+/// A match/if arm body that DIVERGES (its value position is a `throw` or
+/// `return`) contributes no value type to the result. The parser lowers a
+/// `throw`/`return` arm body into a `Block` whose final statement is
+/// `Stmt::Throw`/`Stmt::Return`, so `infer_expr_type` on it yields `Void` --
+/// which must NOT become the whole match's result type when a sibling arm
+/// produces a real value (`let r = match x { 0 => throw .., _ => "s" }` is a
+/// `str`, not void). Skip such arms when picking the type-carrying arm.
+fn arm_body_diverges(body: &ast::Expr) -> bool {
+    match body {
+        ast::Expr::Block { block, .. } => matches!(
+            block.stmts.last(),
+            Some(ast::Stmt::Throw { .. }) | Some(ast::Stmt::Return { .. })
+        ),
+        _ => false,
+    }
+}
+
 fn infer_match_result_type(
     ctx: &mut LoweringContext,
     subject: &ast::Expr,
     arms: &[ast::MatchArm],
 ) -> MirType {
-    arms.first()
+    arms.iter()
+        .find(|a| !arm_body_diverges(&a.body))
+        .or_else(|| arms.first())
         .map(|arm| {
             if let ast::Pattern::Enum {
                 name: enum_name,
