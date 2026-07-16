@@ -165,6 +165,23 @@ impl TypeChecker {
                         key: Box::new(self.engine.fresh_var()),
                         value: Box::new(self.engine.fresh_var()),
                     }
+                } else if name == "i128" || name == "u128" {
+                    // 128-bit integers are declared in the type system but the
+                    // code generators do not implement them: the Cranelift JIT
+                    // hits a verifier ICE (`entered unreachable code`) and the
+                    // LLVM AOT backend fails (`i128 but expected ptr`) on even a
+                    // trivial `let a: i128 = 100`. Reject at type-check with a
+                    // clear diagnostic instead of crashing the compiler; nothing
+                    // in the stdlib/tests uses them (full 128-bit codegen is
+                    // backlogged).
+                    self.error_with_code(
+                        format!(
+                            "`{name}` is not yet supported by the code generator -- use `i64`/`u64`"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                    Type::Error
                 } else if let Some(ty) = Type::from_name(name) {
                     ty
                 } else {
