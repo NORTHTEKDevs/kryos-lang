@@ -5321,13 +5321,34 @@ fn translate_rvalue<M: Module>(
                 })
                 .unwrap_or(types::I64);
             let val = builder.ins().load(cl_ty, MemFlags::new(), ptr, offset);
-            // For heap-owning payload types, retain so the match binding becomes
-            // an additional owner alongside the enum. Previously we zeroed the
-            // slot (pseudo-move), which broke `match p { ... } ; match p { ... }`
-            // patterns where the enum is matched more than once. Retain-on-read
-            // mirrors how struct field access works: the enum keeps its own
-            // reference to the payload, the binding gets its own, and both are
-            // released independently when their respective owners drop.
+            // Str/Array payloads are a PURE bit-copy here (no retain): the
+            // caller (MIR lowering) is responsible for retaining a payload it
+            // wants the binding to independently own -- see `lower_match`'s
+            // "match &field_type" retain block in kryos-mir/src/lower.rs,
+            // which explicitly emits `kryos_string_retain_opt` /
+            // `kryos_array_retain_opt` for str/array/map Ident-bound payloads
+            // and pairs it with letting that binding's own scope-end Drop
+            // fire. This function used to ALSO retain (via `kryos_string_clone`
+            // / `kryos_array_retain`) unconditionally on every read, which
+            // double-counted against that MIR-level retain: the payload
+            // binding ended up with TWO extra references but only ONE extra
+            // release (its own drop) plus the enum's own one-time field
+            // free, so the string/array buffer was never fully released
+            // (measured: a str-payload enum matched in a loop leaked ~400MB
+            // over 3M iterations on this backend even after the MIR-level
+            // fix, while the LLVM backend -- which never had this implicit
+            // retain -- was already flat). The old comment here explained
+            // this retain-on-read was added so `match p {...}; match p
+            // {...}` (matching the same enum twice) wouldn't alias a zeroed
+            // slot; that concern was about a REMOVED "zero the slot on
+            // read" pseudo-move, not about needing a retain per se -- a
+            // plain bit-copy (this function's current behavior, matching
+            // the Struct/Enum arm below and LLVM's `extractvalue`) already
+            // doesn't zero anything, so reading the same enum's payload
+            // twice safely aliases the same buffer both times, exactly like
+            // LLVM. Each MIR call site that needs the binding to survive
+            // independently (lower_match's Ident-bind, `let`/reassignment
+            // "share" rules, etc.) already retains explicitly where needed.
             let payload_mir_ty = translator
                 .enum_defs
                 .get(enum_name.as_str())
@@ -5335,37 +5356,6 @@ fn translate_rvalue<M: Module>(
                 .and_then(|variant| variant.fields.get(*field_idx as usize))
                 .cloned();
             match payload_mir_ty {
-                Some(MirType::Array(_, _)) => {
-                    let retain_ref = ensure_func_ref_with_args(
-                        "kryos_array_retain",
-                        builder,
-                        translator,
-                        module,
-                        1,
-                    )?;
-                    builder.ins().call(retain_ref, &[val]);
-                }
-                Some(MirType::Str) => {
-                    let clone_ref = ensure_func_ref_with_args(
-                        "kryos_string_clone",
-                        builder,
-                        translator,
-                        module,
-                        1,
-                    )?;
-                    let c = builder.ins().call(clone_ref, &[val]);
-                    let cloned = builder.inst_results(c)[0];
-                    // String clone returns a fresh handle; use it in place of val.
-                    let _ = cloned; // falls through -- handle via override below
-                                    // Overwrite val with cloned handle for downstream use.
-                                    // (Cranelift SSA: cannot reassign val, so restructure.)
-                    let widened = if cl_ty == types::I8 {
-                        builder.ins().uextend(types::I64, cloned)
-                    } else {
-                        cloned
-                    };
-                    return Ok(Some(widened));
-                }
                 Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                     let retain_ref = ensure_func_ref_with_args(
                         "kryos_arc_retain",

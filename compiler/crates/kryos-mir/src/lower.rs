@@ -6440,6 +6440,29 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             ctx.current_block = *arm_bb;
         }
 
+        // Str/array/map Ident-bound payload locals that got their OWN
+        // independent retain (below) and so must get an EXPLICIT Drop
+        // scoped to precisely THIS arm's own block -- see the long comment
+        // at the retain/suppress site for why a retain happens, and why
+        // this can't just rely on the generic named-local scope-end Drop
+        // (lower_block_stmts): that mechanism fires unconditionally once
+        // per local, but a payload binding is only ASSIGNED when ITS OWN
+        // arm is taken. A match with multiple arms sharing one merge block
+        // (e.g. `Tag(s) => .., Tag2(s2, arr) => .., _ => {}`) reaches that
+        // merge on EVERY iteration regardless of which arm ran, so an
+        // unconditional drop(s) there fires even on an iteration that took
+        // Tag2 or the wildcard -- freeing `s`'s STALE value from a PRIOR
+        // iteration a second time (confirmed double-free via
+        // KRYOS_FREE_DIAG: `Tag(s)|Tag2(s2,arr)|_` alternating in a loop,
+        // and `Option<str>` `Some(v)|None()` alternating in a loop, both
+        // reported str/array DOUBLE-FREE once the naive fix let the
+        // generic mechanism drop them at the shared merge point). Emitting
+        // the drop here instead -- inside the SAME arm block that did the
+        // retain, right after the arm body runs -- guarantees it only
+        // fires on the exact control-flow path that owns a real retained
+        // reference this iteration.
+        let mut arm_owned_payload_locals: Vec<LocalId> = Vec::new();
+
         // For tuple arms, bind ident elements to the corresponding tuple fields.
         if let Some(binding) = tuple_binding {
             let subj_ty = infer_expr_type(ctx, subject);
@@ -6520,10 +6543,55 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 let needs_mutable = matches!(&field_type, MirType::Struct(n) if !is_copy_type(ctx, &MirType::Struct(n.clone())));
                 let dest = if let ast::Pattern::Ident { name, .. } = pat {
                     let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), needs_mutable);
-                    // Pre-mark non-copy payload bindings as consumed: they will be
-                    // moved into the arm result, not dropped by scope cleanup.
+                    // Pre-mark non-copy payload bindings as consumed -- EXCEPT
+                    // for str/array/map payloads, which get their OWN
+                    // independently-retained reference below (see the retain
+                    // match on `field_type` further down): those bindings
+                    // become a genuine second owner of the payload, mirroring
+                    // the `let copy = <bare heap local>` share rule used
+                    // elsewhere in this file (Stmt::Let / Stmt::Assign). That
+                    // retain must be balanced by exactly one release. It is
+                    // NOT safe to rely on the generic named-local scope-end
+                    // Drop for this (as a first attempt here did): that
+                    // mechanism fires unconditionally once per local at the
+                    // enclosing block's exit, but a payload binding is only
+                    // ASSIGNED on the control-flow path where ITS OWN arm
+                    // runs. A multi-arm match's arms share one merge block,
+                    // reached every iteration regardless of which arm fired,
+                    // so an unconditional drop there double-frees a STALE
+                    // prior-iteration value on any iteration that took a
+                    // DIFFERENT arm (confirmed via KRYOS_FREE_DIAG on a
+                    // `Tag(s) | Tag2(s2, arr) | _` and an alternating
+                    // `Some(v) | None()` loop). Instead, this local is queued
+                    // in `arm_owned_payload_locals` and given an EXPLICIT
+                    // Drop scoped to THIS arm's own block, right after the
+                    // arm body runs (see below) -- that only executes on the
+                    // exact path that did the retain. Pre-suppressing it
+                    // unconditionally (the ORIGINAL, pre-existing behavior)
+                    // left the retain permanently unbalanced whenever the arm
+                    // body didn't move the binding elsewhere -- confirmed
+                    // leak: a str-payload enum matched in a loop grew RSS
+                    // without bound because the retained string was never
+                    // dropped. The tail-expr / call-arg consumption checks
+                    // (and the general assignment/let "share" rule) still
+                    // correctly mark this local dropped when it DOES escape
+                    // the arm (returned, assigned to an outer var, pushed
+                    // into a container, ...), so the per-arm explicit drop
+                    // below skips it and cannot double-free an escaping
+                    // payload. Struct/enum payloads (no retain here, or a
+                    // freshly rebuilt independent box via
+                    // `retain_struct_heap_fields`) keep the previous
+                    // suppress-always behavior unchanged.
+                    let field_gets_independent_ref = matches!(
+                        &field_type,
+                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                    );
                     if !is_copy_type(ctx, &field_type) {
-                        ctx.dropped_locals.insert(local.0);
+                        if field_gets_independent_ref {
+                            arm_owned_payload_locals.push(local);
+                        } else {
+                            ctx.dropped_locals.insert(local.0);
+                        }
                     }
                     local
                 } else {
@@ -6637,6 +6705,23 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 .unwrap_or(MirType::I64);
             if !is_copy_type(ctx, &src_ty) {
                 ctx.dropped_locals.insert(src.0);
+            }
+        }
+        // Release this arm's independently-retained str/array/map payload
+        // bindings (see `arm_owned_payload_locals`'s doc comment above) --
+        // scoped to precisely this arm's own block, so it only runs on the
+        // control-flow path that actually did the retain. Skips any binding
+        // already marked dropped by the tail-return check just above, or by
+        // an escape inside the arm body itself (assignment-share retain,
+        // `push`'s retain, a consuming call, ...) -- those already gave the
+        // payload a new independent owner or transferred it onward.
+        for payload_local in &arm_owned_payload_locals {
+            if !ctx.dropped_locals.contains(&payload_local.0) {
+                drop_tag(ctx, "match-arm-payload");
+                ctx.emit(Instruction::Drop {
+                    local: *payload_local,
+                });
+                ctx.dropped_locals.insert(payload_local.0);
             }
         }
         ctx.emit(Instruction::Assign {

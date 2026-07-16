@@ -104,5 +104,33 @@ fn main() {
     let bare: List<i64> = Cons(9, List.Nil)
     expect(true, "bare recursive-generic-enum constructor compiles + runs")
 
+    // Match-bound heap payloads: retained on bind, released per-arm after the
+    // body UNLESS the binding escaped (pushed/assigned/returned). Previously the
+    // retain was never balanced -> every match on a heap enum leaked one
+    // reference (218MB over a 3M loop). An ESCAPED payload must still survive.
+    let mut kept: [str] = []
+    let bx: Box<str> = Box.Full("escapee")
+    match bx {
+        Empty => expect(false, "unexpected Empty"),
+        Full(s) => {
+            expect(len(s) == 7, "bound payload usable in arm")
+            kept = push(kept, s)
+        },
+    }
+    expect(kept[0] == "escapee", "escaped match payload survives the arm release")
+    // Non-escaping heap payload in a small loop (leak fix smoke; RSS asserted
+    // in CI-external measurements, correctness asserted here).
+    let mut tot: i64 = 0
+    let mut li: i64 = 0
+    while li < 100 {
+        let w: Box<str> = Box.Full("item-" + to_string(li))
+        match w {
+            Empty => {},
+            Full(s2) => { tot = tot + len(s2) },
+        }
+        li = li + 1
+    }
+    expect(tot > 600, "heap-enum match loop correct (payload retain/release balanced)")
+
     println("conformance generic-enum: PASS")
 }
