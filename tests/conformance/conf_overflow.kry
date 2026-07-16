@@ -12,6 +12,8 @@ use std::crypto::{hmac_sha256}
 
 use std::numfmt::{hex, bin, decimal_padded}
 
+use std::fmt::{oct, thousands, duration, float_sci}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -71,6 +73,15 @@ fn main() {
     expect(bin(minv) == "-0b1000000000000000000000000000000000000000000000000000000000000000", "bin(i64::MIN) is well-formed")
     expect(decimal_padded(minv, 25) == "-000009223372036854775808", "decimal_padded(i64::MIN) has a single sign")
     expect(hex(255) == "0xff" and bin(10) == "0b1010" and decimal_padded(-42, 6) == "-00042", "numfmt normal values unaffected")
+
+    // std::fmt shares the same i64::MIN-negation hazard (a separate module).
+    expect(oct(minv) == "-0o1000000000000000000000", "fmt::oct(i64::MIN) well-formed")
+    expect(thousands(minv) == "-9,223,372,036,854,775,808", "fmt::thousands(i64::MIN) single sign")
+    expect(duration(minv) == "2562047788015215h 30m 7s", "fmt::duration(i64::MIN) does not zero out")
+    expect(oct(8) == "0o10" and thousands(-1234567) == "-1,234,567" and duration(3661) == "1h 1m 1s", "fmt normal values unaffected")
+    // float_sci must renormalize a mantissa that rounds up to 10.0.
+    expect(float_sci(9.99, 1) == "1.0e+1", "float_sci renormalizes 9.99 -> 1.0e+1 (not 10.0e+0)")
+    expect(float_sci(1234.5, 2) == "1.23e+3", "float_sci normal value")
 
     println("conformance overflow: PASS")
 }

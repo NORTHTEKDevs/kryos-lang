@@ -178,13 +178,15 @@ fn hex(n: i64) -> str {
     }
     let hex_digits = "0123456789abcdef"
     let negative = n < 0
+    // Extract digits WITHOUT negating: `-val` overflows for i64::MIN (stays
+    // negative), so the old `while val > 0` loop never ran -> bare "-0x". For a
+    // negative val, `val % base` is <= 0, so the digit is `-(val % base)` (safe,
+    // in [0, base)); `val / base` shrinks toward 0. Works for i64::MIN.
     let mut val = n
-    if negative {
-        val = -val
-    }
     let mut result = ""
-    while val > 0 {
-        let digit = val % 16
+    while val != 0 {
+        let rem = val % 16
+        let digit = if rem < 0 { 0 - rem } else { rem }
         result = hex_digits[digit] + result
         val = val / 16
     }
@@ -201,13 +203,12 @@ fn hex_upper(n: i64) -> str {
     }
     let hex_digits = "0123456789ABCDEF"
     let negative = n < 0
+    // See hex(): extract digits without negating (i64::MIN-safe).
     let mut val = n
-    if negative {
-        val = -val
-    }
     let mut result = ""
-    while val > 0 {
-        let digit = val % 16
+    while val != 0 {
+        let rem = val % 16
+        let digit = if rem < 0 { 0 - rem } else { rem }
         result = hex_digits[digit] + result
         val = val / 16
     }
@@ -223,13 +224,12 @@ fn oct(n: i64) -> str {
         return "0o0"
     }
     let negative = n < 0
+    // See hex(): extract digits without negating (i64::MIN-safe).
     let mut val = n
-    if negative {
-        val = -val
-    }
     let mut result = ""
-    while val > 0 {
-        let digit = val % 8
+    while val != 0 {
+        let rem = val % 8
+        let digit = if rem < 0 { 0 - rem } else { rem }
         result = to_string(digit) + result
         val = val / 8
     }
@@ -245,13 +245,12 @@ fn bin(n: i64) -> str {
         return "0b0"
     }
     let negative = n < 0
+    // See hex(): extract digits without negating (i64::MIN-safe).
     let mut val = n
-    if negative {
-        val = -val
-    }
     let mut result = ""
-    while val > 0 {
-        let digit = val % 2
+    while val != 0 {
+        let rem = val % 2
+        let digit = if rem < 0 { 0 - rem } else { rem }
         result = to_string(digit) + result
         val = val / 2
     }
@@ -349,7 +348,14 @@ fn float_sci(n: f64, decimals: i64) -> str {
         }
     }
 
-    let mantissa_str = float_fixed(mantissa, decimals)
+    // float_fixed can round the mantissa UP to exactly 10.0 (e.g. 9.99 at 1
+    // decimal -> "10.0"), breaking the [1,10) invariant. Renormalize once:
+    // divide by 10 and bump the exponent so "9.99" -> "1.0e+1", not "10.0e+0".
+    let mut mantissa_str = float_fixed(mantissa, decimals)
+    if len(mantissa_str) >= 2 and substr(mantissa_str, 0, 2) == "10" {
+        exponent = exponent + 1
+        mantissa_str = float_fixed(mantissa / 10.0, decimals)
+    }
     let mut exp_str = ""
     if exponent >= 0 {
         exp_str = "e+" + to_string(exponent)
@@ -370,11 +376,11 @@ fn float_sci(n: f64, decimals: i64) -> str {
 ///   thousands(1234567) => "1,234,567"
 fn thousands(n: i64) -> str {
     let negative = n < 0
-    let mut val = n
-    if negative {
-        val = -val
-    }
-    let s = to_string(val)
+    // Strip the sign from to_string(n) rather than negating: `-val` overflows
+    // for i64::MIN and produced a double sign ("--9,223,..."). to_string(n)
+    // formats i64::MIN correctly.
+    let raw = to_string(n)
+    let s = if negative { substr(raw, 1, len(raw)) } else { raw }
     let slen = len(s)
     let mut result = ""
     let mut count = 0
@@ -571,6 +577,12 @@ fn bytes(n: i64) -> str {
 ///   duration(45)   => "45s"
 fn duration(seconds: i64) -> str {
     let mut s = seconds
+    // i64::MIN has no representable positive magnitude; clamp by 1s (negligible
+    // for a duration this extreme) so `-s` doesn't overflow back to i64::MIN
+    // (which stayed negative and silently zeroed hours/minutes -> "-8s").
+    if s == -9223372036854775807 - 1 {
+        s = -9223372036854775807
+    }
     if s < 0 {
         s = -s
     }
