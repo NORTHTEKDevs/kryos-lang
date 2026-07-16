@@ -1265,7 +1265,13 @@ impl TypeChecker {
                     self.env.push_scope();
                     let mut branch_ty = self.infer_block_as_expr(then_block);
                     self.env.pop_scope();
-                    // Walk elif clauses; their branch type must match.
+                    // A branch whose control flow always diverges
+                    // (throw/return) never yields a value -- it must not be
+                    // unified against, or override, a real branch type (see
+                    // the matching fix in `Expr::IfExpr`).
+                    let mut branch_diverges = block_diverges(then_block);
+                    // Walk elif clauses; their branch type must match unless
+                    // one side is divergent.
                     for (elif_cond, elif_block) in elif_clauses {
                         let ec_ty = self.infer_expr(elif_cond);
                         if let Err(diag) = self.engine.unify(&Type::Bool, &ec_ty, *span) {
@@ -1274,14 +1280,27 @@ impl TypeChecker {
                         self.env.push_scope();
                         let elif_ty = self.infer_block_as_expr(elif_block);
                         self.env.pop_scope();
-                        if let Err(diag) = self.engine.unify(&branch_ty, &elif_ty, *span) {
+                        let elif_diverges = block_diverges(elif_block);
+                        if elif_diverges {
+                            // Diverging elif contributes nothing; keep the
+                            // accumulated branch type/divergence as-is.
+                        } else if branch_diverges {
+                            branch_ty = elif_ty;
+                            branch_diverges = false;
+                        } else if let Err(diag) = self.engine.unify(&branch_ty, &elif_ty, *span) {
                             self.diagnostics.push(diag);
                         }
                     }
                     self.env.push_scope();
                     let else_ty = self.infer_block_as_expr(else_blk);
                     self.env.pop_scope();
-                    if let Err(diag) = self.engine.unify(&branch_ty, &else_ty, *span) {
+                    let else_diverges = block_diverges(else_blk);
+                    if else_diverges {
+                        // Diverging else contributes nothing; branch_ty (or
+                        // Void if every branch diverged) stands as-is.
+                    } else if branch_diverges {
+                        branch_ty = else_ty;
+                    } else if let Err(diag) = self.engine.unify(&branch_ty, &else_ty, *span) {
                         self.diagnostics.push(diag);
                         // If unification fails return the else type so the outer
                         // expression still gets a concrete (non-void) type.
@@ -3269,10 +3288,30 @@ impl TypeChecker {
                     self.env.push_scope();
                     let else_ty = self.infer_block_as_expr(else_blk);
                     self.env.pop_scope();
-                    if let Err(diag) = self.engine.unify(&then_ty, &else_ty, *span) {
-                        self.diagnostics.push(diag);
+                    // A branch that always diverges (ends in `throw`/`return`,
+                    // or all-diverging nested if/match) never produces a
+                    // value -- `infer_block_as_expr` types it `void` because
+                    // it falls off the end of the loop, but that's not a
+                    // real value type to unify against the other branch.
+                    // Exclude a divergent branch from unification and take
+                    // the other (non-divergent) branch's type as the whole
+                    // if-expression's type -- e.g. `if c { "pos" } else {
+                    // throw "neg!" }` types as `str`, not `void`. If BOTH
+                    // branches diverge, the expression itself never
+                    // produces a value; degrade to `void` (bottom).
+                    let then_diverges = block_diverges(then_branch);
+                    let else_diverges = block_diverges(else_blk);
+                    match (then_diverges, else_diverges) {
+                        (true, true) => Type::Void,
+                        (true, false) => else_ty,
+                        (false, true) => then_ty,
+                        (false, false) => {
+                            if let Err(diag) = self.engine.unify(&then_ty, &else_ty, *span) {
+                                self.diagnostics.push(diag);
+                            }
+                            then_ty
+                        }
                     }
-                    then_ty
                 } else {
                     // No else branch: if-expr without else is void.
                     Type::Void
@@ -5912,9 +5951,78 @@ fn block_returns(block: &Block) -> bool {
 /// Returns true if a match-arm body expression is guaranteed to
 /// diverge (return/throw on every path) and therefore should not
 /// contribute its type to the match expression's unified type.
+///
+/// NOTE: this is intentionally NOT implemented via `block_returns` /
+/// `stmt_returns` above. Those answer "does every path produce a
+/// value" -- which is also true for a plain value-producing tail
+/// expression like `{ 42 }` (a `Stmt::Expr` tail counts as "returning"
+/// a value there). Divergence is a different question: "does this
+/// path never complete normally at all" (it only throws/returns).
+/// Reusing `block_returns` here previously misclassified an all-block
+/// match arm's `{ 42 }` body as divergent, so a match where every arm
+/// was a block silently dropped every arm's type and fell back to
+/// `void` (adding a bare sibling arm masked the bug because ANY
+/// non-diverging arm supplies the result type).
 fn arm_body_diverges(body: &Expr) -> bool {
-    match body {
-        Expr::Block { block, .. } => block_returns(block),
+    expr_diverges(body)
+}
+
+/// Returns true if a block's control flow always diverges (throws or
+/// returns) on every path -- i.e. it can never complete normally with
+/// a value. Used to exclude a divergent if/match branch from value-type
+/// unification: a branch that only ever throws/returns contributes no
+/// type, and the expression's type comes from the other branch(es).
+fn block_diverges(block: &Block) -> bool {
+    block.stmts.last().is_some_and(stmt_diverges)
+}
+
+fn stmt_diverges(stmt: &Stmt) -> bool {
+    match stmt {
+        Stmt::Return { .. } => true,
+        Stmt::Throw { .. } => true,
+        Stmt::If {
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            // An if/elif/else statement diverges only if EVERY branch
+            // diverges, including a mandatory else (no else => it can
+            // fall through without diverging).
+            block_diverges(then_block)
+                && elif_clauses.iter().all(|(_, b)| block_diverges(b))
+                && else_block.as_ref().is_some_and(block_diverges)
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => block_diverges(try_block) && block_diverges(catch_block),
+        Stmt::DenyBlock { body, .. } => block_diverges(body),
+        // A tail expression statement diverges only if the expression
+        // itself always diverges (e.g. a nested if/match whose every
+        // branch throws/returns) -- a plain value expression like `42`
+        // does NOT diverge, it's the block's value.
+        Stmt::Expr { expr, .. } => expr_diverges(expr),
+        _ => false,
+    }
+}
+
+/// Returns true if an expression (a match-arm body, or a block's tail
+/// expression) always diverges rather than producing a value.
+fn expr_diverges(expr: &Expr) -> bool {
+    match expr {
+        Expr::Block { block, .. } => block_diverges(block),
+        Expr::IfExpr {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            block_diverges(then_branch) && else_branch.as_ref().is_some_and(block_diverges)
+        }
+        Expr::MatchExpr { arms, .. } => {
+            !arms.is_empty() && arms.iter().all(|a| expr_diverges(&a.body))
+        }
         _ => false,
     }
 }

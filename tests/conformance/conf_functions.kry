@@ -1,6 +1,24 @@
 // Conformance: functions, recursion, closures, fn-typed params, generics,
 // traits. (Reference chapters 3, 8.)
 
+fn early_ret(c: bool) -> i64 {
+    let v = if c { 5 } else { return 0 }
+    return v + 1
+}
+
+fn classify_pos(x: i64) -> str {
+    let r = if x > 0 { "pos" } else { throw "neg" }
+    return r
+}
+
+fn all_block_match(tag: i64) -> i64 {
+    return match tag {
+        0 => { let a = 10  a + 1 },
+        1 => { let b = 20  b + 2 },
+        _ => { 99 },
+    }
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -85,6 +103,22 @@ fn main() {
         return a[i] + nsum(a, i + 1)
     }
     expect(nsum([1, 2, 3, 4], 0) == 10, "nested fn recursion over an array")
+
+    // A match whose arms are ALL `{ block }` bodies must infer the tail-
+    // expression's type, not void (a block arm was misclassified as divergent).
+    expect(all_block_match(1) == 22, "all-block match arms infer tail value (not void)")
+    expect(all_block_match(0) == 11 and all_block_match(9) == 99, "all-block match arms across variants")
+    // An if/else whose OTHER branch diverges (throw/return) types as the live
+    // branch, not void. A divergent branch contributes no type to unification.
+    expect(classify_pos(5) == "pos", "if with a throw branch types as the value branch")
+    try {
+        let bad = classify_pos(-1)
+        expect(false, "classify_pos(-1) should throw")
+    } catch e {
+        expect(e == "neg", "if-throw branch actually throws when taken")
+    }
+    expect(early_ret(true) == 6, "if with a return branch types as the value branch")
+    expect(early_ret(false) == 0, "if-return branch returns early when taken")
 
     println("conformance functions: PASS")
 }
