@@ -648,7 +648,14 @@ fn base64_decode(input: &str) -> Vec<u8> {
 #[no_mangle]
 pub extern "C" fn kryos_base64_encode_ks(input_handle: i64) -> i64 {
     let s = unsafe { handle_to_str(input_handle) };
-    str_to_handle(&base64_encode(s.as_bytes()))
+    // Read each CODEPOINT as one byte (latin-1), matching base64_decode_ks's
+    // 1-codepoint-per-byte output (and the chr/byte_at binary model). The old
+    // `s.as_bytes()` used the string's UTF-8 encoding, so a byte >= 0x80 that
+    // decode produced as U+0080..U+00FF (2 UTF-8 bytes) re-encoded as 2 bytes ->
+    // `base64_encode(base64_decode(x)) != x` for any binary payload. For pure
+    // ASCII this is identical to as_bytes().
+    let bytes: Vec<u8> = s.chars().map(|c| c as u8).collect();
+    str_to_handle(&base64_encode(&bytes))
 }
 
 /// `base64_decode(s: str) -> str` — decode base64 back to a (possibly binary) string.

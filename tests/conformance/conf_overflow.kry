@@ -126,5 +126,11 @@ fn main() {
     let mb = pad_left("x", 5, char_from(233))
     expect(len(mb) == 5 and substr(mb, 4, 5) == "x", "pad_left multi-byte fill produces valid UTF-8 (not corrupt)")
 
+    // base64 must round-trip BINARY (bytes >= 0x80): encode read the string's
+    // UTF-8 bytes while decode emitted 1 codepoint per byte, so they disagreed.
+    expect(base64_encode("Man") == "TWFu", "base64_encode ASCII (standard)")
+    expect(base64_decode("aGk=") == "hi", "base64_decode ASCII")
+    expect(base64_encode(base64_decode("AAH//n+A")) == "AAH//n+A", "base64 round-trips binary (high bytes)")
+
     println("conformance overflow: PASS")
 }
