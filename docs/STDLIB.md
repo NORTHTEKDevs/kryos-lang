@@ -218,9 +218,11 @@ Other things that catch people:
   one and stay consistent.
 - `time_now()` returns seconds; `time_now_millis()` returns milliseconds.
   There is no `time_now_nanos()` yet.
-- Integer arithmetic panics on overflow in debug mode. Use the
-  `wrapping_*`, `checked_*`, or `saturating_*` family explicitly when
-  you need defined behaviour.
+- Plain integer arithmetic (`+`, `-`, `*`) WRAPS modulo 2^64 on overflow --
+  the same on both backends (`kryos run` and `kryos build --release`), never a
+  panic. Use the `checked_*` family when you want an overflow to panic, or the
+  `wrapping_*` / `saturating_*` family for explicit wrap / clamp semantics.
+  (Integer division/modulo by zero and `i64::MIN / -1` DO panic; see gotcha #18.)
 - `json_parse` returns an opaque handle (`i64`). Use `json_get` /
   `json_to_str` / `json_to_int` / `json_to_float` to extract values.
 - String interpolation uses `{expr}` braces. Use `{{` / `}}` (v2.8+) for
