@@ -2339,7 +2339,19 @@ impl LlvmCodegen {
             }
             RValue::UnOp { operand, .. } => self.prescan_operand(operand),
             RValue::Use(op) => self.prescan_operand(op),
-            RValue::Call { args, .. } => {
+            RValue::Call { func: fname, args } => {
+                // `type_of` is resolved at emit time to an interned type-name
+                // string constant (see the RValue::Call emission). Its string
+                // globals are only emitted for names interned during THIS
+                // prescan pass, so intern the full fixed set up front -- the
+                // prescan has no `func`, so it can't resolve the one specific
+                // name, and an emit-time intern would leave the global
+                // undefined (`use of undefined value '@.str.N.hdr'`).
+                if fname == "type_of" {
+                    for name in TYPE_OF_NAMES {
+                        self.intern_string(name);
+                    }
+                }
                 for arg in args {
                     self.prescan_operand(arg);
                 }
@@ -4768,6 +4780,34 @@ impl LlvmCodegen {
 
             // ----- Function call -----
             RValue::Call { func: fname, args } => {
+                // `type_of` is resolved at COMPILE TIME from the argument's
+                // static MIR type, exactly like the Cranelift backend. It was
+                // routed to the runtime `kryos_builtin_type_of(i64)`, which only
+                // sees the erased i64 slot -- so a concretely-typed
+                // array/struct/str/tuple reported "i64" on AOT while the JIT
+                // returned the real tag (e.g. `type_of(nested[0])` = "array" on
+                // JIT, "i64" on AOT). The result is an immortal interned string,
+                // materialized exactly like RValue::ConstString.
+                if fname == "type_of" && args.len() == 1 {
+                    let tyname = mir_type_name_of_operand(&args[0], func);
+                    let global_name = self
+                        .string_constants
+                        .get(tyname)
+                        .cloned()
+                        .unwrap_or_else(|| self.intern_string(tyname));
+                    if is_mutable {
+                        self.emit_line(&format!(
+                            "  store ptr {global_name}.hdr, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "  %_{} = getelementptr i8, ptr {global_name}.hdr, i64 0",
+                            dest.0
+                        ));
+                    }
+                    return Ok(());
+                }
                 // Handle print/println/eprintln before building arg_list to
                 // avoid double-evaluating operands (which would emit duplicate
                 // kryos_string_new calls for string constants).
@@ -10305,6 +10345,69 @@ fn constant_type(c: &Constant) -> String {
         Constant::Bool(_) => "i1".into(),
         Constant::Str(_) => "ptr".into(),
         Constant::None => "ptr".into(),
+    }
+}
+
+/// Every string `type_of()` can resolve to -- interned up front during prescan
+/// so the chosen name's string global is always defined (see prescan_rvalue).
+const TYPE_OF_NAMES: &[&str] = &[
+    "i8", "i16", "i32", "i64", "i128", "u8", "u16", "u32", "u64", "u128", "f32", "f64", "bool",
+    "char", "str", "void", "ptr", "ref", "shared", "array", "tuple", "struct", "enum", "fn", "dyn",
+    "map",
+];
+
+/// The Kryos `type_of()` name string for an operand's STATIC MIR type. Mirrors
+/// the Cranelift backend so both agree; resolving at compile time is required
+/// because `type_of` was routed to a runtime `kryos_builtin_type_of(i64)` that
+/// only saw the erased i64 slot, reporting "i64" for a concretely-typed
+/// array/struct/str on AOT while the JIT returned the real tag.
+fn mir_type_name_of_operand(op: &Operand, func: &MirFunction) -> &'static str {
+    match op {
+        Operand::Local(id) => func
+            .locals
+            .iter()
+            .find(|l| l.id == *id)
+            .map(|l| mir_type_name(&l.ty))
+            .unwrap_or("i64"),
+        Operand::Constant(c) => match c {
+            Constant::Int(_) => "i64",
+            Constant::Float(_) => "f64",
+            Constant::Bool(_) => "bool",
+            Constant::Str(_) => "str",
+            Constant::None => "void",
+        },
+    }
+}
+
+/// Maps a MIR type to its Kryos `type_of()` name string.
+fn mir_type_name(ty: &MirType) -> &'static str {
+    match ty {
+        MirType::I8 => "i8",
+        MirType::I16 => "i16",
+        MirType::I32 => "i32",
+        MirType::I64 => "i64",
+        MirType::I128 => "i128",
+        MirType::U8 => "u8",
+        MirType::U16 => "u16",
+        MirType::U32 => "u32",
+        MirType::U64 => "u64",
+        MirType::U128 => "u128",
+        MirType::F32 => "f32",
+        MirType::F64 => "f64",
+        MirType::Bool => "bool",
+        MirType::Char => "char",
+        MirType::Str => "str",
+        MirType::Void => "void",
+        MirType::Ptr(_) => "ptr",
+        MirType::Ref { .. } => "ref",
+        MirType::Shared(_) => "shared",
+        MirType::Array(_, _) => "array",
+        MirType::Tuple(_) => "tuple",
+        MirType::Struct(_) => "struct",
+        MirType::Enum(_) => "enum",
+        MirType::Function { .. } => "fn",
+        MirType::DynTrait(_) => "dyn",
+        MirType::Map { .. } => "map",
     }
 }
 

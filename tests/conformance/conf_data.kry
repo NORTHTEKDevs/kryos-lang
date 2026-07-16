@@ -307,6 +307,22 @@ fn main() {
     ca_px.b -= 10
     expect(ca_px.r == 15 and ca_px.g == 40 and ca_px.b == 20, "compound-assign on struct field")
 
+    // type_of resolves from the STATIC type at compile time. On AOT it was
+    // routed to a runtime helper that only saw the erased i64 slot, so a
+    // concretely-typed array/struct/str/tuple/map reported "i64" (JIT was
+    // correct) -- a silent backend divergence. Now both resolve identically.
+    let tof_arr: [i64] = [1, 2]
+    let tof_str: str = "x"
+    let tof_px = Pixel { r: 1, g: 2, b: 3 }
+    let tof_tup = (1, 2)
+    let tof_map: map<str, i64> = {"k": 1}
+    expect(type_of(tof_arr) == "array", "type_of array (not i64) on AOT")
+    expect(type_of(tof_str) == "str", "type_of str")
+    expect(type_of(tof_px) == "struct", "type_of struct (not i64) on AOT")
+    expect(type_of(tof_tup) == "tuple", "type_of tuple (not i64) on AOT")
+    expect(type_of(tof_map) == "map", "type_of map (not i64) on AOT")
+    expect(type_of(42) == "i64" and type_of(1.5) == "f64" and type_of(true) == "bool", "type_of scalars")
+
     // Match guards and wildcard.
     let v = 15
     let mut kind = ""
