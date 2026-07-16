@@ -1974,16 +1974,38 @@ impl TypeChecker {
                 for part in parts {
                     if let kryos_ast::StringPart::Expr(e) = part {
                         let ty = self.infer_expr(e);
-                        // A struct value has no built-in string representation.
-                        // Interpolating one fell through to the i64/pointer path
-                        // and printed the raw pointer on JIT, produced blank
-                        // output / an AOT SEGFAULT on LLVM. Reject it with a
-                        // clear error instead: interpolate a field or call
-                        // `.to_string()` explicitly.
-                        if let Type::Struct { name, .. } = self.engine.resolve(&ty) {
+                        // Only scalars and `str` have a built-in string form.
+                        // Interpolating an AGGREGATE (struct/enum/array/tuple/
+                        // map/set/Option/Result/fn) fell through to the i64/
+                        // pointer path -> the raw pointer printed on JIT, and
+                        // blank output / an AOT SEGFAULT on LLVM (e.g. through
+                        // std::tracked's explain()/to_json()). Reject it with a
+                        // clear error. (A generic `T` is an unresolved Var here
+                        // and is allowed; only concrete aggregates are caught.)
+                        let resolved = self.engine.resolve(&ty);
+                        let interpolatable = matches!(
+                            resolved,
+                            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                                | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                                | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Str
+                                | Type::USize | Type::ISize | Type::Var(_) | Type::Error
+                        );
+                        if !interpolatable {
+                            let desc = match &resolved {
+                                Type::Struct { name, .. } => name.clone(),
+                                Type::Enum { name, .. } => name.clone(),
+                                Type::Array { .. } => "array".to_string(),
+                                Type::Tuple { .. } => "tuple".to_string(),
+                                Type::Map { .. } => "map".to_string(),
+                                Type::Set { .. } => "set".to_string(),
+                                Type::Option { .. } => "Option".to_string(),
+                                Type::Result { .. } => "Result".to_string(),
+                                Type::Function { .. } => "function".to_string(),
+                                _ => "this type".to_string(),
+                            };
                             self.error(
                                 format!(
-                                    "cannot interpolate a value of type `{name}` into a string: a struct has no string representation. Interpolate a field (e.g. `{{v.field}}`) or call `.to_string()` explicitly (`{{v.to_string()}}`)."
+                                    "cannot interpolate a value of type `{desc}` into a string: it has no built-in string representation. Interpolate a field/element (e.g. `{{v.field}}` or `{{v[0]}}`) or convert explicitly with `to_string(v)` / `.to_string()`."
                                 ),
                                 e.span(),
                             );
