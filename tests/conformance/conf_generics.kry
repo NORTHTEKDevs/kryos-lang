@@ -157,6 +157,22 @@ impl<T> Nest<T> {
     }
 }
 
+// A generic function body whose LOCAL is explicitly annotated with the generic
+// param type (`let inner: T`, or a compound `let mid: Nest<T>`) must substitute
+// T to the concrete instantiation. The monomorphized body kept the RAW generic
+// annotation, so resolve_type produced a placeholder and LLVM emitted `load %T`
+// -> AOT build failure (JIT tolerated the opaque type). Omitting the annotation
+// always worked; now the annotated form does too (active_generic_bindings).
+fn deref_annotated<T>(n: Nest<T>) -> T {
+    let inner: T = n.get()
+    return inner
+}
+
+fn deref_nested<T>(n: Nest<Nest<T>>) -> T {
+    let mid: Nest<T> = n.get()
+    return mid.get()
+}
+
 fn main() {
     // Through generic-fn returns (the path that mistyped fields as i64:
     // Boxed<str>.value printed its handle before the fix).
@@ -313,6 +329,14 @@ fn main() {
     kf = 50
     expect(gg(2) == 100, "let-bound closure sees mutation")
     expect(mach.hf(2) == 100, "struct-field closure sees mutation")
+
+    // Generic-param-annotated locals inside a generic fn body (was AOT `load %T`).
+    let dci: Nest<i64> = Nest { inner: 7 }
+    expect(deref_annotated(dci) == 7, "generic fn body: `let x: T` annotation substitutes (i64)")
+    let dcs: Nest<str> = Nest { inner: "z" }
+    expect(deref_annotated(dcs) == "z", "generic fn body: `let x: T` annotation substitutes (str)")
+    let dcn: Nest<Nest<i64>> = Nest { inner: Nest { inner: 88 } }
+    expect(deref_nested(dcn) == 88, "generic fn body: compound `let x: Nest<T>` annotation substitutes")
 
     println("conformance generics: PASS")
 }

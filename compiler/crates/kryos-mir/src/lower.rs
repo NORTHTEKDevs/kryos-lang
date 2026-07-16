@@ -94,6 +94,12 @@ pub struct LoweringContext {
     /// span), from the type checker. Used so `let x = []; push(x, S{..})` types
     /// x as `[S]` instead of the MIR's default `[i64]`.
     let_types: HashMap<kryos_errors::Span, ast::TypeExpr>,
+    /// Generic-param -> concrete-type bindings active while lowering a
+    /// monomorphized generic function/method body. Consulted when resolving a
+    /// local `let`'s type annotation so `let x: T` / `let x: Box<T>` inside the
+    /// body substitute to the concrete instantiation (else LLVM emits `%T`).
+    /// Empty outside a monomorphized body.
+    active_generic_bindings: HashMap<String, MirType>,
     /// Counter for spawn wrapper function names.
     spawn_counter: u32,
     /// Type alias map: alias_name -> resolved MirType.
@@ -382,6 +388,7 @@ impl LoweringContext {
             lambda_counter: 0,
             lambda_param_types: HashMap::new(),
             let_types: HashMap::new(),
+            active_generic_bindings: HashMap::new(),
             spawn_counter: 0,
             type_aliases: HashMap::new(),
             try_catch_target: None,
@@ -2995,7 +3002,20 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             ..
         } => {
             let mir_ty = if let Some(t) = ty {
-                ctx.resolve_type(t)
+                // A generic function body monomorphized for concrete type args
+                // still carries the RAW generic annotation on its locals
+                // (`let inner: T` / `let inner: Box<T>`) -- resolve_type would
+                // yield a placeholder `Struct("T")` and LLVM emitted `load %T`
+                // (AOT build fail; the JIT tolerated the opaque type). Substitute
+                // the active generic bindings (set by `monomorphize` around the
+                // body lowering) into the annotation first, so `T` -> `i64`,
+                // `Box<T>` -> `Box<i64>`. No-op when not in a monomorphized body.
+                if ctx.active_generic_bindings.is_empty() {
+                    ctx.resolve_type(t)
+                } else {
+                    let substituted = substitute_type_expr(t, &ctx.active_generic_bindings);
+                    ctx.resolve_type(&substituted)
+                }
             } else if let Some(te) = ctx.let_types.get(let_span).cloned() {
                 // Type-checker-resolved type for an unannotated empty-array `let`
                 // (element type came from later `push`). Without this the MIR's
@@ -12117,6 +12137,11 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
 
     // Save the current function state — lower_function will call reset().
     let saved = ctx.save_function_state();
+    // Expose the concrete type bindings so the body's local `let` annotations
+    // (`let x: T` / `let x: Box<T>`) substitute to the instantiation. Saved and
+    // restored to survive NESTED monomorphizations triggered while lowering.
+    let saved_bindings =
+        std::mem::replace(&mut ctx.active_generic_bindings, type_map.clone());
 
     // Lower the specialized function.
     let mir_func = lower_function(
@@ -12128,6 +12153,7 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
     );
 
     // Restore the caller's function state.
+    ctx.active_generic_bindings = saved_bindings;
     ctx.restore_function_state(saved);
 
     // Store the monomorphized function for collection by lower_module.
