@@ -344,12 +344,14 @@ fn classify(value: i64) -> str {
 | Literal              | `42`, `"yes"`, `-1`, `true` |
 | Wildcard             | `_`                      |
 | Variable bind        | `n`                      |
-| Range                | `0..10`                  |
 | Tuple                | `(a, b)`                 |
 | Struct               | `Point { x: 0, y }`      |
 | Enum variant         | `Color::Red`, `Some(x)`  |
 | OR                   | `1 \| 2 \| 3`           |
 | Guard                | `n if n > 0`             |
+
+> Range patterns (`0..10`) are **not yet implemented** in `match`; the parser
+> rejects `..` in pattern position. Use a guard instead: `n if n >= 0 and n < 10`.
 
 ### 6.2 Exhaustiveness
 
