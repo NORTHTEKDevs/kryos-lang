@@ -9960,7 +9960,38 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         });
                         Operand::Local(tmp)
                     }
-                    ast::StringPart::Expr(e) => lower_expr_to_operand(ctx, e),
+                    ast::StringPart::Expr(e) => {
+                        // A non-scalar AGGREGATE (struct/enum/array/tuple/map/fn)
+                        // has no string form; StringConcat would treat it as an
+                        // i64 (pointer) -> garbage on JIT, blank/SEGFAULT on AOT.
+                        // The type checker rejects CONCRETE aggregate
+                        // interpolation, but a GENERIC `T` that monomorphizes to
+                        // an aggregate slips past (e.g. std::tracked's
+                        // `"{t.value}"`). Lower `e` for its side effects, then
+                        // substitute a safe placeholder so it never derefs an
+                        // aggregate as a string.
+                        let ety = infer_expr_type(ctx, e);
+                        let placeholder = match &ety {
+                            MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
+                            MirType::Array(..) => Some("<array>".to_string()),
+                            MirType::Tuple(_) => Some("<tuple>".to_string()),
+                            MirType::Map { .. } => Some("<map>".to_string()),
+                            MirType::Function { .. } => Some("<fn>".to_string()),
+                            _ => None,
+                        };
+                        match placeholder {
+                            Some(ph) => {
+                                let _ = lower_expr_to_operand(ctx, e);
+                                let tmp = ctx.alloc_temp(MirType::Str);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::ConstString(ph),
+                                });
+                                Operand::Local(tmp)
+                            }
+                            None => lower_expr_to_operand(ctx, e),
+                        }
+                    }
                 })
                 .collect();
             RValue::StringConcat(ops)
