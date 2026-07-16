@@ -106,20 +106,7 @@ fn pad_left(s: str, width: i64, ch: str) -> str {
     if slen >= width {
         return s
     }
-    let fill = if len(ch) > 0 { char_code(ch[0]) } else { 32 }
-    let pad_count = width - slen
-    let buf = alloc(width)
-    let mut i = 0
-    while i < pad_count {
-        ptr_set_byte(buf, i, fill)
-        i = i + 1
-    }
-    let mut j = 0
-    while j < slen {
-        ptr_set_byte(buf, pad_count + j, char_code(s[j]))
-        j = j + 1
-    }
-    return buf_to_str(buf, width)
+    return _fmt_pad_build(width - slen, ch) + s
 }
 
 /// Pad a string on the right to reach target width.
@@ -128,20 +115,7 @@ fn pad_right(s: str, width: i64, ch: str) -> str {
     if slen >= width {
         return s
     }
-    let fill = if len(ch) > 0 { char_code(ch[0]) } else { 32 }
-    let pad_count = width - slen
-    let buf = alloc(width)
-    let mut j = 0
-    while j < slen {
-        ptr_set_byte(buf, j, char_code(s[j]))
-        j = j + 1
-    }
-    let mut i = 0
-    while i < pad_count {
-        ptr_set_byte(buf, slen + i, fill)
-        i = i + 1
-    }
-    return buf_to_str(buf, width)
+    return s + _fmt_pad_build(width - slen, ch)
 }
 
 /// Center a string within the given width.
@@ -150,23 +124,28 @@ fn center(s: str, width: i64, ch: str) -> str {
     if slen >= width {
         return s
     }
-    let fill = if len(ch) > 0 { ch[0] } else { " " }
     let total_pad = width - slen
     let left_pad = total_pad / 2
     let right_pad = total_pad - left_pad
-    let mut result = ""
-    let mut i = 0
-    while i < left_pad {
-        result = result + fill
-        i = i + 1
+    return _fmt_pad_build(left_pad, ch) + s + _fmt_pad_build(right_pad, ch)
+}
+
+/// Build a pad of at least `target_bytes` from the fill string `ch`, repeating
+/// the WHOLE fill char. The old pad functions took only `char_code(ch[0])` --
+/// the first BYTE of the fill -- and repeated it, so a multi-byte UTF-8 fill
+/// wrote an invalid byte sequence and the runtime substituted "<invalid utf-8>".
+/// A single-byte fill still yields an exact-width pad; a multi-byte fill keeps
+/// whole chars (may overshoot by < len(ch) rather than slice a char mid-byte).
+fn _fmt_pad_build(target_bytes: i64, ch: str) -> str {
+    let fill = if len(ch) > 0 { ch } else { " " }
+    let mut pad = ""
+    while len(pad) < target_bytes {
+        pad = pad + fill
     }
-    result = result + s
-    i = 0
-    while i < right_pad {
-        result = result + fill
-        i = i + 1
+    if len(fill) == 1 {
+        return substr(pad, 0, target_bytes)
     }
-    return result
+    return pad
 }
 
 // --- Number base conversions -------------------------------------------------

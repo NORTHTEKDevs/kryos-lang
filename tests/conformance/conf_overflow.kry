@@ -12,9 +12,9 @@ use std::crypto::{hmac_sha256}
 
 use std::numfmt::{hex, bin, decimal_padded}
 
-use std::fmt::{oct, thousands, duration, float_sci}
+use std::fmt::{oct, thousands, duration, float_sci, pad_left, center}
 
-use std::math::{atan}
+use std::math::{atan, lcm}
 
 use std::json::{stringify, json_string}
 
@@ -113,6 +113,18 @@ fn main() {
     expect(compare(parse("1.0.0-alpha.1"), parse("1.0.0-alpha.beta")) == -1, "semver numeric identifier ranks below alphanumeric")
     expect(compare(parse("1.0.0-rc.1"), parse("1.0.0")) == -1, "semver prerelease < release")
     expect(compare(parse("1.0.0-alpha.1"), parse("1.0.0-alpha.10")) == -1, "semver numeric identifiers compare numerically (1 < 10)")
+
+    // math::lcm must stay in exact integer precision -- the old f64 path
+    // (float(a)*float(b)/float(g)) lost the low digits past 2^53.
+    expect(lcm(1000000007, 1000000009) == 1000000016000000063, "math::lcm exact for large i64 (no f64 precision loss)")
+    expect(lcm(12, 18) == 36, "math::lcm small values")
+
+    // pad with a MULTI-BYTE fill must not corrupt (was <invalid utf-8>): the old
+    // code repeated only the first BYTE of the fill. Single-byte fill -> exact.
+    expect(pad_left("x", 5, "-") == "----x", "pad_left single-byte fill exact width")
+    expect(center("hi", 8, "*") == "***hi***", "fmt::center single-byte fill")
+    let mb = pad_left("x", 5, char_from(233))
+    expect(len(mb) == 5 and substr(mb, 4, 5) == "x", "pad_left multi-byte fill produces valid UTF-8 (not corrupt)")
 
     println("conformance overflow: PASS")
 }

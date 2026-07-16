@@ -489,8 +489,14 @@ fn lcm(a: i64, b: i64) -> i64 {
         return 0
     }
     let g = gcd(a, b)
-    let product = abs(float(a)) * abs(float(b))
-    return int(product / float(g))
+    // Pure-integer (absa/g)*absb -- the old `int(float(a)*float(b)/float(g))`
+    // went through f64 (only 53 bits), so lcm(1000000007, 1000000009) lost the
+    // low digits (...000 instead of ...063). Same fix already applied to
+    // std::mathx::lcm and std::math::gcd. Divide before multiply to avoid an
+    // intermediate i64 overflow.
+    let absa = if a < 0 { 0 - a } else { a }
+    let absb = if b < 0 { 0 - b } else { b }
+    return (absa / g) * absb
 }
 
 /// Factorial of n (n must be >= 0).
