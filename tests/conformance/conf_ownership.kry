@@ -1,6 +1,41 @@
 // Conformance: ownership, moves, Copy primitives, @copy struct semantics.
 // (Reference chapters 6 + gotcha #23 guarantees.)
 
+use std::result::{Result, Ok, Err}
+
+// F1 regression (gotcha #23 "BROAD crash hazard"): a non-@copy struct with a
+// HEAP field, reassigned INSIDE A LOOP from a NESTED-match enum payload, used
+// to CRASH both backends (AOT segfault / JIT corrupt, order-dependent). Root
+// cause: a `let` declared in one match arm (a value-position block) was not
+// dropped at that arm's own scope end, so its drop hoisted to the loop body's
+// shared post-match block and fired __kryos_drop_S on a stale/null slot on
+// EVERY iteration -- including iterations that took the OTHER arm. This is the
+// standard "validate-then-commit via Result" state-machine idiom.
+enum F1Tok { Push(i64), Commit }
+struct F1Calc { stack: [i64] }
+
+fn f1_run() -> i64 {
+    let mut c = F1Calc { stack: [] }
+    let toks: [F1Tok] = [F1Tok.Push(3), F1Tok.Commit, F1Tok.Push(4), F1Tok.Commit]
+    for t in toks {
+        match t {
+            F1Tok.Push(n) => {
+                let mut s = c.stack
+                s = push(s, n)
+                c = F1Calc { stack: s }
+            },
+            F1Tok.Commit => {
+                let r: Result<F1Calc, str> = Ok(F1Calc { stack: c.stack })
+                match r {
+                    Ok(nc) => { c = nc },
+                    Err(e) => {},
+                }
+            },
+        }
+    }
+    return len(c.stack)
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -104,6 +139,11 @@ fn main() {
     // and the original reused: must compile (was a false E0303) and share the
     // handle (the local copy's mutation aliases the shared array).
     expect(bare_pattern_field_reuse() == "z", "bare enum pattern struct-payload field reuse (no false E0303)")
+
+    // Heap-field struct reassigned in a loop from a nested-match Result payload:
+    // must not crash (F1). A match-arm-local `let` is now dropped at its own
+    // arm's scope end, not hoisted to the loop-body's shared post-match drop.
+    expect(f1_run() == 2, "loop + nested-match struct-payload reassign (F1: no crash, correct value)")
 
     println("conformance ownership: PASS")
 }

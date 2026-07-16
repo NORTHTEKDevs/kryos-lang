@@ -51,6 +51,21 @@ pub fn install() {
 #[no_mangle]
 pub extern "C" fn kryos_rt_init() {
     install();
+    // Also install the vectored-exception fault tracer (`fault::install`,
+    // gated behind KRYOS_FAULT_TRACE/KRYOS_WATCHDOG/KRYOS_HANG_TRAP -- a
+    // no-op unless one of those env vars is set) so AOT binaries get the
+    // same [FAULT] RVA reporting the JIT path already gets via kryos-cli's
+    // main.rs installing it directly. Previously the ONLY caller of
+    // `fault::install` besides that JIT-only call site was `kryos_alloc`,
+    // which the struct/array pool allocators (`kryos_calloc`, `pool_alloc`)
+    // bypass entirely -- so an AOT program whose first heap traffic is a
+    // struct/array never installed the handler at all, and a real crash
+    // (found while root-causing the F1 struct/loop/nested-match bug) showed
+    // a silent access violation instead of a `[FAULT] ... RVA=...` line.
+    // `kryos_rt_init` is called once from `@main` (see
+    // kryos-codegen-llvm's emit_main_wrapper), before any user code runs,
+    // so this now covers every AOT program regardless of allocator path.
+    crate::fault::install();
 }
 
 // ---------------------------------------------------------------------------

@@ -2419,21 +2419,38 @@ pub fn lower_function(
 // Statement lowering
 // ---------------------------------------------------------------------------
 
-fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
-    let scope_start = ctx.locals.len();
-
-    for stmt in stmts {
-        lower_stmt(ctx, stmt);
-    }
-
-    // Emit drops for *named* locals declared in this scope (reverse order).
-    // Unnamed temporaries (name == None) must NOT be dropped because they
-    // hold non-owning copies of values (e.g. a string handle loaded from a
-    // struct field).  Dropping them would free memory that the struct still
-    // owns, causing heap corruption / use-after-free.
-    //
-    // We also skip locals that were already dropped by a nested inner scope
-    // to prevent double-free.
+/// Emit drops for *named* locals declared in `ctx.locals[scope_start..]`
+/// (reverse order), into whatever block is currently `ctx.current_block`.
+///
+/// Shared by `lower_block_stmts` (a block used as a plain statement) and the
+/// `Expr::Block`/`Expr::UnsafeBlock` rvalue case (a block used as a VALUE,
+/// e.g. a match-arm body or an if-as-value branch). Before this was
+/// factored out, the rvalue path had NO scope-exit drop of its own at all —
+/// a named `let` declared inside a match-arm block (e.g. `let r = Ok(..)`
+/// inside `E.B => { let r = ..; match r { .. } }`) was never dropped at the
+/// end of ITS OWN arm. The local stayed un-dropped in `ctx.locals`, so the
+/// NEXT enclosing `lower_block_stmts` call that happened to cover it (e.g.
+/// the `for`-loop body wrapping the whole outer `match`) swept it up
+/// instead — unconditionally, in the loop body's own shared exit block,
+/// on EVERY iteration, regardless of which arm of the outer match actually
+/// ran that iteration. On an iteration that took a DIFFERENT arm (one that
+/// never touched `r` this time), that dropped whatever STALE value `r`'s
+/// slot held from a previous iteration (or zero-init on the first) — a
+/// null-deref or a double-free of an already-freed prior box. This is the
+/// verified root cause of the F1 struct/loop/nested-match crash (gotcha
+/// #23's "BROAD, HIGH-PRIORITY crash hazard"): dropping `r` correctly at
+/// the end of the E.B arm's OWN block (this function, called from the
+/// block-rvalue case) means the outer loop-body scope never sees `r` left
+/// over to double-drop.
+///
+/// Unnamed temporaries (name == None) must NOT be dropped because they
+/// hold non-owning copies of values (e.g. a string handle loaded from a
+/// struct field). Dropping them would free memory that the struct still
+/// owns, causing heap corruption / use-after-free.
+///
+/// We also skip locals that were already dropped (by a nested inner scope,
+/// or by a tail-expression move) to prevent double-free.
+fn emit_named_scope_drops(ctx: &mut LoweringContext, scope_start: usize) {
     let scope_end = ctx.locals.len();
     for i in (scope_start..scope_end).rev() {
         if ctx.locals[i].name.is_some() {
@@ -2456,12 +2473,23 @@ fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
             }
         }
     }
+}
+
+fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
+    let scope_start = ctx.locals.len();
+
+    for stmt in stmts {
+        lower_stmt(ctx, stmt);
+    }
+
+    emit_named_scope_drops(ctx, scope_start);
 
     // Hide scoped locals from name resolution so outer scopes don't
     // see inner bindings (prevents variable shadowing leaks like
     // `let x = 100; if true { let x = 999 } println(x)` printing 999).
     // We add them to hidden_locals rather than clearing names, so the
     // final MIR output still has names for debugging/introspection.
+    let scope_end = ctx.locals.len();
     for i in scope_start..scope_end {
         if ctx.locals[i].name.is_some() {
             ctx.hidden_locals.insert(ctx.locals[i].id.0);
@@ -9664,10 +9692,47 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         // plain block. The safety marker is enforced by the type-checker (E0500).
         ast::Expr::Block { block, .. } | ast::Expr::UnsafeBlock { body: block, .. } => {
             // Lower all statements, return last expression.
+            //
+            // Scope-exit drop: a block used as a VALUE (a match-arm body, an
+            // if-as-value branch, ...) previously had NO drop cleanup of its
+            // own for named locals it declares (unlike `lower_block_stmts`,
+            // used when a block appears as a plain statement). A `let`
+            // declared here (e.g. `let r = Ok(..)` inside one arm of an
+            // enum match) stayed un-dropped in `ctx.locals`; the next
+            // ENCLOSING `lower_block_stmts` scope that happened to cover it
+            // (e.g. a `for`-loop body wrapping the whole match) swept it up
+            // instead -- unconditionally, in that outer scope's own exit
+            // block, on every iteration regardless of which arm actually
+            // ran. On an iteration that took a DIFFERENT arm, that dropped
+            // stale data left over from a previous iteration (or zero-init
+            // on the first) instead of this arm's own value -- a null-deref
+            // or a double-free of an already-freed prior allocation. This
+            // was the verified root cause of the F1 struct/loop/nested-match
+            // crash (gotcha #23). Track this block's own locals and drop
+            // them here, at the end of ITS OWN control-flow path, exactly
+            // like `lower_block_stmts` does for a statement-position block.
+            let scope_start = ctx.locals.len();
             for (i, stmt) in block.stmts.iter().enumerate() {
                 if i == block.stmts.len() - 1 {
                     if let ast::Stmt::Expr { expr, .. } = stmt {
-                        return lower_expr_to_rvalue(ctx, expr);
+                        let rv = lower_expr_to_rvalue(ctx, expr);
+                        // A bare-identifier tail MOVES the local into the
+                        // result (Use is a bit-copy with no retain) -- mark
+                        // it dropped first so the scope cleanup below
+                        // doesn't free the value the result now owns
+                        // (mirrors `lower_block_as_value`'s identical guard).
+                        if let ast::Expr::Identifier { name, .. } = expr {
+                            if let Some(l) = ctx
+                                .locals
+                                .iter()
+                                .rev()
+                                .find(|l| l.name.as_deref() == Some(name.as_str()))
+                            {
+                                ctx.dropped_locals.insert(l.id.0);
+                            }
+                        }
+                        emit_named_scope_drops(ctx, scope_start);
+                        return rv;
                     }
                     // A trailing `if ... else ...` is the block's tail VALUE
                     // (parsed as Stmt::If). Without this it lowered as a
@@ -9675,11 +9740,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // ConstNone -- `let x = { if c { a } else { b } }` and a
                     // match arm `x => { if ... }` produced empty.
                     if let Some(if_expr) = stmt.as_value_if_expr() {
-                        return lower_expr_to_rvalue(ctx, &if_expr);
+                        let rv = lower_expr_to_rvalue(ctx, &if_expr);
+                        emit_named_scope_drops(ctx, scope_start);
+                        return rv;
                     }
                 }
                 lower_stmt(ctx, stmt);
             }
+            emit_named_scope_drops(ctx, scope_start);
             RValue::ConstNone
         }
 

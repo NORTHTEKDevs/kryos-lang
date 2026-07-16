@@ -2010,6 +2010,22 @@ impl LlvmCodegen {
             self.emit_line(&format!("; Type drop helper for struct {name}"));
             self.emit_line(&format!("define internal void @{drop_name}(ptr %ptr) {{"));
             self.emit_line("entry:");
+            // Null guard: unlike the enum-drop helpers below (which already
+            // check `icmp eq ptr %ptr, null` before touching the pointer),
+            // this struct helper unconditionally dereferenced %ptr to read
+            // its first heap field -- a crash when called with a null/stale
+            // box (e.g. a zero-initialized `Result<Struct, _>` payload slot
+            // whose scope-exit drop fires on a control-flow path that never
+            // constructed it this time -- see gotcha #23 / the F1 fix in
+            // kryos-mir/src/lower.rs). Matching the enum helpers' guard here
+            // makes a null-pointer call site a safe no-op instead of an
+            // access violation, independent of that MIR-level fix.
+            let struct_null_chk = self.next_temp();
+            self.emit_line(&format!("  {struct_null_chk} = icmp eq ptr %ptr, null"));
+            self.emit_line(&format!(
+                "  br i1 {struct_null_chk}, label %struct_drop_ret_{name}, label %struct_drop_body_{name}"
+            ));
+            self.emit_line(&format!("struct_drop_body_{name}:"));
 
             // Delegate to emit_struct_drop, which uses struct-indexed GEP
             // (`getelementptr %Name, ptr val, i32 0, i32 idx`) so multi-word
@@ -2039,6 +2055,8 @@ impl LlvmCodegen {
             self.emit_struct_drop("%ptr", name, &dummy);
 
             self.emit_line("  call void @kryos_free(ptr %ptr)");
+            self.emit_line(&format!("  br label %struct_drop_ret_{name}"));
+            self.emit_line(&format!("struct_drop_ret_{name}:"));
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -2242,6 +2260,7 @@ impl LlvmCodegen {
         self.emit_line("; C-compatible main() entry point");
         self.emit_line("define i32 @main() {");
         self.emit_line("entry:");
+        self.emit_line("  call void @kryos_rt_init()");
         self.emit_line("  call void @_kryos_main()");
         // Drain + join actor threads, then wait for spawned threads (no-op if
         // none of either). Actors first so their handlers finish before exit.
