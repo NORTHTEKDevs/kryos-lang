@@ -8376,6 +8376,30 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 return RValue::Use(Operand::Constant(Constant::Int(0)));
             }
 
+            // `to_string(aggregate)` has no string representation and printed a
+            // raw pointer (JIT) / garbage (AOT), same class as interpolating one.
+            // Substitute a safe placeholder for a non-scalar aggregate arg (the
+            // arg is still lowered for side effects). The concrete case is also
+            // rejected by the type checker; this covers explicit `to_string(x)`
+            // and the generic-monomorphized case. A user `to_string` METHOD is
+            // called via `x.to_string()` (a MethodCall, a different path) and is
+            // unaffected -- only the free-function builtin is intercepted.
+            if func_name == "to_string" && args.len() == 1 {
+                let aty = infer_expr_type(ctx, &args[0]);
+                let placeholder = match &aty {
+                    MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
+                    MirType::Array(..) => Some("<array>".to_string()),
+                    MirType::Tuple(_) => Some("<tuple>".to_string()),
+                    MirType::Map { .. } => Some("<map>".to_string()),
+                    MirType::Function { .. } => Some("<fn>".to_string()),
+                    _ => None,
+                };
+                if let Some(ph) = placeholder {
+                    let _ = lower_expr_to_operand(ctx, &args[0]);
+                    return RValue::ConstString(ph);
+                }
+            }
+
             // Check if this is an actor construction (e.g., `Counter()`).
             if ctx.actor_defs.contains_key(&func_name) {
                 let dispatch_fn = format!("{func_name}__dispatch");
