@@ -227,9 +227,14 @@ fn hmac_sha256(key: str, message: str) -> str {
         padded_key = sha256(padded_key)
     }
 
-    // Pad key to block_size with zeros
+    // Pad key to block_size with zeros. NOTE: `"\x00"` is NOT a valid Kryos
+    // escape (the syntax is `\x{NN}` braced, or `\0`); it passed through as the
+    // 4 literal chars `\`, `x`, `0`, `0`, so the pad loop overshot and the HMAC
+    // key was corrupted -> hmac_sha256 / JWT HS256 signatures did not match
+    // RFC 2104/7519. Use `char_from(0)` for a real NUL byte (matches the
+    // char_from usage just below).
     while len(padded_key) < block_size {
-        padded_key = padded_key + "\x00"
+        padded_key = padded_key + char_from(0)
     }
 
     // Compute inner and outer pads
@@ -246,9 +251,13 @@ fn hmac_sha256(key: str, message: str) -> str {
         i = i + 1
     }
 
-    // HMAC = H(outer_pad || H(inner_pad || message))
-    let inner_hash = sha256(inner_pad + message)
-    return sha256(outer_pad + inner_hash)
+    // HMAC = H(outer_pad || H(inner_pad || message)). The inner hash MUST be
+    // fed to the outer hash as its RAW 32 bytes -- the old code passed
+    // `sha256(...)` (the 64-char HEX string), so the outer hash digested the
+    // wrong input and HMAC-SHA256 never matched RFC 2104 / any reference.
+    let inner_raw = sha256_raw(inner_pad + message)
+    let inner_bytes = buf_to_str(inner_raw, 32)
+    return sha256(outer_pad + inner_bytes)
 }
 
 // --- Constant-time comparison -----------------------------------------------

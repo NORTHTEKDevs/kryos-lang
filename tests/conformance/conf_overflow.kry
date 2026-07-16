@@ -8,6 +8,8 @@
 
 use std::hash::{crc32}
 
+use std::crypto::{hmac_sha256}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -15,6 +17,9 @@ fn expect(cond: bool, what: str) {
     }
 }
 
+// crypto for hmac_sha256; the conformance runner uses inferred (not permissive)
+// capability mode, so `main` must declare what it transitively needs.
+@capabilities(crypto)
 fn main() {
     let imax: i64 = 9223372036854775807
     let imin: i64 = -9223372036854775808
@@ -48,6 +53,13 @@ fn main() {
     expect(crc32("hello") == 907060870, "crc32(hello) matches reference IEEE CRC-32")
     expect(crc32("") == 0, "crc32(empty) is 0")
     expect(crc32("The quick brown fox jumps over the lazy dog") == 1095738169, "crc32(fox) matches reference")
+
+    // HMAC-SHA256 must match RFC 2104 / any reference. The old impl (a) padded
+    // the key with the literal `"\x00"` (4 chars -- an unrecognized escape), and
+    // (b) fed the inner hash's HEX string to the outer hash instead of its raw
+    // 32 bytes -- so signatures never matched (and were import-set-dependent).
+    expect(hmac_sha256("key", "The quick brown fox jumps over the lazy dog") == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8", "hmac_sha256 matches the reference vector")
+    expect(hmac_sha256("", "") == "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad", "hmac_sha256 of empty key+msg matches reference")
 
     println("conformance overflow: PASS")
 }
