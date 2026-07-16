@@ -2158,9 +2158,20 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fval})"));
                         }
                         MirType::Struct(ref n) | MirType::Enum(ref n) => {
-                            let nested = format!("__kryos_drop_{n}");
-                            self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
-                            self.emit_line(&format!("  call void @{nested}(ptr {fval})"));
+                            // Skip a nested field whose type is an UNRESOLVED
+                            // generic placeholder (e.g. `Result<U, E>`
+                            // monomorphized with U unbound because a closure --
+                            // an untyped `fn` -- was passed as the mapping fn):
+                            // `__kryos_drop_U` is never defined, so the call was
+                            // an undefined symbol (AOT build fail). The field is
+                            // carried as an opaque i64 slot with no drop helper.
+                            if self.struct_defs.contains_key(n)
+                                || self.enum_defs.contains_key(n)
+                            {
+                                let nested = format!("__kryos_drop_{n}");
+                                self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                                self.emit_line(&format!("  call void @{nested}(ptr {fval})"));
+                            }
                         }
                         _ => {}
                     }
@@ -9957,20 +9968,18 @@ impl LlvmCodegen {
                     "i64".to_string(),
                     "call void @kryos_map_free(i64 {fv})".to_string(),
                 ),
-                MirType::Struct(n) => {
+                MirType::Struct(n) | MirType::Enum(n)
+                    if self.struct_defs.contains_key(n) || self.enum_defs.contains_key(n) =>
+                {
                     let drop_name = format!("__kryos_drop_{n}");
                     (
                         "ptr".to_string(),
                         format!("call void @{drop_name}(ptr {{fv}})"),
                     )
                 }
-                MirType::Enum(n) => {
-                    let drop_name = format!("__kryos_drop_{n}");
-                    (
-                        "ptr".to_string(),
-                        format!("call void @{drop_name}(ptr {{fv}})"),
-                    )
-                }
+                // An unresolved generic placeholder type (`Struct("U")`) has no
+                // drop helper -- skip it (opaque i64 slot). Emitting the call
+                // was an undefined `@__kryos_drop_U` symbol on AOT.
                 _ => ("i64".to_string(), String::new()),
             };
             if !free_call.is_empty() {

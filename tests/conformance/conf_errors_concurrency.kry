@@ -2,7 +2,22 @@
 use std::option::{Option, Some, None}
 // chapters 7 (errors), 9 (concurrency).)
 
-use std::result::{Result, Ok, Err}
+use std::result::{Result, Ok, Err, and_then, or_else, unwrap_or}
+
+// Result.and_then/or_else return f's Result value DIRECTLY (unlike `map`, which
+// re-wraps). With the old bare `Result` return + untyped `f: fn`, the payload
+// erased to i64 and AOT silently returned `Err("")` instead of the correct
+// `Ok(..)` (JIT was fine). The combinators are now generic; a CLOSURE arg
+// (untyped fn) leaves the result generic param unbound, so the monomorphized
+// drop glue referenced an undefined `__kryos_drop_<U>` -- now skipped for
+// unresolved-generic placeholder types.
+fn inc_ok(x: i64) -> Result<i64, str> {
+    return Ok(x + 1)
+}
+
+fn recover_ok(e: str) -> Result<i64, str> {
+    return Ok(0)
+}
 
 use std::chan::{new_channel, close, fan_out, send_val, receive, try_receive}
 
@@ -461,6 +476,21 @@ fn main() {
     let sv1 = recv(vch)
     let sv2 = recv(vch)
     expect(sv1 == 42 and sv2 == 45, "actor handler with a struct message arg persists state (42, then 45)")
+
+    // Result.and_then/or_else combinators (was an AOT silent Err miscompile for
+    // named fns, and an AOT drop-glue build-fail for closures).
+    let ck1: Result<i64, str> = Ok(21)
+    let at1: Result<i64, str> = and_then(ck1, inc_ok)
+    expect(unwrap_or(at1, -1) == 22, "Result.and_then named fn returns Ok(22), not Err (AOT)")
+    let ck2: Result<i64, str> = Ok(5)
+    let at2: Result<i64, str> = and_then(ck2, |x| Ok(x * 10))
+    expect(unwrap_or(at2, -1) == 50, "Result.and_then closure returns Ok(50) (no drop-glue build-fail)")
+    let ck3: Result<i64, str> = Err("keep")
+    let at3: Result<i64, str> = and_then(ck3, inc_ok)
+    expect(unwrap_or(at3, -9) == -9, "Result.and_then passes Err through unchanged")
+    let ck4: Result<i64, str> = Err("boom")
+    let oe1: Result<i64, str> = or_else(ck4, recover_ok)
+    expect(unwrap_or(oe1, -1) == 0, "Result.or_else recovers Err to Ok(0)")
 
     println("conformance errors+concurrency: PASS")
 }

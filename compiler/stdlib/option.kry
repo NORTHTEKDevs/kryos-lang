@@ -87,7 +87,11 @@ fn map(opt: Option, f: fn) -> Option {
 
 /// Apply a function that returns an Option to the contained value.
 /// Flattens the result (avoids Option(Option(...))).
-fn and_then(opt: Option, f: fn) -> Option {
+/// GENERIC: a bare `Option` return with an untyped `f: fn` erases the payload
+/// to i64 (gotcha #13); returning f's Option DIRECTLY then corrupted the tag/
+/// payload on AOT (`and_then(Some(21), ..)` returned `None`). Full
+/// parameterization keeps the aggregate typed so it round-trips both backends.
+fn and_then<T, U>(opt: Option<T>, f: fn(T) -> Option<U>) -> Option<U> {
     return match opt {
         Option.Some(v) => f(v),
         Option.None => Option.None,
@@ -95,7 +99,7 @@ fn and_then(opt: Option, f: fn) -> Option {
 }
 
 /// If the option is None, call f to produce a fallback Option.
-fn or_else(opt: Option, f: fn) -> Option {
+fn or_else<T>(opt: Option<T>, f: fn() -> Option<T>) -> Option<T> {
     return match opt {
         Option.Some(v) => Option.Some(v),
         Option.None => f(),

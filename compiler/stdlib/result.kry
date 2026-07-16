@@ -141,7 +141,13 @@ fn map_or_else(r: Result, default_fn: fn, f: fn) -> any {
 }
 
 /// Chain a function that returns a Result. Flattens Result(Result(...)).
-fn and_then(r: Result, f: fn) -> Result {
+// NOTE: `and_then`/`or_else` are GENERIC. A bare `Result` return with an
+// untyped `f: fn` erases the payload to i64 (gotcha #13); when the combinator
+// returns f's Result DIRECTLY (not re-wrapped like `map`), that erasure
+// silently corrupted the enum tag/payload on AOT -> `and_then(Ok(21), ..)`
+// returned `Err("")` (JIT was unaffected). Fully parameterizing `r`, `f`, and
+// the return keeps the aggregate typed so it round-trips on both backends.
+fn and_then<T, U, E>(r: Result<T, E>, f: fn(T) -> Result<U, E>) -> Result<U, E> {
     return match r {
         Result.Ok(v) => f(v),
         Result.Err(e) => Result.Err(e),
@@ -159,7 +165,7 @@ fn map_err(r: Result, f: fn) -> Result {
 }
 
 /// If Err, call f to produce a fallback Result.
-fn or_else(r: Result, f: fn) -> Result {
+fn or_else<T, E, F>(r: Result<T, E>, f: fn(E) -> Result<T, F>) -> Result<T, F> {
     return match r {
         Result.Ok(v) => Result.Ok(v),
         Result.Err(e) => f(e),
