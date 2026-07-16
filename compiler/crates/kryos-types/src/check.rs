@@ -1973,7 +1973,21 @@ impl TypeChecker {
                 // `"{...}"` passed `kryos check` and ran as 0 (backlog #23).
                 for part in parts {
                     if let kryos_ast::StringPart::Expr(e) = part {
-                        let _ = self.infer_expr(e);
+                        let ty = self.infer_expr(e);
+                        // A struct value has no built-in string representation.
+                        // Interpolating one fell through to the i64/pointer path
+                        // and printed the raw pointer on JIT, produced blank
+                        // output / an AOT SEGFAULT on LLVM. Reject it with a
+                        // clear error instead: interpolate a field or call
+                        // `.to_string()` explicitly.
+                        if let Type::Struct { name, .. } = self.engine.resolve(&ty) {
+                            self.error(
+                                format!(
+                                    "cannot interpolate a value of type `{name}` into a string: a struct has no string representation. Interpolate a field (e.g. `{{v.field}}`) or call `.to_string()` explicitly (`{{v.to_string()}}`)."
+                                ),
+                                e.span(),
+                            );
+                        }
                     }
                 }
                 Type::Str

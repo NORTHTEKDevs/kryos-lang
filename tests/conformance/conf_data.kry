@@ -449,5 +449,10 @@ fn main() {
     let bsum = match bp { Pixel { r: r, g: g, b: b } => r + g + b }
     expect(bsum == 15, "single irrefutable struct pattern binds every field")
 
+    // Struct FIELD interpolation works (whole-struct interpolation is a compile
+    // error -- it used to print a raw pointer / segfault on AOT).
+    let ip = Pixel { r: 7, g: 8, b: 9 }
+    expect("r={ip.r} g={ip.g} b={ip.b}" == "r=7 g=8 b=9", "struct field interpolation renders the field values")
+
     println("conformance data: PASS")
 }
