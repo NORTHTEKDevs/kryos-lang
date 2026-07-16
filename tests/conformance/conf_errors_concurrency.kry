@@ -107,6 +107,10 @@ actor Sink {
     }
 }
 
+fn pass_through(s: Sink) -> Sink {
+    return s
+}
+
 actor Bag {
     data: [i64]
     fn fill(self, n: i64) {
@@ -311,6 +315,19 @@ fn main() {
     spawn { let sv = recv(sjobs)  sink.absorb(sv, sdone) }
     send(sjobs, 42)
     expect(recv(sdone) == 42, "actor method called from inside a spawn block delivers")
+
+    // Actor RETURNED from a function: the fn's return-type actor annotation was
+    // erased to i64 at signature registration, so a call-expression receiver
+    // (`pass_through(sink2).absorb(..)`) emitted a bare unmangled symbol -> link
+    // failure. fn_return_actor_types now recovers it, for chained, annotated-let,
+    // and un-annotated-let receivers alike.
+    let s2done = chan()
+    let sink2 = Sink()
+    pass_through(sink2).absorb(11, s2done)
+    expect(recv(s2done) == 11, "actor returned from a fn: chained call dispatches")
+    let held = pass_through(sink2)
+    held.absorb(4, s2done)
+    expect(recv(s2done) == 15, "actor returned from a fn: un-annotated let dispatches")
 
     println("conformance errors+concurrency: PASS")
 }

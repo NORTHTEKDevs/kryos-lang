@@ -165,6 +165,17 @@ pub struct LoweringContext {
     /// unannotated `let col = Collector()` whose type is inferred directly
     /// from the constructor call and never erased).
     local_actor_types: HashMap<u32, String>,
+    /// Functions/methods whose declared RETURN type names an actor:
+    /// fn_name (or `Type__method` for impl methods) -> actor_type_name.
+    /// Captured at signature-registration time (alongside `func_ret_types`),
+    /// BEFORE `resolve_type`'s actor-erasure rule turns the return type into
+    /// a bare `I64` handle. Third facet of the same family as
+    /// `field_actor_types` (an actor recovered through a FIELD) and
+    /// `local_actor_types` (an actor recovered through a typed PARAM/`let`):
+    /// this one recovers it when the method-call RECEIVER is itself a call
+    /// expression (`get_counter(c).bump(..)`) -- consulted by
+    /// `infer_type_name`'s `FnCall` fallback.
+    fn_return_actor_types: HashMap<String, String>,
     /// Top-level constant definitions: const_name -> (MirType, AST expression).
     const_defs: HashMap<String, (MirType, ast::Expr)>,
     /// Top-level mutable globals: name -> (MirType, init expression).
@@ -382,6 +393,7 @@ impl LoweringContext {
             current_actor: None,
             field_actor_types: HashMap::new(),
             local_actor_types: HashMap::new(),
+            fn_return_actor_types: HashMap::new(),
             const_defs: HashMap::new(),
             mutable_globals: HashMap::new(),
             mutable_global_order: Vec::new(),
@@ -1240,6 +1252,22 @@ pub fn lower_module_with_lambda_params(
                     }
                 };
                 ctx.func_ret_types.insert(name.clone(), mir_ret);
+                // If the return type names an actor, `resolve_type` just
+                // erased it to a bare `I64` handle. Record the logical actor
+                // name in `fn_return_actor_types` BEFORE that's lost, so a
+                // method call chained directly on this function's result
+                // (`get_counter(c).bump(..)`) is still recognized as an actor
+                // receiver by `infer_type_name`'s `FnCall` fallback instead of
+                // falling to a plain unmangled call. Skipped for generic
+                // templates (see comment above): the real return registers
+                // per-instantiation at monomorphization time.
+                if generics.is_empty() {
+                    if let Some(ast::TypeExpr::Simple { name: tn, .. }) = ret_ty {
+                        if ctx.actor_defs.contains_key(tn) {
+                            ctx.fn_return_actor_types.insert(name.clone(), tn.clone());
+                        }
+                    }
+                }
 
                 // Store parameter types for dyn Trait coercion. Generic
                 // templates must not resolve here (same reason as the return
@@ -1401,6 +1429,17 @@ pub fn lower_module_with_lambda_params(
                                 Some(ty) => ctx.resolve_type(ty),
                                 None => MirType::Void,
                             };
+                            // Sibling of the free-function registration above:
+                            // recover an actor-named method return before
+                            // `resolve_type` erased it, keyed by the mangled
+                            // `Type__method` name (how a method call resolves
+                            // its callee), so a chained call on an impl
+                            // method's actor return is also recognized.
+                            if let Some(ast::TypeExpr::Simple { name: tn, .. }) = ret_ty {
+                                if ctx.actor_defs.contains_key(tn) {
+                                    ctx.fn_return_actor_types.insert(mangled.clone(), tn.clone());
+                                }
+                            }
                             ctx.func_ret_types.insert(mangled, mir_ret);
                         }
                         // Record the self-param + return TypeExprs so an
@@ -3038,6 +3077,29 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
             // Now allocate the new local (after RHS is evaluated).
             let local = ctx.alloc_local(Some(name.clone()), mir_ty, *mutable);
+
+            // If this `let`'s declared type names an actor, `resolve_type`
+            // (above, for `mir_ty`) just erased it to a bare `I64` handle.
+            // Record the logical actor name in `local_actor_types` before
+            // that's lost -- mirrors the param-loop registration in
+            // `lower_function`, for the "actor returned from a function,
+            // bound via an annotated `let`" case (`let g: Counter =
+            // get_counter(c)`). Without an annotation, fall back to
+            // `fn_return_actor_types` when the initializer is a direct call
+            // to a function with a registered actor return (`let g =
+            // get_counter(c)`) -- same recovery, driven by the callee's
+            // signature instead of this `let`'s own annotation.
+            if let Some(ast::TypeExpr::Simple { name: tn, .. }) = ty {
+                if ctx.actor_defs.contains_key(tn) {
+                    ctx.local_actor_types.insert(local.0, tn.clone());
+                }
+            } else if let Some(ast::Expr::FnCall { callee, .. }) = value {
+                if let ast::Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
+                    if let Some(actor_ty) = ctx.fn_return_actor_types.get(callee_name).cloned() {
+                        ctx.local_actor_types.insert(local.0, actor_ty);
+                    }
+                }
+            }
 
             if let Some((rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
                 if mark_non_owning {
@@ -10043,6 +10105,23 @@ fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String
             if let ast::Expr::Identifier { name, .. } = expr {
                 if let Some(local_id) = find_local_by_name(ctx, name) {
                     if let Some(actor_ty) = ctx.local_actor_types.get(&local_id.0).cloned() {
+                        return Some(actor_ty);
+                    }
+                }
+            }
+            // A method-call receiver that is itself a CALL expression
+            // (`get_counter(c).bump(..)`) whose callee's declared return type
+            // names an actor erases the same way -- the return-type
+            // annotation goes through `resolve_type` at signature-registration
+            // time (see `fn_return_actor_types`), so the FnCall's static
+            // MirType here is a bare `I64` handle, not `Struct(actor)`.
+            // Recover the logical actor name from that registry -- third
+            // facet of the family, sibling of the field/local recoveries
+            // above (this one for a function's RETURN type instead of a
+            // field's or a param/let's declared type).
+            if let ast::Expr::FnCall { callee, .. } = expr {
+                if let ast::Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
+                    if let Some(actor_ty) = ctx.fn_return_actor_types.get(callee_name).cloned() {
                         return Some(actor_ty);
                     }
                 }
