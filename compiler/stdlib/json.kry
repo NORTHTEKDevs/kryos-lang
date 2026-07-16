@@ -492,7 +492,20 @@ fn _escape_string(s: str) -> str {
             found_special = true
         }
         if not found_special {
-            result = result + ch
+            // RFC 8259: control characters U+0000-U+001F that aren't one of the
+            // named escapes above MUST be escaped as \u00XX. The old code passed
+            // them through raw, producing JSON that any conformant parser
+            // rejects ("Invalid control character"). A multibyte UTF-8 byte has
+            // char_code >= 0x80, so this only catches genuine control bytes.
+            let code = char_code(ch)
+            if code < 32 {
+                let hexd = "0123456789abcdef"
+                let hi = code / 16
+                let lo = code % 16
+                result = result + "\\u00" + substr(hexd, hi, hi + 1) + substr(hexd, lo, lo + 1)
+            } else {
+                result = result + ch
+            }
         }
         i = i + 1
     }

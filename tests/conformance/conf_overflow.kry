@@ -16,6 +16,8 @@ use std::fmt::{oct, thousands, duration, float_sci}
 
 use std::math::{atan}
 
+use std::json::{stringify, json_string}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -95,6 +97,12 @@ fn main() {
     expect(at9 < 0.0000001 and at9 > -0.0000001, "atan(0.9) accurate")
     let at2 = atan(parse_float("2.0")) - 1.1071487177940904
     expect(at2 < 0.0000001 and at2 > -0.0000001, "atan(2.0) accurate (reciprocal reduction)")
+
+    // json::stringify must escape control chars U+0000-U+001F as \u00XX (RFC
+    // 8259) -- raw control bytes made the output invalid JSON.
+    let ctrl = char_from(1) + "X" + char_from(31)
+    expect(stringify(json_string(ctrl)) == "\"\\u0001X\\u001f\"", "json escapes control chars as \\u00XX")
+    expect(stringify(json_string("a\tb")) == "\"a\\tb\"", "json named escape (tab) still works")
 
     println("conformance overflow: PASS")
 }
