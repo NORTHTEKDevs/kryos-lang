@@ -1705,11 +1705,20 @@ impl OwnershipAnalyzer {
                 VarInfo {
                     state: OwnershipState::Owned,
                     mutable: false,
+                    // An UNANNOTATED closure param (`|n|`) has an unknown type at
+                    // ownership-analysis time (its type is inferred later, from
+                    // the HOF signature). Defaulting it to non-Copy move-tracked
+                    // it, so using it TWICE in a struct literal (`Pt { x: n, y: n
+                    // * n }`) reported a false E0300 use-of-moved on the second
+                    // field -- blocking valid, idiomatic code. Default to Copy:
+                    // most closure params are scalars, and under the ARC model
+                    // reuse is always safe anyway (E0300 is advisory), so
+                    // suppressing move-tracking here can never be unsound.
                     is_copy: param
                         .ty
                         .as_ref()
                         .map(|t| self.is_type_expr_copy(t))
-                        .unwrap_or(false),
+                        .unwrap_or(true),
                     decl_span: param.span,
                     moved_span: None,
                     moved_fields: HashSet::new(),

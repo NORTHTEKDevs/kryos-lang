@@ -30,6 +30,9 @@ fn make_adder(n: i64) -> fn(i64) -> i64 {
     return |x| x + n
 }
 
+struct Pt2 { x: i64, y: i64 }
+struct Twin { a: str, b: str }
+
 fn main() {
     // Escaping closure capturing a struct, reading a str field and an i64 field.
     let c: Counter = Counter { label: "job", count: 42 }
@@ -48,6 +51,17 @@ fn main() {
     // Non-struct capture (regression -- must still work).
     let add10: fn(i64) -> i64 = make_adder(10)
     expect(add10(5) == 15, "escaping closure captures i64 (non-struct regression)")
+
+    // An UNANNOTATED closure param used TWICE in a struct literal must not draw
+    // a false E0300 use-of-moved on the second field (its type is unknown at
+    // ownership-analysis time; it now defaults to Copy/non-move-tracked, which
+    // is sound under ARC). Covers an i64 param and a str param.
+    let mk_pt = |n| Pt2 { x: n, y: n * n }
+    let p = mk_pt(5)
+    expect(p.x == 5 and p.y == 25, "unannotated closure param reused in a struct literal (i64)")
+    let mk_twin = |s| Twin { a: s, b: s }
+    let tw = mk_twin("hi")
+    expect(tw.a == "hi" and tw.b == "hi", "unannotated closure param reused in a struct literal (str)")
 
     println("conformance closures: PASS")
 }
