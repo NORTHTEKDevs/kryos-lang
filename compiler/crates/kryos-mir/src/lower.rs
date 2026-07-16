@@ -8386,6 +8386,16 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // unaffected -- only the free-function builtin is intercepted.
             if func_name == "to_string" && args.len() == 1 {
                 let aty = infer_expr_type(ctx, &args[0]);
+                // A char is stored as its i64 code point; to_string must produce
+                // the CHARACTER (via char_from), not the numeric code -- the
+                // generic to_string treated it as an integer ('x' -> "120").
+                if matches!(aty, MirType::Char) {
+                    let code = lower_expr_to_operand(ctx, &args[0]);
+                    return RValue::Call {
+                        func: "char_from".into(),
+                        args: vec![code],
+                    };
+                }
                 let placeholder = match &aty {
                     MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
                     MirType::Array(..) => Some("<array>".to_string()),
@@ -9995,6 +10005,20 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         // substitute a safe placeholder so it never derefs an
                         // aggregate as a string.
                         let ety = infer_expr_type(ctx, e);
+                        // A char interpolates as the CHARACTER (via char_from),
+                        // not its numeric code point ('x' -> "x", not "120").
+                        if matches!(ety, MirType::Char) {
+                            let code = lower_expr_to_operand(ctx, e);
+                            let tmp = ctx.alloc_temp(MirType::Str);
+                            ctx.emit(Instruction::Assign {
+                                dest: tmp,
+                                value: RValue::Call {
+                                    func: "char_from".into(),
+                                    args: vec![code],
+                                },
+                            });
+                            return Operand::Local(tmp);
+                        }
                         let placeholder = match &ety {
                             MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
                             MirType::Array(..) => Some("<array>".to_string()),

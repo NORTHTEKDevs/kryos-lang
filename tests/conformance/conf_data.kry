@@ -454,5 +454,12 @@ fn main() {
     let ip = Pixel { r: 7, g: 8, b: 9 }
     expect("r={ip.r} g={ip.g} b={ip.b}" == "r=7 g=8 b=9", "struct field interpolation renders the field values")
 
+    // A char stringifies/interpolates as the CHARACTER, not its numeric code
+    // point (`to_string('x')` was "120"). i64 to_string is unaffected.
+    let ch = 'x'
+    expect(to_string(ch) == "x", "to_string(char) renders the character, not its code")
+    expect("[{ch}{'Z'}]" == "[xZ]", "char interpolation renders characters")
+    expect(to_string(120) == "120", "to_string(i64) still renders the number")
+
     println("conformance data: PASS")
 }
