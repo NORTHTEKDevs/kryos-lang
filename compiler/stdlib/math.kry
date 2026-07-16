@@ -349,16 +349,29 @@ fn acos(x: f64) -> f64 {
     return PI / 2.0 - asin(x)
 }
 
-/// Arctangent via Taylor-like series with range reduction.
+/// Arctangent via a Maclaurin series with TWO-stage range reduction.
 fn atan(x: f64) -> f64 {
-    // Handle large values: atan(x) = PI/2 - atan(1/x) for x > 1
+    // atan is odd: reduce to x >= 0 so the reductions below are symmetric.
+    if x < 0.0 {
+        return -atan(-x)
+    }
+    // Reciprocal identity: atan(x) = PI/2 - atan(1/x) for x > 1 -> |arg| <= 1.
     if x > 1.0 {
         return PI / 2.0 - atan(1.0 / x)
     }
-    if x < -1.0 {
-        return -PI / 2.0 - atan(1.0 / x)
+    // The plain series `x - x^3/3 + x^5/5 - ...` converges FAR too slowly near
+    // |x| = 1: `term = -term*x^2` with x^2 ~= 1 never shrinks, so the 50-term
+    // cap returned a badly unconverged sum (atan(1.0) gave 0.79030 not 0.78540,
+    // 0.63% error). Second reduction with atan(x) = PI/6 + atan((x - t)/(1 +
+    // x*t)), t = tan(PI/6) = 1/sqrt(3): for x in (tan(PI/12), 1] this maps the
+    // argument down to <= tan(PI/12) ~= 0.2679, where x^2 < 0.072 and the series
+    // reaches 1e-16 in ~10 terms.
+    if x > 0.26794919243112270 {
+        let inv_sqrt3 = 0.5773502691896257
+        let reduced = (x - inv_sqrt3) / (1.0 + x * inv_sqrt3)
+        return 0.5235987755982988 + atan(reduced)
     }
-    // Taylor series for |x| <= 1: x - x^3/3 + x^5/5 - ...
+    // Maclaurin series for x <= tan(PI/12).
     let x2 = x * x
     let mut term = x
     let mut sum = x

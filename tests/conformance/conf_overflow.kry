@@ -14,6 +14,8 @@ use std::numfmt::{hex, bin, decimal_padded}
 
 use std::fmt::{oct, thousands, duration, float_sci}
 
+use std::math::{atan}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -82,6 +84,17 @@ fn main() {
     // float_sci must renormalize a mantissa that rounds up to 10.0.
     expect(float_sci(9.99, 1) == "1.0e+1", "float_sci renormalizes 9.99 -> 1.0e+1 (not 10.0e+0)")
     expect(float_sci(1234.5, 2) == "1.23e+3", "float_sci normal value")
+
+    // atan must converge accurately near |x| = 1 (the plain Taylor series gave
+    // 0.63% error at x=1). parse_float forces a runtime arg; tolerant compare
+    // since the AOT const-fold of a libm-named fn can differ ~1 ULP from the
+    // Kryos series for a literal.
+    let at1 = atan(parse_float("1.0")) - 0.7853981633974483
+    expect(at1 < 0.0000001 and at1 > -0.0000001, "atan(1.0) accurate near |x|=1 (was 0.63% off)")
+    let at9 = atan(parse_float("0.9")) - 0.7328151017865066
+    expect(at9 < 0.0000001 and at9 > -0.0000001, "atan(0.9) accurate")
+    let at2 = atan(parse_float("2.0")) - 1.1071487177940904
+    expect(at2 < 0.0000001 and at2 > -0.0000001, "atan(2.0) accurate (reciprocal reduction)")
 
     println("conformance overflow: PASS")
 }
