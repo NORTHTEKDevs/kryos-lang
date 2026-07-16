@@ -5491,6 +5491,114 @@ fn bind_tuple_pattern(
     }
 }
 
+/// Bind/test a struct pattern `Name { field: subpat, .. }` against a pinned
+/// struct local. Mirrors bind_tuple_pattern but addresses fields BY NAME via
+/// RValue::Field. Ident subpatterns bind the field; Literal subpatterns AND a
+/// field-equality test into `acc`; nested Struct/Tuple subpatterns recurse. A
+/// struct has no tag, so an all-ident/wildcard struct pattern is irrefutable
+/// (acc stays None). Struct patterns previously never reached the lowering
+/// (routed to the tagless enum switch path), so field bindings read 0 and
+/// literal-field arms never matched -- a silent both-backend miscompile.
+fn bind_struct_pattern(
+    ctx: &mut LoweringContext,
+    struct_local: LocalId,
+    struct_name: &str,
+    fields: &[(String, ast::Pattern)],
+    acc: &mut Option<Operand>,
+) {
+    for (fname, fpat) in fields {
+        let fty = ctx
+            .struct_defs
+            .get(struct_name)
+            .and_then(|fs| fs.iter().find(|(n, _)| n == fname).map(|(_, t)| t.clone()))
+            .unwrap_or(MirType::I64);
+        // A field declared as a Struct whose name is actually an enum reads
+        // back as an enum value (same remap the enum-payload path uses).
+        let fty = match fty {
+            MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
+            other => other,
+        };
+        match fpat {
+            ast::Pattern::Wildcard { .. } => {}
+            ast::Pattern::Ident { name, mutable, .. } => {
+                let bound = ctx.alloc_local(Some(name.clone()), fty.clone(), *mutable);
+                if !is_copy_type(ctx, &fty) {
+                    ctx.borrowed_locals.insert(bound.0);
+                }
+                ctx.emit(Instruction::Assign {
+                    dest: bound,
+                    value: RValue::Field {
+                        object: Operand::Local(struct_local),
+                        field: fname.clone(),
+                    },
+                });
+            }
+            ast::Pattern::Literal { expr, .. } => {
+                let elem = ctx.alloc_temp(fty.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(struct_local),
+                        field: fname.clone(),
+                    },
+                });
+                let lit = lower_expr_to_operand(ctx, expr);
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(elem),
+                        right: lit,
+                    },
+                });
+                and_into_acc(ctx, acc, Operand::Local(cmp));
+            }
+            ast::Pattern::Struct {
+                name: sub_name,
+                fields: sub_fields,
+                ..
+            } => {
+                let elem = ctx.alloc_temp(fty.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(struct_local),
+                        field: fname.clone(),
+                    },
+                });
+                let resolved = if !sub_name.is_empty() {
+                    sub_name.clone()
+                } else if let MirType::Struct(n) = &fty {
+                    n.clone()
+                } else {
+                    String::new()
+                };
+                bind_struct_pattern(ctx, elem, &resolved, sub_fields, acc);
+            }
+            ast::Pattern::Tuple { elements, .. } => {
+                let elem = ctx.alloc_temp(fty.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: elem,
+                    value: RValue::Field {
+                        object: Operand::Local(struct_local),
+                        field: fname.clone(),
+                    },
+                });
+                let sub_elem_tys = match &fty {
+                    MirType::Tuple(e) => e.clone(),
+                    _ => Vec::new(),
+                };
+                bind_tuple_pattern(ctx, elem, elements, &sub_elem_tys, acc);
+            }
+            // Nested enum / or-pattern inside a struct field is rare; treat
+            // defensively as always-match (bind nothing) rather than emit a
+            // wrong test.
+            _ => {}
+        }
+    }
+}
+
 /// Sequential lowering for scalar matches with guards and/or binding arms:
 /// each arm becomes test -> (guard ->) body, falling through to the next
 /// arm's test. Non-exhaustive matches fall through to a zero result, the
@@ -5613,6 +5721,26 @@ fn lower_match_sequential(
                     .unwrap_or_default();
                 let mut acc: Option<Operand> = None;
                 bind_tuple_pattern(ctx, subj_local, elements, &elem_tys, &mut acc);
+                acc
+            }
+            ast::Pattern::Struct { name, fields, .. } => {
+                // Struct pattern in the ordered path: extract each named field,
+                // bind idents, AND together literal-field equality tests. An
+                // all-ident/wildcard struct pattern is irrefutable (acc None).
+                let sname = if !name.is_empty() {
+                    name.clone()
+                } else {
+                    ctx.locals
+                        .iter()
+                        .find(|l| l.id == subj_local)
+                        .and_then(|l| match &l.ty {
+                            MirType::Struct(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default()
+                };
+                let mut acc: Option<Operand> = None;
+                bind_struct_pattern(ctx, subj_local, &sname, fields, &mut acc);
                 acc
             }
             // Wildcard and anything else: always matches, binds nothing.
@@ -6048,6 +6176,20 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         // routed every `(a,b)` to the first arm's block, so a failed guard fell
         // to the default instead of the next guarded arm (silent wrong output).
         if needs_sequential && !is_enum_or_struct && tuple_seq_safe {
+            return lower_match_sequential(ctx, subj_op, subj_ty_early, arms, result_local, merge_bb);
+        }
+        // A STRUCT match has no tag to switch on. Route it to the sequential
+        // path, which extracts and binds/tests struct fields. Struct patterns
+        // were previously forced onto the enum switch path (subj_enum_name=None
+        // -> degenerate switch), so field bindings read 0 and literal-field arms
+        // never matched -- a silent both-backend miscompile of a core feature.
+        let has_struct_arm = arms
+            .iter()
+            .any(|a| matches!(&a.pattern, ast::Pattern::Struct { .. }));
+        let has_enum_arm = arms
+            .iter()
+            .any(|a| matches!(&a.pattern, ast::Pattern::Enum { .. }));
+        if has_struct_arm && !has_enum_arm && !matches!(subj_ty_early, MirType::Enum(_)) {
             return lower_match_sequential(ctx, subj_op, subj_ty_early, arms, result_local, merge_bb);
         }
     }

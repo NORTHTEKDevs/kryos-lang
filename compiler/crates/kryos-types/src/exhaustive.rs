@@ -51,8 +51,33 @@ pub fn check_exhaustive(
             if has_wildcard_or_ident(patterns) {
                 return vec![];
             }
+            // An irrefutable struct pattern (`Point { x, y }` -- every field
+            // bound by wildcard/ident, no literal or nested-refutable field)
+            // covers ALL values of a struct type: a struct has a single shape.
+            // Without this a valid exhaustive `match p { Point { x, y } => .. }`
+            // drew a spurious non-exhaustive warning.
+            if patterns.iter().any(|p| is_irrefutable_struct_pattern(p)) {
+                return vec![];
+            }
             check_requires_wildcard(subject_type_name, span)
         }
+    }
+}
+
+/// A struct pattern whose every field sub-pattern is itself irrefutable
+/// (wildcard/ident, or a nested all-irrefutable struct/tuple). Such a pattern
+/// matches every value of the struct type.
+fn is_irrefutable_struct_pattern(pat: &Pattern) -> bool {
+    matches!(pat, Pattern::Struct { .. }) && is_irrefutable_subpat(pat)
+}
+
+fn is_irrefutable_subpat(pat: &Pattern) -> bool {
+    match pat {
+        Pattern::Wildcard { .. } | Pattern::Ident { .. } => true,
+        Pattern::Struct { fields, .. } => fields.iter().all(|(_, s)| is_irrefutable_subpat(s)),
+        Pattern::Tuple { elements, .. } => elements.iter().all(is_irrefutable_subpat),
+        // Literal / enum-variant / or-patterns can fail to match.
+        _ => false,
     }
 }
 

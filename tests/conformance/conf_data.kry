@@ -204,6 +204,24 @@ fn quadrant(x: i64, y: i64) -> str {
     }
 }
 
+struct Pixel { r: i64, g: i64, b: i64 }
+
+// Struct patterns in `match`: literal-field discrimination, field binding, and
+// a single irrefutable arm. Struct patterns were previously routed to the
+// tagless enum switch path (a struct has no variant tag), so the switch
+// degenerated -- field bindings read 0 and literal-field arms never matched
+// (silent miscompile on BOTH backends). Now lowered via the sequential path
+// (bind_struct_pattern): each named field is extracted, idents bind, literals
+// AND an equality test.
+fn pixel_kind(p: Pixel) -> str {
+    return match p {
+        Pixel { r: 0, g: 0, b: 0 } => "black",
+        Pixel { r: 255, g: 255, b: 255 } => "white",
+        Pixel { r: r, g: 0, b: 0 } => "red:" + to_string(r),
+        Pixel { r: r, g: g, b: b } => "mix:" + to_string(r + g + b),
+    }
+}
+
 fn main() {
     // Structs + methods + field mutation.
     let mut p = Point { x: 3.0, y: 0.0 - 4.0 }
@@ -420,6 +438,16 @@ fn main() {
     }
     expect(nests[0].leaf.s == "leaf-0" and nests[5].leaf.s == "leaf-5", "nested-struct-field array read")
     expect(nests[3].n == 3, "nested-struct outer field")
+
+    // Struct patterns in match (was a silent 0-binding / fallthrough miscompile).
+    expect(pixel_kind(Pixel { r: 0, g: 0, b: 0 }) == "black", "struct pattern all-zero literal fields")
+    expect(pixel_kind(Pixel { r: 255, g: 255, b: 255 }) == "white", "struct pattern all-max literal fields")
+    expect(pixel_kind(Pixel { r: 9, g: 0, b: 0 }) == "red:9", "struct pattern mixed literal + binding")
+    expect(pixel_kind(Pixel { r: 1, g: 2, b: 3 }) == "mix:6", "struct pattern all-binding arm reads real fields")
+    // A single irrefutable struct pattern is exhaustive (no wildcard needed).
+    let bp = Pixel { r: 4, g: 5, b: 6 }
+    let bsum = match bp { Pixel { r: r, g: g, b: b } => r + g + b }
+    expect(bsum == 15, "single irrefutable struct pattern binds every field")
 
     println("conformance data: PASS")
 }
