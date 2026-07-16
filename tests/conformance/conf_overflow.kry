@@ -18,6 +18,8 @@ use std::math::{atan}
 
 use std::json::{stringify, json_string}
 
+use std::semver::{parse, compare}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -103,6 +105,14 @@ fn main() {
     let ctrl = char_from(1) + "X" + char_from(31)
     expect(stringify(json_string(ctrl)) == "\"\\u0001X\\u001f\"", "json escapes control chars as \\u00XX")
     expect(stringify(json_string("a\tb")) == "\"a\\tb\"", "json named escape (tab) still works")
+
+    // semver::compare must order PRERELEASE identifiers (semver.org 11.4), not
+    // just the has-prerelease flag (which made all distinct prereleases equal).
+    expect(compare(parse("1.0.0-alpha"), parse("1.0.0-beta")) == -1, "semver alpha < beta")
+    expect(compare(parse("1.0.0-alpha"), parse("1.0.0-alpha.1")) == -1, "semver fewer prerelease identifiers rank lower")
+    expect(compare(parse("1.0.0-alpha.1"), parse("1.0.0-alpha.beta")) == -1, "semver numeric identifier ranks below alphanumeric")
+    expect(compare(parse("1.0.0-rc.1"), parse("1.0.0")) == -1, "semver prerelease < release")
+    expect(compare(parse("1.0.0-alpha.1"), parse("1.0.0-alpha.10")) == -1, "semver numeric identifiers compare numerically (1 < 10)")
 
     println("conformance overflow: PASS")
 }

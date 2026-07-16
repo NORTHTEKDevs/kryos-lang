@@ -8,6 +8,7 @@ struct Version {
     minor: i64,
     patch: i64,
     has_pre: bool,
+    pre: str,
 }
 
 /// Parse a version string. Returns Version with major=-1 on malformed input.
@@ -28,15 +29,16 @@ fn parse(s: str) -> Version {
     let dash = find_char(text, "-")
     let has_pre = dash >= 0
     let core = if has_pre { substr(text, 0, dash) } else { text }
+    let pre = if has_pre { substr(text, dash + 1, len(text)) } else { "" }
 
     let dot1 = find_char(core, ".")
     if dot1 < 0 {
-        return Version { major: -1, minor: 0, patch: 0, has_pre: false }
+        return Version { major: -1, minor: 0, patch: 0, has_pre: false, pre: "" }
     }
     let rest = substr(core, dot1 + 1, len(core))
     let dot2 = find_char(rest, ".")
     if dot2 < 0 {
-        return Version { major: -1, minor: 0, patch: 0, has_pre: false }
+        return Version { major: -1, minor: 0, patch: 0, has_pre: false, pre: "" }
     }
     let maj_s = substr(core, 0, dot1)
     let min_s = substr(rest, 0, dot2)
@@ -45,13 +47,14 @@ fn parse(s: str) -> Version {
     // "3.4", which parse_int silently truncated to 0). A valid core has
     // exactly three numeric segments.
     if not is_all_digits(maj_s) or not is_all_digits(min_s) or not is_all_digits(pat_s) {
-        return Version { major: -1, minor: 0, patch: 0, has_pre: false }
+        return Version { major: -1, minor: 0, patch: 0, has_pre: false, pre: "" }
     }
     return Version {
         major: parse_int(maj_s),
         minor: parse_int(min_s),
         patch: parse_int(pat_s),
         has_pre: has_pre,
+        pre: pre,
     }
 }
 
@@ -77,10 +80,74 @@ fn compare(a: Version, b: Version) -> i64 {
     if a.major != b.major { return cmp_i64(a.major, b.major) }
     if a.minor != b.minor { return cmp_i64(a.minor, b.minor) }
     if a.patch != b.patch { return cmp_i64(a.patch, b.patch) }
-    // Equal triple. Prerelease sorts before release.
+    // Equal triple. A release (no prerelease) has HIGHER precedence than a
+    // prerelease of the same triple (semver.org rule 11.3).
     if a.has_pre && !b.has_pre { return -1 }
     if !a.has_pre && b.has_pre { return 1 }
+    // Both prereleases: compare identifier-by-identifier. Previously only the
+    // has_pre flag was checked, so ALL distinct prereleases of the same triple
+    // compared EQUAL (1.0.0-alpha == 1.0.0-beta), violating semver precedence.
+    if a.has_pre && b.has_pre {
+        return compare_prerelease(a.pre, b.pre)
+    }
     return 0
+}
+
+/// Compare two dot-separated prerelease strings per semver.org rule 11.4:
+/// identifiers left-to-right; numeric compared numerically and ranked BELOW
+/// alphanumeric; alphanumeric compared by ASCII; a larger set of identifiers
+/// outranks a smaller one when all preceding identifiers are equal.
+fn compare_prerelease(a: str, b: str) -> i64 {
+    let alen = len(a)
+    let blen = len(b)
+    let mut i: i64 = 0
+    let mut j: i64 = 0
+    while i < alen or j < blen {
+        // One prerelease ran out of identifiers -> it has lower precedence.
+        if i >= alen { return -1 }
+        if j >= blen { return 1 }
+        let a_end = _next_dot(a, i)
+        let b_end = _next_dot(b, j)
+        let c = _cmp_identifier(substr(a, i, a_end), substr(b, j, b_end))
+        if c != 0 { return c }
+        i = a_end + 1
+        j = b_end + 1
+    }
+    return 0
+}
+
+/// Index of the next '.' at or after `from`, or len(s) if none.
+fn _next_dot(s: str, from: i64) -> i64 {
+    let n = len(s)
+    let mut k = from
+    while k < n {
+        if substr(s, k, k + 1) == "." { return k }
+        k = k + 1
+    }
+    return n
+}
+
+fn _cmp_identifier(a: str, b: str) -> i64 {
+    let a_num = is_all_digits(a)
+    let b_num = is_all_digits(b)
+    if a_num && b_num { return cmp_i64(parse_int(a), parse_int(b)) }
+    // A numeric identifier ranks below an alphanumeric one.
+    if a_num && !b_num { return -1 }
+    if !a_num && b_num { return 1 }
+    return _cmp_ascii(a, b)
+}
+
+fn _cmp_ascii(a: str, b: str) -> i64 {
+    let alen = len(a)
+    let blen = len(b)
+    let mut i: i64 = 0
+    while i < alen && i < blen {
+        let ca = char_code(substr(a, i, i + 1))
+        let cb = char_code(substr(b, i, i + 1))
+        if ca != cb { return cmp_i64(ca, cb) }
+        i = i + 1
+    }
+    return cmp_i64(alen, blen)
 }
 
 fn cmp_i64(a: i64, b: i64) -> i64 {
