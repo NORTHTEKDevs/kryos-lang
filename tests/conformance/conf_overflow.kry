@@ -20,6 +20,8 @@ use std::json::{stringify, json_string}
 
 use std::semver::{parse, compare}
 
+use std::http::{parse_url, Url}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -131,6 +133,15 @@ fn main() {
     expect(base64_encode("Man") == "TWFu", "base64_encode ASCII (standard)")
     expect(base64_decode("aGk=") == "hi", "base64_decode ASCII")
     expect(base64_encode(base64_decode("AAH//n+A")) == "AAH//n+A", "base64 round-trips binary (high bytes)")
+
+    // parse_url must handle an IPv6 bracketed host (which contains colons) --
+    // the old first-colon split fed garbage to parse_int and PANICKED.
+    let u4 = parse_url("http://example.com:8080/path")
+    expect(u4.host == "example.com" and u4.port == 8080, "parse_url normal host:port")
+    let u6 = parse_url("http://[::1]:8080/path")
+    expect(u6.host == "::1" and u6.port == 8080, "parse_url IPv6 bracketed host + port (was a panic)")
+    let u6b = parse_url("https://[fe80::1]/api")
+    expect(u6b.host == "fe80::1" and u6b.port == 443, "parse_url IPv6 host, default https port")
 
     println("conformance overflow: PASS")
 }

@@ -62,15 +62,30 @@ fn parse_url(raw: str) -> Url {
         rest = _substring(rest, 0, path_idx)
     }
 
-    // Extract host and port
+    // Extract host and port. An IPv6 literal host is bracketed (`[::1]`) and
+    // itself contains colons, so the port separator is the colon AFTER the
+    // closing `]`, not the first colon. The old `_find(rest, ":")` split on the
+    // colon inside `::1`, feeding garbage ("`:1]:8080`") to parse_int, which
+    // PANICS (uncatchable) -> any IPv6-host URL hard-crashed the process.
     let mut host = rest
     let mut port = 80
     if scheme == "https" { port = 443 }
-    let colon_idx = _find(rest, ":")
-    if colon_idx >= 0 {
-        host = _substring(rest, 0, colon_idx)
-        let port_str = _substring(rest, colon_idx + 1, len(rest))
-        port = parse_int(port_str)
+    if len(rest) > 0 and _substring(rest, 0, 1) == "[" {
+        let close = _find(rest, "]")
+        if close >= 0 {
+            host = _substring(rest, 1, close)
+            let after = _substring(rest, close + 1, len(rest))
+            if len(after) > 1 and _substring(after, 0, 1) == ":" {
+                port = parse_int(_substring(after, 1, len(after)))
+            }
+        }
+    } else {
+        let colon_idx = _find(rest, ":")
+        if colon_idx >= 0 {
+            host = _substring(rest, 0, colon_idx)
+            let port_str = _substring(rest, colon_idx + 1, len(rest))
+            port = parse_int(port_str)
+        }
     }
 
     return Url {
