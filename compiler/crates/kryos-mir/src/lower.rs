@@ -3813,6 +3813,40 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     right: rhs,
                                 },
                             });
+                        } else {
+                            // Compound assignment to a NON-identifier lvalue
+                            // (`a.field += n`, `arr[i] += n`, `*p += n`): the arm
+                            // above matched ONLY Identifier targets, so a field /
+                            // index / deref compound-assign fell through and did
+                            // NOTHING -- a silent no-op on both backends. Desugar
+                            // `target OP= value` into `target = target OP value`
+                            // and re-lower as a plain assign, which already
+                            // handles FieldAccess (lower_nested_field_assign),
+                            // Index (kryos_array_set / map_set), and Deref with
+                            // full ARC bookkeeping. (A side-effecting index
+                            // sub-expression is evaluated twice, matching the
+                            // rarity vs. the previous "does nothing" behavior.)
+                            let bin_op = match op {
+                                ast::AssignOp::AddAssign => ast::BinOp::Add,
+                                ast::AssignOp::SubAssign => ast::BinOp::Sub,
+                                ast::AssignOp::MulAssign => ast::BinOp::Mul,
+                                ast::AssignOp::DivAssign => ast::BinOp::Div,
+                                ast::AssignOp::Assign => unreachable!(),
+                            };
+                            let sp = target.span();
+                            let new_value = ast::Expr::BinaryOp {
+                                op: bin_op,
+                                left: Box::new(target.clone()),
+                                right: Box::new(value.clone()),
+                                span: sp,
+                            };
+                            let synthetic = ast::Stmt::Assign {
+                                target: target.clone(),
+                                op: ast::AssignOp::Assign,
+                                value: new_value,
+                                span: sp,
+                            };
+                            lower_stmt_inner(ctx, &synthetic);
                         }
                     }
                 }
