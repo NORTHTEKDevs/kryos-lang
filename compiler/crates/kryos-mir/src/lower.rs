@@ -5832,6 +5832,23 @@ fn lower_match_sequential(
 
         // 3. Arm body.
         let body_val = lower_expr_to_operand(ctx, &arm.body);
+        // If the arm body MOVES a non-copy local into the result (e.g. a block
+        // tail `{ let b = "x"  b }`), mark the source consumed so scope cleanup
+        // doesn't double-drop the buffer the result now owns. Mirrors the
+        // switch-path arm handling in `lower_match`; without it, once the result
+        // is correctly str-typed both the tail local and the result free the
+        // same pointer (Pass-18 latent double-free behind the type bug).
+        if let Operand::Local(src) = &body_val {
+            let src_ty = ctx
+                .locals
+                .iter()
+                .find(|l| l.id == *src)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            if !is_copy_type(ctx, &src_ty) {
+                ctx.dropped_locals.insert(src.0);
+            }
+        }
         ctx.emit(Instruction::Assign {
             dest: result_local,
             value: RValue::Use(body_val),
@@ -7149,7 +7166,59 @@ fn is_copy_type(ctx: &LoweringContext, ty: &MirType) -> bool {
 /// Infer the MIR type of the value produced by a block when used as a value
 /// (the type of its tail expression). Returns `None` when the block does not
 /// produce a value (empty, or last stmt is not an expression).
+/// If a block's tail is a bare identifier bound by an earlier `let` in the
+/// SAME block, resolve its type from that binding. Needed because
+/// `infer_match_result_type` / `infer_branch_value_type` run BEFORE the block
+/// is lowered, so the block-local isn't in `ctx.locals` yet and a bare-identifier
+/// tail (`{ let b = "x"  b }`) would fall through to `infer_expr_type`'s I64
+/// default -- mis-typing a str/heap match/if result, which then printed the
+/// value's raw pointer as an integer (Pass-18 critical). Returns None when the
+/// tail isn't such an identifier, so the caller keeps its existing inference.
+fn block_tail_let_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
+    let last = block.stmts.last()?;
+    let tail_name = match last {
+        ast::Stmt::Expr {
+            expr: ast::Expr::Identifier { name, .. },
+            ..
+        } => name.as_str(),
+        _ => return None,
+    };
+    // Build a name -> type overlay from this block's own `let` bindings, in
+    // order, so a chained tail (`let a = "x"  let b = a  b`) still resolves.
+    let mut local_types: HashMap<&str, MirType> = HashMap::new();
+    for st in &block.stmts[..block.stmts.len() - 1] {
+        if let ast::Stmt::Let {
+            name,
+            ty,
+            value,
+            pattern: None,
+            ..
+        } = st
+        {
+            let t = match (ty, value) {
+                (Some(te), _) => lower_type_expr(te),
+                (None, Some(v)) => {
+                    if let ast::Expr::Identifier { name: vn, .. } = v {
+                        match local_types.get(vn.as_str()) {
+                            Some(t) => t.clone(),
+                            None => infer_expr_type(ctx, v),
+                        }
+                    } else {
+                        infer_expr_type(ctx, v)
+                    }
+                }
+                (None, None) => continue,
+            };
+            local_types.insert(name.as_str(), t);
+        }
+    }
+    local_types.get(tail_name).cloned()
+}
+
 fn infer_branch_value_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
+    if let Some(t) = block_tail_let_type(ctx, block) {
+        return Some(t);
+    }
     let last = block.stmts.last()?;
     match last {
         ast::Stmt::Expr { expr, .. } => Some(infer_expr_type(ctx, expr)),
@@ -7842,6 +7911,12 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             // the Void catch-all typed `let x = { 40 + 2 }` (and the
             // `unsafe { ... }` form) as a void slot -- a `store void` codegen
             // error on AOT.
+            // A bare-identifier tail bound by an earlier `let` in this block
+            // resolves via its binding (block-locals aren't in `ctx.locals`
+            // during pre-lowering inference).
+            if let Some(t) = block_tail_let_type(ctx, block) {
+                return t;
+            }
             match block.stmts.last() {
                 Some(ast::Stmt::Expr { expr, .. }) => infer_expr_type(ctx, expr),
                 // A trailing `if ... else ...` is the block's tail value.

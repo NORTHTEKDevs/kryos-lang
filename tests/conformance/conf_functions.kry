@@ -34,6 +34,20 @@ fn all_block_match(tag: i64) -> i64 {
     }
 }
 
+// A LET-bound match expression whose block arms end in a bare-identifier tail
+// bound by an intra-arm `let` must infer the tail's REAL type (str), not the
+// I64 default -- else the heap value's raw pointer was printed as an integer
+// (Pass-18 both-backend miscompile). Also exercises the moved-tail drop-
+// suppression: without it the str is freed twice once correctly typed.
+fn str_block_match(n: i64) -> str {
+    let label = match n {
+        0 => { let a = "zero"  a }
+        1 => { let b = "one"  b }
+        x => { let c = "many"  c }
+    }
+    return label
+}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -123,6 +137,11 @@ fn main() {
     // expression's type, not void (a block arm was misclassified as divergent).
     expect(all_block_match(1) == 22, "all-block match arms infer tail value (not void)")
     expect(all_block_match(0) == 11 and all_block_match(9) == 99, "all-block match arms across variants")
+    // A LET-bound str match whose block arms end in an intra-arm let-bound
+    // identifier must infer str (not i64) so the value isn't a raw pointer.
+    expect(str_block_match(0) == "zero", "let-bound str block-match arm infers str tail (arm 0)")
+    expect(str_block_match(1) == "one", "let-bound str block-match arm infers str tail (arm 1)")
+    expect(str_block_match(7) == "many", "let-bound str block-match arm infers str tail (default arm)")
     // An if/else whose OTHER branch diverges (throw/return) types as the live
     // branch, not void. A divergent branch contributes no type to unification.
     expect(classify_pos(5) == "pos", "if with a throw branch types as the value branch")
