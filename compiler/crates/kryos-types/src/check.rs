@@ -1166,6 +1166,11 @@ impl TypeChecker {
                         // global function (which would shadow same-named
                         // builtins inside the body).
                         self.env.push_scope();
+                        // Fallback binding: the bare (non-generic) impl target
+                        // type. For a generic impl this is a placeholder --
+                        // it's overwritten below from the method's own
+                        // signature, which carries the correct generic
+                        // parameterization (e.g. `Box<T>`, not bare `Box`).
                         self.env.define_var("self".to_string(), ty.clone());
 
                         // Bind generics so param/return types resolve.
@@ -1174,15 +1179,24 @@ impl TypeChecker {
                             self.env.define_var(gp.name.clone(), tv);
                         }
 
-                        // Bind non-self params using the impl method's
-                        // recorded signature when available (preserves the
-                        // exact types used elsewhere), otherwise resolve
+                        // Bind params (including `self`) using the impl
+                        // method's recorded signature when available
+                        // (preserves the exact types used elsewhere,
+                        // including `self`'s generic args), otherwise resolve
                         // them directly from the AST.
+                        //
+                        // `self` MUST be rebound here too, not skipped: the
+                        // signature's `self` entry was resolved in
+                        // register_decl while the impl's `<T>` scope was
+                        // active (see the FunctionSig build above), so it
+                        // carries `Box<T>` with the SAME generic var id as
+                        // `sig.ret`. The fallback binding above has no
+                        // generics at all (`Box`), so a bare `return self`
+                        // failed to unify against a declared `-> Box<T>`
+                        // return -- self's generic parameterization was
+                        // silently dropped.
                         if let Some(sig) = self.env.lookup_method(target, mname).cloned() {
                             for (pname, pty) in &sig.params {
-                                if pname == "self" {
-                                    continue;
-                                }
                                 self.env.define_var(pname.clone(), pty.clone());
                             }
                             let prev_ret = self.current_return_type.take();

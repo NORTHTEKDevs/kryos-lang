@@ -139,6 +139,22 @@ impl<T> Nest<T> {
     fn get(self: Nest<T>) -> T {
         return self.inner
     }
+    // Returns `self`. The impl-method body-checker bound `self` to a BARE
+    // `Nest` (empty generics) then explicitly skipped `self` in the loop that
+    // rebinds params from the real signature -- so the correctly-parameterized
+    // `Nest<T>` was computed and thrown away, and `return self` failed to
+    // type-check (`declared to return Nest<?T>, body evaluates to Nest`). Now
+    // `self` is rebound like every other param and keeps its `<T>`.
+    fn identity(self: Nest<T>) -> Nest<T> {
+        return self
+    }
+    // Early-return `self` (builder-pattern shape) vs a reconstructed branch.
+    fn keep(self: Nest<T>, cond: bool) -> Nest<T> {
+        if cond {
+            return self
+        }
+        return Nest { inner: self.inner }
+    }
 }
 
 fn main() {
@@ -182,6 +198,15 @@ fn main() {
     let sw = pr.swap()
     expect(sw.get_first() == 2.5, "swapped generic method f64 return compare")
     expect(sw.get_first() > 2.4, "swapped generic method f64 ordering")
+
+    // A generic impl method returning `self` must keep its parameterization at
+    // every instantiation (i64 and str), and via an early `return self`.
+    let idn: Nest<i64> = Nest { inner: 41 }
+    expect(idn.identity().get() == 41, "generic impl return self (i64)")
+    let ids: Nest<str> = Nest { inner: "keep" }
+    expect(ids.identity().get() == "keep", "generic impl return self (str)")
+    expect(idn.keep(true).get() == 41, "generic impl early-return self")
+    expect(ids.keep(false).get() == "keep", "generic impl reconstruct-self branch")
 
     // Un-annotated chained generic-method calls (gotcha #17).
     let n2: Nest<Nest<i64>> = Nest { inner: Nest { inner: 99 } }
