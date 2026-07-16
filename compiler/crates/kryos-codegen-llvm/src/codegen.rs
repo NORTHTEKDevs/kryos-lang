@@ -3813,6 +3813,33 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  call void @kryos_arc_retain(ptr {val})"));
                             (val, true)
                         }
+                        Some(
+                            t @ (MirType::Struct(_) | MirType::Tuple(_) | MirType::Enum(_)),
+                        ) => {
+                            // Aggregate message argument: box on the heap and
+                            // send the pointer as i64 (the mailbox carries i64
+                            // slots; the handler's erased-i64 param reads fields
+                            // by inttoptr'ing the slot, same as JIT where every
+                            // aggregate is already a pointer). Without this,
+                            // `kryos_actor_send_i64(i64, i64 %Struct)` passed a
+                            // first-class aggregate where an i64 was expected ->
+                            // AOT build fail (`%Point ... but expected i64`).
+                            let agg = self.sig_ty_to_llvm(t);
+                            let size_ptr = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
+                            ));
+                            let size_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                            ));
+                            let buf = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                            ));
+                            self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                            (buf, true)
+                        }
                         _ => (val, false),
                     };
                     let send_i64 = if is_ptr {
@@ -4349,6 +4376,17 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  %_{} = load {agg}, ptr {buf}", dest.0));
             }
         } else if dest_ty == "void" {
+            self.emit_line(&format!("  call void @{fname}({arg_list})"));
+        } else if self
+            .func_ret_types
+            .get(fname)
+            .is_some_and(|t| t == "void")
+        {
+            // The CALLEE returns void but the call site bound a (non-void) dest
+            // -- e.g. an actor dispatch assigns every handler call to a temp,
+            // and a void handler (`fn show(p: Point)`) taking an aggregate arg
+            // reached this path. Naming a void call (`%t = call void @f(..)`) is
+            // invalid IR. Emit the void call unnamed; the dest is unused.
             self.emit_line(&format!("  call void @{fname}({arg_list})"));
         } else if let Some(callee_ret_ty) = self.needs_return_unbox(fname, dest_ty) {
             // The callee's actual `define` returns a narrow erased scalar

@@ -117,6 +117,21 @@ fn pass_through(s: Sink) -> Sink {
     return s
 }
 
+// An actor handler taking an aggregate (multi-field STRUCT) message argument.
+// The mailbox carries i64 slots, so the struct must be BOXED on send (it was
+// passed as a first-class `%Struct` where an i64 was expected -> AOT build
+// fail) and reconstructed byval in the handler; the void handler bound to a
+// dispatch temp also must not name its void call. JIT always boxed aggregates
+// (Cranelift), so this was an AOT-only build failure -- now a parity fix.
+struct Vec2 { a: i64, b: i64 }
+actor Summer2 {
+    total: i64
+    fn addv(self, v: Vec2, reply: i64) {
+        self.total = self.total + v.a + v.b
+        send(reply, self.total)
+    }
+}
+
 actor Bag {
     data: [i64]
     fn fill(self, n: i64) {
@@ -436,6 +451,16 @@ fn main() {
     let held = pass_through(sink2)
     held.absorb(4, s2done)
     expect(recv(s2done) == 15, "actor returned from a fn: un-annotated let dispatches")
+
+    // Actor handler with a multi-field struct message argument (boxed on send,
+    // reconstructed byval in the handler) across two messages, replying totals.
+    let vch = chan()
+    let summer = Summer2()
+    summer.addv(Vec2 { a: 10, b: 32 }, vch)
+    summer.addv(Vec2 { a: 1, b: 2 }, vch)
+    let sv1 = recv(vch)
+    let sv2 = recv(vch)
+    expect(sv1 == 42 and sv2 == 45, "actor handler with a struct message arg persists state (42, then 45)")
 
     println("conformance errors+concurrency: PASS")
 }
