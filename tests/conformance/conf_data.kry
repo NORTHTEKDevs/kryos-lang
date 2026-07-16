@@ -280,6 +280,16 @@ fn main() {
     let (n, w) = pair
     expect(n == 1 and w == "one", "tuple destructure")
 
+    // Tuple field ASSIGNMENT (`t.0 = v`): tuples are a KryosArray at runtime;
+    // the JIT StoreField path didn't recognize Tuple and silently discarded the
+    // write (offset-0 fallback) while AOT was correct -- a JIT/AOT divergence.
+    let mut tup = (1, "a", 2.5)
+    tup.0 = 99
+    tup.1 = "z"
+    tup.2 = 9.75
+    let (ta, tb, tc) = tup
+    expect(ta == 99 and tb == "z" and tc == 9.75, "tuple field assignment persists (JIT+AOT)")
+
     // Match guards and wildcard.
     let v = 15
     let mut kind = ""

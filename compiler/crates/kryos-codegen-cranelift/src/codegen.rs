@@ -3060,6 +3060,40 @@ fn translate_instruction<M: Module>(
             let ptr = translate_operand(object, builder, translator, module)?;
             let val = translate_operand(value, builder, translator, module)?;
 
+            // Tuple field assignment (`t.0 = v`): tuples are a KryosArray at
+            // runtime (see RValue::Tuple and the tuple field-READ path), so the
+            // write must go through kryos_array_set by numeric index. The
+            // struct-layout path below doesn't recognize MirType::Tuple and fell
+            // to the offset-0 fallback, silently discarding the write on JIT
+            // (AOT was correct) -- a real JIT/AOT divergence on `let mut t`.
+            let tuple_idx = match object {
+                Operand::Local(id) => translator
+                    .mir_func
+                    .locals
+                    .iter()
+                    .find(|l| l.id == *id)
+                    .and_then(|l| match &l.ty {
+                        MirType::Tuple(_) => field.parse::<i64>().ok(),
+                        _ => None,
+                    }),
+                _ => None,
+            };
+            if let Some(idx) = tuple_idx {
+                let val_ty = builder.func.dfg.value_type(val);
+                let val_i64 = if is_float_type(val_ty) {
+                    builder.ins().bitcast(types::I64, MemFlags::new(), val)
+                } else if val_ty.is_int() && val_ty.bits() < 64 {
+                    builder.ins().sextend(types::I64, val)
+                } else {
+                    val
+                };
+                let idx_val = builder.ins().iconst(types::I64, idx);
+                let set_ref =
+                    ensure_func_ref_with_args("kryos_array_set", builder, translator, module, 3)?;
+                builder.ins().call(set_ref, &[ptr, idx_val, val_i64]);
+                return Ok(());
+            }
+
             // Determine the struct type from the object operand.
             // Also handle Ptr(Struct(name)) — a heap box pointer to a struct
             // (e.g. an array element returned by kryos_array_get).
