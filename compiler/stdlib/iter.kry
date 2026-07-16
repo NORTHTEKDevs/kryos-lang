@@ -276,6 +276,10 @@ fn count_if(arr: [any], pred: fn) -> i64 {
 // --- Slicing -----------------------------------------------------------------
 
 /// Flatten one level of nesting: [[1,2],[3]] => [1,2,3].
+/// NOTE: kept `[any]` -- the body also handles a non-array element (the mixed
+/// `[[T], T]` shape), which a clean `[[T]] -> [T]` signature can't express, and
+/// the naive `[[T]]` conversion erased the inner reads (corrupted non-i64
+/// elements). Flattening a non-i64 nested array is a documented gap.
 fn flatten(arr: [any]) -> [any] {
     let mut result = []
     let alen = len(arr)
@@ -298,7 +302,7 @@ fn flatten(arr: [any]) -> [any] {
 }
 
 /// Take the first n elements.
-fn take(arr: [any], n: i64) -> [any] {
+fn take<T>(arr: [T], n: i64) -> [T] {
     let mut result = []
     let mut limit = n
     if limit > len(arr) {
@@ -313,7 +317,7 @@ fn take(arr: [any], n: i64) -> [any] {
 }
 
 /// Take elements while pred returns true.
-fn take_while(arr: [any], pred: fn) -> [any] {
+fn take_while<T>(arr: [T], pred: fn(T) -> bool) -> [T] {
     let mut result = []
     let alen = len(arr)
     let mut i = 0
@@ -328,7 +332,7 @@ fn take_while(arr: [any], pred: fn) -> [any] {
 }
 
 /// Skip the first n elements.
-fn skip(arr: [any], n: i64) -> [any] {
+fn skip<T>(arr: [T], n: i64) -> [T] {
     let mut result = []
     let alen = len(arr)
     let mut i = n
@@ -343,7 +347,7 @@ fn skip(arr: [any], n: i64) -> [any] {
 }
 
 /// Skip elements while pred returns true.
-fn skip_while(arr: [any], pred: fn) -> [any] {
+fn skip_while<T>(arr: [T], pred: fn(T) -> bool) -> [T] {
     let mut result = []
     let alen = len(arr)
     let mut i = 0
@@ -361,7 +365,7 @@ fn skip_while(arr: [any], pred: fn) -> [any] {
 }
 
 /// Concatenate two arrays.
-fn chain(a: [any], b: [any]) -> [any] {
+fn chain<T>(a: [T], b: [T]) -> [T] {
     let mut result = []
     let alen = len(a)
     let blen = len(b)
@@ -381,7 +385,7 @@ fn chain(a: [any], b: [any]) -> [any] {
 // --- Ordering ----------------------------------------------------------------
 
 /// Reverse an array.
-fn rev(arr: [any]) -> [any] {
+fn rev<T>(arr: [T]) -> [T] {
     let mut result = []
     let mut i = len(arr) - 1
     while i >= 0 {
@@ -392,11 +396,23 @@ fn rev(arr: [any]) -> [any] {
 }
 
 /// Sort an array in ascending order. Stable, iterative bottom-up merge sort
-/// (O(n log n) -- was O(n^2) insertion sort).
-fn sort(arr: [any]) -> [any] {
+/// (O(n log n)). Generic over the element type: a non-`i64` element (`str`,
+/// etc.) passed through an `[any]` signature erased to an i64 slot and was
+/// never un-erased on return, so the caller read raw pointers -- `<T>` keeps
+/// the element type through the call. Uses `<=`, so T must be `<`-comparable
+/// (i64/f64/str); sort structs via `sort_by_key`.
+///
+/// The work arrays are annotated `[T]` (not a bare `[]`): a bare empty-array
+/// literal erases to `[i64]`, so `src[a] <= src[b]` compiled as an INTEGER
+/// compare on the elements' erased i64 slots -- a `str` array then sorted by
+/// pointer HANDLE (wrong order) and originally, under the old `[any]`
+/// signature, the elements were returned still-erased (raw pointers printed).
+/// With `src: [T]` the indexed reads carry the element type, so `<=` dispatches
+/// to the real ordering (string compare for `str`, numeric for i64/f64).
+fn sort<T>(arr: [T]) -> [T] {
     let n = len(arr)
-    let mut src = []
-    let mut buf = []
+    let mut src: [T] = []
+    let mut buf: [T] = []
     let mut i = 0
     while i < n {
         push(src, arr[i])
@@ -501,7 +517,7 @@ fn sort_by_key<T, K>(arr: [T], key_fn: fn(T) -> K) -> [T] {
 // --- Deduplication -----------------------------------------------------------
 
 /// Remove consecutive duplicates.
-fn dedup(arr: [any]) -> [any] {
+fn dedup<T>(arr: [T]) -> [T] {
     let alen = len(arr)
     if alen == 0 {
         return []
@@ -517,17 +533,29 @@ fn dedup(arr: [any]) -> [any] {
     return result
 }
 
-/// Remove all duplicates, preserving first occurrence order.
-fn unique(arr: [any]) -> [any] {
-    let mut result = []
-    let mut seen = {}
+/// Remove all duplicates, preserving first occurrence order. O(n^2) direct
+/// equality against the kept elements: the old `to_string`-as-map-key approach
+/// dedup'd non-i64 elements by their erased pointer handle (never equal, so
+/// nothing was removed) -- and even a T-typed `to_string(str)` produces a key
+/// that isn't map-equal to a literal string. `result[j] == x` on the `[T]`
+/// work array dispatches to the element type's real equality (string compare
+/// for `str`, numeric for i64/f64).
+fn unique<T>(arr: [T]) -> [T] {
+    let mut result: [T] = []
     let alen = len(arr)
     let mut i = 0
     while i < alen {
-        let key = to_string(arr[i])
-        if not map_has(seen, key) {
-            push(result, arr[i])
-            seen[key] = true
+        let x = arr[i]
+        let mut dup = false
+        let mut j = 0
+        while j < len(result) {
+            if result[j] == x {
+                dup = true
+            }
+            j = j + 1
+        }
+        if not dup {
+            push(result, x)
         }
         i = i + 1
     }

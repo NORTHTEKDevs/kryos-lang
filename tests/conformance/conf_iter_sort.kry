@@ -5,7 +5,7 @@
 // unresolved type vars -> E0110. Now `sort_by<T>(arr:[T], cmp: fn(T,T)->i64)`
 // and `sort_by_key<T,K>(arr:[T], key_fn: fn(T)->K)`, matching filter/map/fold.
 
-use std::iter::{sort_by, sort_by_key, filter, map, fold}
+use std::iter::{sort_by, sort_by_key, filter, map, fold, sort, rev, dedup, unique, take, skip, chain}
 
 fn expect(cond: bool, what: str) {
     if not cond {
@@ -45,6 +45,31 @@ fn main() {
     let names = map(es, |e| e.name)
     let total = fold(es, 0, |acc, e| acc + e.salary)
     expect(len(hi) == 2 and names[1] == "bb" and total == 120, "filter/map/fold on struct array")
+
+    // Element-preserving pass-throughs (sort/rev/dedup/unique/take/skip/chain)
+    // were declared `[any]`, so a non-i64 element erased to an i64 slot and was
+    // returned still-erased -- the caller read raw pointers, and sort/dedup/
+    // unique compared handles (wrong order / no dedup). Now generic `<T>`, so
+    // the element type survives and `<=`/`==` dispatch to real string ordering.
+    let words: [str] = ["banana", "apple", "cherry", "apple"]
+    let sorted = sort(words)
+    expect(sorted[0] == "apple" and sorted[1] == "apple" and sorted[2] == "banana" and sorted[3] == "cherry", "sort [str] lexicographic (not by pointer)")
+    let reversed = rev(words)
+    expect(reversed[0] == "apple" and reversed[3] == "banana", "rev [str] preserves elements")
+    let dups: [str] = ["a", "a", "b", "b", "c"]
+    let dd = dedup(dups)
+    expect(len(dd) == 3 and dd[0] == "a" and dd[2] == "c", "dedup [str] by value")
+    let uq = unique(dups)
+    expect(len(uq) == 3 and uq[0] == "a" and uq[1] == "b" and uq[2] == "c", "unique [str] by value")
+    let tk = take(words, 2)
+    let sk = skip(words, 3)
+    expect(tk[0] == "banana" and tk[1] == "apple" and sk[0] == "apple", "take/skip [str] preserve elements")
+    let ch = chain(tk, sk)
+    expect(len(ch) == 3 and ch[0] == "banana" and ch[2] == "apple", "chain [str] preserves elements")
+    // Numeric sort still correct (incl. negative floats -> real f64 compare).
+    let fs: [f64] = [1.5, 0.0 - 2.0, 3.0]
+    let sf = sort(fs)
+    expect(sf[0] < 0.0 - 1.9 and sf[2] > 2.9, "sort [f64] with negatives (numeric, not bit-pattern)")
 
     println("conformance iter-sort: PASS")
 }
