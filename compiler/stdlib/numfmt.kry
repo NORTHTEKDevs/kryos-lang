@@ -9,6 +9,12 @@ fn hex(n: i64) -> str {
     if n == 0 {
         return "0x0"
     }
+    // i64::MIN has no representable positive magnitude: `-x` overflows back to
+    // i64::MIN (still negative), so the `while x > 0` loop never ran and the
+    // result was a malformed "-0x". Emit its known magnitude directly.
+    if n == -9223372036854775807 - 1 {
+        return "-0x8000000000000000"
+    }
     let mut x = n
     let neg = n < 0
     if neg { x = -x }
@@ -25,6 +31,11 @@ fn hex(n: i64) -> str {
 /// Binary representation with "0b" prefix.
 fn bin(n: i64) -> str {
     if n == 0 { return "0b0" }
+    // i64::MIN: see hex() -- `-x` overflows, so emit its magnitude directly
+    // (2^63 = a 1 followed by 63 zeros).
+    if n == -9223372036854775807 - 1 {
+        return "-0b1000000000000000000000000000000000000000000000000000000000000000"
+    }
     let mut x = n
     let neg = n < 0
     if neg { x = -x }
@@ -47,7 +58,11 @@ fn decimal_padded(n: i64, width: i64) -> str {
     // Split off a leading sign so zero-padding lands BETWEEN the sign and
     // the digits ("-005"), not before it ("00-5", which is not a number).
     let neg = n < 0
-    let digits = if neg { to_string(-n) } else { to_string(n) }
+    // Derive the digits by STRIPPING the sign from to_string(n), not by
+    // negating -- `-n` overflows for i64::MIN and produced a double-sign
+    // ("-0000-9223372036854775808"). to_string(n) formats i64::MIN correctly.
+    let raw = to_string(n)
+    let digits = if neg { substr(raw, 1, len(raw)) } else { raw }
     let sign_len = if neg { 1 } else { 0 }
     let total = sign_len + len(digits)
     if total >= width {

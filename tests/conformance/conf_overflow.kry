@@ -10,6 +10,8 @@ use std::hash::{crc32}
 
 use std::crypto::{hmac_sha256}
 
+use std::numfmt::{hex, bin, decimal_padded}
+
 fn expect(cond: bool, what: str) {
     if not cond {
         println("CONF FAIL: {what}")
@@ -60,6 +62,15 @@ fn main() {
     // 32 bytes -- so signatures never matched (and were import-set-dependent).
     expect(hmac_sha256("key", "The quick brown fox jumps over the lazy dog") == "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8", "hmac_sha256 matches the reference vector")
     expect(hmac_sha256("", "") == "b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad", "hmac_sha256 of empty key+msg matches reference")
+
+    // numfmt hex/bin/decimal_padded must handle i64::MIN, whose positive
+    // magnitude is unrepresentable -- negating it overflowed back to i64::MIN
+    // and produced malformed output ("-0x", "-0b", double-signed padding).
+    let minv: i64 = -9223372036854775807 - 1
+    expect(hex(minv) == "-0x8000000000000000", "hex(i64::MIN) is well-formed")
+    expect(bin(minv) == "-0b1000000000000000000000000000000000000000000000000000000000000000", "bin(i64::MIN) is well-formed")
+    expect(decimal_padded(minv, 25) == "-000009223372036854775808", "decimal_padded(i64::MIN) has a single sign")
+    expect(hex(255) == "0xff" and bin(10) == "0b1010" and decimal_padded(-42, 6) == "-00042", "numfmt normal values unaffected")
 
     println("conformance overflow: PASS")
 }
