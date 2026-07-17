@@ -491,6 +491,34 @@ fn main() {
     let ck4: Result<i64, str> = Err("boom")
     let oe1: Result<i64, str> = or_else(ck4, recover_ok)
     expect(unwrap_or(oe1, -1) == 0, "Result.or_else recovers Err to Ok(0)")
+    // A try/catch used as the TAIL VALUE of a nested block expression must yield
+
+    // the executed arm's value (there is no Expr::TryCatch; try is statement-only,
+
+    // so the block-wrapper form is the ONLY way to bind a try/catch result). It
+
+    // silently produced 0 on both backends -- the block-rvalue lowering didn't
+
+    // route the try/catch tail through the value path, AND the type-checker typed
+
+    // the block as void (which the LLVM void-coercion turned into a literal 0).
+
+    let tc_ok = { try { 11 } catch e { 22 } }
+
+    expect(tc_ok == 11, "try/catch block-tail value: no-throw yields the try value")
+
+    let tc_err = { try { throw "boom"  11 } catch e { 22 } }
+
+    expect(tc_err == 22, "try/catch block-tail value: throw yields the catch value")
+
+    let tc_str = { try { "okv" } catch e { "cv" } }
+
+    expect(tc_str == "okv", "try/catch block-tail value: str payload round-trips")
+
+    let tc_cond = if true { try { 7 } catch e { -1 } } else { 0 }
+
+    expect(tc_cond == 7, "try/catch as an if-branch block-tail value type-checks and runs")
+
 
     println("conformance errors+concurrency: PASS")
 }

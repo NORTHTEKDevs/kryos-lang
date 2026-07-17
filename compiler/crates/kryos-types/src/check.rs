@@ -1268,6 +1268,43 @@ impl TypeChecker {
         }
     }
 
+    /// The value type of a trailing `try { .. } catch e { .. }` used as a
+    /// block's tail VALUE (mirrors the `Stmt::If`/`Expr::IfExpr` branch-
+    /// unification logic in `infer_block_as_expr`/`Expr::IfExpr`): unify the
+    /// try block's tail type with the catch block's tail type, excluding
+    /// either side from unification if it always diverges (throw/return) --
+    /// same divergence rule as an if/else branch pair, via `block_diverges`.
+    fn infer_try_catch_value_type(
+        &mut self,
+        try_block: &Block,
+        catch_name: &str,
+        catch_block: &Block,
+        span: Span,
+    ) -> Type {
+        self.env.push_scope();
+        let try_ty = self.infer_block_as_expr(try_block);
+        self.env.pop_scope();
+        let try_diverges = block_diverges(try_block);
+
+        self.env.push_scope();
+        self.env.define_var(catch_name.to_string(), Type::Str);
+        let catch_ty = self.infer_block_as_expr(catch_block);
+        self.env.pop_scope();
+        let catch_diverges = block_diverges(catch_block);
+
+        match (try_diverges, catch_diverges) {
+            (true, true) => Type::Void,
+            (true, false) => catch_ty,
+            (false, true) => try_ty,
+            (false, false) => {
+                if let Err(diag) = self.engine.unify(&try_ty, &catch_ty, span) {
+                    self.diagnostics.push(diag);
+                }
+                try_ty
+            }
+        }
+    }
+
     /// Like `check_block`, but returns the type of the tail expression if the
     /// last statement is an `Expr` statement (i.e. the block is used as a value).
     /// Returns `Type::Void` if the block is empty or ends with a non-expr statement.
@@ -1338,6 +1375,24 @@ impl TypeChecker {
                         branch_ty = else_ty;
                     }
                     return branch_ty;
+                }
+                // A trailing `try { .. } catch e { .. }` is the block's tail
+                // VALUE too, same as the if-else case just above. Without
+                // this a value-position block ending in try/catch (or an
+                // if/match branch ending in one) typed as `void` -- e.g.
+                // `let r = if n > 0 { try { n * 2 } catch e { -1 } } else {
+                // 0 }` failed with "type mismatch: expected void, found
+                // i64" on the else branch.
+                if let Stmt::TryCatch {
+                    try_block,
+                    catch_name,
+                    catch_block,
+                    span,
+                } = stmt
+                {
+                    return self.infer_try_catch_value_type(
+                        try_block, catch_name, catch_block, *span,
+                    );
                 }
             }
             self.check_stmt(stmt);
@@ -3743,6 +3798,29 @@ impl TypeChecker {
                         // Stmt::If, so synthesize the equivalent IfExpr.
                         if let Some(if_expr) = stmt.as_value_if_expr() {
                             block_ty = self.infer_expr(&if_expr);
+                            continue;
+                        }
+                        // A trailing `try { .. } catch e { .. }` is the
+                        // block's tail VALUE too -- there is no `Expr::
+                        // TryCatch` node to synthesize (try/catch is
+                        // statement-only in the parser), so handle it
+                        // directly. Without this, `let x = { try { 1 }
+                        // catch e { 2 } }` typed as `void`, which got
+                        // recorded into `resolved_let_types` and silently
+                        // overrode the correct MIR-level type inference for
+                        // `x` -- the LLVM backend's void-coercion fallback
+                        // then substituted a literal `0` at every use site
+                        // regardless of the runtime value.
+                        if let Stmt::TryCatch {
+                            try_block,
+                            catch_name,
+                            catch_block,
+                            span,
+                        } = stmt
+                        {
+                            block_ty = self.infer_try_catch_value_type(
+                                try_block, catch_name, catch_block, *span,
+                            );
                             continue;
                         }
                     }

@@ -8756,8 +8756,45 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Check if this is a call to a generic function — monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
                 let mangled = monomorphize(ctx, &func_name, args);
-                let mir_args: Vec<Operand> =
-                    args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                // Apply the dyn-Trait coercion here too: a concrete struct arg
+                // passed to a `dyn Trait` param must be wrapped in a fat pointer
+                // (MakeTraitObject), exactly as the non-generic call path does
+                // below. This branch previously lowered every arg RAW, so a
+                // struct passed to a generic fn's `dyn Trait` param reached the
+                // monomorphized body's `vtable_call` as a plain struct -> the
+                // vtable deref segfaulted on BOTH backends. A `dyn Trait` param
+                // type is concrete (no dependence on the generic type params),
+                // so the template's declared param types carry it directly.
+                let template_param_tys: Vec<Option<ast::TypeExpr>> = ctx
+                    .generic_templates
+                    .get(&func_name)
+                    .map(|t| t.params.iter().map(|p| p.ty.clone()).collect())
+                    .unwrap_or_default();
+                let mir_args: Vec<Operand> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, a)| {
+                        let operand = lower_expr_to_operand(ctx, a);
+                        if let Some(Some(ast::TypeExpr::DynTrait { trait_name, .. })) =
+                            template_param_tys.get(i)
+                        {
+                            if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
+                                let tmp =
+                                    ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::MakeTraitObject {
+                                        value: operand,
+                                        concrete_type: concrete_type.clone(),
+                                        trait_name: trait_name.clone(),
+                                    },
+                                });
+                                return Operand::Local(tmp);
+                            }
+                        }
+                        operand
+                    })
+                    .collect();
                 return RValue::Call {
                     func: mangled,
                     args: mir_args,
@@ -9824,6 +9861,34 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         let rv = lower_expr_to_rvalue(ctx, &if_expr);
                         emit_named_scope_drops(ctx, scope_start);
                         return rv;
+                    }
+                    // A trailing `try { .. } catch e { .. }` is the block's
+                    // tail VALUE too. There is no `Expr::TryCatch` node --
+                    // try/catch is statement-only in the parser by design --
+                    // so without this branch a value-position block whose
+                    // last statement is a try/catch fell through to the
+                    // side-effecting `lower_stmt` call below and the block
+                    // yielded ConstNone: `let x = { try { 1 } catch e { 2 } }`
+                    // silently produced 0 instead of the executed arm's
+                    // value. Mirrors the if-as-value branch just above and
+                    // the function-body-tail try/catch path (~line 2310),
+                    // both of which route through `lower_try_catch` with an
+                    // explicit result local rather than discarding the arms'
+                    // tail values.
+                    if let ast::Stmt::TryCatch {
+                        try_block,
+                        catch_name,
+                        catch_block,
+                        ..
+                    } = stmt
+                    {
+                        let result_ty = infer_branch_value_type(ctx, try_block)
+                            .or_else(|| infer_branch_value_type(ctx, catch_block))
+                            .unwrap_or(MirType::I64);
+                        let result_local = ctx.alloc_temp(result_ty);
+                        lower_try_catch(ctx, try_block, catch_name, catch_block, Some(result_local));
+                        emit_named_scope_drops(ctx, scope_start);
+                        return RValue::Use(Operand::Local(result_local));
                     }
                 }
                 lower_stmt(ctx, stmt);

@@ -164,6 +164,21 @@ fn two_mutated_struct_captures() -> [i64] {
     return [a, b, d, c1.base, c2.base]
 }
 
+// A `dyn Trait` param whose METHOD is called inside a GENERIC function must
+// still be passed as a trait object (fat pointer): the generic-call lowering
+// path bypassed the dyn-Trait coercion the normal call path does, so a concrete
+// struct arg reached the monomorphized body's vtable_call RAW -> segfault both
+// backends. (Single dyn-Trait dispatch and generics each worked alone; only the
+// co-occurrence crashed.)
+trait Areued { fn area(self) -> i64 }
+struct GRect { w: i64, h: i64 }
+struct GSq { s: i64 }
+impl Areued for GRect { fn area(self: GRect) -> i64 { return self.w * self.h } }
+impl Areued for GSq { fn area(self: GSq) -> i64 { return self.s * self.s } }
+fn dyn_in_generic<T>(tag: T, shape: dyn Areued) -> i64 {
+    return shape.area()
+}
+
 fn main() {
     // Recursion.
     expect(fib(10) == 55, "recursion")
@@ -272,6 +287,11 @@ fn main() {
     let tmc = two_mutated_struct_captures()
     expect(tmc[0] == 111 and tmc[1] == 122 and tmc[2] == 133, "closure mutating two struct captures persists each across calls")
     expect(tmc[3] == 0 and tmc[4] == 100, "two mutated struct captures leave both outer vars unaffected")
+
+    // dyn-Trait method call inside a generic fn: struct arg must be wrapped as
+    // a trait object, not passed raw (was a segfault on both backends).
+    expect(dyn_in_generic(1, GRect { w: 3, h: 4 }) == 12, "dyn-Trait method call inside a generic fn (i64 tag)")
+    expect(dyn_in_generic("x", GSq { s: 5 }) == 25, "dyn-Trait method call inside a generic fn (str tag, 2nd impl)")
 
     println("conformance functions: PASS")
 }
