@@ -1457,6 +1457,26 @@ pub fn lower_module_with_lambda_params(
                                     ctx.fn_return_actor_types.insert(mangled.clone(), tn.clone());
                                 }
                             }
+                            // Store parameter types for dyn Trait coercion at
+                            // method-call sites, mirroring the free-function
+                            // `func_param_types` registration above. `self`
+                            // is excluded so the index lines up with a
+                            // MethodCall's `args` (the receiver is passed
+                            // separately, not through `args`). Without this,
+                            // a struct arg passed to a `dyn Trait` PARAM of
+                            // an instance method (`w.combine(r)`) reached the
+                            // callee's `vtable_call` as a raw struct instead
+                            // of a fat pointer -> SIGSEGV.
+                            let param_types: Vec<MirType> = params
+                                .iter()
+                                .filter(|p| p.name != "self")
+                                .map(|p| {
+                                    p.ty.as_ref()
+                                        .map(|t| ctx.resolve_type(t))
+                                        .unwrap_or(MirType::I64)
+                                })
+                                .collect();
+                            ctx.func_param_types.insert(mangled.clone(), param_types);
                             ctx.func_ret_types.insert(mangled, mir_ret);
                         }
                         // Record the self-param + return TypeExprs so an
@@ -3103,7 +3123,25 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 if pattern.is_none() && matches!(expr, ast::Expr::Lambda { .. }) {
                     ctx.pending_self_recursive_name = Some(name.clone());
                 }
-                let rvalue = lower_expr_to_rvalue(ctx, expr);
+                // dyn Trait coercion for an explicitly-annotated `let`: `let
+                // s: dyn Shape = r` where `r` (or any struct-valued
+                // initializer) is a concrete struct. Lower via the operand
+                // path (same as a call argument) so a bare identifier reuses
+                // its existing local and anything else materializes exactly
+                // once, then wrap in MakeTraitObject -- mirrors the
+                // call-argument coercion below. Without this the `dyn`-typed
+                // local held a raw struct and the later vtable_call
+                // dereferenced garbage (SIGSEGV on both backends). A value
+                // that is already `dyn Trait`-typed (forwarding an existing
+                // binding) is left untouched by `coerce_to_dyn_if_needed`.
+                let rvalue = if matches!(mir_ty, MirType::DynTrait(_))
+                    && matches!(infer_expr_type(ctx, expr), MirType::Struct(_))
+                {
+                    let operand = lower_expr_to_operand(ctx, expr);
+                    RValue::Use(coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr))
+                } else {
+                    lower_expr_to_rvalue(ctx, expr)
+                };
                 let mark_non_owning = matches!(
                     expr,
                     ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
@@ -3891,7 +3929,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
         }
 
         ast::Stmt::Return { value, .. } => {
-            let operand = value.as_ref().map(|e| lower_expr_to_operand(ctx, e));
+            // dyn Trait coercion at the return boundary: `fn make() -> dyn
+            // Shape { return Rect{..} }`. The enclosing function's declared
+            // return type (`current_ret_ty`, set once per `lower_function`
+            // call) is the coercion target; a concrete-struct return value
+            // is wrapped in MakeTraitObject exactly like a call argument.
+            // Without this the caller received a raw struct through a
+            // `dyn`-typed return slot and the later vtable_call segfaulted.
+            let ret_ty = ctx.current_ret_ty.clone();
+            let operand = value.as_ref().map(|e| {
+                let op = lower_expr_to_operand(ctx, e);
+                coerce_to_dyn_if_needed(ctx, op, &ret_ty, e)
+            });
             // Returning a param directly hands the caller a handle it will
             // treat as owned; retain so the caller's release does not free
             // its own argument (borrow-to-own at the return boundary).
@@ -8182,6 +8231,46 @@ fn lower_nested_field_assign(
     }
 }
 
+/// If `target_ty` is `MirType::DynTrait` and `source_expr`'s inferred type is
+/// a concrete `MirType::Struct`, wrap `operand` in `RValue::MakeTraitObject`
+/// so the later `vtable_call` site sees a fat pointer instead of a bare
+/// struct value. A value that is ALREADY `dyn Trait`-typed (e.g. forwarding
+/// an existing `dyn Trait` binding into another `dyn Trait`-typed position)
+/// is left untouched -- `infer_expr_type` returns `MirType::DynTrait` for it,
+/// not `MirType::Struct`, so only a genuine concrete-struct -> dyn-Trait
+/// coercion is ever wrapped here. Enum/other sources are out of scope: only
+/// structs implement traits in this language.
+///
+/// Shared by every dyn-Trait coercion site added alongside the original
+/// call-argument coercion (`ast::Expr::FnCall`'s normal-call and
+/// generic-call arms, which keep their own inline copies of this same
+/// wrap -- left as-is to avoid touching the already-verified working path):
+/// an explicitly `dyn Trait`-annotated `let`, a `return` from a function
+/// whose declared return type is `dyn Trait`, a `dyn Trait`-typed struct
+/// field initializer, and a `dyn Trait` parameter of a resolved method call.
+fn coerce_to_dyn_if_needed(
+    ctx: &mut LoweringContext,
+    operand: Operand,
+    target_ty: &MirType,
+    source_expr: &ast::Expr,
+) -> Operand {
+    if let MirType::DynTrait(ref trait_name) = target_ty {
+        if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, source_expr) {
+            let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+            ctx.emit(Instruction::Assign {
+                dest: tmp,
+                value: RValue::MakeTraitObject {
+                    value: operand,
+                    concrete_type: concrete_type.clone(),
+                    trait_name: trait_name.clone(),
+                },
+            });
+            return Operand::Local(tmp);
+        }
+    }
+    operand
+}
+
 fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand {
     match expr {
         ast::Expr::IntLiteral { value, .. } => Operand::Constant(Constant::Int(*value)),
@@ -9276,14 +9365,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            let obj = lower_expr_to_operand(ctx, object);
-            let mut mir_args: Vec<Operand> = vec![obj];
-            for a in args {
-                mir_args.push(lower_expr_to_operand(ctx, a));
-            }
-
             // Resolve mangled method name: infer the object's type and look up
-            // the impl method as TypeName__method.
+            // the impl method as TypeName__method. Resolved BEFORE lowering
+            // the call args (below) so the dyn-Trait-param coercion can look
+            // up this method's declared param types by its final name.
             let func_name = if let Some(tn) = type_name {
                 ctx.method_owners
                     .get(&(tn.clone(), method.clone()))
@@ -9308,6 +9393,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             } else {
                 method.clone()
             };
+
+            let obj = lower_expr_to_operand(ctx, object);
+            // dyn Trait coercion on method-call arguments: mirrors the
+            // free-function FnCall path -- a concrete struct arg passed to a
+            // `dyn Trait` param of the resolved method must be wrapped in
+            // MakeTraitObject, or the callee's vtable_call derefs a raw
+            // struct instead of a fat pointer (SIGSEGV on both backends).
+            let param_types = ctx.func_param_types.get(&func_name).cloned();
+            let mut mir_args: Vec<Operand> = vec![obj];
+            for (i, a) in args.iter().enumerate() {
+                let operand = lower_expr_to_operand(ctx, a);
+                let operand = match param_types.as_ref().and_then(|p| p.get(i)) {
+                    Some(target_ty) => coerce_to_dyn_if_needed(ctx, operand, target_ty, a),
+                    None => operand,
+                };
+                mir_args.push(operand);
+            }
 
             RValue::Call {
                 func: func_name,
@@ -9524,6 +9626,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             }
                         }
                     }
+                    // dyn Trait field coercion: if the struct's declared
+                    // field type is `dyn Trait` and the provided value is a
+                    // concrete struct, wrap it in MakeTraitObject. Applied
+                    // LAST (after the aliasing/retain/partial-move handling
+                    // above) so that bookkeeping still targets the ORIGINAL
+                    // source operand, matching the call-argument coercion's
+                    // ordering. Without this, `Holder{ inner: r }.inner` held
+                    // a raw struct behind a `dyn Shape` field and the later
+                    // vtable_call segfaulted.
+                    let field_ty = ctx.struct_defs.get(effective_name.as_str()).and_then(|fs| {
+                        fs.iter().find(|(fname, _)| fname == n).map(|(_, t)| t.clone())
+                    });
+                    let op = if let Some(ref fty) = field_ty {
+                        coerce_to_dyn_if_needed(ctx, op, fty, e)
+                    } else {
+                        op
+                    };
                     (n.clone(), op)
                 })
                 .collect();
