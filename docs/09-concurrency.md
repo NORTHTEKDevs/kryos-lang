@@ -40,7 +40,9 @@ The spawned block runs in its own child environment. It can read variables from 
 
 ### Error handling in spawned blocks
 
-If a spawned block throws an exception, the error is captured and printed as `[spawn error] ...`. It does not crash the parent thread.
+If a spawned block **throws** a (recoverable) exception, the error is captured and reported (`kryos: uncaught exception in spawned thread: ...`) and it does **not** crash the parent thread -- the spawned thread dies, the process lives on.
+
+**This isolation covers `throw` only.** An unrecoverable **panic** -- integer division by zero, array index out of bounds, and other exit-98 runtime faults -- inside a spawned block terminates the **whole process** (exit 98); it is not isolated to the spawned thread, and any not-yet-flushed work on the main thread is lost. This is because a panic routes through `kryos_panic` (a process-wide `exit(98)`) and cannot unwind through the generated `extern "C"` frames (on Windows the JIT cannot unwind at all). If a spawned task might hit an unrecoverable fault (an untrusted divisor, an index that could be out of range), **guard it explicitly** (check the divisor/bounds, or use `throw` for a recoverable failure you want isolated). Both backends behave identically here.
 
 ```
 spawn {
@@ -427,9 +429,10 @@ and `kryos build --release` (LLVM AOT).
 
 ### Limits (deferred)
 
-- `coop_spawn` threads at most **one** captured value into a task today; tasks
-  that close over several locals are not yet supported (top-level task fns and
-  zero/one-capture closures are).
+- `coop_spawn` marshals **up to 8** captured values into a task (a closure over
+  several locals works, e.g. `coop_spawn(|| { x + y + z })`); top-level task fns
+  and zero/one/multi-capture closures are all supported. (Verified on both
+  backends; the old one-capture limit was lifted -- see `invoke_task`.)
 - `await` is a yield point, not a future/result combinator: there is no
   `await future` that resolves a value across a real suspension — the awaited
   expression is evaluated eagerly, then the task yields.
