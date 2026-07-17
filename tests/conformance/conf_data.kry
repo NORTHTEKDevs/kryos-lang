@@ -532,5 +532,15 @@ fn main() {
     expect("[{ch}{'Z'}]" == "[xZ]", "char interpolation renders characters")
     expect(to_string(120) == "120", "to_string(i64) still renders the number")
 
+    // f32 to_string / println / interpolation / assert_eq: the Cranelift JIT
+    // must fpromote a statically-f32 value to f64 before the f64-sig runtime
+    // formatter, or it crashed the JIT verifier ("arg 0 has type f32, expected
+    // f64") on code AOT compiled fine. Both backends must print "1.5"/"3.75".
+    let f32a: f32 = 1.5 as f32
+    let f32b: f32 = 2.25 as f32
+    expect(to_string(f32a) == "1.5", "to_string(f32) does not crash the JIT and formats correctly")
+    expect(to_string(f32a + f32b) == "3.75", "f32 arithmetic result stringifies on both backends")
+    expect("{f32b}" == "2.25", "f32 string interpolation works on both backends")
+
     println("conformance data: PASS")
 }

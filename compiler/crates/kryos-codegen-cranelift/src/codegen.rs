@@ -3572,9 +3572,29 @@ fn coerce_to_string<M: Module>(
             "kryos_builtin_to_string"
         }
     };
+    if to_str_fn == "kryos_f64_to_string" {
+        val = promote_f32_to_f64(val, builder);
+    }
     let to_str_ref = ensure_func_ref_with_args(to_str_fn, builder, translator, module, 1)?;
     let call = builder.ins().call(to_str_ref, &[val]);
     Ok(builder.inst_results(call)[0])
+}
+
+/// The `kryos_f64_to_string` runtime fn (and every other f64-signature runtime
+/// helper) expects an f64 argument. A value that is statically `f32` (e.g.
+/// `let g: f32 = 1.5 as f32`) must be widened with `fpromote` first, or the
+/// Cranelift verifier rejects the call ("arg 0 has type f32, expected f64") --
+/// a hard JIT codegen crash on code the LLVM/AOT backend compiles fine. No-op
+/// for values already f64.
+fn promote_f32_to_f64(
+    val: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+) -> cranelift_codegen::ir::Value {
+    if builder.func.dfg.value_type(val) == types::F32 {
+        builder.ins().fpromote(types::F64, val)
+    } else {
+        val
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3933,6 +3953,8 @@ fn translate_rvalue<M: Module>(
                         }
                         "kryos_bool_to_string"
                     } else if is_float_operand(&args[0], &translator.mir_func.locals) {
+                        // f32 must be widened to f64 for the f64-sig formatter.
+                        val = promote_f32_to_f64(val, builder);
                         "kryos_f64_to_string"
                     } else {
                         // Integer: widen to i64 for the string formatter. Unsigned
@@ -4238,7 +4260,8 @@ fn translate_rvalue<M: Module>(
                         module,
                         1,
                     )?;
-                    let call = builder.ins().call(f64_ref, &[val]);
+                    let fval = promote_f32_to_f64(val, builder);
+                    let call = builder.ins().call(f64_ref, &[fval]);
                     return Ok(Some(builder.inst_results(call)[0]));
                 } else if is_bool_operand(&args[0], &translator.mir_func.locals) {
                     let mut v = val;
@@ -4355,7 +4378,8 @@ fn translate_rvalue<M: Module>(
                             module,
                             1,
                         )?;
-                        let call = builder.ins().call(f64_ref, &[val]);
+                        let fval = promote_f32_to_f64(val, builder);
+                        let call = builder.ins().call(f64_ref, &[fval]);
                         handles.push(builder.inst_results(call)[0]);
                     } else if is_bool_operand(arg, &translator.mir_func.locals) {
                         let mut v = val;
