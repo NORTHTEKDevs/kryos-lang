@@ -10143,6 +10143,21 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         mir_func.attributes.mutated_capture_slot = Some(idx as u32);
                     }
                 }
+                // Aggregate (struct/enum) single-mutated-capture case: no
+                // tail-shape restriction needed here (unlike the scalar
+                // slot above) -- see `mutated_capture_ptr_slot`'s doc
+                // comment. Passing the capture BY POINTER makes any field
+                // mutation on ANY path through the body land directly in
+                // the persistent env block, so there is no "does the tail
+                // equal the mutated value" write-back-correctness concern.
+                if mutated_captures.len() == 1 {
+                    if let Some(idx) = captures.iter().position(|c| c == &mutated_captures[0]) {
+                        let cap_ty = mir_func.params.get(idx).map(|p| p.ty.clone());
+                        if matches!(cap_ty, Some(MirType::Struct(_))) {
+                            mir_func.attributes.mutated_capture_ptr_slot = Some(idx as u32);
+                        }
+                    }
+                }
             }
             ctx.monomorphized_functions.push(mir_func);
 
@@ -11098,6 +11113,28 @@ fn expr_mutates_names(
     }
 }
 
+/// Find the base identifier an assignment target ultimately writes through,
+/// walking any chain of field/index accesses: `c.base = ..` and `arr[i] = ..`
+/// both mutate their ROOT variable (`c`, `arr`) even though the target
+/// expression itself is a `FieldAccess`/`IndexAccess`, not a bare
+/// `Identifier`. Used by `block_mutates_names` to detect a captured
+/// STRUCT/ENUM/array whose FIELD (or element) is mutated inside a closure
+/// body -- without this, `find_mutated_captures` only recognized a bare
+/// `name = ..` target, so a closure that only ever wrote through a field
+/// (`c.base = c.base + 1`) was never flagged as mutating its capture `c` at
+/// all, silently keeping it eligible for the `closure_locals` direct-call
+/// optimization meant only for READ-only captures (see the `mutating_closures`
+/// doc comment) -- the root cause of the struct/enum mutating-closure
+/// JIT/AOT divergence (gotcha #11 follow-up).
+fn assign_target_root_name(expr: &ast::Expr) -> Option<&str> {
+    match expr {
+        ast::Expr::Identifier { name, .. } => Some(name.as_str()),
+        ast::Expr::FieldAccess { object, .. } => assign_target_root_name(object),
+        ast::Expr::IndexAccess { object, .. } => assign_target_root_name(object),
+        _ => None,
+    }
+}
+
 fn block_mutates_names(
     stmts: &[ast::Stmt],
     names: &std::collections::HashSet<&str>,
@@ -11106,9 +11143,9 @@ fn block_mutates_names(
     for stmt in stmts {
         match stmt {
             ast::Stmt::Assign { target, value, .. } => {
-                if let ast::Expr::Identifier { name, .. } = target {
-                    if names.contains(name.as_str()) {
-                        out.insert(name.clone());
+                if let Some(root) = assign_target_root_name(target) {
+                    if names.contains(root) {
+                        out.insert(root.to_string());
                     }
                 }
                 expr_mutates_names(target, names, out);

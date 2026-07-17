@@ -133,6 +133,21 @@ fn map_closure_struct_capture() -> i64 {
     return f()
 }
 
+// A closure that MUTATES a captured struct field captures BY MOVE: it owns one
+// persistent independent copy across calls, and the outer var is unaffected --
+// matching the scalar mutating-capture semantics. Was a JIT/AOT DIVERGENCE (JIT
+// 2,3,3 aliased the outer; AOT 2,2,1 lost per-call persistence): find_mutated_
+// captures only saw bare-identifier mutation targets, not `c.field = ..`, so the
+// closure wrongly used the read-only fast path.
+struct MutCtx { base: i64 }
+fn mutating_struct_closure() -> [i64] {
+    let mut c = MutCtx { base: 1 }
+    let bump = || { c.base = c.base + 1  c.base }
+    let first = bump()
+    let second = bump()
+    return [first, second, c.base]
+}
+
 fn main() {
     // Recursion.
     expect(fib(10) == 55, "recursion")
@@ -230,6 +245,11 @@ fn main() {
     // double-free (gotcha #11, was JIT exit 127).
     expect(nested_struct_capture() == 30, "nested closure capturing outer-scope struct (no JIT double-free)")
     expect(map_closure_struct_capture() == 6, "closure capturing struct, stored as a map value (no JIT double-free)")
+
+    // Mutating closure over a captured struct field: persistent-by-move,
+    // outer unaffected (2,3,1), like the scalar case -- was a JIT/AOT divergence.
+    let msc = mutating_struct_closure()
+    expect(msc[0] == 2 and msc[1] == 3 and msc[2] == 1, "closure mutating a captured struct field: persist across calls, outer unaffected")
 
     println("conformance functions: PASS")
 }

@@ -234,6 +234,26 @@ pub struct MirAttributes {
     /// captures, or a mutation whose new value isn't the return value, are
     /// a known remaining limitation — see lower.rs `find_mutated_captures`).
     pub mutated_capture_slot: Option<u32>,
+    /// Set on a synthesized lambda function that mutates EXACTLY ONE of its
+    /// captured (by-move) parameters AND that capture is a Struct/Enum
+    /// (heap-aggregate) type. The value is the 0-based index of that
+    /// capture among the lambda's captures/params (same indexing as
+    /// `mutated_capture_slot`). Unlike a scalar mutated capture -- whose new
+    /// value must be explicitly written BACK into the env slot after the
+    /// call returns, because the env slot holds the value directly -- an
+    /// aggregate capture's env slot already holds a POINTER to an
+    /// independent (deep-copied at closure-construction time) heap block;
+    /// mutating a field of it just needs that SAME pointer to reach the
+    /// lambda body without an intervening copy. Both codegen backends use
+    /// this to pass the capture to the underlying function BY POINTER
+    /// (skipping the normal byval/copy-by-value convention every other
+    /// aggregate parameter gets) so a field write inside the closure body
+    /// lands in the persistent env block instead of a private copy that's
+    /// discarded when the call returns. `None` for ordinary functions, for
+    /// scalar mutated captures (those use `mutated_capture_slot` instead),
+    /// and for closures with more than one mutated capture (a documented
+    /// residual limitation, matching `mutated_capture_slot`'s own scope).
+    pub mutated_capture_ptr_slot: Option<u32>,
 }
 
 /// A single MIR function.

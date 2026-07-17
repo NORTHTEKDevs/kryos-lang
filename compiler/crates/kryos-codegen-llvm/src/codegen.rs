@@ -98,6 +98,14 @@ pub struct LlvmCodegen {
     /// a mutating counter/accumulator closure's state persists across
     /// calls instead of resetting -- see `emit_closure_thunks`.
     closure_mutated_slot: HashMap<String, u32>,
+    /// func_name -> capture index whose Struct-typed value must be passed
+    /// to the underlying function BY POINTER (skipping the normal
+    /// byval-copy convention), copied from `MirFunction::attributes.
+    /// mutated_capture_ptr_slot` (see kryos-mir/src/lower.rs). Lets a
+    /// closure that mutates a captured struct's field write through to the
+    /// persistent env block instead of a private byval copy discarded at
+    /// return -- see `emit_closure_thunks` and `emit_function`.
+    closure_struct_ptr_slot: HashMap<String, u32>,
     /// Trait vtable map from MIR: (concrete_type, trait_name) -> ordered list
     /// of mangled method names. Used to materialize trait objects and
     /// dispatch VtableCall.
@@ -150,6 +158,7 @@ impl LlvmCodegen {
             closure_cap_types: HashMap::new(),
             closure_user_sig: HashMap::new(),
             closure_mutated_slot: HashMap::new(),
+            closure_struct_ptr_slot: HashMap::new(),
             trait_vtables: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
@@ -214,6 +223,7 @@ impl LlvmCodegen {
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
         self.closure_mutated_slot.clear();
+        self.closure_struct_ptr_slot.clear();
         self.module_can_throw = module_has_throw(&module.functions);
         for func in &module.functions {
             self.prescan_function(func);
@@ -273,6 +283,9 @@ impl LlvmCodegen {
                                 );
                                 if let Some(slot) = mf.attributes.mutated_capture_slot {
                                     self.closure_mutated_slot.insert(func_name.clone(), slot);
+                                }
+                                if let Some(slot) = mf.attributes.mutated_capture_ptr_slot {
+                                    self.closure_struct_ptr_slot.insert(func_name.clone(), slot);
                                 }
                             }
                         }
@@ -385,6 +398,7 @@ impl LlvmCodegen {
         self.closure_cap_types.clear();
         self.closure_user_sig.clear();
         self.closure_mutated_slot.clear();
+        self.closure_struct_ptr_slot.clear();
         self.module_can_throw = module_has_throw(functions);
 
         for func in functions {
@@ -442,6 +456,9 @@ impl LlvmCodegen {
                                 );
                                 if let Some(slot) = mf.attributes.mutated_capture_slot {
                                     self.closure_mutated_slot.insert(func_name.clone(), slot);
+                                }
+                                if let Some(slot) = mf.attributes.mutated_capture_ptr_slot {
+                                    self.closure_struct_ptr_slot.insert(func_name.clone(), slot);
                                 }
                             }
                         }
@@ -1653,7 +1670,28 @@ impl LlvmCodegen {
                             // byval-pointer callee that corrupted the
                             // argument registers/stack and segfaulted on
                             // AOT (the Cranelift JIT tolerated it).
-                            call_args.push(format!("ptr byval({expected_ty}) {raw}"));
+                            //
+                            // EXCEPTION: when this closure mutates this
+                            // EXACT capture (`closure_struct_ptr_slot`),
+                            // byval's implicit copy-on-entry is precisely
+                            // the bug -- the callee would mutate its own
+                            // private copy, discarded on return, so the
+                            // mutation never reaches the persistent env
+                            // block and the next call sees the stale
+                            // original value (AOT-only: Cranelift already
+                            // passes captures as raw pointers and mutates
+                            // in place). Pass the pointer directly instead
+                            // so a field write lands in the SAME heap block
+                            // env[i+1] points at -- see `emit_function`'s
+                            // matching non-byval signature/prologue for
+                            // this same func_name+slot.
+                            if self.closure_struct_ptr_slot.get(func_name.as_str())
+                                == Some(&(i as u32))
+                            {
+                                call_args.push(format!("ptr {raw}"));
+                            } else {
+                                call_args.push(format!("ptr byval({expected_ty}) {raw}"));
+                            }
                         } else {
                             let i = self.next_temp();
                             self.emit_line(&format!(
@@ -2932,9 +2970,21 @@ impl LlvmCodegen {
         if let Some(ref agg) = ret_agg {
             param_strs.push(format!("ptr sret({agg}) %_sret"));
         }
-        for p in &func.params {
+        for (i, p) in func.params.iter().enumerate() {
             if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
-                param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
+                if func.attributes.mutated_capture_ptr_slot == Some(i as u32) {
+                    // Mutated struct capture: plain pointer, no `byval` --
+                    // see `mutated_capture_ptr_slot`'s doc comment and the
+                    // matching non-copy prologue below. This function is
+                    // only ever reached through its own `_env` thunk
+                    // (mutating closures are excluded from the
+                    // `closure_locals` direct-call path in kryos-mir), so
+                    // changing this one param's ABI cannot affect any other
+                    // caller.
+                    param_strs.push(format!("ptr %_{}_arg", p.local.0));
+                } else {
+                    param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
+                }
             } else {
                 param_strs.push(format!("{} %_{}", self.sig_ty_to_llvm(&p.ty), p.local.0));
             }
@@ -3007,11 +3057,31 @@ impl LlvmCodegen {
             self.emit_line(&format!("bb{}:", first_block.id.0));
         }
 
+        // Local id of the mutated-struct-capture param (if any) whose
+        // `.addr` must ALIAS the incoming pointer instead of getting a
+        // fresh alloca -- see `mutated_capture_ptr_slot`'s doc comment.
+        // Allocating (and, worse, zero-initializing -- see the match below)
+        // a private slot for it would immediately stomp the caller's
+        // persistent env block before the body ever reads the real
+        // captured value.
+        let ptr_slot_local_id: Option<u32> = func
+            .attributes
+            .mutated_capture_ptr_slot
+            .and_then(|idx| func.params.get(idx as usize))
+            .map(|p| p.local.0);
+
         // Emit allocas for all mutable locals at the top of the entry block.
         // Use the resolved local_types so enums/aggregates get the correct
         // backing storage size (e.g. `alloca { i64, i64 }`, not `alloca i64`).
         let _param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
         for local in &func.locals {
+            if Some(local.id.0) == ptr_slot_local_id {
+                self.emit_line(&format!(
+                    "  %_{}.addr = getelementptr i8, ptr %_{}_arg, i64 0",
+                    local.id.0, local.id.0
+                ));
+                continue;
+            }
             if self.mutable_locals.contains(&local.id.0) {
                 let mut ty = self.local_type(local.id);
                 // A local whose MIR-declared type is `void` normally gets no
@@ -3119,6 +3189,11 @@ impl LlvmCodegen {
         // For aggregate (byval) params: load the aggregate from the byval ptr
         // into the SSA value `%_N`, or into the alloca if mutable.
         for p in &func.params {
+            if Some(p.local.0) == ptr_slot_local_id {
+                // Already aliased to `%_N_arg` directly above -- no byval
+                // copy-in exists to load from (its param is a plain `ptr`).
+                continue;
+            }
             if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
                 if self.mutable_locals.contains(&p.local.0) {
                     let tmp = self.next_temp();
@@ -7175,6 +7250,34 @@ impl LlvmCodegen {
                                     .actual_type(&cap_val)
                                     .unwrap_or_else(|| "i64".to_string());
                                 if cap_actual.starts_with('%') || cap_actual.starts_with('{') {
+                                    // For a STRUCT capture specifically, first
+                                    // rebuild the in-register value with its
+                                    // own heap-owning fields (str/array/map)
+                                    // independently cloned -- see
+                                    // `clone_struct_heap_fields`'s doc comment.
+                                    // Without this, the calloc'd box below is
+                                    // only an independent CONTAINER: a
+                                    // heap-owning FIELD still shares the same
+                                    // underlying block as the outer variable's
+                                    // own copy of the struct, so an in-place
+                                    // mutation of that field (e.g. `push`,
+                                    // which grows an array's buffer in place)
+                                    // is visible through both -- an isolation
+                                    // leak `mutated_capture_ptr_slot` alone
+                                    // does not close. (Enum/Tuple captures
+                                    // keep the prior shallow-box behavior --
+                                    // out of scope for this fix.)
+                                    let boxed_val = if let Some(MirType::Struct(sname)) =
+                                        cap_mir_ty.as_ref()
+                                    {
+                                        self.clone_struct_heap_fields(
+                                            &cap_val,
+                                            sname,
+                                            &cap_actual,
+                                        )
+                                    } else {
+                                        cap_val.clone()
+                                    };
                                     let size_ptr = self.next_temp();
                                     self.emit_line(&format!(
                                         "  {size_ptr} = getelementptr {cap_actual}, ptr null, i64 1"
@@ -7188,7 +7291,7 @@ impl LlvmCodegen {
                                         "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
                                     ));
                                     self.emit_line(&format!(
-                                        "  store {cap_actual} {cap_val}, ptr {buf}"
+                                        "  store {cap_actual} {boxed_val}, ptr {buf}"
                                     ));
                                     let as_i64 = self.next_temp();
                                     self.emit_line(&format!(
@@ -9476,22 +9579,30 @@ impl LlvmCodegen {
         if !self.copy_structs.contains(&sname) {
             return val.to_string();
         }
-        let Some(fields) = self.struct_defs.get(&sname).cloned() else {
+        self.clone_struct_heap_fields(val, &sname, dest_ty)
+    }
+
+    /// Rebuild aggregate `val` (an in-register `dest_ty` struct value, named
+    /// `sname`) with its heap-owning fields (str/array/map cloned, fn/shared
+    /// retained) replaced by independent copies. Extracted from the body of
+    /// `maybe_deep_copy_struct_fields` so a SECOND, UNGATED caller --
+    /// `RValue::Closure`'s struct-capture box (see its call site) -- can
+    /// reuse the exact same per-field logic without the `@copy` gate: a
+    /// closure's captured-struct independent copy must be deep regardless of
+    /// whether the struct is `@copy`, or a heap-owning field (e.g. an
+    /// `[i64]`/`str` field) stays ALIASED with the outer variable's own
+    /// field, and an in-place mutation of it (like `push`, which grows the
+    /// array's buffer in place rather than allocating fresh) is then visible
+    /// through BOTH the closure's copy and the outer variable -- an isolation
+    /// leak distinct from (and not fixed by) `mutated_capture_ptr_slot`'s
+    /// container-level independence. No `needs_work` short-circuit here: the
+    /// caller already knows the destination is an aggregate; scanning fields
+    /// again would just duplicate the loop below for structs with no heap
+    /// fields, which is already a no-op per-field (the `_ => {}` arm).
+    fn clone_struct_heap_fields(&mut self, val: &str, sname: &str, dest_ty: &str) -> String {
+        let Some(fields) = self.struct_defs.get(sname).cloned() else {
             return val.to_string();
         };
-        let needs_work = fields.iter().any(|(_, t)| {
-            matches!(
-                t,
-                MirType::Str
-                    | MirType::Array(_, _)
-                    | MirType::Map { .. }
-                    | MirType::Function { .. }
-                    | MirType::Shared(_)
-            )
-        });
-        if !needs_work {
-            return val.to_string();
-        }
         let mut cur = val.to_string();
         for (idx, (_, fty)) in fields.iter().enumerate() {
             let fty_ll = self.sig_ty_to_llvm(fty);
