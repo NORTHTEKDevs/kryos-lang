@@ -1491,7 +1491,17 @@ impl OwnershipAnalyzer {
                 }
             }
             Expr::MatchExpr { subject, arms, .. } => {
-                self.analyze_expr_move(subject);
+                // Matching an ARC-backed value READS it (shares), it does not
+                // CONSUME it -- the same value may be matched again or used
+                // afterwards, exactly like passing it to a function or binding
+                // it with `let`. Recording a hard move here made a second
+                // `match o {..}` (or any use after a match) a blocking E0300,
+                // contradicting the documented contract that E0300 is advisory
+                // and never blocks (docs/06-ownership.md) and breaking the
+                // ubiquitous check-then-use idiom on Option/Result. `analyze_
+                // expr_use` still flags a genuinely-uninitialized/already-moved
+                // subject (E0301/E0300) without marking the subject moved.
+                self.analyze_expr_use(subject);
                 // Match arms are mutually exclusive, so each arm must start from
                 // the same pre-arm ownership state -- a move performed inside one
                 // arm must NOT leak into a sibling arm. Without this isolation,

@@ -2,6 +2,7 @@
 // (Reference chapters 6 + gotcha #23 guarantees.)
 
 use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
 
 // F1 regression (gotcha #23 "BROAD crash hazard"): a non-@copy struct with a
 // HEAP field, reassigned INSIDE A LOOP from a NESTED-match enum payload, used
@@ -173,6 +174,21 @@ fn main() {
     // A match-arm tail CALL consuming an arm-local heap value must run before
     // the arm-scope drop frees it (F1-fix follow-up: was freed-first -> empty).
     expect(f1_tail_call(3) == 9, "match-arm tail call consumes arm-local before scope drop")
+
+    // Matching an ARC-backed value READS it, it does not CONSUME it: the same
+    // Option/Result may be matched again (or used afterwards). Recording a hard
+    // move on the match subject made a second `match o {..}` a BLOCKING E0300,
+    // contradicting the documented advisory-E0300 contract and breaking the
+    // ubiquitous check-then-use idiom. Must compile AND run on both backends.
+    let opt: Option<i64> = Some(5)
+    let mut osum = 0
+    match opt { Some(x) => { osum = osum + x } None() => {} }
+    match opt { Some(x) => { osum = osum + x } None() => {} }
+    expect(osum == 10, "an Option can be matched twice (match reads, does not consume)")
+    let res: Result<i64, str> = Ok(7)
+    match res { Ok(x) => { osum = osum + x } Err(e) => {} }
+    match res { Ok(x) => { osum = osum + x } Err(e) => {} }
+    expect(osum == 24, "a Result can be matched twice, then reused")
 
     println("conformance ownership: PASS")
 }
