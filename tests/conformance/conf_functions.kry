@@ -195,5 +195,12 @@ fn main() {
     }
     expect(pick_or_return(5) > 2.4 and pick_or_return(5) < 2.6, "if with a return THEN-branch types as the else value (f64)")
 
+    // `not` precedence (reference table level 4): looser than comparison,
+    // tighter than `and` -- was mis-parsed as tight `!` (level 12), so
+    // `not a == b` errored/mis-parsed. Now `not a == b` == `not (a == b)`.
+    expect((not 1 < 2) == false, "not binds looser than comparison: not 1 < 2 == not(1<2)")
+    expect((not true and false) == false, "not binds tighter than and: not true and false == (not true) and false")
+    expect((not (true and false)) == true, "parenthesized not(and) still works")
+
     println("conformance functions: PASS")
 }

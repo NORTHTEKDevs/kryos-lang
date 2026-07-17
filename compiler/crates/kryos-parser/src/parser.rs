@@ -53,8 +53,18 @@ fn infix_binding_power(kind: TokenKind, next: Option<TokenKind>) -> Option<(u8, 
 /// Prefix binding power for unary operators.
 fn prefix_binding_power(kind: TokenKind) -> Option<u8> {
     match kind {
-        // 12. unary - not ~ *
-        TokenKind::Minus | TokenKind::Not | TokenKind::Bang | TokenKind::Tilde | TokenKind::Star => Some(24),
+        // 12. unary - ! ~ * (tight, C-style)
+        TokenKind::Minus | TokenKind::Bang | TokenKind::Tilde | TokenKind::Star => Some(24),
+        // 4. `not` (the WORD) is a LOW-precedence prefix per the reference
+        // precedence table (§3, level 4): looser than comparison (level 5),
+        // tighter than `and` (level 3). So `not a == b` parses as
+        // `not (a == b)` (Python model) and `not a and b` as `(not a) and b`,
+        // unlike the tight C-style `!` (Bang) which stays at level 12. bp 7
+        // sits between `and`'s infix left-bp (6) and comparison's (8): the
+        // operand parse consumes the comparison but stops before `and`.
+        // (Was grouped with `!` at 24, so `not a == b` mis-parsed as
+        // `(not a) == b` -> a type error, contradicting the documented table.)
+        TokenKind::Not => Some(7),
         // & (borrow / address-of) — same precedence as other unary prefix ops
         TokenKind::Amp => Some(24),
         // shared / move / weak / await — prefix keyword operators (very low, just above range)
