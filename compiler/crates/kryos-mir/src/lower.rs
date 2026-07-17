@@ -84,6 +84,14 @@ pub struct LoweringContext {
     monomorphized: HashMap<String, bool>,
     /// Functions produced by monomorphization (collected after lowering).
     monomorphized_functions: Vec<MirFunction>,
+    /// Struct/enum type names for which a `__kryos_eq_<Type>` structural
+    /// equality helper has already been synthesized (see
+    /// `ensure_struct_eq_helper` / `ensure_enum_eq_helper`). Keyed by the
+    /// exact (already-monomorphized) type name so a type compared with `==`
+    /// at multiple call sites gets exactly one helper, mirroring the
+    /// `__kryos_drop_<Type>` per-type helper the codegen backends already
+    /// generate for destructors.
+    synthesized_eq_helpers: HashSet<String>,
     /// Counter for anonymous lambda function names.
     lambda_counter: u32,
     /// Resolved types for un-annotated lambda params, from the type checker
@@ -385,6 +393,7 @@ impl LoweringContext {
             generic_enum_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
+            synthesized_eq_helpers: HashSet::new(),
             lambda_counter: 0,
             lambda_param_types: HashMap::new(),
             let_types: HashMap::new(),
@@ -8426,6 +8435,40 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // Structural equality: `==`/`!=` on a struct or enum operand.
+            // Neither backend can compare two aggregate VALUES directly (see
+            // the doc comment on `ensure_struct_eq_helper`), so route through
+            // a synthesized per-type `__kryos_eq_<Type>` helper instead of
+            // falling into the generic scalar BinOp path below.
+            if matches!(op, ast::BinOp::Eq | ast::BinOp::Neq) {
+                let lty = infer_expr_type(ctx, left);
+                let helper_name = match &lty {
+                    MirType::Struct(name) => Some(ensure_struct_eq_helper(ctx, name)),
+                    MirType::Enum(name) => Some(ensure_enum_eq_helper(ctx, name)),
+                    _ => None,
+                };
+                if let Some(helper_name) = helper_name {
+                    let lhs = lower_expr_to_operand(ctx, left);
+                    let rhs = lower_expr_to_operand(ctx, right);
+                    let call = RValue::Call {
+                        func: helper_name,
+                        args: vec![lhs, rhs],
+                    };
+                    if *op == ast::BinOp::Neq {
+                        let eq_result = ctx.alloc_temp(MirType::Bool);
+                        ctx.emit(Instruction::Assign {
+                            dest: eq_result,
+                            value: call,
+                        });
+                        return RValue::UnOp {
+                            op: MirUnOp::Not,
+                            operand: Operand::Local(eq_result),
+                        };
+                    }
+                    return call;
+                }
+            }
+
             let mut lhs = lower_expr_to_operand(ctx, left);
             let mut rhs = lower_expr_to_operand(ctx, right);
             // Narrow UNSIGNED operands in comparisons: values are stored in
@@ -12357,6 +12400,329 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
     ctx.enum_defs.insert(mangled.clone(), variant_defs);
 
     mangled
+}
+
+// ---------------------------------------------------------------------------
+// Structural equality helpers for `==` / `!=` on struct/enum operands.
+//
+// The type checker permits `BinOp::Eq`/`BinOp::Neq` on any two operands of
+// the same type (it just unifies both sides and returns `Bool`), but neither
+// codegen backend can compare two aggregate (struct/enum) VALUES directly:
+// Cranelift's icmp/fcmp require scalar operands (comparing a struct/enum
+// there silently compares the two HANDLES/pointers, not their content --
+// `Pt{1,2} == Pt{1,2}` came back `false`), and LLVM's textual `icmp`
+// rejects an aggregate type outright (a hard AOT build failure).
+//
+// `ensure_struct_eq_helper` / `ensure_enum_eq_helper` synthesize a per-type
+// `__kryos_eq_<Type>(a, b) -> bool` MIR function (mirroring the existing
+// `__kryos_drop_<Type>` per-type helper both backends already generate for
+// destructors) the FIRST time a type is compared with `==`/`!=`, and cache
+// it in `ctx.synthesized_eq_helpers` so later comparisons of the same type
+// reuse the one helper. The helper's body is built as ordinary Kryos AST
+// (field access / match, exactly the shape a hand-written `eq` method would
+// take) and lowered through the normal `lower_function`/`lower_match` path,
+// so nested struct/enum fields recurse into their OWN helper automatically
+// via the very same call-site rewrite in `lower_expr_to_rvalue`'s
+// `BinaryOp` arm -- no bespoke codegen is needed in either backend.
+//
+// Scope: the type checker (`kryos-types::check::contains_array_or_map`)
+// rejects `==`/`!=` on any struct/enum that has an array/map field, directly
+// or through a nested struct/enum, with a clear compile error -- so by the
+// time MIR lowering reaches this code the operand type is guaranteed to
+// contain only scalar/str/nested-struct/enum fields. The `Array`/`Map` arms
+// below are unreachable in a program that passed type-checking; they are
+// defensive (skip the field rather than emit something that could crash a
+// backend) in case that invariant is ever violated.
+
+/// Ensure a `__kryos_eq_<StructName>(a, b) -> bool` helper exists for
+/// `struct_name`, synthesizing it on first use. Returns the helper's name.
+fn ensure_struct_eq_helper(ctx: &mut LoweringContext, struct_name: &str) -> String {
+    let helper_name = format!("__kryos_eq_{struct_name}");
+    if ctx.synthesized_eq_helpers.contains(&helper_name) {
+        return helper_name;
+    }
+    // Insert before building the body: a field that is itself (recursively)
+    // the same struct type would otherwise recurse forever. Real Kryos
+    // structs are value types (no indirection), so this cannot happen in
+    // practice, but the guard is cheap and matches the monomorphization
+    // placeholder-before-recursing pattern used elsewhere in this file.
+    ctx.synthesized_eq_helpers.insert(helper_name.clone());
+
+    let span = kryos_errors::Span::DUMMY;
+    let fields = ctx.struct_defs.get(struct_name).cloned().unwrap_or_default();
+    let self_ty = ast::TypeExpr::Simple {
+        name: struct_name.to_string(),
+        span,
+    };
+    let params = vec![
+        ast::Param {
+            name: "__eq_a".to_string(),
+            ty: Some(self_ty.clone()),
+            default: None,
+            span,
+        },
+        ast::Param {
+            name: "__eq_b".to_string(),
+            ty: Some(self_ty),
+            default: None,
+            span,
+        },
+    ];
+
+    let body_expr: ast::Expr = {
+        // Array/map fields cannot reach here in a program that passed
+        // type-checking (see module doc comment above) -- filtered
+        // defensively rather than trusted blindly.
+        let comparable: Vec<&(String, MirType)> = fields
+            .iter()
+            .filter(|(_, fty)| !matches!(fty, MirType::Array(..) | MirType::Map { .. }))
+            .collect();
+        if comparable.is_empty() {
+            ast::Expr::BoolLiteral { value: true, span }
+        } else {
+            let mut iter = comparable
+                .into_iter()
+                .map(|(fname, _)| eq_field_access_expr("__eq_a", "__eq_b", fname, span));
+            let mut acc = iter.next().expect("non-empty");
+            for next in iter {
+                acc = ast::Expr::BinaryOp {
+                    op: ast::BinOp::And,
+                    left: Box::new(acc),
+                    right: Box::new(next),
+                    span,
+                };
+            }
+            acc
+        }
+    };
+
+    let body = ast::Block {
+        stmts: vec![ast::Stmt::Return {
+            value: Some(body_expr),
+            span,
+        }],
+        span,
+    };
+    let ret_ty = Some(ast::TypeExpr::Simple {
+        name: "bool".to_string(),
+        span,
+    });
+
+    let saved = ctx.save_function_state();
+    let mir_func = lower_function(ctx, &helper_name, &params, &ret_ty, &body);
+    ctx.restore_function_state(saved);
+    ctx.func_ret_types
+        .insert(helper_name.clone(), MirType::Bool);
+    ctx.monomorphized_functions.push(mir_func);
+
+    helper_name
+}
+
+/// `a.<field> == b.<field>`, where `a_name`/`b_name` name the two params.
+fn eq_field_access_expr(a_name: &str, b_name: &str, field: &str, span: kryos_errors::Span) -> ast::Expr {
+    let a_field = ast::Expr::FieldAccess {
+        object: Box::new(ast::Expr::Identifier {
+            name: a_name.to_string(),
+            span,
+        }),
+        field: field.to_string(),
+        span,
+    };
+    let b_field = ast::Expr::FieldAccess {
+        object: Box::new(ast::Expr::Identifier {
+            name: b_name.to_string(),
+            span,
+        }),
+        field: field.to_string(),
+        span,
+    };
+    ast::Expr::BinaryOp {
+        op: ast::BinOp::Eq,
+        left: Box::new(a_field),
+        right: Box::new(b_field),
+        span,
+    }
+}
+
+/// Ensure a `__kryos_eq_<EnumName>(a, b) -> bool` helper exists for
+/// `enum_name`, synthesizing it on first use. Returns the helper's name.
+///
+/// Body shape (identical to hand-written stdlib code like
+/// `std::option::is_some`, just nested for the second operand):
+/// ```text
+/// return match a {
+///     Variant0(a0, a1) => match b {
+///         Variant0(b0, b1) => a0 == b0 && a1 == b1,
+///         _ => false,
+///     },
+///     Empty => match b { Empty => true, _ => false },
+///     ...
+/// }
+/// ```
+fn ensure_enum_eq_helper(ctx: &mut LoweringContext, enum_name: &str) -> String {
+    let helper_name = format!("__kryos_eq_{enum_name}");
+    if ctx.synthesized_eq_helpers.contains(&helper_name) {
+        return helper_name;
+    }
+    ctx.synthesized_eq_helpers.insert(helper_name.clone());
+
+    let span = kryos_errors::Span::DUMMY;
+    let variants = ctx.enum_defs.get(enum_name).cloned().unwrap_or_default();
+    let self_ty = ast::TypeExpr::Simple {
+        name: enum_name.to_string(),
+        span,
+    };
+    let params = vec![
+        ast::Param {
+            name: "__eq_a".to_string(),
+            ty: Some(self_ty.clone()),
+            default: None,
+            span,
+        },
+        ast::Param {
+            name: "__eq_b".to_string(),
+            ty: Some(self_ty),
+            default: None,
+            span,
+        },
+    ];
+
+    let mut outer_arms: Vec<ast::MatchArm> = Vec::new();
+    for (variant_idx, variant) in variants.iter().enumerate() {
+        // Array/map payload fields cannot reach here in a program that
+        // passed type-checking (see module doc comment above); a field of
+        // one of those types is skipped (treated as always-equal) rather
+        // than trusted blindly.
+        let field_is_comparable: Vec<bool> = variant
+            .fields
+            .iter()
+            .map(|fty| !matches!(fty, MirType::Array(..) | MirType::Map { .. }))
+            .collect();
+        let a_names: Vec<String> = (0..variant.fields.len())
+            .map(|i| format!("__eq_a_{variant_idx}_{i}"))
+            .collect();
+        let b_names: Vec<String> = (0..variant.fields.len())
+            .map(|i| format!("__eq_b_{variant_idx}_{i}"))
+            .collect();
+        let a_field_patterns: Vec<ast::Pattern> = a_names
+            .iter()
+            .map(|n| ast::Pattern::Ident {
+                name: n.clone(),
+                mutable: false,
+                span,
+            })
+            .collect();
+        let b_field_patterns: Vec<ast::Pattern> = b_names
+            .iter()
+            .map(|n| ast::Pattern::Ident {
+                name: n.clone(),
+                mutable: false,
+                span,
+            })
+            .collect();
+
+        let comparable_pairs: Vec<(&String, &String)> = a_names
+            .iter()
+            .zip(b_names.iter())
+            .zip(field_is_comparable.iter())
+            .filter(|(_, comparable)| **comparable)
+            .map(|(pair, _)| pair)
+            .collect();
+        let inner_body: ast::Expr = if comparable_pairs.is_empty() {
+            ast::Expr::BoolLiteral { value: true, span }
+        } else {
+            let mut it = comparable_pairs.into_iter().map(|(an, bn)| ast::Expr::BinaryOp {
+                op: ast::BinOp::Eq,
+                left: Box::new(ast::Expr::Identifier {
+                    name: an.clone(),
+                    span,
+                }),
+                right: Box::new(ast::Expr::Identifier {
+                    name: bn.clone(),
+                    span,
+                }),
+                span,
+            });
+            let mut acc = it.next().expect("non-empty");
+            for next in it {
+                acc = ast::Expr::BinaryOp {
+                    op: ast::BinOp::And,
+                    left: Box::new(acc),
+                    right: Box::new(next),
+                    span,
+                };
+            }
+            acc
+        };
+
+        let inner_match = ast::Expr::MatchExpr {
+            subject: Box::new(ast::Expr::Identifier {
+                name: "__eq_b".to_string(),
+                span,
+            }),
+            arms: vec![
+                ast::MatchArm {
+                    pattern: ast::Pattern::Enum {
+                        name: enum_name.to_string(),
+                        variant: variant.name.clone(),
+                        fields: b_field_patterns,
+                        span,
+                    },
+                    guard: None,
+                    body: Box::new(inner_body),
+                    span,
+                },
+                ast::MatchArm {
+                    pattern: ast::Pattern::Wildcard { span },
+                    guard: None,
+                    body: Box::new(ast::Expr::BoolLiteral { value: false, span }),
+                    span,
+                },
+            ],
+            span,
+        };
+
+        outer_arms.push(ast::MatchArm {
+            pattern: ast::Pattern::Enum {
+                name: enum_name.to_string(),
+                variant: variant.name.clone(),
+                fields: a_field_patterns,
+                span,
+            },
+            guard: None,
+            body: Box::new(inner_match),
+            span,
+        });
+    }
+
+    let match_expr = ast::Expr::MatchExpr {
+        subject: Box::new(ast::Expr::Identifier {
+            name: "__eq_a".to_string(),
+            span,
+        }),
+        arms: outer_arms,
+        span,
+    };
+    let body = ast::Block {
+        stmts: vec![ast::Stmt::Return {
+            value: Some(match_expr),
+            span,
+        }],
+        span,
+    };
+    let ret_ty = Some(ast::TypeExpr::Simple {
+        name: "bool".to_string(),
+        span,
+    });
+
+    let saved = ctx.save_function_state();
+    let mir_func = lower_function(ctx, &helper_name, &params, &ret_ty, &body);
+    ctx.restore_function_state(saved);
+    ctx.func_ret_types
+        .insert(helper_name.clone(), MirType::Bool);
+    ctx.monomorphized_functions.push(mir_func);
+
+    helper_name
 }
 
 /// Monomorphize a generic function template with concrete call-site argument

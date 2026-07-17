@@ -323,6 +323,29 @@ fn main() {
     expect(type_of(tof_map) == "map", "type_of map (not i64) on AOT")
     expect(type_of(42) == "i64" and type_of(1.5) == "f64" and type_of(true) == "bool", "type_of scalars")
 
+    // STRUCTURAL equality on structs and enums (`==`/`!=`). Was broken: the
+    // type-checker allowed it but codegen did not compare content -- JIT
+    // silently returned `false`, AOT failed to build (`icmp requires integer
+    // operands`). Now a synthesized `__kryos_eq_<Type>` helper compares
+    // field-by-field (struct) / tag+payload (enum), recursively, on both
+    // backends. (A struct/enum with an array/map field is rejected at
+    // type-check -- not tested here since that's a compile error.)
+    let eqpx1 = Pixel { r: 1, g: 2, b: 3 }
+    let eqpx2 = Pixel { r: 1, g: 2, b: 3 }
+    let eqpx3 = Pixel { r: 9, g: 2, b: 3 }
+    expect(eqpx1 == eqpx2, "struct == equal (all fields match)")
+    expect(not (eqpx1 == eqpx3), "struct == unequal (one field differs)")
+    expect(eqpx1 != eqpx3, "struct != is the negation")
+    let eqo1: Option<i64> = Some(5)
+    let eqo2: Option<i64> = Some(5)
+    let eqo3: Option<i64> = Some(6)
+    let eqn1: Option<i64> = None()
+    let eqn2: Option<i64> = None()
+    expect(eqo1 == eqo2, "enum == equal payload (Some)")
+    expect(not (eqo1 == eqo3), "enum == different payload")
+    expect(eqn1 == eqn2, "enum == equal nullary variant (None)")
+    expect(not (eqo1 == eqn1), "enum == different variant (Some vs None)")
+
     // Match guards and wildcard.
     let v = 15
     let mut kind = ""

@@ -1954,6 +1954,135 @@ impl TypeChecker {
         walk(fty, &map)
     }
 
+    /// Enum sibling of `substitute_struct_generics`: given an enum's declared
+    /// variant-field type `fty` (which may reference the enum's own generic
+    /// type-variable ids) and the concrete `instance_generics` a particular
+    /// value was constructed/annotated with, substitute the type variables
+    /// with their concrete bindings.
+    fn substitute_enum_generics(&mut self, name: &str, instance_generics: &[Type], fty: &Type) -> Type {
+        if instance_generics.is_empty() {
+            return fty.clone();
+        }
+        let Some(def) = self.env.lookup_enum(name) else {
+            return fty.clone();
+        };
+        if def.generic_var_ids.is_empty() {
+            return fty.clone();
+        }
+        let map: std::collections::HashMap<u32, Type> = def
+            .generic_var_ids
+            .iter()
+            .copied()
+            .zip(instance_generics.iter().cloned())
+            .collect();
+        fn walk(t: &Type, map: &std::collections::HashMap<u32, Type>) -> Type {
+            match t {
+                Type::Var(id) => map.get(id).cloned().unwrap_or_else(|| t.clone()),
+                Type::Array { element, size } => Type::Array {
+                    element: Box::new(walk(element, map)),
+                    size: *size,
+                },
+                Type::Tuple { elements } => Type::Tuple {
+                    elements: elements.iter().map(|e| walk(e, map)).collect(),
+                },
+                Type::Map { key, value } => Type::Map {
+                    key: Box::new(walk(key, map)),
+                    value: Box::new(walk(value, map)),
+                },
+                Type::Option { inner } => Type::Option {
+                    inner: Box::new(walk(inner, map)),
+                },
+                Type::Result { ok, err } => Type::Result {
+                    ok: Box::new(walk(ok, map)),
+                    err: Box::new(walk(err, map)),
+                },
+                Type::Struct { name, generics } => Type::Struct {
+                    name: name.clone(),
+                    generics: generics.iter().map(|g| walk(g, map)).collect(),
+                },
+                Type::Enum { name, generics } => Type::Enum {
+                    name: name.clone(),
+                    generics: generics.iter().map(|g| walk(g, map)).collect(),
+                },
+                Type::Function { params, ret } => Type::Function {
+                    params: params.iter().map(|p| walk(p, map)).collect(),
+                    ret: Box::new(walk(ret, map)),
+                },
+                Type::Reference { inner, mutable } => Type::Reference {
+                    inner: Box::new(walk(inner, map)),
+                    mutable: *mutable,
+                },
+                Type::Shared { inner } => Type::Shared {
+                    inner: Box::new(walk(inner, map)),
+                },
+                other => other.clone(),
+            }
+        }
+        walk(fty, &map)
+    }
+
+    /// True if `ty` is, or (recursively, through struct/enum fields/variant
+    /// payloads and `Option`/`Result`/tuple wrappers) contains, an array or
+    /// map type. Used to reject `==`/`!=` on a struct/enum whose structural
+    /// comparison is not yet implemented for array/map-shaped fields (see
+    /// the `BinOp::Eq | BinOp::Neq` arm in `check_binary_op`), rather than
+    /// let it through to codegen where it previously either silently
+    /// compared handles (Cranelift JIT) or failed the AOT LLVM build.
+    /// `visited` guards against infinite recursion on a self-referential
+    /// struct/enum definition.
+    fn contains_array_or_map(
+        &mut self,
+        ty: &Type,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        let ty = self.engine.resolve(ty);
+        match &ty {
+            Type::Array { .. } | Type::Map { .. } => true,
+            Type::Option { inner } => self.contains_array_or_map(inner, visited),
+            Type::Result { ok, err } => {
+                self.contains_array_or_map(ok, visited) || self.contains_array_or_map(err, visited)
+            }
+            Type::Tuple { elements } => elements
+                .iter()
+                .any(|e| self.contains_array_or_map(e, visited)),
+            Type::Struct { name, generics } => {
+                if !visited.insert(format!("struct:{name}")) {
+                    return false;
+                }
+                let Some(def) = self.env.lookup_struct(name).cloned() else {
+                    return false;
+                };
+                let generics = generics.clone();
+                for (_, fty) in def.fields {
+                    let substituted = self.substitute_struct_generics(name, &generics, &fty);
+                    if self.contains_array_or_map(&substituted, visited) {
+                        return true;
+                    }
+                }
+                false
+            }
+            Type::Enum { name, generics } => {
+                if !visited.insert(format!("enum:{name}")) {
+                    return false;
+                }
+                let Some(def) = self.env.lookup_enum(name).cloned() else {
+                    return false;
+                };
+                let generics = generics.clone();
+                for (_, fields) in def.variants {
+                    for fty in fields {
+                        let substituted = self.substitute_enum_generics(name, &generics, &fty);
+                        if self.contains_array_or_map(&substituted, visited) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+
     /// The stdlib bridge enums `Result`/`Option` are declared non-generic
     /// with `any` payloads; their constructors used to produce a bare
     /// `Enum{Result, []}` that unified with ANY `Result<T, E>` annotation,
@@ -3749,6 +3878,29 @@ impl TypeChecker {
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq => {
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
+                }
+                // `==`/`!=` on a struct or enum lowers to a synthesized
+                // structural-equality helper (kryos-mir's
+                // `ensure_struct_eq_helper`/`ensure_enum_eq_helper`) that
+                // compares fields pairwise. Array/map fields don't have a
+                // cheap, unsurprising structural comparison implemented yet
+                // (elementwise array/map equality), so reject the comparison
+                // here with a clear message rather than let it through to
+                // codegen, where it would previously either silently compare
+                // handles (JIT) or fail to build (AOT).
+                if matches!(op, BinOp::Eq | BinOp::Neq) {
+                    let resolved = self.engine.resolve(&left_ty);
+                    let mut visited = std::collections::HashSet::new();
+                    if self.contains_array_or_map(&resolved, &mut visited) {
+                        let op_sym = if op == BinOp::Eq { "==" } else { "!=" };
+                        self.error(
+                            format!(
+                                "cannot apply `{op_sym}` to type `{resolved}`: it has an array or map field (directly or nested) -- structural equality for array/map fields is not supported; compare those fields explicitly"
+                            ),
+                            span,
+                        );
+                        return Type::Error;
+                    }
                 }
                 Type::Bool
             }
