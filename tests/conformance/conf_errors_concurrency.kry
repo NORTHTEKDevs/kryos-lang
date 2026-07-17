@@ -519,6 +519,14 @@ fn main() {
 
     expect(tc_cond == 7, "try/catch as an if-branch block-tail value type-checks and runs")
 
+    // The try body's OWN tail can itself be a value `if` (parsed as Stmt::If,
+    // not Stmt::Expr): `try { if c { 1 } else { 2 } } catch ..` must yield the
+    // if's value, not Ok(0). (match-as-try-tail already worked; only if did not.)
+    let tc_if_then = { try { if true { 5 } else { 6 } } catch e { 99 } }
+    expect(tc_if_then == 5, "try body tail is a value-if (then branch)")
+    let tc_if_else = { try { if false { 5 } else { 6 } } catch e { 99 } }
+    expect(tc_if_else == 6, "try body tail is a value-if (else branch)")
+
 
     println("conformance errors+concurrency: PASS")
 }
