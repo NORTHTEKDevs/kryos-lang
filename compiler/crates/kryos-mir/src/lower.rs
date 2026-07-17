@@ -5254,6 +5254,36 @@ fn lower_try_catch(
                         fields: vec![val],
                     },
                 });
+            } else if let Some(if_expr) = stmt.as_value_if_expr() {
+                // The try body's OWN tail is a value `if` (parsed as Stmt::If,
+                // not Stmt::Expr): lower it to a value and wrap in Ok, exactly
+                // like the bare-expr tail above. Without this it fell to the
+                // side-effecting branch below and stored Ok(0) -- `try { if c
+                // { 1 } else { 2 } }` silently yielded 0 on both backends.
+                // (`match` at tail position is already Stmt::Expr{MatchExpr},
+                // so it was covered; only `if` commits to Stmt::If.)
+                let val = lower_expr_to_operand(ctx, &if_expr);
+                let val = match val {
+                    Operand::Constant(_) => {
+                        let ty = infer_expr_type(ctx, &if_expr);
+                        let tmp = ctx.alloc_temp(ty);
+                        ctx.emit(Instruction::Assign {
+                            dest: tmp,
+                            value: RValue::Use(val),
+                        });
+                        Operand::Local(tmp)
+                    }
+                    other => other,
+                };
+                emit_exception_check(ctx, result_local, check_bb);
+                ctx.emit(Instruction::Assign {
+                    dest: result_local,
+                    value: RValue::EnumVariant {
+                        enum_name: "Result".into(),
+                        variant_idx: 0,
+                        fields: vec![val],
+                    },
+                });
             } else {
                 lower_stmt(ctx, stmt);
                 emit_exception_check(ctx, result_local, check_bb);
