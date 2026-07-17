@@ -8445,6 +8445,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 let helper_name = match &lty {
                     MirType::Struct(name) => Some(ensure_struct_eq_helper(ctx, name)),
                     MirType::Enum(name) => Some(ensure_enum_eq_helper(ctx, name)),
+                    MirType::Tuple(elems) => {
+                        Some(ensure_tuple_eq_helper(ctx, &elems.clone()))
+                    }
                     _ => None,
                 };
                 if let Some(helper_name) = helper_name {
@@ -12483,6 +12486,98 @@ fn ensure_struct_eq_helper(ctx: &mut LoweringContext, struct_name: &str) -> Stri
             let mut iter = comparable
                 .into_iter()
                 .map(|(fname, _)| eq_field_access_expr("__eq_a", "__eq_b", fname, span));
+            let mut acc = iter.next().expect("non-empty");
+            for next in iter {
+                acc = ast::Expr::BinaryOp {
+                    op: ast::BinOp::And,
+                    left: Box::new(acc),
+                    right: Box::new(next),
+                    span,
+                };
+            }
+            acc
+        }
+    };
+
+    let body = ast::Block {
+        stmts: vec![ast::Stmt::Return {
+            value: Some(body_expr),
+            span,
+        }],
+        span,
+    };
+    let ret_ty = Some(ast::TypeExpr::Simple {
+        name: "bool".to_string(),
+        span,
+    });
+
+    let saved = ctx.save_function_state();
+    let mir_func = lower_function(ctx, &helper_name, &params, &ret_ty, &body);
+    ctx.restore_function_state(saved);
+    ctx.func_ret_types
+        .insert(helper_name.clone(), MirType::Bool);
+    ctx.monomorphized_functions.push(mir_func);
+
+    helper_name
+}
+
+/// Ensure a `__kryos_eq_tuple_<elemtypes>(a, b) -> bool` helper exists for a
+/// tuple type, comparing element-by-element (`a.0 == b.0 and a.1 == b.1 ...`).
+/// Tuples are structurally typed (no name), so the helper name is mangled from
+/// the element types; a nested tuple/struct/enum element recurses through the
+/// same `==` rewrite. A tuple with an array/map element is rejected at
+/// type-check (contains_array_or_map covers Type::Tuple), so those elements are
+/// filtered defensively here, exactly like the struct helper.
+fn ensure_tuple_eq_helper(ctx: &mut LoweringContext, elems: &[MirType]) -> String {
+    let mangle: String = elems
+        .iter()
+        .map(|e| {
+            format!("{e}")
+                .chars()
+                .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("_");
+    let helper_name = format!("__kryos_eq_tuple_{}_{}", elems.len(), mangle);
+    if ctx.synthesized_eq_helpers.contains(&helper_name) {
+        return helper_name;
+    }
+    ctx.synthesized_eq_helpers.insert(helper_name.clone());
+
+    let span = kryos_errors::Span::DUMMY;
+    let tuple_ty = ast::TypeExpr::Tuple {
+        elements: elems
+            .iter()
+            .map(|e| mir_type_to_type_expr_spanned(e, span))
+            .collect(),
+        span,
+    };
+    let params = vec![
+        ast::Param {
+            name: "__eq_a".to_string(),
+            ty: Some(tuple_ty.clone()),
+            default: None,
+            span,
+        },
+        ast::Param {
+            name: "__eq_b".to_string(),
+            ty: Some(tuple_ty),
+            default: None,
+            span,
+        },
+    ];
+
+    let body_expr: ast::Expr = {
+        let comparable: Vec<usize> = (0..elems.len())
+            .filter(|&i| !matches!(elems[i], MirType::Array(..) | MirType::Map { .. }))
+            .collect();
+        if comparable.is_empty() {
+            ast::Expr::BoolLiteral { value: true, span }
+        } else {
+            let mut iter = comparable
+                .into_iter()
+                .map(|i| eq_field_access_expr("__eq_a", "__eq_b", &i.to_string(), span));
             let mut acc = iter.next().expect("non-empty");
             for next in iter {
                 acc = ast::Expr::BinaryOp {

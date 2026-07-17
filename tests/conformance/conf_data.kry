@@ -345,6 +345,11 @@ fn main() {
     expect(not (eqo1 == eqo3), "enum == different payload")
     expect(eqn1 == eqn2, "enum == equal nullary variant (None)")
     expect(not (eqo1 == eqn1), "enum == different variant (Some vs None)")
+    let eqt1 = (1, "a")
+    let eqt2 = (1, "a")
+    let eqt3 = (1, "b")
+    expect(eqt1 == eqt2, "tuple == equal (mixed i64/str elements)")
+    expect(not (eqt1 == eqt3), "tuple == unequal (one element differs)")
 
     // Match guards and wildcard.
     let v = 15
