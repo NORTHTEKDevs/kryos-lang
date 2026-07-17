@@ -98,14 +98,14 @@ pub struct LlvmCodegen {
     /// a mutating counter/accumulator closure's state persists across
     /// calls instead of resetting -- see `emit_closure_thunks`.
     closure_mutated_slot: HashMap<String, u32>,
-    /// func_name -> capture index whose Struct-typed value must be passed
-    /// to the underlying function BY POINTER (skipping the normal
+    /// func_name -> capture indices whose Struct-typed values must each be
+    /// passed to the underlying function BY POINTER (skipping the normal
     /// byval-copy convention), copied from `MirFunction::attributes.
-    /// mutated_capture_ptr_slot` (see kryos-mir/src/lower.rs). Lets a
-    /// closure that mutates a captured struct's field write through to the
-    /// persistent env block instead of a private byval copy discarded at
-    /// return -- see `emit_closure_thunks` and `emit_function`.
-    closure_struct_ptr_slot: HashMap<String, u32>,
+    /// mutated_capture_ptr_slots` (see kryos-mir/src/lower.rs). Lets a
+    /// closure that mutates one or more captured structs' fields write through
+    /// to the persistent env block instead of a private byval copy discarded
+    /// at return -- see `emit_closure_thunks` and `emit_function`.
+    closure_struct_ptr_slot: HashMap<String, Vec<u32>>,
     /// Trait vtable map from MIR: (concrete_type, trait_name) -> ordered list
     /// of mangled method names. Used to materialize trait objects and
     /// dispatch VtableCall.
@@ -284,8 +284,11 @@ impl LlvmCodegen {
                                 if let Some(slot) = mf.attributes.mutated_capture_slot {
                                     self.closure_mutated_slot.insert(func_name.clone(), slot);
                                 }
-                                if let Some(slot) = mf.attributes.mutated_capture_ptr_slot {
-                                    self.closure_struct_ptr_slot.insert(func_name.clone(), slot);
+                                if !mf.attributes.mutated_capture_ptr_slots.is_empty() {
+                                    self.closure_struct_ptr_slot.insert(
+                                        func_name.clone(),
+                                        mf.attributes.mutated_capture_ptr_slots.clone(),
+                                    );
                                 }
                             }
                         }
@@ -457,8 +460,11 @@ impl LlvmCodegen {
                                 if let Some(slot) = mf.attributes.mutated_capture_slot {
                                     self.closure_mutated_slot.insert(func_name.clone(), slot);
                                 }
-                                if let Some(slot) = mf.attributes.mutated_capture_ptr_slot {
-                                    self.closure_struct_ptr_slot.insert(func_name.clone(), slot);
+                                if !mf.attributes.mutated_capture_ptr_slots.is_empty() {
+                                    self.closure_struct_ptr_slot.insert(
+                                        func_name.clone(),
+                                        mf.attributes.mutated_capture_ptr_slots.clone(),
+                                    );
                                 }
                             }
                         }
@@ -1685,8 +1691,10 @@ impl LlvmCodegen {
                             // env[i+1] points at -- see `emit_function`'s
                             // matching non-byval signature/prologue for
                             // this same func_name+slot.
-                            if self.closure_struct_ptr_slot.get(func_name.as_str())
-                                == Some(&(i as u32))
+                            if self
+                                .closure_struct_ptr_slot
+                                .get(func_name.as_str())
+                                .is_some_and(|slots| slots.contains(&(i as u32)))
                             {
                                 call_args.push(format!("ptr {raw}"));
                             } else {
@@ -2972,9 +2980,9 @@ impl LlvmCodegen {
         }
         for (i, p) in func.params.iter().enumerate() {
             if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
-                if func.attributes.mutated_capture_ptr_slot == Some(i as u32) {
+                if func.attributes.mutated_capture_ptr_slots.contains(&(i as u32)) {
                     // Mutated struct capture: plain pointer, no `byval` --
-                    // see `mutated_capture_ptr_slot`'s doc comment and the
+                    // see `mutated_capture_ptr_slots`' doc comment and the
                     // matching non-copy prologue below. This function is
                     // only ever reached through its own `_env` thunk
                     // (mutating closures are excluded from the
@@ -3057,25 +3065,27 @@ impl LlvmCodegen {
             self.emit_line(&format!("bb{}:", first_block.id.0));
         }
 
-        // Local id of the mutated-struct-capture param (if any) whose
-        // `.addr` must ALIAS the incoming pointer instead of getting a
-        // fresh alloca -- see `mutated_capture_ptr_slot`'s doc comment.
+        // Local ids of the mutated-struct-capture params (if any) whose
+        // `.addr` must each ALIAS the incoming pointer instead of getting a
+        // fresh alloca -- see `mutated_capture_ptr_slots`' doc comment.
         // Allocating (and, worse, zero-initializing -- see the match below)
-        // a private slot for it would immediately stomp the caller's
+        // a private slot for one would immediately stomp the caller's
         // persistent env block before the body ever reads the real
         // captured value.
-        let ptr_slot_local_id: Option<u32> = func
+        let ptr_slot_local_ids: HashSet<u32> = func
             .attributes
-            .mutated_capture_ptr_slot
-            .and_then(|idx| func.params.get(idx as usize))
-            .map(|p| p.local.0);
+            .mutated_capture_ptr_slots
+            .iter()
+            .filter_map(|&idx| func.params.get(idx as usize))
+            .map(|p| p.local.0)
+            .collect();
 
         // Emit allocas for all mutable locals at the top of the entry block.
         // Use the resolved local_types so enums/aggregates get the correct
         // backing storage size (e.g. `alloca { i64, i64 }`, not `alloca i64`).
         let _param_ids: HashSet<u32> = func.params.iter().map(|p| p.local.0).collect();
         for local in &func.locals {
-            if Some(local.id.0) == ptr_slot_local_id {
+            if ptr_slot_local_ids.contains(&local.id.0) {
                 self.emit_line(&format!(
                     "  %_{}.addr = getelementptr i8, ptr %_{}_arg, i64 0",
                     local.id.0, local.id.0
@@ -3189,7 +3199,7 @@ impl LlvmCodegen {
         // For aggregate (byval) params: load the aggregate from the byval ptr
         // into the SSA value `%_N`, or into the alloca if mutable.
         for p in &func.params {
-            if Some(p.local.0) == ptr_slot_local_id {
+            if ptr_slot_local_ids.contains(&p.local.0) {
                 // Already aliased to `%_N_arg` directly above -- no byval
                 // copy-in exists to load from (its param is a plain `ptr`).
                 continue;

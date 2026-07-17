@@ -249,11 +249,14 @@ pub struct MirAttributes {
     /// (skipping the normal byval/copy-by-value convention every other
     /// aggregate parameter gets) so a field write inside the closure body
     /// lands in the persistent env block instead of a private copy that's
-    /// discarded when the call returns. `None` for ordinary functions, for
-    /// scalar mutated captures (those use `mutated_capture_slot` instead),
-    /// and for closures with more than one mutated capture (a documented
-    /// residual limitation, matching `mutated_capture_slot`'s own scope).
-    pub mutated_capture_ptr_slot: Option<u32>,
+    /// discarded when the call returns. Holds the env-slot index of EVERY
+    /// mutated Struct-typed capture (each is passed by pointer independently),
+    /// so a closure mutating two or more struct captures persists all of them
+    /// -- with a single slot, a second co-occurring mutated capture reverted
+    /// every struct capture to the byval copy-on-entry path and silently
+    /// dropped their per-call persistence on AOT. Empty for ordinary functions
+    /// and for scalar mutated captures (those use `mutated_capture_slot`).
+    pub mutated_capture_ptr_slots: Vec<u32>,
 }
 
 /// A single MIR function.

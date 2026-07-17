@@ -10143,18 +10143,20 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         mir_func.attributes.mutated_capture_slot = Some(idx as u32);
                     }
                 }
-                // Aggregate (struct/enum) single-mutated-capture case: no
-                // tail-shape restriction needed here (unlike the scalar
-                // slot above) -- see `mutated_capture_ptr_slot`'s doc
-                // comment. Passing the capture BY POINTER makes any field
-                // mutation on ANY path through the body land directly in
-                // the persistent env block, so there is no "does the tail
-                // equal the mutated value" write-back-correctness concern.
-                if mutated_captures.len() == 1 {
-                    if let Some(idx) = captures.iter().position(|c| c == &mutated_captures[0]) {
+                // Aggregate (struct) mutated-capture case: no tail-shape
+                // restriction needed here (unlike the scalar slot above) --
+                // see `mutated_capture_ptr_slots`' doc comment. Passing the
+                // capture BY POINTER makes any field mutation on ANY path
+                // through the body land directly in the persistent env block,
+                // so there is no "does the tail equal the mutated value"
+                // write-back-correctness concern. EACH mutated struct capture
+                // gets its own pointer slot independently, so a closure that
+                // mutates two or more struct captures persists all of them.
+                for cap in &mutated_captures {
+                    if let Some(idx) = captures.iter().position(|c| c == cap) {
                         let cap_ty = mir_func.params.get(idx).map(|p| p.ty.clone());
                         if matches!(cap_ty, Some(MirType::Struct(_))) {
-                            mir_func.attributes.mutated_capture_ptr_slot = Some(idx as u32);
+                            mir_func.attributes.mutated_capture_ptr_slots.push(idx as u32);
                         }
                     }
                 }
