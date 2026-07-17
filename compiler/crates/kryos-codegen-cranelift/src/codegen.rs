@@ -5503,6 +5503,33 @@ fn translate_rvalue<M: Module>(
                             builder.ins().call(f, &[val]);
                             val
                         }
+                        // Struct/Enum captures: box into an INDEPENDENT
+                        // calloc'd block (deep copy) rather than storing the
+                        // raw shared pointer. Without this, a struct captured
+                        // by more than one closure env that both reach
+                        // teardown (e.g. a nested closure whose inner lambda
+                        // also captures the outer's struct, or the map-value
+                        // case in gotcha #11) has EVERY env's dropper call
+                        // `free()` on the SAME block -- a double-free
+                        // (Cranelift-only exit 127; the enclosing scope's own
+                        // copy of the struct is a further independent alias).
+                        // Mirrors the LLVM/AOT backend's `RValue::Closure`
+                        // capture-store, which already `kryos_calloc`s a
+                        // fresh copy for Struct/Enum/Tuple captures for
+                        // exactly this reason -- this closes the same gap on
+                        // the JIT side using the existing deep-copy helpers
+                        // (`emit_struct_deep_copy`/`emit_enum_deep_copy`)
+                        // already relied on elsewhere (@copy struct params,
+                        // array/field-read aliasing) to avoid the identical
+                        // double-free shape.
+                        Some(MirType::Struct(sname))
+                            if translator.struct_defs.contains_key(sname) =>
+                        {
+                            emit_struct_deep_copy(sname, val, builder, translator, module)?
+                        }
+                        Some(MirType::Enum(ename)) if translator.enum_defs.contains_key(ename) => {
+                            emit_enum_deep_copy(ename, val, builder, translator, module)?
+                        }
                         _ => val,
                     };
 

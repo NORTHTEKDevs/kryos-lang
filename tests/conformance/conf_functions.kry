@@ -109,6 +109,30 @@ impl Describable for Dog {
     }
 }
 
+struct CapPt { x: i64, y: i64 }
+
+// Closure struct-capture double-free (gotcha #11, JIT-only, now RESOLVED): a
+// struct captured by two closure envs that both reach teardown (a NESTED
+// closure whose inner lambda also captures the outer scope's struct, or a
+// closure stored as a map value) double-freed the struct on Cranelift/JIT
+// (exit 127). The Cranelift capture-store now deep-copies struct/enum captures
+// like AOT already did.
+fn nested_struct_capture() -> i64 {
+    let p = CapPt { x: 10, y: 20 }
+    let outer = || {
+        let inner = || { p.x + p.y }
+        inner()
+    }
+    return outer()
+}
+
+fn map_closure_struct_capture() -> i64 {
+    let s = CapPt { x: 6, y: 0 }
+    let m: map<str, fn() -> i64> = {"k": || { s.x }}
+    let f = m["k"]
+    return f()
+}
+
 fn main() {
     // Recursion.
     expect(fib(10) == 55, "recursion")
@@ -201,6 +225,11 @@ fn main() {
     expect((not 1 < 2) == false, "not binds looser than comparison: not 1 < 2 == not(1<2)")
     expect((not true and false) == false, "not binds tighter than and: not true and false == (not true) and false")
     expect((not (true and false)) == true, "parenthesized not(and) still works")
+
+    // Closure captures of a struct reached by two env teardowns must not
+    // double-free (gotcha #11, was JIT exit 127).
+    expect(nested_struct_capture() == 30, "nested closure capturing outer-scope struct (no JIT double-free)")
+    expect(map_closure_struct_capture() == 6, "closure capturing struct, stored as a map value (no JIT double-free)")
 
     println("conformance functions: PASS")
 }
