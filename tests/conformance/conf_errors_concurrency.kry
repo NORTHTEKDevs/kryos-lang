@@ -526,6 +526,17 @@ fn main() {
     expect(tc_if_then == 5, "try body tail is a value-if (then branch)")
     let tc_if_else = { try { if false { 5 } else { 6 } } catch e { 99 } }
     expect(tc_if_else == 6, "try body tail is a value-if (else branch)")
+    // try/catch as a MATCH-ARM tail value, and as a `==` operand: both sized
+    // their result via infer_expr_type's Block arm, which lacked a TryCatch case
+    // -> void slot -> AOT substituted 0 (match arm) / emitted `icmp void` (==).
+    let tc_marm = match 0 { 0 => { try { 100 } catch e { -1 } }, _ => { try { throw "e" } catch e { -2 } } }
+    expect(tc_marm == 100, "try/catch as a match-arm tail value (ok arm)")
+    let tc_marm2 = match 1 { 0 => { try { 100 } catch e { -1 } }, _ => { try { throw "e" } catch e { -2 } } }
+    expect(tc_marm2 == -2, "try/catch as a match-arm tail value (throwing arm)")
+    let tc_eq = ({ try { throw "x" } catch e { 1 } }) == 1
+    expect(tc_eq, "try/catch as a == operand (throwing) builds and compares on both backends")
+    let tc_eq2 = ({ try { 5 } catch e { 0 } }) == 5
+    expect(tc_eq2, "try/catch as a == operand (non-throwing)")
 
 
     println("conformance errors+concurrency: PASS")

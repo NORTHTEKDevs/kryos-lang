@@ -8082,6 +8082,24 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             }
             match block.stmts.last() {
                 Some(ast::Stmt::Expr { expr, .. }) => infer_expr_type(ctx, expr),
+                // A trailing `try { .. } catch e { .. }` is the block's tail
+                // VALUE too (mirrors the `lower_expr_to_rvalue` Expr::Block
+                // path and `infer_try_catch_value_type` in kryos-types). Without
+                // this, this TYPE-ONLY inference (used to size a match arm's
+                // result local via `infer_match_result_type`, and a binary-op
+                // operand's temp via `lower_expr_to_operand`'s fallback) typed
+                // a try/catch-tail block as `void` even though the ACTUAL
+                // lowering of that same block correctly produced an i64/str/..
+                // value -- the value got stored into a void-typed slot, and
+                // the LLVM backend's void-coercion silently substituted `0`
+                // (or emitted an invalid `icmp ... void` for a `==` operand).
+                Some(ast::Stmt::TryCatch {
+                    try_block,
+                    catch_block,
+                    ..
+                }) => infer_branch_value_type(ctx, try_block)
+                    .or_else(|| infer_branch_value_type(ctx, catch_block))
+                    .unwrap_or(MirType::I64),
                 // A trailing `if ... else ...` is the block's tail value.
                 Some(s) => s
                     .as_value_if_expr()
