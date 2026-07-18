@@ -6574,6 +6574,51 @@ impl LlvmCodegen {
                     self.emit_line(&format!(
                         "  {raw} = extractvalue {obj_ty} {obj_val}, {field_idx} ; .{field}"
                     ));
+                    // Mirror the construction side: emit_aggregate_tuple stores
+                    // elements via coerce_value's aggregate->i64 arm, which
+                    // boxes a MULTI-field aggregate (slot = heap pointer) but
+                    // collapses a SINGLE-field one BY VALUE (payload-less enum
+                    // tag `{ i64 }`, single-field newtype struct). Unboxing a
+                    // by-value slot inttoptr's the raw tag and dereferences
+                    // e.g. address 0x1 -> AOT crash on `match (a, b)` over a
+                    // payload-less enum. Rebuild single-field aggregates with
+                    // insertvalue instead (the exact inverse in coerce_value's
+                    // i64->aggregate arm).
+                    let single_field_f0ty: Option<String> = if dest_ty.starts_with('{') {
+                        if dest_ty.contains(',') {
+                            None
+                        } else {
+                            Some("i64".to_string())
+                        }
+                    } else if let Some(name) = dest_ty.strip_prefix('%') {
+                        self.struct_defs.get(name).and_then(|fs| {
+                            if fs.len() == 1 {
+                                fs.first().map(|(_, t)| mir_type_to_llvm(t))
+                            } else {
+                                None
+                            }
+                        })
+                    } else {
+                        None
+                    };
+                    if let Some(f0ty) = single_field_f0ty {
+                        let fv = self.coerce_value(&raw, "i64", &f0ty);
+                        let target = if is_mutable {
+                            self.next_temp()
+                        } else {
+                            format!("%_{}", dest.0)
+                        };
+                        self.emit_line(&format!(
+                            "  {target} = insertvalue {dest_ty} undef, {f0ty} {fv}, 0"
+                        ));
+                        if is_mutable {
+                            self.emit_line(&format!(
+                                "  store {dest_ty} {target}, ptr %_{}.addr",
+                                dest.0
+                            ));
+                        }
+                        return Ok(());
+                    }
                     let p = self.next_temp();
                     self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
                     if is_mutable {

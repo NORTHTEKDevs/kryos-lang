@@ -5518,6 +5518,50 @@ fn and_into_acc(ctx: &mut LoweringContext, acc: &mut Option<Operand>, this: Oper
 /// one-level-only version of this logic, added in 95a6cb6, only recursed
 /// one level and hit a catch-all `_ => {}` for a sub-element that was itself
 /// a tuple).
+/// If `name` is a variant of the enum type `ety`, return (enum_name, variant_idx).
+/// A bare ident element in a tuple/nested pattern whose element type IS an enum
+/// and whose name matches one of its variants is a variant TEST, not a binding
+/// (mirrors the single-subject switch path's `Pattern::Ident` resolution).
+/// Previously `(Red, Red)` bound both elements as fresh locals named `Red`, so
+/// every tuple-of-bare-variant arm matched unconditionally and the FIRST arm
+/// always won. A name that matches no variant of the element's own enum type
+/// stays an ordinary binding.
+fn ident_variant_of(ctx: &LoweringContext, name: &str, ety: &MirType) -> Option<(String, u32)> {
+    // Accept the Struct(name) spelling of an enum type too: lower_type_expr
+    // records every non-builtin named type as Struct (it can't know which
+    // names are enums), and not every path normalizes before getting here.
+    let en = match ety {
+        MirType::Enum(n) => n,
+        MirType::Struct(n) if ctx.enum_defs.contains_key(n.as_str()) => n,
+        _ => return None,
+    };
+    ctx.enum_defs
+        .get(en.as_str())
+        .and_then(|vs| vs.iter().position(|v| v.name == name))
+        .map(|i| (en.clone(), i as u32))
+}
+
+/// Recover enum types recorded as Struct(name), recursing through tuple
+/// elements. lower_type_expr maps every non-builtin named type to
+/// Struct(name); the existing single-level recoveries fix a DIRECT enum
+/// payload, but a payload like `(Light, i64)` kept the Struct("Light") label
+/// inside the tuple -- the LLVM backend then renders the local as
+/// `{ %Light, i64 }` where %Light is an opaque forward decl, and clang
+/// rejects the alloca/load ("unsized type"). Normalizing to Enum makes the
+/// tuple render `{ i64, i64 }`, matching the construction-side layout.
+fn recover_enum_types(ctx: &LoweringContext, ty: MirType) -> MirType {
+    match ty {
+        MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
+        MirType::Tuple(elems) => MirType::Tuple(
+            elems
+                .into_iter()
+                .map(|e| recover_enum_types(ctx, e))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 fn bind_tuple_pattern(
     ctx: &mut LoweringContext,
     tuple_local: LocalId,
@@ -5530,14 +5574,46 @@ fn bind_tuple_pattern(
         match epat {
             ast::Pattern::Wildcard { .. } => {}
             ast::Pattern::Ident { name, mutable, .. } => {
-                let bound = ctx.alloc_local(Some(name.clone()), ety.clone(), *mutable);
-                ctx.emit(Instruction::Assign {
-                    dest: bound,
-                    value: RValue::Field {
-                        object: Operand::Local(tuple_local),
-                        field: ei.to_string(),
-                    },
-                });
+                if let Some((_, vidx)) = ident_variant_of(ctx, name, &ety) {
+                    // Bare variant element, e.g. `(Red, Red)`: tag test, no binding.
+                    let elem = ctx.alloc_temp(ety.clone());
+                    if !is_copy_type(ctx, &ety) {
+                        ctx.dropped_locals.insert(elem.0);
+                    }
+                    ctx.emit(Instruction::Assign {
+                        dest: elem,
+                        value: RValue::Field {
+                            object: Operand::Local(tuple_local),
+                            field: ei.to_string(),
+                        },
+                    });
+                    let tag = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: tag,
+                        value: RValue::EnumTag {
+                            operand: Operand::Local(elem),
+                        },
+                    });
+                    let cmp = ctx.alloc_temp(MirType::Bool);
+                    ctx.emit(Instruction::Assign {
+                        dest: cmp,
+                        value: RValue::BinOp {
+                            op: MirBinOp::Eq,
+                            left: Operand::Local(tag),
+                            right: Operand::Constant(Constant::Int(vidx as i64)),
+                        },
+                    });
+                    and_into_acc(ctx, acc, Operand::Local(cmp));
+                } else {
+                    let bound = ctx.alloc_local(Some(name.clone()), ety.clone(), *mutable);
+                    ctx.emit(Instruction::Assign {
+                        dest: bound,
+                        value: RValue::Field {
+                            object: Operand::Local(tuple_local),
+                            field: ei.to_string(),
+                        },
+                    });
+                }
             }
             ast::Pattern::Literal { expr, .. } => {
                 let elem = ctx.alloc_temp(ety.clone());
@@ -6017,12 +6093,20 @@ fn lower_match_sequential(
 
 /// True when a sub-pattern inside an enum-variant pattern can FAIL to match
 /// (so the arm needs a runtime refinement check, not just payload bindings).
-fn is_refutable_subpattern(pat: &ast::Pattern) -> bool {
+fn is_refutable_subpattern(ctx: &LoweringContext, pat: &ast::Pattern) -> bool {
     match pat {
         ast::Pattern::Literal { .. } => true,
         // A nested variant pattern refines which inner variant matches.
         ast::Pattern::Enum { .. } => true,
-        ast::Pattern::Tuple { elements, .. } => elements.iter().any(is_refutable_subpattern),
+        // A bare ident that names a known enum variant is a variant TEST, not
+        // a binding (see ident_variant_of). For ROUTING, over-approximating
+        // across all enums is safe: if the ident turns out to be a plain
+        // binding at emission (type-gated there), the arm simply always
+        // matches and the allocated fail target goes unused.
+        ast::Pattern::Ident { name, .. } => find_enum_variant(ctx, name).is_some(),
+        ast::Pattern::Tuple { elements, .. } => {
+            elements.iter().any(|e| is_refutable_subpattern(ctx, e))
+        }
         _ => false,
     }
 }
@@ -6045,6 +6129,35 @@ fn lower_refutable_bind(
     match pat {
         ast::Pattern::Wildcard { .. } => {}
         ast::Pattern::Ident { name, .. } => {
+            if let Some((_, vidx)) = ident_variant_of(ctx, name, value_ty) {
+                // Bare variant in nested position: inner tag refinement, no binding.
+                let tag = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: tag,
+                    value: RValue::EnumTag {
+                        operand: value_op.clone(),
+                    },
+                });
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(tag),
+                        right: Operand::Constant(Constant::Int(vidx as i64)),
+                    },
+                });
+                let cont = ctx.alloc_block();
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond: Operand::Local(cmp),
+                        then_block: cont,
+                        else_block: fail_bb,
+                    },
+                    cont,
+                );
+                return;
+            }
             let local = ctx.alloc_local(Some(name.clone()), value_ty.clone(), false);
             // Extracted views alias the subject's payload; scope cleanup must
             // not drop them (mirrors the top-level Ident binding path).
@@ -6154,11 +6267,10 @@ fn lower_refutable_bind(
                     .cloned()
                     .unwrap_or(MirType::I64);
                 // Recover enum-typed payloads recorded as Struct(name) (see the
-                // identical recovery in the top-level binding path).
-                let field_type = match field_type {
-                    MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
-                    other => other,
-                };
+                // identical recovery in the top-level binding path); recursive
+                // so a `(Enum, i64)` tuple payload doesn't keep an opaque
+                // Struct label inside the tuple (unsized %Name on AOT).
+                let field_type = recover_enum_types(ctx, field_type);
                 let dest = if let ast::Pattern::Ident { name: bn, .. } = fpat {
                     let l = ctx.alloc_local(Some(bn.clone()), field_type.clone(), false);
                     if !is_copy_type(ctx, &field_type) {
@@ -6196,7 +6308,18 @@ fn lower_refutable_bind(
                     continue;
                 }
                 let ety = elem_tys.get(elem_idx).cloned().unwrap_or(MirType::I64);
-                let dest = if let ast::Pattern::Ident { name: bn, .. } = epat {
+                // A bare ident that names a variant of the element's enum type
+                // is a variant test, not a binding: recurse so the Ident arm
+                // above emits the tag refinement.
+                let bind_name = match epat {
+                    ast::Pattern::Ident { name: bn, .. }
+                        if ident_variant_of(ctx, bn, &ety).is_none() =>
+                    {
+                        Some(bn.clone())
+                    }
+                    _ => None,
+                };
+                let dest = if let Some(bn) = &bind_name {
                     let l = ctx.alloc_local(Some(bn.clone()), ety.clone(), false);
                     if !is_copy_type(ctx, &ety) {
                         ctx.dropped_locals.insert(l.0);
@@ -6216,7 +6339,7 @@ fn lower_refutable_bind(
                         field: elem_idx.to_string(),
                     },
                 });
-                if !matches!(epat, ast::Pattern::Ident { .. }) {
+                if bind_name.is_none() {
                     lower_refutable_bind(ctx, Operand::Local(dest), &ety, epat, fail_bb);
                 }
             }
@@ -6684,7 +6807,10 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         // An arm needs a fail target if a nested sub-pattern can be refuted OR
         // it carries a guard (a false guard falls through like a refutation).
         let has_guard = arm_guards.contains_key(&arm_blocks[i].0 .0);
-        let has_refutable = eb.field_patterns.iter().any(is_refutable_subpattern);
+        let has_refutable = eb
+            .field_patterns
+            .iter()
+            .any(|p| is_refutable_subpattern(ctx, p));
         if !has_guard && !has_refutable {
             continue;
         }
@@ -6773,9 +6899,20 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 } else {
                     None
                 };
-                if let Some(lit_const) = lit {
-                    let elem_ty = elem_tys.get(idx).cloned().unwrap_or(MirType::I64);
-                    let field_local = ctx.alloc_temp(elem_ty);
+                let elem_ty = elem_tys.get(idx).cloned().unwrap_or(MirType::I64);
+                // A bare ident naming a variant of the element's enum type is a
+                // tag test, not an unconditional binding (else `(Red, Red)` vs
+                // `(Green, Green)` never discriminated and arm 1 always won).
+                let variant = if let ast::Pattern::Ident { name, .. } = pat {
+                    ident_variant_of(ctx, name, &elem_ty)
+                } else {
+                    None
+                };
+                if lit.is_some() || variant.is_some() {
+                    let field_local = ctx.alloc_temp(elem_ty.clone());
+                    if !is_copy_type(ctx, &elem_ty) {
+                        ctx.dropped_locals.insert(field_local.0);
+                    }
                     ctx.emit(Instruction::Assign {
                         dest: field_local,
                         value: RValue::Field {
@@ -6784,14 +6921,32 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                         },
                     });
                     let cmp_local = ctx.alloc_temp(MirType::Bool);
-                    ctx.emit(Instruction::Assign {
-                        dest: cmp_local,
-                        value: RValue::BinOp {
-                            op: MirBinOp::Eq,
-                            left: Operand::Local(field_local),
-                            right: Operand::Constant(lit_const),
-                        },
-                    });
+                    if let Some(lit_const) = lit {
+                        ctx.emit(Instruction::Assign {
+                            dest: cmp_local,
+                            value: RValue::BinOp {
+                                op: MirBinOp::Eq,
+                                left: Operand::Local(field_local),
+                                right: Operand::Constant(lit_const),
+                            },
+                        });
+                    } else if let Some((_, vidx)) = variant {
+                        let tag = ctx.alloc_temp(MirType::I64);
+                        ctx.emit(Instruction::Assign {
+                            dest: tag,
+                            value: RValue::EnumTag {
+                                operand: Operand::Local(field_local),
+                            },
+                        });
+                        ctx.emit(Instruction::Assign {
+                            dest: cmp_local,
+                            value: RValue::BinOp {
+                                op: MirBinOp::Eq,
+                                left: Operand::Local(tag),
+                                right: Operand::Constant(Constant::Int(vidx as i64)),
+                            },
+                        });
+                    }
                     cond = Some(match cond {
                         None => cmp_local,
                         Some(prev) => {
@@ -6894,6 +7049,11 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             for (elem_idx, pat) in binding.element_patterns.iter().enumerate() {
                 if let ast::Pattern::Ident { name, .. } = pat {
                     let elem_ty = elem_tys.get(elem_idx).cloned().unwrap_or(MirType::I64);
+                    // A bare variant element was already tag-tested in the
+                    // comparison chain; it binds nothing.
+                    if ident_variant_of(ctx, name, &elem_ty).is_some() {
+                        continue;
+                    }
                     let local = ctx.alloc_local(Some(name.clone()), elem_ty.clone(), false);
                     if !is_copy_type(ctx, &elem_ty) {
                         ctx.dropped_locals.insert(local.0);
@@ -6945,10 +7105,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 // detected as an enum match: it silently falls through to the
                 // first arm (and AOT crashes when `d` is passed onward).
                 // Layout is identical ({i64, ..}); only the type label changes.
-                let field_type = match field_type {
-                    MirType::Struct(n) if ctx.enum_defs.contains_key(&n) => MirType::Enum(n),
-                    other => other,
-                };
+                // Recursive: a `(Enum, i64)` tuple payload must not keep an
+                // opaque Struct label inside the tuple (unsized %Name on AOT).
+                let field_type = recover_enum_types(ctx, field_type);
                 // A Struct payload gets its array/map fields REPLACED in
                 // place below (retain_struct_heap_fields -> StoreField), so
                 // its binding must be a MUTABLE local: an immutable local
@@ -6961,7 +7120,18 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 // immediately after creation, matching the SUBJECT's own
                 // drop rather than staying owned by this binding).
                 let needs_mutable = matches!(&field_type, MirType::Struct(n) if !is_copy_type(ctx, &MirType::Struct(n.clone())));
-                let dest = if let ast::Pattern::Ident { name, .. } = pat {
+                // A bare ident that names a variant of the field's own enum
+                // type (`Some(Red)`) is a variant TEST dispatched through
+                // lower_refutable_bind below, not a payload binding.
+                let ident_bind_name: Option<String> = match pat {
+                    ast::Pattern::Ident { name, .. }
+                        if ident_variant_of(ctx, name, &field_type).is_none() =>
+                    {
+                        Some(name.clone())
+                    }
+                    _ => None,
+                };
+                let dest = if let Some(name) = &ident_bind_name {
                     let local = ctx.alloc_local(Some(name.clone()), field_type.clone(), needs_mutable);
                     // Pre-mark non-copy payload bindings as consumed -- EXCEPT
                     // for str/array/map payloads, which get their OWN
@@ -7079,7 +7249,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     }
                     _ => {}
                 }
-                if !matches!(pat, ast::Pattern::Ident { .. }) {
+                if ident_bind_name.is_none() {
                     // Fail target: next same-tag arm / default / synthetic
                     // no-match (computed above; present whenever the arm has
                     // a refutable sub-pattern).

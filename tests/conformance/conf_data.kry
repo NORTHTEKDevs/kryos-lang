@@ -542,5 +542,78 @@ fn main() {
     expect(to_string(f32a + f32b) == "3.75", "f32 arithmetic result stringifies on both backends")
     expect("{f32b}" == "2.25", "f32 string interpolation works on both backends")
 
+    // BARE payload-less enum variants in TUPLE patterns must DISCRIMINATE.
+    // `(Red, Red)` used to bind both elements as fresh locals named `Red`, so
+    // every tuple-of-bare-variant arm matched unconditionally and the FIRST
+    // arm always won (decide(Green, Green) returned "both stop"). The same
+    // held nested (a variant payload `(Light, i64)` matched with a bare
+    // variant elem) and for a bare variant as a DIRECT payload (`Has(Red)`).
+    // AOT additionally crashed extracting a payload-less enum from a tuple
+    // slot (the raw tag was inttoptr'd and dereferenced) and rejected a
+    // `(Enum, i64)` payload tuple as an unsized `%Name` type.
+    expect(bare_tuple(TLight.TRed, TLight.TRed) == "rr", "bare-variant tuple arm 1 taken only for (Red,Red)")
+    expect(bare_tuple(TLight.TGreen, TLight.TGreen) == "gg", "bare-variant tuple arm 2 discriminates (was: first arm always won)")
+    expect(bare_tuple(TLight.TRed, TLight.TGreen) == "mix", "bare-variant tuple wildcard arm reached")
+    expect(bare_tuple_guard(TLight.TRed, 9) == "r-big", "guarded bare-variant tuple arm (sequential path) tests the tag")
+    expect(bare_tuple_guard(TLight.TRed, 1) == "r-small", "guard falls through within the same bare-variant tag")
+    expect(bare_tuple_guard(TLight.TGreen, 9) == "g", "bare-variant tag test composes with guards")
+    expect(nested_bare(TWrap.TPair((TLight.TRed, 3))) == "p-red 3", "bare variant nested in a payload tuple discriminates (red)")
+    expect(nested_bare(TWrap.TPair((TLight.TGreen, 4))) == "p-green 4", "bare variant nested in a payload tuple discriminates (green)")
+    expect(nested_bare(TWrap.TNo) == "no", "payload-less arm after nested-tuple arms")
+    expect(direct_bare(TOpt2.THas(TLight.TRed)) == "h-red", "bare variant as a DIRECT payload field discriminates (red)")
+    expect(direct_bare(TOpt2.THas(TLight.TGreen)) == "h-green", "bare variant as a DIRECT payload field discriminates (green)")
+    expect(direct_bare(TOpt2.TNo2) == "n", "non-payload arm after direct-bare arms")
+    let tl_tup = (TLight.TGreen, 5)
+    let tl0 = tl_tup.0
+    let tl_kind = match tl0 { TRed => "ex-red", TGreen => "ex-green" }
+    expect(tl_kind == "ex-green", "payload-less enum extracted from a tuple slot carries its tag (AOT crashed here)")
+
     println("conformance data: PASS")
+}
+
+enum TLight {
+    TRed,
+    TGreen,
+}
+
+enum TWrap {
+    TPair((TLight, i64)),
+    TNo,
+}
+
+enum TOpt2 {
+    THas(TLight),
+    TNo2,
+}
+
+fn bare_tuple(a: TLight, b: TLight) -> str {
+    match (a, b) {
+        (TRed, TRed) => return "rr",
+        (TGreen, TGreen) => return "gg",
+        _ => return "mix",
+    }
+}
+
+fn bare_tuple_guard(a: TLight, n: i64) -> str {
+    match (a, n) {
+        (TRed, m) if m > 5 => return "r-big",
+        (TRed, _) => return "r-small",
+        (TGreen, _) => return "g",
+    }
+}
+
+fn nested_bare(w: TWrap) -> str {
+    match w {
+        TWrap.TPair((TRed, k)) => return "p-red {k}",
+        TWrap.TPair((TGreen, k)) => return "p-green {k}",
+        TNo => return "no",
+    }
+}
+
+fn direct_bare(o: TOpt2) -> str {
+    match o {
+        TOpt2.THas(TRed) => return "h-red",
+        TOpt2.THas(TGreen) => return "h-green",
+        TNo2 => return "n",
+    }
 }
