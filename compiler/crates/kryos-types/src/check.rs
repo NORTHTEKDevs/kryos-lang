@@ -780,6 +780,18 @@ impl TypeChecker {
                     trait_name: name.clone(),
                 });
 
+                // Pre-register the trait NAME (empty methods) before resolving
+                // its method signatures, so a method mentioning `dyn <this
+                // trait>` -- e.g. a default method comparing two values of the
+                // trait, `fn bigger(self, o: dyn Areo) -> bool` -- resolves
+                // instead of a false E0105 unknown-trait. The complete def
+                // (with methods) overwrites this stub below.
+                self.env.define_trait(crate::env::TraitDef {
+                    name: name.clone(),
+                    generic_params: generics.iter().map(|g| g.name.clone()).collect(),
+                    methods: vec![],
+                });
+
                 // Bring the trait's own declared type parameters
                 // (`trait Foo<T>`) into scope as fresh type vars so method
                 // signatures that mention them (`fn convert(self: Self) -> T`)

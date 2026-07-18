@@ -1522,7 +1522,13 @@ pub fn lower_module_with_lambda_params(
                 if let Some(trait_name) = trait_name {
                     if let Some(defaults) = ctx.trait_default_methods.get(trait_name).cloned() {
                         for default_method in &defaults {
-                            if let ast::Decl::Function { name, ret_ty, .. } = default_method {
+                            if let ast::Decl::Function {
+                                name,
+                                ret_ty,
+                                params,
+                                ..
+                            } = default_method
+                            {
                                 if !explicit_names.contains(name.as_str()) {
                                     let mangled = format!("{target}__{name}");
                                     let mir_ret = match ret_ty {
@@ -1530,6 +1536,24 @@ pub fn lower_module_with_lambda_params(
                                         None => MirType::Void,
                                     };
                                     ctx.func_ret_types.insert(mangled.clone(), mir_ret);
+                                    // Param types (self excluded) so the
+                                    // method-call arg coercion sees a `dyn
+                                    // Trait` param of a NON-overridden default
+                                    // method -- without this a concrete struct
+                                    // passed to it reached vtable_call as a
+                                    // raw struct (SIGSEGV both backends).
+                                    // Mirrors the explicit-impl registration.
+                                    let param_types: Vec<MirType> = params
+                                        .iter()
+                                        .filter(|p| p.name != "self")
+                                        .map(|p| {
+                                            p.ty.as_ref()
+                                                .map(|t| ctx.resolve_type(t))
+                                                .unwrap_or(MirType::I64)
+                                        })
+                                        .collect();
+                                    ctx.func_param_types
+                                        .insert(mangled.clone(), param_types);
                                     ctx.method_owners
                                         .insert((target.clone(), name.clone()), mangled);
                                 }
@@ -9773,8 +9797,6 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     args: mir_args,
                 };
             }
-            let mir_args: Vec<Operand> =
-                args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
             let func_name = ctx
                 .method_owners
                 .get(&(type_name.clone(), method.clone()))
@@ -9790,6 +9812,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         format!("{type_name}__{method}")
                     }
                 });
+            // dyn Trait coercion on Rust-style `Type::method(args)` arguments:
+            // this arm lowered args RAW, so a concrete struct passed to a
+            // `dyn Trait` param reached vtable_call unwrapped (JIT segfault /
+            // AOT crash). Mirrors the dotted MethodCall path. func_param_types
+            // excludes `self`, which aligns with a no-self static method's
+            // args; a UFCS receiver arg gets no entry (None) and is unchanged.
+            let param_types = ctx.func_param_types.get(&func_name).cloned();
+            let mir_args: Vec<Operand> = args
+                .iter()
+                .enumerate()
+                .map(|(i, a)| {
+                    let operand = lower_expr_to_operand(ctx, a);
+                    match param_types.as_ref().and_then(|p| p.get(i)) {
+                        Some(target_ty) => coerce_to_dyn_if_needed(ctx, operand, target_ty, a),
+                        None => operand,
+                    }
+                })
+                .collect();
             RValue::Call {
                 func: func_name,
                 args: mir_args,

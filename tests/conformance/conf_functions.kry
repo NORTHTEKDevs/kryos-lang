@@ -370,5 +370,49 @@ fn main() {
     }
     expect(mb_r4 == "hi?", "enum-payload binding used in a compound arm body types as its payload")
 
+    // dyn-Trait coercion residuals (Pass-35 #1/#2/#3):
+    // (a) a trait's OWN default method may take `dyn <this trait>` (the trait
+    //     is pre-registered before its sigs resolve; was false E0105);
+    // (b) calling that NON-overridden default method wraps a concrete struct
+    //     arg in a trait object (param types are now registered for default
+    //     methods; was a raw-struct vtable deref -> SIGSEGV both backends);
+    // (c) Rust-style `Type::method(concrete)` static calls coerce dyn params
+    //     too (the StaticMethodCall arm lowered args raw; was JIT segfault).
+    let dq = DSq { side: 4 }
+    let dc = DCi { rad: 2 }
+    expect(dq.dbigger(dc), "non-overridden trait default method with a dyn <self-trait> param dispatches (16 > 12)")
+    expect(dc.dbigger(dq) == false, "cross-type dyn arg to a default method compares the real areas")
+    expect(DUtil::dpick(100, dq) == 116, "Type::method(concrete) coerces the arg to the dyn param (struct 1)")
+    expect(DUtil::dpick(100, dc) == 112, "Type::method(concrete) coerces the arg to the dyn param (struct 2)")
+
     println("conformance functions: PASS")
+}
+
+trait DSized {
+    fn darea(self) -> i64
+    fn dbigger(self, o: dyn DSized) -> bool { return self.darea() > o.darea() }
+}
+
+struct DSq {
+    side: i64,
+}
+
+struct DCi {
+    rad: i64,
+}
+
+impl DSized for DSq {
+    fn darea(self: DSq) -> i64 { return self.side * self.side }
+}
+
+impl DSized for DCi {
+    fn darea(self: DCi) -> i64 { return 3 * self.rad * self.rad }
+}
+
+struct DUtil {
+    dz: i64,
+}
+
+impl DUtil {
+    fn dpick(bonus: i64, s: dyn DSized) -> i64 { return s.darea() + bonus }
 }
