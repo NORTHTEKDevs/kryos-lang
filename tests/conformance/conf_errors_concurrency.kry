@@ -538,6 +538,78 @@ fn main() {
     let tc_eq2 = ({ try { 5 } catch e { 0 } }) == 5
     expect(tc_eq2, "try/catch as a == operand (non-throwing)")
 
+    // spawn capturing an ENUM: the wrapper's enum param must use the
+    // byval-pointer ABI (the runtime passes each env slot as one word; an
+    // inline { i64, i64 } aggregate param consumed two slots and shifted
+    // every later arg -> corrupted tag+payload, wrong-arm dispatch, hangs).
+    let spmsg = SpMsg.Val(42)
+    let spch = chan()
+    spawn {
+        match spmsg {
+            SpMsg.Val(v) => send(spch, v),
+            SpMsg.Nothing => send(spch, -1),
+        }
+    }
+    expect(recv(spch) == 42, "spawn-captured enum keeps its tag and payload across the thread boundary")
+
+    // Actor with STRUCT + ENUM + TUPLE state fields: state slots are raw i64,
+    // so aggregate fields are boxed on store and unboxed on load (was an AOT
+    // build failure `store i64 %Point`), and the constructor installs a
+    // ZEROED box (was a raw 0 -> null deref reading a field before its first
+    // store). State must persist across messages.
+    let arch = chan()
+    let ag0 = AggActor()
+    ag0.probe_unset(arch)
+    expect(recv(arch) == 1000, "aggregate actor state reads as zeroed before first store (no null deref)")
+    let ag = AggActor()
+    ag.set(4, arch)
+    expect(recv(arch) == 9, "actor struct state stores and reads back within a handler")
+    ag.get(arch)
+    expect(recv(arch) == 450, "actor struct+enum state persists across messages (4*100 + 1*10 + 40)")
+    ag.set(7, arch)
+    expect(recv(arch) == 15, "actor struct state reassignment")
+    ag.get(arch)
+    expect(recv(arch) == 790, "actor aggregate state after reassignment (7*100 + 2*10 + 70)")
 
     println("conformance errors+concurrency: PASS")
+}
+
+enum SpMsg {
+    Val(i64),
+    Nothing,
+}
+
+struct AggPoint {
+    x: i64,
+    y: i64,
+}
+
+enum AggMode {
+    AggIdle,
+    AggBusy(i64),
+}
+
+actor AggActor {
+    p: AggPoint
+    m: AggMode
+    count: i64
+
+    fn set(self, nx: i64, reply: i64) {
+        self.p = AggPoint { x: nx, y: nx + 1 }
+        self.m = AggMode.AggBusy(nx * 10)
+        self.count = self.count + 1
+        send(reply, self.p.x + self.p.y)
+    }
+
+    fn get(self, reply: i64) {
+        let extra = match self.m {
+            AggBusy(v) => v,
+            AggIdle => -1,
+        }
+        send(reply, self.p.x * 100 + self.count * 10 + extra)
+    }
+
+    fn probe_unset(self, reply: i64) {
+        send(reply, self.p.y + 1000)
+    }
 }

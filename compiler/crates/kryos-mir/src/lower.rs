@@ -8974,6 +8974,49 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 });
                                 Operand::Local(tmp)
                             }
+                            // Aggregate state (struct/enum/tuple field): a raw 0
+                            // is a NULL aggregate pointer -- reading the field
+                            // before its first store dereferences null (JIT
+                            // segfault; AOT unbox crash). Give it a ZEROED box
+                            // of the right size instead (kryos_arc_alloc_i64
+                            // returns zeroed memory), mirroring the empty-handle
+                            // init for Array/Map. Field words: struct = field
+                            // count, enum = 1 (tag) + max payload fields,
+                            // tuple = element count.
+                            Some(MirType::Struct(ref sn)) | Some(MirType::Enum(ref sn)) => {
+                                let words = if let Some(fs) = ctx.struct_defs.get(sn) {
+                                    fs.len().max(1)
+                                } else if let Some(vs) = ctx.enum_defs.get(sn) {
+                                    1 + vs.iter().map(|v| v.fields.len()).max().unwrap_or(0)
+                                } else {
+                                    1
+                                };
+                                let tmp = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::Call {
+                                        func: "kryos_arc_alloc_i64".into(),
+                                        args: vec![Operand::Constant(Constant::Int(
+                                            (words as i64) * 8,
+                                        ))],
+                                    },
+                                });
+                                Operand::Local(tmp)
+                            }
+                            Some(MirType::Tuple(ref elems)) => {
+                                let words = elems.len().max(1);
+                                let tmp = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: RValue::Call {
+                                        func: "kryos_arc_alloc_i64".into(),
+                                        args: vec![Operand::Constant(Constant::Int(
+                                            (words as i64) * 8,
+                                        ))],
+                                    },
+                                });
+                                Operand::Local(tmp)
+                            }
                             _ => Operand::Constant(Constant::Int(0)),
                         };
                         ctx.emit(Instruction::ActorStateStore {

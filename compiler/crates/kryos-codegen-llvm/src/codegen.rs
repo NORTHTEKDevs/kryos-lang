@@ -198,6 +198,30 @@ impl LlvmCodegen {
         }
     }
 
+    /// Aggregate ABI decision for a specific function's parameter.
+    /// Struct/Tuple params always use the byval-pointer ABI
+    /// (`aggregate_llvm_ty`). ENUM params additionally use it in
+    /// spawn/coop-spawn wrapper functions: those are invoked ONLY through the
+    /// runtime's uniform `[i64]` env (`kryos_spawn` passes each captured slot
+    /// as one pointer-sized word), and `Instruction::Spawn` BOXES an enum
+    /// capture to a heap pointer on the store side. Declaring the wrapper
+    /// with an inline `{ i64, i64 }` aggregate param instead consumed two ABI
+    /// slots and shifted every later argument -- the received tag+payload
+    /// were garbage (wrong-arm dispatch, corrupted channel handles, hangs).
+    /// Ordinary functions keep the inline-aggregate enum ABI unchanged.
+    fn param_agg_ty(&self, func_name: &str, ty: &MirType) -> Option<String> {
+        if let Some(agg) = self.aggregate_llvm_ty(ty) {
+            return Some(agg);
+        }
+        if func_name.starts_with("__spawn_") || func_name.starts_with("__coopspawn_") {
+            if let MirType::Enum(n) = ty {
+                let max = self.enum_max_fields(n);
+                return Some(self.enum_llvm_type(n, max));
+            }
+        }
+        None
+    }
+
     // -----------------------------------------------------------------------
     // Public entry point
     // -----------------------------------------------------------------------
@@ -2941,7 +2965,7 @@ impl LlvmCodegen {
         // prevents an SSA double-definition when the body reassigns the
         // whole param (`p = S{..}` after the byval entry load).
         for p in &func.params {
-            if self.aggregate_llvm_ty(&p.ty).is_some() {
+            if self.param_agg_ty(name, &p.ty).is_some() {
                 self.mutable_locals.insert(p.local.0);
             }
         }
@@ -2979,7 +3003,7 @@ impl LlvmCodegen {
             param_strs.push(format!("ptr sret({agg}) %_sret"));
         }
         for (i, p) in func.params.iter().enumerate() {
-            if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
+            if let Some(agg) = self.param_agg_ty(name, &p.ty) {
                 if func.attributes.mutated_capture_ptr_slots.contains(&(i as u32)) {
                     // Mutated struct capture: plain pointer, no `byval` --
                     // see `mutated_capture_ptr_slots`' doc comment and the
@@ -3204,7 +3228,7 @@ impl LlvmCodegen {
                 // copy-in exists to load from (its param is a plain `ptr`).
                 continue;
             }
-            if let Some(agg) = self.aggregate_llvm_ty(&p.ty) {
+            if let Some(agg) = self.param_agg_ty(name, &p.ty) {
                 if self.mutable_locals.contains(&p.local.0) {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = load {agg}, ptr %_{}_arg", p.local.0));
@@ -3219,7 +3243,7 @@ impl LlvmCodegen {
         }
         // Store parameter values into their allocas (non-aggregate params only).
         for param in &func.params {
-            if self.aggregate_llvm_ty(&param.ty).is_some() {
+            if self.param_agg_ty(name, &param.ty).is_some() {
                 continue;
             }
             if self.mutable_locals.contains(&param.local.0) {
@@ -4014,7 +4038,26 @@ impl LlvmCodegen {
                 // type every use-site renders with), not the raw i64 slot.
                 let dest_llvm = self.local_type(*dest);
                 let is_mutable = self.mutable_locals.contains(&dest.0);
-                if is_mutable {
+                let dest_is_agg = dest_llvm.starts_with('{') || dest_llvm.starts_with('%');
+                if dest_is_agg {
+                    // Aggregate state field (struct/enum/tuple): the slot holds
+                    // a boxed pointer (see the ActorStateStore box + the zeroed
+                    // box the constructor installs) -- unbox to the aggregate.
+                    let slot = self.next_temp();
+                    self.emit_line(&format!("  {slot} = load i64, ptr {field_ptr}"));
+                    let bp = self.next_temp();
+                    self.emit_line(&format!("  {bp} = inttoptr i64 {slot} to ptr"));
+                    if is_mutable {
+                        let tmp = self.next_temp();
+                        self.emit_line(&format!("  {tmp} = load {dest_llvm}, ptr {bp}"));
+                        self.emit_line(&format!(
+                            "  store {dest_llvm} {tmp}, ptr %_{}.addr",
+                            dest.0
+                        ));
+                    } else {
+                        self.emit_line(&format!("  %_{} = load {dest_llvm}, ptr {bp}", dest.0));
+                    }
+                } else if is_mutable {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = load i64, ptr {field_ptr}"));
                     // Opaque-pointer stores through the alloca are
@@ -4040,11 +4083,16 @@ impl LlvmCodegen {
                 // Store value to state_ptr + field_offset * 8. State slots are
                 // raw i64: ptr-typed values (str/array state) ptrtoint first,
                 // f64 bitcasts (mirrors the ActorSend argument coercion).
+                // AGGREGATE values (struct/enum/tuple state fields) are boxed
+                // to a heap copy and the pointer stored -- `store i64 %Point`
+                // was invalid IR (AOT build failure). Mirrors the spawn-env
+                // aggregate capture box; the load side unboxes.
                 let ptr_local = self.operand_to_llvm(&Operand::Local(*state_ptr), func);
                 let val = self.operand_to_llvm(value, func);
                 // Coerce by the value's RENDERED LLVM type (a str-concat dest is
                 // declared ptr even when its MIR local says i64).
-                let val = match self.operand_type(value, func).as_str() {
+                let val_ty = self.operand_type(value, func);
+                let val = match val_ty.as_str() {
                     "ptr" => {
                         let t = self.next_temp();
                         self.emit_line(&format!("  {t} = ptrtoint ptr {val} to i64"));
@@ -4053,6 +4101,24 @@ impl LlvmCodegen {
                     "double" => {
                         let t = self.next_temp();
                         self.emit_line(&format!("  {t} = bitcast double {val} to i64"));
+                        t
+                    }
+                    agg if agg.starts_with('{') || agg.starts_with('%') => {
+                        let size_ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
+                        ));
+                        let size_i64 = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                        ));
+                        let buf = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                        ));
+                        self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                        let t = self.next_temp();
+                        self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
                         t
                     }
                     _ => val,
