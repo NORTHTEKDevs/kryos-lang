@@ -162,5 +162,24 @@ fn main() {
     let sneg: i8 = -8
     expect(sneg >> 1 == -4, "i8 -8 >> 1 == -4 (arithmetic shift retained for signed)")
 
+    // Mixed-width integer arithmetic PROMOTES to the wider type (was: took
+    // the LEFT operand's width, so i8 + i64 computed at i8 and truncated the
+    // result -- 127i8 + 1000000i64 stored -65 on both backends).
+    let mw_a: i8 = 127
+    let mw_b: i64 = 1000000
+    expect(mw_a + mw_b == 1000127, "i8 + i64 promotes to i64 (narrow-left)")
+    expect(mw_b + mw_a == 1000127, "i64 + i8 (wide-left, always worked)")
+    let mw_c: i32 = 2000000000
+    let mw_d: i64 = 5000000000
+    expect(mw_c + mw_d == 7000000000, "i32 + i64 promotes past i32 range")
+    let mw_e: i8 = 100
+    expect(mw_e * mw_b == 100000000, "i8 * i64 promotes (multiply)")
+    let mw_g: u8 = 200
+    let mw_h: i64 = 50
+    expect(mw_g + mw_h == 250, "u8 + i64 promotes without wrap")
+    let mw_n: i8 = 5
+    let mw_m: i8 = 3
+    expect(mw_n + mw_m == 8, "same-width i8 + i8 unchanged")
+
     println("conformance overflow: PASS")
 }

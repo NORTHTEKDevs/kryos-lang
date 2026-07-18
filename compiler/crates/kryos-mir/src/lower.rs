@@ -5844,6 +5844,29 @@ fn desugar_pipe(left: &ast::Expr, right: &ast::Expr, span: kryos_errors::Span) -
     }
 }
 
+/// Result type of mixed-width integer arithmetic: the WIDER of the two
+/// integer operands (C-style integer promotion, no narrowing). Non-integer
+/// or equal-width types keep the left type (the historical behavior for
+/// same-typed operands). Signedness follows the wider operand; on a
+/// same-width signed/unsigned mix the left wins (rare, and the value bits
+/// are identical either way).
+fn wider_int_type(lty: &MirType, rty: &MirType) -> MirType {
+    fn rank(t: &MirType) -> Option<u8> {
+        match t {
+            MirType::I8 | MirType::U8 => Some(8),
+            MirType::I16 | MirType::U16 => Some(16),
+            MirType::I32 | MirType::U32 => Some(32),
+            MirType::I64 | MirType::U64 => Some(64),
+            MirType::I128 | MirType::U128 => Some(128),
+            _ => None,
+        }
+    }
+    match (rank(lty), rank(rty)) {
+        (Some(lr), Some(rr)) if rr > lr => rty.clone(),
+        _ => lty.clone(),
+    }
+}
+
 fn ident_variant_of(ctx: &LoweringContext, name: &str, ety: &MirType) -> Option<(String, u32)> {
     // Accept the Struct(name) spelling of an enum type too: lower_type_expr
     // records every non-builtin named type as Struct (it can't know which
@@ -8067,7 +8090,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             match (&lty, &rty) {
                 (MirType::F64, _) | (_, MirType::F64) => MirType::F64,
                 (MirType::F32, _) | (_, MirType::F32) => MirType::F32,
-                _ => lty,
+                // Mixed-width integer arithmetic PROMOTES to the wider type:
+                // `i8 + i64` is an i64 operation. Taking the LEFT type made
+                // the result local i8-sized, so the (correctly i64-computed)
+                // sum was truncated back on store -- `127i8 + 1000000i64`
+                // stored -65 on both backends. Reversed operand order
+                // happened to work only because the wide type was on the
+                // left.
+                _ => wider_int_type(&lty, &rty),
             }
         }
 

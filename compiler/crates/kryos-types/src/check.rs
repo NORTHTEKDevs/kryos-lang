@@ -4022,6 +4022,27 @@ impl TypeChecker {
     // ── Binary operator type checking ────────────────────────────────
 
     fn check_binary_op(&mut self, op: BinOp, left: &Expr, right: &Expr, span: Span) -> Type {
+        // Integer bit-width for promotion; None for non-integers.
+        fn int_width(t: &Type) -> Option<u8> {
+            match t {
+                Type::I8 | Type::U8 => Some(8),
+                Type::I16 | Type::U16 => Some(16),
+                Type::I32 | Type::U32 => Some(32),
+                Type::I64 | Type::U64 => Some(64),
+                Type::I128 | Type::U128 => Some(128),
+                _ => None,
+            }
+        }
+        // If both are concrete integer types of DIFFERENT widths, the wider
+        // one is the arithmetic result (C-style promotion, no narrowing).
+        fn wider_concrete_int(a: &Type, b: &Type) -> Option<Type> {
+            match (int_width(a), int_width(b)) {
+                (Some(wa), Some(wb)) if wa != wb => {
+                    Some(if wa >= wb { a.clone() } else { b.clone() })
+                }
+                _ => None,
+            }
+        }
         let left_ty = self.infer_expr(left);
         let right_ty = self.infer_expr(right);
 
@@ -4049,6 +4070,20 @@ impl TypeChecker {
                     }
                 }
 
+                // Mixed-width integer arithmetic PROMOTES to the wider type
+                // instead of unifying (which would either reject or pin both
+                // to the narrower left width and truncate the result --
+                // `i8 + i64` stored -65). If BOTH sides are concrete integer
+                // types of different widths, skip the unify and return the
+                // wider type; the codegen already widens the narrow operand
+                // to the operation width.
+                {
+                    let rl = self.engine.resolve(&left_ty);
+                    let rr = self.engine.resolve(&right_ty);
+                    if let Some(wide) = wider_concrete_int(&rl, &rr) {
+                        return wide;
+                    }
+                }
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
                     return Type::Error;
