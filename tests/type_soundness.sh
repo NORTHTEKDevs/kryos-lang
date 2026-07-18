@@ -364,6 +364,36 @@ fn main() {
 }
 '
 
+
+# --- Pass-41: tuple-destructuring arity must be type-checked ---
+# (over-binding passed `check` then panicked at runtime leaking the internal
+# array-OOB message; under-binding silently dropped trailing elements.)
+
+want_reject tuple_over_bind '
+fn main() {
+    let t: (i64, str) = (1, "a")
+    let (a, b, c) = t
+    println(to_string(a) + b + to_string(c))
+}
+'
+
+want_reject tuple_under_bind '
+fn main() {
+    let t: (i64, i64, i64) = (1, 2, 3)
+    let (a, b) = t
+    println(to_string(a) + "," + to_string(b))
+}
+'
+
+want_pass tuple_exact_bind '
+fn main() {
+    let t: (i64, str, bool) = (1, "a", true)
+    let (a, b, c) = t
+    if a != 1 { exit(1) }
+    println(b)
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

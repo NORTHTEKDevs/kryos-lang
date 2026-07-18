@@ -25,6 +25,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0010" => Some(E0010),
         "E0110" => Some(E0110),
         "E0111" => Some(E0111),
+        "E0112" => Some(E0112),
         "E0100" => Some(E0100),
         "E0101" => Some(E0101),
         "E0102" => Some(E0102),
@@ -66,6 +67,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0010", "program nesting too deep"),
         ("E0110", "type error"),
         ("E0111", "integer literal out of range for declared type"),
+        ("E0112", "non-exhaustive match"),
         ("E0100", "type mismatch"),
         ("E0101", "unknown type"),
         ("E0102", "undefined variable"),
@@ -531,6 +533,25 @@ Fixes:
 
 Explicit `as` casts keep their documented truncation semantics; only
 implicit literal coercion is range-checked.
+"#;
+
+const E0112: &str = r#"E0112: non-exhaustive match
+
+A `match` does not cover every possible value of the matched type. Kryos
+requires enum matches to handle every variant (or add a wildcard `_`):
+
+    enum Color { Red, Green, Blue }
+    match c {
+        Red => ...,
+        Green => ...,      // missing `Blue` -- E0112
+    }
+
+Fixes:
+  - add an arm for each missing variant, or
+  - add a catch-all wildcard:   _ => ...
+
+Exhaustiveness makes adding a new enum variant a compile error at every
+match that must handle it, rather than a silent fall-through at runtime.
 "#;
 
 // ----- E0300 ----------------------------------------------------------------

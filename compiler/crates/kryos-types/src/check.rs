@@ -1592,10 +1592,12 @@ impl TypeChecker {
                             let msg = format!(
                                 "function `{fn_name}` declared to return `{expected}`, but body evaluates to `{ret_ty}`"
                             );
-                            diag = Diagnostic::error(msg).with_label(
-                                *span,
-                                format!("expected `{expected}`, found `{ret_ty}`"),
-                            );
+                            diag = Diagnostic::error(msg)
+                                .with_code(kryos_errors::codes::E0100)
+                                .with_label(
+                                    *span,
+                                    format!("expected `{expected}`, found `{ret_ty}`"),
+                                );
                         }
                         self.diagnostics.push(diag);
                     }
@@ -1780,7 +1782,7 @@ impl TypeChecker {
                     self.env.define_var(name.clone(), subject_ty.clone());
                 }
             }
-            Pattern::Tuple { elements, .. } => {
+            Pattern::Tuple { elements, span } => {
                 // Resolve the subject type so we can extract element types.
                 let resolved = self.engine.resolve(subject_ty);
                 let elem_tys: Vec<Type> = if let Type::Tuple { elements: ts } = &resolved {
@@ -1788,6 +1790,27 @@ impl TypeChecker {
                 } else {
                     vec![]
                 };
+                // Arity check: a tuple pattern must bind EXACTLY as many
+                // elements as the (concrete) tuple type has. Without this,
+                // over-binding (`let (a,b,c) = (1,"x")`) passed the checker and
+                // panicked at runtime with the internal array-OOB message, and
+                // under-binding silently dropped the trailing elements. Only
+                // fires when the subject is a concrete tuple (a fresh/unknown
+                // type var is left to later unification).
+                if let Type::Tuple { elements: ts } = &resolved {
+                    if ts.len() != elements.len() {
+                        self.error_with_code(
+                            format!(
+                                "tuple pattern binds {} element{} but the value is a {}-tuple",
+                                elements.len(),
+                                if elements.len() == 1 { "" } else { "s" },
+                                ts.len()
+                            ),
+                            *span,
+                            kryos_errors::codes::E0100,
+                        );
+                    }
+                }
                 for (i, elem) in elements.iter().enumerate() {
                     let elem_ty = elem_tys
                         .get(i)

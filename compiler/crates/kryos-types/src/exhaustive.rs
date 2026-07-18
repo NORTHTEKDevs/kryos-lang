@@ -116,7 +116,7 @@ fn check_variant_exhaustive(
         .collect::<Vec<_>>()
         .join(", ");
     vec![
-        Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}"))
+        Diagnostic::error(format!("non-exhaustive match: missing variant(s) {names}")).with_code(kryos_errors::codes::E0112)
             .with_label(span, "add the missing variant(s) or a wildcard `_`"),
     ]
 }
@@ -204,7 +204,7 @@ fn check_bool(patterns: &[&Pattern], span: Span) -> Vec<Diagnostic> {
     };
 
     vec![
-        Diagnostic::error(format!("non-exhaustive match: missing {missing}"))
+        Diagnostic::error(format!("non-exhaustive match: missing {missing}")).with_code(kryos_errors::codes::E0112)
             .with_label(span, "add the missing case(s) or a wildcard `_`"),
     ]
 }
