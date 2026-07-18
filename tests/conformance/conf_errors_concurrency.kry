@@ -583,6 +583,28 @@ fn main() {
     ts.set(41, tch)
     expect(recv(tch) == 41, "tuple actor state stores and reads back")
 
+    // Nested try/catch reusing the SAME catch-variable name: the inner
+    // catch's binding is scoped to its block and must not leak into the
+    // outer catch. `throw "x: " + e` inside the inner catch built the right
+    // value, but the outer `catch e` then read the STALE inner `e` (the
+    // original message) instead of the rethrown one -- both `e` locals share
+    // the function-flat locals vec and name resolution reverse-scanned to the
+    // most-recent (inner). The inner catch binding is now hidden at block end.
+    let mut nc_msgs: [str] = []
+    try {
+        try {
+            throw "inner"
+        } catch e {
+            nc_msgs = push(nc_msgs, "in:" + e)
+            throw "rethrown:" + e
+        }
+    } catch e {
+        nc_msgs = push(nc_msgs, "out:" + e)
+    }
+    expect(len(nc_msgs) == 2, "nested try/catch both handlers ran")
+    expect(nc_msgs[0] == "in:inner", "inner catch sees the inner message")
+    expect(nc_msgs[1] == "out:rethrown:inner", "outer catch sees the RETHROWN message, not the stale inner e")
+
     println("conformance errors+concurrency: PASS")
 }
 

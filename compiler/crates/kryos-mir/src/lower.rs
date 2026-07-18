@@ -5503,6 +5503,16 @@ fn lower_try_catch(
     } else {
         lower_block_stmts(ctx, &catch_block.stmts);
     }
+    // The catch binding is scoped to this catch block. Hide it from NAME
+    // resolution now so it does not leak into an ENCLOSING catch (or a later
+    // sibling try/catch) that reuses the same variable name: both share the
+    // function-flat locals vec, and find_local_by_name reverse-scans to the
+    // MOST RECENT match, so a nested `catch e { .. }` left its stale `e`
+    // shadowing the outer `catch e`'s binding -- `throw "x: " + e` built the
+    // right value but the outer handler then read the INNER e (the original
+    // message) instead of the rethrown one. Hiding only affects name lookup,
+    // not the scope-end Drop, so the buffer is still freed exactly once.
+    ctx.hidden_locals.insert(err_payload.0);
     ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
 }
 
