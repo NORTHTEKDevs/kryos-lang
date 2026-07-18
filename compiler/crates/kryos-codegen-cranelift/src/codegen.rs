@@ -853,14 +853,23 @@ pub fn compile_module_with_options(
     let _ = exit_id;
 
     // Import len() builtin — reads len field from any Kryos collection.
-    let len_sig = {
-        let mut sig = Signature::new(call_conv);
-        sig.params.push(AbiParam::new(types::I64)); // collection handle
-        sig.returns.push(AbiParam::new(types::I64)); // length
-        sig
-    };
-    let len_id = object_module.declare_function("kryos_builtin_len", Linkage::Import, &len_sig)?;
-    func_ids.insert("len".to_string(), len_id);
+    // Skip when the user defines their own top-level `fn len` (the self-host
+    // compiler's runtime.kry does exactly this): declaring the C symbol as an
+    // Import AND then defining a body under the same "len" name made Cranelift
+    // reject the module ("Invalid to define identifier declared as an import:
+    // kryos_builtin_len"). Mirrors the println/print/eprintln shadow guards
+    // above; the user fn then wins, matching the LLVM backend.
+    if !user_func_names.contains("len") {
+        let len_sig = {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64)); // collection handle
+            sig.returns.push(AbiParam::new(types::I64)); // length
+            sig
+        };
+        let len_id =
+            object_module.declare_function("kryos_builtin_len", Linkage::Import, &len_sig)?;
+        func_ids.insert("len".to_string(), len_id);
+    }
 
     // Import to_string() builtin — converts i64 to KryosString.
     let to_string_sig = {

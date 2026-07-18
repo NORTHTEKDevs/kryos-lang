@@ -5239,7 +5239,13 @@ impl LlvmCodegen {
                                 "  call void @__kryos_array_set_inline({arg_list})"
                             ));
                         }
-                        "len" => {
+                        // Skip the builtin len fast-path when the user defines
+                        // their own `fn len` (the self-host compiler does): fall
+                        // through to the `_` arm's user_shadow handling so the
+                        // user body wins, matching the Cranelift backend (a
+                        // JIT/AOT divergence otherwise -- JIT ran the user len,
+                        // AOT the builtin).
+                        "len" if !self.func_param_types.contains_key("len") => {
                             let arg = if !args.is_empty() {
                                 let val = self.operand_to_llvm(&args[0], func);
                                 let val_ty = self.operand_type(&args[0], func);

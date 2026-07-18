@@ -348,6 +348,22 @@ fn main() {
 }
 '
 
+
+# --- Pass-39: a user `fn len` shadowing the builtin must WIN on both backends ---
+# (Cranelift unconditionally declared kryos_builtin_len as an import ->
+# "Invalid to define identifier declared as an import" codegen crash; LLVM
+# ran the builtin instead of the user body -- a JIT/AOT divergence. The
+# self-host compiler defines its own top-level `fn len`.)
+
+want_pass user_shadows_len '
+fn len(x: [i64]) -> i64 { return 999 }
+fn main() {
+    let a: [i64] = [1, 2, 3]
+    if len(a) != 999 { println("FAIL len shadow")  exit(1) }
+    println("ok")
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
