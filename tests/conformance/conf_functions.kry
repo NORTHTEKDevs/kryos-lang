@@ -422,6 +422,17 @@ fn main() {
     }
     expect(mk_seen == "five", "unannotated map_keys re-index over an int-keyed map (was a JIT segfault)")
 
+    // A generic fn RETURNING a closure at a pointer-backed type (T=str)
+    // now builds and runs on AOT (the lambda's str-concat result is DEFINED
+    // as ptr while the erased return slot is i64; the ret site now ptrtoints
+    // via SSA type tracking -- was a hard AOT build failure `ret i64 %ptr`).
+    let gc_bang = mk_appender("!")
+    let gc_q = mk_appender("?")
+    expect(gc_bang("hi") == "hi!", "generic closure return at T=str (was AOT build fail)")
+    expect(gc_q(gc_bang("z")) == "z!?", "two instantiation values compose")
+    let gc_add = mk_appender(5)
+    expect(gc_add(10) == 15, "generic closure return at T=i64 control")
+
     println("conformance functions: PASS")
 }
 
@@ -452,4 +463,8 @@ struct DUtil {
 
 impl DUtil {
     fn dpick(bonus: i64, s: dyn DSized) -> i64 { return s.darea() + bonus }
+}
+
+fn mk_appender<T>(suffix: T) -> fn(T) -> T {
+    return |x| x + suffix
 }

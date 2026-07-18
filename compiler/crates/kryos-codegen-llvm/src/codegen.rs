@@ -4752,6 +4752,14 @@ impl LlvmCodegen {
                             "  %_{} = call ptr @kryos_string_concat(ptr {left_ptr}, ptr {right_ptr})",
                             dest.0
                         ));
+                        // The dest is DEFINED as ptr here even when its
+                        // declared local type is the erased i64 slot (a
+                        // generic lambda body's `x + suffix` at T=str).
+                        // Track the real SSA type so downstream consumers --
+                        // notably the `ret` coercion -- see ptr and ptrtoint
+                        // into an i64-declared return instead of emitting
+                        // invalid `ret i64 %ptr`.
+                        self.track_type(&format!("%_{}", dest.0), "ptr");
                     }
                 } else if is_string
                     && matches!(
@@ -9024,8 +9032,20 @@ impl LlvmCodegen {
                     }
                     self.emit_line("  ret void");
                 } else {
-                    let from_ty = self.operand_type(op, func);
+                    let mut from_ty = self.operand_type(op, func);
                     let mut val = self.operand_to_llvm(op, func);
+                    // Trust the TRACKED SSA type over the declared local type
+                    // when they disagree: a returned closure's env is built as
+                    // a `ptr` SSA value while its fn-typed local renders i64,
+                    // so `fn make<T>(..) -> fn(T) -> T` emitted `ret i64 %ptr`
+                    // (invalid IR -- the generic-closure-return AOT build
+                    // failure). With the real type known, the ptr->i64
+                    // coercion below ptrtoints it into the declared slot.
+                    if let Some(real) = self.actual_type(&val) {
+                        if real != from_ty && (real == "ptr" || from_ty == "ptr") {
+                            from_ty = real;
+                        }
+                    }
                     // Use sig_ty_to_llvm so enum returns get the correct
                     // aggregate type (`{ i64, i64 }`) rather than the bare
                     // tag (`i64`).
