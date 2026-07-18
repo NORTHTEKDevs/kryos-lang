@@ -190,5 +190,67 @@ fn main() {
     match res { Ok(x) => { osum = osum + x } Err(e) => {} }
     expect(osum == 24, "a Result can be matched twice, then reused")
 
+    // ARC drop-path criticals (Pass-37): a payload pulled out of a
+    // still-owned container (Result/enum/[Struct] array) must be
+    // retained/deep-copied, or the container's own scope-end drop frees it
+    // while a local still aliases it -> double-free (JIT 127 / AOT segfault /
+    // SIGILL). Three sites: struct-nested-enum match payload, enum match
+    // payload reassigned in a loop, and [Struct]-array element returned.
+    let arc_toks: [i64] = [2, 3, 4]
+    let arc_r0 = arc_parse(arc_toks, 0)
+    let arc_out = match arc_r0 {
+        Ok(f) => {
+            let mut node = f.expr
+            let mut cur = f.pos
+            while cur < len(arc_toks) {
+                let rn = arc_parse(arc_toks, cur)
+                let stepped = match rn {
+                    Ok(nx) => { node = ArcExpr.Mul(node, nx.expr)  cur = nx.pos  1 }
+                    Err(e) => { cur = len(arc_toks)  0 }
+                }
+                let _keep = stepped
+            }
+            arc_eval(node)
+        }
+        Err(e) => 0 - 1
+    }
+    expect(arc_out == 24, "struct-wrapping-recursive-enum via Result reassigned in a loop (no double-free)")
+    let arc_rows = [ArcW { tag: 7 }, ArcW { tag: 9 }]
+    let arc_a = arc_firstw(arc_rows)
+    let arc_b = arc_firstw(arc_rows)
+    expect(arc_a.tag + arc_b.tag == 14, "[Struct] array element returned from a fn called twice (no double-release)")
+
     println("conformance ownership: PASS")
+}
+
+enum ArcExpr {
+    Num(i64),
+    Mul(ArcExpr, ArcExpr),
+}
+
+struct ArcPR {
+    expr: ArcExpr,
+    pos: i64,
+}
+
+struct ArcW {
+    tag: i64,
+}
+
+fn arc_parse(toks: [i64], pos: i64) -> Result<ArcPR, str> {
+    if pos >= len(toks) {
+        return Err("eof")
+    }
+    return Ok(ArcPR { expr: ArcExpr.Num(toks[pos]), pos: pos + 1 })
+}
+
+fn arc_eval(e: ArcExpr) -> i64 {
+    match e {
+        Num(v) => return v,
+        Mul(a, b) => return arc_eval(a) * arc_eval(b),
+    }
+}
+
+fn arc_firstw(rows: [ArcW]) -> ArcW {
+    return rows[0]
 }
