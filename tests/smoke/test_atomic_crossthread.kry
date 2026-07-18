@@ -1,0 +1,28 @@
+// Regression: std::sync AtomicInt must not deadlock under real cross-thread
+// contention. The old Mutex<()>+stored-guard runtime primitive had a race
+// (unlock released the lock before nulling the guard pointer -> a waking
+// thread's guard got clobbered -> permanent deadlock, exit 124). Replaced
+// with an atomic spin-then-yield lock. 4 threads x 500 fetch_add must total
+// 2000 with no hang.
+use std::sync::{atomic_int}
+
+@capabilities(process)
+fn main() {
+    let counter = atomic_int(0)
+    let ch = chan()
+    spawn { let mut i = 0  while i < 500 { counter.fetch_add(1)  i = i + 1 }  send(ch, 1) }
+    spawn { let mut i = 0  while i < 500 { counter.fetch_add(1)  i = i + 1 }  send(ch, 1) }
+    spawn { let mut i = 0  while i < 500 { counter.fetch_add(1)  i = i + 1 }  send(ch, 1) }
+    spawn { let mut i = 0  while i < 500 { counter.fetch_add(1)  i = i + 1 }  send(ch, 1) }
+    let mut got = 0
+    while got < 4 {
+        recv(ch)
+        got = got + 1
+    }
+    let total = counter.load()
+    if total != 2000 {
+        println("FAIL: expected 2000, got " + to_string(total))
+        exit(1)
+    }
+    println("atomic crossthread: PASS")
+}
