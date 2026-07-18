@@ -6,6 +6,63 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — adversarial cert Passes 35-39 (~30 correctness + crash bugs)
+A sustained multi-agent adversarial sweep (JIT-only finders + independent
+both-backend re-verification) across pattern matching, closures, concurrency,
+generics, numerics, the pipe operator, and drop-path ownership. Every fix ships
+with a conformance/type-soundness regression; conformance stayed 15/15 and the
+self-host bootstrap 16/16 throughout.
+
+- **Pattern matching.** Bare payload-less enum variants in tuple patterns
+  (`(Red, Red)` vs `(Green, Green)`), nested-in-payload (`Pair((Red, k))`),
+  direct-payload (`Has(Red)`), and depth-3+ nested leaves (`L3a(L2a(L1a))`) now
+  DISCRIMINATE — previously they were parsed as bindings so the first arm always
+  won (silent-wrong both backends). Enum-with-nested-payload as a tuple element
+  now emits the element tests it was skipping. Refinement is short-circuited so
+  an inner tag test never dereferences a mismatched variant. Match-arm bodies
+  that compute on a pattern binding (`v => v + "!"`) now type from the binding
+  instead of defaulting to i64.
+- **Closures.** A closure body whose tail is a `try/catch` or value-`if` now
+  returns that value (was silently 0/void). Generic function returning a closure
+  at `T=str` now builds on AOT.
+- **Concurrency.** Spawn-captured enums keep their tag+payload (wrapper ABI);
+  actor struct/enum/tuple state fields box/unbox with a real zeroed init
+  (read-before-set is defined, was a build failure / null-deref).
+- **Ownership / drop paths.** Three teardown double-frees (JIT exit 127 / AOT
+  segfault / SIGILL) fixed: a struct-wrapping-recursive-enum returned via
+  `Result` and reassigned in a loop, a `[Struct]` array element returned from a
+  function called twice, and a mutable enum reassigned from a nested-match
+  binding in a loop. Root: enum and struct-nested-enum payloads pulled out of a
+  still-owned container were not retained/deep-copied; plus a Cranelift
+  deep-copy recursion cycle guard for self-referential generic enums.
+- **Generics.** `List<T>`/`Set<T>` at non-i64 elements fully work (annotation-
+  bound no-arg constructor, real body bindings, per-instantiation value-param
+  methods so `Set<str>.has`/`List<str>.index_of` compare content not pointers).
+  `map_has` accepts int keys; `map_keys` returns the map's key-typed array;
+  `group_by` is fully generic (was `[any]`-erased: crashed unannotated, dropped
+  all-but-first per group annotated).
+- **Numerics.** Mixed-width integer arithmetic PROMOTES to the wider type —
+  `i8 + i64` was computed at i8 and truncated (`127 + 1000000` stored `-65`).
+- **Dispatch.** The `|>` pipe operator routes through the real call machinery
+  (fixed `f64 |> abs` printing bit-garbage and closure-valued pipes failing to
+  link). A user function shadowing a builtin (`fn sin`, `fn abs`) now wins on
+  JIT (the codegen math fast-paths were bypassing it). Trait-object argument
+  coercion fires at every position including dyn-receiver and `Type::method`
+  static calls.
+- **Crash-to-clean-error hardening (public-use safety floor).** `dyn Trait` in
+  any container (array/tuple/`Option`/`Result`/map) is now a clean `E0110`
+  instead of a runtime segfault. Global `reverse`/`sort` reject non-array args
+  (`reverse(str)` segfaulted) and their in-place void return can no longer be
+  captured into a crashing slot. Duplicate top-level function definitions are a
+  clean diagnostic instead of a raw codegen dump.
+
+### Documented — accuracy corrections
+`char_code` returns the first Unicode codepoint (not byte); `push`/`sort`/
+`reverse` mutate in place (reassign, never read a pre-call alias); `comptime {}`
+is currently a runtime block, not a compile-time evaluator; flat-namespace
+builtin/import collisions; hand-declared `kryos_*` externs with string
+signatures; the collection-element read-share boundary.
+
 ### Fixed — value semantics (found by differential fuzzing)
 - **Map/array container VALUES are now retained on store.** `m[k] = v` and
   `arr[i] = v` stored the raw pointer; when `v`'s local dropped, the stored
