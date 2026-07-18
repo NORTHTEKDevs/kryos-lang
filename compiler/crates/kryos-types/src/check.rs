@@ -3073,10 +3073,50 @@ impl TypeChecker {
 
                     // Check if this is a Function-typed struct field being called
                     // (e.g. `t.transform(5)` where `transform: fn(i64) -> i64`).
+                    //
+                    // For a generic struct (`struct Box<T> { f: T }`), the field's
+                    // RAW declared type is the bare generic param var (`Type::Var`),
+                    // not yet substituted with the concrete type argument carried by
+                    // `obj_ty`'s generics (e.g. `Box<fn() -> i64>`). Substitute the
+                    // struct's declared generic vars with the receiver's concrete
+                    // generic args before checking for `Type::Function`, mirroring
+                    // the freshen-then-unify-then-resolve pattern the generic METHOD
+                    // path above already uses for `self`.
+                    let field_ty = self.env.lookup_field(tname, method).cloned().map(|raw| {
+                        if let Type::Struct {
+                            generics: obj_generics,
+                            ..
+                        } = &obj_ty
+                        {
+                            if let Some(def) = self.env.lookup_struct(tname) {
+                                if !def.generic_var_ids.is_empty() && !obj_generics.is_empty() {
+                                    let mut var_map = std::collections::HashMap::new();
+                                    let mut fresh_vars =
+                                        Vec::with_capacity(def.generic_var_ids.len());
+                                    for &old_id in &def.generic_var_ids {
+                                        let fresh = self.engine.fresh_var();
+                                        if let Type::Var(new_id) = &fresh {
+                                            var_map.insert(old_id, *new_id);
+                                        }
+                                        fresh_vars.push(fresh);
+                                    }
+                                    let instantiated = self.engine.instantiate(&raw, &var_map);
+                                    for (fresh, concrete) in
+                                        fresh_vars.iter().zip(obj_generics.iter())
+                                    {
+                                        let _ = self.engine.unify(fresh, concrete, *span);
+                                    }
+                                    return self.engine.resolve(&instantiated);
+                                }
+                            }
+                        }
+                        raw
+                    });
+
                     if let Some(Type::Function {
                         params: fn_params,
                         ret: fn_ret,
-                    }) = self.env.lookup_field(tname, method).cloned()
+                    }) = field_ty
                     {
                         // Opaque callable (bare `fn` type) accepts any arity.
                         let is_opaque = fn_params.len() == 1

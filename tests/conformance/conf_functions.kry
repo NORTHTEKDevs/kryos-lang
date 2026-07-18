@@ -188,6 +188,13 @@ struct AHolder { shape: dyn Areued }
 struct ATagger { tag: i64 }
 impl ATagger { fn tagged_area(self: ATagger, s: dyn Areued) -> i64 { return s.area() + self.tag } }
 
+// A generic struct field typed as the bare param `T`, instantiated at a FUNCTION
+// type, must be CALLABLE (`b.f()`): the field-call resolution looked up the RAW
+// declared type `T` (a type var), never substituting the concrete fn type, so it
+// failed the Function-field check -> false E0107. Now the struct's generic params
+// are substituted into the field type first (freshen->unify vs the instance).
+struct FBox<T> { f: T }
+
 fn main() {
     // Recursion.
     expect(fib(10) == 55, "recursion")
@@ -311,6 +318,12 @@ fn main() {
     expect(dyn_holder.shape.area() == 12, "dyn-Trait coercion at a struct-literal field")
     let dyn_tagger = ATagger { tag: 100 }
     expect(dyn_tagger.tagged_area(GRect { w: 3, h: 4 }) == 112, "dyn-Trait coercion at a method-call argument")
+
+    // Generic struct field typed `T` instantiated at a fn type is callable.
+    let fb0: FBox<fn() -> i64> = FBox { f: || 100 + 1 }
+    expect(fb0.f() == 101, "generic struct fn-typed field (T=fn()->i64) is callable")
+    let fb1: FBox<fn(i64) -> i64> = FBox { f: |x: i64| x * 2 }
+    expect(fb1.f(5) == 10, "generic struct fn-typed field with an argument (T=fn(i64)->i64)")
 
     println("conformance functions: PASS")
 }
