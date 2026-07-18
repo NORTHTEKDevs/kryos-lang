@@ -4172,10 +4172,18 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(builder.inst_results(call)[0]));
             }
 
+            // A user-defined function shadows any same-named builtin, INCLUDING
+            // these early math fast-paths (they fire before the builtin-map
+            // guard below). Without this, `fn sin(x) { 999 }` / `fn abs(n)` was
+            // silently unreachable -- the native-instruction / runtime-call
+            // fast-path ran instead of the user body (both backends).
+            let user_shadows_early = translator.user_func_names.contains(func.as_str());
+
             // Handle math builtins that map to native Cranelift f64 instructions.
             // sqrt, floor, ceil use Cranelift's native instructions directly;
             // abs dispatches to fabs for floats or integer negation for ints.
-            if matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "round" | "abs")
+            if !user_shadows_early
+                && matches!(func.as_str(), "sqrt" | "floor" | "ceil" | "round" | "abs")
                 && args.len() == 1
             {
                 let val = translate_operand(&args[0], builder, translator, module)?;
@@ -4243,10 +4251,12 @@ fn translate_rvalue<M: Module>(
 
             // Handle f64→f64 math builtins (sin, cos, tan, log, log2, log10)
             // via runtime calls with proper f64 signatures.
-            if matches!(
-                func.as_str(),
-                "sin" | "cos" | "tan" | "log" | "log2" | "log10"
-            ) && args.len() == 1
+            if !user_shadows_early
+                && matches!(
+                    func.as_str(),
+                    "sin" | "cos" | "tan" | "log" | "log2" | "log10"
+                )
+                && args.len() == 1
             {
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let rt_name = format!("kryos_builtin_{func}");

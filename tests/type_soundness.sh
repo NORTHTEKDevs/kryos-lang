@@ -330,6 +330,24 @@ fn main() {
 }
 '
 
+
+# --- Pass-38: a user function shadowing a builtin must WIN (JIT + AOT-runtime) ---
+# (Cranelift math fast-paths for sin/abs/sqrt/... fired before the
+# user-shadow guard, so `fn sin` was silently unreachable -- the builtin
+# ran instead. Now the user body wins; only an AOT constant-arg call to a
+# libm-NAMED fn is still const-folded, gotcha #18.)
+
+want_pass user_shadows_math_builtin '
+fn sin(x: f64) -> f64 { return 999.0 }
+fn abs(n: i64) -> i64 { return 42 }
+fn main() {
+    let a: f64 = parse_float("0.5")
+    if sin(a) != 999.0 { println("FAIL sin")  exit(1) }
+    if abs(0 - 7) != 42 { println("FAIL abs")  exit(1) }
+    println("ok")
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
