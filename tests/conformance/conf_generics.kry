@@ -3,6 +3,7 @@
 // (Reference chapter 8; regression for the step-240 field-typing fix.)
 
 use std::iter::{map}
+use std::collections::{List, Set}
 
 fn expect(cond: bool, what: str) {
     if not cond {
@@ -337,6 +338,29 @@ fn main() {
     expect(deref_annotated(dcs) == "z", "generic fn body: `let x: T` annotation substitutes (str)")
     let dcn: Nest<Nest<i64>> = Nest { inner: Nest { inner: 88 } }
     expect(deref_nested(dcn) == 88, "generic fn body: compound `let x: Nest<T>` annotation substitutes")
+
+    // std::collections List<T>/Set<T> at NON-i64 element types (was: the
+    // no-arg static ctor couldn't bind T from the let annotation ->
+    // List___i64 collided with .push("a") -> JIT raw pointers / AOT build
+    // fail; and T-value-param methods (has/contains/index_of) dispatched to
+    // the ERASED copy, stringifying/comparing POINTERS -> Set<str>.has was
+    // always false). Three fixes: pending_let_expected binds the ctor from
+    // the annotation; monomorphize_impl_fn sets active_generic_bindings for
+    // the body; T-value-param methods register as monomorphization templates.
+    let g36s: Set<str> = Set.new()
+    let g36s2 = g36s.add("x").add("y").add("x")
+    expect(g36s2.len() == 2, "Set<str> dedups by content (annotation-bound ctor)")
+    expect(g36s2.has("y"), "Set<str>.has finds a present element (was always false)")
+    expect(g36s2.has("z") == false, "Set<str>.has rejects an absent element")
+    let mut g36l: List<str> = List.new()
+    g36l = g36l.push("aa").push("bb")
+    expect(g36l.len() == 2, "List<str> push/len via annotation-bound ctor (was AOT build fail)")
+    expect(g36l.get(1) == "bb", "List<str>.get returns the real string")
+    expect(g36l.index_of("bb") == 1, "List<str>.index_of compares CONTENT not pointers")
+    expect(g36l.contains("zz") == false, "List<str>.contains rejects an absent element")
+    let g36li: List<i64> = List.new()
+    let g36li2 = g36li.push(7).push(8)
+    expect(g36li2.index_of(8) == 1, "List<i64> control intact")
 
     println("conformance generics: PASS")
 }

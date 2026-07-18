@@ -265,6 +265,14 @@ pub struct LoweringContext {
     /// `closure_locals`: discarded when `restore_function_state` runs, so it
     /// never leaks past this one lambda's own body.
     pending_self_recursive_name: Option<String>,
+    /// The resolved annotation of the `let` whose initializer is currently
+    /// being lowered. Consumed (take()) by `monomorphize_impl_fn` when a
+    /// no-argument generic static constructor leaves type params unbound --
+    /// `let ls: List<str> = List.new()` has nothing to bind `T` from except
+    /// this annotation (matched against the template's return type), so it
+    /// defaulted to `List___i64` while the chained `.push("a")` wanted
+    /// `List___str`: JIT printed raw pointers, AOT failed the build.
+    pending_let_expected: Option<MirType>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -427,6 +435,7 @@ impl LoweringContext {
             capture_boxes: HashMap::new(),
             pending_box_scalar_captures: false,
             pending_self_recursive_name: None,
+            pending_let_expected: None,
         }
     }
 
@@ -1410,8 +1419,29 @@ pub fn lower_module_with_lambda_params(
                         // routing it through monomorphization too would be
                         // unnecessary churn on the hottest generic-method path
                         // (the self-host compiler leans on it heavily).
+                        // A T-typed VALUE param (non-self param mentioning an
+                        // impl generic, e.g. `has(self, val: T)`) means the
+                        // body OPERATES on T values (stringifies them for map
+                        // keys, compares them, formats them) -- the erased
+                        // single copy is semantically WRONG for pointer-backed
+                        // T there: `Set<str>.has("y")` stringified the str's
+                        // POINTER as the lookup key (always false), and
+                        // `List<str>.index_of` compared pointers instead of
+                        // content. Flow-through methods (T only in the return,
+                        // e.g. `get -> T`, or no T at all, e.g. `len`) keep
+                        // the erased fast path the self-host leans on.
+                        let has_generic_value_param = has_self
+                            && params.iter().any(|p| {
+                                p.name != "self"
+                                    && p.ty.as_ref().is_some_and(|t| {
+                                        impl_generic_names
+                                            .iter()
+                                            .any(|gp| type_expr_mentions_param(t, gp))
+                                    })
+                            });
                         let is_ctor_instance_method = has_self
-                            && instance_ret_needs_monomorphization(ret_ty, &impl_generic_names);
+                            && (instance_ret_needs_monomorphization(ret_ty, &impl_generic_names)
+                                || has_generic_value_param);
                         // A no-`self` (associated) method inside a generic
                         // impl block must be registered as a monomorphization
                         // TEMPLATE, not lowered/resolved once here: resolving
@@ -3113,6 +3143,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Lower the RHS BEFORE allocating the new local.  This ensures
             // that variable name lookups in the initializer resolve to the
             // previous binding (important for `let x = f(x)` shadowing).
+            // Expose the resolved annotation to the RHS lowering so a
+            // no-arg generic static ctor (`List.new()`) can bind its type
+            // params from it (see pending_let_expected).
+            let saved_let_expected = ctx.pending_let_expected.take();
+            if ty.is_some() {
+                ctx.pending_let_expected = Some(mir_ty.clone());
+            }
             let rvalue_and_meta = if let Some(expr) = value {
                 // Mark source locals as non-owning when the initializer
                 // borrows from another value.
@@ -3197,6 +3234,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             } else {
                 None
             };
+            ctx.pending_let_expected = saved_let_expected;
 
             // Tuple destructuring: `let (a, b, c) = expr`
             if let Some(ast::Pattern::Tuple { elements, .. }) = pattern {
@@ -13836,6 +13874,21 @@ fn monomorphize_impl_fn(
             extract_type_bindings_from_arg(ctx, param_ty, arg_expr, &generic_params, &mut type_map);
         }
     }
+    // A no-argument generic static ctor (`List.new()`) leaves its type
+    // params unbound -- bind them from the enclosing annotated `let`'s
+    // resolved type (matched against the template's RETURN type, which
+    // extract_type_bindings demangles against mono_instance_args). Without
+    // this, `let ls: List<str> = List.new()` monomorphized `List___i64`
+    // while the chained `.push("a")` wanted `List___str` -- JIT printed
+    // raw pointers, AOT failed the build. Consumed once; falls back to the
+    // historical i64 default when there is no annotation.
+    if generic_params.iter().any(|gp| !type_map.contains_key(gp)) {
+        if let Some(expected) = ctx.pending_let_expected.take() {
+            if let Some(ret_te) = &template_ret_ty {
+                extract_type_bindings(ctx, ret_te, &expected, &generic_params, &mut type_map);
+            }
+        }
+    }
 
     // Build the list of concrete types in generic_params order for the
     // mangled name, matching the free-function scheme exactly (e.g.
@@ -13895,6 +13948,15 @@ fn monomorphize_impl_fn(
 
     // Save the current function state — lower_function will call reset().
     let saved = ctx.save_function_state();
+    // Expose the concrete bindings to the body lowering, exactly like the
+    // free-function monomorphize does: a `let d: [T] = []` inside the body
+    // must resolve to the INSTANTIATION type ([str]), or the struct literal
+    // `List { data: d, .. }` field-infers T=i64 and builds a %List___i64
+    // value inside List__new___str -- the sret store then emitted `store
+    // %List___str undef` (AOT: corrupt-array-header panic on first use;
+    // erased-to-i64 was only correct for the single-compile erased copy).
+    let saved_bindings =
+        std::mem::replace(&mut ctx.active_generic_bindings, type_map.clone());
 
     // Lower the specialized function.
     let mir_func = lower_function(
@@ -13906,6 +13968,7 @@ fn monomorphize_impl_fn(
     );
 
     // Restore the caller's function AND impl state.
+    ctx.active_generic_bindings = saved_bindings;
     ctx.restore_function_state(saved);
     ctx.current_self_type = prev_self;
     ctx.current_impl_generics = prev_impl_generics;
