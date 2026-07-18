@@ -8051,6 +8051,20 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
+                    // map_keys/keys(m: map<K, V>) -> [K] — the KEY-typed
+                    // array, not the static [str] table entry. An int-keyed
+                    // map's unannotated `let ikeys = map_keys(mi)` typed the
+                    // keys [str], so `for k in ikeys { mi[k] }` dispatched the
+                    // str map-get on i64 keys and str-dropped raw integers
+                    // (JIT segfault). Falls through for non-map args (the
+                    // self-host's own helpers).
+                    if matches!(name.as_str(), "map_keys" | "keys") {
+                        if let Some(first_arg) = args.first() {
+                            if let MirType::Map { key, .. } = infer_expr_type(ctx, first_arg) {
+                                return MirType::Array(key, None);
+                            }
+                        }
+                    }
                     // pop(arr: [T]) -> T — element-typed result so aggregate/
                     // float elements keep their real type (the i64 table entry
                     // mis-typed `let last = pop(items); last.field` on AOT).
@@ -9266,16 +9280,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 Operand::Local(tmp)
                             }
                             Some(MirType::Tuple(ref elems)) => {
-                                let words = elems.len().max(1);
-                                let tmp = ctx.alloc_temp(MirType::I64);
+                                // A real zero-valued TUPLE, not a raw zeroed
+                                // buffer: on the JIT a tuple is a KryosArray,
+                                // so reading a raw box as one panics "index 0
+                                // but length is 0" on the first field access.
+                                // Elements zero-init per slot (heap elements
+                                // get a 0 handle -- a null str reads as "",
+                                // matching scalar state fields).
+                                let ty = MirType::Tuple(elems.clone());
+                                let zeros: Vec<Operand> = elems
+                                    .iter()
+                                    .map(|_| Operand::Constant(Constant::Int(0)))
+                                    .collect();
+                                let tmp = ctx.alloc_temp(ty);
                                 ctx.emit(Instruction::Assign {
                                     dest: tmp,
-                                    value: RValue::Call {
-                                        func: "kryos_arc_alloc_i64".into(),
-                                        args: vec![Operand::Constant(Constant::Int(
-                                            (words as i64) * 8,
-                                        ))],
-                                    },
+                                    value: RValue::Tuple(zeros),
                                 });
                                 Operand::Local(tmp)
                             }
@@ -9726,10 +9746,25 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if let Some(methods) = ctx.trait_defs.get(trait_name.as_str()).cloned() {
                     if let Some(method_idx) = methods.iter().position(|m| m.name == *method) {
                         let ret_ty = methods[method_idx].ret_ty.clone();
+                        let param_tys = methods[method_idx].param_types.clone();
                         let obj = lower_expr_to_operand(ctx, object);
+                        // dyn Trait coercion on DYNAMIC-dispatch arguments: the
+                        // callee is unknown at compile time, so the coercion
+                        // targets come from the TRAIT method signature (self
+                        // excluded, aligning with args). Without this, a
+                        // concrete struct passed to a dyn param of a method
+                        // called ON a dyn receiver (`boxed.heavier(other)`)
+                        // reached the vtable body raw -> SIGSEGV both backends.
                         let mut call_args: Vec<Operand> = Vec::new();
-                        for a in args {
-                            call_args.push(lower_expr_to_operand(ctx, a));
+                        for (i, a) in args.iter().enumerate() {
+                            let operand = lower_expr_to_operand(ctx, a);
+                            let operand = match param_tys.get(i) {
+                                Some(target_ty) => {
+                                    coerce_to_dyn_if_needed(ctx, operand, target_ty, a)
+                                }
+                                None => operand,
+                            };
+                            call_args.push(operand);
                         }
                         return RValue::VtableCall {
                             object: obj,

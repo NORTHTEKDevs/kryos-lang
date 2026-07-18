@@ -571,7 +571,33 @@ fn main() {
     ag.get(arch)
     expect(recv(arch) == 790, "actor aggregate state after reassignment (7*100 + 2*10 + 70)")
 
+    // TUPLE actor state read-before-set: the zeroed-box init installed a raw
+    // buffer, but a tuple is a KryosArray on the JIT -- reading it panicked
+    // "index 0 but length is 0". The constructor now installs a real
+    // zero-valued tuple.
+    let tch = chan()
+    let ts0 = TupProbe()
+    ts0.first(tch)
+    expect(recv(tch) == 0, "tuple actor state reads as zeroed before first store (was a panic)")
+    let ts = TupProbe()
+    ts.set(41, tch)
+    expect(recv(tch) == 41, "tuple actor state stores and reads back")
+
     println("conformance errors+concurrency: PASS")
+}
+
+actor TupProbe {
+    pair: (i64, str)
+
+    fn first(self, reply: i64) {
+        let p = self.pair
+        send(reply, p.0)
+    }
+
+    fn set(self, n: i64, reply: i64) {
+        self.pair = (n, "tag")
+        send(reply, self.pair.0)
+    }
 }
 
 enum SpMsg {

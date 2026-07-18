@@ -385,6 +385,43 @@ fn main() {
     expect(DUtil::dpick(100, dq) == 116, "Type::method(concrete) coerces the arg to the dyn param (struct 1)")
     expect(DUtil::dpick(100, dc) == 112, "Type::method(concrete) coerces the arg to the dyn param (struct 2)")
 
+    // dyn coercion on DYNAMIC dispatch (Pass-36): a method called ON a
+    // dyn-typed receiver lowers through the vtable, where the callee is
+    // unknown -- the arg coercion targets come from the TRAIT signature. A
+    // concrete struct arg at such a call site reached the vtable body raw
+    // (SIGSEGV both backends).
+    let dyn_recv: dyn DSized = DSq { side: 5 }
+    let dyn_arg_concrete = DCi { rad: 2 }
+    expect(dyn_recv.dbigger(dyn_arg_concrete), "concrete arg coerced to dyn at a dyn-receiver call (25 > 12)")
+
+    // map_has accepts int-keyed maps (key param was hardcoded str -> E0100);
+    // map_keys returns the map's KEY-typed array so the natural
+    // `let keys = map_keys(m)  for k in keys { m[k] }` idiom compiles and
+    // runs for BOTH key types without an annotation (was E0100 for str maps
+    // and a JIT segfault for int maps: keys mis-typed [str] str-dropped raw
+    // integers).
+    let mut mh_i: map<i64, i64> = {}
+    mh_i[1] = 100
+    expect(map_has(mh_i, 1), "map_has works on an int-keyed map")
+    expect(map_has(mh_i, 2) == false, "map_has miss on an int-keyed map")
+    let mut mk_s: map<str, i64> = {}
+    mk_s["a"] = 1
+    mk_s["b"] = 2
+    let mk_keys = map_keys(mk_s)
+    let mut mk_total = 0
+    for k in mk_keys {
+        mk_total = mk_total + mk_s[k]
+    }
+    expect(mk_total == 3, "unannotated map_keys re-index over a str-keyed map")
+    let mut mk_i: map<i64, str> = {}
+    mk_i[5] = "five"
+    let mk_ikeys = map_keys(mk_i)
+    let mut mk_seen = ""
+    for k in mk_ikeys {
+        mk_seen = mk_seen + mk_i[k]
+    }
+    expect(mk_seen == "five", "unannotated map_keys re-index over an int-keyed map (was a JIT segfault)")
+
     println("conformance functions: PASS")
 }
 

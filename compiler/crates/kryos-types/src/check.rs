@@ -2720,6 +2720,25 @@ impl TypeChecker {
                             && matches!(&params[0], Type::Error)
                             && matches!(ret.as_ref(), Type::Error);
                         if is_opaque_callable {
+                            // map_keys matches the opaque shape (one lenient
+                            // param, Error ret) but its return IS knowable:
+                            // the MAP'S KEY-typed array. The Error placeholder
+                            // broke the natural `let keys = map_keys(m)
+                            // for k in keys { m[k] }` idiom with a bogus E0100
+                            // on the re-index (workaround was annotating
+                            // `let keys: [str]`).
+                            if matches!(&callee_name_str, Some(n) if n == "map_keys") {
+                                if let Some(arg0) = args.first() {
+                                    let arg0_ty = self.infer_expr(arg0);
+                                    let mt = self.engine.resolve(&arg0_ty);
+                                    if let Type::Map { key, .. } = mt {
+                                        return Type::Array {
+                                            element: key,
+                                            size: None,
+                                        };
+                                    }
+                                }
+                            }
                             for arg in args.iter() {
                                 let _ = self.infer_expr(arg);
                             }
@@ -4420,14 +4439,19 @@ pub fn type_check_with_lambda_params(
         ret: Type::Str,
     });
 
-    // map_has(m, key: str) -> bool
+    // map_has(m, key) -> bool. The key is lenient (Type::Error) like
+    // `contains` and `map_delete`, so it works on BOTH str- and int-keyed
+    // maps (the hardcoded `key: str` rejected `map_has(int_map, 1)` with
+    // E0100 even though the MIR dispatches to kryos_map_has / _str by the
+    // map's key type -- map_has was the one remaining holdout of the three
+    // key-membership builtins).
     checker.env.define_function(FunctionSig {
         name: "map_has".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
         params: vec![
             ("m".to_string(), Type::Error),
-            ("key".to_string(), Type::Str),
+            ("key".to_string(), Type::Error),
         ],
         ret: Type::Bool,
     });
