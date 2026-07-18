@@ -42,13 +42,19 @@ self-host bootstrap 16/16 throughout.
   `group_by` is fully generic (was `[any]`-erased: crashed unannotated, dropped
   all-but-first per group annotated).
 - **Numerics.** Mixed-width integer arithmetic PROMOTES to the wider type —
-  `i8 + i64` was computed at i8 and truncated (`127 + 1000000` stored `-65`).
+  `i8 + i64` was computed at i8 and truncated (`127 + 1000000` stored `-65`) —
+  and each operand extends by its OWN signedness, so a signed narrow operand
+  mixed with an unsigned wider one is sign-extended (`i8(-5) + u16(1000)` = 995,
+  was 1251).
 - **Dispatch.** The `|>` pipe operator routes through the real call machinery
-  (fixed `f64 |> abs` printing bit-garbage and closure-valued pipes failing to
-  link). A user function shadowing a builtin (`fn sin`, `fn abs`) now wins on
-  JIT (the codegen math fast-paths were bypassing it). Trait-object argument
-  coercion fires at every position including dyn-receiver and `Type::method`
-  static calls.
+  in BOTH the checker and MIR (fixed `f64 |> abs` printing bit-garbage,
+  closure-valued pipes failing to link, and `x |> f(y)` multi-arg targets being
+  rejected). A user function shadowing a builtin (`fn sin`, `fn abs`, `fn len`)
+  now wins on both backends (the codegen math fast-paths and an unconditional
+  `len` import were bypassing it). Bare `to_string(structVal)` dispatches to the
+  struct's own `to_string` method, so `Set<Struct>`/`group_by` dedup works.
+  Trait-object argument coercion fires at every position including dyn-receiver
+  and `Type::method` static calls.
 - **Crash-to-clean-error hardening (public-use safety floor).** `dyn Trait` in
   any container (array/tuple/`Option`/`Result`/map) is now a clean `E0110`
   instead of a runtime segfault. Global `reverse`/`sort` reject non-array args
