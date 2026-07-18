@@ -10374,8 +10374,19 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         // expression AND contains no `return` statements.
                         // A block like `{ if cond { return 1 } return 0 }`
                         // returns i64 even though the last stmt is a Return.
-                        let trailing_is_expr =
-                            matches!(block.stmts.last(), Some(ast::Stmt::Expr { .. }));
+                        // A trailing try/catch or value-`if` commits to a
+                        // STATEMENT form but is a VALUE tail (the Expr::Block
+                        // rvalue path materializes both) -- treating them as
+                        // void made `|x| { try { x+1 } catch e { -1 } }` and
+                        // `|x| { if x > 0 { 100 } else { -100 } }` closures
+                        // silently return 0.
+                        let trailing_is_expr = match block.stmts.last() {
+                            Some(ast::Stmt::Expr { .. }) | Some(ast::Stmt::TryCatch { .. }) => {
+                                true
+                            }
+                            Some(s) => s.as_value_if_expr().is_some(),
+                            None => false,
+                        };
                         let has_return = block
                             .stmts
                             .iter()

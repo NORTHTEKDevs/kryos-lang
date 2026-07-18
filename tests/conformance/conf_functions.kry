@@ -325,5 +325,22 @@ fn main() {
     let fb1: FBox<fn(i64) -> i64> = FBox { f: |x: i64| x * 2 }
     expect(fb1.f(5) == 10, "generic struct fn-typed field with an argument (T=fn(i64)->i64)")
 
+    // A closure body block whose TAIL is a try/catch or a value-`if` is a
+    // VALUE, not void. The lambda void-detection heuristic only recognized a
+    // trailing Stmt::Expr, so `|x| { try { x+1 } catch e { -1 } }` and
+    // `|x| { if x > 0 { 100 } else { -100 } }` compiled to void closures that
+    // silently returned 0 on both backends (match tails already worked).
+    let cl_try = |x: i64| { try { x + 1 } catch e { -1 } }
+    expect(cl_try(10) == 11, "closure try/catch tail returns the try value (was 0)")
+    let cl_throw = |x: i64| { try { throw "boom" } catch e { -9 } }
+    expect(cl_throw(1) == -9, "closure try/catch tail returns the catch value on throw")
+    let cl_if = |x: i64| { if x > 0 { 100 } else { -100 } }
+    expect(cl_if(5) == 100, "closure value-if tail returns the then value (was 0)")
+    expect(cl_if(0 - 5) == -100, "closure value-if tail returns the else value")
+    let cl_str = |t: str| { try { t + "!" } catch e { "err" } }
+    expect(cl_str("hi") == "hi!", "closure str try/catch tail returns the string (was empty)")
+    let cl_let = |x: i64| { let y = x * 2  try { y + 1 } catch e { -1 } }
+    expect(cl_let(4) == 9, "closure let + try/catch tail resolves the block-local")
+
     println("conformance functions: PASS")
 }
