@@ -5501,11 +5501,229 @@ fn tuple_elem_seq_safe(pat: &ast::Pattern) -> bool {
         ast::Pattern::Literal { .. }
         | ast::Pattern::Ident { .. }
         | ast::Pattern::Wildcard { .. } => true,
-        ast::Pattern::Enum { fields, .. } => fields
-            .iter()
-            .all(|f| matches!(f, ast::Pattern::Ident { .. } | ast::Pattern::Wildcard { .. })),
+        // Fully recursive: an enum element whose payload is itself an enum /
+        // literal / tuple pattern (`(L2a(L1b(m)), n)`) is handled by the
+        // sequential path's refine_pattern_acc. The old one-level gate
+        // (fields all Ident/Wildcard) pushed nested shapes onto the SWITCH
+        // tuple chain, which emits NO enum-element tests at all -- every
+        // such match took its first arm.
+        ast::Pattern::Enum { fields, .. } => fields.iter().all(tuple_elem_seq_safe),
         ast::Pattern::Tuple { elements, .. } => elements.iter().all(tuple_elem_seq_safe),
         _ => false,
+    }
+}
+
+/// Recursive acc-style pattern refinement for the sequential/ordered match
+/// path: emits tag-equality tests (at every nesting depth), literal-equality
+/// tests, and payload/element bindings for the pattern against an already
+/// EXTRACTED value local, ANDing every test into `acc`. Used by
+/// `bind_tuple_pattern` for enum-shaped tuple elements and by itself for
+/// nested payload sub-patterns.
+fn refine_pattern_acc(
+    ctx: &mut LoweringContext,
+    value_local: LocalId,
+    value_ty: &MirType,
+    pat: &ast::Pattern,
+    acc: &mut Option<Operand>,
+) {
+    match pat {
+        ast::Pattern::Wildcard { .. } => {}
+        ast::Pattern::Ident { name, mutable, .. } => {
+            if let Some((_, vidx)) = ident_variant_of(ctx, name, value_ty) {
+                let tag = ctx.alloc_temp(MirType::I64);
+                ctx.emit(Instruction::Assign {
+                    dest: tag,
+                    value: RValue::EnumTag {
+                        operand: Operand::Local(value_local),
+                    },
+                });
+                let cmp = ctx.alloc_temp(MirType::Bool);
+                ctx.emit(Instruction::Assign {
+                    dest: cmp,
+                    value: RValue::BinOp {
+                        op: MirBinOp::Eq,
+                        left: Operand::Local(tag),
+                        right: Operand::Constant(Constant::Int(vidx as i64)),
+                    },
+                });
+                and_into_acc(ctx, acc, Operand::Local(cmp));
+            } else {
+                let bound = ctx.alloc_local(Some(name.clone()), value_ty.clone(), *mutable);
+                if !is_copy_type(ctx, value_ty) {
+                    ctx.dropped_locals.insert(bound.0);
+                }
+                ctx.emit(Instruction::Assign {
+                    dest: bound,
+                    value: RValue::Use(Operand::Local(value_local)),
+                });
+            }
+        }
+        ast::Pattern::Literal { expr, .. } => {
+            let lit = lower_expr_to_operand(ctx, expr);
+            let cmp = ctx.alloc_temp(MirType::Bool);
+            ctx.emit(Instruction::Assign {
+                dest: cmp,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: Operand::Local(value_local),
+                    right: lit,
+                },
+            });
+            and_into_acc(ctx, acc, Operand::Local(cmp));
+        }
+        ast::Pattern::Enum {
+            name: pname,
+            variant,
+            fields,
+            ..
+        } => {
+            let enum_name = match value_ty {
+                MirType::Enum(n) => n.clone(),
+                MirType::Struct(n) if ctx.enum_defs.contains_key(n.as_str()) => n.clone(),
+                _ if !pname.is_empty() => pname.clone(),
+                _ => find_enum_variant(ctx, variant)
+                    .map(|(n, _)| n)
+                    .unwrap_or_default(),
+            };
+            let Some(vidx) = ctx
+                .enum_defs
+                .get(enum_name.as_str())
+                .and_then(|vs| vs.iter().position(|v| v.name == *variant))
+            else {
+                // Unresolvable: defensively no test (matches the old
+                // always-match fallback rather than emitting a wrong test).
+                return;
+            };
+            let tag = ctx.alloc_temp(MirType::I64);
+            ctx.emit(Instruction::Assign {
+                dest: tag,
+                value: RValue::EnumTag {
+                    operand: Operand::Local(value_local),
+                },
+            });
+            let cmp = ctx.alloc_temp(MirType::Bool);
+            ctx.emit(Instruction::Assign {
+                dest: cmp,
+                value: RValue::BinOp {
+                    op: MirBinOp::Eq,
+                    left: Operand::Local(tag),
+                    right: Operand::Constant(Constant::Int(vidx as i64)),
+                },
+            });
+            and_into_acc(ctx, acc, Operand::Local(cmp));
+            // Bindings are plain word reads of the (uniform-layout) payload
+            // slot -- safe to extract unconditionally, and suppressed from
+            // drops. REFUTABLE sub-patterns are collected for a
+            // SHORT-CIRCUITED block below: an inner refinement may DEREF the
+            // payload (e.g. `enum_tag` of a payload enum, a heap pointer on
+            // the JIT), which is only valid when the OUTER tag matched --
+            // evaluating it eagerly in the AND chain dereferenced garbage/
+            // null whenever a different variant flowed in (SIGSEGV).
+            let mut refutable_subs: Vec<(usize, MirType)> = Vec::new();
+            for (fi, fpat) in fields.iter().enumerate() {
+                if matches!(fpat, ast::Pattern::Wildcard { .. }) {
+                    continue;
+                }
+                let field_type = ctx
+                    .enum_defs
+                    .get(enum_name.as_str())
+                    .and_then(|vs| vs.get(vidx))
+                    .and_then(|v| v.fields.get(fi))
+                    .cloned()
+                    .unwrap_or(MirType::I64);
+                let field_type = recover_enum_types(ctx, field_type);
+                // Plain binding fast path keeps the direct extract-into-named
+                // local (with drop suppression, as the old inline loop did).
+                let bind_name = match fpat {
+                    ast::Pattern::Ident { name: bn, mutable, .. }
+                        if ident_variant_of(ctx, bn, &field_type).is_none() =>
+                    {
+                        Some((bn.clone(), *mutable))
+                    }
+                    _ => None,
+                };
+                if let Some((bn, m)) = &bind_name {
+                    let l = ctx.alloc_local(Some(bn.clone()), field_type.clone(), *m);
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(l.0);
+                    }
+                    ctx.emit(Instruction::Assign {
+                        dest: l,
+                        value: RValue::EnumPayload {
+                            operand: Operand::Local(value_local),
+                            enum_name: enum_name.clone(),
+                            variant_idx: vidx as u32,
+                            field_idx: fi as u32,
+                        },
+                    });
+                } else {
+                    refutable_subs.push((fi, field_type));
+                }
+            }
+            if !refutable_subs.is_empty() {
+                // ok = false; if <acc so far> { ok = <inner tests> }  --
+                // extraction + inner refinement only run on the matched-tag
+                // path. `ok` replaces acc for the arm condition.
+                let ok = ctx.alloc_local(None, MirType::Bool, true);
+                ctx.emit(Instruction::Assign {
+                    dest: ok,
+                    value: RValue::Use(Operand::Constant(Constant::Bool(false))),
+                });
+                let inner_bb = ctx.alloc_block();
+                let join_bb = ctx.alloc_block();
+                let cond = acc
+                    .take()
+                    .unwrap_or(Operand::Constant(Constant::Bool(true)));
+                ctx.finish_block(
+                    Terminator::Branch {
+                        cond,
+                        then_block: inner_bb,
+                        else_block: join_bb,
+                    },
+                    inner_bb,
+                );
+                let mut inner_acc: Option<Operand> = None;
+                for (fi, field_type) in refutable_subs {
+                    let t = ctx.alloc_temp(field_type.clone());
+                    if !is_copy_type(ctx, &field_type) {
+                        ctx.dropped_locals.insert(t.0);
+                    }
+                    ctx.emit(Instruction::Assign {
+                        dest: t,
+                        value: RValue::EnumPayload {
+                            operand: Operand::Local(value_local),
+                            enum_name: enum_name.clone(),
+                            variant_idx: vidx as u32,
+                            field_idx: fi as u32,
+                        },
+                    });
+                    refine_pattern_acc(ctx, t, &field_type, &fields[fi], &mut inner_acc);
+                }
+                let inner_op =
+                    inner_acc.unwrap_or(Operand::Constant(Constant::Bool(true)));
+                ctx.emit(Instruction::Assign {
+                    dest: ok,
+                    value: RValue::Use(inner_op),
+                });
+                ctx.finish_block(Terminator::Goto(join_bb), join_bb);
+                *acc = Some(Operand::Local(ok));
+            }
+        }
+        ast::Pattern::Tuple { elements, .. } => {
+            let elem_tys = match value_ty {
+                MirType::Tuple(e) => e.clone(),
+                _ => Vec::new(),
+            };
+            bind_tuple_pattern(ctx, value_local, elements, &elem_tys, acc);
+        }
+        ast::Pattern::Struct { name, fields, .. } => {
+            let sname = match value_ty {
+                MirType::Struct(n) => n.clone(),
+                _ => name.clone(),
+            };
+            bind_struct_pattern(ctx, value_local, &sname, fields, acc);
+        }
+        _ => {}
     }
 }
 
@@ -5660,17 +5878,19 @@ fn bind_tuple_pattern(
                 });
                 and_into_acc(ctx, acc, Operand::Local(cmp));
             }
-            ast::Pattern::Enum {
-                name: pname,
-                variant,
-                fields,
-                ..
-            } => {
-                // Nested enum element, e.g. `match (o, y) { (Yes(x), q) => .. }`,
-                // possibly itself nested inside a deeper tuple. Extract the
-                // element, AND its tag-equality test into acc, and extract
-                // payload fields into idents.
+            ast::Pattern::Enum { .. } => {
+                // Nested enum element, possibly with its OWN nested
+                // sub-patterns (`(L2a(L1b(m)), n)`): extract the element and
+                // run the recursive acc-refinement (tag tests at EVERY depth,
+                // literal payload tests, payload bindings). The old inline
+                // version tested one tag level and bound only Ident payload
+                // fields -- a bare-variant payload leaf (`L2a(L1a)`) became a
+                // BINDING with no inner tag test, so sibling arms sharing the
+                // outer variant never discriminated.
                 let elem = ctx.alloc_temp(ety.clone());
+                if !is_copy_type(ctx, &ety) {
+                    ctx.dropped_locals.insert(elem.0);
+                }
                 ctx.emit(Instruction::Assign {
                     dest: elem,
                     value: RValue::Field {
@@ -5678,80 +5898,7 @@ fn bind_tuple_pattern(
                         field: ei.to_string(),
                     },
                 });
-                let enum_name = if !pname.is_empty() {
-                    pname.clone()
-                } else {
-                    match &ety {
-                        MirType::Enum(n) => n.clone(),
-                        _ => find_enum_variant(ctx, variant)
-                            .map(|(n, _)| n)
-                            .unwrap_or_default(),
-                    }
-                };
-                let vidx = ctx
-                    .enum_defs
-                    .get(enum_name.as_str())
-                    .and_then(|vs| vs.iter().position(|v| v.name == *variant));
-                if let Some(vidx) = vidx {
-                    let tag = ctx.alloc_temp(MirType::I64);
-                    ctx.emit(Instruction::Assign {
-                        dest: tag,
-                        value: RValue::EnumTag {
-                            operand: Operand::Local(elem),
-                        },
-                    });
-                    let cmp = ctx.alloc_temp(MirType::Bool);
-                    ctx.emit(Instruction::Assign {
-                        dest: cmp,
-                        value: RValue::BinOp {
-                            op: MirBinOp::Eq,
-                            left: Operand::Local(tag),
-                            right: Operand::Constant(Constant::Int(vidx as i64)),
-                        },
-                    });
-                    and_into_acc(ctx, acc, Operand::Local(cmp));
-                    for (fi, fpat) in fields.iter().enumerate() {
-                        if let ast::Pattern::Ident {
-                            name: fname,
-                            mutable,
-                            ..
-                        } = fpat
-                        {
-                            let field_type = ctx
-                                .enum_defs
-                                .get(enum_name.as_str())
-                                .and_then(|vs| vs.get(vidx))
-                                .and_then(|v| v.fields.get(fi))
-                                .cloned()
-                                .unwrap_or(MirType::I64);
-                            let field_type = match field_type {
-                                MirType::Struct(n)
-                                    if ctx.enum_defs.contains_key(&n) =>
-                                {
-                                    MirType::Enum(n)
-                                }
-                                other => other,
-                            };
-                            let bound = ctx.alloc_local(
-                                Some(fname.clone()),
-                                field_type.clone(),
-                                *mutable,
-                            );
-                            if !is_copy_type(ctx, &field_type) {
-                                ctx.dropped_locals.insert(bound.0);
-                            }
-                            ctx.emit(Instruction::Assign {
-                                dest: bound,
-                                value: RValue::EnumPayload {
-                                    operand: Operand::Local(elem),
-                                    enum_name: enum_name.clone(),
-                                    variant_idx: vidx as u32,
-                                    field_idx: fi as u32,
-                                },
-                            });
-                        }
-                    }
-                }
+                refine_pattern_acc(ctx, elem, &ety, epat, acc);
             }
             ast::Pattern::Tuple {
                 elements: sub_elements,
@@ -6295,7 +6442,20 @@ fn lower_refutable_bind(
                 // so a `(Enum, i64)` tuple payload doesn't keep an opaque
                 // Struct label inside the tuple (unsized %Name on AOT).
                 let field_type = recover_enum_types(ctx, field_type);
-                let dest = if let ast::Pattern::Ident { name: bn, .. } = fpat {
+                // A bare ident naming a variant of the field's own enum type
+                // is a variant TEST (recursed below), not a binding. Without
+                // this, a depth-3 nested bare leaf (`L3a(L2a(L1a))`) became a
+                // binding, so a sibling arm sharing the 2-level prefix never
+                // discriminated -- the bare arm swallowed the payload arm.
+                let bind_name = match fpat {
+                    ast::Pattern::Ident { name: bn, .. }
+                        if ident_variant_of(ctx, bn, &field_type).is_none() =>
+                    {
+                        Some(bn.clone())
+                    }
+                    _ => None,
+                };
+                let dest = if let Some(bn) = &bind_name {
                     let l = ctx.alloc_local(Some(bn.clone()), field_type.clone(), false);
                     if !is_copy_type(ctx, &field_type) {
                         ctx.dropped_locals.insert(l.0);
@@ -6317,7 +6477,7 @@ fn lower_refutable_bind(
                         field_idx: field_idx as u32,
                     },
                 });
-                if !matches!(fpat, ast::Pattern::Ident { .. }) {
+                if bind_name.is_none() {
                     lower_refutable_bind(ctx, Operand::Local(dest), &field_type, fpat, fail_bb);
                 }
             }

@@ -584,7 +584,45 @@ fn main() {
     sfi[7].v = 71
     expect(sfi[7].v == 71, "in-place field mutation through an int-keyed map of single-field structs")
 
+    // DEEP nested enum patterns (Pass-36): a bare-variant LEAF at nesting
+    // depth >= 3 (`L3a(L2a(L1a))`) was bound as a local instead of tag-tested,
+    // so it swallowed the sibling payload arm sharing the 2-level prefix; and
+    // an enum pattern with its OWN nested sub-pattern used as a TUPLE element
+    // (`(L2a(L1b(m)), n)`) routed to the switch tuple chain which emits NO
+    // enum-element tests -- first arm won for EVERY input. The refinement is
+    // also SHORT-CIRCUITED: an inner tag read derefs the payload and must
+    // only run when the outer tag matched (eager evaluation segfaulted on a
+    // different outer variant).
+    expect(t36_deep(T36c.Cp(T36b.Bw(T36a.Ax))) == "p-w-x", "depth-3 bare leaf arm taken only for its own variant")
+    expect(t36_deep(T36c.Cp(T36b.Bw(T36a.Ay(7)))) == "p-w-y:7", "depth-3 payload arm not swallowed by the bare-leaf arm")
+    expect(t36_deep(T36c.Cp(T36b.Bv)) == "p-v", "depth-2 bare arm after deep arms")
+    expect(t36_deep(T36c.Cq) == "q", "top-level bare arm after deep arms")
+    expect(t36_tup((T36b.Bw(T36a.Ax), 1)) == "w-x:1", "nested-enum tuple element discriminates (bare leaf)")
+    expect(t36_tup((T36b.Bw(T36a.Ay(7)), 2)) == "w-y:7,2", "nested-enum tuple element binds the deep payload")
+    expect(t36_tup((T36b.Bv, 3)) == "v:3", "different OUTER variant does not take the first tuple arm (and no segfault)")
+
     println("conformance data: PASS")
+}
+
+enum T36a { Ax, Ay(i64) }
+enum T36b { Bw(T36a), Bv }
+enum T36c { Cp(T36b), Cq }
+
+fn t36_deep(x: T36c) -> str {
+    match x {
+        Cp(Bw(Ax)) => return "p-w-x",
+        Cp(Bw(Ay(n))) => return "p-w-y:" + to_string(n),
+        Cp(Bv) => return "p-v",
+        Cq => return "q",
+    }
+}
+
+fn t36_tup(t: (T36b, i64)) -> str {
+    match t {
+        (Bw(Ax), n) => return "w-x:" + to_string(n),
+        (Bw(Ay(m)), n) => return "w-y:" + to_string(m) + "," + to_string(n),
+        (Bv, n) => return "v:" + to_string(n),
+    }
 }
 
 struct TOne {
