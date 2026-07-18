@@ -2169,6 +2169,33 @@ fn retain_struct_heap_fields(ctx: &mut LoweringContext, holder: LocalId, struct_
                 });
                 new_fields.push((field_name.clone(), Operand::Local(dup_tmp)));
             }
+            // A nested Enum field (e.g. `PResult { expr: Expr, pos: i64 }`
+            // wrapping a recursive `Expr`): `field_val` above is a bit-copy
+            // alias of the subject struct's own field slot, same hazard as
+            // an Array field one arm up. The subject (e.g. `let first =
+            // parse_primary(..)`, or `let r0` bound one match-arm out) still
+            // owns its own unconditional scope-end Drop, which recursively
+            // frees this SAME field object when the struct drops. Without an
+            // independent copy here, `holder`'s rebuilt struct and the
+            // subject alias the identical Expr; the subject's drop frees it
+            // out from under `holder`, and a later fold
+            // (`node = Expr.Mul(node, r1.expr)`) either corrupts on the
+            // SECOND reassignment or double-frees at teardown (matches the
+            // observed exit 127/139 non-determinism: heap corruption, not a
+            // deterministic panic). Fix: same `__kryos_enum_index_clone`
+            // deep-copy marker used for the top-level enum-payload-bind case
+            // and the push-aliasing shape.
+            MirType::Enum(enum_name) if ctx.enum_defs.contains_key(enum_name.as_str()) => {
+                let cloned = ctx.alloc_temp(field_ty.clone());
+                ctx.emit(Instruction::Assign {
+                    dest: cloned,
+                    value: RValue::Call {
+                        func: "__kryos_enum_index_clone".to_string(),
+                        args: vec![Operand::Local(field_val)],
+                    },
+                });
+                new_fields.push((field_name.clone(), Operand::Local(cloned)));
+            }
             _ => {
                 if let Some(rf) = retain_for_ty(field_ty) {
                     let sink = ctx.alloc_temp(MirType::I64);
@@ -3999,7 +4026,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Without this the caller received a raw struct through a
             // `dyn`-typed return slot and the later vtable_call segfaulted.
             let ret_ty = ctx.current_ret_ty.clone();
-            let operand = value.as_ref().map(|e| {
+            let mut operand = value.as_ref().map(|e| {
                 let op = lower_expr_to_operand(ctx, e);
                 coerce_to_dyn_if_needed(ctx, op, &ret_ty, e)
             });
@@ -4008,6 +4035,63 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // its own argument (borrow-to-own at the return boundary).
             if let Some(Operand::Local(src)) = &operand {
                 emit_param_source_retain(ctx, *src, *src);
+            }
+            // Returning a Struct/Enum VALUE READ OUT of a container the
+            // callee does not own outright -- an array-element read
+            // (`return rows[0]`) or a struct-field read (`return s.field`),
+            // including through a borrowed bare-ident bound one `let` back
+            // -- is a bit-copy ALIAS, not a fresh value (the exact shapes
+            // `__kryos_struct_index_clone`/`__kryos_enum_index_clone`
+            // already cover for the `push(dest, arr[i])` aliasing case).
+            // The CALLER treats every return value as freshly owned and
+            // gives it its own scope-end Drop; without an independent copy
+            // here, that drop races the source container's own per-element
+            // Drop over the SAME heap block. Confirmed via KRYOS_DUMP_IR /
+            // MIR diff: `fn first(rows: [Sale]) -> Sale { return rows[0] }`
+            // called twice on the SAME array handle produces two locals
+            // that both alias `rows[0]` and both get an unconditional
+            // `drop()` at the caller's scope end -- double-freeing the
+            // shared Sale (exit 127/139 at teardown, non-deterministic --
+            // the classic heap-corruption signature, not a panic).
+            if let (Some(e), Some(Operand::Local(src))) = (value.as_ref(), &operand) {
+                let is_direct_alias_read = matches!(
+                    e,
+                    ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
+                );
+                let is_borrowed_bare_ident = if let ast::Expr::Identifier { name: id_name, .. } = e
+                {
+                    find_local_by_name(ctx, id_name)
+                        .is_some_and(|l| ctx.borrowed_locals.contains(&l.0))
+                } else {
+                    false
+                };
+                if is_direct_alias_read || is_borrowed_bare_ident {
+                    match infer_expr_type(ctx, e) {
+                        MirType::Struct(ref sname) if ctx.struct_defs.contains_key(sname) => {
+                            let cloned = ctx.alloc_temp(MirType::Struct(sname.clone()));
+                            ctx.emit(Instruction::Assign {
+                                dest: cloned,
+                                value: RValue::Call {
+                                    func: "__kryos_struct_index_clone".to_string(),
+                                    args: vec![Operand::Local(*src)],
+                                },
+                            });
+                            operand = Some(Operand::Local(cloned));
+                        }
+                        MirType::Enum(ref ename) if ctx.enum_defs.contains_key(ename) => {
+                            let cloned = ctx.alloc_temp(MirType::Enum(ename.clone()));
+                            ctx.emit(Instruction::Assign {
+                                dest: cloned,
+                                value: RValue::Call {
+                                    func: "__kryos_enum_index_clone".to_string(),
+                                    args: vec![Operand::Local(*src)],
+                                },
+                            });
+                            operand = Some(Operand::Local(cloned));
+                        }
+                        _ => {}
+                    }
+                }
             }
             let next = ctx.alloc_block();
             ctx.finish_block(Terminator::Return(operand), next);
@@ -7607,6 +7691,36 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     }
                     MirType::Struct(struct_name) if !is_copy_type(ctx, &field_type) => {
                         retain_struct_heap_fields(ctx, dest, struct_name.clone());
+                    }
+                    // Enum payload bind (e.g. `Ok(new_state) => { state =
+                    // new_state }` where new_state: OrderState): the
+                    // EnumPayload read above is a bit-copy alias of the
+                    // subject's own payload slot -- the subject (e.g. a
+                    // `let result = f(..)` declared inside a loop) still
+                    // gets its own unconditional scope-end Drop, which
+                    // recursively releases ITS payload too. Without an
+                    // independent copy here, that drop frees the exact
+                    // object `dest` now aliases: a use-after-free the next
+                    // allocation silently corrupts (reads back as a garbage
+                    // enum tag), surfacing as a SIGILL trap wherever the
+                    // stale value is later matched/tag-dispatched (verified
+                    // via KRYOS_DUMP_IR: the post-loop `enum_tag` read landed
+                    // on freed/reused memory and fell through to the
+                    // `unreachable` arm). Fix mirrors the Struct case one
+                    // line up: give `dest` its own deep copy via the same
+                    // `__kryos_enum_index_clone` marker/emit_enum_deep_copy
+                    // codegen already used for the push-aliasing shape.
+                    MirType::Enum(enum_name)
+                        if !is_copy_type(ctx, &field_type)
+                            && ctx.enum_defs.contains_key(enum_name.as_str()) =>
+                    {
+                        ctx.emit(Instruction::Assign {
+                            dest,
+                            value: RValue::Call {
+                                func: "__kryos_enum_index_clone".to_string(),
+                                args: vec![Operand::Local(dest)],
+                            },
+                        });
                     }
                     _ => {}
                 }
