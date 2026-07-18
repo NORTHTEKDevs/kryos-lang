@@ -9393,6 +9393,31 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         args: vec![code],
                     };
                 }
+                // A struct/enum with its OWN `to_string` method: dispatch the
+                // bare `to_string(x)` to that method (`x.to_string()`), not the
+                // safe placeholder. Without this, `to_string(structVal)`
+                // returned "<Type>" even when the type defined a real
+                // to_string -- and std::collections `Set<T>`/`group_by` key off
+                // `to_string(elem)`, so every distinct struct value collided on
+                // "<Type>" (dedup under-counted, membership false-positived).
+                if let MirType::Struct(n) | MirType::Enum(n) = &aty {
+                    let base = n.split("___").next().unwrap_or(n).to_string();
+                    let mangled = ctx
+                        .method_owners
+                        .get(&(n.clone(), "to_string".to_string()))
+                        .or_else(|| {
+                            ctx.method_owners
+                                .get(&(base.clone(), "to_string".to_string()))
+                        })
+                        .cloned();
+                    if let Some(m) = mangled {
+                        let self_op = lower_expr_to_operand(ctx, &args[0]);
+                        return RValue::Call {
+                            func: m,
+                            args: vec![self_op],
+                        };
+                    }
+                }
                 let placeholder = match &aty {
                     MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
                     MirType::Array(..) => Some("<array>".to_string()),

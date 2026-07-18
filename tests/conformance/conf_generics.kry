@@ -362,5 +362,23 @@ fn main() {
     let g36li2 = g36li.push(7).push(8)
     expect(g36li2.index_of(8) == 1, "List<i64> control intact")
 
+    // Bare to_string(structVal) dispatches to the struct's own to_string
+    // method (was: returned the "<Type>" placeholder, so Set<Struct>/group_by
+    // keyed EVERY distinct value on the same placeholder and dedup collapsed).
+    let g39p = G39Pt { x: 3, y: 4 }
+    expect(to_string(g39p) == "(3,4)", "to_string(struct) dispatches to the impl method")
+    let g39s: Set<G39Pt> = Set.new()
+    let g39s2 = g39s.add(G39Pt { x: 1, y: 1 }).add(G39Pt { x: 2, y: 2 }).add(G39Pt { x: 1, y: 1 })
+    expect(g39s2.len() == 2, "Set<Struct> dedups by the struct's to_string (was 1)")
+    expect(g39s2.has(G39Pt { x: 1, y: 1 }), "Set<Struct> membership true for a present value")
+    expect(g39s2.has(G39Pt { x: 9, y: 9 }) == false, "Set<Struct> membership false for an absent value")
+
     println("conformance generics: PASS")
+}
+
+struct G39Pt { x: i64, y: i64 }
+impl G39Pt {
+    fn to_string(self: G39Pt) -> str {
+        return "(" + to_string(self.x) + "," + to_string(self.y) + ")"
+    }
 }
