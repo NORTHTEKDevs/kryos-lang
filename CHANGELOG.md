@@ -62,6 +62,18 @@ self-host bootstrap 16/16 throughout.
   captured into a crashing slot. Duplicate top-level function definitions are a
   clean diagnostic instead of a raw codegen dump.
 
+### Fixed — concurrency + performance (cert Pass 40)
+- **`std::sync` mutex deadlock under real cross-thread contention.** The
+  primitive backing `AtomicInt`/`AtomicBool`/`WaitGroup` stored a `MutexGuard`
+  behind a shared mutable pointer and released the lock *before* nulling it —
+  a waking thread's guard got clobbered, its later unlock failed, and the lock
+  leaked held: a program-wide deadlock (4 threads × 500 `fetch_add` hung on
+  both backends). Replaced with a race-free atomic spin-then-yield lock.
+- **Method-chain compile time was O(2^depth), now linear.** `infer_expr_type`
+  on a method call inferred the receiver twice per level (once directly, once
+  via `infer_type_name`), so a 30-deep `b.inc().inc()…` chain took >90s. A
+  100-deep chain now compiles in ~0.5s.
+
 ### Documented — accuracy corrections
 `char_code` returns the first Unicode codepoint (not byte); `push`/`sort`/
 `reverse` mutate in place (reassign, never read a pre-call alias); `comptime {}`
