@@ -568,7 +568,27 @@ fn main() {
     let tl_kind = match tl0 { TRed => "ex-red", TGreen => "ex-green" }
     expect(tl_kind == "ex-green", "payload-less enum extracted from a tuple slot carries its tag (AOT crashed here)")
 
+    // Map values are ALWAYS boxed, including a SINGLE-field struct: the
+    // generic single-field-by-value coercion collapsed `P { v }` to its raw
+    // field on insert, so `m[k].field = x` (which mutates in place through
+    // the handle map_get returns) inttoptr'd the raw value -> AOT segfault.
+    // Multi-field structs and int-keyed maps must keep working.
+    let mut sfm: map<str, TOne> = {}
+    sfm["a"] = TOne { v: 1 }
+    sfm["a"].v = 5
+    expect(sfm["a"].v == 5, "in-place field mutation through a str-keyed map of single-field structs")
+    let sfm_got = sfm["a"]
+    expect(sfm_got.v == 5, "single-field struct map value reads back after in-place mutation")
+    let mut sfi: map<i64, TOne> = {}
+    sfi[7] = TOne { v: 70 }
+    sfi[7].v = 71
+    expect(sfi[7].v == 71, "in-place field mutation through an int-keyed map of single-field structs")
+
     println("conformance data: PASS")
+}
+
+struct TOne {
+    v: i64,
 }
 
 enum TLight {

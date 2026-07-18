@@ -5178,6 +5178,40 @@ impl LlvmCodegen {
                             let t = self.next_temp();
                             self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
                             t
+                        } else if matches!(
+                            fname.as_str(),
+                            "kryos_map_insert" | "kryos_map_insert_str"
+                        ) && i == 2
+                            && (actual_ty.starts_with('{') || actual_ty.starts_with('%'))
+                        {
+                            // Map VALUES are always boxed -- including a
+                            // SINGLE-field struct, which the generic aggregate
+                            // ->i64 coercion collapses BY VALUE (extractvalue
+                            // 0). The JIT boxes every struct map value, and
+                            // in-place mutation (`m[k].field = x`) writes
+                            // through the handle map_get returns: a by-value
+                            // slot made that inttoptr(raw field value) ->
+                            // AOT segfault at ~0x1. Same kryos_arc_alloc_i64
+                            // box the multi-field coercion already emits, so
+                            // multi-field behavior is unchanged.
+                            let size_ptr = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_ptr} = getelementptr {actual_ty}, ptr null, i32 1"
+                            ));
+                            let size_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {size_i64} = ptrtoint ptr {size_ptr} to i64"
+                            ));
+                            let heap_i64 = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_i64})"
+                            ));
+                            let heap_ptr = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {heap_ptr} = inttoptr i64 {heap_i64} to ptr"
+                            ));
+                            self.emit_line(&format!("  store {actual_ty} {val}, ptr {heap_ptr}"));
+                            heap_i64
                         } else {
                             self.coerce_value(&val, &actual_ty, &expected_ty)
                         };
@@ -6352,7 +6386,28 @@ impl LlvmCodegen {
                                 self.emit_line(&format!(
                                     "  {raw} = call {actual_ret_ty} @{runtime_fname}({arg_list})"
                                 ));
-                                let coerced = self.coerce_value(&raw, &actual_ret_ty, dest_ty.as_str());
+                                // Map values are ALWAYS boxed (see the
+                                // kryos_map_insert* force-box in the arg loop):
+                                // unbox even a SINGLE-field aggregate dest --
+                                // generic coercion's single-field arm would
+                                // rebuild it BY VALUE from the box handle.
+                                let coerced = if matches!(
+                                    runtime_fname,
+                                    "kryos_map_get" | "kryos_map_get_str"
+                                ) && (dest_ty.starts_with('{')
+                                    || dest_ty.starts_with('%'))
+                                {
+                                    let p = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {p} = inttoptr i64 {raw} to ptr"
+                                    ));
+                                    let v = self.next_temp();
+                                    self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                                    self.track_type(&v, &dest_ty);
+                                    v
+                                } else {
+                                    self.coerce_value(&raw, &actual_ret_ty, dest_ty.as_str())
+                                };
                                 if is_mutable {
                                     self.emit_line(&format!(
                                         "  store {dest_ty} {coerced}, ptr %_{}.addr",
