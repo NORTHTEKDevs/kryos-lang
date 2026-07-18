@@ -3860,33 +3860,34 @@ impl TypeChecker {
 
             // Pipe expression (left |> right).
             Expr::PipeExpr { left, right, span } => {
-                let left_ty = self.infer_expr(left);
-                let right_ty = self.infer_expr(right);
-                let right_ty = self.engine.resolve(&right_ty);
-                match &right_ty {
-                    Type::Function { params, ret } => {
-                        if params.len() == 1 {
-                            if let Err(diag) = self.engine.unify(&params[0], &left_ty, *span) {
-                                self.diagnostics.push(diag);
-                            }
-                            *ret.clone()
-                        } else {
-                            self.error(
-                                "pipe target must be a function taking exactly 1 argument",
-                                *span,
-                            );
-                            Type::Error
+                // Desugar to a REAL FnCall and type-check THAT, exactly as the
+                // MIR lowering's `desugar_pipe` does: `a |> f` -> `f(a)` and
+                // `a |> f(b, c)` -> `f(a, b, c)`. The old version only handled a
+                // bare-function RHS (`a |> f`); a multi-arg target `5 |> add(10)`
+                // type-checked `add(10)` standalone (arity error) and then
+                // required the result to be a Function -- so any pipe with
+                // explicit extra args was rejected despite compiling in MIR.
+                let call = match right.as_ref() {
+                    Expr::FnCall {
+                        callee,
+                        args,
+                        span: cspan,
+                    } => {
+                        let mut all_args = vec![(**left).clone()];
+                        all_args.extend(args.iter().cloned());
+                        Expr::FnCall {
+                            callee: callee.clone(),
+                            args: all_args,
+                            span: *cspan,
                         }
                     }
-                    Type::Error => Type::Error,
-                    _ => {
-                        self.error(
-                            format!("pipe target must be a function, found `{right_ty}`"),
-                            *span,
-                        );
-                        Type::Error
-                    }
-                }
+                    _ => Expr::FnCall {
+                        callee: right.clone(),
+                        args: vec![(**left).clone()],
+                        span: *span,
+                    },
+                };
+                self.infer_expr(&call)
             }
 
             // Borrow expression: &x or &mut x.

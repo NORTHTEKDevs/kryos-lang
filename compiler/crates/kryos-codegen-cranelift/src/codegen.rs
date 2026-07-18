@@ -3770,20 +3770,27 @@ fn translate_rvalue<M: Module>(
                 || is_unsigned_operand(right, &translator.mir_func.locals);
 
             // Coerce integer operands to the same width before the operation.
-            // Unsigned operands ZERO-extend; sign-extending a narrow unsigned
-            // value would corrupt its magnitude.
+            // Each operand extends per ITS OWN signedness: an unsigned narrow
+            // value ZERO-extends, a signed one SIGN-extends. Using the combined
+            // `is_unsigned` flag (true if EITHER operand is unsigned) zero-
+            // extended a SIGNED narrow operand in a mixed pair -- `i8(-5) +
+            // u16(1000)` widened -5's byte pattern to 251 and gave 1251 instead
+            // of 995 (silent miscompile). The narrower operand is the only one
+            // that gets extended (the wider already spans the result width).
+            let lhs_unsigned = is_unsigned_operand(left, &translator.mir_func.locals);
+            let rhs_unsigned = is_unsigned_operand(right, &translator.mir_func.locals);
             if !is_float && !is_float_type(rhs_ty) {
                 let lhs_actual = builder.func.dfg.value_type(lhs);
                 let rhs_actual = builder.func.dfg.value_type(rhs);
                 if lhs_actual != rhs_actual {
                     if lhs_actual.bits() < rhs_actual.bits() {
-                        lhs = if is_unsigned {
+                        lhs = if lhs_unsigned {
                             builder.ins().uextend(rhs_actual, lhs)
                         } else {
                             builder.ins().sextend(rhs_actual, lhs)
                         };
                     } else {
-                        rhs = if is_unsigned {
+                        rhs = if rhs_unsigned {
                             builder.ins().uextend(lhs_actual, rhs)
                         } else {
                             builder.ins().sextend(lhs_actual, rhs)

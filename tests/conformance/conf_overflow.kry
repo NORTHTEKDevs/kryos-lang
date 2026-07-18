@@ -180,6 +180,15 @@ fn main() {
     let mw_n: i8 = 5
     let mw_m: i8 = 3
     expect(mw_n + mw_m == 8, "same-width i8 + i8 unchanged")
+    // Mixed SIGNED+UNSIGNED widths: each operand extends per its OWN
+    // signedness (was: the combined is_unsigned flag zero-extended a signed
+    // narrow operand -> i8(-5)+u16(1000) gave 1251 not 995).
+    let mw_s: i8 = 0 - 5
+    let mw_u: u16 = 1000
+    expect(mw_s + mw_u == 995, "i8(-5) + u16(1000) sign-extends the signed operand")
+    let mw_s2: i8 = 0 - 2
+    let mw_u2: u16 = 100
+    expect(mw_s2 * mw_u2 == 65336, "i8(-2) * u16(100) = -200 wrapped into u16 (65336)")
 
     println("conformance overflow: PASS")
 }
