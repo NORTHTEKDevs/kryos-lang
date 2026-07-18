@@ -8375,7 +8375,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 }
             }
             // Try mangled name first (TypeName__method), then bare method name.
-            if let Some(type_name) = infer_type_name(ctx, object) {
+            if let Some(type_name) = infer_type_name_with(ctx, object, obj_ty.clone()) {
                 // A generic INSTANCE method whose return type CONSTRUCTS a
                 // generic struct (e.g. `Foo<T>.to_box() -> Box<T>`) must
                 // resolve its return type PER RECEIVER instantiation -- see
@@ -8511,7 +8511,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             }
             // Function-typed struct field: e.g. t.transform(5) where
             // `transform: fn(i64) -> i64`. Return the closure's declared ret ty.
-            if let Some(type_name) = infer_type_name(ctx, object) {
+            if let Some(type_name) = infer_type_name_with(ctx, object, obj_ty.clone()) {
                 if let Some(fields) = ctx.struct_defs.get(type_name.as_str()) {
                     if let Some((_, ty)) = fields.iter().find(|(n, _)| n == method) {
                         if let MirType::Function { ret, .. } = ty {
@@ -11735,7 +11735,22 @@ fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
 /// Infer the type name of an expression (for method call resolution).
 /// Returns the struct/enum name if resolvable, None otherwise.
 fn infer_type_name(ctx: &mut LoweringContext, expr: &ast::Expr) -> Option<String> {
-    match infer_expr_type(ctx, expr) {
+    let ty = infer_expr_type(ctx, expr);
+    infer_type_name_with(ctx, expr, ty)
+}
+
+/// `infer_type_name` but with the expression's MIR type ALREADY computed.
+/// The caller often just ran `infer_expr_type(object)` itself (e.g. the
+/// MethodCall inference/lowering arms), and letting `infer_type_name`
+/// re-infer it double-recurses into the receiver -- for a method CHAIN
+/// (`b.inc().inc()...`) that is O(2^depth), so a 30-deep chain took minutes.
+/// Reusing the precomputed type makes chain inference linear.
+fn infer_type_name_with(
+    ctx: &mut LoweringContext,
+    expr: &ast::Expr,
+    ty: MirType,
+) -> Option<String> {
+    match ty {
         MirType::Struct(name) | MirType::Enum(name) => Some(name),
         _ => {
             // An actor-typed FIELD erases to a bare `I64` (actor VALUES are
