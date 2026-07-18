@@ -2341,6 +2341,44 @@ fn emit_struct_deep_copy<M: Module>(
     builder: &mut FunctionBuilder,
     translator: &mut FuncTranslator,
     module: &mut M,
+    visiting: &mut HashSet<String>,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    // Cycle guard: a struct/enum type graph can be (in)directly
+    // self-referential (e.g. a recursive generic `List<T> { Cons(T,
+    // List<T>) }`, whose Cons field is correctly typed `MirType::Enum`, not
+    // erased). Without this, cloning such a value here recurses into this
+    // Rust function (and/or `emit_enum_deep_copy`) once per TYPE-GRAPH
+    // level with NO base case -- unconditional, unbounded compile-time
+    // Rust recursion that overflows the COMPILER's own stack (verified via
+    // KRYOS_TRACE instrumentation: a 2-node List<i64> clone triggered
+    // 500k+ nested calls before the guard-page fault, caught by the SAME
+    // kryos-rt fault handler linked into the compiler binary itself --
+    // hence the misleading "kryos: stack overflow" message appearing to
+    // come from a compiled PROGRAM when it was actually the COMPILER
+    // crashing during codegen). If we're already in the middle of cloning
+    // this exact type one level up the Rust call stack, we've hit a cycle:
+    // fall back to sharing the raw pointer for this one occurrence (the
+    // SAME safe pass-through non-recursive struct/enum fields already use
+    // elsewhere in these two functions) instead of recursing again. This
+    // bounds recursion by the number of DISTINCT types in a cycle, not by
+    // runtime data depth, and only affects the (rare) case where a cycle
+    // is actually present -- every existing non-recursive struct/enum
+    // clone is unaffected.
+    if !visiting.insert(sname.to_string()) {
+        return Ok(val);
+    }
+    let result = emit_struct_deep_copy_inner(sname, val, builder, translator, module, visiting);
+    visiting.remove(sname);
+    result
+}
+
+fn emit_struct_deep_copy_inner<M: Module>(
+    sname: &str,
+    val: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    visiting: &mut HashSet<String>,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     let struct_def = translator
         .struct_defs
@@ -2418,7 +2456,7 @@ fn emit_struct_deep_copy<M: Module>(
                 if translator.copy_structs.contains(inner_name) {
                     field_val
                 } else {
-                    emit_struct_deep_copy(inner_name, field_val, builder, translator, module)?
+                    emit_struct_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
                 }
             }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
@@ -2458,6 +2496,28 @@ fn emit_enum_deep_copy<M: Module>(
     builder: &mut FunctionBuilder,
     translator: &mut FuncTranslator,
     module: &mut M,
+    visiting: &mut HashSet<String>,
+) -> Result<cranelift_codegen::ir::Value, CodegenError> {
+    // Cycle guard -- see the identical guard + doc comment on
+    // `emit_struct_deep_copy` for the full rationale (verified root cause:
+    // a self-referential monomorphized enum, e.g. `List<T> { Cons(T,
+    // List<T>) }`, recurses this Rust function into itself with no base
+    // case, overflowing the COMPILER's own stack during codegen).
+    if !visiting.insert(enum_name.to_string()) {
+        return Ok(val);
+    }
+    let result = emit_enum_deep_copy_inner(enum_name, val, builder, translator, module, visiting);
+    visiting.remove(enum_name);
+    result
+}
+
+fn emit_enum_deep_copy_inner<M: Module>(
+    enum_name: &str,
+    val: cranelift_codegen::ir::Value,
+    builder: &mut FunctionBuilder,
+    translator: &mut FuncTranslator,
+    module: &mut M,
+    visiting: &mut HashSet<String>,
 ) -> Result<cranelift_codegen::ir::Value, CodegenError> {
     let variants = translator
         .enum_defs
@@ -2585,7 +2645,7 @@ fn emit_enum_deep_copy<M: Module>(
                     // fields).
                     MirType::Struct(_) => field_val,
                     MirType::Enum(ref inner_name) => {
-                        emit_enum_deep_copy(inner_name, field_val, builder, translator, module)?
+                        emit_enum_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
                     }
                     _ => field_val,
                 };
@@ -2723,7 +2783,7 @@ pub fn translate_function<M: Module>(
                 })
             });
             if all_scalar && translator.copy_structs.contains(sname) {
-                emit_struct_deep_copy(sname, val, builder, &mut translator, module)?
+                emit_struct_deep_copy(sname, val, builder, &mut translator, module, &mut HashSet::new())?
             } else {
                 val
             }
@@ -3627,8 +3687,14 @@ fn translate_rvalue<M: Module>(
                     if translator.copy_structs.contains(sname)
                         && translator.struct_defs.contains_key(sname)
                     {
-                        let new_ptr =
-                            emit_struct_deep_copy(sname, val, builder, translator, module)?;
+                        let new_ptr = emit_struct_deep_copy(
+                            sname,
+                            val,
+                            builder,
+                            translator,
+                            module,
+                            &mut HashSet::new(),
+                        )?;
                         return Ok(Some(new_ptr));
                     }
                 }
@@ -4013,8 +4079,14 @@ fn translate_rvalue<M: Module>(
                     });
                 if let Some(sname) = sname {
                     if translator.struct_defs.contains_key(&sname) {
-                        let new_ptr =
-                            emit_struct_deep_copy(&sname, val, builder, translator, module)?;
+                        let new_ptr = emit_struct_deep_copy(
+                            &sname,
+                            val,
+                            builder,
+                            translator,
+                            module,
+                            &mut HashSet::new(),
+                        )?;
                         return Ok(Some(new_ptr));
                     }
                 }
@@ -4034,7 +4106,14 @@ fn translate_rvalue<M: Module>(
                     });
                 if let Some(ename) = ename {
                     if translator.enum_defs.contains_key(&ename) {
-                        let new_ptr = emit_enum_deep_copy(&ename, val, builder, translator, module)?;
+                        let new_ptr = emit_enum_deep_copy(
+                            &ename,
+                            val,
+                            builder,
+                            translator,
+                            module,
+                            &mut HashSet::new(),
+                        )?;
                         return Ok(Some(new_ptr));
                     }
                 }
@@ -5549,10 +5628,24 @@ fn translate_rvalue<M: Module>(
                         Some(MirType::Struct(sname))
                             if translator.struct_defs.contains_key(sname) =>
                         {
-                            emit_struct_deep_copy(sname, val, builder, translator, module)?
+                            emit_struct_deep_copy(
+                                sname,
+                                val,
+                                builder,
+                                translator,
+                                module,
+                                &mut HashSet::new(),
+                            )?
                         }
                         Some(MirType::Enum(ename)) if translator.enum_defs.contains_key(ename) => {
-                            emit_enum_deep_copy(ename, val, builder, translator, module)?
+                            emit_enum_deep_copy(
+                                ename,
+                                val,
+                                builder,
+                                translator,
+                                module,
+                                &mut HashSet::new(),
+                            )?
                         }
                         _ => val,
                     };
