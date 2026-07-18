@@ -224,6 +224,7 @@ You do not need to `use` these — they're in the global namespace:
 | `file_exists(path) -> i64`          | `1` if exists, `0` otherwise.                  |
 | `create_dir(path)`                  | Create directory (idempotent).                 |
 | `push(arr, item) -> [T]`            | Append in place, return the array handle. See the aliasing note below -- always write `arr = push(arr, item)`. |
+| `sort(arr)` / `reverse(arr)`        | Sort / reverse an array IN PLACE (void). Array-only; write `sort(arr)` as a statement, NOT `arr = sort(arr)`. For a string use `std::string::reverse(s)`. |
 | `substr(s, start, end) -> str`      | Byte-indexed substring.                        |
 | `char_code(s) -> i64`               | First byte of `s` as integer.                  |
 | `contains(haystack, needle)`        | Substring search.                              |

@@ -300,6 +300,36 @@ fn clamp(x: f64, lo: f64, hi: f64) -> f64 { return x }
 fn main() { println(to_string(clamp(15.0, 0.0, 10.0))) }
 '
 
+
+# --- Pass-38: global reverse/sort are array-only, in-place, void-returning ---
+# (reverse(str) dereferenced a KryosString as a KryosArray -> SEGFAULT;
+# capturing the void return crashed on a garbage slot.)
+
+want_reject reverse_str '
+fn main() {
+    let s = "hello"
+    let r = reverse(s)
+    println(r)
+}
+'
+
+want_reject capture_sort_void '
+fn main() {
+    let a: [i64] = [3, 1, 2]
+    let s = sort(a)
+    println(to_string(s[0]))
+}
+'
+
+want_pass reverse_sort_inplace '
+fn main() {
+    let a: [i64] = [3, 1, 2]
+    sort(a)
+    reverse(a)
+    println(to_string(a[0]))
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

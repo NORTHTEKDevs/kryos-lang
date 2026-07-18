@@ -2803,6 +2803,51 @@ impl TypeChecker {
                                     }
                                 }
                             }
+                            // The global `reverse`/`sort` array builtins have
+                            // the opaque (any->any) shape, so they hit this
+                            // early return before the len-style arg gate. They
+                            // operate on a KryosArray in place: a str (or any
+                            // non-array) arg dereferences a KryosString as a
+                            // KryosArray -> SEGFAULT, and the untyped `any`
+                            // RETURN makes `let r = sort(a)  r[0]` index a
+                            // non-array (crash). Reject non-array args here and
+                            // return the arg's real ARRAY type so the result
+                            // indexes correctly.
+                            // reverse/sort mutate the array IN PLACE and
+                            // return VOID (kryos_builtin_sort/reverse are
+                            // `-> ()`). Reject a non-array arg (a str reached
+                            // the array codegen and dereferenced a KryosString
+                            // as a KryosArray -> SEGFAULT), and type the result
+                            // Void so capturing it (`let r = sort(a)` /
+                            // `a = sort(a)`) is a clean compile error steering
+                            // to the in-place `sort(a)` form rather than a
+                            // crash on a garbage void slot.
+                            if matches!(&callee_name_str, Some(n) if n == "reverse" || n == "sort") {
+                                if let Some(arg0) = args.first() {
+                                    let arg0_ty = self.infer_expr(arg0);
+                                    let at = self.engine.resolve(&arg0_ty);
+                                    let fname = callee_name_str.as_deref().unwrap_or("");
+                                    match &at {
+                                        Type::Array { .. } | Type::Error | Type::Var(_) => {
+                                            return Type::Void;
+                                        }
+                                        other => {
+                                            let hint = if *other == Type::Str && fname == "reverse" {
+                                                " -- for a string use `std::string::reverse(s)`"
+                                            } else {
+                                                ""
+                                            };
+                                            self.error(
+                                                format!(
+                                                    "`{fname}` expects an array; found `{other}`{hint}"
+                                                ),
+                                                args[0].span(),
+                                            );
+                                            return Type::Error;
+                                        }
+                                    }
+                                }
+                            }
                             for arg in args.iter() {
                                 let _ = self.infer_expr(arg);
                             }
