@@ -224,6 +224,65 @@ fn main() {
 }
 '
 
+
+# --- Pass-36/37: dyn Trait in a CONTAINER position must be rejected --------
+# ([dyn T] / Option<dyn T> / (i64, dyn T) / map<K, dyn T> type-checked clean
+# and then SEGFAULTED or hung at runtime on both backends; single dyn
+# positions stay supported).
+
+want_reject dyn_in_array '
+trait DShape { fn area(self) -> i64 }
+struct DSq { s: i64 }
+impl DShape for DSq { fn area(self: DSq) -> i64 { return self.s * self.s } }
+fn main() {
+    let arr: [dyn DShape] = []
+    println(len(arr))
+}
+'
+
+want_reject dyn_in_option '
+use std::option::{Option, Some, None}
+trait DShape2 { fn area(self) -> i64 }
+struct DSq2 { s: i64 }
+impl DShape2 for DSq2 { fn area(self: DSq2) -> i64 { return self.s * self.s } }
+fn main() {
+    let o: Option<dyn DShape2> = Some(DSq2 { s: 3 })
+    match o {
+        Some(x) => println(x.area()),
+        None() => println(-1),
+    }
+}
+'
+
+want_reject dyn_in_tuple '
+trait DShape3 { fn area(self) -> i64 }
+struct DSq3 { s: i64 }
+impl DShape3 for DSq3 { fn area(self: DSq3) -> i64 { return self.s * self.s } }
+fn main() {
+    let t: (i64, dyn DShape3) = (1, DSq3 { s: 3 })
+    println(t.1.area())
+}
+'
+
+want_reject dyn_in_map '
+trait DShape4 { fn area(self) -> i64 }
+fn main() {
+    let m: map<str, dyn DShape4> = {}
+    println(len(m))
+}
+'
+
+want_pass dyn_single_positions '
+trait DShape5 { fn area(self) -> i64 }
+struct DSq5 { s: i64 }
+impl DShape5 for DSq5 { fn area(self: DSq5) -> i64 { return self.s * self.s } }
+fn describe(s: dyn DShape5) -> i64 { return s.area() }
+fn main() {
+    let boxed: dyn DShape5 = DSq5 { s: 4 }
+    println(to_string(describe(boxed) + describe(DSq5 { s: 2 })))
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

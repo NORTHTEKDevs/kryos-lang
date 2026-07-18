@@ -143,6 +143,32 @@ impl TypeChecker {
     // ── TypeExpr → Type resolution ───────────────────────────────────
 
     /// Resolve an AST TypeExpr to a concrete Type.
+    /// Reject `dyn Trait` in a CONTAINER position (array/tuple element,
+    /// Option/Result/map/user-generic argument). Trait objects in containers
+    /// are unimplemented at the codegen level and used to SEGFAULT or hang at
+    /// runtime on both backends -- surface a clean compile error until
+    /// fat-pointer container storage lands. Single `dyn Trait` positions
+    /// (params, returns, lets, struct fields) remain fully supported.
+    fn reject_dyn_in_container<'a>(
+        &mut self,
+        container: &str,
+        args: impl Iterator<Item = &'a TypeExpr>,
+    ) -> bool {
+        for a in args {
+            if let TypeExpr::DynTrait { trait_name, span } = a {
+                self.error_with_code(
+                    format!(
+                        "`dyn {trait_name}` cannot be stored in {container} yet -- trait objects in containers are unimplemented; use an enum with one variant per concrete type and `match`"
+                    ),
+                    *span,
+                    kryos_errors::codes::E0110,
+                );
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn resolve_type_expr(&mut self, te: &TypeExpr) -> Type {
         match te {
             TypeExpr::Simple { name, span } => {
@@ -218,6 +244,9 @@ impl TypeChecker {
                 }
             }
             TypeExpr::Generic { name, args, span } => {
+                if self.reject_dyn_in_container(&format!("`{name}<..>`"), args.iter()) {
+                    return Type::Error;
+                }
                 let resolved_args: Vec<Type> =
                     args.iter().map(|a| self.resolve_type_expr(a)).collect();
 
@@ -300,13 +329,23 @@ impl TypeChecker {
                 element,
                 size,
                 span: _,
-            } => Type::Array {
-                element: Box::new(self.resolve_type_expr(element)),
-                size: *size,
-            },
-            TypeExpr::Tuple { elements, span: _ } => Type::Tuple {
-                elements: elements.iter().map(|e| self.resolve_type_expr(e)).collect(),
-            },
+            } => {
+                if self.reject_dyn_in_container("an array", std::iter::once(element.as_ref())) {
+                    return Type::Error;
+                }
+                Type::Array {
+                    element: Box::new(self.resolve_type_expr(element)),
+                    size: *size,
+                }
+            }
+            TypeExpr::Tuple { elements, span: _ } => {
+                if self.reject_dyn_in_container("a tuple", elements.iter()) {
+                    return Type::Error;
+                }
+                Type::Tuple {
+                    elements: elements.iter().map(|e| self.resolve_type_expr(e)).collect(),
+                }
+            }
             TypeExpr::Function {
                 params,
                 ret,
