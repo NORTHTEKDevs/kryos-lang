@@ -1,6 +1,8 @@
 // Conformance: functions, recursion, closures, fn-typed params, generics,
 // traits. (Reference chapters 3, 8.)
 
+use std::option::{Option, Some, None}
+
 fn early_ret(c: bool) -> i64 {
     let v = if c { 5 } else { return 0 }
     return v + 1
@@ -341,6 +343,32 @@ fn main() {
     expect(cl_str("hi") == "hi!", "closure str try/catch tail returns the string (was empty)")
     let cl_let = |x: i64| { let y = x * 2  try { y + 1 } catch e { -1 } }
     expect(cl_let(4) == 9, "closure let + try/catch tail resolves the block-local")
+
+    // A match-arm BODY that COMPUTES on the arm's pattern binding must type
+    // from the binding: `v => v + "!"` over a str subject inferred i64 (the
+    // binding isn't a real local during pre-lowering inference), so the str
+    // result was stored into an i64 slot and printed as a raw pointer on
+    // BOTH backends. Guard-bound arms and enum payload bindings included.
+    let mb_s = "abc"
+    let mb_r1 = match mb_s { v => v + "!" }
+    expect(mb_r1 == "abc!", "binding-arm body concat types as str (was raw pointer)")
+    let mb_r2 = match mb_s {
+        t if len(t) > 100 => t + "-huge",
+        u if len(u) > 10 => u + "-big",
+        _ => "tiny",
+    }
+    expect(mb_r2 == "tiny", "guarded binding arms with str-concat bodies fall through to the wildcard value")
+    let mb_r3 = match mb_s {
+        t if len(t) > 2 => t + "-yes",
+        _ => "no",
+    }
+    expect(mb_r3 == "abc-yes", "a TRUE guard's binding-computed str body is the match value")
+    let mb_o: Option<str> = Some("hi")
+    let mb_r4 = match mb_o {
+        Some(x) => x + "?",
+        None() => "none",
+    }
+    expect(mb_r4 == "hi?", "enum-payload binding used in a compound arm body types as its payload")
 
     println("conformance functions: PASS")
 }

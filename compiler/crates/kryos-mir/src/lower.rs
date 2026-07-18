@@ -6384,6 +6384,73 @@ fn arm_body_diverges(body: &ast::Expr) -> bool {
     }
 }
 
+/// Temporarily register an arm PATTERN's ident bindings as synthetic locals
+/// (typed from the subject/payload) so pre-lowering inference can resolve an
+/// arm BODY that COMPUTES on a binding -- `match s { v => v + "!" }` and
+/// `t if len(t) > 5 => t + "-long"` typed the whole match i64 (the str result
+/// was stored into an i64 slot and printed as a raw pointer, both backends).
+/// Mirrors the block_tail_let_type synthetic-local overlay; the caller
+/// truncates ctx.locals and restores ctx.next_local afterwards.
+fn overlay_arm_bindings(ctx: &mut LoweringContext, ty: &MirType, pat: &ast::Pattern) {
+    match pat {
+        ast::Pattern::Ident { name, .. } => {
+            // A bare variant name is a tag test, not a binding.
+            if ident_variant_of(ctx, name, ty).is_none() {
+                ctx.alloc_local(Some(name.clone()), ty.clone(), false);
+            }
+        }
+        ast::Pattern::Tuple { elements, .. } => {
+            let elem_tys = match ty {
+                MirType::Tuple(e) => e.clone(),
+                _ => Vec::new(),
+            };
+            for (i, ep) in elements.iter().enumerate() {
+                let ety = elem_tys.get(i).cloned().unwrap_or(MirType::I64);
+                overlay_arm_bindings(ctx, &ety, ep);
+            }
+        }
+        ast::Pattern::Enum {
+            name,
+            variant,
+            fields,
+            ..
+        } => {
+            let resolved = match ty {
+                MirType::Enum(n) => Some(n.clone()),
+                _ if !name.is_empty() => Some(name.clone()),
+                _ => find_enum_variant(ctx, variant).map(|(en, _)| en),
+            };
+            let Some(vs) = resolved.and_then(|en| ctx.enum_defs.get(en.as_str()).cloned()) else {
+                return;
+            };
+            let Some(idx) = vs.iter().position(|v| v.name == *variant) else {
+                return;
+            };
+            for (fi, fp) in fields.iter().enumerate() {
+                let fty = vs[idx].fields.get(fi).cloned().unwrap_or(MirType::I64);
+                let fty = recover_enum_types(ctx, fty);
+                overlay_arm_bindings(ctx, &fty, fp);
+            }
+        }
+        ast::Pattern::Struct { name, fields, .. } => {
+            let sname = match ty {
+                MirType::Struct(n) => n.clone(),
+                _ => name.clone(),
+            };
+            let field_defs = ctx.struct_defs.get(&sname).cloned().unwrap_or_default();
+            for (fname, fpat) in fields {
+                let fty = field_defs
+                    .iter()
+                    .find(|(n, _)| n == fname)
+                    .map(|(_, t)| t.clone())
+                    .unwrap_or(MirType::I64);
+                overlay_arm_bindings(ctx, &fty, fpat);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn infer_match_result_type(
     ctx: &mut LoweringContext,
     subject: &ast::Expr,
@@ -6444,7 +6511,18 @@ fn infer_match_result_type(
                     }
                 }
             }
-            infer_expr_type(ctx, &arm.body)
+            // Overlay the arm pattern's bindings (typed from the subject) so a
+            // body that COMPUTES on a binding resolves -- without this,
+            // `v => v + "!"` over a str subject fell to i64 and the match
+            // result slot stored the str as a raw pointer (both backends).
+            let subj_ty = infer_expr_type(ctx, subject);
+            let saved_len = ctx.locals.len();
+            let saved_next = ctx.next_local;
+            overlay_arm_bindings(ctx, &subj_ty, &arm.pattern);
+            let inferred = infer_expr_type(ctx, &arm.body);
+            ctx.locals.truncate(saved_len);
+            ctx.next_local = saved_next;
+            inferred
         })
         .unwrap_or(MirType::I64)
 }
