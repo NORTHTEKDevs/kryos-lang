@@ -486,16 +486,20 @@ impl TypeChecker {
                 generics,
                 params,
                 ret_ty,
+                body,
                 span,
                 ..
             } => {
-                // Duplicate top-level function: two user fns with the same
-                // name, or a local fn colliding with an IMPORTED one,
-                // previously passed `kryos check` silently and died in
+                // Duplicate top-level function: two DEFINED user fns with the
+                // same name, or a defined local fn colliding with an IMPORTED
+                // one -- previously passed `kryos check` silently and died in
                 // codegen with a raw internal "Duplicate definition of
-                // identifier" dump. Surface it here instead. (Import-vs-
+                // identifier" dump. Only a BODIED definition reserves the
+                // name: a bodyless forward declaration (`fn f(..) -> T` with no
+                // block, used for mutual recursion / prototypes) followed by
+                // its definition is legal and must NOT be flagged. (Import-vs-
                 // import collisions are already caught by the resolver.)
-                if !self.seen_fn_names.insert(name.clone()) {
+                if body.is_some() && !self.seen_fn_names.insert(name.clone()) {
                     self.error(
                         format!(
                             "duplicate definition of function `{name}` -- a function with this name is already defined (or imported) in this program"
