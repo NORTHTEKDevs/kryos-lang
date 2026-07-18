@@ -283,6 +283,23 @@ fn main() {
 }
 '
 
+
+# --- Pass-37: duplicate top-level function names must be rejected ----------
+# (kryos check passed them silently; codegen then died with a raw internal
+# "Duplicate definition of identifier" dump.)
+
+want_reject dup_local_fns '
+fn helper(x: i64) -> i64 { return x }
+fn helper(x: i64, y: i64) -> i64 { return x + y }
+fn main() { println(to_string(helper(1))) }
+'
+
+want_reject dup_import_vs_local '
+use std::math::{clamp}
+fn clamp(x: f64, lo: f64, hi: f64) -> f64 { return x }
+fn main() { println(to_string(clamp(15.0, 0.0, 10.0))) }
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

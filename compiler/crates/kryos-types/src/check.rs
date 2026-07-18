@@ -22,6 +22,11 @@ pub struct TypeChecker {
     current_function_name: Option<String>,
     /// Functions marked with @deprecated — emit warnings on call.
     deprecated_functions: std::collections::HashSet<String>,
+    /// Top-level function names already registered this module, for duplicate
+    /// detection (local-vs-local and local-vs-imported -- imports are merged
+    /// as ordinary decls by the resolver). Builtin shadowing stays allowed
+    /// (builtins are not decls).
+    seen_fn_names: std::collections::HashSet<String>,
     /// Functions marked with @pure — cannot call non-pure or do I/O.
     pure_functions: std::collections::HashSet<String>,
     /// Names declared as ACTORS. Actors register as struct-like types (so
@@ -100,6 +105,7 @@ impl TypeChecker {
             current_return_type: None,
             current_function_name: None,
             deprecated_functions: std::collections::HashSet::new(),
+            seen_fn_names: std::collections::HashSet::new(),
             pure_functions: std::collections::HashSet::new(),
             actor_names: std::collections::HashSet::new(),
             in_pure_function: false,
@@ -480,8 +486,23 @@ impl TypeChecker {
                 generics,
                 params,
                 ret_ty,
+                span,
                 ..
             } => {
+                // Duplicate top-level function: two user fns with the same
+                // name, or a local fn colliding with an IMPORTED one,
+                // previously passed `kryos check` silently and died in
+                // codegen with a raw internal "Duplicate definition of
+                // identifier" dump. Surface it here instead. (Import-vs-
+                // import collisions are already caught by the resolver.)
+                if !self.seen_fn_names.insert(name.clone()) {
+                    self.error(
+                        format!(
+                            "duplicate definition of function `{name}` -- a function with this name is already defined (or imported) in this program"
+                        ),
+                        *span,
+                    );
+                }
                 // Temporarily bind generic params so they resolve in param/return types.
                 // Capture the type variable IDs so we can instantiate fresh copies
                 // at each call site (prevents generic pinning bug).

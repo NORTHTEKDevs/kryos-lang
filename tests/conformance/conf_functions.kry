@@ -433,6 +433,19 @@ fn main() {
     let gc_add = mk_appender(5)
     expect(gc_add(10) == 15, "generic closure return at T=i64 control")
 
+    // Pipe operator routes through the ORDINARY call machinery (was a raw
+    // direct-call that bypassed it): polymorphic builtin dispatch (f64 |> abs
+    // printed the float's raw bit pattern), closure invocation (a closure-
+    // valued RHS failed to link), and chains.
+    let pf: f64 = -9.6
+    expect(to_string(pf |> abs) == "9.6", "f64 |> abs dispatches the float overload (was bit-pattern garbage)")
+    let pn: i64 = -42
+    expect((pn |> abs) == 42, "i64 |> abs control")
+    let psq = |v: i64| v * v
+    expect((7 |> psq) == 49, "pipe into a closure VARIABLE links and runs (was LNK2001)")
+    expect((3 |> (|v: i64| v + 1)) == 4, "pipe into an inline closure literal")
+    expect((pf |> floor |> abs) == 10.0, "multi-stage f64 pipe chain keeps float typing")
+
     println("conformance functions: PASS")
 }
 

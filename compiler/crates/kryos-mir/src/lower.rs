@@ -5806,6 +5806,34 @@ fn and_into_acc(ctx: &mut LoweringContext, acc: &mut Option<Operand>, this: Oper
 /// every tuple-of-bare-variant arm matched unconditionally and the FIRST arm
 /// always won. A name that matches no variant of the element's own enum type
 /// stays an ordinary binding.
+/// Desugar `a |> f` / `a |> f(b, c)` into the equivalent FnCall AST so both
+/// the lowering AND the type inference route through the ordinary call
+/// machinery (builtin overload dispatch, closure invocation, coercions).
+fn desugar_pipe(left: &ast::Expr, right: &ast::Expr, span: kryos_errors::Span) -> ast::Expr {
+    match right {
+        ast::Expr::FnCall {
+            callee,
+            args,
+            span: cspan,
+        } => {
+            // `a |> f(b, c)` -> `f(a, b, c)`
+            let mut all_args = vec![left.clone()];
+            all_args.extend(args.iter().cloned());
+            ast::Expr::FnCall {
+                callee: callee.clone(),
+                args: all_args,
+                span: *cspan,
+            }
+        }
+        // `a |> f` (named fn, closure var, or inline closure literal) -> `f(a)`.
+        _ => ast::Expr::FnCall {
+            callee: Box::new(right.clone()),
+            args: vec![left.clone()],
+            span,
+        },
+    }
+}
+
 fn ident_variant_of(ctx: &LoweringContext, name: &str, ety: &MirType) -> Option<(String, u32)> {
     // Accept the Struct(name) spelling of an enum type too: lower_type_expr
     // records every non-builtin named type as Struct (it can't know which
@@ -8480,15 +8508,13 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             }
         }
 
-        ast::Expr::PipeExpr { right, .. } => {
-            // The pipe result type is the return type of the RHS callable.
-            // The RHS itself types as Function{..}; returning that wholesale
-            // made an un-annotated `let x = v |> f` bind x as a closure, so
-            // scope-end drop freed the scalar result as an env ptr (segfault).
-            match infer_expr_type(ctx, right) {
-                MirType::Function { ret, .. } => *ret,
-                other => other,
-            }
+        ast::Expr::PipeExpr { left, right, span } => {
+            // Infer as the DESUGARED call (must match the lowering): the old
+            // "RHS callable's return type" shortcut missed the polymorphic
+            // builtin dispatch, so `x |> abs` on f64 typed i64 and the float
+            // printed as its raw bit pattern.
+            let call = desugar_pipe(left, right, *span);
+            infer_expr_type(ctx, &call)
         }
 
         ast::Expr::IndexAccess { object, .. } => {
@@ -11020,46 +11046,16 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             }
         }
 
-        ast::Expr::PipeExpr { left, right, .. } => {
-            // Desugar: `a |> f` → `f(a)`
-            // Desugar: `a |> f(b, c)` → `f(a, b, c)`
-            let lhs_op = lower_expr_to_operand(ctx, left);
-            match right.as_ref() {
-                ast::Expr::FnCall {
-                    callee,
-                    args,
-                    span: _,
-                } => {
-                    // `a |> f(b, c)` → `f(a, b, c)`
-                    let func_name = match callee.as_ref() {
-                        ast::Expr::Identifier { name, .. } => name.clone(),
-                        _ => "<pipe_target>".to_string(),
-                    };
-                    let mut all_args = vec![lhs_op];
-                    for a in args {
-                        all_args.push(lower_expr_to_operand(ctx, a));
-                    }
-                    RValue::Call {
-                        func: func_name,
-                        args: all_args,
-                    }
-                }
-                ast::Expr::Identifier { name, .. } => {
-                    // `a |> f` → `f(a)`
-                    RValue::Call {
-                        func: name.clone(),
-                        args: vec![lhs_op],
-                    }
-                }
-                _ => {
-                    // Fallback: try to evaluate RHS as a function.
-                    let rhs_op = lower_expr_to_operand(ctx, right);
-                    RValue::Call {
-                        func: "<pipe_target>".to_string(),
-                        args: vec![lhs_op, rhs_op],
-                    }
-                }
-            }
+        ast::Expr::PipeExpr { left, right, span } => {
+            // Desugar to a REAL FnCall AST and recurse through the ordinary
+            // call lowering. The old direct RValue::Call bypassed the entire
+            // FnCall machinery: builtin overload dispatch (`x |> abs` on f64
+            // picked the i64 builtin and printed the float's raw bit
+            // pattern), closure invocation (a closure-valued RHS emitted a
+            // direct call to an undefined symbol -> LNK2001), dyn coercion,
+            // and call-arg consumption bookkeeping.
+            let call = desugar_pipe(left, right, *span);
+            return lower_expr_to_rvalue(ctx, &call);
         }
 
         ast::Expr::InterpolatedString { parts, .. } => {

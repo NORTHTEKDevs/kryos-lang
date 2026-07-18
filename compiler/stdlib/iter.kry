@@ -668,17 +668,24 @@ fn max_by_key(arr: [any], key_fn: fn) -> any {
 // --- Grouping ----------------------------------------------------------------
 
 /// Group elements by a key function. Returns a map of key => [elements].
-fn group_by(arr: [any], key_fn: fn) -> any {
-    let mut groups = {}
+/// Fully generic (was `[any] -> any`, which erased the elements: an
+/// unannotated result crashed on map subscript, and even annotated, pushes
+/// through the erased signature silently kept only the FIRST element per
+/// group). The work map is annotated `map<str, [T]>` so element pushes keep
+/// their real type.
+fn group_by<T, K>(arr: [T], key_fn: fn(T) -> K) -> map<str, [T]> {
+    let mut groups: map<str, [T]> = {}
     let alen = len(arr)
     let mut i = 0
     while i < alen {
         let key = to_string(key_fn(arr[i]))
         if not map_has(groups, key) {
-            groups[key] = []
+            let empty: [T] = []
+            groups[key] = empty
         }
-        let group = groups[key]
-        push(group, arr[i])
+        let mut group = groups[key]
+        group = push(group, arr[i])
+        groups[key] = group
         i = i + 1
     }
     return groups
