@@ -4606,6 +4606,7 @@ fn translate_rvalue<M: Module>(
                 "buf_write_str" => ("kryos_buf_write_str", 2),
                 "buf_write_zeros" => ("kryos_buf_write_zeros", 2),
                 "buf_len" => ("kryos_buf_len", 1),
+                "buf_str" => ("kryos_buf_contents_to_str", 1),
                 "buf_get_byte" => ("kryos_buf_get_byte", 2),
                 "buf_set_byte" => ("kryos_buf_set_byte", 3),
                 "buf_patch_i32_le" => ("kryos_buf_patch_i32_le", 3),

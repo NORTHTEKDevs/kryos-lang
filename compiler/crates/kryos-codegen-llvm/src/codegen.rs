@@ -1160,6 +1160,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_buf_free(i64)");
         self.emit_line("declare i64 @kryos_buf_get_byte(i64, i64)");
         self.emit_line("declare i64 @kryos_buf_len(i64)");
+        self.emit_line("declare i64 @kryos_buf_contents_to_str(i64)");
         self.emit_line("declare i64 @kryos_buf_new(i64)");
         self.emit_line("declare void @kryos_buf_patch_i32_le(i64, i64, i64)");
         self.emit_line("declare void @kryos_buf_patch_i64_le(i64, i64, i64)");
@@ -6274,6 +6275,7 @@ impl LlvmCodegen {
                                 "buf_write_str" => "kryos_buf_write_str",
                                 "buf_write_zeros" => "kryos_buf_write_zeros",
                                 "buf_len" => "kryos_buf_len",
+                                "buf_str" => "kryos_buf_contents_to_str",
                                 "buf_get_byte" => "kryos_buf_get_byte",
                                 "buf_set_byte" => "kryos_buf_set_byte",
                                 "buf_patch_i32_le" => "kryos_buf_patch_i32_le",

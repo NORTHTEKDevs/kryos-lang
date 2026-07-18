@@ -5361,6 +5361,15 @@ pub fn type_check_with_lambda_params(
         ret: Type::I64,
     });
 
+    // buf_str(handle: i64) -> str — materialize a growable KryosBuf's contents.
+    checker.env.define_function(FunctionSig {
+        name: "buf_str".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("handle".to_string(), Type::I64)],
+        ret: Type::Str,
+    });
+
     // buf_get_byte(handle: i64, offset: i64) -> i64
     checker.env.define_function(FunctionSig {
         name: "buf_get_byte".to_string(),

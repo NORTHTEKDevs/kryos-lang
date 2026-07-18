@@ -466,3 +466,58 @@ fn format(template: str, args: [str]) -> str {
     }
     return result
 }
+
+// --- StringBuilder -----------------------------------------------------------
+// Amortized-O(1) string building. Repeated `s = s + chunk` in a loop is
+// O(n^2) (each concat reallocates and copies the whole accumulator), so
+// building a multi-MB string that way is quadratic. A StringBuilder appends
+// into a growable byte buffer (amortized-O(1)) and materializes the string
+// once at the end -- ~hundreds of times faster for large builds.
+//
+//     let sb = string_builder()
+//     let mut i = 0
+//     while i < n {
+//         sb.append("chunk")
+//         i = i + 1
+//     }
+//     let result = sb.build()   // consumes the builder (frees the buffer)
+//
+// `append` mutates the shared buffer and returns self, so calls chain:
+// `sb.append("a").append("b")`. Call `build()` exactly once; the builder is
+// invalid afterward (its buffer is freed).
+
+struct StringBuilder {
+    buf: i64
+}
+
+fn string_builder() -> StringBuilder {
+    return StringBuilder { buf: buf_new(0) }
+}
+
+impl StringBuilder {
+    /// Append a string chunk. Returns self for chaining.
+    fn append(self: StringBuilder, s: str) -> StringBuilder {
+        buf_write_str(self.buf, s)
+        return self
+    }
+
+    /// Append a chunk followed by a newline. Returns self for chaining.
+    fn append_line(self: StringBuilder, s: str) -> StringBuilder {
+        buf_write_str(self.buf, s)
+        buf_write_str(self.buf, "\n")
+        return self
+    }
+
+    /// Current byte length of the accumulated content.
+    fn len(self: StringBuilder) -> i64 {
+        return buf_len(self.buf)
+    }
+
+    /// Materialize the accumulated string and free the builder's buffer.
+    /// Call exactly once; the builder must not be used afterward.
+    fn build(self: StringBuilder) -> str {
+        let out = buf_str(self.buf)
+        buf_free(self.buf)
+        return out
+    }
+}

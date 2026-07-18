@@ -1215,6 +1215,22 @@ pub unsafe extern "C" fn kryos_buf_len(handle: i64) -> i64 {
     buf.data.len() as i64
 }
 
+/// `buf_str(handle) -> str` — materialize a KryosBuf's contents as a string.
+/// The `buf_new`/`buf_write_*` family operates on a growable KryosBuf struct,
+/// but `buf_to_str(ptr, len)` expects a RAW byte pointer (from `alloc`), so
+/// there was previously no way to turn a growable buffer into a string --
+/// blocking an amortized-O(1) StringBuilder. This copies the buffer's bytes
+/// into a fresh KryosString (the bytes are written as-is, so UTF-8 content
+/// round-trips exactly).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_buf_contents_to_str(handle: i64) -> i64 {
+    if handle == 0 {
+        return crate::string::kryos_string_new(std::ptr::null(), 0) as i64;
+    }
+    let buf = &*(handle as *const KryosBuf);
+    crate::string::kryos_string_new(buf.data.as_ptr(), buf.data.len() as i64) as i64
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn kryos_buf_get_byte(handle: i64, offset: i64) -> i64 {
     let buf = &*(handle as *const KryosBuf);

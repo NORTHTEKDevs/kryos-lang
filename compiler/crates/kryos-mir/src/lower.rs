@@ -1020,6 +1020,7 @@ pub fn lower_module_with_lambda_params(
         ("buf_write_str", MirType::Void),
         ("buf_write_zeros", MirType::Void),
         ("buf_len", MirType::I64),
+        ("buf_str", MirType::Str),
         ("buf_get_byte", MirType::I64),
         ("buf_set_byte", MirType::Void),
         ("buf_patch_i32_le", MirType::Void),

@@ -1,0 +1,25 @@
+// StringBuilder gives amortized-O(1) append (buf-backed) vs O(n^2) for
+// repeated `s = s + chunk`. Verifies content correctness + chaining.
+use std::string::{string_builder}
+
+fn main() {
+    let sb = string_builder()
+    sb.append("Hello").append(", ").append("World").append("!")
+    let r = sb.build()
+    if r != "Hello, World!" {
+        println("FAIL chain: " + r)
+        exit(1)
+    }
+    let sb2 = string_builder()
+    let mut i = 0
+    while i < 1000 {
+        sb2.append("x")
+        i = i + 1
+    }
+    let r2 = sb2.build()
+    if len(r2) != 1000 {
+        println("FAIL loop len: " + to_string(len(r2)))
+        exit(1)
+    }
+    println("string builder: PASS")
+}

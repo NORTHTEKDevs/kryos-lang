@@ -1285,6 +1285,10 @@ impl JitCompiler {
             kryos_rt::builtins::kryos_buf_len as *const u8,
         );
         jit_builder.symbol(
+            "kryos_buf_contents_to_str",
+            kryos_rt::builtins::kryos_buf_contents_to_str as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_buf_get_byte",
             kryos_rt::builtins::kryos_buf_get_byte as *const u8,
         );
