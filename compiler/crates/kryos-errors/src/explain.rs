@@ -51,6 +51,8 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0505" => Some(E0505),
         "E0506" => Some(E0506),
         "E0507" => Some(E0507),
+        "W0400" => Some(W0400),
+        "W0500" => Some(W0500),
         _ => None,
     }
 }
@@ -93,6 +95,8 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0505", "builtin capability violation"),
         ("E0506", "FFI capability violation"),
         ("E0507", "capability propagation violation"),
+        ("W0400", "tracked value discarded"),
+        ("W0500", "unrecognized capability name in deny!()"),
     ]
 }
 
@@ -346,7 +350,7 @@ Fixed:
 
 Or, if it lives in another module:
 
-    use math.geometry { Point }
+    use math::geometry::{Point}
 
     let p = Point { x: 1, y: 2 }
 "#;
@@ -446,7 +450,7 @@ Fixed:
 
 If the method is provided by a trait, `use` the trait into scope:
 
-    use math.vector { LengthOps }     // brings the `.length()` method into scope
+    use math::vector::{LengthOps}     // brings the `.length()` method into scope
 "#;
 
 // ----- E0108 ----------------------------------------------------------------
@@ -809,7 +813,7 @@ An `import`/`use` brings in a function whose capability requirements exceed
 what the importing scope is allowed to grant. Importing a capability you may
 not hold is rejected at the import site rather than at the call site.
 
-Fix: grant the capability on the entry point (e.g. `// capabilities: io`),
+Fix: grant the capability on the enclosing function (e.g. `@capabilities(io)`),
 or import a more attenuated API that does not require it.
 "#;
 
@@ -867,4 +871,61 @@ not silently swallowed.
 
 Fix: declare the capability on the intermediate function so it propagates to
 its callers.
+"#;
+
+
+// ----- W0400 ----------------------------------------------------------------
+const W0400: &str = r#"W0400: tracked value is discarded
+
+A `Tracked<T>` value carries provenance/lineage metadata. Discarding one
+(calling a tracked-returning function without using its result) silently
+loses that lineage, which defeats the point of tracking it.
+
+Erroneous code:
+
+    use std::tracked::{tracked_source}
+
+    fn main() {
+        tracked_source("sensor-a", 42)   // result discarded -> W0400
+    }
+
+Fix: use the value, or drop it explicitly with a recorded reason:
+
+    use std::tracked::{tracked_source, tracked_discard}
+
+    fn main() {
+        let t = tracked_source("sensor-a", 42)
+        tracked_discard(t, "calibration sample, not persisted")
+    }
+
+This is a warning, not an error: the program still compiles and runs.
+"#;
+
+// ----- W0500 ----------------------------------------------------------------
+const W0500: &str = r#"W0500: unrecognized capability name in deny!()
+
+A `deny!(...)` block names a capability the compiler does not recognize.
+The deny still applies to nothing, so the block gives no protection --
+this usually means a typo.
+
+Erroneous code:
+
+    fn main() {
+        deny!(newtork) {           // typo: not a real capability -> W0500
+            fetch_data()
+        }
+    }
+
+Fix: use a recognized capability name (`net`, `fs`, `fs:read`, `fs:write`,
+`db`, `crypto`, `ffi`, `env`, `process`, ...):
+
+    fn main() {
+        deny!(net) {
+            fetch_data()           // now actually rejected if it uses net
+        }
+    }
+
+This is a warning so existing programs keep compiling, but a misspelled
+deny provides NO sandboxing -- treat it as an error in security-sensitive
+code.
 "#;

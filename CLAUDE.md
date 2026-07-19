@@ -308,7 +308,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 | `kryos fmt`                   | Auto-format `.kry` files in place.                             |
 | `kryos test`                  | Run `@test` fns (file or `tests/` dir) in-process. Works with stdlib imports and `@capabilities`; failing tests exit 1. LIMITATION: a runtime PANIC (not a failed assert) inside one test aborts the whole run -- panics are process-fatal by design, so remaining tests don't execute. |
 | `kryos repl`                  | Interactive shell.                                             |
-| `kryos doc`                   | Generate HTML from `///` doc comments.                         |
+| `kryos doc`                   | Generate Markdown (stdout) from `///` doc comments; `--html` for HTML. |
 | `kryos pkg add <name>`        | Resolve and install a registry package.                        |
 | `kryos lsp`                   | Language server (stdio).                                       |
 | `kryos explain <code>`        | rustc-style long-form error explanation. e.g. `kryos explain E0300`. 32 codes documented. |
