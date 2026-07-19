@@ -484,6 +484,41 @@ impl TypeChecker {
 
     /// Type-check an entire module.
     pub fn check_module(&mut self, module: &Module) {
+        // An ACTOR name colliding with a struct/enum of the same name is a
+        // hard error: an actor registers itself in the struct table (so
+        // `self.field` resolves in handlers), so a same-named struct/enum
+        // silently OVERWRITES the actor's field table, producing incoherent
+        // "no field X" errors pointing INTO the actor's own valid body. (A
+        // struct+enum same-name pair is fine -- disambiguated by `Name{}` vs
+        // `Name.Variant` syntax -- so only the actor collision is rejected.)
+        {
+            let mut actor_names = std::collections::HashSet::new();
+            let mut structy_names = std::collections::HashSet::new();
+            for decl in &module.declarations {
+                match decl {
+                    Decl::Actor { name, .. } => {
+                        actor_names.insert(name.clone());
+                    }
+                    Decl::Struct { name, .. } | Decl::Enum { name, .. } => {
+                        structy_names.insert(name.clone());
+                    }
+                    _ => {}
+                }
+            }
+            for decl in &module.declarations {
+                if let Decl::Actor { name, span, .. } = decl {
+                    if structy_names.contains(name) {
+                        self.error(
+                            format!(
+                                "actor `{name}` collides with a struct or enum of the same name -- rename one; an actor and a struct/enum cannot share a name"
+                            ),
+                            *span,
+                        );
+                    }
+                }
+                let _ = &actor_names;
+            }
+        }
         // Pass 0: pre-register all struct/enum NAMES so self-referential
         // types (e.g. `struct Expr { left: [Expr] }`) can resolve.
         for decl in &module.declarations {
@@ -1145,9 +1180,46 @@ impl TypeChecker {
                 name,
                 state_fields,
                 handlers,
+                span,
                 ..
             } => {
                 self.actor_names.insert(name.clone());
+                // Duplicate state field names -- an actor's state uses the same
+                // positional field storage as a struct, so a repeated name made
+                // `self.v` resolve to an implementation-defined occurrence
+                // (mirror of the Pass-45 struct-field fix).
+                {
+                    let mut seen = std::collections::HashSet::new();
+                    for f in state_fields {
+                        if !seen.insert(f.name.as_str()) {
+                            self.error(
+                                format!(
+                                    "duplicate state field `{}` in actor `{name}` -- each field name may appear only once",
+                                    f.name
+                                ),
+                                *span,
+                            );
+                        }
+                    }
+                }
+                // Duplicate handler names -- two same-named handlers mangle to
+                // the same symbol `Actor__handler` and previously died at
+                // codegen with a raw internal Cranelift ABI dump instead of a
+                // clean diagnostic (mirror of dup_method_same_impl).
+                {
+                    let mut seen = std::collections::HashSet::new();
+                    for h in handlers {
+                        if !seen.insert(h.name.as_str()) {
+                            self.error(
+                                format!(
+                                    "duplicate handler `{}` in actor `{name}` -- an actor cannot define the same handler name twice",
+                                    h.name
+                                ),
+                                *span,
+                            );
+                        }
+                    }
+                }
                 // Register the actor as a struct-like type with its state fields
                 // (so `self.field` in handlers type-checks).
                 let field_types: Vec<(String, Type)> = state_fields
@@ -1379,8 +1451,10 @@ impl TypeChecker {
             }
             Decl::Impl {
                 target,
+                trait_name,
                 methods,
                 generics: impl_generics,
+                span: impl_span,
                 ..
             } => {
                 // Set Self type for the duration of this impl block.
@@ -1414,6 +1488,128 @@ impl TypeChecker {
                 };
 
                 self.current_self_type = target_ty.clone();
+
+                // Trait/impl conformance. A `impl Trait for Type` whose method
+                // signature DISAGREES with the trait's declaration (param or
+                // return type) was accepted, then dispatched through a generic
+                // bound or `dyn` vtable at the trait's declared ABI while the
+                // body used the impl's ABI -- a memory-safety SEGFAULT. Also,
+                // an `impl UnknownTrait for Type` (typo'd trait name) silently
+                // degraded to an inherent impl with no signal. Both checked
+                // here (all decls are registered by now, so lookup is
+                // order-independent). The comparison is CONSERVATIVE: it flags
+                // only a conflict between two fully-GROUND types (primitives /
+                // named / ground containers), never one involving a type var,
+                // `Self`, a generic param, or a function type -- so a legit
+                // generic trait method is never falsely rejected.
+                if let Some(tname) = &trait_name {
+                    match self.env.lookup_trait(tname).cloned() {
+                        None => {
+                            self.error_with_code(
+                                format!(
+                                    "unknown trait `{tname}` in `impl {tname} for {target}` -- the trait is not declared; a misspelled trait name silently becomes an unchecked inherent impl"
+                                ),
+                                *impl_span,
+                                kryos_errors::codes::E0105,
+                            );
+                        }
+                        Some(tdef) => {
+                            fn ground_name(t: &Type) -> Option<String> {
+                                match t {
+                                    Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+                                    | Type::F32 | Type::F64 | Type::Bool | Type::Char
+                                    | Type::Str | Type::USize | Type::ISize | Type::Void => {
+                                        Some(format!("{t:?}"))
+                                    }
+                                    Type::Struct { name, .. } => Some(format!("struct {name}")),
+                                    Type::Enum { name, .. } => Some(format!("enum {name}")),
+                                    Type::Array { element, .. } => {
+                                        ground_name(element).map(|e| format!("[{e}]"))
+                                    }
+                                    Type::Option { inner } => {
+                                        ground_name(inner).map(|i| format!("Option<{i}>"))
+                                    }
+                                    Type::Result { ok, err } => match (
+                                        ground_name(ok),
+                                        ground_name(err),
+                                    ) {
+                                        (Some(o), Some(e)) => Some(format!("Result<{o},{e}>")),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                }
+                            }
+                            for method in methods {
+                                if let Decl::Function {
+                                    name: mname,
+                                    params: m_params,
+                                    ret_ty: m_ret,
+                                    span: m_span,
+                                    ..
+                                } = method
+                                {
+                                    let Some(tsig) =
+                                        tdef.methods.iter().find(|s| &s.name == mname)
+                                    else {
+                                        continue;
+                                    };
+                                    // Compare non-self params positionally.
+                                    let impl_np: Vec<&kryos_ast::Param> = m_params
+                                        .iter()
+                                        .filter(|p| p.name != "self")
+                                        .collect();
+                                    let trait_np: Vec<&Type> = tsig
+                                        .params
+                                        .iter()
+                                        .filter(|(n, _)| n != "self")
+                                        .map(|(_, t)| t)
+                                        .collect();
+                                    if impl_np.len() == trait_np.len() {
+                                        for (ip, tp) in impl_np.iter().zip(trait_np.iter()) {
+                                            if let Some(ty) = &ip.ty {
+                                                let ity = self.resolve_type_expr(ty);
+                                                let it = self.engine.resolve(&ity);
+                                                let tt = self.engine.resolve(tp);
+                                                if let (Some(a), Some(b)) =
+                                                    (ground_name(&it), ground_name(&tt))
+                                                {
+                                                    if a != b {
+                                                        self.error_with_code(
+                                                            format!("method `{mname}` in `impl {tname} for {target}` has parameter type `{it}` but the trait declares `{tt}`"),
+                                                            *m_span,
+                                                            kryos_errors::codes::E0100,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Compare return types.
+                                    let impl_ret = match m_ret.as_ref() {
+                                        Some(t) => {
+                                            let rt = self.resolve_type_expr(t);
+                                            self.engine.resolve(&rt)
+                                        }
+                                        None => Type::Void,
+                                    };
+                                    let trait_ret = self.engine.resolve(&tsig.ret);
+                                    if let (Some(a), Some(b)) =
+                                        (ground_name(&impl_ret), ground_name(&trait_ret))
+                                    {
+                                        if a != b {
+                                            self.error_with_code(
+                                                format!("method `{mname}` in `impl {tname} for {target}` returns `{impl_ret}` but the trait declares `{trait_ret}`"),
+                                                *m_span,
+                                                kryos_errors::codes::E0100,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 for method in methods {
                     if let (
@@ -1968,7 +2164,17 @@ impl TypeChecker {
         outer_mut: bool,
     ) {
         match pattern {
-            Pattern::Wildcard { .. } | Pattern::Literal { .. } => {}
+            Pattern::Wildcard { .. } => {}
+            Pattern::Literal { expr, span } => {
+                // A match-arm integer literal is compared against the
+                // scrutinee at the scrutinee's WIDTH, so an out-of-range
+                // literal was silently truncated: `match x { 999 => .. }` on a
+                // `u8` scrutinee truncated 999 to 231 and could fire the wrong
+                // arm (231 == 231) while the source said 999. Range-check the
+                // literal against the scrutinee type, exactly like a narrow
+                // let/assign (E0111).
+                self.check_int_literal_range(subject_ty, expr, *span);
+            }
             Pattern::Ident {
                 name,
                 mutable,

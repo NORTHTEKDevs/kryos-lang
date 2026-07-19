@@ -691,6 +691,88 @@ struct Point { x: i64, y: i64 }
 fn main() { let p = Point { x: 1, y: 2 }  if p.x + p.y != 3 { exit(1) }  println("ok") }
 '
 
+# --- Section-1 hardening round 2: trait conformance, actors, match literals.
+
+# Trait/impl signature mismatch dispatched at the trait ABI while the body
+# used the impl ABI -> SEGFAULT through a generic bound or dyn vtable.
+want_reject trait_impl_param_mismatch '
+trait Adder { fn add(self: Self, n: i64) -> i64 }
+struct Acc { v: i64 }
+impl Adder for Acc { fn add(self: Acc, n: str) -> str { return "hi" + n } }
+fn call_through<T: Adder>(x: T, n: i64) -> i64 { return x.add(n) }
+fn main() { let a = Acc { v: 1 }  println(to_string(call_through(a, 5))) }
+'
+want_reject impl_unknown_trait '
+struct Cat { name: str }
+impl Meower for Cat { fn meow(self: Cat) -> str { return "meow" } }
+fn main() { let c = Cat { name: "tom" }  println(c.meow()) }
+'
+want_pass valid_trait_impl_generic_and_default '
+trait Container<T> {
+    fn get(self: Self) -> T
+    fn describe(self: Self) -> str { return "a container" }
+}
+struct Box2 { v: i64 }
+impl Container<i64> for Box2 { fn get(self: Box2) -> i64 { return self.v } }
+fn main() {
+    let b = Box2 { v: 42 }
+    if b.get() != 42 { exit(1) }
+    println(b.describe())
+}
+'
+
+# Duplicate actor handlers mangled to one symbol -> internal Cranelift ABI
+# dump at codegen; duplicate state fields resolved ambiguously.
+want_reject dup_actor_handler '
+actor Counter {
+    count: i64,
+    fn inc(self) { self.count = self.count + 1 }
+    fn inc(self, n: i64) { self.count = self.count + n }
+}
+fn main() { let c = Counter()  c.inc()  println("done") }
+'
+want_reject dup_actor_state_field '
+actor Boxy {
+    count: i64,
+    count: i64,
+    fn get(self) -> i64 { return self.count }
+}
+fn main() { let b = Boxy()  println(to_string(b.get())) }
+'
+# Actor name colliding with a struct/enum corrupted the actor field table
+# (incoherent "no field" errors into the actor'\''s own valid body).
+want_reject actor_struct_name_collision '
+actor Worker {
+    tasks: i64,
+    fn add(self) { self.tasks = self.tasks + 1 }
+}
+struct Worker { id: i64 }
+fn main() { let w = Worker()  w.add()  println("done") }
+'
+want_pass valid_actor '
+actor Counter {
+    count: i64,
+    fn inc(self) { self.count = self.count + 1 }
+    fn add(self, n: i64) { self.count = self.count + n }
+}
+fn main() { let c = Counter()  c.inc()  c.add(5)  println("done") }
+'
+
+# Out-of-range match-arm literal truncated to the scrutinee width and could
+# fire the wrong arm (999 aliased 231 on a u8).
+want_reject match_arm_literal_out_of_range '
+fn main() {
+    let x: u8 = 231
+    match x { 999 => println("matched 999"), 231 => println("matched 231"), _ => println("no"), }
+}
+'
+want_pass valid_narrow_match '
+fn main() {
+    let x: u8 = 200
+    match x { 100 => { exit(1) }, 200 => println("ok"), _ => { exit(1) }, }
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
