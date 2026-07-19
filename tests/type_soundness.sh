@@ -826,6 +826,21 @@ let B: i64 = C + 1
 let C: i64 = A + 1
 fn main() { println(to_string(A)) }
 '
+# Cycle routed THROUGH a function call (interprocedural): the const-cycle
+# detector must follow calls to the consts they transitively read.
+want_reject const_cycle_via_function '
+let A: i64 = helper()
+fn helper() -> i64 { return A + 1 }
+fn main() { println(to_string(A)) }
+'
+# A const initialized by a function that reads a DIFFERENT const (no cycle)
+# must stay legal -- guards the interprocedural graph against false positives.
+want_pass const_via_function_no_cycle '
+let A: i64 = compute()
+let B: i64 = 10
+fn compute() -> i64 { return B * 2 }
+fn main() { if A != 20 { exit(1) }  println("ok") }
+'
 # A long ACYCLIC forward chain must stay legal (guards the cycle detector
 # against false positives).
 want_pass acyclic_const_chain_3hop '

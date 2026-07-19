@@ -519,12 +519,16 @@ impl TypeChecker {
                 let _ = &actor_names;
             }
         }
-        // Top-level const dependency CYCLES of length >= 2 (`A = B + 1;
-        // B = A + 1`). The const evaluator resolves dependencies topologically
-        // but had no cycle guard, so a cycle recursed to a runtime STACK
-        // OVERFLOW (exit 253). (A direct self-reference `X = X + 1` is caught
-        // per-const below with a targeted message; this pass covers mutual and
-        // longer cycles.) Report at check time.
+        // Top-level const dependency CYCLES (`A = B + 1; B = A + 1`, or routed
+        // THROUGH a function `A = f(); fn f() { return A + 1 }`). The const
+        // evaluator inlines each immutable const's initializer at its use
+        // sites, so a cycle recursed to a runtime STACK OVERFLOW (exit 253).
+        // (A direct self-reference `X = X + 1` is caught per-const below with a
+        // targeted message; this pass covers mutual, longer, and
+        // function-indirected cycles.) The graph is INTERPROCEDURAL: a const's
+        // dependencies include every const reachable through the functions its
+        // initializer calls (transitively), so indirection through a helper is
+        // visible. Reported at check time.
         {
             let consts: Vec<(&str, &Expr, Span)> = module
                 .declarations
@@ -536,35 +540,106 @@ impl TypeChecker {
                     _ => None,
                 })
                 .collect();
-            let names: Vec<&str> = consts.iter().map(|(n, _, _)| *n).collect();
-            // deps[i] = indices of the consts that const i's initializer
-            // references (self-references excluded -- the per-const check owns
-            // those and gives a targeted message).
+            let const_set: std::collections::HashSet<&str> =
+                consts.iter().map(|(n, _, _)| *n).collect();
+            // Every function's body-referenced names.
+            let fns: std::collections::HashMap<&str, std::collections::HashSet<String>> = module
+                .declarations
+                .iter()
+                .filter_map(|d| match d {
+                    Decl::Function {
+                        name,
+                        body: Some(b),
+                        ..
+                    } => {
+                        let mut names = std::collections::HashSet::new();
+                        collect_names_block(b, &mut names);
+                        Some((name.as_str(), names))
+                    }
+                    _ => None,
+                })
+                .collect();
+            // Fixpoint: fn_consts[f] = consts f references directly + consts
+            // reachable through the functions f calls (transitively).
+            let mut fn_consts: std::collections::HashMap<&str, std::collections::HashSet<String>> =
+                fns.iter()
+                    .map(|(f, names)| {
+                        (
+                            *f,
+                            names
+                                .iter()
+                                .filter(|n| const_set.contains(n.as_str()))
+                                .cloned()
+                                .collect(),
+                        )
+                    })
+                    .collect();
+            loop {
+                let mut changed = false;
+                for (f, names) in &fns {
+                    let mut add: Vec<String> = Vec::new();
+                    for called in names {
+                        if let Some(cc) = fn_consts.get(called.as_str()) {
+                            for c in cc {
+                                if !fn_consts[f].contains(c) {
+                                    add.push(c.clone());
+                                }
+                            }
+                        }
+                    }
+                    if !add.is_empty() {
+                        changed = true;
+                        let e = fn_consts.get_mut(f).unwrap();
+                        for c in add {
+                            e.insert(c);
+                        }
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            // Per const: names its initializer references, expanded through any
+            // functions it calls.
+            let idx_of: std::collections::HashMap<&str, usize> =
+                consts.iter().enumerate().map(|(i, (n, _, _))| (*n, i)).collect();
             let deps: Vec<Vec<usize>> = consts
                 .iter()
                 .enumerate()
                 .map(|(i, (_, val, _))| {
-                    names
+                    let mut refs = std::collections::HashSet::new();
+                    collect_names_expr(val, &mut refs);
+                    let mut dep_consts: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                    for r in &refs {
+                        if const_set.contains(r.as_str()) {
+                            dep_consts.insert(r.as_str());
+                        }
+                        if let Some(cc) = fn_consts.get(r.as_str()) {
+                            for c in cc {
+                                dep_consts.insert(c.as_str());
+                            }
+                        }
+                    }
+                    // Self-edges are KEPT: a const that depends on itself
+                    // through a function (`let A = helper()` where helper reads
+                    // A) is a real cycle with no other node, and the direct
+                    // `A = A + 1` self-edge is a cycle too. Both are reported
+                    // here (the per-const direct-self check was removed as
+                    // redundant with this).
+                    let _ = i;
+                    dep_consts
                         .iter()
-                        .enumerate()
-                        .filter(|(j, dn)| *j != i && expr_references_name(val, dn))
-                        .map(|(j, _)| j)
+                        .filter_map(|c| idx_of.get(c).copied())
                         .collect()
                 })
                 .collect();
-            // DFS cycle detection (0=unvisited, 1=in-stack, 2=done).
+            // DFS cycle detection (0=unvisited, 1=in-stack, 2=done). A
+            // self-edge (v == u) is detected because state[u] is already 1.
             let n = consts.len();
             let mut state = vec![0u8; n];
-            fn dfs(
-                u: usize,
-                deps: &[Vec<usize>],
-                state: &mut [u8],
-            ) -> bool {
+            fn dfs(u: usize, deps: &[Vec<usize>], state: &mut [u8]) -> bool {
                 state[u] = 1;
                 for &v in &deps[u] {
-                    if v == u {
-                        continue;
-                    }
                     if state[v] == 1 {
                         return true;
                     }
@@ -581,7 +656,7 @@ impl TypeChecker {
                     reported = true;
                     self.error_with_code(
                         format!(
-                            "circular dependency among top-level consts (including `{}`) -- their values depend on each other and cannot be resolved",
+                            "circular dependency among top-level consts (including `{}`) -- their values depend on each other (directly or through a called function) and cannot be resolved",
                             consts[i].0
                         ),
                         consts[i].2,
@@ -1218,22 +1293,9 @@ impl TypeChecker {
                 span,
                 ..
             } => {
-                // A top-level const whose initializer references ITSELF
-                // (`let X: i64 = X + 1`) is a circular definition -- the const
-                // evaluator resolves dependencies topologically but had no
-                // cycle guard, so it recursed until a runtime STACK OVERFLOW
-                // (exit 253) instead of a compile error. Reject the direct
-                // self-reference here. (Forward refs to OTHER consts stay
-                // legal -- they resolve by dependency order.)
-                if expr_references_name(value, name) {
-                    self.error_with_code(
-                        format!(
-                            "const `{name}` refers to itself in its own initializer -- a circular definition (its value cannot depend on itself)"
-                        ),
-                        *span,
-                        kryos_errors::codes::E0102,
-                    );
-                }
+                // (Self-referential and mutual/function-indirected const
+                // cycles are detected up front by the interprocedural cycle
+                // pass in check_module; no per-const check needed here.)
                 let resolved_ty = if let Some(t) = ty {
                     let decl_ty = self.resolve_type_expr(t);
                     // Check the value against the annotation (mirrors the
@@ -7362,37 +7424,192 @@ pub fn type_check_with_lambda_params(
 /// pattern, or a compound pattern (tuple/struct/enum/or) containing one. Used to
 /// enforce that or-pattern alternatives are non-binding (CLAUDE.md gotcha #14):
 /// binding alternatives silently produced type confusion or uninitialized reads.
-/// Returns true if `expr` contains a bare reference to the identifier `name`.
-/// Used to detect a self-referential top-level const (`let X = X + 1`), which
-/// otherwise stack-overflows at const-eval time. Walks the common expression
-/// shapes; a name reached only through an intervening binding that shadows it
-/// is a rare false positive that at worst rejects a legal shadow -- acceptable
-/// for a const initializer, which is a simple expression in practice.
-fn expr_references_name(expr: &Expr, name: &str) -> bool {
+/// Collect every referenced name (identifiers, call callees, method names)
+/// in an expression into `out`. Used to build the interprocedural const
+/// dependency graph so a cycle routed THROUGH a function call
+/// (`let A = helper()` where `helper` reads `A`) is visible to cycle
+/// detection, not just direct in-initializer references. Over-collection is
+/// harmless (a name that is neither a const nor a fn is ignored downstream).
+fn collect_names_expr(expr: &Expr, out: &mut std::collections::HashSet<String>) {
     use kryos_ast::Expr as E;
     match expr {
-        E::Identifier { name: n, .. } => n == name,
-        E::BinaryOp { left, right, .. } => {
-            expr_references_name(left, name) || expr_references_name(right, name)
+        E::Identifier { name, .. } => {
+            out.insert(name.clone());
         }
-        E::UnaryOp { operand, .. } => expr_references_name(operand, name),
-        E::Cast { expr, .. } => expr_references_name(expr, name),
-        E::FieldAccess { object, .. } => expr_references_name(object, name),
+        E::FieldAccess { object, .. } => collect_names_expr(object, out),
         E::IndexAccess { object, index, .. } => {
-            expr_references_name(object, name) || expr_references_name(index, name)
+            collect_names_expr(object, out);
+            collect_names_expr(index, out);
         }
-        E::FnCall { args, .. } => args.iter().any(|a| expr_references_name(a, name)),
-        E::MethodCall { object, args, .. } => {
-            expr_references_name(object, name)
-                || args.iter().any(|a| expr_references_name(a, name))
+        E::BinaryOp { left, right, .. } => {
+            collect_names_expr(left, out);
+            collect_names_expr(right, out);
         }
-        E::ArrayLiteral { elements, .. } => {
-            elements.iter().any(|e| expr_references_name(e, name))
+        E::UnaryOp { operand, .. } => collect_names_expr(operand, out),
+        E::FnCall { callee, args, .. } => {
+            collect_names_expr(callee, out);
+            for a in args {
+                collect_names_expr(a, out);
+            }
         }
-        E::TupleLiteral { elements, .. } => {
-            elements.iter().any(|e| expr_references_name(e, name))
+        E::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } => {
+            collect_names_expr(object, out);
+            out.insert(method.clone());
+            for a in args {
+                collect_names_expr(a, out);
+            }
         }
-        _ => false,
+        E::StaticMethodCall {
+            type_name,
+            method,
+            args,
+            ..
+        } => {
+            out.insert(type_name.clone());
+            out.insert(method.clone());
+            for a in args {
+                collect_names_expr(a, out);
+            }
+        }
+        E::ArrayLiteral { elements, .. } | E::TupleLiteral { elements, .. } => {
+            for e in elements {
+                collect_names_expr(e, out);
+            }
+        }
+        E::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                collect_names_expr(k, out);
+                collect_names_expr(v, out);
+            }
+        }
+        E::StructLiteral { fields, .. } => {
+            for (_, e) in fields {
+                collect_names_expr(e, out);
+            }
+        }
+        E::InterpolatedString { parts, .. } => {
+            for p in parts {
+                if let kryos_ast::StringPart::Expr(e) = p {
+                    collect_names_expr(e, out);
+                }
+            }
+        }
+        E::Lambda { body, .. } => collect_names_expr(body, out),
+        E::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_names_expr(condition, out);
+            collect_names_block(then_branch, out);
+            if let Some(eb) = else_branch {
+                collect_names_block(eb, out);
+            }
+        }
+        E::MatchExpr { subject, arms, .. } => {
+            collect_names_expr(subject, out);
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    collect_names_expr(g, out);
+                }
+                collect_names_expr(&arm.body, out);
+            }
+        }
+        E::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                collect_names_expr(s, out);
+            }
+            if let Some(e) = end {
+                collect_names_expr(e, out);
+            }
+        }
+        E::PipeExpr { left, right, .. } => {
+            collect_names_expr(left, out);
+            collect_names_expr(right, out);
+        }
+        E::Borrow { inner, .. }
+        | E::Deref { inner, .. }
+        | E::SharedExpr { inner, .. }
+        | E::MoveExpr { inner, .. }
+        | E::WeakExpr { inner, .. } => collect_names_expr(inner, out),
+        E::Cast { expr, .. } => collect_names_expr(expr, out),
+        E::Await { value, .. } => collect_names_expr(value, out),
+        E::Block { block, .. } => collect_names_block(block, out),
+        E::ComptimeBlock { body, .. }
+        | E::QuantumBlock { body, .. }
+        | E::UnsafeBlock { body, .. } => collect_names_block(body, out),
+        _ => {}
+    }
+}
+
+fn collect_names_stmt(stmt: &kryos_ast::Stmt, out: &mut std::collections::HashSet<String>) {
+    use kryos_ast::Stmt as S;
+    match stmt {
+        S::Let { value, .. } => {
+            if let Some(v) = value {
+                collect_names_expr(v, out);
+            }
+        }
+        S::Assign { target, value, .. } => {
+            collect_names_expr(target, out);
+            collect_names_expr(value, out);
+        }
+        S::Return { value, .. } => {
+            if let Some(v) = value {
+                collect_names_expr(v, out);
+            }
+        }
+        S::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            collect_names_expr(condition, out);
+            collect_names_block(then_block, out);
+            for (c, b) in elif_clauses {
+                collect_names_expr(c, out);
+                collect_names_block(b, out);
+            }
+            if let Some(eb) = else_block {
+                collect_names_block(eb, out);
+            }
+        }
+        S::For { iterable, body, .. } => {
+            collect_names_expr(iterable, out);
+            collect_names_block(body, out);
+        }
+        S::While {
+            condition, body, ..
+        } => {
+            collect_names_expr(condition, out);
+            collect_names_block(body, out);
+        }
+        S::Expr { expr, .. } | S::Spawn { expr, .. } | S::Throw { expr, .. } => {
+            collect_names_expr(expr, out)
+        }
+        S::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => {
+            collect_names_block(try_block, out);
+            collect_names_block(catch_block, out);
+        }
+        _ => {}
+    }
+}
+
+fn collect_names_block(block: &Block, out: &mut std::collections::HashSet<String>) {
+    for s in &block.stmts {
+        collect_names_stmt(s, out);
     }
 }
 
