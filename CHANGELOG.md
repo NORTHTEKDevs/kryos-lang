@@ -74,6 +74,21 @@ self-host bootstrap 16/16 throughout.
   via `infer_type_name`), so a 30-deep `b.inc().inc()…` chain took >90s. A
   100-deep chain now compiles in ~0.5s.
 
+### Fixed — type-checker, diagnostics, string perf (cert Pass 41)
+- **Tuple-destructuring arity is now type-checked.** `let (a,b,c) = t` over-binding
+  a 2-tuple passed `check` then panicked at runtime leaking the internal
+  array-OOB message; under-binding silently dropped elements. Now a clean E0100.
+- **`std::string::StringBuilder`** gives amortized-O(1) string building — repeated
+  `s = s + chunk` in a loop is O(n²) (~256× slower at 160k chars). Also fixed the
+  underlying gap: the growable `buf_*` family had no string conversion (added the
+  `buf_str` builtin).
+- **Two everyday errors gained codes** — wrong return type (E0100) and
+  non-exhaustive match (new E0112, with a `kryos explain` entry).
+- **Multi-line diagnostic carets no longer overflow** the shown line (a whole
+  `match` span drew 67 carets under a 13-char line, corrupting LSP column mapping).
+- Compile-time performance verified: a 160-probe scaling sweep across 18 structural
+  dimensions found no super-linear paths beyond the method-chain one (also fixed).
+
 ### Documented — accuracy corrections
 `char_code` returns the first Unicode codepoint (not byte); `push`/`sort`/
 `reverse` mutate in place (reassign, never read a pre-call alias); `comptime {}`
