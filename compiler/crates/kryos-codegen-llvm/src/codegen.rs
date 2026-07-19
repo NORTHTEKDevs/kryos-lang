@@ -1393,6 +1393,9 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_tls_recv(i64, ptr, i64)");
         self.emit_line("declare i64 @kryos_tls_send(i64, ptr, i64)");
         self.emit_line("declare void @kryos_trace_exit()");
+        // Panic call-stack tracking (matches the Cranelift/JIT emission).
+        // Only emitted under -g; see emit_function_as.
+        self.emit_line("declare void @kryos_trace_enter(ptr, i64, ptr, i64, i32)");
         self.emit_line("declare i64 @kryos_uds_bind(ptr, i64)");
         self.emit_line("declare i64 @kryos_uds_connect(ptr, i64)");
         self.emit_line("declare i64 @kryos_uds_recv(i64, ptr, i64)");
@@ -3363,6 +3366,25 @@ impl LlvmCodegen {
             };
             self.emit_line(&init);
             self.track_type(&format!("%_{id}"), &ty);
+        }
+
+        // Panic-stack-trace instrumentation, -g only. The JIT registers every
+        // frame via kryos_trace_enter so a panic prints the Kryos call stack;
+        // AOT binaries emitted nothing, so the same panic printed only the
+        // message line. Release builds stay untraced (a per-call runtime hook
+        // is a real cost in hot loops); `kryos build -g` now matches the JIT.
+        // Placed BEFORE the TCO br/label below so a self-looping function
+        // registers its frame once, not on every back-edge iteration.
+        if self.options.debug_info {
+            let fn_name_global = self.intern_string(&func.name);
+            let fn_name_len = func.name.len();
+            let file = func.source_file.clone().unwrap_or_default();
+            let file_global = self.intern_string(&file);
+            let file_len = file.len();
+            let line = func.source_line.max(1);
+            self.emit_line(&format!(
+                "  call void @kryos_trace_enter(ptr {fn_name_global}, i64 {fn_name_len}, ptr {file_global}, i64 {file_len}, i32 {line})"
+            ));
         }
 
         // If we emitted a separate `entry:` block for TCO, branch into bb0 now
@@ -9020,6 +9042,9 @@ impl LlvmCodegen {
     ) -> Result<(), CodegenError> {
         match term {
             Terminator::Return(None) => {
+                if self.options.debug_info {
+                    self.emit_line("  call void @kryos_trace_exit()");
+                }
                 if func.name == "main" {
                     self.emit_line(
                         "  call void @kryos_exception_report_uncaught_if_pending()",
@@ -9039,6 +9064,9 @@ impl LlvmCodegen {
                 }
             }
             Terminator::Return(Some(op)) => {
+                if self.options.debug_info {
+                    self.emit_line("  call void @kryos_trace_exit()");
+                }
                 if func.name == "main" {
                     self.emit_line(
                         "  call void @kryos_exception_report_uncaught_if_pending()",
