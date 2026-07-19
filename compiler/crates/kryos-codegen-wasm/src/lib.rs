@@ -216,6 +216,65 @@ fn is_void(ty: &MirType) -> bool {
     matches!(ty, MirType::Void)
 }
 
+/// Collect every module-function name an instruction can transfer control to:
+/// direct calls, closure creation, thread spawns, and actor dispatch fns.
+/// Names that don't resolve to a module function (builtins, native imports)
+/// are collected too and simply ignored by the reachability walk.
+fn collect_callees(inst: &Instruction, out: &mut Vec<String>) {
+    fn from_rvalue(rv: &RValue, out: &mut Vec<String>) {
+        match rv {
+            RValue::Call { func, .. } => out.push(func.clone()),
+            RValue::Closure { func_name, .. } => out.push(func_name.clone()),
+            RValue::Comptime(inner) => from_rvalue(inner, out),
+            _ => {}
+        }
+    }
+    match inst {
+        Instruction::Assign { value, .. } => from_rvalue(value, out),
+        Instruction::Spawn { func, .. } => out.push(func.clone()),
+        Instruction::ActorSpawn { dispatch_fn, .. } => out.push(dispatch_fn.clone()),
+        _ => {}
+    }
+}
+
+/// The subset of `module` whose functions are reachable from `main` (module
+/// with no `main` is passed through untouched). Emitting only this subset
+/// keeps an unsupported construct in an UNCALLED stdlib/module function from
+/// failing the whole build.
+fn reachable_subset(module: &MirModule) -> MirModule {
+    use std::collections::HashSet;
+    if !module.functions.iter().any(|f| f.name == "main") {
+        return module.clone();
+    }
+    let by_name: HashMap<&str, &MirFunction> = module
+        .functions
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+    let mut keep: HashSet<String> = HashSet::new();
+    let mut queue: Vec<String> = vec!["main".to_string()];
+    keep.insert("main".to_string());
+    while let Some(name) = queue.pop() {
+        let Some(f) = by_name.get(name.as_str()) else {
+            continue;
+        };
+        let mut callees = Vec::new();
+        for block in &f.blocks {
+            for inst in &block.instructions {
+                collect_callees(inst, &mut callees);
+            }
+        }
+        for callee in callees {
+            if by_name.contains_key(callee.as_str()) && keep.insert(callee.clone()) {
+                queue.push(callee);
+            }
+        }
+    }
+    let mut filtered = module.clone();
+    filtered.functions.retain(|f| keep.contains(&f.name));
+    filtered
+}
+
 // ---------------------------------------------------------------------------
 // Internal: the codegen state machine
 // ---------------------------------------------------------------------------
@@ -325,6 +384,12 @@ struct WasmCodegen {
     /// Map host imports (str-keyed, i64-valued; host keeps a JS Map per handle).
     map_new_idx: u32,
     map_insert_str_idx: u32,
+    /// `kryos_map_insert(handle, key_i64, value) -> i64` (handle passthrough).
+    map_insert_idx: u32,
+    /// `kryos_map_get(handle, key_i64) -> i64` (value, 0 if absent).
+    map_get_idx: u32,
+    /// `kryos_map_has(handle, key_i64) -> i64` (1/0).
+    map_has_idx: u32,
     map_get_str_idx: u32,
     map_has_str_idx: u32,
     map_len_idx: u32,
@@ -410,6 +475,9 @@ impl WasmCodegen {
             string_contains_idx: 0,
             map_new_idx: 0,
             map_insert_str_idx: 0,
+            map_insert_idx: 0,
+            map_get_idx: 0,
+            map_has_idx: 0,
             map_get_str_idx: 0,
             map_has_str_idx: 0,
             map_len_idx: 0,
@@ -427,6 +495,14 @@ impl WasmCodegen {
 
     /// Top-level emit.
     fn emit(&mut self, module: &MirModule) -> Result<(), WasmCodegenError> {
+        // 0a. Restrict to functions reachable from `main`. The whole module
+        // used to be emitted, so ANY unsupported construct anywhere in an
+        // imported stdlib module failed the build even when the program never
+        // called it (`use std::string::{split_lines}` broke the moment
+        // std::string gained buf-native-backed helpers wasm doesn't host).
+        let filtered = reachable_subset(module);
+        let module = &filtered;
+
         // 0. Cache struct definitions for field-index lookups during codegen.
         self.struct_defs = module.struct_defs.clone();
 
@@ -881,6 +957,32 @@ impl WasmCodegen {
         self.imports.import(env_module, "kryos_map_len",
             wasm_encoder::EntityType::Function(self.type_count));
         self.map_len_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // ---- Integer-keyed map variants. MIR lowers map<i64, V> through
+        // kryos_map_insert/get/has (the native runtime names); before these
+        // imports existed, any int-keyed map program failed the wasm build. ----
+        // map_insert(handle, key_i64, value) -> i64 (handle passthrough; the
+        // native fn is void but MIR assigns the call result to a temp, so the
+        // wasm import must produce a value)
+        self.types.ty().function(vec![ValType::I64, ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_insert",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_insert_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_get(handle, key_i64) -> i64 (value, 0 if absent)
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_get",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_get_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // map_has(handle, key_i64) -> i64 (1/0)
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_map_has",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.map_has_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
     }
 
@@ -1910,7 +2012,18 @@ impl<'a> FnEmitter<'a> {
                                     self.wfunc.instruction(&W::Return);
                                     break;
                                 }
-                                _ => { self.wfunc.instruction(&W::Unreachable); break; }
+                                // A Branch/Switch inside the arm chain (e.g.
+                                // `while let` with an `if`/`match` in the loop
+                                // body) is beyond this fast path. It MUST fail
+                                // the structured attempt so the dispatch
+                                // relooper takes over -- emitting a silent
+                                // W::Unreachable here compiled cleanly and then
+                                // TRAPPED at runtime mid-loop.
+                                _ => {
+                                    return Err(WasmCodegenError::unsupported(
+                                        "switch-while arm with nested branch; relooper fallback",
+                                    ));
+                                }
                             }
                         }
                     }
@@ -1918,7 +2031,13 @@ impl<'a> FnEmitter<'a> {
                         if let Some(op) = v.as_ref() { self.emit_operand(op)?; }
                         self.wfunc.instruction(&W::Return);
                     }
-                    _ => { self.wfunc.instruction(&W::Unreachable); }
+                    // Same contract as above: unexpressible arm shape -> error
+                    // out to the relooper, never a silent runtime trap.
+                    _ => {
+                        return Err(WasmCodegenError::unsupported(
+                            "switch-while arm terminator; relooper fallback",
+                        ));
+                    }
                 }
             }
             self.wfunc.instruction(&W::End); // end if
@@ -2191,7 +2310,16 @@ impl<'a> FnEmitter<'a> {
                 // converge to the same wasm continuation.
                 self.emit_if_else_with_join(cond, then_block, else_block, join)?;
             }
-            Terminator::Switch { .. } | Terminator::Unreachable => {
+            Terminator::Switch { .. } => {
+                // A `match` nested inside an if arm that this structured path
+                // can't express: fail so the dispatch relooper handles the
+                // function. A silent W::Unreachable here becomes a runtime
+                // trap inside code that compiled without any diagnostic.
+                return Err(WasmCodegenError::unsupported(
+                    "match inside if arm; relooper fallback",
+                ));
+            }
+            Terminator::Unreachable => {
                 self.wfunc.instruction(&W::Unreachable);
             }
         }
@@ -3034,6 +3162,15 @@ impl<'a> FnEmitter<'a> {
                         self.wfunc.instruction(&W::Call(self.cg.print_f64_idx));
                         return Ok(());
                     }
+                    // Bool: print true/false, not the raw 0/1 encoding
+                    // (mirrors the to_string builtin's bool arm).
+                    (op, MirType::Bool) => {
+                        let op = op.clone();
+                        self.emit_to_str_packed(&op)?;
+                        self.emit_unpack_string();
+                        self.wfunc.instruction(&W::Call(self.cg.print_str_idx));
+                        return Ok(());
+                    }
                     // Default: print as i64.
                     (op, _) => {
                         self.emit_operand(op)?;
@@ -3179,6 +3316,23 @@ impl<'a> FnEmitter<'a> {
                 MirType::F32 => {
                     self.wfunc.instruction(&W::F64PromoteF32);
                     self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+                }
+                MirType::Bool => {
+                    // "true"/"false", NOT the raw i64 encoding -- falling
+                    // through to to_string_i64 silently printed 1/0 for every
+                    // bool from ordinary function logic (native backends print
+                    // the words). Bools here are i64 0/1; eqz gives an i32
+                    // cond (1 when false), so the If yields the packed str.
+                    let (t_off, t_len) = self.cg.intern_string("true");
+                    let (f_off, f_len) = self.cg.intern_string("false");
+                    let t_packed = (((t_len as u64) << 32) | (t_off as u64)) as i64;
+                    let f_packed = (((f_len as u64) << 32) | (f_off as u64)) as i64;
+                    self.wfunc.instruction(&W::I64Eqz);
+                    self.wfunc.instruction(&W::If(BlockType::Result(ValType::I64)));
+                    self.wfunc.instruction(&W::I64Const(f_packed));
+                    self.wfunc.instruction(&W::Else);
+                    self.wfunc.instruction(&W::I64Const(t_packed));
+                    self.wfunc.instruction(&W::End);
                 }
                 _ => {
                     self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));
@@ -3329,6 +3483,37 @@ impl<'a> FnEmitter<'a> {
             self.wfunc.instruction(&W::Call(self.cg.map_has_str_idx));
             return Ok(());
         }
+        // Integer-keyed map family (map<i64, V> lowers to these runtime names).
+        if (func == "kryos_map_insert" || func == "map_insert") && args.len() == 3 {
+            self.emit_operand(&args[0])?; // handle
+            self.emit_operand(&args[1])?; // i64 key
+            self.emit_operand(&args[2])?; // value
+            self.wfunc.instruction(&W::Call(self.cg.map_insert_idx));
+            return Ok(());
+        }
+        if (func == "kryos_map_get" || func == "map_get") && args.len() == 2 {
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(self.cg.map_get_idx));
+            return Ok(());
+        }
+        if (func == "kryos_map_has" || func == "map_has") && args.len() == 2 {
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(self.cg.map_has_idx));
+            return Ok(());
+        }
+        // Ownership deep-copy marker for an enum value pulled out of a still-
+        // owned container. It exists to prevent aliased ARC drops on the
+        // NATIVE backends; the wasm host never frees (values live in JS-side
+        // arenas with no refcounting) and the supported wasm subset has no
+        // in-place enum-payload mutation, so identity is semantically exact
+        // here. (The struct sibling __kryos_struct_index_clone is NOT mapped:
+        // structs are field-mutable in the subset, so identity would alias.)
+        if func == "__kryos_enum_index_clone" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            return Ok(());
+        }
         if (func == "kryos_map_new" || func == "map_new") && args.is_empty() {
             self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
             return Ok(());
@@ -3384,6 +3569,20 @@ impl<'a> FnEmitter<'a> {
             MirType::F32 => {
                 self.wfunc.instruction(&W::F64PromoteF32);
                 self.wfunc.instruction(&W::Call(self.cg.to_string_f64_idx));
+            }
+            MirType::Bool => {
+                // Same true/false rendering as the to_string builtin -- a bool
+                // in interpolation/println otherwise printed its raw 0/1.
+                let (t_off, t_len) = self.cg.intern_string("true");
+                let (f_off, f_len) = self.cg.intern_string("false");
+                let t_packed = (((t_len as u64) << 32) | (t_off as u64)) as i64;
+                let f_packed = (((f_len as u64) << 32) | (f_off as u64)) as i64;
+                self.wfunc.instruction(&W::I64Eqz);
+                self.wfunc.instruction(&W::If(BlockType::Result(ValType::I64)));
+                self.wfunc.instruction(&W::I64Const(f_packed));
+                self.wfunc.instruction(&W::Else);
+                self.wfunc.instruction(&W::I64Const(t_packed));
+                self.wfunc.instruction(&W::End);
             }
             _ => {
                 self.wfunc.instruction(&W::Call(self.cg.to_string_i64_idx));

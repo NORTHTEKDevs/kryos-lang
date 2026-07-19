@@ -1,0 +1,35 @@
+// Regression (cert Pass 42): `while let` over Option with a conditional in
+// the loop body compiled cleanly on wasm but TRAPPED at runtime
+// (RuntimeError: unreachable) -- the switch-while fast path emitted a bare
+// W::Unreachable for arm bodies containing a Branch instead of failing over
+// to the dispatch relooper.
+use std::option::{Option, Some, None}
+
+fn find_positive(x: i64) -> Option<i64> {
+    if x > 0 {
+        return Some(x)
+    }
+    return None()
+}
+
+fn main() {
+    if let Some(v) = find_positive(5) {
+        println("got " + to_string(v))
+    } else {
+        println("none")
+    }
+    if let Some(v) = find_positive(0 - 1) {
+        println("got " + to_string(v))
+    } else {
+        println("none")
+    }
+    let mut n: i64 = 3
+    while let Some(v) = find_positive(n) {
+        println("loop " + to_string(v))
+        n = n - 1
+        if n <= 0 {
+            break
+        }
+    }
+    println("done")
+}

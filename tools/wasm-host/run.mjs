@@ -168,6 +168,17 @@ const env = {
     return m.has(readStr(off, len)) ? 1n : 0n;
   },
   kryos_map_len: (handle) => maps[asNum(handle) - 1].size,
+  // Integer-keyed map family (map<i64, V>). Keys normalized to BigInt so
+  // insert/get/has agree on identity.
+  kryos_map_insert: (handle, key, value) => {
+    maps[asNum(handle) - 1].set(BigInt(key), BigInt(value));
+    return handle; // passthrough (MIR assigns the call result to a temp)
+  },
+  kryos_map_get: (handle, key) => {
+    const v = maps[asNum(handle) - 1].get(BigInt(key));
+    return v === undefined ? 0n : v;
+  },
+  kryos_map_has: (handle, key) => (maps[asNum(handle) - 1].has(BigInt(key)) ? 1n : 0n),
   kryos_array_push: (handle, value) => {
     // In-place append (mutates the existing array), returns the SAME handle so
     // both `push(a, x)` (discarded) and `a = push(a, x)` (reassigned) work.
