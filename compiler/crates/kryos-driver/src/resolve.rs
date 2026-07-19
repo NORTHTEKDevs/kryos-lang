@@ -17,7 +17,7 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kryos_ast::{Block, Decl, Expr, ImportPath, Module, Stmt, StringPart};
+use kryos_ast::{Block, Decl, Expr, ImportPath, Module, Param, Pattern, Stmt, StringPart};
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
 use kryos_parser::parse;
@@ -522,12 +522,76 @@ fn collect_qualified_calls_in_expr(e: &Expr, out: &mut Vec<(String, String, kryo
     }
 }
 
+/// Union of selected names per (canonical) module path across the ENTIRE
+/// import graph. `None` = at least one importer uses a bare `use m` (import
+/// everything) -> every function stays under its bare name.
+///
+/// Needed because module resolution is first-import-wins (the `visited` set
+/// dedups), but OTHER importers' bodies legitimately reference names THEY
+/// selected: `test.kry` importing `transcript::{total_calls}` plus
+/// `replay::{replay}` (where replay.kry imports `transcript::{turn_is_call}`)
+/// must keep BOTH `total_calls` and `turn_is_call` under bare names, whichever
+/// import happens to process `transcript` first.
+type SelectionUnions = HashMap<PathBuf, Option<HashSet<String>>>;
+
+fn collect_selection_unions(
+    module: &Module,
+    importing_file: &Path,
+    visited: &mut HashSet<PathBuf>,
+    unions: &mut SelectionUnions,
+) {
+    for (import_path, _span) in extract_imports(module) {
+        let Ok(module_path) = resolve_module_path(&import_path.segments, importing_file) else {
+            continue; // resolution errors surface in the main pass
+        };
+        let canonical = fs::canonicalize(&module_path).unwrap_or_else(|_| module_path.clone());
+        let entry = unions
+            .entry(canonical.clone())
+            .or_insert_with(|| Some(HashSet::new()));
+        if import_path.items.is_empty() {
+            *entry = None;
+        } else if let Some(set) = entry.as_mut() {
+            for item in &import_path.items {
+                set.insert(item.clone());
+            }
+        }
+        if visited.insert(canonical) {
+            if let Ok((imported_module, _sm)) = parse_module_file(&module_path) {
+                collect_selection_unions(&imported_module, &module_path, visited, unions);
+            }
+        }
+    }
+}
+
 pub fn resolve_imports(
     module: &Module,
     importing_file: &Path,
     visited: &mut HashSet<PathBuf>,
     resolved_decls: &mut Vec<Decl>,
     verbose: bool,
+) -> Result<(), Vec<Diagnostic>> {
+    // Pre-scan the whole import graph for per-module selection unions before
+    // any module is resolved (see SelectionUnions).
+    let mut unions: SelectionUnions = HashMap::new();
+    let mut scan_visited: HashSet<PathBuf> = HashSet::new();
+    collect_selection_unions(module, importing_file, &mut scan_visited, &mut unions);
+    resolve_imports_inner(
+        module,
+        importing_file,
+        visited,
+        resolved_decls,
+        verbose,
+        &unions,
+    )
+}
+
+fn resolve_imports_inner(
+    module: &Module,
+    importing_file: &Path,
+    visited: &mut HashSet<PathBuf>,
+    resolved_decls: &mut Vec<Decl>,
+    verbose: bool,
+    unions: &SelectionUnions,
 ) -> Result<(), Vec<Diagnostic>> {
     let imports = extract_imports(module);
 
@@ -587,12 +651,13 @@ pub fn resolve_imports(
         };
 
         // Recursively resolve imports within the imported module.
-        resolve_imports(
+        resolve_imports_inner(
             &imported_module,
             &module_path,
             visited,
             resolved_decls,
             verbose,
+            unions,
         )?;
 
         // Collect non-import declarations from the imported module.
@@ -689,7 +754,26 @@ pub fn resolve_imports(
             }
         }
 
-        if selected.is_empty() {
+        // Resolution is first-import-wins (the `visited` set), so the shape
+        // this module resolves with must satisfy EVERY importer in the
+        // program, not just this one: use the program-wide selection union.
+        // None = some importer does a bare `use m` -> include everything bare.
+        let effective_selected: Option<HashSet<String>> =
+            match unions.get(&canonical) {
+                Some(None) => None,
+                Some(Some(u)) => Some(u.clone()),
+                // Not in the pre-scan (path resolution raced/failed there):
+                // fall back to this import's own selection.
+                None => {
+                    if selected.is_empty() {
+                        None
+                    } else {
+                        Some(selected.clone())
+                    }
+                }
+            };
+
+        if effective_selected.is_none() {
             for decl in imported_module.declarations {
                 // An imported module's `main` is an ENTRY POINT, not an
                 // export: pulling it in alongside the importer's own main
@@ -721,13 +805,15 @@ pub fn resolve_imports(
                 .collect();
 
             // Transitive closure of identifier references over selected
-            // function bodies. Seeded with `selected`. New names that
-            // resolve to functions in this module get added; missing names
-            // (builtins, types, helpers from other modules) are ignored —
-            // the type-checker will resolve / diagnose them later.
-            let selected_names: HashSet<String> = selected.clone();
-            let mut needed: HashSet<String> = selected.clone();
-            let mut worklist: Vec<String> = selected.into_iter().collect();
+            // function bodies. Seeded with the program-wide selection UNION
+            // (every name any importer selected). New names that resolve to
+            // functions in this module get added; missing names (builtins,
+            // types, helpers from other modules) are ignored — the
+            // type-checker will resolve / diagnose them later.
+            let union_selected = effective_selected.unwrap_or_default();
+            let selected_names: HashSet<String> = union_selected.clone();
+            let mut needed: HashSet<String> = union_selected.clone();
+            let mut worklist: Vec<String> = union_selected.into_iter().collect();
             // Impl blocks (and actors/consts) are ALWAYS included below, so
             // every module-local function their bodies reference must come
             // along too. Without this, `use m::{SomeStruct}` imported the
@@ -1106,22 +1192,239 @@ fn collect_idents_in_expr(e: &Expr, out: &mut HashSet<String>) {
 // names, method names, type names, and struct-literal names are never touched.
 // ---------------------------------------------------------------------------
 
+/// Names a pattern binds (payload/tuple/struct-field binders, plain idents).
+fn collect_bound_in_pattern(p: &Pattern, out: &mut HashSet<String>) {
+    match p {
+        Pattern::Ident { name, .. } => {
+            out.insert(name.clone());
+        }
+        Pattern::Tuple { elements, .. } => {
+            for e in elements {
+                collect_bound_in_pattern(e, out);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, sub) in fields {
+                collect_bound_in_pattern(sub, out);
+            }
+        }
+        Pattern::Enum { fields, .. } => {
+            for sub in fields {
+                collect_bound_in_pattern(sub, out);
+            }
+        }
+        Pattern::Or { patterns, .. } => {
+            for sub in patterns {
+                collect_bound_in_pattern(sub, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every name a function body binds locally: let names/patterns, for-loop
+/// patterns, catch names, lambda params, match-arm patterns. Used to keep the
+/// module-private rename from touching a local that shadows a helper --
+/// std::-style code routinely names a parameter after a module function
+/// (`fn cost_delta(replay: ComputeCost, ..)` in a module that also defines
+/// `fn replay(..)`), and renaming those uses pointed them at the mangled fn.
+fn collect_bound_names_in_block(b: &Block, out: &mut HashSet<String>) {
+    for stmt in &b.stmts {
+        collect_bound_names_in_stmt(stmt, out);
+    }
+}
+
+fn collect_bound_names_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
+    match s {
+        Stmt::Let {
+            name,
+            pattern,
+            value,
+            ..
+        } => {
+            out.insert(name.clone());
+            if let Some(p) = pattern {
+                collect_bound_in_pattern(p, out);
+            }
+            if let Some(v) = value {
+                collect_bound_names_in_expr(v, out);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            collect_bound_names_in_expr(target, out);
+            collect_bound_names_in_expr(value, out);
+        }
+        Stmt::Return { value: Some(v), .. } => collect_bound_names_in_expr(v, out),
+        Stmt::Return { value: None, .. } => {}
+        Stmt::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            collect_bound_names_in_expr(condition, out);
+            collect_bound_names_in_block(then_block, out);
+            for (c, b) in elif_clauses {
+                collect_bound_names_in_expr(c, out);
+                collect_bound_names_in_block(b, out);
+            }
+            if let Some(b) = else_block {
+                collect_bound_names_in_block(b, out);
+            }
+        }
+        Stmt::For {
+            pattern,
+            iterable,
+            body,
+            ..
+        } => {
+            collect_bound_in_pattern(pattern, out);
+            collect_bound_names_in_expr(iterable, out);
+            collect_bound_names_in_block(body, out);
+        }
+        Stmt::While {
+            condition, body, ..
+        } => {
+            collect_bound_names_in_expr(condition, out);
+            collect_bound_names_in_block(body, out);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+            collect_bound_names_in_expr(expr, out)
+        }
+        Stmt::Select {
+            branches, timeout, ..
+        } => {
+            for br in branches {
+                collect_bound_names_in_block(&br.body, out);
+            }
+            if let Some(t) = timeout {
+                collect_bound_names_in_block(&t.body, out);
+            }
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_name,
+            catch_block,
+            ..
+        } => {
+            out.insert(catch_name.clone());
+            collect_bound_names_in_block(try_block, out);
+            collect_bound_names_in_block(catch_block, out);
+        }
+        Stmt::DenyBlock { body, .. } => collect_bound_names_in_block(body, out),
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn collect_bound_names_in_expr(e: &Expr, out: &mut HashSet<String>) {
+    match e {
+        Expr::Lambda { params, body, .. } => {
+            for p in params {
+                out.insert(p.name.clone());
+            }
+            collect_bound_names_in_expr(body, out);
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            collect_bound_names_in_expr(subject, out);
+            for arm in arms {
+                collect_bound_in_pattern(&arm.pattern, out);
+                if let Some(g) = &arm.guard {
+                    collect_bound_names_in_expr(g, out);
+                }
+                collect_bound_names_in_expr(&arm.body, out);
+            }
+        }
+        Expr::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_bound_names_in_expr(condition, out);
+            collect_bound_names_in_block(then_branch, out);
+            if let Some(eb) = else_branch {
+                collect_bound_names_in_block(eb, out);
+            }
+        }
+        Expr::Block { block, .. }
+        | Expr::ComptimeBlock { body: block, .. }
+        | Expr::QuantumBlock { body: block, .. } => collect_bound_names_in_block(block, out),
+        Expr::FnCall { callee, args, .. } => {
+            collect_bound_names_in_expr(callee, out);
+            for a in args {
+                collect_bound_names_in_expr(a, out);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            collect_bound_names_in_expr(object, out);
+            for a in args {
+                collect_bound_names_in_expr(a, out);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_bound_names_in_expr(left, out);
+            collect_bound_names_in_expr(right, out);
+        }
+        Expr::UnaryOp { operand, .. } => collect_bound_names_in_expr(operand, out),
+        Expr::InterpolatedString { parts, .. } => {
+            for p in parts {
+                if let StringPart::Expr(pe) = p {
+                    collect_bound_names_in_expr(pe, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Rename with the shadow-aware map: names the function binds locally
+/// (params or any let/for/catch/lambda/match binding) are dropped from the
+/// map for that body.
+fn rename_in_fn_body(
+    params: &[Param],
+    body: &mut Block,
+    map: &HashMap<String, String>,
+) {
+    let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    collect_bound_names_in_block(body, &mut bound);
+    if bound.iter().any(|b| map.contains_key(b)) {
+        let filtered: HashMap<String, String> = map
+            .iter()
+            .filter(|(k, _)| !bound.contains(*k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        if !filtered.is_empty() {
+            rename_idents_in_block(body, &filtered);
+        }
+    } else {
+        rename_idents_in_block(body, map);
+    }
+}
+
 fn rename_idents_in_decl(d: &mut Decl, map: &HashMap<String, String>) {
     match d {
-        Decl::Function { name, body, .. } => {
+        Decl::Function {
+            name, params, body, ..
+        } => {
             if let Some(new) = map.get(name) {
                 *name = new.clone();
             }
             if let Some(b) = body {
-                rename_idents_in_block(b, map);
+                rename_in_fn_body(params, b, map);
             }
         }
         Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
             for m in methods {
                 // Method NAMES are never in the map (only top-level module
                 // functions are mangled); this renames helper calls in bodies.
-                if let Decl::Function { body: Some(b), .. } = m {
-                    rename_idents_in_block(b, map);
+                if let Decl::Function {
+                    params,
+                    body: Some(b),
+                    ..
+                } = m
+                {
+                    rename_in_fn_body(params, b, map);
                 }
             }
         }
