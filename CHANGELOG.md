@@ -74,6 +74,34 @@ self-host bootstrap 16/16 throughout.
   via `infer_type_name`), so a 30-deep `b.inc().inc()…` chain took >90s. A
   100-deep chain now compiles in ~0.5s.
 
+### Fixed — stdlib, WASM backend, docs (cert Pass 42)
+- **`http.parse_url` no longer crashes the process** on userinfo URLs
+  (`user:pass@host` — DB conn strings, git remotes) or non-numeric ports; both
+  previously hit an uncatchable `parse_int` panic.
+- **`std::re` anchors are correct in multi-match functions**: `count("^a","aaa")`
+  returned 3 (each internal restart re-anchored `^`); now 1. New offset-aware
+  native search keeps anchors relative to the true text start.
+- **`std::re` capture groups now exist**: new `captures()` (whole match +
+  groups), `Regex.captures/captures_at/find_at`, and `$N`/`$$` expansion in
+  `replace`/`replace_all` (previously 100% literal). `compile()` now throws a
+  catchable "invalid regex pattern" instead of a misleading deferred failure.
+- **`std::db::col_is_null`** distinguishes SQL NULL from `''`/`0`. Also fixed:
+  the prepared-statement natives were missing from the AOT extern declares, so
+  ANY AOT build importing `std::db` failed at link time.
+- **WASM: `while let` no longer traps at runtime** — unexpressible loop shapes
+  now fall back to the dispatch relooper instead of emitting a silent
+  `unreachable` (the wasm contract guarantees compile-time-only rejection).
+- **WASM: bools print as `true`/`false`** (were raw `1`/`0`) in `to_string`,
+  `println`, and interpolation.
+- **WASM: only functions reachable from `main` are emitted** — an unsupported
+  construct in an uncalled stdlib function can no longer fail the build — plus
+  int-keyed map support and the enum ownership-clone mapping; the 48-program
+  JIT-vs-wasm corpus gate is back to 48/48.
+- **Docs match reality**: `docs/stdlib/datetime.md` was rewritten (it documented
+  a fictional static-method API and strftime tokens that never existed);
+  `docs/stdlib/regex.md` field names/sentinels corrected and the new capture
+  API documented. All doc examples are now execution-verified.
+
 ### Fixed — type-checker, diagnostics, string perf (cert Pass 41)
 - **Tuple-destructuring arity is now type-checked.** `let (a,b,c) = t` over-binding
   a 2-tuple passed `check` then panicked at runtime leaking the internal
