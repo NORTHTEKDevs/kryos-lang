@@ -1147,6 +1147,22 @@ impl TypeChecker {
                 span,
                 ..
             } => {
+                // A top-level const whose initializer references ITSELF
+                // (`let X: i64 = X + 1`) is a circular definition -- the const
+                // evaluator resolves dependencies topologically but had no
+                // cycle guard, so it recursed until a runtime STACK OVERFLOW
+                // (exit 253) instead of a compile error. Reject the direct
+                // self-reference here. (Forward refs to OTHER consts stay
+                // legal -- they resolve by dependency order.)
+                if expr_references_name(value, name) {
+                    self.error_with_code(
+                        format!(
+                            "const `{name}` refers to itself in its own initializer -- a circular definition (its value cannot depend on itself)"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0102,
+                    );
+                }
                 let resolved_ty = if let Some(t) = ty {
                     let decl_ty = self.resolve_type_expr(t);
                     // Check the value against the annotation (mirrors the
@@ -7219,6 +7235,40 @@ pub fn type_check_with_lambda_params(
 /// pattern, or a compound pattern (tuple/struct/enum/or) containing one. Used to
 /// enforce that or-pattern alternatives are non-binding (CLAUDE.md gotcha #14):
 /// binding alternatives silently produced type confusion or uninitialized reads.
+/// Returns true if `expr` contains a bare reference to the identifier `name`.
+/// Used to detect a self-referential top-level const (`let X = X + 1`), which
+/// otherwise stack-overflows at const-eval time. Walks the common expression
+/// shapes; a name reached only through an intervening binding that shadows it
+/// is a rare false positive that at worst rejects a legal shadow -- acceptable
+/// for a const initializer, which is a simple expression in practice.
+fn expr_references_name(expr: &Expr, name: &str) -> bool {
+    use kryos_ast::Expr as E;
+    match expr {
+        E::Identifier { name: n, .. } => n == name,
+        E::BinaryOp { left, right, .. } => {
+            expr_references_name(left, name) || expr_references_name(right, name)
+        }
+        E::UnaryOp { operand, .. } => expr_references_name(operand, name),
+        E::Cast { expr, .. } => expr_references_name(expr, name),
+        E::FieldAccess { object, .. } => expr_references_name(object, name),
+        E::IndexAccess { object, index, .. } => {
+            expr_references_name(object, name) || expr_references_name(index, name)
+        }
+        E::FnCall { args, .. } => args.iter().any(|a| expr_references_name(a, name)),
+        E::MethodCall { object, args, .. } => {
+            expr_references_name(object, name)
+                || args.iter().any(|a| expr_references_name(a, name))
+        }
+        E::ArrayLiteral { elements, .. } => {
+            elements.iter().any(|e| expr_references_name(e, name))
+        }
+        E::TupleLiteral { elements, .. } => {
+            elements.iter().any(|e| expr_references_name(e, name))
+        }
+        _ => false,
+    }
+}
+
 fn pattern_is_binding(p: &kryos_ast::Pattern) -> bool {
     use kryos_ast::Pattern;
     match p {

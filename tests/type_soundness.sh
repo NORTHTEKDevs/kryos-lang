@@ -773,6 +773,18 @@ fn main() {
 }
 '
 
+# Self-referential top-level const stack-overflowed at const-eval instead of
+# a compile error; forward refs to OTHER consts stay legal.
+want_reject self_referential_const '
+let X: i64 = X + 1
+fn main() { println(to_string(X)) }
+'
+want_pass forward_ref_const_chain '
+let A: i64 = B + 1
+let B: i64 = 10
+fn main() { if A != 11 { exit(1) }  println("ok") }
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
