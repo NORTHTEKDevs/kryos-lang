@@ -609,6 +609,88 @@ fn main() {
 }
 '
 
+# --- Section-1 hardening (adversarial finders): memory-safety soundness holes
+# in the type checker that passed `check` and then segfaulted / read garbage.
+
+# Cast set is closed (docs 3.1). Casting to/from str or an aggregate
+# bit-reinterpreted the handle: `x as str` SEGFAULTED, `struct as i64` leaked
+# a heap pointer into output.
+want_reject cast_bool_as_str '
+fn main() { let b = true  let s = b as str  println(s) }
+'
+want_reject cast_i64_as_str '
+fn main() { let n = 5  let s = n as str  println(s) }
+'
+want_reject cast_struct_as_i64 '
+struct P { x: i64, y: i64 }
+fn main() { let p = P { x: 1, y: 2 }  let n = p as i64  println(to_string(n)) }
+'
+want_reject cast_str_as_i64 '
+fn main() { let s = "hi"  let n = s as i64  println(to_string(n)) }
+'
+want_pass legal_scalar_casts '
+fn main() {
+    let n: i64 = 65
+    let f: f64 = (n as f64)
+    let back: i64 = (f as i64)
+    let bi: i64 = (true as i64)
+    if back != 65 { exit(1) }
+    if bi != 1 { exit(1) }
+    println("ok")
+}
+'
+
+# Enum-variant PATTERN arity: over-binding read uninitialized memory.
+want_reject enum_pattern_over_arity '
+enum Shape { Circle(i64) }
+fn main() {
+    let s = Shape.Circle(5)
+    match s { Circle(x, y) => println(to_string(x) + to_string(y)), }
+}
+'
+# Enum-variant CONSTRUCTION arity: extra args dropped / too few left garbage.
+want_reject enum_construct_over_arity '
+enum Shape { Circle(i64) }
+fn main() {
+    let s = Shape.Circle(1, 2)
+    match s { Circle(r) => println(to_string(r)), }
+}
+'
+want_reject enum_construct_under_arity '
+enum Pair { Two(i64, i64) }
+fn main() {
+    let p = Pair.Two(1)
+    match p { Two(a, b) => println(to_string(a) + "," + to_string(b)), }
+}
+'
+want_pass enum_correct_arity '
+enum Shape { Circle(i64), Rect(i64, i64), Empty }
+fn main() {
+    let s = Shape.Rect(3, 4)
+    match s {
+        Circle(r) => println(to_string(r)),
+        Rect(w, h) => { if w * h != 12 { exit(1) }  println("ok") },
+        Empty => println("empty"),
+    }
+}
+'
+
+# Struct-literal missing fields: silently zeroed; a nested-struct field
+# SEGFAULTED on first access.
+want_reject struct_missing_scalar_field '
+struct Point { x: i64, y: i64 }
+fn main() { let p = Point { x: 1 }  println(to_string(p.y)) }
+'
+want_reject struct_missing_nested_field '
+struct Inner { v: i64 }
+struct Outer { inner: Inner, tag: i64 }
+fn main() { let o = Outer { tag: 1 }  println(to_string(o.inner.v)) }
+'
+want_pass struct_all_fields_set '
+struct Point { x: i64, y: i64 }
+fn main() { let p = Point { x: 1, y: 2 }  if p.x + p.y != 3 { exit(1) }  println("ok") }
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

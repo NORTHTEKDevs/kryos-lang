@@ -151,6 +151,29 @@ impl TypeChecker {
     }
 
     /// Reject duplicate generic parameter names (`fn f<T, T>(..)`).
+    /// Reject an enum-variant construction whose argument count differs from
+    /// the variant's declared field count. Silently zipping min(args, fields)
+    /// dropped extra args and left too-few constructions with garbage payload.
+    fn check_variant_construct_arity(
+        &mut self,
+        variant: &str,
+        declared: usize,
+        provided: usize,
+        span: Span,
+    ) {
+        if declared != provided {
+            self.error_with_code(
+                format!(
+                    "enum variant `{variant}` takes {declared} argument{} but {provided} {} provided",
+                    if declared == 1 { "" } else { "s" },
+                    if provided == 1 { "was" } else { "were" }
+                ),
+                span,
+                kryos_errors::codes::E0110,
+            );
+        }
+    }
+
     fn check_duplicate_generics(
         &mut self,
         generics: &[kryos_ast::GenericParam],
@@ -1721,6 +1744,16 @@ impl TypeChecker {
                 // reassigned. This is an ERROR (E0302), matching CLAUDE.md and
                 // `kryos explain E0302` — it was previously only a warning, so
                 // immutability was silently unenforced (backlog #113).
+                //
+                // NOTE: this checks only a BARE-identifier reassignment
+                // (`x = v`). Field/index mutation through an immutable binding
+                // (`let p = Point{..}; p.x = 9`, or a struct-typed PARAMETER's
+                // `self.field = v`) is DELIBERATELY allowed -- it is the
+                // established, conformance-tested Kryos contract (gotcha #23,
+                // conf_ownership `mutate_pair`), and every impl method mutating
+                // `self.field` relies on it. (docs/19 §7.4 claims the opposite;
+                // that line is aspirational and contradicted by the language's
+                // own tests -- do NOT extend E0302 to compound targets.)
                 if let Expr::Identifier { name, .. } = target {
                     if !self.env.is_mutable(name) {
                         self.diagnostics.push(
@@ -2222,6 +2255,49 @@ impl TypeChecker {
                     }
                 };
 
+                // Arity: an enum-variant pattern must bind exactly as many
+                // sub-patterns as the variant has payload fields. Over-binding
+                // (`Circle(x, y)` on `Circle(i64)`) previously read
+                // uninitialized memory for the phantom fields (nondeterministic
+                // garbage), and under-binding silently dropped fields. Only
+                // enforced when the variant's arity is authoritatively known
+                // (concrete Option/Result/Enum subject + resolved variant); a
+                // still-unresolved subject is left to later unification.
+                let expected_arity: Option<usize> = match (&resolved_subject, variant.as_str()) {
+                    (Type::Option { .. }, "Some") => Some(1),
+                    (Type::Option { .. }, "None") => Some(0),
+                    (Type::Result { .. }, "Ok") | (Type::Result { .. }, "Err") => Some(1),
+                    _ => {
+                        let rname = if name.is_empty() {
+                            match &resolved_subject {
+                                Type::Enum { name: n, .. } => n.clone(),
+                                _ => String::new(),
+                            }
+                        } else {
+                            name.clone()
+                        };
+                        self.env.lookup_enum(&rname).and_then(|d| {
+                            d.variants
+                                .iter()
+                                .find(|(v, _)| v == variant)
+                                .map(|(_, tys)| tys.len())
+                        })
+                    }
+                };
+                if let Some(n) = expected_arity {
+                    if n != fields.len() {
+                        self.error_with_code(
+                            format!(
+                                "enum variant `{variant}` binds {} field{} but the variant has {}",
+                                fields.len(),
+                                if fields.len() == 1 { "" } else { "s" },
+                                n
+                            ),
+                            *enum_pat_span,
+                            kryos_errors::codes::E0100,
+                        );
+                    }
+                }
                 for (i, pat) in fields.iter().enumerate() {
                     let field_ty = field_types
                         .get(i)
@@ -3078,6 +3154,12 @@ impl TypeChecker {
                             if let Some((_, field_types)) =
                                 edef.variants.iter().find(|(v, _)| v == cname)
                             {
+                                self.check_variant_construct_arity(
+                                    cname,
+                                    field_types.len(),
+                                    args.len(),
+                                    *span,
+                                );
                                 let mut var_map = std::collections::HashMap::new();
                                 let mut fresh_generics =
                                     Vec::with_capacity(edef.generic_var_ids.len());
@@ -3457,6 +3539,12 @@ impl TypeChecker {
                         if let Some((_, field_types)) =
                             edef.variants.iter().find(|(vname, _)| vname == method)
                         {
+                            self.check_variant_construct_arity(
+                                method,
+                                field_types.len(),
+                                args.len(),
+                                *span,
+                            );
                             // Per-use monomorphization: fresh vars for each generic param.
                             let mut var_map = std::collections::HashMap::new();
                             let mut fresh_generics = Vec::with_capacity(edef.generic_var_ids.len());
@@ -3684,6 +3772,12 @@ impl TypeChecker {
                     if let Some((_, field_types)) =
                         edef.variants.iter().find(|(vname, _)| vname == method)
                     {
+                        self.check_variant_construct_arity(
+                            method,
+                            field_types.len(),
+                            args.len(),
+                            *span,
+                        );
                         let mut var_map = std::collections::HashMap::new();
                         let mut fresh_generics = Vec::with_capacity(edef.generic_var_ids.len());
                         for &old_id in &edef.generic_var_ids {
@@ -3926,6 +4020,34 @@ impl TypeChecker {
                         } else {
                             self.error(format!("no field `{fname}` on struct `{name}`"), *span);
                         }
+                    }
+                    // Missing fields: every declared field must be set. Kryos
+                    // has no default-value / partial-initialization feature, so
+                    // an omitted field was left as zeroed/null memory -- a
+                    // missing nested-struct field SEGFAULTED on first access,
+                    // and a missing str/array field yielded a null handle.
+                    // Reject the omission at check time (mirrors the existing
+                    // extra-/unknown-field rejection above).
+                    let missing: Vec<&str> = def
+                        .fields
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .filter(|dn| !fields.iter().any(|(fn_, _)| fn_ == dn))
+                        .collect();
+                    if !missing.is_empty() {
+                        let list = missing
+                            .iter()
+                            .map(|f| format!("`{f}`"))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.error_with_code(
+                            format!(
+                                "missing field{} {list} in `{name}` literal -- every field must be initialized (Kryos has no default field values)",
+                                if missing.len() == 1 { "" } else { "s" }
+                            ),
+                            *span,
+                            kryos_errors::codes::E0100,
+                        );
                     }
                     Type::Struct {
                         name: name.clone(),
@@ -4315,10 +4437,69 @@ impl TypeChecker {
             }
 
             // Cast expression.
-            Expr::Cast { expr, ty, .. } => {
+            Expr::Cast { expr, ty, span } => {
                 // Check the source expression, then return the target type.
-                self.infer_expr(expr);
-                self.resolve_type_expr(ty)
+                let src = self.infer_expr(expr);
+                let dst = self.resolve_type_expr(ty);
+                // Enforce the closed cast set (docs/19-language-reference.md
+                // §3.1): integer<->integer, integer<->float, bool->integer,
+                // char<->integer, and reference->raw-pointer. Casting to/from
+                // an aggregate or `str` was accepted and bit-reinterpreted the
+                // handle -- `x as str` fed a raw i64 to string code and
+                // SEGFAULTED, `struct as i64` leaked a heap pointer into
+                // program output. Anything outside the scalar cast set (and
+                // not a pointer/reference cast, which is unsafe territory left
+                // permissive) is a hard type error. Var/Error operands are
+                // left alone (inference incomplete / already reported).
+                fn is_scalar_castable(t: &Type) -> bool {
+                    matches!(
+                        t,
+                        Type::I8
+                            | Type::I16
+                            | Type::I32
+                            | Type::I64
+                            | Type::I128
+                            | Type::U8
+                            | Type::U16
+                            | Type::U32
+                            | Type::U64
+                            | Type::U128
+                            | Type::F32
+                            | Type::F64
+                            | Type::Bool
+                            | Type::Char
+                            | Type::USize
+                            | Type::ISize
+                    )
+                }
+                fn is_ptr_like(t: &Type) -> bool {
+                    matches!(
+                        t,
+                        Type::Pointer { .. }
+                            | Type::Reference { .. }
+                            | Type::Shared { .. }
+                            | Type::Weak { .. }
+                    )
+                }
+                let rsrc = self.engine.resolve(&src);
+                let rdst = self.engine.resolve(&dst);
+                let inference_pending = matches!(rsrc, Type::Var(_) | Type::Error)
+                    || matches!(rdst, Type::Var(_) | Type::Error);
+                if !inference_pending {
+                    let ptr_cast = is_ptr_like(&rsrc) || is_ptr_like(&rdst);
+                    let scalar_cast =
+                        is_scalar_castable(&rsrc) && is_scalar_castable(&rdst);
+                    if !ptr_cast && !scalar_cast {
+                        self.error_with_code(
+                            format!(
+                                "cannot cast `{rsrc}` to `{rdst}` -- the cast set is integer<->integer, integer<->float, bool->integer, and char<->integer; aggregate and string types cannot be cast (use a conversion function like `to_string`)"
+                            ),
+                            *span,
+                            kryos_errors::codes::E0100,
+                        );
+                    }
+                }
+                dst
             }
 
             // Block expression — type is the type of the last expression.
