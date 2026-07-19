@@ -38,6 +38,14 @@ pub struct KryosString {
     pub ref_count: i64,
 }
 
+/// Atomic view of a header's `ref_count` (field stays `i64` for layout;
+/// see the identical rationale in array.rs -- plain increments/decrements
+/// raced across threads and corrupted counts into premature frees).
+#[inline(always)]
+unsafe fn rc_atomic(s: *mut KryosString) -> &'static std::sync::atomic::AtomicI64 {
+    std::sync::atomic::AtomicI64::from_ptr(std::ptr::addr_of_mut!((*s).ref_count))
+}
+
 impl KryosString {
     fn layout(cap: usize) -> Layout {
         // +1 for null terminator.
@@ -287,7 +295,7 @@ pub unsafe extern "C" fn kryos_string_clone(s: *const KryosString) -> *mut Kryos
         return kryos_string_new(ptr::null(), 0);
     }
     let mut_s = s as *mut KryosString;
-    (*mut_s).ref_count += 1;
+    rc_atomic(mut_s).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     mut_s
 }
 
@@ -299,7 +307,7 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
     if s.is_null() {
         return kryos_string_new(ptr::null(), 0);
     }
-    (*s).ref_count += 1;
+    rc_atomic(s).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     s
 }
 
@@ -315,7 +323,7 @@ pub unsafe extern "C" fn kryos_string_retain(s: *mut KryosString) -> *mut KryosS
 pub unsafe extern "C" fn kryos_string_retain_opt(s: *mut KryosString) -> i64 {
     if !s.is_null() {
         // Immortal literal headers (huge negative rc) increment harmlessly.
-        (*s).ref_count += 1;
+        rc_atomic(s).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     0
 }
@@ -334,7 +342,7 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     }
     if crate::free_diag() {
         // Diagnostic mode: never dealloc; report over-frees with content.
-        let rc = (*s).ref_count;
+        let rc = rc_atomic(s).load(std::sync::atomic::Ordering::Relaxed);
         if rc <= 0 {
             // Immortal literal headers carry a huge negative sentinel;
             // releasing them is a by-design no-op, not a bug. Only an exact
@@ -350,17 +358,29 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
             }
             return;
         }
-        (*s).ref_count = rc - 1;
+        rc_atomic(s).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         return;
     }
     crate::memstats::note_str_free_call();
-    let rc = (*s).ref_count;
-    if rc <= 0 {
-        return;
+    // Race-free guarded decrement (sentinel check + decrement as one atomic
+    // step) -- see kryos_array_free for the failure mode this prevents.
+    let a = rc_atomic(s);
+    let mut rc = a.load(std::sync::atomic::Ordering::Acquire);
+    loop {
+        if rc <= 0 {
+            return;
+        }
+        match a.compare_exchange_weak(
+            rc,
+            rc - 1,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(cur) => rc = cur,
+        }
     }
-    let new_rc = rc - 1;
-    (*s).ref_count = new_rc;
-    if new_rc > 0 {
+    if rc > 1 {
         return;
     }
     let cap = (*s).cap as usize;
@@ -377,7 +397,7 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
     (*s).len = 0;
     (*s).cap = 0;
     (*s).data = ptr::null_mut();
-    (*s).ref_count = 0;
+    a.store(0, std::sync::atomic::Ordering::Release);
     crate::memstats::note_str_free((cap + 1 + 32) as i64);
     STR_HDR_POOL.put(s as *mut u8);
 }

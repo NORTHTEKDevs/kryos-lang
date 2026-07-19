@@ -12,6 +12,19 @@
 
 use std::alloc::{realloc, Layout};
 use std::ptr;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Atomic view of a header's `ref_count`. The field stays declared `i64`
+/// (codegen constructs static/stack headers by writing plain fields at fixed
+/// offsets, before any sharing), but every RUNTIME retain/release/read goes
+/// through this view: the old plain `+= 1` / `= rc - 1` raced across threads
+/// -- 50 spawned threads releasing one shared captured array corrupted the
+/// count into premature frees ("corrupt array header ... ref_count=0,
+/// data=0x0" panics and segfaults on both backends).
+#[inline(always)]
+unsafe fn rc_atomic(arr: *mut KryosArray) -> &'static AtomicI64 {
+    AtomicI64::from_ptr(std::ptr::addr_of_mut!((*arr).ref_count))
+}
 
 /// Heap-allocated dynamic array with explicit length and capacity.
 #[repr(C)]
@@ -87,7 +100,7 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
     // ref_count > 0, elem_size in a sane range.
     let raw_len = (*arr).len;
     let raw_cap = (*arr).cap;
-    let raw_rc = (*arr).ref_count;
+    let raw_rc = rc_atomic(arr).load(Ordering::Relaxed);
     let raw_es = (*arr).elem_size;
     if raw_cap <= 0
         || raw_cap > (1 << 30)
@@ -410,7 +423,7 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
     if arr.is_null() {
         return kryos_array_new(8, 4);
     }
-    (*arr).ref_count += 1;
+    rc_atomic(arr).fetch_add(1, Ordering::Relaxed);
     arr
 }
 
@@ -419,7 +432,7 @@ pub unsafe extern "C" fn kryos_array_retain(arr: *mut KryosArray) -> *mut KryosA
 #[no_mangle]
 pub unsafe extern "C" fn kryos_array_retain_opt(arr: *mut KryosArray) -> i64 {
     if !arr.is_null() {
-        (*arr).ref_count += 1;
+        rc_atomic(arr).fetch_add(1, Ordering::Relaxed);
     }
     0
 }
@@ -476,25 +489,36 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     }
     if crate::free_diag() {
         // Diagnostic mode: never dealloc; report over-frees.
-        let rc = (*arr).ref_count;
+        let rc = rc_atomic(arr).load(Ordering::Relaxed);
         if rc <= 0 {
             crate::diag_report(&format!(
                 "array DOUBLE-FREE rc={rc} len={} cap={}", (*arr).len, (*arr).cap));
             return;
         }
-        (*arr).ref_count = rc - 1;
+        rc_atomic(arr).fetch_sub(1, Ordering::Relaxed);
         return;
     }
     crate::memstats::note_arr_free_call();
-    let rc = (*arr).ref_count;
-    if rc <= 0 {
-        return; // already freed (sentinel)
+    // Race-free guarded decrement: the sentinel check (rc <= 0 = already
+    // freed / static) and the decrement must be ONE atomic step -- the old
+    // `load; store(rc - 1)` let two threads releasing concurrently both read
+    // the same count, losing a decrement (leak) or both observing 1
+    // (double free).
+    let a = rc_atomic(arr);
+    let mut rc = a.load(Ordering::Acquire);
+    loop {
+        if rc <= 0 {
+            return; // already freed (sentinel)
+        }
+        match a.compare_exchange_weak(rc, rc - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(cur) => rc = cur,
+        }
     }
-    let new_rc = rc - 1;
-    (*arr).ref_count = new_rc;
-    if new_rc > 0 {
-        return;
+    if rc > 1 {
+        return; // other owners remain
     }
+    // rc was 1 -> we performed the 1 -> 0 transition and own the value.
     // Last reference — deallocate the data buffer AND the header.
     let cap = (*arr).cap as usize;
     if !(*arr).data.is_null() && cap > 0 {
@@ -503,11 +527,11 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
     // Recycle the header TYPE-STABLY (wiped to an inert sentinel) instead
     // of pushing it into the shared pool where it could be reused as a data
     // buffer and corrupted by a stale release. Stack-promoted arrays never
-    // reach this line (their rc sentinel keeps new_rc > 0 above).
+    // reach this line (their rc sentinel keeps the count > 0 above).
     (*arr).len = 0;
     (*arr).cap = 0;
     (*arr).data = ptr::null_mut();
-    (*arr).ref_count = 0;
+    a.store(0, Ordering::Release);
     crate::memstats::note_arr_free((cap * ELEM_SIZE + 40) as i64);
     ARR_HDR_POOL.put(arr as *mut u8);
 }
@@ -538,24 +562,30 @@ pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind:
         return;
     }
     if crate::free_diag() {
-        let rc = (*arr).ref_count;
+        let rc = rc_atomic(arr).load(Ordering::Relaxed);
         if rc <= 0 {
             crate::diag_report(&format!(
                 "array DOUBLE-FREE rc={rc} len={} cap={}", (*arr).len, (*arr).cap));
             return;
         }
-        (*arr).ref_count = rc - 1;
+        rc_atomic(arr).fetch_sub(1, Ordering::Relaxed);
         return;
     }
     crate::memstats::note_arr_free_call();
-    let rc = (*arr).ref_count;
-    if rc <= 0 {
-        return; // already freed (sentinel)
+    // Same race-free guarded decrement as kryos_array_free.
+    let a = rc_atomic(arr);
+    let mut rc = a.load(Ordering::Acquire);
+    loop {
+        if rc <= 0 {
+            return; // already freed (sentinel)
+        }
+        match a.compare_exchange_weak(rc, rc - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(cur) => rc = cur,
+        }
     }
-    let new_rc = rc - 1;
-    (*arr).ref_count = new_rc;
-    if new_rc > 0 {
-        return;
+    if rc > 1 {
+        return; // other owners remain
     }
     // Last reference: free each element's heap-typed content BEFORE the data
     // buffer itself is deallocated below. Only `len` slots are populated
@@ -580,7 +610,7 @@ pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind:
     (*arr).len = 0;
     (*arr).cap = 0;
     (*arr).data = ptr::null_mut();
-    (*arr).ref_count = 0;
+    a.store(0, Ordering::Release);
     crate::memstats::note_arr_free((cap * ELEM_SIZE + 40) as i64);
     ARR_HDR_POOL.put(arr as *mut u8);
 }

@@ -2052,6 +2052,56 @@ fn array_elem_dup_kind(elem: &MirType) -> i64 {
     }
 }
 
+/// True when the struct's whole field graph is shapes the deep-clone helpers
+/// (`__kryos_struct_index_clone` in both backends) handle COMPLETELY:
+/// scalars, str/array/map, and nested structs that are themselves cleanly
+/// clonable. Enum/tuple/fn/shared fields disqualify -- the helpers leave an
+/// enum field's heap payload SHARED, so a "clone" there creates two owners of
+/// one payload and the second drop double-releases it. Cyclic type graphs
+/// disqualify conservatively.
+fn struct_cleanly_clonable(ctx: &LoweringContext, name: &str) -> bool {
+    fn walk(
+        ctx: &LoweringContext,
+        name: &str,
+        visiting: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if !visiting.insert(name.to_string()) {
+            return false; // cycle: be conservative
+        }
+        let Some(fields) = ctx.struct_defs.get(name) else {
+            return false;
+        };
+        for (_fname, fty) in fields {
+            match fty {
+                MirType::I8
+                | MirType::I16
+                | MirType::I32
+                | MirType::I64
+                | MirType::U8
+                | MirType::U16
+                | MirType::U32
+                | MirType::U64
+                | MirType::F32
+                | MirType::F64
+                | MirType::Bool
+                | MirType::Char
+                | MirType::Str
+                | MirType::Array(_, _)
+                | MirType::Map { .. } => {}
+                MirType::Struct(inner) => {
+                    if !walk(ctx, inner, visiting) {
+                        return false;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+    let mut visiting = std::collections::HashSet::new();
+    walk(ctx, name, &mut visiting)
+}
+
 fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
     match ty {
         MirType::Str => Some("kryos_string_retain_opt"),
@@ -2741,6 +2791,14 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 /// small and conservative: an unlisted callee (including any user-defined
 /// function) keeps the existing consume-on-call-argument behavior.
 const BORROWING_CALL_ARGS: &[&str] = &[
+    // The deep-clone markers only READ their source aggregate (the clone's
+    // result is a fresh independent value owned by the destination); the
+    // source keeps its own scope-end drop. Without this, the struct/enum
+    // `let copy = src` rewrite re-marked src consumed via the generic
+    // call-arg-consume path -- reintroducing the exact move-suppression the
+    // rewrite exists to remove (src's fields would leak once per copy).
+    "__kryos_struct_index_clone",
+    "__kryos_enum_index_clone",
     "len",
     "to_string",
     "println",
@@ -3332,7 +3390,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 }
             }
 
-            if let Some((rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
+            if let Some((mut rvalue, mark_non_owning, closure_info, is_shared)) = rvalue_and_meta {
                 if mark_non_owning {
                     ctx.borrowed_locals.insert(local.0);
                 }
@@ -3360,6 +3418,20 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // bindings (strings are immutable-by-reassignment) keep the
                 // cheap share-retain.
                 let mut dup_array_kind: Option<i64> = None;
+                // For a STRUCT/ENUM `let copy = src`, the initializer is
+                // rewritten below to the deep-clone marker so the copy owns
+                // independent heap-field references (the documented
+                // semantics: docs/06-ownership.md "assignment deep-copies
+                // heap fields"). The old model instead marked SRC consumed
+                // (move) -- which broke in loops: `let hc = h` per iteration
+                // re-"moved" the same value, so each iteration's scope-end
+                // drop of `hc` released h's fields AGAIN -> count collapse,
+                // premature free, single-threaded segfault/corrupt-header
+                // (and the same collapse under `spawn`-per-iteration
+                // capture, the canonical WaitGroup idiom). Use-after-move
+                // was also never rejected, so the old model was UB on the
+                // very next read of `src`.
+                let mut aggregate_clone: Option<&'static str> = None;
                 if let RValue::Use(Operand::Local(src)) = &rvalue {
                     let src_ty = ctx
                         .locals
@@ -3378,8 +3450,37 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         } else if retain_for_ty(&src_ty).is_some() {
                             retain_shared_container = true;
                         } else {
-                            ctx.dropped_locals.insert(src.0);
+                            match &src_ty {
+                                // Only structs whose field graph the clone
+                                // helpers handle COMPLETELY (scalars +
+                                // str/array/map + nested such structs) take
+                                // the deep-clone path. Structs with ENUM /
+                                // tuple / fn-typed fields keep the old move
+                                // semantics: the clone helpers leave an enum
+                                // field's heap PAYLOAD shared, so cloning
+                                // there gave two owners one payload -- each
+                                // drop released it once (double-release; the
+                                // self-host stage-1 flake, its AST structs
+                                // all carry heap-payload enum fields).
+                                MirType::Struct(name)
+                                    if struct_cleanly_clonable(ctx, name) =>
+                                {
+                                    aggregate_clone =
+                                        Some("__kryos_struct_index_clone");
+                                }
+                                _ => {
+                                    ctx.dropped_locals.insert(src.0);
+                                }
+                            }
                         }
+                    }
+                }
+                if let Some(marker) = aggregate_clone {
+                    if let RValue::Use(op) = rvalue.clone() {
+                        rvalue = RValue::Call {
+                            func: marker.to_string(),
+                            args: vec![op],
+                        };
                     }
                 }
                 // If initializer is a call, mark non-copy args consumed.

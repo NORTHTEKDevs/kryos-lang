@@ -1,0 +1,24 @@
+// Regression (cert Pass 44): `let copy = struct_with_heap_fields` inside a
+// loop crashed SINGLE-THREADED (rc=127 heap corruption within ~200
+// iterations). The old lowering treated each struct let-copy as a MOVE
+// (suppressing the source's drop) -- but a loop "moves" the same value every
+// iteration, so each iteration's scope-end drop of the copy released the
+// source's fields again. Copies of cleanly-clonable structs now deep-clone
+// heap fields per the documented ownership model (docs/06-ownership.md).
+struct Holder {
+    cell: [i64]
+}
+
+fn main() {
+    let mut c: [i64] = []
+    c = push(c, 42)
+    let h = Holder { cell: c }
+    let mut i = 0
+    let mut sum = 0
+    while i < 500 {
+        let hc = h
+        sum = sum + hc.cell[0]
+        i = i + 1
+    }
+    println("sum={sum} len={len(h.cell)} v={h.cell[0]}")
+}

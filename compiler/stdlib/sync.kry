@@ -15,6 +15,7 @@ extern {
     fn kryos_mutex_unlock(mutex: ptr) -> i32
     fn kryos_mutex_drop(mutex: ptr) -> i32
     fn kryos_time_now_millis() -> i64
+    fn kryos_time_sleep_millis(millis: i64)
 }
 
 // --- Mutex ------------------------------------------------------------------
@@ -105,15 +106,18 @@ fn mutex_new() -> Mutex {
 // True atomics require hardware CAS instructions.  This implementation
 // provides the Atomic API using a Mutex for thread-safe access.
 
-// The value lives in a 1-element heap array (`cell`), NOT a plain i64 field.
-// Kryos structs are pass-by-value, so a mutator that reassigned `self`
-// (`self = AtomicInt { value: ... }`) only touched a throwaway local and the
-// caller's value never changed — every fetch_add/increment/CAS was a silent
-// no-op. An array field is a shared heap reference, so `self.cell[0] = x`
-// mutates through the pointer and the caller observes it. (True cross-thread
-// atomicity still needs hardware CAS; this is the single-owner API contract.)
+// The value lives in a RAW 8-byte heap block (`cell` holds its address), NOT
+// a plain i64 field and NOT a Kryos array. A plain field is pass-by-value
+// (mutations touch a throwaway copy). An array field (the previous design)
+// shared correctly under aliasing but is ARC-managed: struct assignment and
+// spawn captures deep-CLONE heap fields (the documented ownership model), so
+// every copy of the atomic got its own private counter -- a WaitGroup's
+// workers decremented clones while wait() watched the original (deadlock).
+// A raw pointer is a scalar: every copy/capture/deep-clone carries the SAME
+// address, so all owners genuinely share one cell under every semantics the
+// language has. (True cross-thread atomicity still comes from the Mutex.)
 struct AtomicInt {
-    cell: [i64],
+    cell: i64,
     mu: Mutex
 }
 
@@ -121,7 +125,7 @@ impl AtomicInt {
     // Load the current value atomically.
     fn load(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        let v = self.cell[0]
+        let v = ptr_read_i64(self.cell, 0)
         locked.unlock()
         return v
     }
@@ -129,7 +133,7 @@ impl AtomicInt {
     // Store a new value atomically.
     fn store(self: AtomicInt, new_value: i64) -> AtomicInt {
         let locked = self.mu.lock()
-        self.cell[0] = new_value
+        ptr_write_i64(self.cell, 0, new_value)
         locked.unlock()
         return self
     }
@@ -137,8 +141,8 @@ impl AtomicInt {
     // Add a value and return the previous value.
     fn fetch_add(self: AtomicInt, delta: i64) -> i64 {
         let locked = self.mu.lock()
-        let old = self.cell[0]
-        self.cell[0] = old + delta
+        let old = ptr_read_i64(self.cell, 0)
+        ptr_write_i64(self.cell, 0, old + delta)
         locked.unlock()
         return old
     }
@@ -146,8 +150,8 @@ impl AtomicInt {
     // Subtract a value and return the previous value.
     fn fetch_sub(self: AtomicInt, delta: i64) -> i64 {
         let locked = self.mu.lock()
-        let old = self.cell[0]
-        self.cell[0] = old - delta
+        let old = ptr_read_i64(self.cell, 0)
+        ptr_write_i64(self.cell, 0, old - delta)
         locked.unlock()
         return old
     }
@@ -155,8 +159,8 @@ impl AtomicInt {
     // Increment by 1 and return the new value.
     fn increment(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        self.cell[0] = self.cell[0] + 1
-        let v = self.cell[0]
+        let v = ptr_read_i64(self.cell, 0) + 1
+        ptr_write_i64(self.cell, 0, v)
         locked.unlock()
         return v
     }
@@ -164,8 +168,8 @@ impl AtomicInt {
     // Decrement by 1 and return the new value.
     fn decrement(self: AtomicInt) -> i64 {
         let locked = self.mu.lock()
-        self.cell[0] = self.cell[0] - 1
-        let v = self.cell[0]
+        let v = ptr_read_i64(self.cell, 0) - 1
+        ptr_write_i64(self.cell, 0, v)
         locked.unlock()
         return v
     }
@@ -173,8 +177,8 @@ impl AtomicInt {
     // Compare-and-swap: if current value == expected, set to new_value and return true.
     fn compare_and_swap(self: AtomicInt, expected: i64, new_value: i64) -> bool {
         let locked = self.mu.lock()
-        if self.cell[0] == expected {
-            self.cell[0] = new_value
+        if ptr_read_i64(self.cell, 0) == expected {
+            ptr_write_i64(self.cell, 0, new_value)
             locked.unlock()
             return true
         }
@@ -182,56 +186,58 @@ impl AtomicInt {
         return false
     }
 
-    // Drop the underlying mutex.
+    // Drop the cell and the underlying mutex.
     fn drop(self: AtomicInt) -> AtomicInt {
-        return AtomicInt { cell: self.cell, mu: self.mu.drop() }
+        free_bytes(self.cell, 8)
+        return AtomicInt { cell: 0, mu: self.mu.drop() }
     }
 }
 
 // Create a new AtomicInt with an initial value.
 fn atomic_int(initial: i64) -> AtomicInt {
-    let mut c: [i64] = []
-    c = push(c, initial)
+    let c = alloc(8)
+    ptr_write_i64(c, 0, initial)
     return AtomicInt { cell: c, mu: mutex_new() }
 }
 
 struct AtomicBool {
-    cell: [i64],
+    cell: i64,
     mu: Mutex
 }
 
 impl AtomicBool {
     fn load(self: AtomicBool) -> bool {
         let locked = self.mu.lock()
-        let v = self.cell[0]
+        let v = ptr_read_i64(self.cell, 0)
         locked.unlock()
         return v != 0
     }
 
     fn store(self: AtomicBool, new_value: bool) -> AtomicBool {
         let locked = self.mu.lock()
-        self.cell[0] = if new_value { 1 } else { 0 }
+        ptr_write_i64(self.cell, 0, if new_value { 1 } else { 0 })
         locked.unlock()
         return self
     }
 
     fn toggle(self: AtomicBool) -> bool {
         let locked = self.mu.lock()
-        let old = self.cell[0]
-        self.cell[0] = if old != 0 { 0 } else { 1 }
+        let old = ptr_read_i64(self.cell, 0)
+        ptr_write_i64(self.cell, 0, if old != 0 { 0 } else { 1 })
         locked.unlock()
         return old != 0
     }
 
     fn drop(self: AtomicBool) -> AtomicBool {
-        return AtomicBool { cell: self.cell, mu: self.mu.drop() }
+        free_bytes(self.cell, 8)
+        return AtomicBool { cell: 0, mu: self.mu.drop() }
     }
 }
 
 // Create a new AtomicBool with an initial value.
 fn atomic_bool(initial: bool) -> AtomicBool {
-    let mut c: [i64] = []
-    c = push(c, if initial { 1 } else { 0 })
+    let c = alloc(8)
+    ptr_write_i64(c, 0, if initial { 1 } else { 0 })
     return AtomicBool { cell: c, mu: mutex_new() }
 }
 
@@ -246,25 +252,35 @@ struct WaitGroup {
 impl WaitGroup {
     // Add `n` tasks to the wait group.
     fn add(self: WaitGroup, n: i64) -> WaitGroup {
-        let new_counter = self.counter.store(self.counter.load() + n)
-        return WaitGroup { counter: new_counter, target: self.target }
+        // Single mutex-guarded read-modify-write. The old
+        // `store(load() + n)` was TWO separate atomic ops, so a concurrent
+        // add/done interleaved between them lost an update.
+        self.counter.fetch_add(n)
+        return WaitGroup { counter: self.counter, target: self.target }
     }
 
     // Signal that one task is done.
     fn done(self: WaitGroup) -> WaitGroup {
-        let current = self.counter.load()
-        if current <= 0 {
+        // decrement() is one guarded read-modify-write. The old
+        // `load(); store(current - 1)` raced: N workers finishing together
+        // could all read the same value and store the same result, losing
+        // decrements -- the counter never reached 0 and every wait()er
+        // DEADLOCKED. (Workers that sleep the same duration wake together,
+        // so this hit deterministically in practice, not rarely.)
+        let new_value = self.counter.decrement()
+        if new_value < 0 {
             throw "sync error: WaitGroup.done() called more times than Add()"
         }
-        let new_counter = self.counter.store(current - 1)
-        return WaitGroup { counter: new_counter, target: self.target }
+        return WaitGroup { counter: self.counter, target: self.target }
     }
 
-    // Wait (busy-spin) until all tasks are done.
+    // Wait until all tasks are done (1ms sleep backoff between polls).
     fn wait(self: WaitGroup) -> bool {
         while self.counter.load() > 0 {
-            // Busy wait -- a proper implementation would use condition variables
-            // or a sleep-based backoff
+            // A raw busy-spin here monopolized a core AND hammered the
+            // counter's mutex, starving the very workers being waited on
+            // once the thread count exceeded the machine's cores.
+            kryos_time_sleep_millis(1)
         }
         return true
     }

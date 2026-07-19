@@ -3358,6 +3358,30 @@ fn translate_instruction<M: Module>(
                             builder.ins().call(f, &[val]);
                             val
                         }
+                        // A STRUCT capture passed its raw shared pointer: the
+                        // spawned thread aliased the spawning frame's struct
+                        // (and its heap fields), so a per-iteration capture
+                        // (`let wgc = wg` then `spawn { .. wgc .. }`, the
+                        // canonical WaitGroup idiom) was freed by the loop's
+                        // scope-end drop before the thread ran -- corrupt
+                        // array headers / segfaults at 10+ threads. Deep-copy
+                        // into a fresh block (heap fields cloned, nested
+                        // structs shared -- so an AtomicInt inside keeps its
+                        // shared cell) so the THREAD owns its capture.
+                        Some(MirType::Struct(sname))
+                            if translator.struct_defs.contains_key(sname.as_str()) =>
+                        {
+                            let sname = sname.clone();
+                            let mut visiting = HashSet::new();
+                            emit_struct_deep_copy(
+                                &sname,
+                                val,
+                                builder,
+                                translator,
+                                module,
+                                &mut visiting,
+                            )?
+                        }
                         _ => val,
                     };
                     builder

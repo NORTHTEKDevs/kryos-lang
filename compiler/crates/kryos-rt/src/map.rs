@@ -47,6 +47,13 @@ struct MapHeader {
     ref_count: i64,
 }
 
+/// Atomic view of a header's `ref_count` (field stays `i64` for layout; see
+/// array.rs for the cross-thread race this closes).
+#[inline(always)]
+unsafe fn rc_atomic(header: *mut MapHeader) -> &'static std::sync::atomic::AtomicI64 {
+    std::sync::atomic::AtomicI64::from_ptr(std::ptr::addr_of_mut!((*header).ref_count))
+}
+
 // `capacity` is ALWAYS a power of two (INITIAL_CAPACITY = 16, resize doubles),
 // so `x % capacity` is equivalent to `x & (capacity - 1)` and compiles to a
 // single AND instead of going through the division unit. Applied to hash_key
@@ -553,7 +560,7 @@ pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
     }
     unsafe {
         let header = map as *mut MapHeader;
-        (*header).ref_count += 1;
+        rc_atomic(header).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     map
 }
@@ -566,7 +573,7 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     }
     unsafe {
         let header = map as *mut MapHeader;
-        (*header).ref_count += 1;
+        rc_atomic(header).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     map
 }
@@ -577,7 +584,7 @@ pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
 pub extern "C" fn kryos_map_retain_opt(map: i64) -> i64 {
     if map != 0 {
         unsafe {
-            (*(map as *mut MapHeader)).ref_count += 1;
+            rc_atomic(map as *mut MapHeader).fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
     0
@@ -599,22 +606,33 @@ pub extern "C" fn kryos_map_free(map: i64) {
         let header = map as *mut MapHeader;
         if crate::free_diag() {
             // Diagnostic mode: never dealloc; report over-frees.
-            let rc = (*header).ref_count;
+            let rc = rc_atomic(header).load(std::sync::atomic::Ordering::Relaxed);
             if rc <= 0 {
                 crate::diag_report(&format!(
                     "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
                 return;
             }
-            (*header).ref_count = rc - 1;
+            rc_atomic(header).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let rc = (*header).ref_count;
-        if rc <= 0 {
-            return;
+        // Race-free guarded decrement -- see kryos_array_free.
+        let a = rc_atomic(header);
+        let mut rc = a.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if rc <= 0 {
+                return;
+            }
+            match a.compare_exchange_weak(
+                rc,
+                rc - 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(cur) => rc = cur,
+            }
         }
-        let new_rc = rc - 1;
-        (*header).ref_count = new_rc;
-        if new_rc > 0 {
+        if rc > 1 {
             return;
         }
         let capacity = (*header).capacity as usize;
@@ -625,7 +643,7 @@ pub extern "C" fn kryos_map_free(map: i64) {
         (*header).len = 0;
         (*header).capacity = 0;
         (*header).entries = std::ptr::null_mut();
-        (*header).ref_count = 0;
+        rc_atomic(header).store(0, std::sync::atomic::Ordering::Release);
         MAP_HDR_POOL.put(header as *mut u8);
     }
 }
@@ -682,22 +700,33 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64,
             // mode, so there is nothing to leak-check here beyond the
             // header's own rc, which is already covered by kryos_map_free's
             // reporting path when this same map is also dropped there).
-            let rc = (*header).ref_count;
+            let rc = rc_atomic(header).load(std::sync::atomic::Ordering::Relaxed);
             if rc <= 0 {
                 crate::diag_report(&format!(
                     "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
                 return;
             }
-            (*header).ref_count = rc - 1;
+            rc_atomic(header).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
-        let rc = (*header).ref_count;
-        if rc <= 0 {
-            return;
+        // Race-free guarded decrement -- see kryos_array_free.
+        let a = rc_atomic(header);
+        let mut rc = a.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if rc <= 0 {
+                return;
+            }
+            match a.compare_exchange_weak(
+                rc,
+                rc - 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(cur) => rc = cur,
+            }
         }
-        let new_rc = rc - 1;
-        (*header).ref_count = new_rc;
-        if new_rc > 0 {
+        if rc > 1 {
             return;
         }
         // Last reference: free each occupied entry's heap-typed key/value
@@ -718,7 +747,7 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64,
         (*header).len = 0;
         (*header).capacity = 0;
         (*header).entries = std::ptr::null_mut();
-        (*header).ref_count = 0;
+        rc_atomic(header).store(0, std::sync::atomic::Ordering::Release);
         MAP_HDR_POOL.put(header as *mut u8);
     }
 }

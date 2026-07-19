@@ -3514,6 +3514,18 @@ impl<'a> FnEmitter<'a> {
             self.emit_operand(&args[0])?;
             return Ok(());
         }
+        // Struct deep-clone marker: on the native backends `let copy = s`
+        // (struct) clones heap fields so both bindings own independent
+        // references (docs/06-ownership.md). The wasm host never frees, so
+        // identity carries no drop-balance hazard here -- it preserves the
+        // wasm backend's existing alias behavior for struct copies exactly.
+        // (Divergence note: an in-place mutation through the copy is visible
+        // to the source on wasm but not on native; the documented native
+        // semantics are authoritative.)
+        if func == "__kryos_struct_index_clone" && args.len() == 1 {
+            self.emit_operand(&args[0])?;
+            return Ok(());
+        }
         if (func == "kryos_map_new" || func == "map_new") && args.is_empty() {
             self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
             return Ok(());

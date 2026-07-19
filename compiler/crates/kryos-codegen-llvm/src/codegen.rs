@@ -3834,6 +3834,22 @@ impl LlvmCodegen {
                                 // Without this, `store i64 %Router` mismatched the
                                 // %Router aggregate value.
                                 let agg = self.sig_ty_to_llvm(t);
+                                // For STRUCT captures, the byte-box alone still
+                                // SHARED the heap-field pointers with the
+                                // spawning frame's local -- a per-iteration
+                                // capture was freed by the loop's scope-end
+                                // drop before the thread ran (corrupt array
+                                // headers / segfaults at 10+ threads; the
+                                // canonical WaitGroup idiom). Clone heap
+                                // fields into the box (nested structs stay
+                                // shared, so an AtomicInt inside keeps its
+                                // shared cell) so the THREAD owns them.
+                                let boxed_val = if let MirType::Struct(sname) = t {
+                                    let sname = sname.clone();
+                                    self.deep_copy_struct_index_clone(&val, &sname, &agg)
+                                } else {
+                                    val.clone()
+                                };
                                 let size_ptr = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
@@ -3846,7 +3862,7 @@ impl LlvmCodegen {
                                 self.emit_line(&format!(
                                     "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
                                 ));
-                                self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
+                                self.emit_line(&format!("  store {agg} {boxed_val}, ptr {buf}"));
                                 let t2 = self.next_temp();
                                 self.emit_line(&format!("  {t2} = ptrtoint ptr {buf} to i64"));
                                 t2

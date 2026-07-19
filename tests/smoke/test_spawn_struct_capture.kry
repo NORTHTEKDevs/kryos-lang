@@ -1,0 +1,31 @@
+// Regression (cert Pass 44): a spawned block capturing a per-iteration
+// STRUCT local (the canonical WaitGroup idiom) crashed with corrupt array
+// headers / segfaults -- the spawn env carried the struct's raw heap-field
+// pointers, which the loop's scope-end drop freed before the thread ran.
+// Spawn now deep-copies struct captures so the thread owns its fields
+// (nested structs stay shared, so sync primitives keep working).
+use std::sync
+use std::datetime
+
+struct Job {
+    payload: [i64]
+}
+
+fn main() {
+    let mut wg = wait_group()
+    wg = wg.add(8)
+    let mut i = 0
+    while i < 8 {
+        let mut p: [i64] = []
+        p = push(p, i * 3)
+        let job = Job { payload: p }
+        spawn {
+            let v = job.payload[0]
+            let x = v + 1
+            wg.done()
+        }
+        i = i + 1
+    }
+    wg.wait()
+    println("all done pending={wg.pending()}")
+}
