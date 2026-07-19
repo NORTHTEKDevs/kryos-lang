@@ -1215,6 +1215,7 @@ impl LlvmCodegen {
         self.emit_line("declare i32 @kryos_db_close(i64)");
         self.emit_line("declare i32 @kryos_db_col_count(i64)");
         self.emit_line("declare i64 @kryos_db_col_int(i64, i32)");
+        self.emit_line("declare i32 @kryos_db_col_is_null(i64, i32)");
         self.emit_line("declare i64 @kryos_db_col_text_len(i64, i32)");
         self.emit_line("declare i64 @kryos_db_exec(i64, ptr, i64)");
         self.emit_line("declare i32 @kryos_db_finalize(i64)");
@@ -1341,6 +1342,12 @@ impl LlvmCodegen {
         // start+len). Was missing from the LLVM declares, so AOT builds of any
         // regex program failed with "use of undefined value @kryos_regex_find".
         self.emit_line("declare i32 @kryos_regex_find(i64, i64, i64, i64, i64)");
+        // Offset-aware find/captures (anchor-correct multi-match iteration) and
+        // capture-group access used by std::re find_all/replace_all/captures.
+        self.emit_line("declare i32 @kryos_regex_find_at(i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_regex_capture_count(i64)");
+        self.emit_line("declare i32 @kryos_regex_capture(i64, i64, i64, i64, i64, i64)");
+        self.emit_line("declare i32 @kryos_regex_capture_at(i64, i64, i64, i64, i64, i64, i64)");
         self.emit_line("declare i32 @kryos_regex_is_match(ptr, ptr, i64)");
         self.emit_line("declare ptr @kryos_regex_new(ptr, i64)");
         self.emit_line("declare void @kryos_rt_init()");
@@ -1397,6 +1404,18 @@ impl LlvmCodegen {
         // hand. Only entries NOT already declared above; types match the
         // actual extern "C" fn declarations in kryos-stdlib-native / kryos-rt.
         self.emit_line("declare i64 @kryos_db_col_text_copy(i64, i32, i64, i64)");
+        // Prepared-statement family. These were never declared, so ANY AOT
+        // build of a program importing std::db failed at clang with
+        // "use of undefined value @kryos_db_bind_int" -- the whole module's
+        // functions are emitted, so the gap hit even programs that only used
+        // the plain query path (JIT was unaffected and hid it).
+        self.emit_line("declare i64 @kryos_db_stmt_prepare(i64, i64, i64)");
+        self.emit_line("declare i32 @kryos_db_bind_text(i64, i64, i64, i64)");
+        self.emit_line("declare i32 @kryos_db_bind_int(i64, i64, i64)");
+        self.emit_line("declare i32 @kryos_db_bind_null(i64, i64)");
+        self.emit_line("declare i64 @kryos_db_stmt_execute(i64)");
+        self.emit_line("declare i64 @kryos_db_stmt_query(i64)");
+        self.emit_line("declare i32 @kryos_db_stmt_finalize(i64)");
         self.emit_line("declare i64 @kryos_ws_decode_frame_ks(i64, i64, i64)");
         self.emit_line("declare ptr @kryos_realloc(ptr, i64, i64, i64)");
         self.emit_line("declare i64 @kryos_fs_read(ptr, i64, ptr, i64)");

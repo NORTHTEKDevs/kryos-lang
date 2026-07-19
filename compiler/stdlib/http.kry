@@ -27,6 +27,21 @@ struct Url {
 }
 
 /// Parse a URL string into its components.
+/// Parse a decimal port string. Returns -1 (instead of panicking) when the
+/// input is empty or contains any non-digit, so parse_url can fall back to
+/// the scheme default rather than crash the process via parse_int's
+/// uncatchable panic.
+fn _parse_port(s: str) -> i64 {
+    if len(s) == 0 { return 0 - 1 }
+    let mut j = 0
+    while j < len(s) {
+        let ch = _substring(s, j, j + 1)
+        if _find("0123456789", ch) < 0 { return 0 - 1 }
+        j = j + 1
+    }
+    return parse_int(s)
+}
+
 fn parse_url(raw: str) -> Url {
     let mut scheme = "http"
     let mut rest = raw
@@ -62,11 +77,29 @@ fn parse_url(raw: str) -> Url {
         rest = _substring(rest, 0, path_idx)
     }
 
+    // Strip userinfo (`user:pass@host`). RFC 3986 forbids `@` in the host, so
+    // everything up to the LAST `@` is userinfo. Without this, the host/port
+    // split below took the FIRST colon of `user:pass@example.com`, producing
+    // host="user" and feeding "pass@example.com" to parse_int, which PANICS
+    // (uncatchable) -> any userinfo URL (DB conn strings, git remotes)
+    // hard-crashed the process. The credentials themselves are discarded:
+    // Url has no userinfo field, and this parser's contract is host routing.
+    let mut i = len(rest) - 1
+    while i >= 0 {
+        if _substring(rest, i, i + 1) == "@" {
+            rest = _substring(rest, i + 1, len(rest))
+            i = 0
+        }
+        i = i - 1
+    }
+
     // Extract host and port. An IPv6 literal host is bracketed (`[::1]`) and
     // itself contains colons, so the port separator is the colon AFTER the
     // closing `]`, not the first colon. The old `_find(rest, ":")` split on the
     // colon inside `::1`, feeding garbage ("`:1]:8080`") to parse_int, which
     // PANICS (uncatchable) -> any IPv6-host URL hard-crashed the process.
+    // Ports only parse when all-digits for the same reason: `host:abc` must
+    // not take down the process, it keeps the scheme default instead.
     let mut host = rest
     let mut port = 80
     if scheme == "https" { port = 443 }
@@ -76,15 +109,18 @@ fn parse_url(raw: str) -> Url {
             host = _substring(rest, 1, close)
             let after = _substring(rest, close + 1, len(rest))
             if len(after) > 1 and _substring(after, 0, 1) == ":" {
-                port = parse_int(_substring(after, 1, len(after)))
+                let p = _parse_port(_substring(after, 1, len(after)))
+                if p >= 0 { port = p }
             }
         }
     } else {
         let colon_idx = _find(rest, ":")
         if colon_idx >= 0 {
-            host = _substring(rest, 0, colon_idx)
-            let port_str = _substring(rest, colon_idx + 1, len(rest))
-            port = parse_int(port_str)
+            let p = _parse_port(_substring(rest, colon_idx + 1, len(rest)))
+            if p >= 0 {
+                host = _substring(rest, 0, colon_idx)
+                port = p
+            }
         }
     }
 

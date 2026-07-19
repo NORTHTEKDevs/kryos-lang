@@ -256,6 +256,29 @@ pub unsafe extern "C" fn kryos_db_col_int(cursor: i64, col: i32) -> i64 {
     }
 }
 
+/// Return 1 if the column in the current row is SQL NULL, 0 if it is not,
+/// -1 on error (unknown cursor / no current row / column out of range).
+/// Without this, NULL is indistinguishable from '' / 0 through col_text /
+/// col_int, which both coerce NULL to their zero value.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_db_col_is_null(cursor: i64, col: i32) -> i32 {
+    let guard = cursor_map().lock().unwrap();
+    let c = match guard.get(&cursor) {
+        Some(c) => c,
+        None => return -1,
+    };
+    let row_idx = c.position.wrapping_sub(1);
+    let row = match c.rows.get(row_idx) {
+        Some(r) => r,
+        None => return -1,
+    };
+    match row.get(col as usize) {
+        Some(Value::Null) => 1,
+        Some(_) => 0,
+        None => -1,
+    }
+}
+
 /// Return the byte length of a text column in the current row, or -1 on error.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_db_col_text_len(cursor: i64, col: i32) -> i64 {

@@ -1,0 +1,26 @@
+// Regression (cert Pass 42): std::http::parse_url hard-crashed the whole
+// process (uncatchable parse_int panic) on any URL with userinfo
+// (user:pass@host) -- the host/port split took the FIRST colon of the
+// authority and fed "pass@example.com" to parse_int. Same crash class for a
+// non-numeric port (host:abc). Both must parse without panicking.
+use std::http
+
+fn main() {
+    let u1 = parse_url("http://user:pass@example.com/secret")
+    print("1 host={u1.host} port={u1.port} path={u1.path}")
+
+    let u2 = parse_url("https://alice@example.com:8443/a?q=1#f")
+    print("2 host={u2.host} port={u2.port} query={u2.query} frag={u2.fragment}")
+
+    let u3 = parse_url("http://example.com:abc/x")
+    print("3 host={u3.host} port={u3.port} path={u3.path}")
+
+    let u4 = parse_url("http://user:pass@[::1]:9000/v")
+    print("4 host={u4.host} port={u4.port} path={u4.path}")
+
+    let u5 = parse_url("https://example.com:8443/ok")
+    print("5 host={u5.host} port={u5.port}")
+
+    let u6 = parse_url("http://example.com/plain")
+    print("6 host={u6.host} port={u6.port}")
+}

@@ -33,6 +33,7 @@ extern {
     fn kryos_db_step(cursor: i64) -> i32
     fn kryos_db_col_count(cursor: i64) -> i32
     fn kryos_db_col_int(cursor: i64, col: i32) -> i64
+    fn kryos_db_col_is_null(cursor: i64, col: i32) -> i32
     fn kryos_db_col_text_len(cursor: i64, col: i32) -> i64
     fn kryos_db_col_text_copy(cursor: i64, col: i32, buf: i64, buf_len: i64) -> i64
     fn kryos_db_finalize(cursor: i64) -> i32
@@ -221,6 +222,14 @@ fn col_count(cursor: Cursor) -> i32 {
 @capabilities(db)
 fn col_int(cursor: Cursor, col: i32) -> i64 {
     return kryos_db_col_int(cursor.handle, col)
+}
+
+// True if the column in the current row is SQL NULL. col_text/col_int coerce
+// NULL to ""/0, which is indistinguishable from a real empty string or zero --
+// this is the only way to tell the two apart.
+@capabilities(db)
+fn col_is_null(cursor: Cursor, col: i32) -> bool {
+    return kryos_db_col_is_null(cursor.handle, col) == 1
 }
 
 // Read a text column from the current row.

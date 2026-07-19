@@ -14,6 +14,18 @@ extern {
     // Single-pass match: writes byte-offset start to *out_start and byte length
     // to *out_len. Returns 1 on match, 0 on no-match, -1 on error.
     fn kryos_regex_find(re: i64, text_ptr: i64, text_len: i64, out_start: i64, out_len: i64) -> i32
+    // Offset-aware find: first match at or after byte offset `from`, with `^`
+    // still anchored to the TRUE start of the text (offset 0). This is what
+    // find_all/replace_all/split iterate with -- re-slicing the haystack and
+    // re-running find made `^` re-match at the start of EVERY slice, so
+    // count("^a", "aaa") wrongly returned 3 instead of 1.
+    fn kryos_regex_find_at(re: i64, text_ptr: i64, text_len: i64, from: i64, out_start: i64, out_len: i64) -> i32
+    // Number of explicit capture groups in the pattern (excludes group 0).
+    fn kryos_regex_capture_count(re: i64) -> i64
+    // Captures of the first match at/after `from`. Writes the ABSOLUTE start
+    // and length of group `group_idx` (0 = whole match); a group that did not
+    // participate writes start=-1. Returns 1 match, 0 no-match, -1 error.
+    fn kryos_regex_capture_at(re: i64, text_ptr: i64, text_len: i64, from: i64, group_idx: i64, out_start: i64, out_len: i64) -> i32
     fn kryos_regex_drop(re: i64) -> i32
 }
 
@@ -87,6 +99,75 @@ impl Regex {
         }
     }
 
+    // Find the first match at or after byte offset `from`. Anchors keep their
+    // meaning relative to the true start of the text: `^` only matches at
+    // offset 0 (this is NOT the same as find(substr(text, from, ..))).
+    fn find_at(self: Regex, text: str, from: i64) -> Match {
+        if self.dropped {
+            throw "re error: find_at on dropped regex"
+        }
+        let buf = alloc(16)
+        let r = kryos_regex_find_at(self.handle, str_to_ptr(text), len(text), from, buf, buf + 8)
+        if r < 0 {
+            free_bytes(buf, 16)
+            throw "re error: find_at failed for pattern: " + self.pattern
+        }
+        if r == 0 {
+            free_bytes(buf, 16)
+            return Match { text: "", start: 0, end: 0, found: false }
+        }
+        let start: i64 = ptr_read_i64(buf, 0)
+        let length: i64 = ptr_read_i64(buf, 1)
+        free_bytes(buf, 16)
+        let mend: i64 = start + length
+        return Match {
+            text: substr(text, start, mend),
+            start: start,
+            end: mend,
+            found: true
+        }
+    }
+
+    // Capture groups of the first match at or after byte offset `from`.
+    // groups[0] is the whole match, groups[i] the i-th parenthesized group
+    // ("" for a group that did not participate). count = number of explicit
+    // groups (excluding the whole match). found=false when nothing matched.
+    fn captures_at(self: Regex, text: str, from: i64) -> Captures {
+        if self.dropped {
+            throw "re error: captures_at on dropped regex"
+        }
+        let ngroups = kryos_regex_capture_count(self.handle)
+        let buf = alloc(16)
+        let mut groups = []
+        let mut gi = 0
+        while gi <= ngroups {
+            let r = kryos_regex_capture_at(self.handle, str_to_ptr(text), len(text), from, gi, buf, buf + 8)
+            if r < 0 {
+                free_bytes(buf, 16)
+                throw "re error: captures failed for pattern: " + self.pattern
+            }
+            if r == 0 {
+                free_bytes(buf, 16)
+                return Captures { groups: [], count: 0, found: false }
+            }
+            let s: i64 = ptr_read_i64(buf, 0)
+            let l: i64 = ptr_read_i64(buf, 1)
+            if s < 0 {
+                groups = push(groups, "")
+            } else {
+                groups = push(groups, substr(text, s, s + l))
+            }
+            gi = gi + 1
+        }
+        free_bytes(buf, 16)
+        return Captures { groups: groups, count: ngroups as i32, found: true }
+    }
+
+    // Capture groups of the first match in the text.
+    fn captures(self: Regex, text: str) -> Captures {
+        return self.captures_at(text, 0)
+    }
+
     // Find all non-overlapping matches in the text.
     fn find_all(self: Regex, text: str) -> [Match] {
         if self.dropped {
@@ -97,20 +178,13 @@ impl Regex {
         let mut pos = 0
 
         while pos < text_len {
-            let remaining = substr(text, pos, text_len)
-            let m = self.find(remaining)
+            let m = self.find_at(text, pos)
             if not m.found {
                 pos = text_len  // No more matches
             } else {
-                let actual_match = Match {
-                    text: m.text,
-                    start: pos + m.start,
-                    end: pos + m.end,
-                    found: true
-                }
-                results = push(results, actual_match)
+                results = push(results, m)
                 // Advance past this match
-                pos = pos + m.end
+                pos = m.end
                 if m.end == m.start {
                     pos = pos + 1  // Prevent infinite loop on zero-width matches
                 }
@@ -121,9 +195,22 @@ impl Regex {
     }
 
     // Replace the first occurrence of the pattern with a replacement string.
+    // `$N` in the replacement substitutes capture group N ($0 = whole match),
+    // `$$` is a literal dollar; an out-of-range `$N` is left as-is.
     fn replace(self: Regex, text: str, replacement: str) -> str {
         if self.dropped {
             throw "re error: replace on dropped regex"
+        }
+        let ngroups = kryos_regex_capture_count(self.handle)
+        if ngroups > 0 {
+            let caps = self.captures_at(text, 0)
+            if not caps.found {
+                return text
+            }
+            let m = self.find_at(text, 0)
+            let before = substr(text, 0, m.start)
+            let after = substr(text, m.end, len(text))
+            return before + _expand_groups(replacement, caps.groups) + after
         }
         let m = self.find(text)
         if not m.found {
@@ -131,40 +218,49 @@ impl Regex {
         }
         let before = substr(text, 0, m.start)
         let after = substr(text, m.end, len(text))
-        return before + replacement + after
+        return before + _expand_groups(replacement, [m.text]) + after
     }
 
     // Replace all occurrences of the pattern with a replacement string.
+    // Group references work as in replace(): $N, $$, out-of-range left as-is.
     fn replace_all(self: Regex, text: str, replacement: str) -> str {
         if self.dropped {
             throw "re error: replace_all on dropped regex"
         }
+        let ngroups = kryos_regex_capture_count(self.handle)
         let mut result = ""
         let text_len = len(text)
         let mut pos = 0
+        let mut last = 0
 
         while pos < text_len {
-            let remaining = substr(text, pos, text_len)
-            let m = self.find(remaining)
+            let m = self.find_at(text, pos)
             if not m.found {
-                result = result + remaining
                 pos = text_len
             } else {
                 // Append text before the match
-                result = result + substr(remaining, 0, m.start)
-                // Append the replacement
-                result = result + replacement
+                result = result + substr(text, last, m.start)
+                // Append the (group-expanded) replacement
+                if ngroups > 0 {
+                    let caps = self.captures_at(text, pos)
+                    result = result + _expand_groups(replacement, caps.groups)
+                } else {
+                    result = result + _expand_groups(replacement, [m.text])
+                }
                 // Advance past the match
-                pos = pos + m.end
+                pos = m.end
+                last = m.end
                 if m.end == m.start {
                     // Zero-width match: include the current char and advance
                     if pos < text_len {
-                        result = result + text[pos]
+                        result = result + substr(text, pos, pos + 1)
                     }
                     pos = pos + 1
+                    last = pos
                 }
             }
         }
+        result = result + substr(text, last, text_len)
 
         return result
     }
@@ -177,20 +273,21 @@ impl Regex {
         let mut parts = []
         let text_len = len(text)
         let mut pos = 0
+        let mut last = 0
         let mut last_consumed_match = false
 
         while pos < text_len {
-            let remaining = substr(text, pos, text_len)
-            let m = self.find(remaining)
+            let m = self.find_at(text, pos)
             if not m.found {
-                parts = push(parts, remaining)
+                parts = push(parts, substr(text, last, text_len))
                 pos = text_len
+                last = text_len
                 last_consumed_match = false
             } else {
                 // Add the part before the match
-                let part = substr(remaining, 0, m.start)
-                parts = push(parts, part)
-                pos = pos + m.end
+                parts = push(parts, substr(text, last, m.start))
+                pos = m.end
+                last = m.end
                 if m.end == m.start {
                     pos = pos + 1
                 }
@@ -241,12 +338,60 @@ impl Regex {
     }
 }
 
+// --- Replacement-string group expansion --------------------------------------
+
+// Expand $N group references in a replacement string. groups[0] is the whole
+// match, groups[i] the i-th capture group. `$$` produces a literal `$`; a
+// `$N` whose group does not exist is left untouched (so accidental dollars
+// in a groupless replacement pass through unchanged).
+fn _expand_groups(replacement: str, groups: [str]) -> str {
+    let n = len(replacement)
+    let mut out = ""
+    let mut i = 0
+    while i < n {
+        let ch = substr(replacement, i, i + 1)
+        if ch == "$" and i + 1 < n {
+            let nxt = substr(replacement, i + 1, i + 2)
+            if nxt == "$" {
+                out = out + "$"
+                i = i + 2
+            } elif char_code(nxt) >= 48 and char_code(nxt) <= 57 {
+                let mut j = i + 1
+                let mut idx = 0
+                while j < n and char_code(substr(replacement, j, j + 1)) >= 48 and char_code(substr(replacement, j, j + 1)) <= 57 {
+                    idx = idx * 10 + (char_code(substr(replacement, j, j + 1)) - 48)
+                    j = j + 1
+                }
+                if idx < len(groups) {
+                    out = out + groups[idx]
+                } else {
+                    out = out + substr(replacement, i, j)
+                }
+                i = j
+            } else {
+                out = out + ch
+                i = i + 1
+            }
+        } else {
+            out = out + ch
+            i = i + 1
+        }
+    }
+    return out
+}
+
 // --- Public API: compile and match ------------------------------------------
 
 // Compile a regex pattern.  Throws on invalid pattern.
 fn compile(pattern: str) -> Regex {
     let handle = kryos_regex_new(str_to_ptr(pattern), len(pattern))
-    // kryos_regex_new aborts on invalid pattern; no explicit null check.
+    // kryos_regex_new returns NULL for an invalid pattern (it does NOT abort).
+    // Failing here honors the documented "throws on invalid pattern" contract;
+    // previously the null handle sailed through and every later use failed
+    // with a misleading "is_match failed" runtime error instead.
+    if handle == 0 {
+        throw "re error: invalid regex pattern: " + pattern
+    }
     return Regex { handle: handle, pattern: pattern, dropped: false }
 }
 
@@ -262,6 +407,15 @@ fn is_match(pattern: str, text: str) -> bool {
 fn find(pattern: str, text: str) -> Match {
     let re = compile(pattern)
     let result = re.find(text)
+    re.drop()
+    return result
+}
+
+// Capture groups of the first match (one-shot). groups[0] = whole match,
+// groups[i] = i-th parenthesized group, found=false when nothing matched.
+fn captures(pattern: str, text: str) -> Captures {
+    let re = compile(pattern)
+    let result = re.captures(text)
     re.drop()
     return result
 }

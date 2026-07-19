@@ -1,0 +1,35 @@
+// Regression (cert Pass 42):
+// 1. col_is_null -- SQL NULL was indistinguishable from ''/0 through
+//    col_text/col_int (both coerce NULL to their zero value).
+// 2. The prepared-statement family (stmt_prepare/bind_*/stmt_execute/
+//    stmt_finalize) was missing from the LLVM extern declares, so ANY AOT
+//    build importing std::db failed at clang with "use of undefined value
+//    @kryos_db_bind_int" even if the program never used prepared statements.
+use std::db
+
+@capabilities(db)
+fn main() {
+    let conn = open_memory()
+    execute(conn, "CREATE TABLE t (id INTEGER, name TEXT, val INTEGER)")
+    execute(conn, "INSERT INTO t VALUES (1, 'alice', 5)")
+    execute(conn, "INSERT INTO t VALUES (2, NULL, NULL)")
+    execute(conn, "INSERT INTO t VALUES (3, '', 0)")
+
+    let s = prepare(conn, "INSERT INTO t VALUES (?, ?, ?)")
+    bind_int(s, 1, 4)
+    bind_text(s, 2, "bob")
+    bind_null(s, 3)
+    stmt_execute(s)
+    stmt_finalize(s)
+
+    let cur = query(conn, "SELECT id, name, val FROM t ORDER BY id")
+    while step(cur) {
+        let id = col_int(cur, 0)
+        let name = col_text(cur, 1)
+        let name_null = col_is_null(cur, 1)
+        let val_null = col_is_null(cur, 2)
+        print("id={id} name=[{name}] name_null={name_null} val_null={val_null}")
+    }
+    finalize(cur)
+    close(conn)
+}

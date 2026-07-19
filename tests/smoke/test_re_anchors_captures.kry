@@ -1,0 +1,53 @@
+// Regression (cert Pass 42): std::re multi-match iteration + capture groups.
+//
+// 1. `^`/`$` anchors in find_all/count/replace_all/split must anchor to the
+//    TRUE text start/end, not to every internal restart position. The old
+//    iterators re-ran `find` on substr slices, so count("^a", "aaa") == 3.
+// 2. Capture-group access (captures / $N replacement expansion) -- the
+//    Captures struct existed but nothing ever constructed it.
+// 3. compile() must throw a catchable, descriptive error on an invalid
+//    pattern instead of deferring a misleading failure to first use.
+use std::re
+
+fn main() {
+    let c1 = count("^a", "aaa")
+    let c2 = count("a$", "aaa")
+    let c3 = count("a", "aaa")
+    print("anchors caret={c1} dollar={c2} plain={c3}")
+
+    let c = captures("(\\w+)=(\\d+)", "key=42 x=7")
+    print("caps found={c.found} count={c.count} whole={c.groups[0]} g1={c.groups[1]} g2={c.groups[2]}")
+
+    let nc = captures("(a)(b)?", "za")
+    let g2_empty = len(nc.groups[2]) == 0
+    print("optional_group participates=false empty={g2_empty}")
+
+    let r1 = replace_all("(\\d+)", "abc123def456", "[$1]")
+    let r2 = replace_all("x", "axa", "$$")
+    let r3 = replace_all("(a)", "za", "$1$9")
+    let r4 = replace("(b)(c)", "abcd", "$2$1")
+    print("repl grp={r1} dollar={r2} oor={r3} single={r4}")
+
+    let r5 = replace_all("^a", "aaa", "X")
+    let r6 = replace_all("x*", "ab", "-")
+    print("anchored_repl={r5} zero_width={r6}")
+
+    let parts = split(",", "a,b,,c,")
+    let pn = len(parts)
+    print("split n={pn} p0={parts[0]} p2={parts[2]} trailing_empty={len(parts[pn - 1]) == 0}")
+
+    let ms = find_all("\\d+", "a1b22c333")
+    print("find_all n={len(ms)} m1={ms[1].text}@{ms[1].start} m2={ms[2].text}@{ms[2].start}")
+
+    let uc = count("é", "aébéc")
+    print("unicode_count={uc}")
+
+    let mut compile_throws = "no"
+    try {
+        let bad = compile("(a")
+        compile_throws = "compiled"
+    } catch e {
+        compile_throws = "yes"
+    }
+    print("compile_throws={compile_throws}")
+}

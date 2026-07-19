@@ -80,6 +80,113 @@ pub extern "C" fn kryos_regex_find(
     }
 }
 
+/// Find the first match at or after byte offset `start`. Unlike re-slicing the
+/// haystack and re-running `find`, anchors keep their meaning relative to the
+/// TRUE start of `text` (`^` only matches at offset 0), which is what makes
+/// iterated multi-match loops anchor-correct. A `start` that lands inside a
+/// multi-byte codepoint (possible after a zero-width-match +1 skip) is rounded
+/// up to the next char boundary instead of erroring. Returns 1 on match, 0 if
+/// no match, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_regex_find_at(
+    re: *mut u8,
+    text_ptr: *const u8,
+    text_len: usize,
+    start: i64,
+    out_start: *mut i64,
+    out_len: *mut i64,
+) -> i32 {
+    if re.is_null() || text_ptr.is_null() || out_start.is_null() || out_len.is_null() || start < 0 {
+        return -1;
+    }
+    let re = unsafe { &*(re as *const Regex) };
+    let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
+    let text = match std::str::from_utf8(text) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut s = start as usize;
+    if s > text.len() {
+        return 0;
+    }
+    while s < text.len() && !text.is_char_boundary(s) {
+        s += 1;
+    }
+    match re.find_at(text, s) {
+        Some(m) => {
+            unsafe {
+                *out_start = m.start() as i64;
+                *out_len = (m.end() - m.start()) as i64;
+            }
+            1
+        }
+        None => 0,
+    }
+}
+
+/// Offset-aware variant of `kryos_regex_capture`: captures of the first match
+/// at or after byte offset `start`, anchor-correct like `kryos_regex_find_at`.
+/// Writes the ABSOLUTE start (into `text`) and length of capture group
+/// `group_idx` (0 = whole match). A group that did not participate writes
+/// start=-1, len=0. Returns 1 on match, 0 if no match, -1 on error.
+#[no_mangle]
+pub extern "C" fn kryos_regex_capture_at(
+    re: *mut u8,
+    text_ptr: *const u8,
+    text_len: usize,
+    start: i64,
+    group_idx: i64,
+    out_start: *mut i64,
+    out_len: *mut i64,
+) -> i32 {
+    if re.is_null()
+        || text_ptr.is_null()
+        || out_start.is_null()
+        || out_len.is_null()
+        || start < 0
+        || group_idx < 0
+    {
+        return -1;
+    }
+    let re = unsafe { &*(re as *const Regex) };
+    let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
+    let text = match std::str::from_utf8(text) {
+        Ok(s) => s,
+        Err(_) => return -1,
+    };
+    let mut s = start as usize;
+    if s > text.len() {
+        return 0;
+    }
+    while s < text.len() && !text.is_char_boundary(s) {
+        s += 1;
+    }
+    match re.captures_at(text, s) {
+        None => 0,
+        Some(caps) => {
+            if (group_idx as usize) >= caps.len() {
+                return -1;
+            }
+            match caps.get(group_idx as usize) {
+                Some(m) => {
+                    unsafe {
+                        *out_start = m.start() as i64;
+                        *out_len = (m.end() - m.start()) as i64;
+                    }
+                    1
+                }
+                None => {
+                    unsafe {
+                        *out_start = -1;
+                        *out_len = 0;
+                    }
+                    1
+                }
+            }
+        }
+    }
+}
+
 /// Replace all matches of `re` in `text` with `replacement`. Writes the
 /// replaced bytes into `out` (caller-provided buffer of capacity `out_cap`).
 /// Sets `*needed` to the required byte count. Returns the number of bytes
@@ -239,6 +346,38 @@ mod tests {
         assert!(written > 0);
         let out = std::str::from_utf8(&buf[..written as usize]).unwrap();
         assert_eq!(out, "aXbXcX");
+        kryos_regex_drop(re);
+    }
+
+    #[test]
+    fn find_at_respects_caret_anchor() {
+        let re = compile("^a");
+        let text = "aaa";
+        let (mut s, mut l) = (0i64, 0i64);
+        assert_eq!(
+            kryos_regex_find_at(re, text.as_ptr(), text.len(), 0, &mut s, &mut l),
+            1
+        );
+        assert_eq!((s, l), (0, 1));
+        // ^ must NOT re-match at offset 1 of the same haystack.
+        assert_eq!(
+            kryos_regex_find_at(re, text.as_ptr(), text.len(), 1, &mut s, &mut l),
+            0
+        );
+        kryos_regex_drop(re);
+    }
+
+    #[test]
+    fn capture_at_absolute_offsets() {
+        let re = compile(r"(\d+)");
+        let text = "a1b22c333";
+        let (mut s, mut l) = (0i64, 0i64);
+        // Second match starting search after the first.
+        assert_eq!(
+            kryos_regex_capture_at(re, text.as_ptr(), text.len(), 2, 1, &mut s, &mut l),
+            1
+        );
+        assert_eq!((s, l), (3, 2));
         kryos_regex_drop(re);
     }
 
