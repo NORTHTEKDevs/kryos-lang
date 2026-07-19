@@ -74,6 +74,23 @@ self-host bootstrap 16/16 throughout.
   via `infer_type_name`), so a 30-deep `b.inc().inc()…` chain took >90s. A
   100-deep chain now compiles in ~0.5s.
 
+### Fixed — thread-safe ARC, struct-copy ownership, WaitGroup (cert Pass 44)
+- **Refcounts are now atomic** (array/map/string headers): concurrent
+  cross-thread releases previously corrupted counts into premature frees —
+  50-thread stress segfaulted on 100% of runs; now passes repeatedly on both
+  backends with no measurable single-thread perf cost.
+- **`let copy = struct` is memory-safe and spec-conformant.** The old move
+  lowering re-"moved" the same value every loop iteration (single-threaded
+  heap corruption in ~200 iterations); cleanly-clonable structs now deep-copy
+  heap fields per the documented ownership model.
+- **Spawn blocks own their struct captures** (deep-copied into the spawn env
+  on both backends) — the canonical per-iteration WaitGroup capture idiom no
+  longer frees the capture before the thread runs.
+- **`WaitGroup` no longer deadlocks**: add/done are single atomic RMW ops
+  (workers finishing together lost decrements before), and `wait()` sleeps
+  1ms/poll instead of monopolizing a core. `AtomicInt`/`AtomicBool` rebuilt on
+  a raw shared cell so every copy/capture genuinely shares one counter.
+
 ### Fixed — `kryos test` works on real test files (cert Pass 43)
 - **Selective imports no longer falsely collide.** `use std::string::{split_lines}`
   plus `use std::re` failed with "duplicate function `split` imported from
