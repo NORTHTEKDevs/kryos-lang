@@ -725,6 +725,7 @@ pub fn resolve_imports(
             // resolve to functions in this module get added; missing names
             // (builtins, types, helpers from other modules) are ignored —
             // the type-checker will resolve / diagnose them later.
+            let selected_names: HashSet<String> = selected.clone();
             let mut needed: HashSet<String> = selected.clone();
             let mut worklist: Vec<String> = selected.into_iter().collect();
             // Impl blocks (and actors/consts) are ALWAYS included below, so
@@ -758,21 +759,55 @@ pub fn resolve_imports(
                 }
             }
 
-            for decl in imported_module.declarations {
-                match &decl {
+            // Mangle every included-but-NOT-selected function to a
+            // module-private name and rewrite references inside this
+            // module's declarations. Without this, a transitively-pulled
+            // helper kept its bare name and falsely collided with a
+            // same-named function from another imported module (`use
+            // std::string::{split_lines}` + `use std::re` failed on
+            // std::string's internal `split` vs std::re's exported one).
+            let module_tag = import_path
+                .segments
+                .last()
+                .cloned()
+                .unwrap_or_default();
+            let rename_map: HashMap<String, String> = fn_by_name
+                .keys()
+                .filter(|n| {
+                    needed.contains(*n) && !selected_names.contains(*n) && *n != "main"
+                })
+                .map(|n| (n.clone(), format!("__kry_pm_{module_tag}_{n}")))
+                .collect();
+
+            for mut decl in imported_module.declarations {
+                let fn_name: Option<String> = match &decl {
                     Decl::Import { .. } => continue,
-                    Decl::Function { name, .. } => {
-                        if name != "main" && needed.contains(name) {
-                            if let Some(last) = import_path.segments.last() {
-                                record_origin(name, last);
-                            }
-                            resolved_decls.push(decl);
-                        }
-                    }
+                    Decl::Function { name, .. } => Some(name.clone()),
                     // Always include types, constants, externs, impls,
                     // traits, actors, type aliases. Selecting `{a, b}`
                     // shouldn't hide the struct definitions they need.
-                    _ => resolved_decls.push(decl),
+                    _ => None,
+                };
+                if let Some(name) = fn_name {
+                    if name == "main" || !needed.contains(&name) {
+                        continue;
+                    }
+                    if !rename_map.is_empty() {
+                        rename_idents_in_decl(&mut decl, &rename_map);
+                    }
+                    // Origin tracking only for the names the user can SEE;
+                    // mangled helpers are module-internal.
+                    if selected_names.contains(&name) {
+                        if let Some(last) = import_path.segments.last() {
+                            record_origin(&name, last);
+                        }
+                    }
+                    resolved_decls.push(decl);
+                } else {
+                    if !rename_map.is_empty() {
+                        rename_idents_in_decl(&mut decl, &rename_map);
+                    }
+                    resolved_decls.push(decl);
                 }
             }
         }
@@ -1047,6 +1082,227 @@ fn collect_idents_in_expr(e: &Expr, out: &mut HashSet<String>) {
             }
         }
         // True leaves (int/float/string/bool literals, etc.) contribute no idents.
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Module-private renaming for selective imports.
+//
+// A selective import (`use m::{a}`) drags in every module-local helper `a`
+// transitively references. Those helpers kept their BARE names, so a helper
+// that happened to share a name with a function from another imported module
+// produced a false "duplicate function imported from multiple modules" error
+// -- `use std::string::{split_lines}` (whose body calls std::string's
+// internal `split`) plus `use std::re` (which exports `split`) could not
+// coexist, even though the user imported disjoint names exactly as the error
+// message advises. Mangling non-selected helpers to `__kry_pm_<module>_<name>`
+// and rewriting references inside THAT module's included declarations keeps
+// them callable while leaving the bare name free for whichever module the
+// user actually imported it from.
+//
+// The walkers mirror collect_idents_* exactly: only `Expr::Identifier` is
+// renamed (function call callees and function-as-value references); field
+// names, method names, type names, and struct-literal names are never touched.
+// ---------------------------------------------------------------------------
+
+fn rename_idents_in_decl(d: &mut Decl, map: &HashMap<String, String>) {
+    match d {
+        Decl::Function { name, body, .. } => {
+            if let Some(new) = map.get(name) {
+                *name = new.clone();
+            }
+            if let Some(b) = body {
+                rename_idents_in_block(b, map);
+            }
+        }
+        Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+            for m in methods {
+                // Method NAMES are never in the map (only top-level module
+                // functions are mangled); this renames helper calls in bodies.
+                if let Decl::Function { body: Some(b), .. } = m {
+                    rename_idents_in_block(b, map);
+                }
+            }
+        }
+        Decl::Const { value, .. } => rename_idents_in_expr(value, map),
+        _ => {}
+    }
+}
+
+fn rename_idents_in_block(b: &mut Block, map: &HashMap<String, String>) {
+    for stmt in &mut b.stmts {
+        rename_idents_in_stmt(stmt, map);
+    }
+}
+
+fn rename_idents_in_stmt(s: &mut Stmt, map: &HashMap<String, String>) {
+    match s {
+        Stmt::Let { value, .. } => {
+            if let Some(v) = value {
+                rename_idents_in_expr(v, map);
+            }
+        }
+        Stmt::Assign { target, value, .. } => {
+            rename_idents_in_expr(target, map);
+            rename_idents_in_expr(value, map);
+        }
+        Stmt::Return { value: Some(v), .. } => rename_idents_in_expr(v, map),
+        Stmt::Return { value: None, .. } => {}
+        Stmt::If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            rename_idents_in_expr(condition, map);
+            rename_idents_in_block(then_block, map);
+            for (c, b) in elif_clauses {
+                rename_idents_in_expr(c, map);
+                rename_idents_in_block(b, map);
+            }
+            if let Some(b) = else_block {
+                rename_idents_in_block(b, map);
+            }
+        }
+        Stmt::For { iterable, body, .. } => {
+            rename_idents_in_expr(iterable, map);
+            rename_idents_in_block(body, map);
+        }
+        Stmt::While { condition, body, .. } => {
+            rename_idents_in_expr(condition, map);
+            rename_idents_in_block(body, map);
+        }
+        Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+            rename_idents_in_expr(expr, map)
+        }
+        Stmt::Select {
+            branches, timeout, ..
+        } => {
+            for br in branches {
+                rename_idents_in_expr(&mut br.channel, map);
+                rename_idents_in_block(&mut br.body, map);
+            }
+            if let Some(t) = timeout {
+                rename_idents_in_expr(&mut t.duration_ms, map);
+                rename_idents_in_block(&mut t.body, map);
+            }
+        }
+        Stmt::TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => {
+            rename_idents_in_block(try_block, map);
+            rename_idents_in_block(catch_block, map);
+        }
+        Stmt::DenyBlock { body, .. } => rename_idents_in_block(body, map),
+        Stmt::Break { .. } | Stmt::Continue { .. } => {}
+    }
+}
+
+fn rename_idents_in_expr(e: &mut Expr, map: &HashMap<String, String>) {
+    match e {
+        Expr::Identifier { name, .. } => {
+            if let Some(new) = map.get(name) {
+                *name = new.clone();
+            }
+        }
+        Expr::FieldAccess { object, .. } => rename_idents_in_expr(object, map),
+        Expr::IndexAccess { object, index, .. } => {
+            rename_idents_in_expr(object, map);
+            rename_idents_in_expr(index, map);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            rename_idents_in_expr(left, map);
+            rename_idents_in_expr(right, map);
+        }
+        Expr::UnaryOp { operand, .. } => rename_idents_in_expr(operand, map),
+        Expr::FnCall { callee, args, .. } => {
+            rename_idents_in_expr(callee, map);
+            for a in args {
+                rename_idents_in_expr(a, map);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            rename_idents_in_expr(object, map);
+            for a in args {
+                rename_idents_in_expr(a, map);
+            }
+        }
+        Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                rename_idents_in_expr(a, map);
+            }
+        }
+        Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+            for el in elements {
+                rename_idents_in_expr(el, map);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                rename_idents_in_expr(k, map);
+                rename_idents_in_expr(v, map);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                rename_idents_in_expr(v, map);
+            }
+        }
+        Expr::Lambda { body, .. } => rename_idents_in_expr(body, map),
+        Expr::IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            rename_idents_in_expr(condition, map);
+            rename_idents_in_block(then_branch, map);
+            if let Some(eb) = else_branch {
+                rename_idents_in_block(eb, map);
+            }
+        }
+        Expr::MatchExpr { subject, arms, .. } => {
+            rename_idents_in_expr(subject, map);
+            for arm in arms {
+                if let Some(g) = &mut arm.guard {
+                    rename_idents_in_expr(g, map);
+                }
+                rename_idents_in_expr(&mut arm.body, map);
+            }
+        }
+        Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                rename_idents_in_expr(s, map);
+            }
+            if let Some(en) = end {
+                rename_idents_in_expr(en, map);
+            }
+        }
+        Expr::PipeExpr { left, right, .. } => {
+            rename_idents_in_expr(left, map);
+            rename_idents_in_expr(right, map);
+        }
+        Expr::Borrow { inner, .. }
+        | Expr::Deref { inner, .. }
+        | Expr::SharedExpr { inner, .. }
+        | Expr::MoveExpr { inner, .. }
+        | Expr::WeakExpr { inner, .. } => rename_idents_in_expr(inner, map),
+        Expr::Cast { expr, .. } => rename_idents_in_expr(expr, map),
+        Expr::Await { value, .. } => rename_idents_in_expr(value, map),
+        Expr::Block { block, .. }
+        | Expr::ComptimeBlock { body: block, .. }
+        | Expr::QuantumBlock { body: block, .. } => rename_idents_in_block(block, map),
+        Expr::InterpolatedString { parts, .. } => {
+            for p in parts {
+                if let StringPart::Expr(pe) = p {
+                    rename_idents_in_expr(pe, map);
+                }
+            }
+        }
         _ => {}
     }
 }

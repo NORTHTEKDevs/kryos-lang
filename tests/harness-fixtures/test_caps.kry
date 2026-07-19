@@ -1,0 +1,15 @@
+use std::db
+
+@test
+@capabilities(db)
+fn test_db() {
+    let conn = open_memory()
+    execute(conn, "CREATE TABLE t (x INTEGER)")
+    execute(conn, "INSERT INTO t VALUES (7)")
+    let cur = query(conn, "SELECT x FROM t")
+    let mut got = 0
+    while step(cur) { got = col_int(cur, 0) }
+    finalize(cur)
+    close(conn)
+    assert_eq(got, 7)
+}

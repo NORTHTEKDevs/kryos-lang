@@ -1204,6 +1204,57 @@ impl JitCompiler {
             kryos_stdlib_native::sync_prims::kryos_mutex_drop as *const u8,
         );
 
+        // FFI/pointer-helper builtins (str_to_ptr, alloc, buf_to_str, ...).
+        // These were registered only on the AOT path, so the in-process JIT
+        // (the `kryos test` runner -- `kryos run` is Cranelift-AOT plus a
+        // subprocess, NOT this JIT) crashed with "can't resolve symbol
+        // str_to_ptr" the moment a test imported any stdlib module using
+        // them (std::re, std::db, std::http, ...).
+        jit_builder.symbol(
+            "kryos_str_to_ptr",
+            kryos_rt::builtins::kryos_str_to_ptr as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_alloc_bytes",
+            kryos_rt::builtins::kryos_alloc_bytes as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_handle_to_str",
+            kryos_rt::builtins::kryos_handle_to_str as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_buf_to_str",
+            kryos_rt::builtins::kryos_buf_to_str as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ptr_byte_at",
+            kryos_rt::builtins::kryos_ptr_byte_at as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ptr_read_i64",
+            kryos_rt::builtins::kryos_ptr_read_i64 as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_free_bytes",
+            kryos_rt::builtins::kryos_free_bytes as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ptr_set_byte",
+            kryos_rt::builtins::kryos_ptr_set_byte as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_ptr_write_i64",
+            kryos_rt::builtins::kryos_ptr_write_i64 as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_array_clone_deep",
+            kryos_rt::array::kryos_array_clone_deep as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_string_char_at",
+            kryos_rt::builtins::kryos_string_char_at as *const u8,
+        );
+
         // Trace runtime (call stack tracking for panic stack traces)
         jit_builder.symbol(
             "kryos_trace_enter",
@@ -1431,6 +1482,18 @@ impl JitCompiler {
         jit_builder.symbol("kryos_ffi_write_f64", kffi::kryos_ffi_write_f64 as *const u8);
         jit_builder.symbol("kryos_ffi_write_f32_bits", kffi::kryos_ffi_write_f32_bits as *const u8);
         jit_builder.symbol("kryos_ffi_write_f64_bits", kffi::kryos_ffi_write_f64_bits as *const u8);
+
+        // Bulk-register EVERY kryos-stdlib-native symbol from the generated
+        // inventory. The hand-maintained registrations above cover kryos-rt
+        // and a historical subset of stdlib-native; the inventory closes the
+        // rest (sqlite, regex find/captures, http2, crypto, ...) so a stdlib
+        // extern that works on the AOT path can never again panic the test
+        // runner's JIT with "can't resolve symbol". Later registrations of an
+        // already-registered name are identical pointers, so overlap with the
+        // explicit list is harmless.
+        for (name, ptr) in kryos_stdlib_native::native_symbols() {
+            jit_builder.symbol(name, ptr);
+        }
 
         let module = JITModule::new(jit_builder);
 
@@ -1949,6 +2012,22 @@ fn declare_runtime_builtins<M: Module>(
 
     // --- String runtime ---
     decl!("kryos_string_new", "kryos_string_new", sig(2));
+    // FFI/pointer-helper builtins -- mirror the AOT builtin table in
+    // codegen.rs (compile_module_with_options). Without these the JIT
+    // declared the callee under its bare MIR name ("str_to_ptr") and
+    // finalization aborted with "can't resolve symbol str_to_ptr".
+    decl!("str_to_ptr", "kryos_str_to_ptr", sig(1));
+    decl!("alloc", "kryos_alloc_bytes", sig(1));
+    decl!("handle_to_str", "kryos_handle_to_str", sig(1));
+    decl!("buf_to_str", "kryos_buf_to_str", sig(2));
+    decl!("ptr_byte_at", "kryos_ptr_byte_at", sig(2));
+    decl!("ptr_read_i64", "kryos_ptr_read_i64", sig(2));
+    decl!("free_bytes", "kryos_free_bytes", sig(2));
+    decl!("ptr_set_byte", "kryos_ptr_set_byte", sig(3));
+    decl!("ptr_write_i64", "kryos_ptr_write_i64", sig(3));
+    decl!("kryos_array_clone_deep", "kryos_array_clone_deep", sig(2));
+    decl!("kryos_string_char_at", "kryos_string_char_at", sig(2));
+    decl!("calloc", "calloc", sig(2));
     decl!("kryos_string_concat", "kryos_string_concat", sig(2));
     decl!("kryos_string_len", "kryos_string_len", sig(1));
     decl!("kryos_string_eq", "kryos_string_eq", sig(2));

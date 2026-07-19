@@ -1,0 +1,11 @@
+use std::string::{split_lines}
+use std::re
+
+fn main() {
+    let lines = split_lines("x\ny\nz")
+    print("lines={len(lines)}")
+    let parts = split(",", "a,b,c")
+    print("re_split={len(parts)} p1={parts[1]}")
+    let n = count("^a", "aaa")
+    print("anchored={n}")
+}

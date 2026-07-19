@@ -1,0 +1,13 @@
+use std::string::{split_lines}
+use std::re
+
+@test
+fn test_split() {
+    let parts = split_lines("a\nb")
+    assert_eq(len(parts), 2)
+}
+
+@test
+fn test_re() {
+    assert_eq(count("^a", "aaa"), 1)
+}
