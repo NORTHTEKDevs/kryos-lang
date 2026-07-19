@@ -519,6 +519,77 @@ impl TypeChecker {
                 let _ = &actor_names;
             }
         }
+        // Top-level const dependency CYCLES of length >= 2 (`A = B + 1;
+        // B = A + 1`). The const evaluator resolves dependencies topologically
+        // but had no cycle guard, so a cycle recursed to a runtime STACK
+        // OVERFLOW (exit 253). (A direct self-reference `X = X + 1` is caught
+        // per-const below with a targeted message; this pass covers mutual and
+        // longer cycles.) Report at check time.
+        {
+            let consts: Vec<(&str, &Expr, Span)> = module
+                .declarations
+                .iter()
+                .filter_map(|d| match d {
+                    Decl::Const {
+                        name, value, span, ..
+                    } => Some((name.as_str(), value.as_ref(), *span)),
+                    _ => None,
+                })
+                .collect();
+            let names: Vec<&str> = consts.iter().map(|(n, _, _)| *n).collect();
+            // deps[i] = indices of the consts that const i's initializer
+            // references (self-references excluded -- the per-const check owns
+            // those and gives a targeted message).
+            let deps: Vec<Vec<usize>> = consts
+                .iter()
+                .enumerate()
+                .map(|(i, (_, val, _))| {
+                    names
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, dn)| *j != i && expr_references_name(val, dn))
+                        .map(|(j, _)| j)
+                        .collect()
+                })
+                .collect();
+            // DFS cycle detection (0=unvisited, 1=in-stack, 2=done).
+            let n = consts.len();
+            let mut state = vec![0u8; n];
+            fn dfs(
+                u: usize,
+                deps: &[Vec<usize>],
+                state: &mut [u8],
+            ) -> bool {
+                state[u] = 1;
+                for &v in &deps[u] {
+                    if v == u {
+                        continue;
+                    }
+                    if state[v] == 1 {
+                        return true;
+                    }
+                    if state[v] == 0 && dfs(v, deps, state) {
+                        return true;
+                    }
+                }
+                state[u] = 2;
+                false
+            }
+            let mut reported = false;
+            for i in 0..n {
+                if state[i] == 0 && dfs(i, &deps, &mut state) && !reported {
+                    reported = true;
+                    self.error_with_code(
+                        format!(
+                            "circular dependency among top-level consts (including `{}`) -- their values depend on each other and cannot be resolved",
+                            consts[i].0
+                        ),
+                        consts[i].2,
+                        kryos_errors::codes::E0102,
+                    );
+                }
+            }
+        }
         // Pass 0: pre-register all struct/enum NAMES so self-referential
         // types (e.g. `struct Expr { left: [Expr] }`) can resolve.
         for decl in &module.declarations {
@@ -1581,6 +1652,18 @@ impl TypeChecker {
                                         .filter(|(n, _)| n != "self")
                                         .map(|(_, t)| t)
                                         .collect();
+                                    // Arity mismatch: an impl method with more or
+                                    // fewer params than the trait declares was
+                                    // dispatched through a generic bound at the
+                                    // trait's arg count and died with a raw
+                                    // Cranelift "mismatched argument count" ICE.
+                                    if impl_np.len() != trait_np.len() {
+                                        self.error_with_code(
+                                            format!("method `{mname}` in `impl {tname} for {target}` takes {} parameter{} but the trait declares {}", impl_np.len(), if impl_np.len() == 1 { "" } else { "s" }, trait_np.len()),
+                                            *m_span,
+                                            kryos_errors::codes::E0110,
+                                        );
+                                    }
                                     if impl_np.len() == trait_np.len() {
                                         for (ip, tp) in impl_np.iter().zip(trait_np.iter()) {
                                             if let Some(ty) = &ip.ty {
@@ -1616,6 +1699,50 @@ impl TypeChecker {
                                         if a != b {
                                             self.error_with_code(
                                                 format!("method `{mname}` in `impl {tname} for {target}` returns `{impl_ret}` but the trait declares `{trait_ret}`"),
+                                                *m_span,
+                                                kryos_errors::codes::E0100,
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Self-type conformance (all impls, inherent + trait). A method
+                // whose explicit `self: T` annotation names a DIFFERENT concrete
+                // struct/enum than the impl target reinterprets the receiver's
+                // memory through the wrong layout -> SEGFAULT / garbage read
+                // (`impl Speaker for Dog { fn speak(self: Cat) ... }`). `self:
+                // Self` and an unannotated `self` resolve to the target and are
+                // fine; only a concrete NON-target aggregate is rejected.
+                if let Some(tt) = &target_ty {
+                    let target_ground = match tt {
+                        Type::Struct { name, .. } => Some(name.clone()),
+                        Type::Enum { name, .. } => Some(name.clone()),
+                        _ => None,
+                    };
+                    for method in methods {
+                        if let Decl::Function {
+                            name: mname,
+                            params: m_params,
+                            span: m_span,
+                            ..
+                        } = method
+                        {
+                            if let Some(sp) = m_params.iter().find(|p| p.name == "self") {
+                                if let Some(sty) = &sp.ty {
+                                    let rs = self.resolve_type_expr(sty);
+                                    let self_ground = match self.engine.resolve(&rs) {
+                                        Type::Struct { name, .. } => Some(name),
+                                        Type::Enum { name, .. } => Some(name),
+                                        _ => None, // Self/DynTrait/Var -> fine
+                                    };
+                                    if let (Some(sg), Some(tg)) = (&self_ground, &target_ground) {
+                                        if sg != tg {
+                                            self.error_with_code(
+                                                format!("method `{mname}` declares `self: {sg}` but is implemented on `{tg}` -- the receiver type must be `{tg}` (or `Self`)"),
                                                 *m_span,
                                                 kryos_errors::codes::E0100,
                                             );

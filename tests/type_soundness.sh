@@ -785,6 +785,56 @@ let B: i64 = 10
 fn main() { if A != 11 { exit(1) }  println("ok") }
 '
 
+# --- Section-1 convergence residuals: trait arity/self-type + const cycles.
+
+# Trait impl with fewer/more params than the trait -> Cranelift "mismatched
+# argument count" ICE through a generic bound.
+want_reject trait_impl_fewer_params '
+trait Adder { fn add(self: Self, n: i64) -> i64 }
+struct Acc { v: i64 }
+impl Adder for Acc { fn add(self: Acc) -> i64 { return self.v } }
+fn call_through<T: Adder>(x: T, n: i64) -> i64 { return x.add(n) }
+fn main() { let a = Acc { v: 1 }  println(to_string(call_through(a, 5))) }
+'
+want_reject trait_impl_more_params '
+trait Speaker { fn speak(self: Self) -> str }
+struct Dog { name: str }
+impl Speaker for Dog { fn speak(self: Dog, extra: str) -> str { return "woof " + extra } }
+fn call_through<T: Speaker>(x: T) -> str { return x.speak() }
+fn main() { let d = Dog { name: "rex" }  println(call_through(d)) }
+'
+# Impl method self type naming a DIFFERENT struct reinterprets the receiver
+# layout -> SEGFAULT.
+want_reject impl_method_wrong_self_type '
+trait Speaker { fn speak(self: Self) -> str }
+struct Dog { name: str }
+struct Cat { a: i64, b: i64, c: i64, name: str }
+impl Speaker for Dog { fn speak(self: Cat) -> str { return "cat: " + self.name } }
+fn call_through<T: Speaker>(x: T) -> str { return x.speak() }
+fn main() { let d = Dog { name: "rex" }  println(call_through(d)) }
+'
+
+# Const dependency cycles of length >= 2 stack-overflowed at const-eval.
+want_reject mutual_const_cycle '
+let A: i64 = B + 1
+let B: i64 = A + 1
+fn main() { println(to_string(A)) }
+'
+want_reject three_way_const_cycle '
+let A: i64 = B + 1
+let B: i64 = C + 1
+let C: i64 = A + 1
+fn main() { println(to_string(A)) }
+'
+# A long ACYCLIC forward chain must stay legal (guards the cycle detector
+# against false positives).
+want_pass acyclic_const_chain_3hop '
+let A: i64 = B + 1
+let B: i64 = C + 1
+let C: i64 = 10
+fn main() { if A != 12 { exit(1) }  println("ok") }
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
