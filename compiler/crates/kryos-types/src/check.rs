@@ -133,6 +133,11 @@ impl TypeChecker {
     fn check_duplicate_params(&mut self, params: &[kryos_ast::Param], what: &str) {
         let mut seen = std::collections::HashSet::new();
         for p in params {
+            // `_` is the discard placeholder -- `fn f(_: i64, _: i64)` is
+            // deliberate "ignore both", not a duplicate.
+            if p.name == "_" {
+                continue;
+            }
             if !seen.insert(p.name.as_str()) {
                 self.error(
                     format!(
@@ -2232,8 +2237,32 @@ impl TypeChecker {
                 // its OWN field type: `Num(x) | Label(x)` (i64 vs str) produced
                 // type confusion, and `Pos(x) | Neg(y)` bound both names so the
                 // non-matching path read an uninitialized value. Reject them.
+                // A bare IDENT alternative parses as Pattern::Ident whether it
+                // is a genuine binding (`x | y` -- illegal) or a nullary
+                // variant tag test (`Red | Green` -- the documented legal
+                // form). pattern_is_binding can't tell them apart without type
+                // context, and classifying every Ident as binding rejected the
+                // exact syntax this error's own message recommends. Resolve
+                // the ident against the SUBJECT's type: a variant of its enum
+                // (or Some/None/Ok/Err for Option/Result) is a tag test, not
+                // a binding.
+                let resolved_subject = self.engine.resolve(subject_ty);
                 for alt in patterns.iter() {
-                    if pattern_is_binding(alt) {
+                    let is_variant_test = if let Pattern::Ident { name, .. } = alt {
+                        match &resolved_subject {
+                            Type::Enum { name: en, .. } => self
+                                .env
+                                .lookup_enum(en)
+                                .map(|d| d.variants.iter().any(|(v, _)| v == name))
+                                .unwrap_or(false),
+                            Type::Option { .. } => name == "Some" || name == "None",
+                            Type::Result { .. } => name == "Ok" || name == "Err",
+                            _ => false,
+                        }
+                    } else {
+                        false
+                    };
+                    if !is_variant_test && pattern_is_binding(alt) {
                         self.error(
                             "or-pattern alternatives must be non-binding: use literals (`1 | 2`) or bare enum variants (`Red | Green`); a pattern that binds a variable is not allowed here because alternatives may bind different names or types"
                                 .to_string(),

@@ -543,6 +543,52 @@ fn main() {
 }
 '
 
+# `_` is the discard placeholder -- multiple `_` params are deliberate
+# "ignore both", not duplicates (found as a false-reject in review).
+want_pass underscore_params_not_duplicates '
+fn f(_: i64, _: i64) -> i64 { return 7 }
+fn g(_: i64, x: i64) -> i64 { return x }
+fn main() {
+    if f(1, 2) != 7 { exit(1) }
+    if g(100, 42) != 42 { exit(1) }
+    let h = |_: i64, _: i64| 9
+    if h(1, 2) != 9 { exit(1) }
+    println("ok")
+}
+'
+
+# Bare enum variants in an OR-pattern are tag tests, not bindings -- the
+# non-binding rule must resolve idents against the subject enum instead of
+# rejecting the documented-legal `Red | Green` form (its own error message
+# cites it). Genuine ident/payload bindings must still reject.
+want_pass bare_variant_or_pattern_discriminates '
+enum C { Red, Green, Blue }
+fn classify(c: C) -> str {
+    return match c { Red | Green => "warm", Blue => "cool" }
+}
+fn main() {
+    if classify(C.Red) != "warm" { exit(1) }
+    if classify(C.Green) != "warm" { exit(1) }
+    if classify(C.Blue) != "cool" { exit(1) }
+    println("ok")
+}
+'
+
+want_reject or_pattern_ident_binding '
+fn main() {
+    let n = 3
+    match n { x | y => println(to_string(x)), }
+}
+'
+
+want_reject or_pattern_payload_binding '
+enum V { Num(i64), Label(str) }
+fn main() {
+    let v = V.Num(3)
+    match v { Num(x) | Label(x) => println("bad"), }
+}
+'
+
 # Bare enum variants in a tuple pattern are tag TESTS, not bindings -- the
 # duplicate-binding check must NOT fire on them (guards the variant-test
 # exclusion; this is the Pass-35 discriminate-fix shape).
