@@ -88,6 +88,9 @@ self-host bootstrap 16/16 throughout.
 - Known limitation (documented): a runtime *panic* (not a failed assert)
   inside one test still aborts the whole run — panics are process-fatal by
   design.
+- Selective-import resolution now honors **every** importer in the program
+  (per-module selection unions) and never renames a local that shadows a
+  module function. Full ecosystem sweep: 259/259 programs clean.
 
 ### Fixed — stdlib, WASM backend, docs (cert Pass 42)
 - **`?` on a non-`Result` value is now a clean compile error.** It desugars to
