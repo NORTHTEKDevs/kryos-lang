@@ -35,9 +35,23 @@ accepts any text file passed as input.
 
 ### 1.2 Line breaks
 
-Kryos is **line-sensitive**. Statement boundaries are line breaks; there
-are no semicolons. To break a long expression across lines, end the line
-with an open-bracket (`(`, `[`, `{`), a comma, or a binary operator.
+Kryos has no semicolons. In practice you write **one statement per line**,
+and that is the recommended style. Under the hood, though, statement
+boundaries are **grammar-driven, not strictly line-based**: the parser
+extends the current expression as far as the grammar allows, then starts a
+new statement. Two consequences follow:
+
+- **A trailing binary operator, comma, or open bracket (`(`, `[`, `{`)
+  continues the expression onto the next line** — this is how you break a
+  long expression across lines.
+- **A new line that *begins* with an infix operator also continues the
+  previous line** (the ASI-class trap): `let a = 5` followed by a line
+  `+ 3` parses as `let a = 5 + 3`. Never begin a line with a binary
+  operator, unary `-`, `(`, or `[` unless you intend continuation. Because
+  boundaries are grammar-driven, a single space can also separate two
+  complete statements on one physical line (`let a = 1  let b = 2`) — legal
+  but avoid it for readability.
+
 The lexer emits a hint if it sees a `;`:
 
 ```
@@ -176,7 +190,10 @@ except `**` (right) and the assignment `=` (right).
 implicit conversions. The cast set is:
 
 - Integer ↔ integer (sign- or zero-extend / truncate).
-- Integer ↔ float (round to nearest).
+- Integer → float (nearest representable value).
+- Float → integer (**truncates toward zero**: `3.9 as i64` is `3`, `-3.9 as i64`
+  is `-3`). An out-of-range or NaN value **saturates** (`1e300 as i64` is
+  `i64::MAX`, `NaN as i64` is `0`) rather than being undefined.
 - `bool` → integer (`false` = 0, `true` = 1).
 - Reference → raw pointer (in `unsafe` contexts).
 
