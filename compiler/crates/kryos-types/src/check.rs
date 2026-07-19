@@ -38,6 +38,12 @@ pub struct TypeChecker {
     in_pure_function: bool,
     /// The current `Self` type — set when checking trait/impl blocks.
     current_self_type: Option<Type>,
+    /// Duplicate-binding detection for the pattern currently being bound.
+    /// Set to an empty map at each top-level `bind_pattern` entry; every
+    /// GENUINE binding (not a bare-variant tag test) records its name here,
+    /// and a repeat (`let (a, a) = ..`, `P(x, x) => ..`) is rejected --
+    /// previously the last duplicate silently won.
+    pattern_dup_seen: Option<std::collections::HashMap<String, Span>>,
     /// Maps generic type variable id → list of trait bound names. Populated
     /// when entering a generic function with bounds (e.g. `<T: Showable>`).
     /// Used in MethodCall resolution: when `obj_ty` resolves to a Type::Var
@@ -117,6 +123,46 @@ impl TypeChecker {
             unsafe_depth: 0,
             actor_nonvoid_handlers: std::collections::HashMap::new(),
             pending_self_recursive_name: None,
+            pattern_dup_seen: None,
+        }
+    }
+
+    /// Reject duplicate names in a parameter list. Params are stored
+    /// positionally with no uniqueness check, so `fn f(a: i64, a: i64)`
+    /// silently resolved `a` to the LAST duplicate.
+    fn check_duplicate_params(&mut self, params: &[kryos_ast::Param], what: &str) {
+        let mut seen = std::collections::HashSet::new();
+        for p in params {
+            if !seen.insert(p.name.as_str()) {
+                self.error(
+                    format!(
+                        "duplicate parameter `{}` in {what} -- each parameter name may appear only once",
+                        p.name
+                    ),
+                    p.span,
+                );
+            }
+        }
+    }
+
+    /// Reject duplicate generic parameter names (`fn f<T, T>(..)`).
+    fn check_duplicate_generics(
+        &mut self,
+        generics: &[kryos_ast::GenericParam],
+        what: &str,
+        span: Span,
+    ) {
+        let mut seen = std::collections::HashSet::new();
+        for gp in generics {
+            if !seen.insert(gp.name.as_str()) {
+                self.error(
+                    format!(
+                        "duplicate generic parameter `{}` on {what} -- each generic parameter may appear only once",
+                        gp.name
+                    ),
+                    span,
+                );
+            }
         }
     }
 
@@ -507,6 +553,8 @@ impl TypeChecker {
                         *span,
                     );
                 }
+                self.check_duplicate_params(params, &format!("function `{name}`"));
+                self.check_duplicate_generics(generics, &format!("function `{name}`"), *span);
                 // Temporarily bind generic params so they resolve in param/return types.
                 // Capture the type variable IDs so we can instantiate fresh copies
                 // at each call site (prevents generic pinning bug).
@@ -584,6 +632,7 @@ impl TypeChecker {
                         }
                     }
                 }
+                self.check_duplicate_generics(generics, &format!("struct `{name}`"), *span);
                 // Bind generic params so they resolve in field types.
                 let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
@@ -614,8 +663,28 @@ impl TypeChecker {
                 name,
                 generics,
                 variants,
+                span,
                 ..
             } => {
+                // Duplicate variant names. Variants are tag-indexed by
+                // POSITION, so two same-named variants gave the constructor
+                // and every match arm an ambiguous tag -- which one won was
+                // implementation-defined (silent wrong dispatch).
+                {
+                    let mut seen_variants = std::collections::HashSet::new();
+                    for v in variants {
+                        if !seen_variants.insert(v.name.as_str()) {
+                            self.error(
+                                format!(
+                                    "duplicate variant `{}` in enum `{name}` -- each variant name may appear only once",
+                                    v.name
+                                ),
+                                *span,
+                            );
+                        }
+                    }
+                }
+                self.check_duplicate_generics(generics, &format!("enum `{name}`"), *span);
                 // Bind generic params so they resolve in variant field types.
                 let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
@@ -650,10 +719,17 @@ impl TypeChecker {
                 trait_name,
                 methods,
                 generics: impl_generics,
+                span: impl_span,
                 ..
             } => {
                 // Set Self type for the duration of this impl block registration.
                 let prev_self = self.current_self_type.take();
+
+                self.check_duplicate_generics(
+                    impl_generics,
+                    &format!("impl `{target}`"),
+                    *impl_span,
+                );
 
                 // Detect a method-name collision with a method already registered
                 // on this type from ANOTHER impl block (two same-named methods --
@@ -661,10 +737,15 @@ impl TypeChecker {
                 // the same symbol `Type__method` and fail at codegen with an
                 // internal DuplicateDefinition). Report it cleanly at check time.
                 // (No prior impl's methods for THIS block are registered yet, so
-                // lookup_method only sees earlier impls.)
+                // lookup_method only sees earlier impls -- the same-BLOCK set
+                // below covers sibling duplicates, which previously escaped to
+                // the same internal codegen dump.)
+                let mut block_methods = std::collections::HashSet::new();
                 for m in methods {
                     if let Decl::Function {
                         name: mname,
+                        params: mparams,
+                        generics: mgenerics,
                         span: mspan,
                         ..
                     } = m
@@ -677,6 +758,20 @@ impl TypeChecker {
                                 *mspan,
                             );
                         }
+                        if !block_methods.insert(mname.as_str()) {
+                            self.error(
+                                format!(
+                                    "type `{target}` defines method `{mname}` twice in the same impl block -- both mangle to the same symbol; rename one"
+                                ),
+                                *mspan,
+                            );
+                        }
+                        self.check_duplicate_params(mparams, &format!("method `{mname}`"));
+                        self.check_duplicate_generics(
+                            mgenerics,
+                            &format!("method `{mname}`"),
+                            *mspan,
+                        );
                     }
                 }
 
@@ -855,8 +950,40 @@ impl TypeChecker {
                 name,
                 generics,
                 methods,
+                span: trait_span,
                 ..
             } => {
+                // Duplicate method declarations in one trait -- the second
+                // silently shadowed the first in the method table.
+                {
+                    let mut trait_methods = std::collections::HashSet::new();
+                    for m in methods {
+                        if let Decl::Function {
+                            name: mname,
+                            params: mparams,
+                            generics: mgenerics,
+                            span: mspan,
+                            ..
+                        } = m
+                        {
+                            if !trait_methods.insert(mname.as_str()) {
+                                self.error(
+                                    format!(
+                                        "trait `{name}` declares method `{mname}` twice -- each method name may appear only once"
+                                    ),
+                                    *mspan,
+                                );
+                            }
+                            self.check_duplicate_params(mparams, &format!("method `{mname}`"));
+                            self.check_duplicate_generics(
+                                mgenerics,
+                                &format!("method `{mname}`"),
+                                *mspan,
+                            );
+                        }
+                    }
+                }
+                self.check_duplicate_generics(generics, &format!("trait `{name}`"), *trait_span);
                 // Set Self to DynTrait so `self: Self` in trait method
                 // signatures resolves correctly.
                 let prev_self = self.current_self_type.take();
@@ -1564,7 +1691,9 @@ impl TypeChecker {
                     // makes both bindings mutable, and `let (mut a, b) = ...`
                     // makes only `a` mutable via the per-element `mut` flag
                     // inside bind_pattern_with_mut.
+                    self.pattern_dup_seen = Some(std::collections::HashMap::new());
                     self.bind_pattern_with_mut(pat, &final_ty, *mutable);
+                    self.pattern_dup_seen = None;
                 } else if *mutable {
                     self.env.define_var_mut(name.clone(), final_ty);
                 } else {
@@ -1784,7 +1913,14 @@ impl TypeChecker {
     /// (`let (mut a, b) = ...`) is also honored — the binding is
     /// mutable if either source says so.
     fn bind_pattern(&mut self, pattern: &Pattern, subject_ty: &Type) {
+        let fresh_dup_scope = self.pattern_dup_seen.is_none();
+        if fresh_dup_scope {
+            self.pattern_dup_seen = Some(std::collections::HashMap::new());
+        }
         self.bind_pattern_with_mut(pattern, subject_ty, false);
+        if fresh_dup_scope {
+            self.pattern_dup_seen = None;
+        }
     }
 
     fn bind_pattern_with_mut(
@@ -1795,7 +1931,49 @@ impl TypeChecker {
     ) {
         match pattern {
             Pattern::Wildcard { .. } | Pattern::Literal { .. } => {}
-            Pattern::Ident { name, mutable, .. } => {
+            Pattern::Ident {
+                name,
+                mutable,
+                span,
+            } => {
+                // Duplicate-binding detection: record every GENUINE binding
+                // in the top-level pattern's map and reject a repeat
+                // (`let (a, a) = ..`, `P(x, x) => ..`) -- the last duplicate
+                // silently won. A bare ident that names a VARIANT of the
+                // subject's enum type is a tag TEST, not a binding
+                // (`(Red, Red)` is legal), so it is excluded; an UNRESOLVED
+                // subject (struct-pattern fields bind through fresh vars)
+                // can't be ruled out as a variant test, so it is skipped
+                // rather than risk rejecting valid code.
+                if self.pattern_dup_seen.is_some() {
+                    let resolved = self.engine.resolve(subject_ty);
+                    let skip = match &resolved {
+                        Type::Enum { name: en, .. } => self
+                            .env
+                            .lookup_enum(en)
+                            .map(|d| d.variants.iter().any(|(v, _)| v == name))
+                            .unwrap_or(false),
+                        Type::Option { .. } => name == "Some" || name == "None",
+                        Type::Result { .. } => name == "Ok" || name == "Err",
+                        Type::Var(_) => true,
+                        _ => false,
+                    };
+                    let dup = if skip {
+                        false
+                    } else if let Some(seen) = self.pattern_dup_seen.as_mut() {
+                        seen.insert(name.clone(), *span).is_some()
+                    } else {
+                        false
+                    };
+                    if dup {
+                        self.error(
+                            format!(
+                                "identifier `{name}` is bound more than once in the same pattern"
+                            ),
+                            *span,
+                        );
+                    }
+                }
                 if outer_mut || *mutable {
                     self.env.define_var_mut(name.clone(), subject_ty.clone());
                 } else {
@@ -3749,6 +3927,8 @@ impl TypeChecker {
                 body,
                 span: lambda_span,
             } => {
+                self.check_duplicate_params(params, "this closure");
+
                 // Bidirectional inference: if an outer FnCall pushed expected
                 // types for this lambda, use them for any un-annotated params
                 // and the return type. This is what makes `|a, b| a + b` work

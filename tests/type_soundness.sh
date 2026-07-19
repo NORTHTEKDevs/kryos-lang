@@ -472,6 +472,97 @@ fn main() {
 }
 '
 
+# The rest of the duplicate-name class, swept in one batch: enum variants
+# (positional tags -> ambiguous dispatch), fn/closure/method params (last
+# duplicate silently won), generic params, same-impl-block methods (died as
+# an internal codegen DuplicateDefinition dump), trait methods (second
+# silently shadowed the first), and pattern bindings (`let (a, a)`,
+# `P(x, x)` -- last binding silently won).
+
+want_reject dup_enum_variant '
+enum E { A(i64), B, A(str) }
+fn main() {
+    let x = E.A(42)
+    match x { A(n) => println(to_string(n)), _ => println("other") }
+}
+'
+
+want_reject dup_fn_param '
+fn f(a: i64, a: i64) -> i64 { return a }
+fn main() { println(to_string(f(1, 2))) }
+'
+
+want_reject dup_closure_param '
+fn main() {
+    let f = |x: i64, x: i64| x
+    println(to_string(f(1, 2)))
+}
+'
+
+want_reject dup_generic_param '
+fn pick<T, T>(a: T, b: T) -> T { return a }
+fn main() { println(to_string(pick(1, 2))) }
+'
+
+want_reject dup_method_same_impl '
+struct S { v: i64 }
+impl S {
+    fn get(self: S) -> i64 { return 1 }
+    fn get(self: S) -> i64 { return 2 }
+}
+fn main() { let s = S { v: 0 }  println(to_string(s.get())) }
+'
+
+want_reject dup_trait_method '
+struct S { v: i64 }
+trait Sized2 {
+    fn size(self: S) -> i64
+    fn size(self: S) -> i64
+}
+impl Sized2 for S {
+    fn size(self: S) -> i64 { return 1 }
+}
+fn main() { let s = S { v: 0 }  println(to_string(s.size())) }
+'
+
+want_reject dup_tuple_destructure_binding '
+fn main() {
+    let (a, a) = (1, 2)
+    println(to_string(a))
+}
+'
+
+want_reject dup_match_pattern_binding '
+enum M { P(i64, i64), Q }
+fn main() {
+    let m = M.P(3, 9)
+    match m {
+        P(x, x) => println(to_string(x)),
+        _ => println("other"),
+    }
+}
+'
+
+# Bare enum variants in a tuple pattern are tag TESTS, not bindings -- the
+# duplicate-binding check must NOT fire on them (guards the variant-test
+# exclusion; this is the Pass-35 discriminate-fix shape).
+want_pass bare_variant_tuple_pattern_not_a_dup '
+enum Light { Red, Yellow, Green }
+fn decide(a: Light, b: Light) -> str {
+    return match (a, b) {
+        (Red, Red) => "both stop",
+        (Green, Green) => "both go",
+        _ => "mixed",
+    }
+}
+fn main() {
+    if decide(Green, Green) != "both go" { exit(1) }
+    if decide(Red, Red) != "both stop" { exit(1) }
+    if decide(Yellow, Red) != "mixed" { exit(1) }
+    println("ok")
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — duplicate-name soundness sweep (Pass 45)
+Eleven shapes of duplicate names that the checker silently accepted (which
+duplicate "won" was implementation-defined, or the program died later as an
+internal codegen dump) are now clean check-time errors, each with a
+type-soundness regression:
+
+- **Struct fields** — duplicate field in a declaration (`struct P { x, y, x }`)
+  and in a literal (`P { x: 1.0, x: 2.0 }`).
+- **Enum variants** — `enum E { A(i64), B, A(str) }` (variants are tag-indexed
+  by position, so dispatch was ambiguous).
+- **Parameters** — duplicate names in function, method, and closure parameter
+  lists (`fn f(a: i64, a: i64)`, `|x, x| x` — the last duplicate silently won).
+- **Generic parameters** — `fn pick<T, T>`, `struct Pair<T, T>`, and the same
+  on enums, impls, traits, and methods.
+- **Impl methods** — the same method name twice in ONE impl block (previously
+  passed `check` and died in codegen with an internal DuplicateDefinition
+  dump; the cross-impl case was already caught).
+- **Trait methods** — the same method declared twice in one trait (the second
+  silently shadowed the first).
+- **Pattern bindings** — an identifier bound more than once in the same
+  pattern (`let (a, a) = ..`, `P(x, x) => ..`). Bare enum variants in tuple
+  patterns (`(Red, Red)`) are tag tests, not bindings, and stay legal.
+
+Also: `tests/type_soundness.sh` printed its verdict before the Pass-42 probes
+ran, so a late-probe regression could never turn the gate red — the summary
+now runs after all probes.
+
 ### Fixed — adversarial cert Passes 35-39 (~30 correctness + crash bugs)
 A sustained multi-agent adversarial sweep (JIT-only finders + independent
 both-backend re-verification) across pattern matching, closures, concurrency,
