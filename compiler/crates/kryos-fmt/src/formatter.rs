@@ -1056,21 +1056,24 @@ impl Formatter {
                 body,
                 ..
             } => {
-                let mut s = String::from("fn(");
+                // Closures print in the bar form the language documents
+                // (`|x| x * 2`), not a rewritten `fn(x) { x * 2 }` -- a
+                // formatter re-lays-out code, it does not switch the
+                // syntactic form the programmer chose.
+                let mut s = String::from("|");
                 for (i, p) in params.iter().enumerate() {
                     if i > 0 {
                         s.push_str(", ");
                     }
                     s.push_str(&self.fmt_param_to_string(p));
                 }
-                s.push(')');
+                s.push('|');
                 if let Some(ty) = ret_ty {
                     s.push_str(" -> ");
                     s.push_str(&self.fmt_type_to_string(ty));
                 }
-                s.push_str(" { ");
+                s.push(' ');
                 s.push_str(&self.fmt_expr_to_string(body));
-                s.push_str(" }");
                 s
             }
 
@@ -1092,6 +1095,15 @@ impl Formatter {
             }
 
             Expr::MatchExpr { subject, arms, .. } => {
+                // Re-sugar the parser's `?` desugaring back to `expr?`. The
+                // parser expands `expr?` into a Result match binding
+                // compiler-internal `__kry_try_*` temps at PARSE time, so a
+                // naive AST print leaked those internals into user source
+                // (and the emitted `Result::Ok(__kry_try_v_0)` block did not
+                // even reparse). The desugar shape is exact and unambiguous.
+                if let Some(sugared) = self.try_resugar_question(subject, arms) {
+                    return sugared;
+                }
                 let mut s = format!("match {} {{\n", self.fmt_expr_to_string(subject));
                 for arm in arms {
                     let indent_str = " ".repeat((self.indent + 1) * INDENT_WIDTH);
@@ -1416,6 +1428,53 @@ impl Formatter {
     // Patterns
     // -----------------------------------------------------------------------
 
+    /// Detect the parser's `?` desugaring and return the `expr?` surface
+    /// form: exactly two guardless arms, `Result::Ok(__kry_try_v_N)` whose
+    /// body is that same binding, and `Result::Err(__kry_try_e_N)`. The
+    /// `__kry_try_` prefix is reserved for the desugar (parser fresh_name),
+    /// so user code can never collide with this shape.
+    fn try_resugar_question(&self, subject: &Expr, arms: &[MatchArm]) -> Option<String> {
+        if arms.len() != 2 {
+            return None;
+        }
+        let ok_arm = &arms[0];
+        let err_arm = &arms[1];
+        if ok_arm.guard.is_some() || err_arm.guard.is_some() {
+            return None;
+        }
+        let ok_binding = match &ok_arm.pattern {
+            Pattern::Enum {
+                name,
+                variant,
+                fields,
+                ..
+            } if name == "Result" && variant == "Ok" && fields.len() == 1 => match &fields[0] {
+                Pattern::Ident { name, .. } if name.starts_with("__kry_try_") => name.clone(),
+                _ => return None,
+            },
+            _ => return None,
+        };
+        match ok_arm.body.as_ref() {
+            Expr::Identifier { name, .. } if *name == ok_binding => {}
+            _ => return None,
+        }
+        let err_matches = match &err_arm.pattern {
+            Pattern::Enum {
+                name,
+                variant,
+                fields,
+                ..
+            } if name == "Result" && variant == "Err" && fields.len() == 1 => {
+                matches!(&fields[0], Pattern::Ident { name, .. } if name.starts_with("__kry_try_"))
+            }
+            _ => false,
+        };
+        if !err_matches {
+            return None;
+        }
+        Some(format!("{}?", self.fmt_expr_to_string(subject)))
+    }
+
     fn fmt_pattern_to_string(&self, pattern: &Pattern) -> String {
         match pattern {
             Pattern::Wildcard { .. } => "_".to_string(),
@@ -1459,14 +1518,24 @@ impl Formatter {
                 fields,
                 ..
             } => {
+                // A BARE variant pattern (`Circle(r)` inside a match whose
+                // subject type supplies the enum) parses with an EMPTY enum
+                // name. Printing the qualified form unconditionally produced
+                // a dangling `::Circle(r)` -- which does not parse, so fmt
+                // turned compiling programs into permanently broken ones.
+                let qualifier = if name.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}::", name)
+                };
                 if fields.is_empty() {
-                    format!("{}::{}", name, variant)
+                    format!("{}{}", qualifier, variant)
                 } else {
                     let fields_str: Vec<String> = fields
                         .iter()
                         .map(|f| self.fmt_pattern_to_string(f))
                         .collect();
-                    format!("{}::{}({})", name, variant, fields_str.join(", "))
+                    format!("{}{}({})", qualifier, variant, fields_str.join(", "))
                 }
             }
 

@@ -568,3 +568,44 @@ fn test_literal_braces_are_re_escaped() {
     let out = fmt("fn main() {\n    let j = \"a {{brace}} and {name}\"\n}\n");
     assert!(out.contains("{{brace}}"), "literal brace must be doubled, got:\n{out}");
 }
+
+// ================= Cert Pass 44 regressions (fmt destroyed code) =============
+
+#[test]
+fn test_bare_enum_pattern_keeps_no_qualifier() {
+    // Bare variant patterns parse with an EMPTY enum name; printing
+    // `::Circle(r)` produced code that no longer parsed.
+    let src = "enum Shape { Circle(f64), Empty }\n\
+               fn area(s: Shape) -> f64 {\n\
+                   match s {\n\
+                       Circle(r) => return r,\n\
+                       Empty => return 0.0\n\
+                   }\n\
+               }";
+    let out = fmt(src);
+    assert!(out.contains("Circle(r)"), "bare pattern preserved: {out}");
+    assert!(!out.contains("::Circle"), "no dangling qualifier: {out}");
+}
+
+#[test]
+fn test_question_mark_resugars() {
+    // `expr?` desugars at PARSE time; printing the desugared match leaked
+    // compiler-internal __kry_try_* names into user source (and did not
+    // reparse). The formatter re-sugars the exact desugar shape.
+    let src = "fn f() -> Result<i64, str> {\n\
+                   let v = g()?\n\
+                   return Ok(v)\n\
+               }";
+    let out = fmt(src);
+    assert!(out.contains("g()?"), "? resugared: {out}");
+    assert!(!out.contains("__kry_try_"), "no internal temps leaked: {out}");
+}
+
+#[test]
+fn test_lambda_prints_bar_form() {
+    // Closures keep the documented `|x| expr` form; the formatter must not
+    // rewrite them into `fn(x) { expr }`.
+    let out = fmt("fn main() { let f = |x: i64| x * 2 }");
+    assert!(out.contains("|x: i64| x * 2"), "bar form preserved: {out}");
+    assert!(!out.contains("fn(x"), "no fn-form rewrite: {out}");
+}
