@@ -1,0 +1,72 @@
+// Conformance: lexical scoping and shadowing. A binding introduced in an
+// inner scope (bare block, for-loop variable, match-arm pattern) must NOT
+// leak into the enclosing scope -- the outer same-named binding is restored
+// when the inner scope exits. A leak previously corrupted the outer value
+// and SEGFAULTED when the shadow changed the type (e.g. str outer, i64
+// loop var). (Reference chapter 4.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn expect_str(got: str, want: str, what: str) {
+    if got != want {
+        println("CONF FAIL: {what} -- got `{got}` want `{want}`")
+        exit(1)
+    }
+}
+
+enum Shape {
+    Circle(i64),
+    Empty,
+}
+
+fn main() {
+    // Bare block shadow (same type): outer restored after the block.
+    let a: i64 = 777
+    {
+        let a: i64 = 5
+        expect(a == 5, "bare block inner sees inner value")
+    }
+    expect(a == 777, "bare block: outer restored after block")
+
+    // for-loop variable shadow: the loop var must not leak. Type CHANGE
+    // (str outer, i64 loop var) is the segfault case.
+    let i: str = "outer"
+    for i in [1, 2, 3] {
+        expect(i >= 1 and i <= 3, "for loop var in range")
+    }
+    expect_str(i, "outer", "for loop var does not leak (str outer restored)")
+
+    // for over a range() likewise.
+    let k: str = "kept"
+    for k in 0..4 {
+        expect(k >= 0 and k < 4, "range loop var in range")
+    }
+    expect_str(k, "kept", "range loop var does not leak")
+
+    // match-arm pattern binding shadow: does not leak past the match.
+    let x: i64 = 999
+    let s = Shape.Circle(42)
+    match s {
+        Circle(x) => expect(x == 42, "match arm binds payload"),
+        Empty => expect(false, "wrong arm"),
+    }
+    expect(x == 999, "match arm binding does not leak")
+
+    // Nested: block inside a loop, both shadowing.
+    let n: i64 = 100
+    for n in [7] {
+        {
+            let n: i64 = 1
+            expect(n == 1, "nested block inner")
+        }
+        expect(n == 7, "loop var restored after inner block")
+    }
+    expect(n == 100, "outer n restored after loop")
+
+    println("conf_scoping OK")
+}

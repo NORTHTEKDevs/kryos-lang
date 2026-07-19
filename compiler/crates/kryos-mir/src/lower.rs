@@ -2634,6 +2634,21 @@ fn emit_named_scope_drops(ctx: &mut LoweringContext, scope_start: usize) {
             }
         }
     }
+    // Hide this scope's named locals from name resolution now that the scope
+    // has exited, so an outer scope's same-named binding re-resolves to the
+    // OUTER local. Without this, a value-position block (`{ let i = 5 }`), a
+    // match-arm body, or any block reached only through this path leaked its
+    // inner binding: `let i = 777  { let i = 5 }  i` read 5, and a
+    // type-changed shadow (str outer, i64 inner) then read a raw int as a
+    // string handle and SEGFAULTED. `lower_block_stmts` already hid its own
+    // scope separately (that path was correct); centralizing the hide here
+    // covers every scope-exit caller uniformly (its now-redundant explicit
+    // hide is harmless -- HashSet inserts are idempotent).
+    for i in scope_start..scope_end {
+        if ctx.locals[i].name.is_some() {
+            ctx.hidden_locals.insert(ctx.locals[i].id.0);
+        }
+    }
 }
 
 fn lower_block_stmts(ctx: &mut LoweringContext, stmts: &[ast::Stmt]) {
@@ -4792,6 +4807,11 @@ fn lower_for(
     //       _idx += 1;
     //   }
 
+    // Loop var / index / iter / destructure-bind locals live in the enclosing
+    // scope; hide them once the loop exits so they don't shadow an outer
+    // same-named binding (see lower_for_range).
+    let for_scope_start = ctx.locals.len();
+
     // Infer the element type for array iteration so loop variables
     // carry struct/enum type info (needed for field access codegen).
     let iter_type = infer_expr_type(ctx, iterable);
@@ -4915,6 +4935,7 @@ fn lower_for(
         },
     });
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
+    hide_scope_locals(ctx, for_scope_start);
 }
 
 /// Lower `for i in range(start, end) { body }` into a simple counter loop:
@@ -4937,6 +4958,12 @@ fn lower_for_range(
     body: &ast::Block,
     inclusive: bool,
 ) {
+    // The loop variable + index are allocated in the ENCLOSING scope (before
+    // the body). Record the start so they can be hidden from name resolution
+    // once the loop exits -- otherwise `let i = "outer"  for i in 0..3 {}  i`
+    // leaves the outer `i` resolving to the loop's i64 var (a segfault when
+    // the types differ). The body's OWN locals are hidden by lower_block_stmts.
+    let for_scope_start = ctx.locals.len();
     // Lower start and end bounds.
     let start_op = lower_expr_to_operand(ctx, start_expr);
     let end_op = lower_expr_to_operand(ctx, end_expr);
@@ -5015,6 +5042,21 @@ fn lower_for_range(
         },
     });
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
+    hide_scope_locals(ctx, for_scope_start);
+}
+
+/// Hide every named local allocated at or after `scope_start` from further
+/// name resolution. Used at the exit of a scope-introducing construct whose
+/// bindings live in the enclosing `ctx.locals` list (for-loop var/index,
+/// match-arm pattern bindings) so an outer same-named binding re-resolves to
+/// the outer local after the construct ends. Idempotent.
+fn hide_scope_locals(ctx: &mut LoweringContext, scope_start: usize) {
+    let end = ctx.locals.len();
+    for i in scope_start..end {
+        if ctx.locals[i].name.is_some() {
+            ctx.hidden_locals.insert(ctx.locals[i].id.0);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7562,6 +7604,13 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             ctx.current_block = *arm_bb;
         }
 
+        // Pattern bindings (enum payload, tuple elements) for THIS arm are
+        // allocated in the enclosing scope below; hide them once the arm body
+        // is lowered so they don't shadow an outer same-named binding after
+        // the match (`let x = 999  match v { Circle(x) => .. }  x` must still
+        // read 999, and a type-changed shadow must not reinterpret memory).
+        let arm_scope_start = ctx.locals.len();
+
         // Str/array/map Ident-bound payload locals that got their OWN
         // independent retain (below) and so must get an EXPLICIT Drop
         // scoped to precisely THIS arm's own block -- see the long comment
@@ -7903,6 +7952,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             merge_bb
         };
         ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
+        hide_scope_locals(ctx, arm_scope_start);
     }
 
     // Default arm.
