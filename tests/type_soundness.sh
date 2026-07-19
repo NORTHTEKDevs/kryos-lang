@@ -400,3 +400,51 @@ else
   echo "type-soundness: $fail probe(s) FAILED"
   exit 1
 fi
+
+# --- Pass 42: enum patterns against concrete non-enum scrutinees -----------
+# `?` desugars to a Result match; applying it to a plain-i64-returning call
+# previously produced only a stray warning, ran on the JIT, and emitted
+# invalid LLVM IR on the AOT path (extractvalue on a scalar).
+
+want_reject qmark_on_plain_i64 '
+use std::result::{Result, Ok, Err}
+fn parse_and_double(s: str) -> Result<i64, str> {
+    let v: i64 = parse_int(s)?
+    return Ok(v * 2)
+}
+fn main() {
+    match parse_and_double("21") {
+        Ok(v) => println(to_string(v)),
+        Err(e) => println(e),
+    }
+}
+'
+
+want_reject enum_pattern_on_scalar '
+enum Color { Red, Green }
+fn main() {
+    let x = 3
+    match x {
+        Color.Red => println("r"),
+        _ => println("other"),
+    }
+}
+'
+
+want_pass qmark_on_real_result '
+use std::result::{Result, Ok, Err}
+fn half(n: i64) -> Result<i64, str> {
+    if n % 2 != 0 { return Err("odd") }
+    return Ok(n / 2)
+}
+fn double_half(n: i64) -> Result<i64, str> {
+    let h = half(n)?
+    return Ok(h * 2)
+}
+fn main() {
+    match double_half(10) {
+        Ok(v) => println(to_string(v)),
+        Err(e) => println(e),
+    }
+}
+'

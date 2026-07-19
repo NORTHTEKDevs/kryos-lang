@@ -1868,6 +1868,78 @@ impl TypeChecker {
                         vec![]
                     }
                     _ => {
+                        // An enum pattern against a CONCRETE non-enum subject
+                        // is a type error, full stop. This previously fell to
+                        // the lookup below, found nothing, and silently bound
+                        // the payload to a fresh var -- so `parse_int(s)?`
+                        // (`?` desugars to a Result match; parse_int returns
+                        // a plain i64) type-checked with only a stray
+                        // non-exhaustive-match WARNING, ran under the JIT, and
+                        // crashed the AOT build with invalid LLVM IR
+                        // (`extractvalue` on a scalar). Var/Never/Error stay
+                        // exempt (inference in progress / diverging /
+                        // already-reported), as do reference-like wrappers.
+                        let subject_is_concrete_non_enum = matches!(
+                            &resolved_subject,
+                            Type::I8
+                                | Type::I16
+                                | Type::I32
+                                | Type::I64
+                                | Type::I128
+                                | Type::U8
+                                | Type::U16
+                                | Type::U32
+                                | Type::U64
+                                | Type::U128
+                                | Type::F32
+                                | Type::F64
+                                | Type::Bool
+                                | Type::Char
+                                | Type::Str
+                                | Type::USize
+                                | Type::ISize
+                                | Type::Void
+                                | Type::Array { .. }
+                                | Type::Tuple { .. }
+                                | Type::Map { .. }
+                                | Type::Set { .. }
+                                | Type::Struct { .. }
+                                | Type::Function { .. }
+                        );
+                        if subject_is_concrete_non_enum {
+                            let is_try_desugar = name == "Result"
+                                && fields.iter().any(|f| {
+                                    matches!(f, Pattern::Ident { name, .. }
+                                        if name.starts_with("__kry_try_"))
+                                });
+                            if is_try_desugar {
+                                self.error_with_code(
+                                    format!(
+                                        "`?` requires a `Result` value, but this expression has type `{resolved_subject}` -- only apply `?` to `Result`-returning calls (wrap fallible plain calls in try/catch instead)"
+                                    ),
+                                    *enum_pat_span,
+                                    kryos_errors::codes::E0100,
+                                );
+                            } else {
+                                let shown = if name.is_empty() {
+                                    variant.clone()
+                                } else {
+                                    format!("{name}.{variant}")
+                                };
+                                self.error_with_code(
+                                    format!(
+                                        "pattern `{shown}` matches an enum variant, but this value has type `{resolved_subject}`"
+                                    ),
+                                    *enum_pat_span,
+                                    kryos_errors::codes::E0100,
+                                );
+                            }
+                            for pat in fields.iter() {
+                                let fresh = self.engine.fresh_var();
+                                self.bind_pattern_with_mut(pat, &fresh, outer_mut);
+                            }
+                            return;
+                        }
                         // Bare (unqualified) variant patterns carry an empty
                         // enum name; resolve it from the matched subject type
                         // when it is an enum.
@@ -2426,14 +2498,44 @@ impl TypeChecker {
                         _ => None,
                     };
                     let known = self.env.all_var_names();
+                    // An EXACT stdlib export beats any fuzzy guess: the real
+                    // problem is almost always a missing `use`, and the old
+                    // Levenshtein-only path pointed at unrelated builtins
+                    // (`exec` -> "did you mean `exit`?" when the user wanted
+                    // std::db's `execute`... or just hadn't imported std::db).
+                    let stdlib_hits = crate::suggest::stdlib_modules_exporting(name);
                     if let Some(diag) = self.diagnostics.last_mut() {
+                        let mut noted = false;
                         if let Some(note) = newcomer_note {
                             diag.notes.push(note.to_string());
-                        } else if let Some(suggestion) =
-                            crate::suggest::closest_match(name, known.iter().map(|s| s.as_str()))
-                        {
-                            diag.notes.push(format!("did you mean `{suggestion}`?"));
-                        } else {
+                            noted = true;
+                        }
+                        if !noted && !stdlib_hits.is_empty() {
+                            let uses: Vec<String> = stdlib_hits
+                                .iter()
+                                .take(2)
+                                .map(|m| format!("`use std::{m}`"))
+                                .collect();
+                            diag.notes.push(format!(
+                                "`{name}` is a std function -- add {}",
+                                uses.join(" or ")
+                            ));
+                            noted = true;
+                        }
+                        if newcomer_note.is_none() {
+                            // Keep the fuzzy local suggestion even alongside a
+                            // stdlib hit -- the name may equally be a typo of
+                            // an in-scope variable, and showing both is never
+                            // wrong.
+                            if let Some(suggestion) = crate::suggest::closest_match(
+                                name,
+                                known.iter().map(|s| s.as_str()),
+                            ) {
+                                diag.notes.push(format!("did you mean `{suggestion}`?"));
+                                noted = true;
+                            }
+                        }
+                        if !noted {
                             // No close match, show that variable is not in scope
                             diag.notes.push("this variable is not in scope".to_string());
                         }
