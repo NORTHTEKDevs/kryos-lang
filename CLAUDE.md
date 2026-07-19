@@ -301,12 +301,12 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 
 | Command                       | Purpose                                                        |
 | ----------------------------- | -------------------------------------------------------------- |
-| `kryos run <file-or-project>` | Compile + JIT-execute via Cranelift.                           |
+| `kryos run <file-or-project>` | Compile + execute via Cranelift (AOT + subprocess, not an in-process JIT). |
 | `kryos build --release`       | AOT via LLVM. Outputs native binary.                           |
-| `kryos build -g`              | Add debug info (DWARF on Unix, CodeView `.pdb` on Windows).    |
+| `kryos build -g`              | Add debug info (DWARF on Unix, CodeView `.pdb` on Windows) AND panic stack traces matching `kryos run`. |
 | `kryos check`                 | Type-check, do not codegen. Fast.                              |
 | `kryos fmt`                   | Auto-format `.kry` files in place.                             |
-| `kryos test`                  | Run `tests/` directory.                                        |
+| `kryos test`                  | Run `@test` fns (file or `tests/` dir) in-process. Works with stdlib imports and `@capabilities`; failing tests exit 1. LIMITATION: a runtime PANIC (not a failed assert) inside one test aborts the whole run -- panics are process-fatal by design, so remaining tests don't execute. |
 | `kryos repl`                  | Interactive shell.                                             |
 | `kryos doc`                   | Generate HTML from `///` doc comments.                         |
 | `kryos pkg add <name>`        | Resolve and install a registry package.                        |

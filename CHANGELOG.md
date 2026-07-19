@@ -74,6 +74,21 @@ self-host bootstrap 16/16 throughout.
   via `infer_type_name`), so a 30-deep `b.inc().inc()…` chain took >90s. A
   100-deep chain now compiles in ~0.5s.
 
+### Fixed — `kryos test` works on real test files (cert Pass 43)
+- **Selective imports no longer falsely collide.** `use std::string::{split_lines}`
+  plus `use std::re` failed with "duplicate function `split` imported from
+  multiple modules" — the collision was between std::re's *exported* `split`
+  and a std::string *internal helper* the user never imported. Non-selected
+  transitive helpers now get module-private names.
+- **`kryos test` no longer crashes on stdlib-importing or `@capabilities`
+  tests.** The test runner's in-process JIT was missing dozens of native
+  symbols the AOT path resolves at link time ("can't resolve symbol
+  str_to_ptr" / "kryos_db_open" process aborts). The symbol inventory is now
+  generated from the sources at build time, ending the drift class.
+- Known limitation (documented): a runtime *panic* (not a failed assert)
+  inside one test still aborts the whole run — panics are process-fatal by
+  design.
+
 ### Fixed — stdlib, WASM backend, docs (cert Pass 42)
 - **`?` on a non-`Result` value is now a clean compile error.** It desugars to
   a `Result` match; against a plain value it previously produced only a stray
