@@ -75,6 +75,16 @@ self-host bootstrap 16/16 throughout.
   100-deep chain now compiles in ~0.5s.
 
 ### Fixed — stdlib, WASM backend, docs (cert Pass 42)
+- **`?` on a non-`Result` value is now a clean compile error.** It desugars to
+  a `Result` match; against a plain value it previously produced only a stray
+  warning, ran under the JIT, and crashed the AOT build with invalid LLVM IR.
+  Enum patterns against any concrete non-enum scrutinee are now rejected
+  (E0100) on both backends.
+- **`kryos build -g` binaries print panic stack traces** identical to the JIT
+  (frame names + file:line). Release binaries intentionally stay untraced.
+- **Missing-import hints**: "undefined variable `execute`" now suggests
+  "add `use std::db`" (index generated from the real stdlib at build time)
+  instead of fuzzy-matching an unrelated builtin.
 - **`http.parse_url` no longer crashes the process** on userinfo URLs
   (`user:pass@host` — DB conn strings, git remotes) or non-numeric ports; both
   previously hit an uncatchable `parse_int` panic.
