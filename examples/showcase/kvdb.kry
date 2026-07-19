@@ -323,7 +323,7 @@ fn main() {
   println("")
   println("--- delete ---")
   db_del("user:2:name")
-  println("has user:2:name: " + (db_has("user:2:name") as string))
+  println("has user:2:name: " + to_string(db_has("user:2:name")))
   println("live count: " + to_string(live_len()))
 
   println("")
