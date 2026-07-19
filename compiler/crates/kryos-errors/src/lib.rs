@@ -256,7 +256,15 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                 let col_start = (col - 1) as usize;
                 let span_len = (label.span.end - label.span.start) as usize;
                 let padding = " ".repeat(col_start);
-                let underline = "^".repeat(span_len.max(1));
+                // Clamp the caret run to the visible portion of THIS line. A
+                // MULTI-LINE span (e.g. a whole `match { .. }` expression) has
+                // a byte length far larger than the one displayed line, so an
+                // unclamped `^`.repeat(span_len) drew carets running off the
+                // end of the shown line -- breaking any editor/LSP that maps
+                // the caret range back to columns. Single-line spans are
+                // unaffected (their length already fits the line).
+                let max_underline = src_line.len().saturating_sub(col_start).max(1);
+                let underline = "^".repeat(span_len.min(max_underline).max(1));
                 let line_num_width = format!("{line}").len();
                 let gutter = " ".repeat(line_num_width + 2);
 
