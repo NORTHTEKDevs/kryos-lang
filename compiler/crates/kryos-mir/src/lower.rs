@@ -1039,7 +1039,11 @@ pub fn lower_module_with_lambda_params(
         ("write_file", MirType::I64),
         ("http_get", MirType::Str),
         ("read_line", MirType::Str),
-        ("file_exists", MirType::Bool),
+        // file_exists returns i64 (1/0), per the type checker and the language
+        // reference -- NOT bool. Typing it Bool here made `to_string` of an
+        // unannotated `let e = file_exists(..)` print "true"/"false" and
+        // poisoned downstream i64 arithmetic typing.
+        ("file_exists", MirType::I64),
         ("file_size", MirType::I64),
         ("create_dir", MirType::Void),
         ("is_null", MirType::Bool),
