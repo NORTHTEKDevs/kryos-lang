@@ -562,8 +562,28 @@ impl TypeChecker {
                 name,
                 generics,
                 fields,
+                span,
                 ..
             } => {
+                // Duplicate field names in the DECLARATION. Fields are stored
+                // positionally in a Vec with no uniqueness check, so which of
+                // two same-named fields a literal/access resolved to was
+                // implementation-defined -- silent wrong data. Mirrors the
+                // duplicate-function check above.
+                {
+                    let mut seen_fields = std::collections::HashSet::new();
+                    for f in fields {
+                        if !seen_fields.insert(f.name.as_str()) {
+                            self.error(
+                                format!(
+                                    "duplicate field `{}` in struct `{name}` -- each field name may appear only once",
+                                    f.name
+                                ),
+                                *span,
+                            );
+                        }
+                    }
+                }
                 // Bind generic params so they resolve in field types.
                 let mut generic_var_ids = Vec::new();
                 if !generics.is_empty() {
@@ -3637,6 +3657,22 @@ impl TypeChecker {
                 }
             }
             Expr::StructLiteral { name, fields, span } => {
+                // Duplicate field in the LITERAL (`Point { x: 1.0, x: 2.0 }`)
+                // -- classic copy-paste typo; which value won was
+                // implementation-defined before this check.
+                {
+                    let mut seen_fields = std::collections::HashSet::new();
+                    for (fname, _) in fields {
+                        if !seen_fields.insert(fname.as_str()) {
+                            self.error(
+                                format!(
+                                    "duplicate field `{fname}` in `{name}` literal -- each field may be set only once"
+                                ),
+                                *span,
+                            );
+                        }
+                    }
+                }
                 if self.actor_names.contains(name) {
                     self.error(
                         format!(

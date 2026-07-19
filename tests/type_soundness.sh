@@ -394,13 +394,6 @@ fn main() {
 }
 '
 
-if [ "$fail" -eq 0 ]; then
-  echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
-else
-  echo "type-soundness: $fail probe(s) FAILED"
-  exit 1
-fi
-
 # --- Pass 42: enum patterns against concrete non-enum scrutinees -----------
 # `?` desugars to a Result match; applying it to a plain-i64-returning call
 # previously produced only a stray warning, ran on the JIT, and emitted
@@ -448,3 +441,40 @@ fn main() {
     }
 }
 '
+
+# --- Pass 45: duplicate struct fields must be rejected ----------------------
+# Fields are stored positionally with no uniqueness check, so which of two
+# same-named fields a literal or access resolved to was implementation-defined
+# (silent wrong data on the classic copy-paste typo).
+
+want_reject dup_field_in_decl '
+struct Point { x: f64, y: f64, x: f64 }
+fn main() {
+    let p = Point { x: 1.0, y: 2.0, x: 3.0 }
+    println(to_string(p.x))
+}
+'
+
+want_reject dup_field_in_literal '
+struct Point { x: f64, y: f64 }
+fn main() {
+    let p = Point { x: 1.0, x: 2.0, y: 3.0 }
+    println(to_string(p.x))
+}
+'
+
+want_pass distinct_fields_still_accepted '
+struct Point { x: f64, y: f64 }
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 }
+    if p.x + p.y != 3.0 { exit(1) }
+    println("ok")
+}
+'
+
+if [ "$fail" -eq 0 ]; then
+  echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
+else
+  echo "type-soundness: $fail probe(s) FAILED"
+  exit 1
+fi
