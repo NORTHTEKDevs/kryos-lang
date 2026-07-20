@@ -256,6 +256,24 @@ pub fn snapshot_frames() -> Vec<(String, u32)> {
 /// Format the current call stack as a human-readable string.
 ///
 /// Returns an empty string if the stack is empty.
+///
+/// KNOWN LIMITATION (line precision): each frame's `line` is set ONCE at
+/// `kryos_trace_enter` to the function's *declaration* line (`MirFunction::
+/// source_line`) and never advances, so every frame reports where the function
+/// was defined, not the call/panic site inside it. A leaf frame that panics at
+/// line 9 of a function declared at line 1 still prints `:1`.
+///
+/// Fixing this requires per-frame "current line" updates: emit a
+/// `kryos_trace_line(line)` hook (setting the TOP frame's line -- always the
+/// currently-executing frame) at each call site and each panic-capable
+/// operation. The source lines are already available as MIR `DebugLine`
+/// markers, but those are gated to the `kryos dap` debug path
+/// (`debug_lines::debug_lines_active()`) because always-on per-statement
+/// instrumentation adds a runtime hook to every statement and regresses hot
+/// loops. Enabling it for normal builds (globally, or scoped to call/panic
+/// sites) is a performance-vs-diagnostics tradeoff left as an owner decision;
+/// it also requires the corresponding emission in BOTH the Cranelift and LLVM
+/// backends.
 pub fn format_stack_trace() -> String {
     CALL_STACK.with(|stack| {
         let stack = stack.borrow();
