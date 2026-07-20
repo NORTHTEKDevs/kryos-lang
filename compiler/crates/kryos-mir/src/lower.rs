@@ -3851,6 +3851,79 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 _ => None,
                             };
                             let rvalue = lower_expr_to_rvalue(ctx, value);
+                            // Exception-safety: `dest = fails()` where `fails`
+                            // THROWS must leave `dest` holding its OLD value.
+                            // `Assign { dest, Call }` is a single instruction
+                            // whose store executes as part of the call, and the
+                            // post-call exception check (emit()) only fires
+                            // AFTER it -- so a throw left `dest` clobbered with
+                            // the null sentinel (old heap value lost, then a
+                            // null-deref on the next read; found by the runtime
+                            // exception-safety fuzz). Only matters inside a
+                            // try/catch (an uncaught throw exits anyway). Fix:
+                            // materialize the throwable call into a fresh temp
+                            // first (its exception check fires after `tmp =
+                            // Call`, diverting to the catch with `dest`
+                            // untouched), then MOVE the temp into `dest`
+                            // (release the old value, no container retain --
+                            // the temp is an owned fresh result, not a shared
+                            // local -- and mark the temp consumed).
+                            if ctx.try_catch_target.is_some()
+                                && matches!(
+                                    rvalue,
+                                    RValue::Call { .. } | RValue::CallIndirect { .. }
+                                )
+                            {
+                                match &rvalue {
+                                    RValue::Call { func, args } => {
+                                        consume_call_args(ctx, dest, func, args)
+                                    }
+                                    RValue::CallIndirect { args, .. } => {
+                                        consume_call_args(ctx, dest, "", args)
+                                    }
+                                    _ => {}
+                                }
+                                let ty = dest_ty.clone().unwrap_or(MirType::I64);
+                                let tmp = ctx.alloc_temp(ty);
+                                ctx.emit(Instruction::Assign {
+                                    dest: tmp,
+                                    value: rvalue,
+                                });
+                                // Past the exception check now -- safe to touch
+                                // dest. Release the old value (guarded), then
+                                // move the temp in.
+                                if let (Some(f), Some(old)) = (release_fn, old_snapshot) {
+                                    drop_tag(ctx, "reassign-release-exc-safe");
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: f.to_string(),
+                                            args: vec![
+                                                Operand::Local(old),
+                                                Operand::Local(tmp),
+                                            ],
+                                        },
+                                    });
+                                } else if let (Some(struct_name), Some(old)) =
+                                    (&dest_struct_name, old_snapshot)
+                                {
+                                    drop_tag(ctx, "reassign-release-struct-exc-safe");
+                                    release_struct_heap_fields_if_ne(
+                                        ctx,
+                                        old,
+                                        tmp,
+                                        struct_name,
+                                    );
+                                }
+                                ctx.emit(Instruction::Assign {
+                                    dest,
+                                    value: RValue::Use(Operand::Local(tmp)),
+                                });
+                                ctx.dropped_locals.insert(tmp.0);
+                                ctx.dropped_locals.remove(&dest.0);
+                                return;
+                            }
                             // Reassign from a bare local: containers SHARE
                             // (retain), mirroring the Let-binding rule. The
                             // old consume-the-source model broke when the

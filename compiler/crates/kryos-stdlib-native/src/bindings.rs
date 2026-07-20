@@ -697,10 +697,16 @@ pub extern "C" fn kryos_byte_at_ks(input_handle: i64, idx: i64) -> i64 {
         return -1;
     }
     let i = idx as usize;
-    // Walk codepoints, returning the scalar value of the i-th one.
+    // Walk codepoints, returning the scalar value of the i-th one -- the FULL
+    // Unicode codepoint, matching char_code and the documented contract
+    // ("CODEPOINT of the i-th CHARACTER"). The previous `& 0xff` truncated
+    // any codepoint >= 256 (CJK, emoji, most non-Latin scripts) to its low
+    // byte -- byte_at("日", 0) returned 229 (26085 mod 256) instead of 26085.
+    // For a latin-1 buffer (codepoints 0-255, the base64/chr byte model) the
+    // mask was a no-op, which hid the bug.
     for (k, ch) in s.chars().enumerate() {
         if k == i {
-            return (ch as u32) as i64 & 0xff;
+            return (ch as u32) as i64;
         }
     }
     -1

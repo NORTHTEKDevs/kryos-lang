@@ -1,0 +1,48 @@
+// Conformance: runtime exception-safety + a few stdlib correctness fixes.
+use std::csv::{parse}
+use std::http::{parse_url, url_to_string}
+use std::random::{new_rng, range_i64}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn throws_arr() -> [i64] { throw "boom" }
+fn throws_str() -> str { throw "boom" }
+
+fn main() {
+    // Exception during an assignment RHS must leave the target UNCHANGED
+    // (the throwing call must not clobber the destination before the
+    // exception check diverts to the catch).
+    let mut a: [i64] = [999]
+    try { a = throws_arr() } catch e { expect(e == "boom", "array catch msg") }
+    expect(len(a) == 1 and a[0] == 999, "throwing assign preserves array target")
+    let mut s: str = "keep"
+    try { s = throws_str() } catch e {}
+    expect(s == "keep", "throwing assign preserves str target")
+
+    // byte_at returns the FULL codepoint, not the low byte.
+    expect(byte_at("日", 0) == 26085, "byte_at returns full codepoint (CJK)")
+    expect(byte_at("é", 0) == 233, "byte_at latin-1 still correct")
+
+    // csv: an interior blank line is a 0-field row, not dropped.
+    let rows = parse("a,b\n\nc,d\n")
+    expect(len(rows) == 3, "csv interior blank line yields a row")
+    expect(len(rows[1].fields) == 1 and rows[1].fields[0] == "", "csv blank row is empty")
+    expect(rows[2].fields[0] == "c", "csv row after blank not misaligned")
+
+    // http: url_to_string keeps the port for a non-http/https scheme.
+    let u = parse_url("ftp://example.com:21/file")
+    expect(url_to_string(u) == "ftp://example.com:21/file", "url_to_string keeps ftp port")
+
+    // random: range_i64 over the full i64 span does not collapse to lo.
+    let r = new_rng(1)
+    let x = range_i64(r, -9223372036854775807 - 1, 9223372036854775807)
+    let y = range_i64(r, -9223372036854775807 - 1, 9223372036854775807)
+    expect(x != y, "range_i64 full-span varies (no overflow collapse)")
+
+    println("conf_runtime_stdlib OK")
+}
