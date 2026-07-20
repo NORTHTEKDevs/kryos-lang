@@ -1222,39 +1222,49 @@ fn collect_bound_in_pattern(p: &Pattern, out: &mut HashSet<String>) {
     }
 }
 
-/// Every name a function body binds locally: let names/patterns, for-loop
-/// patterns, catch names, lambda params, match-arm patterns. Used to keep the
-/// module-private rename from touching a local that shadows a helper --
-/// std::-style code routinely names a parameter after a module function
-/// (`fn cost_delta(replay: ComputeCost, ..)` in a module that also defines
-/// `fn replay(..)`), and renaming those uses pointed them at the mangled fn.
-fn collect_bound_names_in_block(b: &Block, out: &mut HashSet<String>) {
-    for stmt in &b.stmts {
-        collect_bound_names_in_stmt(stmt, out);
+
+/// Rename with the shadow-aware map, LEXICALLY SCOPED: a helper reference is
+/// renamed unless a local binding shadows that name AT THAT POINT. A
+/// function-wide exclusion (the old approach) was too coarse -- a body that
+/// binds a local named after a helper it ALSO calls in a different scope
+/// (`fn pow` has `let mut exp` in its fast-path if-block AND calls the sibling
+/// `exp()` in its general path) had the call left un-renamed while the helper
+/// itself was mangled -> "undefined variable `exp`". Scope tracking renames
+/// the general-path call (where the local is out of scope) and leaves the
+/// fast-path local alone.
+fn rename_in_fn_body(params: &[Param], body: &mut Block, map: &HashMap<String, String>) {
+    let shadowed: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    rename_block_scoped(body, map, &shadowed);
+}
+
+fn rename_block_scoped(b: &mut Block, map: &HashMap<String, String>, shadowed: &HashSet<String>) {
+    // A `let` binding shadows the helper for the REMAINDER of THIS block, so
+    // accumulate bindings statement-by-statement (nested blocks get their own
+    // scope via the recursive calls in rename_stmt_scoped).
+    let mut cur = shadowed.clone();
+    for stmt in &mut b.stmts {
+        rename_stmt_scoped(stmt, map, &cur);
+        if let Stmt::Let { name, pattern, .. } = stmt {
+            cur.insert(name.clone());
+            if let Some(p) = pattern {
+                collect_bound_in_pattern(p, &mut cur);
+            }
+        }
     }
 }
 
-fn collect_bound_names_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
+fn rename_stmt_scoped(s: &mut Stmt, map: &HashMap<String, String>, shadowed: &HashSet<String>) {
     match s {
-        Stmt::Let {
-            name,
-            pattern,
-            value,
-            ..
-        } => {
-            out.insert(name.clone());
-            if let Some(p) = pattern {
-                collect_bound_in_pattern(p, out);
-            }
+        Stmt::Let { value, .. } => {
             if let Some(v) = value {
-                collect_bound_names_in_expr(v, out);
+                rename_expr_scoped(v, map, shadowed);
             }
         }
         Stmt::Assign { target, value, .. } => {
-            collect_bound_names_in_expr(target, out);
-            collect_bound_names_in_expr(value, out);
+            rename_expr_scoped(target, map, shadowed);
+            rename_expr_scoped(value, map, shadowed);
         }
-        Stmt::Return { value: Some(v), .. } => collect_bound_names_in_expr(v, out),
+        Stmt::Return { value: Some(v), .. } => rename_expr_scoped(v, map, shadowed),
         Stmt::Return { value: None, .. } => {}
         Stmt::If {
             condition,
@@ -1263,14 +1273,14 @@ fn collect_bound_names_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
             else_block,
             ..
         } => {
-            collect_bound_names_in_expr(condition, out);
-            collect_bound_names_in_block(then_block, out);
+            rename_expr_scoped(condition, map, shadowed);
+            rename_block_scoped(then_block, map, shadowed);
             for (c, b) in elif_clauses {
-                collect_bound_names_in_expr(c, out);
-                collect_bound_names_in_block(b, out);
+                rename_expr_scoped(c, map, shadowed);
+                rename_block_scoped(b, map, shadowed);
             }
             if let Some(b) = else_block {
-                collect_bound_names_in_block(b, out);
+                rename_block_scoped(b, map, shadowed);
             }
         }
         Stmt::For {
@@ -1279,27 +1289,30 @@ fn collect_bound_names_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
             body,
             ..
         } => {
-            collect_bound_in_pattern(pattern, out);
-            collect_bound_names_in_expr(iterable, out);
-            collect_bound_names_in_block(body, out);
+            rename_expr_scoped(iterable, map, shadowed);
+            let mut body_shadow = shadowed.clone();
+            collect_bound_in_pattern(pattern, &mut body_shadow);
+            rename_block_scoped(body, map, &body_shadow);
         }
         Stmt::While {
             condition, body, ..
         } => {
-            collect_bound_names_in_expr(condition, out);
-            collect_bound_names_in_block(body, out);
+            rename_expr_scoped(condition, map, shadowed);
+            rename_block_scoped(body, map, shadowed);
         }
         Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
-            collect_bound_names_in_expr(expr, out)
+            rename_expr_scoped(expr, map, shadowed)
         }
         Stmt::Select {
             branches, timeout, ..
         } => {
             for br in branches {
-                collect_bound_names_in_block(&br.body, out);
+                rename_expr_scoped(&mut br.channel, map, shadowed);
+                rename_block_scoped(&mut br.body, map, shadowed);
             }
             if let Some(t) = timeout {
-                collect_bound_names_in_block(&t.body, out);
+                rename_expr_scoped(&mut t.duration_ms, map, shadowed);
+                rename_block_scoped(&mut t.body, map, shadowed);
             }
         }
         Stmt::TryCatch {
@@ -1308,32 +1321,74 @@ fn collect_bound_names_in_stmt(s: &Stmt, out: &mut HashSet<String>) {
             catch_block,
             ..
         } => {
-            out.insert(catch_name.clone());
-            collect_bound_names_in_block(try_block, out);
-            collect_bound_names_in_block(catch_block, out);
+            rename_block_scoped(try_block, map, shadowed);
+            let mut catch_shadow = shadowed.clone();
+            catch_shadow.insert(catch_name.clone());
+            rename_block_scoped(catch_block, map, &catch_shadow);
         }
-        Stmt::DenyBlock { body, .. } => collect_bound_names_in_block(body, out),
+        Stmt::DenyBlock { body, .. } => rename_block_scoped(body, map, shadowed),
         Stmt::Break { .. } | Stmt::Continue { .. } => {}
     }
 }
 
-fn collect_bound_names_in_expr(e: &Expr, out: &mut HashSet<String>) {
+fn rename_expr_scoped(e: &mut Expr, map: &HashMap<String, String>, shadowed: &HashSet<String>) {
     match e {
-        Expr::Lambda { params, body, .. } => {
-            for p in params {
-                out.insert(p.name.clone());
-            }
-            collect_bound_names_in_expr(body, out);
-        }
-        Expr::MatchExpr { subject, arms, .. } => {
-            collect_bound_names_in_expr(subject, out);
-            for arm in arms {
-                collect_bound_in_pattern(&arm.pattern, out);
-                if let Some(g) = &arm.guard {
-                    collect_bound_names_in_expr(g, out);
+        Expr::Identifier { name, .. } => {
+            if !shadowed.contains(name.as_str()) {
+                if let Some(new) = map.get(name) {
+                    *name = new.clone();
                 }
-                collect_bound_names_in_expr(&arm.body, out);
             }
+        }
+        Expr::FieldAccess { object, .. } => rename_expr_scoped(object, map, shadowed),
+        Expr::IndexAccess { object, index, .. } => {
+            rename_expr_scoped(object, map, shadowed);
+            rename_expr_scoped(index, map, shadowed);
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            rename_expr_scoped(left, map, shadowed);
+            rename_expr_scoped(right, map, shadowed);
+        }
+        Expr::UnaryOp { operand, .. } => rename_expr_scoped(operand, map, shadowed),
+        Expr::FnCall { callee, args, .. } => {
+            rename_expr_scoped(callee, map, shadowed);
+            for a in args {
+                rename_expr_scoped(a, map, shadowed);
+            }
+        }
+        Expr::MethodCall { object, args, .. } => {
+            rename_expr_scoped(object, map, shadowed);
+            for a in args {
+                rename_expr_scoped(a, map, shadowed);
+            }
+        }
+        Expr::StaticMethodCall { args, .. } => {
+            for a in args {
+                rename_expr_scoped(a, map, shadowed);
+            }
+        }
+        Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+            for el in elements {
+                rename_expr_scoped(el, map, shadowed);
+            }
+        }
+        Expr::MapLiteral { entries, .. } => {
+            for (k, v) in entries {
+                rename_expr_scoped(k, map, shadowed);
+                rename_expr_scoped(v, map, shadowed);
+            }
+        }
+        Expr::StructLiteral { fields, .. } => {
+            for (_, v) in fields {
+                rename_expr_scoped(v, map, shadowed);
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            let mut body_shadow = shadowed.clone();
+            for p in params.iter() {
+                body_shadow.insert(p.name.clone());
+            }
+            rename_expr_scoped(body, map, &body_shadow);
         }
         Expr::IfExpr {
             condition,
@@ -1341,64 +1396,53 @@ fn collect_bound_names_in_expr(e: &Expr, out: &mut HashSet<String>) {
             else_branch,
             ..
         } => {
-            collect_bound_names_in_expr(condition, out);
-            collect_bound_names_in_block(then_branch, out);
+            rename_expr_scoped(condition, map, shadowed);
+            rename_block_scoped(then_branch, map, shadowed);
             if let Some(eb) = else_branch {
-                collect_bound_names_in_block(eb, out);
+                rename_block_scoped(eb, map, shadowed);
             }
         }
+        Expr::MatchExpr { subject, arms, .. } => {
+            rename_expr_scoped(subject, map, shadowed);
+            for arm in arms {
+                let mut arm_shadow = shadowed.clone();
+                collect_bound_in_pattern(&arm.pattern, &mut arm_shadow);
+                if let Some(g) = &mut arm.guard {
+                    rename_expr_scoped(g, map, &arm_shadow);
+                }
+                rename_expr_scoped(&mut arm.body, map, &arm_shadow);
+            }
+        }
+        Expr::RangeExpr { start, end, .. } => {
+            if let Some(s) = start {
+                rename_expr_scoped(s, map, shadowed);
+            }
+            if let Some(en) = end {
+                rename_expr_scoped(en, map, shadowed);
+            }
+        }
+        Expr::PipeExpr { left, right, .. } => {
+            rename_expr_scoped(left, map, shadowed);
+            rename_expr_scoped(right, map, shadowed);
+        }
+        Expr::Borrow { inner, .. }
+        | Expr::Deref { inner, .. }
+        | Expr::SharedExpr { inner, .. }
+        | Expr::MoveExpr { inner, .. }
+        | Expr::WeakExpr { inner, .. } => rename_expr_scoped(inner, map, shadowed),
+        Expr::Cast { expr, .. } => rename_expr_scoped(expr, map, shadowed),
+        Expr::Await { value, .. } => rename_expr_scoped(value, map, shadowed),
         Expr::Block { block, .. }
         | Expr::ComptimeBlock { body: block, .. }
-        | Expr::QuantumBlock { body: block, .. } => collect_bound_names_in_block(block, out),
-        Expr::FnCall { callee, args, .. } => {
-            collect_bound_names_in_expr(callee, out);
-            for a in args {
-                collect_bound_names_in_expr(a, out);
-            }
-        }
-        Expr::MethodCall { object, args, .. } => {
-            collect_bound_names_in_expr(object, out);
-            for a in args {
-                collect_bound_names_in_expr(a, out);
-            }
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            collect_bound_names_in_expr(left, out);
-            collect_bound_names_in_expr(right, out);
-        }
-        Expr::UnaryOp { operand, .. } => collect_bound_names_in_expr(operand, out),
+        | Expr::QuantumBlock { body: block, .. } => rename_block_scoped(block, map, shadowed),
         Expr::InterpolatedString { parts, .. } => {
             for p in parts {
                 if let StringPart::Expr(pe) = p {
-                    collect_bound_names_in_expr(pe, out);
+                    rename_expr_scoped(pe, map, shadowed);
                 }
             }
         }
         _ => {}
-    }
-}
-
-/// Rename with the shadow-aware map: names the function binds locally
-/// (params or any let/for/catch/lambda/match binding) are dropped from the
-/// map for that body.
-fn rename_in_fn_body(
-    params: &[Param],
-    body: &mut Block,
-    map: &HashMap<String, String>,
-) {
-    let mut bound: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
-    collect_bound_names_in_block(body, &mut bound);
-    if bound.iter().any(|b| map.contains_key(b)) {
-        let filtered: HashMap<String, String> = map
-            .iter()
-            .filter(|(k, _)| !bound.contains(*k))
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-        if !filtered.is_empty() {
-            rename_idents_in_block(body, &filtered);
-        }
-    } else {
-        rename_idents_in_block(body, map);
     }
 }
 
@@ -1428,184 +1472,8 @@ fn rename_idents_in_decl(d: &mut Decl, map: &HashMap<String, String>) {
                 }
             }
         }
-        Decl::Const { value, .. } => rename_idents_in_expr(value, map),
+        Decl::Const { value, .. } => rename_expr_scoped(value, map, &HashSet::new()),
         _ => {}
     }
 }
 
-fn rename_idents_in_block(b: &mut Block, map: &HashMap<String, String>) {
-    for stmt in &mut b.stmts {
-        rename_idents_in_stmt(stmt, map);
-    }
-}
-
-fn rename_idents_in_stmt(s: &mut Stmt, map: &HashMap<String, String>) {
-    match s {
-        Stmt::Let { value, .. } => {
-            if let Some(v) = value {
-                rename_idents_in_expr(v, map);
-            }
-        }
-        Stmt::Assign { target, value, .. } => {
-            rename_idents_in_expr(target, map);
-            rename_idents_in_expr(value, map);
-        }
-        Stmt::Return { value: Some(v), .. } => rename_idents_in_expr(v, map),
-        Stmt::Return { value: None, .. } => {}
-        Stmt::If {
-            condition,
-            then_block,
-            elif_clauses,
-            else_block,
-            ..
-        } => {
-            rename_idents_in_expr(condition, map);
-            rename_idents_in_block(then_block, map);
-            for (c, b) in elif_clauses {
-                rename_idents_in_expr(c, map);
-                rename_idents_in_block(b, map);
-            }
-            if let Some(b) = else_block {
-                rename_idents_in_block(b, map);
-            }
-        }
-        Stmt::For { iterable, body, .. } => {
-            rename_idents_in_expr(iterable, map);
-            rename_idents_in_block(body, map);
-        }
-        Stmt::While { condition, body, .. } => {
-            rename_idents_in_expr(condition, map);
-            rename_idents_in_block(body, map);
-        }
-        Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
-            rename_idents_in_expr(expr, map)
-        }
-        Stmt::Select {
-            branches, timeout, ..
-        } => {
-            for br in branches {
-                rename_idents_in_expr(&mut br.channel, map);
-                rename_idents_in_block(&mut br.body, map);
-            }
-            if let Some(t) = timeout {
-                rename_idents_in_expr(&mut t.duration_ms, map);
-                rename_idents_in_block(&mut t.body, map);
-            }
-        }
-        Stmt::TryCatch {
-            try_block,
-            catch_block,
-            ..
-        } => {
-            rename_idents_in_block(try_block, map);
-            rename_idents_in_block(catch_block, map);
-        }
-        Stmt::DenyBlock { body, .. } => rename_idents_in_block(body, map),
-        Stmt::Break { .. } | Stmt::Continue { .. } => {}
-    }
-}
-
-fn rename_idents_in_expr(e: &mut Expr, map: &HashMap<String, String>) {
-    match e {
-        Expr::Identifier { name, .. } => {
-            if let Some(new) = map.get(name) {
-                *name = new.clone();
-            }
-        }
-        Expr::FieldAccess { object, .. } => rename_idents_in_expr(object, map),
-        Expr::IndexAccess { object, index, .. } => {
-            rename_idents_in_expr(object, map);
-            rename_idents_in_expr(index, map);
-        }
-        Expr::BinaryOp { left, right, .. } => {
-            rename_idents_in_expr(left, map);
-            rename_idents_in_expr(right, map);
-        }
-        Expr::UnaryOp { operand, .. } => rename_idents_in_expr(operand, map),
-        Expr::FnCall { callee, args, .. } => {
-            rename_idents_in_expr(callee, map);
-            for a in args {
-                rename_idents_in_expr(a, map);
-            }
-        }
-        Expr::MethodCall { object, args, .. } => {
-            rename_idents_in_expr(object, map);
-            for a in args {
-                rename_idents_in_expr(a, map);
-            }
-        }
-        Expr::StaticMethodCall { args, .. } => {
-            for a in args {
-                rename_idents_in_expr(a, map);
-            }
-        }
-        Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
-            for el in elements {
-                rename_idents_in_expr(el, map);
-            }
-        }
-        Expr::MapLiteral { entries, .. } => {
-            for (k, v) in entries {
-                rename_idents_in_expr(k, map);
-                rename_idents_in_expr(v, map);
-            }
-        }
-        Expr::StructLiteral { fields, .. } => {
-            for (_, v) in fields {
-                rename_idents_in_expr(v, map);
-            }
-        }
-        Expr::Lambda { body, .. } => rename_idents_in_expr(body, map),
-        Expr::IfExpr {
-            condition,
-            then_branch,
-            else_branch,
-            ..
-        } => {
-            rename_idents_in_expr(condition, map);
-            rename_idents_in_block(then_branch, map);
-            if let Some(eb) = else_branch {
-                rename_idents_in_block(eb, map);
-            }
-        }
-        Expr::MatchExpr { subject, arms, .. } => {
-            rename_idents_in_expr(subject, map);
-            for arm in arms {
-                if let Some(g) = &mut arm.guard {
-                    rename_idents_in_expr(g, map);
-                }
-                rename_idents_in_expr(&mut arm.body, map);
-            }
-        }
-        Expr::RangeExpr { start, end, .. } => {
-            if let Some(s) = start {
-                rename_idents_in_expr(s, map);
-            }
-            if let Some(en) = end {
-                rename_idents_in_expr(en, map);
-            }
-        }
-        Expr::PipeExpr { left, right, .. } => {
-            rename_idents_in_expr(left, map);
-            rename_idents_in_expr(right, map);
-        }
-        Expr::Borrow { inner, .. }
-        | Expr::Deref { inner, .. }
-        | Expr::SharedExpr { inner, .. }
-        | Expr::MoveExpr { inner, .. }
-        | Expr::WeakExpr { inner, .. } => rename_idents_in_expr(inner, map),
-        Expr::Cast { expr, .. } => rename_idents_in_expr(expr, map),
-        Expr::Await { value, .. } => rename_idents_in_expr(value, map),
-        Expr::Block { block, .. }
-        | Expr::ComptimeBlock { body: block, .. }
-        | Expr::QuantumBlock { body: block, .. } => rename_idents_in_block(block, map),
-        Expr::InterpolatedString { parts, .. } => {
-            for p in parts {
-                if let StringPart::Expr(pe) = p {
-                    rename_idents_in_expr(pe, map);
-                }
-            }
-        }
-        _ => {}
-    }
-}

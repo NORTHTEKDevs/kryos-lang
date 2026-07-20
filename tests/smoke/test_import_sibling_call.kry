@@ -1,0 +1,12 @@
+// A selectively-imported stdlib fn whose body calls a same-module sibling
+// (and shadows that sibling's name with a local var) must resolve without
+// the caller importing the sibling. `pow` calls `exp` in its general path
+// and has a local `let mut exp` in its fast path -- was "undefined `exp`".
+use std::math::{pow}
+fn main() {
+    let r = pow(2.0, 0.5)
+    if r < 1.414 or r > 1.415 { println("FAIL")  exit(1) }
+    let i = pow(2.0, 10.0)
+    if i != 1024.0 { println("FAIL int path")  exit(1) }
+    println("ok")
+}
