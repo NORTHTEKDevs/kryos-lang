@@ -1,0 +1,21 @@
+// expect-error: @pure
+// A @pure function cannot call a static/associated method -- same reason as
+// instance dispatch: purity is unverifiable, so the @pure optimization could
+// drop side effects. (Enum-variant construction like `Some(x)` is unaffected.)
+
+struct Sys { x: i64 }
+impl Sys {
+    fn boom() -> i64 {
+        println("side effect")
+        return 7
+    }
+}
+
+@pure
+fn tainted() -> i64 {
+    return Sys::boom()
+}
+
+fn main() {
+    tainted()
+}

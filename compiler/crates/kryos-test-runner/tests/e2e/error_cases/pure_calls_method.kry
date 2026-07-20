@@ -1,0 +1,23 @@
+// expect-error: @pure
+// A @pure function cannot call an instance method. The method's purity
+// cannot be verified, and the @pure CSE/dead-call optimization would
+// otherwise silently drop any side effect the method performs (release
+// builds deduplicated such calls -- a real miscompile).
+
+struct Logger { id: i64 }
+impl Logger {
+    fn log(self: Logger) -> i64 {
+        println("side effect")
+        return 0
+    }
+}
+
+@pure
+fn tainted(l: Logger) -> i64 {
+    return l.log() + 1
+}
+
+fn main() {
+    let lg: Logger = Logger { id: 1 }
+    tainted(lg)
+}

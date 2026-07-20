@@ -220,6 +220,47 @@ impl TypeChecker {
             .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
+    /// `@pure` enforcement for a free-function / builtin callee identified by
+    /// name (direct `f(..)` or module-qualified `m::f(..)`). Rejects I/O
+    /// builtins and non-`@pure` user functions; a curated set of pure builtins
+    /// is allowed. Method and static-method dispatch are handled separately at
+    /// their call sites -- the concrete callee's purity cannot be verified
+    /// (impl-method `@pure` is not tracked, and a name-based method check would
+    /// be unsound across same-named methods on different types), so those are
+    /// rejected outright to keep the `@pure` CSE/dead-call optimization sound.
+    fn check_pure_free_call(&mut self, name: &str, span: Span) {
+        if !self.in_pure_function {
+            return;
+        }
+        let io_builtins = ["println", "print", "eprintln", "exit"];
+        if io_builtins.contains(&name) {
+            self.error(
+                format!("`@pure` function cannot call I/O builtin `{name}`"),
+                span,
+            );
+            return;
+        }
+        if self.pure_functions.contains(name) {
+            return;
+        }
+        // Builtins that are side-effect free may be called from a @pure fn.
+        let side_effect_free_builtins = [
+            "len", "range", "to_string", "typeof", "sizeof", "min", "max", "min_f", "max_f",
+            "abs", "abs_f", "sqrt", "pow", "floor", "ceil", "round", "log", "log2", "log10", "sin",
+            "cos", "tan", "push", "pop", "contains", "keys", "values", "split", "trim",
+            "starts_with", "ends_with", "to_upper", "to_lower", "char_at", "substring", "parse_int",
+            "parse_float",
+        ];
+        if self.env.lookup_function(name).is_some()
+            && !side_effect_free_builtins.contains(&name)
+        {
+            self.error(
+                format!("`@pure` function cannot call non-pure function `{name}`"),
+                span,
+            );
+        }
+    }
+
     // ── TypeExpr → Type resolution ───────────────────────────────────
 
     /// Resolve an AST TypeExpr to a concrete Type.
@@ -3488,66 +3529,8 @@ impl TypeChecker {
 
                 // @pure enforcement: pure functions cannot call non-pure functions or I/O builtins.
                 if self.in_pure_function {
-                    let io_builtins = ["println", "print", "eprintln", "exit"];
                     if let Some(ref name) = callee_name_str {
-                        if io_builtins.contains(&name.as_str()) {
-                            self.error(
-                                format!("`@pure` function cannot call I/O builtin `{name}`"),
-                                *span,
-                            );
-                        } else if !self.pure_functions.contains(name) {
-                            // Only warn for user-defined functions that are not marked @pure.
-                            // Skip builtins like len, range, etc. which are side-effect free.
-                            let side_effect_free_builtins = [
-                                "len",
-                                "range",
-                                "to_string",
-                                "typeof",
-                                "sizeof",
-                                "min",
-                                "max",
-                                "min_f",
-                                "max_f",
-                                "abs",
-                                "abs_f",
-                                "sqrt",
-                                "pow",
-                                "floor",
-                                "ceil",
-                                "round",
-                                "log",
-                                "log2",
-                                "log10",
-                                "sin",
-                                "cos",
-                                "tan",
-                                "push",
-                                "pop",
-                                "contains",
-                                "keys",
-                                "values",
-                                "split",
-                                "trim",
-                                "starts_with",
-                                "ends_with",
-                                "to_upper",
-                                "to_lower",
-                                "char_at",
-                                "substring",
-                                "parse_int",
-                                "parse_float",
-                            ];
-                            if self.env.lookup_function(name).is_some()
-                                && !side_effect_free_builtins.contains(&name.as_str())
-                            {
-                                self.error(
-                                    format!(
-                                        "`@pure` function cannot call non-pure function `{name}`"
-                                    ),
-                                    *span,
-                                );
-                            }
-                        }
+                        self.check_pure_free_call(name, *span);
                     }
                 }
 
@@ -3813,6 +3796,23 @@ impl TypeChecker {
                         };
                         return self.infer_expr(&static_call);
                     }
+                }
+                // @pure enforcement: a pure function may not use instance-method
+                // dispatch. The concrete callee's purity cannot be verified here
+                // (impl-method @pure is not tracked, and a name-based check would
+                // be unsound across same-named methods on different types), so
+                // any side effect it performs would be silently dropped by the
+                // @pure CSE/dead-call optimization. Reject outright.
+                if self.in_pure_function {
+                    self.error(
+                        format!(
+                            "`@pure` function cannot call method `{method}` \
+                             (purity of a method call cannot be verified; \
+                             extract the side-effect-free computation into a \
+                             top-level `@pure` function, or drop `@pure`)"
+                        ),
+                        *span,
+                    );
                 }
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
@@ -4227,6 +4227,22 @@ impl TypeChecker {
                 }
                 // Look up the method on the type (mangled as TypeName__method).
                 if let Some(sig) = self.env.lookup_method(type_name, method).cloned() {
+                    // @pure enforcement: same as instance-method dispatch above --
+                    // an associated/static method's purity cannot be verified, so
+                    // calling one from a @pure function is rejected (enum-variant
+                    // construction returned earlier and is unaffected).
+                    if self.in_pure_function {
+                        self.error(
+                            format!(
+                                "`@pure` function cannot call static method \
+                                 `{type_name}::{method}` (purity of a method call \
+                                 cannot be verified; extract the side-effect-free \
+                                 computation into a top-level `@pure` function, or \
+                                 drop `@pure`)"
+                            ),
+                            *span,
+                        );
+                    }
                     // Instantiate with FRESH type vars per call site, mirroring
                     // the instance-method fix above (and the free-function /
                     // module-qualified-call paths). Without this, a generic
@@ -4276,6 +4292,9 @@ impl TypeChecker {
                     // -- type this as a call of the plain function. The MIR
                     // lowering already resolves it the same way; only the
                     // checker rejected it ("no method `add` on type `util`").
+                    // @pure enforcement: this is a free-function call in disguise,
+                    // so apply the same name-based purity check as a bare call.
+                    self.check_pure_free_call(method, *span);
                     let sig = self.env.lookup_function(method).cloned().unwrap();
                     let (params, ret, var_map) = self.engine.instantiate_sig(&sig);
                     for (old_id, new_id) in &var_map {
