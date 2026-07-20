@@ -5276,33 +5276,19 @@ fn translate_rvalue<M: Module>(
                 }
             }
 
-            // Fallback for unknown structs or fields: emit a warning and
-            // return typed zero. This should not happen in well-typed programs;
-            // if it does, the type checker or struct propagation has a gap.
-            eprintln!(
-                "warning: codegen fallback for field access '{}' on unknown struct — returning zero",
-                field
-            );
-            let cl_ty = dest
-                .and_then(|d| {
-                    translator
-                        .mir_func
-                        .locals
-                        .iter()
-                        .find(|l| l.id == d)
-                        .and_then(|l| mir_type_to_cl(&l.ty).ok().flatten())
-                })
-                .unwrap_or(types::I64);
-            let val = if is_float_type(cl_ty) {
-                if cl_ty == types::F32 {
-                    builder.ins().f32const(0.0)
-                } else {
-                    builder.ins().f64const(0.0)
-                }
-            } else {
-                builder.ins().iconst(cl_ty, 0)
-            };
-            Ok(Some(val))
+            // No struct definition could be resolved for this field access.
+            // Previously this returned a typed ZERO with only a stderr warning:
+            // a silent miscompile that fed wrong data into the program. It is
+            // unreachable for well-typed programs (the conformance/examples
+            // gates exercise every field-access shape), so failing loudly here
+            // converts a latent data-corruption landmine into a clear codegen
+            // error that names the gap instead of masking it.
+            return Err(CodegenError::Internal(format!(
+                "cannot resolve the struct type for field access `.{field}`: the \
+                 object's static type did not propagate to a unique struct \
+                 definition. This is a compiler bug (type/struct-propagation gap) \
+                 -- please report it with a minimal reproducer."
+            )));
         }
 
         RValue::Index { object, index } => {
