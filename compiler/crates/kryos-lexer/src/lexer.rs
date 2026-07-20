@@ -268,7 +268,13 @@ impl<'src> Lexer<'src> {
                     self.emit(TokenKind::Slash, start, self.pos, "/".into());
                 }
             }
-            b'%' => self.emit(TokenKind::Percent, start, self.pos, "%".into()),
+            b'%' => {
+                if self.match_char(b'=') {
+                    self.emit(TokenKind::PercentEq, start, self.pos, "%=".into());
+                } else {
+                    self.emit(TokenKind::Percent, start, self.pos, "%".into());
+                }
+            }
 
             b'=' => {
                 if self.match_char(b'=') {

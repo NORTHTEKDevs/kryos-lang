@@ -30,6 +30,7 @@ pub enum AssignOp {
     SubAssign,
     MulAssign,
     DivAssign,
+    ModAssign,
 }
 
 #[derive(Debug, Clone, PartialEq)]

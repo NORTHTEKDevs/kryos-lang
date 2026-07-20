@@ -306,6 +306,17 @@ fn main() {
     ca_px.g *= 2
     ca_px.b -= 10
     expect(ca_px.r == 15 and ca_px.g == 40 and ca_px.b == 20, "compound-assign on struct field")
+    // `%=` (modulo compound-assign) -- was never tokenized (lexer had no
+    // PercentEq), so every use was a parse error despite being in the spec.
+    let mut ca_mod = 17
+    ca_mod %= 5
+    expect(ca_mod == 2, "%= on a plain variable")
+    ca_px.r %= 4
+    expect(ca_px.r == 3, "%= on a struct field")
+    ca_arr[0] %= 3
+    expect(ca_arr[0] == 2, "%= on an array index")
+    ca_map["k"] %= 7
+    expect(ca_map["k"] == 2, "%= on a map value")
 
     // type_of resolves from the STATIC type at compile time. On AOT it was
     // routed to a runtime helper that only saw the erased i64 slot, so a

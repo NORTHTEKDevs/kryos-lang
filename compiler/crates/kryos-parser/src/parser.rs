@@ -1908,6 +1908,7 @@ impl Parser {
             TokenKind::MinusEq => Some(AssignOp::SubAssign),
             TokenKind::StarEq => Some(AssignOp::MulAssign),
             TokenKind::SlashEq => Some(AssignOp::DivAssign),
+            TokenKind::PercentEq => Some(AssignOp::ModAssign),
             _ => None,
         };
 

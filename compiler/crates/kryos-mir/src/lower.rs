@@ -3763,6 +3763,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             ast::AssignOp::SubAssign => MirBinOp::Sub,
                             ast::AssignOp::MulAssign => MirBinOp::Mul,
                             ast::AssignOp::DivAssign => MirBinOp::Div,
+                            ast::AssignOp::ModAssign => MirBinOp::Mod,
                             ast::AssignOp::Assign => unreachable!(),
                         };
                         let current = ctx.alloc_temp(field_ty.clone());
@@ -4055,6 +4056,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         ast::AssignOp::SubAssign => MirBinOp::Sub,
                                         ast::AssignOp::MulAssign => MirBinOp::Mul,
                                         ast::AssignOp::DivAssign => MirBinOp::Div,
+                            ast::AssignOp::ModAssign => MirBinOp::Mod,
                                         ast::AssignOp::Assign => unreachable!(),
                                     };
                                     let cur = emit_global_load(ctx, name, mir_ty.clone());
@@ -4079,6 +4081,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 ast::AssignOp::SubAssign => MirBinOp::Sub,
                                 ast::AssignOp::MulAssign => MirBinOp::Mul,
                                 ast::AssignOp::DivAssign => MirBinOp::Div,
+                            ast::AssignOp::ModAssign => MirBinOp::Mod,
                                 ast::AssignOp::Assign => unreachable!(),
                             };
                             let rhs = lower_expr_to_operand(ctx, value);
@@ -4132,6 +4135,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 ast::AssignOp::SubAssign => ast::BinOp::Sub,
                                 ast::AssignOp::MulAssign => ast::BinOp::Mul,
                                 ast::AssignOp::DivAssign => ast::BinOp::Div,
+                                ast::AssignOp::ModAssign => ast::BinOp::Mod,
                                 ast::AssignOp::Assign => unreachable!(),
                             };
                             let sp = target.span();

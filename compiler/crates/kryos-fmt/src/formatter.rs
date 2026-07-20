@@ -729,6 +729,7 @@ impl Formatter {
                     AssignOp::SubAssign => "-=",
                     AssignOp::MulAssign => "*=",
                     AssignOp::DivAssign => "/=",
+                    AssignOp::ModAssign => "%=",
                 });
                 self.write(" ");
                 self.write(&self.fmt_expr_to_string(value));
