@@ -850,6 +850,46 @@ let C: i64 = 10
 fn main() { if A != 12 { exit(1) }  println("ok") }
 '
 
+# --- Ownership analysis: reuse-after-share is safe (ARC), must NOT be blocked.
+# These were false E0300/E0303 rejections of valid code.
+
+# Extracting a struct/enum-typed field into a `let`, then reading the source
+# field again, is an ARC share -- not a partial move.
+want_pass reuse_aggregate_field_after_let '
+enum Status { Active(i64), Inactive }
+struct Account { status: Status, id: i64 }
+fn main() {
+    let acc = Account { status: Status.Active(42), id: 7 }
+    let s = acc.status
+    match acc.status {
+        Active(n) => { if n != 42 { exit(1) }  println("ok") },
+        Inactive => { exit(1) },
+    }
+}
+'
+# Same for a tuple positional element.
+want_pass reuse_tuple_element_after_let '
+fn main() {
+    let t = ("hello", "label")
+    let x = t.0
+    if x != "hello" { exit(1) }
+    if t.0 != "hello" { exit(1) }
+    println("ok")
+}
+'
+# Pushing a map into an array of maps, then reusing the map, is a share.
+want_pass reuse_map_after_push '
+fn main() {
+    let mut inner: map<str, str> = {}
+    inner["k"] = "deep"
+    let mut am: [map<str, str>] = []
+    am = push(am, inner)
+    if inner["k"] != "deep" { exit(1) }
+    if len(am) != 1 { exit(1) }
+    println("ok")
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

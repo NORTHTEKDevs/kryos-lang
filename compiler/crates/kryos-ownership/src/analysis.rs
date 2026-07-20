@@ -334,64 +334,6 @@ impl OwnershipAnalyzer {
         is_primitive_copy_type(name) || self.copy_structs.contains(name)
     }
 
-    /// Determine if an expression resolves to a `@copy` STRUCT type
-    /// (as opposed to a primitive copy type like i64/bool). @copy structs
-    /// are heap-allocated and passed by pointer in codegen, so when one is
-    /// pushed into an array the array captures that pointer. The source
-    /// local must therefore be treated as MOVED (its drop suppressed),
-    /// otherwise the end-of-scope drop frees the struct body the array
-    /// still points at — a use-after-free that manifests as non-deterministic
-    /// garbage in array elements. Primitives have no heap body, so they stay
-    /// as `use` (copied by value).
-    fn expr_is_copy_struct(&self, expr: &Expr) -> bool {
-        let sname: Option<String> = match expr {
-            Expr::StructLiteral { name, .. } => Some(name.clone()),
-            Expr::Identifier { name, .. } => self.var_struct_names.get(name.as_str()).cloned(),
-            Expr::FnCall { callee, .. } => {
-                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
-                    self.fn_return_struct_names.get(fname.as_str()).cloned()
-                } else {
-                    None
-                }
-            }
-            Expr::MoveExpr { inner, .. } => return self.expr_is_copy_struct(inner),
-            _ => None,
-        };
-        match sname {
-            Some(ref n) => self.copy_structs.contains(n),
-            None => false,
-        }
-    }
-
-    /// Determine if an expression's inferred type is ANY struct — `@copy`
-    /// or not — as opposed to `expr_is_copy_struct` which only matches
-    /// `@copy`-annotated ones. Shares the same struct-name resolution.
-    ///
-    /// Used by the `push` builtin arm: `kryos-mir`'s `consume_call_args`
-    /// (see `lower.rs`) already suppresses a pushed struct LOCAL's own
-    /// scope-end drop unconditionally, for every struct — `@copy` or
-    /// plain — not just `@copy` ones. The array ends up the sole owner
-    /// that frees the body. So reusing the source local after `push` is
-    /// memory-safe under ARC for any struct, exactly like passing one to
-    /// an ordinary function (the `FnCall` arm below always treats struct
-    /// args as a `use`, never a hard move). Marking a struct element as
-    /// moved here for the non-`@copy` case was a false E0300 on a safe
-    /// reuse; this predicate lets the `push` arm treat all structs alike.
-    fn expr_is_any_struct(&self, expr: &Expr) -> bool {
-        match expr {
-            Expr::StructLiteral { .. } => true,
-            Expr::Identifier { name, .. } => self.var_struct_names.contains_key(name.as_str()),
-            Expr::FnCall { callee, .. } => {
-                if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
-                    self.fn_return_struct_names.contains_key(fname.as_str())
-                } else {
-                    false
-                }
-            }
-            Expr::MoveExpr { inner, .. } => self.expr_is_any_struct(inner),
-            _ => false,
-        }
-    }
 
     /// Determine if an expression's inferred type is a copy type.
     /// Returns true when the result is provably a primitive copy type
@@ -1361,23 +1303,18 @@ impl OwnershipAnalyzer {
                     // (mutated in-place), not moved. Only the value is moved.
                     if name == "push" && args.len() == 2 {
                         self.analyze_expr_use(&args[0]); // array is used, not moved
-                        // Primitive/handle copy types (i64, str, array, map,
-                        // ...) stay as `use`. Struct elements — `@copy` or
-                        // not — are ALSO a `use`: MIR already suppresses the
-                        // source local's own drop unconditionally when a
-                        // struct is pushed (see `expr_is_any_struct` doc),
-                        // so the array becomes the sole owner and reuse of
-                        // the local afterward is safe. Do not hard-move it
-                        // here (that produced a false E0300); mirror the
-                        // ordinary FnCall arg arm below, which never moves
-                        // struct arguments either.
-                        if (self.expr_is_copy(&args[1]) && !self.expr_is_copy_struct(&args[1]))
-                            || self.expr_is_any_struct(&args[1])
-                        {
-                            self.analyze_expr_use(&args[1]);
-                        } else {
-                            self.analyze_expr_move(&args[1]); // value is moved into array
-                        }
+                        // The pushed value is SHARED into the array under ARC:
+                        // MIR suppresses the source local's own scope-end drop
+                        // when a value is pushed, so the array becomes an owner
+                        // and reusing the source afterward is memory-safe for
+                        // EVERY type -- str/array/map/set/struct/enum alike.
+                        // Treat it as a use, never a move (mirrors the ordinary
+                        // FnCall arg arm below, which never moves any argument).
+                        // Previously a non-copy, non-struct value (a `map`/`set`)
+                        // was hard-moved here, raising a false E0300 on a safe
+                        // reuse -- inconsistent with the str/array/struct cases
+                        // which already stayed a `use`.
+                        self.analyze_expr_use(&args[1]);
                         return;
                     }
                     if name == "pop" && args.len() == 1 {
@@ -1635,41 +1572,23 @@ impl OwnershipAnalyzer {
                     info.moved_span = Some(*span);
                 }
             }
-            Expr::FieldAccess {
-                object,
-                field,
-                span,
-            } => {
-                // Partial move of a struct/tuple field.
+            Expr::FieldAccess { object, span, .. } => {
+                // Reading a field -- even into a `let` (`let s = obj.status`) --
+                // SHARES it under Kryos's ARC value model: the source object
+                // and its other fields stay fully usable afterward (a refcount
+                // bump, not a destructive move). Marking the field "partially
+                // moved" here raised a false E0303 on a later read of the same
+                // field. `str`/`[T]` fields were already exempt (via the old
+                // `expr_is_copy` check), but `struct`/`enum`/`map`/tuple-element
+                // fields were wrongly flagged -- an inconsistency, since all of
+                // them are equally ARC-shareable. A GENUINE destructive move is
+                // written `move obj.field` and handled by the `MoveExpr` arm;
+                // a plain field read is only a USE. (This crate is advisory:
+                // its state never reaches codegen, which does its own ARC drop
+                // tracking, so treating the read as a share is purely a
+                // false-positive fix with no memory-safety effect.)
                 if let Expr::Identifier { name, .. } = object.as_ref() {
                     self.check_usable(name, *span);
-                    // @copy structs: field access copies the value,
-                    // so the parent is never partially moved.
-                    if let Some(info) = self.lookup_var(name) {
-                        if info.is_copy || info.state == OwnershipState::Shared {
-                            return;
-                        }
-                    }
-                    // A Copy-typed FIELD (e.g. `pair.1: i64` on a tuple whose
-                    // sibling field `pair.0: Alloc` is heap-bearing, or a
-                    // primitive field on a non-@copy struct) is never actually
-                    // moved — the whole-object `is_copy` check above only
-                    // catches the case where EVERY field is Copy. Consult
-                    // `expr_is_copy` (which resolves the specific field's
-                    // type via `struct_fields` / `var_tuple_elem_types`) and
-                    // treat a Copy field as a use, not a move: it must not be
-                    // recorded in `moved_fields`, or a later access of that
-                    // same field is wrongly flagged as "use of partially
-                    // moved value" (E0303 false positive).
-                    if self.expr_is_copy(expr) {
-                        return;
-                    }
-                    if let Some(info) = self.lookup_var_mut(name) {
-                        info.moved_fields.insert(field.clone());
-                        if info.state == OwnershipState::Owned {
-                            info.state = OwnershipState::PartiallyMoved;
-                        }
-                    }
                 } else {
                     self.analyze_expr_use(object);
                 }
