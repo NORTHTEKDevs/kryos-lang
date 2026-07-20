@@ -500,6 +500,22 @@ impl LoweringContext {
                 let type_args: Vec<MirType> = args.iter().map(|a| self.resolve_type(a)).collect();
                 return MirType::Enum(monomorphize_enum(self, name, &type_args));
             }
+
+            // A map must recurse its key/value through the ctx-AWARE
+            // resolve_type (like Array/Tuple/Function/Shared below) so a
+            // nested generic value MONOMORPHIZES correctly. Falling to the
+            // ctx-less lower_type_expr named a doubly-nested value
+            // `map<str, Option<Result<i64,str>>>` as a stub that did not match
+            // the fully-monomorphized value `Some(Ok(9))` constructs -- so
+            // reading `m["a"]` back lost the inner Result's tag+payload (the
+            // outer Option matched but the inner Ok(n) read 0). Single-level
+            // values happened to match the stub name, which hid the bug.
+            if (name == "map" || name == "Map") && args.len() == 2 {
+                return MirType::Map {
+                    key: Box::new(self.resolve_type(&args[0])),
+                    value: Box::new(self.resolve_type(&args[1])),
+                };
+            }
         }
 
         // Compound types must recurse through resolve_type, not fall to the

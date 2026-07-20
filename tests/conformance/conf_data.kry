@@ -601,6 +601,25 @@ fn main() {
     expect(t36_tup((T36b.Bw(T36a.Ay(7)), 2)) == "w-y:7,2", "nested-enum tuple element binds the deep payload")
     expect(t36_tup((T36b.Bv, 3)) == "v:3", "different OUTER variant does not take the first tuple arm (and no segfault)")
 
+    // A doubly-nested generic enum stored as a MAP VALUE must keep its inner
+    // tag+payload when read back. Previously `map<str, Option<Result<i64,str>>>`
+    // lost the inner Result (outer Some matched, inner Ok(n) read 0) because
+    // the map value type fell to a ctx-less lowering that named the nested
+    // enum with a stub not matching the constructed value.
+    let mut nm: map<str, Option<Result<i64, str>>> = {}
+    nm["a"] = Some(Ok(9))
+    nm["b"] = Some(Err("bad"))
+    match nm["a"] {
+        Some(Ok(n)) => expect(n == 9, "nested-enum map value: inner Ok payload survives"),
+        Some(Err(e)) => expect(false, "nm[a] wrong inner tag (expected Ok)"),
+        None() => expect(false, "nm[a] wrong outer tag"),
+    }
+    match nm["b"] {
+        Some(Ok(n)) => expect(false, "nm[b] wrong inner tag (expected Err)"),
+        Some(Err(e)) => expect(e == "bad", "nested-enum map value: inner Err payload survives"),
+        None() => expect(false, "nm[b] wrong outer tag"),
+    }
+
     println("conformance data: PASS")
 }
 
