@@ -42,10 +42,16 @@ fn next_i64(state: [i64]) -> i64 {
 /// Random i64 uniformly in [lo, hi). Returns lo if hi <= lo.
 fn range_i64(state: [i64], lo: i64, hi: i64) -> i64 {
     if hi <= lo { return lo }
-    let span = hi - lo
-    let v = next_i64(state)
-    let abs_v = if v < 0 { 0 - v } else { v }
-    return lo + (abs_v % span)
+    // Compute the span in u64 so a range wider than i64::MAX (e.g.
+    // [i64::MIN, i64::MAX)) does not overflow. The old i64 `hi - lo` wrapped
+    // (i64::MAX - i64::MIN = -1), and `x % -1 == 0` collapsed EVERY draw to
+    // `lo`. Unsigned subtraction gives the correct magnitude across the sign
+    // boundary; the modulo and the add-back to `lo` wrap correctly into
+    // [lo, hi). (Also drops the `abs` bias -- unsigned modulo is uniform.)
+    let span: u64 = (hi as u64) - (lo as u64)
+    let v: u64 = next_i64(state) as u64
+    let off: i64 = (v % span) as i64
+    return lo + off
 }
 
 /// Random f64 uniformly in [0.0, 1.0). Uses the top 53 bits of the

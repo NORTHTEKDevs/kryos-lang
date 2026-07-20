@@ -138,7 +138,13 @@ fn parse_url(raw: str) -> Url {
 /// Reconstruct a URL string from a Url struct.
 fn url_to_string(u: Url) -> str {
     let mut result = u.scheme + "://" + u.host
-    if (u.scheme == "http" and u.port != 80) or (u.scheme == "https" and u.port != 443) {
+    // Include the port whenever it is NOT the scheme's default. Previously
+    // this was hardcoded to http/https only, so a non-HTTP scheme (ftp, ws,
+    // wss, redis, ...) silently dropped its port on round-trip even when it
+    // was parsed correctly. parse_url defaults the port to 443 for https and
+    // 80 for every other scheme, so mirror that here.
+    let default_port: i64 = if u.scheme == "https" { 443 } else { 80 }
+    if u.port != default_port {
         result = result + ":" + to_string(u.port)
     }
     result = result + u.path

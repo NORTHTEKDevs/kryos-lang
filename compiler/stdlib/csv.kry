@@ -85,14 +85,20 @@ fn parse(input: str) -> [CsvRow] {
                 } else {
                     i = i + 1
                 }
-                if row_has_content or len(cur) > 0 or len(fields) > 0 {
-                    fields = push(fields, cur)
-                    rows = push(rows, CsvRow { fields: fields })
-                    let fresh: [str] = []
-                    fields = fresh
-                    cur = ""
-                    row_has_content = false
-                }
+                // A newline ALWAYS ends a row -- including an interior blank
+                // line, which yields an empty (0-field) row (matching Python's
+                // csv). Do NOT suppress an empty line here: a genuinely
+                // spurious TRAILING empty row (input ending in a newline after
+                // content) is already prevented by the final flush guard
+                // below, which only emits when there is pending content.
+                // Suppressing here instead dropped every interior blank line
+                // and mis-shifted all subsequent row indices.
+                fields = push(fields, cur)
+                rows = push(rows, CsvRow { fields: fields })
+                let fresh: [str] = []
+                fields = fresh
+                cur = ""
+                row_has_content = false
             } else {
                 cur = cur + c
                 row_has_content = true
