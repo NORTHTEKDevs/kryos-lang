@@ -19,8 +19,13 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     let mut skipped = 0usize;
 
     for path in &targets {
-        let source =
-            std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
+        // Use the shared BOM/UTF-16-aware reader (kryos_driver::read_source),
+        // the same one `check`/`run`/`build` use -- a plain read_to_string
+        // left a UTF-8 BOM in front of the source, so fmt uniquely rejected
+        // (with a cryptic "unexpected token error") a BOM-prefixed file that
+        // the other three subcommands accept and run fine.
+        let source = kryos_driver::read_source(Path::new(path))
+            .map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
         // The AST does not carry `//` line/inline comments (only `///` doc
         // comments survive), so a naive re-emit would DELETE them. For files

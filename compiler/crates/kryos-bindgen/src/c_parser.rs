@@ -419,7 +419,19 @@ impl<'a> CHeaderParser<'a> {
                 self.skip_line();
                 return;
             }
-            self.skip_whitespace();
+            // Skip ONLY same-line whitespace (spaces/tabs), NOT newlines: a
+            // value-less guard `#define B07_H` (the standard `#ifndef X` /
+            // `#define X` / `#endif` include-guard idiom) has no value, and
+            // crossing the newline here made the value-read loop below swallow
+            // the NEXT declaration line as the macro's value -- so bindgen
+            // silently dropped everything after the most common header shape.
+            while let Some(ch) = self.peek_char() {
+                if ch == ' ' || ch == '\t' {
+                    self.advance(ch.len_utf8());
+                } else {
+                    break;
+                }
+            }
             // Read value until end of line (handling line continuations)
             let start = self.pos;
             loop {
@@ -805,6 +817,7 @@ impl<'a> CHeaderParser<'a> {
         let mut variadic = false;
 
         loop {
+            let loop_start = self.pos;
             self.skip_whitespace_and_comments();
             if self.peek_char() == Some(')') {
                 self.advance(1);
@@ -866,6 +879,17 @@ impl<'a> CHeaderParser<'a> {
             self.skip_whitespace_and_comments();
             if self.peek_char() == Some(',') {
                 self.advance(1);
+            }
+
+            // Progress guard: on malformed input `parse_type()` returns None
+            // on a non-type token that is not `)`, `,`, EOF, or `...`, so the
+            // loop otherwise makes NO progress and HANGS forever (an
+            // unterminated param list followed by brace/bracket garbage was a
+            // reproducible infinite loop). Bail out with an error instead.
+            if self.pos <= loop_start {
+                self.errors
+                    .push("malformed function parameters".to_string());
+                break;
             }
         }
 
