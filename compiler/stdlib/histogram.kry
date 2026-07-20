@@ -63,6 +63,17 @@ fn percentile(edges: [i64], counts: [i64], p: i64) -> i64 {
     let target = (t * p) / 100
     let mut cum: i64 = 0
     let n_edges = len(edges)
+    // Include the underflow bucket counts[0]. `target` is computed from
+    // total() (which counts underflow), so the cumulative walk must count it
+    // too -- otherwise, when enough mass sits below the lowest edge, `cum`
+    // never reaches `target` and the function wrongly fell through to the
+    // TOP edge (e.g. all samples < edges[0] gave p50 == edges[n-1]). If the
+    // target is reached within the underflow bucket, the percentile is below
+    // the lowest edge -> report edges[0].
+    cum = cum + counts[0]
+    if cum >= target {
+        return edges[0]
+    }
     let mut i: i64 = 1
     while i <= n_edges {
         cum = cum + counts[i]

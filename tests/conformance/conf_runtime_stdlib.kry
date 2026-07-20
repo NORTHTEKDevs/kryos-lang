@@ -2,6 +2,8 @@
 use std::csv::{parse}
 use std::http::{parse_url, url_to_string}
 use std::random::{new_rng, range_i64}
+use std::re::{split, count, replace_all}
+use std::histogram::{new_counts, record, percentile}
 
 fn expect(cond: bool, what: str) {
     if not cond {
@@ -43,6 +45,28 @@ fn main() {
     let x = range_i64(r, -9223372036854775807 - 1, 9223372036854775807)
     let y = range_i64(r, -9223372036854775807 - 1, 9223372036854775807)
     expect(x != y, "range_i64 full-span varies (no overflow collapse)")
+
+    // re: a zero-width match at end-of-string is applied (Python semantics),
+    // so split does not drop the final real segment and count is not short.
+    let sp = split("x*", "abc")
+    expect(len(sp) == 5, "re::split zero-width keeps all segments")
+    expect(sp[3] == "c", "re::split does not drop the trailing real segment")
+    expect(count(".*", "hi") == 2, "re::count includes the end zero-width match")
+    expect(replace_all("x*", "abc", "-") == "-a-b-c-", "re::replace_all trailing zero-width")
+    // Normal (non-zero-width) re behavior is unchanged.
+    let sp2 = split(",", "a,b,c")
+    expect(len(sp2) == 3 and sp2[2] == "c", "re::split normal delimiter unchanged")
+    expect(count("a", "banana") == 3, "re::count normal unchanged")
+
+    // histogram: percentile counts the underflow bucket (all-below-lowest-edge
+    // data must not report the TOP edge).
+    let edges = [10, 20, 30]
+    let hc = new_counts(edges)
+    record(edges, hc, 1)
+    record(edges, hc, 2)
+    record(edges, hc, 3)
+    record(edges, hc, 4)
+    expect(percentile(edges, hc, 50) == 10, "histogram percentile counts underflow bucket")
 
     println("conf_runtime_stdlib OK")
 }

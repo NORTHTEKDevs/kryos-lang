@@ -177,10 +177,16 @@ impl Regex {
         let text_len = len(text)
         let mut pos = 0
 
-        while pos < text_len {
+        // `pos <= text_len` (not `<`): a zero-width pattern (`a*`, `.*`, an
+        // optional group) can match the empty string AT end-of-string, and
+        // Python/Rust regex report it. The old `<` bound skipped that final
+        // position, under-counting matches (and, in split, dropping the last
+        // real segment). The zero-width advance below still guarantees
+        // termination.
+        while pos <= text_len {
             let m = self.find_at(text, pos)
             if not m.found {
-                pos = text_len  // No more matches
+                pos = text_len + 1  // No more matches (exceed to exit the <= loop)
             } else {
                 results = push(results, m)
                 // Advance past this match
@@ -233,10 +239,13 @@ impl Regex {
         let mut pos = 0
         let mut last = 0
 
-        while pos < text_len {
+        // `pos <= text_len` so a zero-width match at end-of-string is applied
+        // (see find_all). Without it the trailing replacement was dropped
+        // (`replace_all("x*","abc","-")` gave "-a-b-c" instead of "-a-b-c-").
+        while pos <= text_len {
             let m = self.find_at(text, pos)
             if not m.found {
-                pos = text_len
+                pos = text_len + 1
             } else {
                 // Append text before the match
                 result = result + substr(text, last, m.start)
@@ -260,7 +269,11 @@ impl Regex {
                 }
             }
         }
-        result = result + substr(text, last, text_len)
+        // `last` can advance one PAST text_len after a zero-width match at the
+        // end; only append a genuine remaining tail.
+        if last < text_len {
+            result = result + substr(text, last, text_len)
+        }
 
         return result
     }
@@ -276,11 +289,15 @@ impl Regex {
         let mut last = 0
         let mut last_consumed_match = false
 
-        while pos < text_len {
+        // `pos <= text_len` so a zero-width match at end-of-string is applied,
+        // which is what emits the final real segment before it: the old `<`
+        // bound dropped it (`split("x*","abc")` gave ["","a","b",""], losing
+        // "c"; now ["","a","b","c",""] matching Python re.split).
+        while pos <= text_len {
             let m = self.find_at(text, pos)
             if not m.found {
                 parts = push(parts, substr(text, last, text_len))
-                pos = text_len
+                pos = text_len + 1
                 last = text_len
                 last_consumed_match = false
             } else {
