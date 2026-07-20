@@ -1209,11 +1209,28 @@ impl Formatter {
             }
 
             Expr::Cast { expr, ty, .. } => {
-                format!(
-                    "{} as {}",
-                    self.fmt_expr_to_string(expr),
-                    self.fmt_type_to_string(ty)
-                )
+                // `as` binds TIGHTER than binary operators and a leading unary
+                // `-` (gotcha #18), so the cast operand must keep its parens
+                // when it is a looser-binding expression. Emitting
+                // `(x + y) as f64` as `x + y as f64` re-parses as
+                // `x + (y as f64)` -- a DIFFERENT AST that no longer compiles
+                // (dropping semantically-required parens is a formatter bug).
+                let needs_parens = matches!(
+                    expr.as_ref(),
+                    Expr::BinaryOp { .. }
+                        | Expr::UnaryOp { .. }
+                        | Expr::IfExpr { .. }
+                        | Expr::MatchExpr { .. }
+                        | Expr::RangeExpr { .. }
+                        | Expr::PipeExpr { .. }
+                        | Expr::Cast { .. }
+                );
+                let inner = self.fmt_expr_to_string(expr);
+                if needs_parens {
+                    format!("({}) as {}", inner, self.fmt_type_to_string(ty))
+                } else {
+                    format!("{} as {}", inner, self.fmt_type_to_string(ty))
+                }
             }
 
             Expr::Block { block, .. } => {
@@ -1294,10 +1311,115 @@ impl Formatter {
             Stmt::Expr { expr, .. } => self.fmt_expr_to_string(expr),
             Stmt::Break { .. } => "break".to_string(),
             Stmt::Continue { .. } => "continue".to_string(),
-            _ => {
-                // For complex statements in inline positions, render a simplified form.
-                // This shouldn't happen often (match/if expressions are Expr variants).
-                "/* stmt */".to_string()
+            // Assignment inside an inline block (a closure body, an inline
+            // if-branch). MUST be rendered -- the old `_ => "/* stmt */"`
+            // fallback SILENTLY DELETED it, so `|| { c = c + 1  c }` formatted
+            // to `|| { /* stmt */  c }`, a working closure turned into one that
+            // never mutates.
+            Stmt::Assign {
+                target, op, value, ..
+            } => {
+                let op_str = match op {
+                    AssignOp::Assign => "=",
+                    AssignOp::AddAssign => "+=",
+                    AssignOp::SubAssign => "-=",
+                    AssignOp::MulAssign => "*=",
+                    AssignOp::DivAssign => "/=",
+                    AssignOp::ModAssign => "%=",
+                };
+                format!(
+                    "{} {} {}",
+                    self.fmt_expr_to_string(target),
+                    op_str,
+                    self.fmt_expr_to_string(value)
+                )
+            }
+            Stmt::Throw { expr, .. } => {
+                format!("throw {}", self.fmt_expr_to_string(expr))
+            }
+            Stmt::Spawn { expr, .. } => {
+                format!("spawn {}", self.fmt_expr_to_string(expr))
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                let mut s = format!(
+                    "if {} {{ {} }}",
+                    self.fmt_expr_to_string(condition),
+                    self.fmt_block_inline(then_block)
+                );
+                for (cond, block) in elif_clauses {
+                    s.push_str(&format!(
+                        " elif {} {{ {} }}",
+                        self.fmt_expr_to_string(cond),
+                        self.fmt_block_inline(block)
+                    ));
+                }
+                if let Some(else_blk) = else_block {
+                    s.push_str(&format!(" else {{ {} }}", self.fmt_block_inline(else_blk)));
+                }
+                s
+            }
+            Stmt::For {
+                parallel,
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
+                format!(
+                    "{}for {} in {} {{ {} }}",
+                    if *parallel { "parallel " } else { "" },
+                    self.fmt_pattern_to_string(pattern),
+                    self.fmt_expr_to_string(iterable),
+                    self.fmt_block_inline(body)
+                )
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                format!(
+                    "while {} {{ {} }}",
+                    self.fmt_expr_to_string(condition),
+                    self.fmt_block_inline(body)
+                )
+            }
+            Stmt::TryCatch {
+                try_block,
+                catch_name,
+                catch_block,
+                ..
+            } => {
+                format!(
+                    "try {{ {} }} catch {} {{ {} }}",
+                    self.fmt_block_inline(try_block),
+                    catch_name,
+                    self.fmt_block_inline(catch_block)
+                )
+            }
+            Stmt::DenyBlock { denied, body, .. } => {
+                format!(
+                    "deny!({}) {{ {} }}",
+                    denied.join(", "),
+                    self.fmt_block_inline(body)
+                )
+            }
+            Stmt::Select { branches, .. } => {
+                let mut s = String::from("select { ");
+                for branch in branches {
+                    s.push_str(&format!(
+                        "{} <- {} {{ {} }} ",
+                        branch.pattern,
+                        self.fmt_expr_to_string(&branch.channel),
+                        self.fmt_block_inline(&branch.body)
+                    ));
+                }
+                s.push('}');
+                s
             }
         }
     }
