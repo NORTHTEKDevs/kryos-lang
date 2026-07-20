@@ -570,35 +570,52 @@ pub fn run_all_with(tests: &[TestCase], opts: RunOptions) -> TestReport {
 /// - Yellow for skipped tests
 pub fn format_report(report: &TestReport) -> String {
     let mut out = String::new();
-
-    // Individual results
     for result in &report.results {
-        match &result.outcome {
-            TestOutcome::Passed => {
-                out.push_str(&format!(
-                    "\x1b[32m  PASS\x1b[0m {} ({:.1}ms)\n",
-                    result.name,
-                    result.duration.as_secs_f64() * 1000.0
-                ));
-            }
-            TestOutcome::Failed { reason } => {
-                out.push_str(&format!(
-                    "\x1b[31m  FAIL\x1b[0m {} ({:.1}ms)\n",
-                    result.name,
-                    result.duration.as_secs_f64() * 1000.0
-                ));
-                // Indent the failure reason
-                for line in reason.lines() {
-                    out.push_str(&format!("       {}\n", line));
-                }
-            }
-            TestOutcome::Skipped => {
-                out.push_str(&format!("\x1b[33m  SKIP\x1b[0m {}\n", result.name));
+        out.push_str(&format_result_line(result));
+    }
+    out.push_str(&format_summary(report));
+    out
+}
+
+/// Format a single test result as its terminal line(s): the colored
+/// PASS/FAIL/SKIP line plus, for a failure, the indented reason. Shared by
+/// `format_report` (batch) and the streaming test runner so that a later
+/// test's *process-fatal* panic (a runtime panic is not catchable through
+/// JIT frames, so it aborts the whole `kryos test` run) cannot swallow the
+/// results already printed for the tests that ran before it.
+pub fn format_result_line(result: &TestResult) -> String {
+    let mut out = String::new();
+    match &result.outcome {
+        TestOutcome::Passed => {
+            out.push_str(&format!(
+                "\x1b[32m  PASS\x1b[0m {} ({:.1}ms)\n",
+                result.name,
+                result.duration.as_secs_f64() * 1000.0
+            ));
+        }
+        TestOutcome::Failed { reason } => {
+            out.push_str(&format!(
+                "\x1b[31m  FAIL\x1b[0m {} ({:.1}ms)\n",
+                result.name,
+                result.duration.as_secs_f64() * 1000.0
+            ));
+            // Indent the failure reason
+            for line in reason.lines() {
+                out.push_str(&format!("       {}\n", line));
             }
         }
+        TestOutcome::Skipped => {
+            out.push_str(&format!("\x1b[33m  SKIP\x1b[0m {}\n", result.name));
+        }
     }
+    out
+}
 
-    // Summary line
+/// Format only the summary tail of a report: a blank separator line, the
+/// `Tests: ... total` count line, and the `Time: ...` line. Used when the
+/// per-test lines were already emitted (streamed) as each test completed.
+pub fn format_summary(report: &TestReport) -> String {
+    let mut out = String::new();
     out.push('\n');
     let status_color = if report.failed > 0 {
         "\x1b[31m"
@@ -610,7 +627,6 @@ pub fn format_report(report: &TestReport) -> String {
         status_color, report.passed, report.failed, report.skipped, report.total
     ));
     out.push_str(&format!("Time:  {:.3}s\n", report.duration.as_secs_f64()));
-
     out
 }
 
@@ -851,7 +867,7 @@ pub fn run_annotated_tests(dir: &Path, filter: Option<&str>) -> TestReport {
 /// run; otherwise the filter is matched as a substring (the historical
 /// behaviour).
 pub fn run_annotated_tests_with(dir: &Path, filter: Option<&str>, exact: bool) -> TestReport {
-    run_annotated_tests_internal(discover_annotated_tests(dir), filter, exact)
+    run_annotated_tests_internal(discover_annotated_tests(dir), filter, exact, None)
 }
 
 /// Run `@test`-annotated functions in a single file.
@@ -860,19 +876,97 @@ pub fn run_annotated_tests_in_file(
     filter: Option<&str>,
     exact: bool,
 ) -> TestReport {
-    run_annotated_tests_internal(discover_annotated_tests_in_file(path), filter, exact)
+    run_annotated_tests_internal(discover_annotated_tests_in_file(path), filter, exact, None)
 }
 
+/// Like [`run_annotated_tests_with`] but streams each test's PASS/FAIL/SKIP
+/// line to stderr (flushed) as the test completes, and prints the
+/// `running N @test functions` header before the first test runs. This makes
+/// the output panic-safe: because a runtime panic inside a `@test` function is
+/// process-fatal (it cannot be caught through Cranelift JIT frames), batching
+/// the report until after every test ran meant a single later panic swallowed
+/// the results of every test that had already passed. `sep_before` prints a
+/// blank separator line ahead of the header (used when a file-test phase was
+/// already printed). Returns the same [`TestReport`]; the caller prints only
+/// [`format_summary`] afterward, since the per-test lines were already emitted.
+pub fn run_annotated_tests_with_streaming(
+    dir: &Path,
+    filter: Option<&str>,
+    exact: bool,
+    sep_before: bool,
+) -> TestReport {
+    run_annotated_tests_internal(discover_annotated_tests(dir), filter, exact, Some(sep_before))
+}
+
+/// Streaming counterpart to [`run_annotated_tests_in_file`]; see
+/// [`run_annotated_tests_with_streaming`] for the streaming contract.
+pub fn run_annotated_tests_in_file_streaming(
+    path: &Path,
+    filter: Option<&str>,
+    exact: bool,
+    sep_before: bool,
+) -> TestReport {
+    run_annotated_tests_internal(
+        discover_annotated_tests_in_file(path),
+        filter,
+        exact,
+        Some(sep_before),
+    )
+}
+
+/// `stream`: `None` buffers the report (the caller prints it in one batch);
+/// `Some(sep_before)` streams the header + each per-test line to stderr as it
+/// completes (panic-safe), with a leading blank line when `sep_before`.
 fn run_annotated_tests_internal(
     discovered: Vec<(PathBuf, Vec<String>)>,
     filter: Option<&str>,
     exact: bool,
+    stream: Option<bool>,
 ) -> TestReport {
     let start = Instant::now();
     let mut results = Vec::new();
     let mut passed = 0usize;
     let mut failed = 0usize;
     let mut skipped = 0usize;
+
+    // When streaming, print the header before the first test runs so it
+    // survives a later process-fatal panic. `planned` == the report's `total`
+    // (every discovered @test fn yields exactly one result: passed, failed, or
+    // filtered-to-skipped), so it matches the batch header the caller prints.
+    let streaming = stream.is_some();
+    if let Some(sep_before) = stream {
+        let planned: usize = discovered.iter().map(|(_, fns)| fns.len()).sum();
+        if planned > 0 {
+            use std::io::Write;
+            if sep_before {
+                eprintln!();
+            }
+            eprintln!(
+                "running {} @test function{}",
+                planned,
+                if planned == 1 { "" } else { "s" }
+            );
+            eprintln!();
+            let _ = std::io::stderr().flush();
+        }
+    }
+
+    // Central recorder: streams the line (if streaming), tallies the outcome,
+    // and stores the result. Keeps the per-outcome tally and the streamed
+    // output in lockstep across every push site.
+    let mut record = |r: TestResult| {
+        if streaming {
+            use std::io::Write;
+            eprint!("{}", format_result_line(&r));
+            let _ = std::io::stderr().flush();
+        }
+        match &r.outcome {
+            TestOutcome::Passed => passed += 1,
+            TestOutcome::Failed { .. } => failed += 1,
+            TestOutcome::Skipped => skipped += 1,
+        }
+        results.push(r);
+    };
 
     // Enable test mode so assert/panic raise catchable panics instead of
     // aborting the process.
@@ -893,8 +987,7 @@ fn run_annotated_tests_internal(
                 if let Some(f) = filter {
                     let matches = if exact { fn_name == f } else { fn_name.contains(f) };
                     if !matches {
-                        skipped += 1;
-                        results.push(TestResult {
+                        record(TestResult {
                             name: fn_name.clone(),
                             outcome: TestOutcome::Skipped,
                             duration: Duration::ZERO,
@@ -903,8 +996,7 @@ fn run_annotated_tests_internal(
                         continue;
                     }
                 }
-                failed += 1;
-                results.push(TestResult {
+                record(TestResult {
                     name: fn_name.clone(),
                     outcome: TestOutcome::Failed {
                         reason: format!("compilation failed:\n{diags}"),
@@ -927,8 +1019,7 @@ fn run_annotated_tests_internal(
             Ok(p) => p,
             Err(e) => {
                 for fn_name in test_fns {
-                    failed += 1;
-                    results.push(TestResult {
+                    record(TestResult {
                         name: fn_name.clone(),
                         outcome: TestOutcome::Failed {
                             reason: format!("JIT compilation failed: {e}"),
@@ -946,8 +1037,7 @@ fn run_annotated_tests_internal(
             if let Some(f) = filter {
                 let matches = if exact { fn_name == f } else { fn_name.contains(f) };
                 if !matches {
-                    skipped += 1;
-                    results.push(TestResult {
+                    record(TestResult {
                         name: fn_name.clone(),
                         outcome: TestOutcome::Skipped,
                         duration: Duration::ZERO,
@@ -980,8 +1070,7 @@ fn run_annotated_tests_internal(
                 let failure = failure.or(thrown);
                 let duration = test_start.elapsed();
                 if let Some(msg) = failure {
-                    failed += 1;
-                    results.push(TestResult {
+                    record(TestResult {
                         name: fn_name.clone(),
                         outcome: TestOutcome::Failed {
                             reason: msg.clone(),
@@ -990,8 +1079,7 @@ fn run_annotated_tests_internal(
                         actual_output: msg,
                     });
                 } else {
-                    passed += 1;
-                    results.push(TestResult {
+                    record(TestResult {
                         name: fn_name.clone(),
                         outcome: TestOutcome::Passed,
                         duration,
@@ -999,8 +1087,7 @@ fn run_annotated_tests_internal(
                     });
                 }
             } else {
-                failed += 1;
-                results.push(TestResult {
+                record(TestResult {
                     name: fn_name.clone(),
                     outcome: TestOutcome::Failed {
                         reason: format!("function `{fn_name}` not found in JIT output"),
@@ -1013,6 +1100,10 @@ fn run_annotated_tests_internal(
     }
 
     kryos_rt::set_test_mode(false);
+
+    // Release the mutable borrows `record` holds on the tallies and `results`
+    // so the report can read them.
+    drop(record);
 
     TestReport {
         total: results.len(),

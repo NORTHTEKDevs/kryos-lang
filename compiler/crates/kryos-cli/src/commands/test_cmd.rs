@@ -9,9 +9,9 @@ use std::path::Path;
 
 use kryos_test_runner::{
     discover_annotated_tests, discover_annotated_tests_in_file, discover_tests,
-    discover_tests_in_file, format_report, format_report_json, run_all_with,
-    run_annotated_tests_in_file, run_annotated_tests_with, Expectation, RunOptions, TestReport,
-    TestResult,
+    discover_tests_in_file, format_report, format_report_json, format_summary, run_all_with,
+    run_annotated_tests_in_file, run_annotated_tests_in_file_streaming, run_annotated_tests_with,
+    run_annotated_tests_with_streaming, Expectation, RunOptions, TestReport, TestResult,
 };
 
 /// Report format selector for `kryos test`.
@@ -151,13 +151,29 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
             );
             eprintln!();
         }
-        run_all_with(&tests, run_opts)
+        let report = run_all_with(&tests, run_opts);
+        // Print file-test results now, before the in-process @test phase runs:
+        // a runtime panic inside a @test function is process-fatal and would
+        // otherwise swallow this phase's output along with its own.
+        if opts.format == OutputFormat::Pretty {
+            eprint!("{}", format_report(&report));
+        }
+        report
     };
 
     // ---- Phase 2: `@test`-annotated function tests ----
-    let annotated_report = match &single_file {
-        Some(f) => run_annotated_tests_in_file(f, filter_opt, opts.exact),
-        None => run_annotated_tests_with(test_dir, filter_opt, opts.exact),
+    // In Pretty mode, stream each result as it runs (panic-safe): the header
+    // and per-test lines are emitted by the runner; only the summary is printed
+    // below. JSON mode buffers (it emits one merged suite object at the end).
+    let stream_annotated = opts.format == OutputFormat::Pretty;
+    let sep_before = stream_annotated && !tests.is_empty();
+    let annotated_report = match (&single_file, stream_annotated) {
+        (Some(f), true) => {
+            run_annotated_tests_in_file_streaming(f, filter_opt, opts.exact, sep_before)
+        }
+        (Some(f), false) => run_annotated_tests_in_file(f, filter_opt, opts.exact),
+        (None, true) => run_annotated_tests_with_streaming(test_dir, filter_opt, opts.exact, sep_before),
+        (None, false) => run_annotated_tests_with(test_dir, filter_opt, opts.exact),
     };
 
     if tests.is_empty() && annotated_report.total == 0 {
@@ -192,20 +208,11 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
 
     match opts.format {
         OutputFormat::Pretty => {
-            if !tests.is_empty() {
-                eprint!("{}", format_report(&file_report));
-            }
+            // File-test results were printed after Phase 1; the @test header
+            // and per-test lines were streamed by the runner as each ran. Only
+            // the @test summary tail remains to print.
             if annotated_report.total > 0 {
-                if !tests.is_empty() {
-                    eprintln!();
-                }
-                eprintln!(
-                    "running {} @test function{}",
-                    annotated_report.total,
-                    if annotated_report.total == 1 { "" } else { "s" }
-                );
-                eprintln!();
-                eprint!("{}", format_report(&annotated_report));
+                eprint!("{}", format_summary(&annotated_report));
             }
         }
         OutputFormat::Json => {
