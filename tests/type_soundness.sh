@@ -889,6 +889,19 @@ fn main() {
     println("ok")
 }
 '
+# Placing a struct/enum/map var into a STRUCT LITERAL field shares it -- the
+# source stays usable (same ARC-share class at the construction site).
+want_pass reuse_var_after_struct_literal '
+struct Wrapper { m: map<str, i64> }
+fn main() {
+    let mut m: map<str, i64> = {}
+    m["x"] = 1
+    let w = Wrapper { m: m }
+    if len(m) != 1 { exit(1) }
+    if w.m["x"] != 1 { exit(1) }
+    println("ok")
+}
+'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

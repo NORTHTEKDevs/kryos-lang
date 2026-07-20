@@ -1367,8 +1367,18 @@ impl OwnershipAnalyzer {
                 }
             }
             Expr::StructLiteral { fields, .. } => {
+                // A field value placed into a struct literal is SHARED into
+                // the struct under ARC (a refcount bump) -- the source var
+                // stays fully usable, exactly like passing it to a function
+                // or storing it as a map-literal value (the MapLiteral arm
+                // above uses `analyze_expr_use` too). Hard-moving it here
+                // raised a false E0300 on reuse (`let w = W { m: m }`
+                // println(len(m))) for struct/enum/map field values -- the
+                // same ARC-share false positive the field-read/push fixes
+                // closed, at the construction site. (Advisory crate: no
+                // codegen effect.)
                 for (_, val) in fields {
-                    self.analyze_expr_move(val);
+                    self.analyze_expr_use(val);
                 }
             }
             Expr::Lambda {
