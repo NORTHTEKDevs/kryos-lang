@@ -112,6 +112,27 @@ fn main() { let d: Doc = Doc { n: 1 }  d.write_file() }'
 want_pass ambient_builtins \
 'fn main() { exit(0) }'
 
+# Two structs with a same-named method: an annotated Logger.write must not
+# suppress the unannotated FileSink.write. main declaring BOTH is accepted...
+want_pass collision_main_declares_both \
+'struct Logger { t: i64 }
+impl Logger { @capabilities(process) fn write(self: Logger) -> str { return env_get("PATH") } }
+struct FileSink { t: i64 }
+impl FileSink { fn write(self: FileSink) { file_write("/tmp/z", "d") } }
+@capabilities(process, fs:write)
+fn main() { let f: FileSink = FileSink { t: 1 }  f.write() }'
+
+# ...and main UNDER-declaring (only process, but calls FileSink.write which
+# needs fs:write) must still be REJECTED -- the collision must not let the
+# fs:write requirement vanish (that was an escape).
+want_reject collision_main_underdeclares \
+'struct Logger { t: i64 }
+impl Logger { @capabilities(process) fn write(self: Logger) -> str { return env_get("PATH") } }
+struct FileSink { t: i64 }
+impl FileSink { fn write(self: FileSink) { file_write("/tmp/z", "d") } }
+@capabilities(process)
+fn main() { let f: FileSink = FileSink { t: 1 }  f.write() }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else

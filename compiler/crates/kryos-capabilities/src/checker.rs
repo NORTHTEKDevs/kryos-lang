@@ -194,7 +194,17 @@ impl CapabilityChecker {
                     name, annotations, ..
                 } if Self::has_capabilities_annotation(annotations) => {
                     let caps = CapabilitySet::from_annotations(annotations);
-                    self.fn_capabilities.insert(name.clone(), caps);
+                    // UNION on a name collision, not overwrite: impl methods
+                    // are keyed by bare name here, so two structs each with an
+                    // annotated `write` must contribute BOTH sets. Overwriting
+                    // let the last-declared one win, which (with the inference
+                    // filter below) both false-rejected the other method's body
+                    // and let a caller under-declare (an escape).
+                    let merged = match self.fn_capabilities.get(name) {
+                        Some(existing) => existing.union(&caps),
+                        None => caps,
+                    };
+                    self.fn_capabilities.insert(name.clone(), merged);
                 }
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     self.build_fn_capability_map(methods);
@@ -226,14 +236,18 @@ impl CapabilityChecker {
 
     /// Gather every function (top-level and impl/trait method) that has a body,
     /// as `(name, body)` pairs, for interior capability inference.
-    fn collect_functions<'a>(decls: &'a [Decl], out: &mut Vec<(String, &'a kryos_ast::Block)>) {
+    fn collect_functions<'a>(
+        decls: &'a [Decl],
+        out: &mut Vec<(String, bool, &'a kryos_ast::Block)>,
+    ) {
         for d in decls {
             match d {
                 Decl::Function {
                     name,
+                    annotations,
                     body: Some(b),
                     ..
-                } => out.push((name.clone(), b)),
+                } => out.push((name.clone(), Self::has_capabilities_annotation(annotations), b)),
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     Self::collect_functions(methods, out)
                 }
@@ -260,19 +274,25 @@ impl CapabilityChecker {
         &self,
         declarations: &[Decl],
     ) -> HashMap<String, CapabilitySet> {
-        let mut fns: Vec<(String, &kryos_ast::Block)> = Vec::new();
+        let mut fns: Vec<(String, bool, &kryos_ast::Block)> = Vec::new();
         Self::collect_functions(declarations, &mut fns);
 
         // Seed the working map with annotated functions' declared ceilings.
         let mut working: HashMap<String, CapabilitySet> = self.fn_capabilities.clone();
-        let annotated: std::collections::HashSet<String> =
-            self.fn_capabilities.keys().cloned().collect();
 
         loop {
             let mut changed = false;
-            for (name, body) in &fns {
-                if annotated.contains(name) {
-                    continue; // annotation is the ceiling; never widened by inference
+            for (name, is_annotated, body) in &fns {
+                // Skip only THIS function if it is annotated (its declaration is
+                // the ceiling, never widened by its own body). Do NOT skip an
+                // UNANNOTATED method just because a DIFFERENT method sharing its
+                // bare name is annotated -- that suppressed the unannotated
+                // method's inferred caps (a same-named annotated method hid an
+                // unannotated one's fs:write), which both false-rejected the
+                // unannotated body and let a caller under-declare. Its inferred
+                // caps are UNIONED into the shared name entry.
+                if *is_annotated {
+                    continue;
                 }
                 let collected = self.collect_caps_block(body, &working);
                 let cur = working
@@ -291,10 +311,10 @@ impl CapabilityChecker {
             }
         }
 
+        // Return the full unioned map. A name shared by an annotated and an
+        // unannotated method now carries BOTH (over-approximation) so neither
+        // the ceiling nor the propagation loses a capability.
         working
-            .into_iter()
-            .filter(|(n, _)| !annotated.contains(n))
-            .collect()
     }
 
     /// Read-only union of the capabilities required by every call in a block.
@@ -555,7 +575,15 @@ impl CapabilityChecker {
         if matches!(self.mode, CapabilityMode::Inferred) {
             let inferred = self.compute_inferred_capabilities(&module.declarations);
             for (name, caps) in inferred {
-                self.fn_capabilities.entry(name).or_insert(caps);
+                // UNION (not or_insert): a name shared by an annotated and an
+                // unannotated method must carry both the declared and the
+                // inferred caps, so a caller sees the full requirement and the
+                // unannotated body sees a ceiling that covers it.
+                let merged = match self.fn_capabilities.get(&name) {
+                    Some(existing) => existing.union(&caps),
+                    None => caps,
+                };
+                self.fn_capabilities.insert(name, merged);
             }
         }
 
