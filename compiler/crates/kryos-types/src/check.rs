@@ -5983,6 +5983,21 @@ pub fn type_check_with_lambda_params(
         ret: Type::Str,
     });
 
+    // index_of(s: str, sub: str) -> i64 — first byte offset of `sub` in `s`, or
+    // -1. Fully implemented in MIR + runtime (kryos_builtin_index_of) but was
+    // never registered here, so `index_of(..)` failed with E0102 despite being
+    // a working builtin.
+    checker.env.define_function(FunctionSig {
+        name: "index_of".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![
+            ("s".to_string(), Type::Str),
+            ("sub".to_string(), Type::Str),
+        ],
+        ret: Type::I64,
+    });
+
     // push<T>(arr: [T], val: T) -> [T] — generic so the element type flows:
     // `let mut a = []; a = push(a, X)` infers `a: [X]`.
     let push_t = {
