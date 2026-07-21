@@ -4,11 +4,27 @@
 // Pure Kryos.
 // ============================================================
 
+use std::utf8::{codepoint_count}
+
 /// Levenshtein edit distance between two strings.
 /// Cost: insert/delete/substitute = 1.
+///
+/// Operates on Unicode CODEPOINTS, not raw UTF-8 bytes: `byte_at` is
+/// char-indexed (returns the i-th codepoint) and `codepoint_count` gives the
+/// character length, so a multibyte character (accent, CJK, emoji) counts as a
+/// single edit. (The old byte-indexed version returned 2 for
+/// levenshtein("café","cafe") instead of the correct 1.)
 fn levenshtein(a: str, b: str) -> i64 {
-    let m = len(a)
-    let n = len(b)
+    let m = codepoint_count(a)
+    let n = codepoint_count(b)
+    // codepoint_count returns -1 for invalid UTF-8; fall back to a
+    // non-panicking byte-length delta so we never index past the string.
+    if m < 0 or n < 0 {
+        let la = len(a)
+        let lb = len(b)
+        if la > lb { return la - lb }
+        return lb - la
+    }
     if m == 0 { return n }
     if n == 0 { return m }
 
@@ -27,8 +43,8 @@ fn levenshtein(a: str, b: str) -> i64 {
         cur[0] = i
         let mut j2: i64 = 1
         while j2 <= n {
-            let ac = char_code(substr(a, i - 1, i))
-            let bc = char_code(substr(b, j2 - 1, j2))
+            let ac = byte_at(a, i - 1)
+            let bc = byte_at(b, j2 - 1)
             let cost = if ac == bc { 0 } else { 1 }
             let del = prev[j2] + 1
             let ins = cur[j2 - 1] + 1
@@ -71,8 +87,11 @@ fn closest(query: str, candidates: [str], max_dist: i64) -> i64 {
 
 /// Jaro similarity in [0.0, 1.0]: 1.0 = identical, 0.0 = no match.
 fn jaro(a: str, b: str) -> f64 {
-    let la = len(a)
-    let lb = len(b)
+    // Codepoint lengths (see levenshtein): byte lengths mis-scored non-ASCII.
+    // Invalid UTF-8 yields a negative length, which harmlessly short-circuits
+    // every loop below to 0 matches -> returns 0.0 (no out-of-bounds).
+    let la = codepoint_count(a)
+    let lb = codepoint_count(b)
     if la == 0 and lb == 0 { return 1.0 }
     if la == 0 or lb == 0 { return 0.0 }
 
@@ -103,7 +122,7 @@ fn jaro(a: str, b: str) -> f64 {
         if hi > lb { hi = lb }
         let mut j = lo
         while j < hi {
-            if b_match[j] == 0 and substr(a, i, i + 1) == substr(b, j, j + 1) {
+            if b_match[j] == 0 and byte_at(a, i) == byte_at(b, j) {
                 a_match[i] = 1
                 b_match[j] = 1
                 matches = matches + 1
@@ -125,7 +144,7 @@ fn jaro(a: str, b: str) -> f64 {
             while b_match[k] == 0 {
                 k = k + 1
             }
-            if substr(a, i, i + 1) != substr(b, k, k + 1) {
+            if byte_at(a, i) != byte_at(b, k) {
                 transpositions = transpositions + 1
             }
             k = k + 1
@@ -143,14 +162,14 @@ fn jaro(a: str, b: str) -> f64 {
 fn jaro_winkler(a: str, b: str) -> f64 {
     let j = jaro(a, b)
     let mut prefix = 0
-    let la = len(a)
-    let lb = len(b)
+    let la = codepoint_count(a)
+    let lb = codepoint_count(b)
     let mut max_prefix = 4
     if la < max_prefix { max_prefix = la }
     if lb < max_prefix { max_prefix = lb }
     let mut i = 0
     while i < max_prefix {
-        if substr(a, i, i + 1) == substr(b, i, i + 1) {
+        if byte_at(a, i) == byte_at(b, i) {
             prefix = prefix + 1
             i = i + 1
         } else {

@@ -112,6 +112,14 @@ fn parse(input: str) -> JsonValue {
     let mut p = _new_parser(input)
     p = _skip_whitespace(p)
     let result = _parse_value(p, 0)
+    // Reject trailing non-whitespace after the top-level value, matching every
+    // conformant parser (serde_json / JSON.parse / json.loads). Without this,
+    // `parse("123abc")` silently returned 123 and dropped the garbage, and
+    // `parse("[1,2]xyz")` silently returned [1,2] -- a data-integrity trap.
+    let tail = _skip_whitespace(result.parser)
+    if tail.pos < tail.input_len {
+        throw "json: unexpected trailing content at position " + to_string(tail.pos)
+    }
     return result.value
 }
 
