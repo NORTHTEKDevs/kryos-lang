@@ -382,6 +382,65 @@ pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
     }
 }
 
+/// The capability a RAW NATIVE runtime symbol requires, for an `extern { fn
+/// kryos_<sym> }` call (`sym` is the name with the `kryos_` prefix already
+/// stripped). The native symbol vocabulary is LARGER and spelled differently
+/// from the language-builtin vocabulary [`required_capability_for_builtin`]
+/// checks: natives carry a `_ks` (kryos-string ABI) suffix or a `builtin_`
+/// prefix, and some use a different verb order (`dir_create` vs the builtin
+/// `create_dir`, `file_remove` vs `remove_file`, `process_exec` vs `exec`).
+/// Because a program can hand-declare `extern { fn kryos_process_exec_simple }`
+/// and call it (marshalling args via the ungated `str_to_ptr`/`len`
+/// primitives), mapping ONLY the builtin names left every authority-bearing
+/// native ambient -- a full bypass of deny-by-default (arbitrary process
+/// exec / fs write / outbound HTTP from a zero-capability `main`). This maps
+/// the natives to the SAME authority as the builtin they back.
+pub fn required_capability_for_native_symbol(sym: &str) -> Option<Capability> {
+    // 1. Exact language-builtin spelling (file_read, create_dir, exec, ...).
+    if let Some(c) = required_capability_for_builtin(sym) {
+        return Some(c);
+    }
+    // 2. Normalize the ABI-variant spellings and retry the builtin table: strip
+    //    a `_ks` suffix and/or a `builtin_` prefix (http_request_ks -> http_request,
+    //    https_get_ks -> https_get, tcp_connect_ks -> tcp_connect, builtin_http_get
+    //    -> http_get, builtin_file_write -> file_write).
+    let norm = sym.strip_suffix("_ks").unwrap_or(sym);
+    let norm = norm.strip_prefix("builtin_").unwrap_or(norm);
+    if norm != sym {
+        if let Some(c) = required_capability_for_builtin(norm) {
+            return Some(c);
+        }
+    }
+    // 3. Native symbols whose name differs from the builtin (verb order /
+    //    distinct spelling) and therefore never matched the table. These are the
+    //    raw runtime entry points registered in the JIT (kryos-codegen-cranelift
+    //    jit.rs) behind the documented fs/process/net builtins.
+    match norm {
+        // process — spawn/run other programs
+        "process_exec" | "process_exec_simple" => Some(Capability::Process),
+        // fs:write — create/remove/delete on disk
+        "dir_create" | "dir_remove" | "file_remove" | "fs_delete" | "file_append" => {
+            Some(Capability::FsWrite)
+        }
+        // fs:read — enumerate/open/stat on disk
+        "dir_list" | "dir_walk" | "file_open" | "fs_exists" => Some(Capability::FsRead),
+        // net:http — the outbound-HTTP natives whose bare name isn't in the table
+        "https_get" | "http_request" | "http2_get" | "http2_post" | "http2_request" => {
+            Some(Capability::NetHttp)
+        }
+        // net:tcp — raw sockets / TLS / unix-domain sockets closing helpers whose
+        // bare native name isn't in the table (their connect/send/recv siblings
+        // normalize into the table above).
+        "socket_close" | "tls_server_config" | "tls_accept" | "uds_accept" | "uds_close" => {
+            Some(Capability::NetTcp)
+        }
+        // Genuine ambient plumbing (allocators, pointer/string helpers, stdout/
+        // stderr/stdin, process_exit/argc/argv, file_close, socket handles) —
+        // no authority, stays ungated.
+        _ => None,
+    }
+}
+
 /// Map a stdlib module path prefix to its required capability.
 ///
 /// For example, `std::net` requires `Net`, `std::io` requires `Io`, etc.

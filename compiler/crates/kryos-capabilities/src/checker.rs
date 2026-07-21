@@ -12,8 +12,8 @@ use kryos_errors::{Diagnostic, Span};
 use std::collections::HashMap;
 
 use crate::model::{
-    is_escalation_action, required_capability_for_builtin, required_capability_for_path, Budget,
-    Capability, CapabilitySet, Sandbox,
+    is_escalation_action, required_capability_for_builtin, required_capability_for_native_symbol,
+    required_capability_for_path, Budget, Capability, CapabilitySet, Sandbox,
 };
 
 /// How strictly capabilities are enforced. The three modes form a hierarchy
@@ -145,15 +145,21 @@ impl CapabilityChecker {
 
     /// The capability a CALL to `name` requires because `name` is an
     /// extern-declared function. `kryos_*` runtime exports resolve through the
-    /// builtin table (same authority, same capability); unmapped `kryos_*`
-    /// names are runtime plumbing (allocators, pointer helpers) and stay
-    /// ambient; every non-`kryos_` extern (user C libraries) requires `ffi`.
+    /// NATIVE-SYMBOL table (which maps the raw runtime symbol names -- `_ks`
+    /// suffixes, `builtin_` prefixes, and verb-order-different spellings like
+    /// `dir_create`/`process_exec_simple` -- to the SAME authority as the
+    /// builtin they back); genuinely ambient `kryos_*` plumbing (allocators,
+    /// pointer/string helpers) stays ungated; every non-`kryos_` extern (user
+    /// C libraries) requires `ffi`. Mapping only the builtin spellings left the
+    /// authority-bearing natives ambient -- a hand-declared
+    /// `extern { fn kryos_process_exec_simple }` reached arbitrary process exec
+    /// from a zero-capability `main` (deny-by-default bypass).
     fn required_capability_for_extern(&self, name: &str) -> Option<Capability> {
         if !self.extern_fns.contains(name) {
             return None;
         }
         match name.strip_prefix("kryos_") {
-            Some(stripped) => required_capability_for_builtin(stripped),
+            Some(stripped) => required_capability_for_native_symbol(stripped),
             None => Some(Capability::Ffi),
         }
     }

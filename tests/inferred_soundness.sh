@@ -223,6 +223,49 @@ want_pass actor_pure_handler \
   fn bump(self, x: i64) { println(to_string(x + 1)) } }
 fn main() { let c = Counter()  c.bump(41) }'
 
+# --- capability ESCAPE via a hand-declared RAW NATIVE extern -----------------
+# `extern { fn kryos_<native> }` lets code call the runtime symbols behind the
+# fs/process/net builtins directly, marshalling args through the ungated
+# str_to_ptr/len primitives. The native symbol names differ from the builtin
+# names (_ks suffix, builtin_ prefix, verb order: dir_create vs create_dir), so
+# mapping only builtin names left them AMBIENT -- an unannotated main reached
+# arbitrary process exec / fs write / outbound HTTP with zero caps. Each MUST be
+# rejected now (gated to the same authority as the builtin it backs).
+want_reject native_extern_process_exec \
+'extern { fn kryos_process_exec_simple(c: i64, n: i64) -> i64 }
+fn main() { let c = "x"  let r = kryos_process_exec_simple(str_to_ptr(c), len(c))  println(to_string(r)) }'
+
+want_reject native_extern_dir_create \
+'extern { fn kryos_dir_create(p: i64, n: i64) -> i64 }
+fn main() { let c = "x"  let r = kryos_dir_create(str_to_ptr(c), len(c))  println(to_string(r)) }'
+
+want_reject native_extern_file_remove \
+'extern { fn kryos_file_remove(p: i64, n: i64) -> i64 }
+fn main() { let c = "x"  let r = kryos_file_remove(str_to_ptr(c), len(c))  println(to_string(r)) }'
+
+want_reject native_extern_https_get_ks \
+'extern { fn kryos_https_get_ks(u: i64) -> i64 }
+fn main() { let r = kryos_https_get_ks(0)  println(to_string(r)) }'
+
+want_reject native_extern_builtin_env_get \
+'extern { fn kryos_builtin_env_get(a: i64) -> i64 }
+fn main() { let r = kryos_builtin_env_get(0)  println(to_string(r)) }'
+
+want_reject native_extern_tcp_connect_ks \
+'extern { fn kryos_tcp_connect_ks(a: i64, b: i64) -> i64 }
+fn main() { let r = kryos_tcp_connect_ks(0, 0)  println(to_string(r)) }'
+
+# ...but declaring the matching capability is accepted, and a genuinely pure
+# native (an allocator/pointer helper) stays ambient (not over-gated).
+want_pass native_extern_declared \
+'extern { fn kryos_dir_create(p: i64, n: i64) -> i64 }
+@capabilities(fs:write)
+fn main() { let c = "x"  let r = kryos_dir_create(str_to_ptr(c), len(c))  println(to_string(r)) }'
+
+want_pass native_extern_pure_alloc \
+'extern { fn kryos_arc_alloc_i64(n: i64) -> i64 }
+fn main() { let r = kryos_arc_alloc_i64(8)  println(to_string(r)) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else
