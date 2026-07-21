@@ -1,0 +1,33 @@
+// Conformance: `arr_to_ptr` is the sanctioned array-handle -> i64 FFI shim
+// that replaced the now-rejected `arr as i64` cast. std::tensor and
+// std::process::Command route their native calls through it; if the builtin
+// regresses (missing runtime symbol, wrong codegen on either backend), the
+// shape-based tensor constructors go dead again. Exercise the round-trip on
+// both backends.
+
+use std::tensor::{tensor_zeros, tensor_ones, tensor_numel, tensor_free}
+
+fn expect(cond: bool, msg: str) {
+    if cond {
+        return
+    }
+    println("FAIL: " + msg)
+    exit(1)
+}
+
+fn main() {
+    // A non-null array handle must reinterpret to a non-zero pointer.
+    let a: [i64] = [1, 2, 3]
+    expect(arr_to_ptr(a) != 0, "arr_to_ptr non-null handle")
+
+    // Every shape-based tensor constructor passes arr_to_ptr(shape) to native.
+    let t = tensor_zeros([2, 3, 4])
+    expect(tensor_numel(t) == 24, "tensor_zeros numel via arr_to_ptr(shape)")
+    tensor_free(t)
+
+    let t2 = tensor_ones([5, 2])
+    expect(tensor_numel(t2) == 10, "tensor_ones numel via arr_to_ptr(shape)")
+    tensor_free(t2)
+
+    println("conformance ffi arr_ptr: PASS")
+}

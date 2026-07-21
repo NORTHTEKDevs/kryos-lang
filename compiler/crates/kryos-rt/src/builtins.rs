@@ -1740,6 +1740,17 @@ pub unsafe extern "C" fn kryos_str_to_ptr(handle: i64) -> i64 {
     (*s).data as i64
 }
 
+/// `arr_to_ptr(arr) -> i64` — raw handle pointer (as i64) of an array/collection.
+/// Unlike `str_to_ptr` (which returns a string's inner data pointer), an array
+/// handle already IS the pointer to its `{len,cap,elem_size,ref_count,data}`
+/// header, so this is the identity on the handle. `0` (null) stays `0`. Used by
+/// the stdlib FFI shims (std::tensor, std::process) to reach a native routine
+/// that reads the array header; replaces the now-rejected `arr as i64` cast.
+#[no_mangle]
+pub extern "C" fn kryos_arr_to_ptr(handle: i64) -> i64 {
+    handle
+}
+
 /// `buf_to_str(ptr, len) -> str` — build a KryosString by copying `len` bytes
 /// from `ptr`. Returns 0 (null) if `ptr` is null and `len > 0`.
 #[no_mangle]

@@ -72,25 +72,25 @@ fn arr_data_ptr(header: i64) -> i64 {
 // i64. (kryos_f64_from_bits, an i64-arg/f64-return extern, works directly.)
 fn f64_to_bits(v: f64) -> i64 {
     let slot = [v]
-    return ptr_read_i64(arr_data_ptr(slot as i64), 0)
+    return ptr_read_i64(arr_data_ptr(arr_to_ptr(slot)), 0)
 }
 
 // --- Creation functions -----------------------------------------------------
 
 fn tensor_zeros(shape: [i64]) -> i64 {
-    return kryos_tensor_zeros(arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_zeros(arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 fn tensor_ones(shape: [i64]) -> i64 {
-    return kryos_tensor_ones(arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_ones(arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 fn tensor_rand(shape: [i64]) -> i64 {
-    return kryos_tensor_rand(arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_rand(arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 fn tensor_randn(shape: [i64]) -> i64 {
-    return kryos_tensor_randn(arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_randn(arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 fn tensor_eye(n: i64) -> i64 {
@@ -123,7 +123,7 @@ fn tensor_sigmoid(t: i64) -> i64 {
 
 // Build a tensor from a flat [f64] buffer and an explicit shape.
 fn tensor_from_data(data: [f64], shape: [i64]) -> i64 {
-    return kryos_tensor_from_data(arr_data_ptr(data as i64), len(data), arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_from_data(arr_data_ptr(arr_to_ptr(data)), len(data), arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 // --- Introspection ----------------------------------------------------------
@@ -232,7 +232,7 @@ fn tensor_transpose(t: i64) -> i64 {
 }
 
 fn tensor_reshape(t: i64, shape: [i64]) -> i64 {
-    return kryos_tensor_reshape(t, arr_data_ptr(shape as i64), len(shape))
+    return kryos_tensor_reshape(t, arr_data_ptr(arr_to_ptr(shape)), len(shape))
 }
 
 fn tensor_flatten(t: i64) -> i64 {

@@ -1169,6 +1169,7 @@ pub fn lower_module_with_lambda_params(
         ("ws_read_frame", MirType::Str),
         // Low-level FFI helpers (v2.3.4)
         ("str_to_ptr", MirType::I64),
+        ("arr_to_ptr", MirType::I64),
         ("buf_to_str", MirType::Str),
         ("alloc", MirType::I64),
         ("free_bytes", MirType::Void),

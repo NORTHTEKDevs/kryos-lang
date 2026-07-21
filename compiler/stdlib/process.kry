@@ -299,7 +299,7 @@ impl Command {
         // header's `data` field (frozen v4 ABI { len, cap, elem_size,
         // ref_count, data } -> i64 index 4). (`null, 0` previously dropped
         // every argument silently; passing the header crashes the native.)
-        let args_buf = ptr_read_i64(self.arguments as i64, 4)
+        let args_buf = ptr_read_i64(arr_to_ptr(self.arguments), 4)
         let result_ptr = kryos_process_exec(
             str_to_ptr(self.program), len(self.program),
             args_buf, len(self.arguments)

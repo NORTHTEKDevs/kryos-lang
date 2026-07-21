@@ -1093,6 +1093,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_mutex_drop(i64)");
         self.emit_line("; Low-level FFI helpers (v2.3.4) — pointers carried as i64 in IR.");
         self.emit_line("declare i64 @kryos_str_to_ptr(i64)");
+        self.emit_line("declare i64 @kryos_arr_to_ptr(i64)");
         self.emit_line("declare i64 @kryos_buf_to_str(i64, i64)");
         self.emit_line("declare i64 @kryos_alloc_bytes(i64)");
         self.emit_line("declare void @kryos_free_bytes(i64, i64)");
@@ -6316,6 +6317,7 @@ impl LlvmCodegen {
                                 "mutex_drop" => "kryos_mutex_drop",
                                 // Low-level FFI helpers (v2.3.4)
                                 "str_to_ptr" => "kryos_str_to_ptr",
+                                "arr_to_ptr" => "kryos_arr_to_ptr",
                                 "buf_to_str" => "kryos_buf_to_str",
                                 // Byte-buffer builtins (self-host codegen uses
                                 // these heavily). The Cranelift backend mapped

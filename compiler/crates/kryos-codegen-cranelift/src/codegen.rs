@@ -940,6 +940,14 @@ pub fn compile_module_with_options(
         )?;
         func_ids.insert("str_to_ptr".to_string(), str_to_ptr_id);
 
+        // arr_to_ptr(arr) -> i64  (identity on the array handle; same shape)
+        let arr_to_ptr_id = object_module.declare_function(
+            "kryos_arr_to_ptr",
+            Linkage::Import,
+            &sig_i64_i64,
+        )?;
+        func_ids.insert("arr_to_ptr".to_string(), arr_to_ptr_id);
+
         let alloc_id = object_module.declare_function(
             "kryos_alloc_bytes",
             Linkage::Import,

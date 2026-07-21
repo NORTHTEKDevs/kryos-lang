@@ -5749,6 +5749,18 @@ pub fn type_check_with_lambda_params(
         ret: Type::I64,
     });
 
+    // arr_to_ptr(arr) -> i64 — raw handle pointer (as i64) of an array. The
+    // array handle IS its header pointer, so this is the sanctioned FFI shim
+    // that replaced the (now-rejected) `arr as i64` cast. Param is opaque
+    // (any collection handle), same convention as `len`.
+    checker.env.define_function(FunctionSig {
+        name: "arr_to_ptr".to_string(),
+        generic_params: vec![],
+        generic_var_ids: vec![],
+        params: vec![("arr".to_string(), Type::Error)],
+        ret: Type::I64,
+    });
+
     // buf_to_str(ptr: i64, len: i64) -> str — copy `len` bytes at `ptr` to a new string.
     checker.env.define_function(FunctionSig {
         name: "buf_to_str".to_string(),
