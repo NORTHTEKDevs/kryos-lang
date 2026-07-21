@@ -33,7 +33,7 @@ fn main() {
     // csv: an interior blank line is a 0-field row, not dropped.
     let rows = parse("a,b\n\nc,d\n")
     expect(len(rows) == 3, "csv interior blank line yields a row")
-    expect(len(rows[1].fields) == 1 and rows[1].fields[0] == "", "csv blank row is empty")
+    expect(len(rows[1].fields) == 0, "csv blank line is a 0-field row (Python csv parity)")
     expect(rows[2].fields[0] == "c", "csv row after blank not misaligned")
 
     // http: url_to_string keeps the port for a non-http/https scheme.

@@ -116,9 +116,15 @@ fn parse_url(raw: str) -> Url {
     } else {
         let colon_idx = _find(rest, ":")
         if colon_idx >= 0 {
+            // The colon is the host/port delimiter regardless of whether the
+            // port digits are valid -- always split the host off it, and only
+            // override the scheme-default port when the port segment parses.
+            // (Previously host was only split inside `if p >= 0`, so a bad port
+            // like `example.com:abc` left the ":abc" attached to the host and
+            // broke DNS resolution for the caller.)
+            host = _substring(rest, 0, colon_idx)
             let p = _parse_port(_substring(rest, colon_idx + 1, len(rest)))
             if p >= 0 {
-                host = _substring(rest, 0, colon_idx)
                 port = p
             }
         }
