@@ -7,19 +7,16 @@ Build a command-line word counter that reads a file and prints line, word, and c
 Save as `wc.kry`:
 
 ```kryos
+use std::string::{replace}
+
 fn count_words(line: str) -> i64 {
+    // Strings can't be iterated char-by-char (`for c in line` is a compile
+    // error) -- split into an array of tokens first.
+    let normalized = replace(line, "\t", " ")
     let mut count = 0
-    let mut in_word = false
-    let space = char_code(" ")
-    let tab = char_code("\t")
-    let newline = char_code("\n")
-    for c in line {
-        let is_space = c == space or c == tab or c == newline
-        if !is_space and !in_word {
+    for w in split(normalized, " ") {
+        if len(w) > 0 {
             count = count + 1
-            in_word = true
-        } elif is_space {
-            in_word = false
         }
     }
     return count
@@ -63,8 +60,8 @@ kryos run wc.kry README.md
 
 - **`args()`** returns the argv array (program name at `args[0]`)
 - **`file_read(path)`** reads a file into a `str`. Requires the `io` capability — note `@capabilities(io)` on `main`.
-- **`split(s, delim)`** splits a string into an array of substrings.
-- **Iterating a `str`** yields each character as an `i64` char code; compare with `char_code(" ")` etc.
+- **`split(s, delim)`** splits a string into an array of substrings — this is the global builtin form (`std::path` and `std::string` also each have their own `split` with a different signature; the flat namespace resolves the unqualified call to the builtin unless you import one of those).
+- **You cannot iterate a `str` directly.** `for c in line` is a compile error (`E0110`) — `for` only accepts an array or a range. Split the string into an array first (`split(s, " ")`, `std::string::split_lines`) or index characters with `substr(s, i, i + 1)`.
 
 ## Variations to try
 

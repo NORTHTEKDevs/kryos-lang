@@ -1,6 +1,6 @@
 # Cookbook 12 · Structured logging
 
-`std::log` emits one line per record to stderr in `LEVEL ts=<epoch_secs> msg="..." k=v k=v` format. Easy to pipe through `awk` / `grep` / `jq`.
+`std::log` emits one line per record to stdout (via `println` — Kryos has no dedicated stderr builtin) in `LEVEL msg="..."[ k=v k=v]` format. There is no `ts=` field; the trailing `k=v` payload is only appended when you pass a non-empty `kv` string. Easy to pipe through `awk` / `grep` / `jq`.
 
 ## The program
 
@@ -42,6 +42,6 @@ fn main() {
 
 ## Tips
 
-- Set `KRYOS_LOG_LEVEL=3` in production to drop everything below WARN.
+- `std::log` has no environment-variable support — the min level is set purely in code via `set_level(log, WARN())`. Read your own env var (`env_get("LOG_LEVEL")`, needs the `process` capability) and map it to a level constant if you want that behavior.
 - Pipe to `jq -R 'split(" ") | ...'` if you want JSON for ingestion.
 - The `k=v` payload is verbatim — escape `"` and spaces yourself.

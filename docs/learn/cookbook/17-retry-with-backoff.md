@@ -38,8 +38,13 @@ fn with_retry(max_attempts: i64, base_ms: i64, op: fn() -> bool) -> bool {
 }
 
 fn attempt_request() -> bool {
-    // Replace with your actual operation. For demo, succeed on the 3rd try.
+    // Replace with your actual operation. Demo: set ATTEMPTS=3 in the
+    // environment to simulate success on a later try. `env_get` returns ""
+    // when unset, and `parse_int("")` panics, so guard the empty case —
+    // running this without ATTEMPTS set exhausts all 5 retries and prints
+    // "failed after 5 attempts" instead of crashing.
     let count = env_get("ATTEMPTS")
+    if len(count) == 0 { return false }
     let n = parse_int(count)
     if n >= 2 { return true }
     return false

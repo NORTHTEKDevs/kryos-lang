@@ -24,9 +24,12 @@ fn main() {
 
 - All four functions return caller-allocated strings via `kryos-rt`'s string
   builder — no manual buffer management at the Kryos level.
-- `fmt_bytes` reports in **binary** units (KB = 1024, MB = 1024², etc.).
-  Use IEC suffixes (KiB/MiB) if your domain disambiguates from SI.
-- `fmt_decimal_padded(42, 5)` returns `"00042"`. For width less than digits,
+- `bytes(n)` reports in **binary** units (KB = 1024, MB = 1024², etc.) and
+  truncates to a whole number (`bytes(1572864)` — 1.5 MiB worth of bytes —
+  prints `"1 MB"`, not `"1.5 MB"`). Use IEC suffixes (KiB/MiB) if your domain
+  disambiguates from SI.
+- `decimal_padded(42, 5)` returns `"00042"`. For width less than digits,
   you get the unpadded string.
-- Negative values: hex / binary use sign-magnitude (`fmt_hex(-1) = -0x1`),
-  bytes treats sign as informational ("−100 B").
+- Negative values: hex / binary use sign-magnitude (`hex(-1) = "-0x1"`),
+  `bytes` treats sign as informational (`bytes(-100) = "-100 B"`, ASCII
+  hyphen, not a Unicode minus sign).

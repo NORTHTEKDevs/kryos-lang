@@ -30,9 +30,11 @@ fn main() {
 
 ## Things to know
 
-- Normalization is purely lexical. `path_normalize("a/../b")` returns
-  `"b"` even if `a` doesn't exist or is a file. For filesystem-aware
-  resolution use `std::fs::canonicalize`.
+- Normalization is purely lexical. `normalize("a/../b")` returns
+  `"b"` even if `a` doesn't exist or is a file — `std::pathext` never
+  touches the filesystem. `std::fs` has no canonicalize/realpath
+  equivalent yet; check `std::fs::exists`/`is_dir`/`is_file` yourself if
+  you need to confirm a normalized path actually resolves.
 - `..` past the root is silently absorbed (`"/.." == "/"`). For relative
   paths it accumulates (`"../../foo"`).
 - Backslashes are always converted to forward slashes — Kryos paths are

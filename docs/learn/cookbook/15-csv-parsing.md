@@ -75,5 +75,8 @@ fn print_row(header: [str], row: [str]) {
   buffer until quotes balance.
 - Does **not** handle escaped `""` inside quoted fields — strip those in
   a follow-up pass if needed.
-- For multi-MB files, switch to a streaming approach (`std::stream`) to
-  avoid loading the whole file into a single `str`.
+- For multi-MB files, switch to a streaming approach (`std::io::open` +
+  `buf_reader(file)`, then loop `reader.read_line()` until `reader.is_eof()`)
+  to avoid loading the whole file into a single `str`. (`std::stream` builds
+  lazy pipelines over in-memory `[i64]`/range data — it has no file-reading
+  API.)

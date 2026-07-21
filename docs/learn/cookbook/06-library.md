@@ -40,6 +40,7 @@ Replace `src/lib.kry`:
 
 <!-- docs-example: skip -->
 ```kryos
+@pure
 pub fn mean(xs: [f64]) -> f64 {
     if len(xs) == 0 { return 0.0 }
     let mut sum = 0.0
@@ -74,7 +75,7 @@ pub fn stddev(xs: [f64]) -> f64 {
 Things to notice:
 
 - **`pub`** marks each function as importable.
-- **`@pure`** on `stddev` tells the compiler this function has no side effects. Calling `file_read` from it would be a compile error.
+- **`@pure`** on `mean` and `stddev` tells the compiler these functions have no side effects. Calling `file_read` from either would be a compile error. A `@pure` function may only call other `@pure` functions (or pure builtins) — since `stddev` calls `mean`, `mean` must be `@pure` too (E0110 otherwise).
 - **No `main`.** Libraries don't have an entry point.
 
 ## Step 3 · Tests

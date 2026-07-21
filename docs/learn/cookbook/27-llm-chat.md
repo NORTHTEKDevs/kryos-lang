@@ -7,6 +7,7 @@ Ollama/vLLM server (point `with_base_url` at it).
 ```kryos
 use std::llm::{anthropic_config, openai_config, with_base_url, system, user, chat, complete}
 
+@capabilities(process, net)
 fn main() {
     // One-shot ask against Anthropic. (`complete`, because `ask` is a
     // reserved keyword.)
@@ -37,6 +38,7 @@ plus one API call afterward.
 use std::llm::{anthropic_config, user, chat_within}
 use std::cost::{Budget, ComputeCost}
 
+@capabilities(process, net)
 fn main() {
     let cfg = anthropic_config(env_get("ANTHROPIC_API_KEY"), "claude-sonnet-4-6")
     let mut budget = Budget { max_usd: 1.0, max_tokens: 50000, max_api_calls: 25, spent_usd: 0.0, spent_tokens: 0, spent_api_calls: 0 }
@@ -60,10 +62,12 @@ inside (at any depth) charges against it automatically. Exceeding the
 ceiling throws, which is what halts a runaway loop. Nested `@budget`
 functions stack — an outer budget constrains everything inside it.
 
+<!-- docs-example: skip -->
 ```kryos
 use std::llm::{anthropic_config, user, chat}
 
 @budget(tokens = 50000, calls = 25)
+@capabilities(process, net)
 fn research_agent(question: str) -> str {
     let cfg = anthropic_config(env_get("ANTHROPIC_API_KEY"), "claude-sonnet-4-6")
     let mut notes = ""

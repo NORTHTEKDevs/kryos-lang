@@ -86,7 +86,7 @@ kryos run pool.kry
 ## Variations to try
 
 - Use a `struct Job { id, payload }` and `struct Result { id, value }` to preserve ordering.
-- Make `workers` configurable from `process_args()`.
-- Time the parallel version vs a single-threaded version with `time_now_ms()`.
+- Make `workers` configurable from `args()` (the argv array; ungated, no capability needed).
+- Time the parallel version vs a single-threaded version with `time_now_millis()`.
 
 When you're ready for more, see [05 · Async fetch many](./05-async-fetch.md).

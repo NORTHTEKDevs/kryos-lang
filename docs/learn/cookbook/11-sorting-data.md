@@ -1,6 +1,6 @@
 # Cookbook 11 · Sorting + binary search
 
-`std::sort` provides in-place Timsort, descending reverse, binary search, and an is-sorted check.
+The global builtins `sort(arr)` and `reverse(arr)` sort/reverse an array in place. There's no built-in binary search or is-sorted check — this recipe writes both by hand (a few lines each).
 
 ## The program
 
@@ -72,7 +72,7 @@ fn main() {
 
 ## Things to know
 
-- `sort_i64` is **in-place** — pass `let mut` arrays.
-- For descending: call `sort_i64` then `sort_i64_reverse`.
-- `bsearch_i64` returns `-1` on miss — *always* check.
-- The sort is unstable (Rust's `sort_unstable`); equal keys may reorder.
+- `sort(arr)` is **in-place and void** — pass `let mut` arrays and call it as a statement (`sort(nums)`), not `nums = sort(nums)`.
+- For descending: call `sort(arr)` then `reverse(arr)` (also in-place and void).
+- The hand-rolled `bsearch` above returns `-1` on miss — *always* check.
+- `std::iter::sort<T>(arr) -> [T]` is a separate, non-mutating generic sort that returns a new array — importing it (`use std::iter::{sort}`) shadows the bare builtin's in-place behavior, so don't mix the two in the same file.

@@ -54,7 +54,6 @@ Output is non-deterministic per run (UUIDs are random):
 ```
 id1: 8c5f4d2e-...
 id2: bf8d1a06-...
-parsed bytes length: 16
 encoded:   dGhlIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIDEzIGxhenkgZG9ncyE=
 decoded:   the quick brown fox jumps over 13 lazy dogs!
 u:OGM1ZjRkMmUtN2Q4MS00ZjBkLWE5YjUtNzE5OWJjOWVmNDAx
@@ -64,7 +63,7 @@ u:...
 
 ## Things to know
 
-- The UUID v4 random source is splitmix64 over `(nanos XOR counter)` — fine for IDs, not for crypto. If you need cryptographically secure randomness, use `std::crypto::rand_bytes`.
-- `uuid_v4()` is in `std::crypto`. There is no `uuid_parse` in the standard library; validate UUID format with a regex if needed.
+- The UUID v4 random source is splitmix64 over `(nanos XOR counter)` — fine for IDs, not for crypto. If you need cryptographically secure randomness, use `std::crypto::random_bytes`.
+- `uuid_v4()` is in `std::crypto`. `std::crypto::uuid_parse(s)` validates and normalizes the canonical hyphenated form (throws on malformed input) if you need to check a UUID you didn't generate yourself.
 - `base64_encode` and `base64_decode` are builtins (no import). They use the standard RFC 4648 alphabet (`+ /`). For URL-safe variants (`- _`) substitute the chars after encoding.
 - Both functions move bytes through a caller-owned buffer at the FFI layer; you don't have to free anything — the runtime handles cleanup.

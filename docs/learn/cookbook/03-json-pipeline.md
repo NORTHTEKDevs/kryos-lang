@@ -64,13 +64,11 @@ fn main() {
 
 ```bash
 kryos run pipeline.kry
-# → wrote 2 admin records to admins.json
-
-cat admins.json
-# → [{"name":"alice","age":30},{"name":"bob","age":24}]
+# → admins: [name=alice age=30,name=carol age=41]
+# → wrote 2 admin records
 ```
 
-(Note: `bob` is actually a `user` in the input above; in real use this prints just `alice` and `carol`. The example fixed up here is for illustration of the loop pattern.)
+(`bob` is a `user`, not an `admin`, so the filter correctly keeps only `alice` and `carol`.)
 
 ## What this teaches
 
@@ -82,6 +80,6 @@ cat admins.json
 
 - Group users by role and write `admins.json` + `users.json` separately.
 - Replace the manual JSON output with a helper function that takes a struct and serializes it.
-- Pipe through stdin/stdout instead of named files (use `stdin_read_all()`).
+- Pipe through stdin/stdout instead of named files (`use std::io::{read_line, read_stdin}` — `read_line()` reads one line, `read_stdin(n)` reads up to `n` bytes; there's no unbounded "read all" helper).
 
 When you're ready for more, see [04 · Worker pool](./04-worker-pool.md).

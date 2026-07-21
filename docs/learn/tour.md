@@ -263,6 +263,7 @@ async fn fetch_size(url: str) -> i64 {
     len(resp.body)
 }
 
+@capabilities(net)
 async fn main() {
     let s1 = await fetch_size("https://example.com")
     let s2 = await fetch_size("https://example.org")
@@ -277,9 +278,11 @@ async fn main() {
 ## 12 · Capabilities
 
 ```kryos
+use std::net::{http_post}
+
 @pure
 fn add(a: i64, b: i64) -> i64 {
-    a + b      // compile error if this calls file_read, net_get, etc.
+    a + b      // compile error if this calls file_read, http_get, etc.
 }
 
 @capabilities(io)
@@ -290,7 +293,7 @@ fn read_config(path: str) -> str {
 @capabilities(io, net)
 fn upload_logs() {
     let logs = file_read("/var/log/app.log")
-    net_post("https://example.com/logs", logs)
+    http_post("https://example.com/logs", logs, "text/plain")
 }
 ```
 
@@ -314,11 +317,11 @@ fn parse_port(s: str) -> i64 {
 
 fn main() {
     println(to_string(parse_port("80")))      // → 80
-    println(to_string(parse_port("abc")))     // → 8080 (fell through catch)
+    println(to_string(parse_port("99999")))   // → 8080 (fell through catch)
 }
 ```
 
-`try { ... } catch e { ... }` is the recoverable-error pattern. For truly fatal errors, `panic("message")`.
+`try { ... } catch e { ... }` is the recoverable-error pattern for `throw`ed errors — but note it only catches an explicit `throw`, not a runtime panic (`parse_int` on a non-numeric string panics rather than throwing, so a malformed string like `"abc"` would abort the program instead of hitting `catch`; guard the input before parsing if it might not be numeric). For truly fatal errors, `panic("message")`.
 
 ---
 
@@ -365,15 +368,17 @@ See [12 · Modules and Packages](../12-modules-and-packages.md) and [docs/packag
 ## 16 · FFI (calling C)
 
 ```kryos
-@ffi("libm")
-fn sqrt(x: f64) -> f64
+extern "C" {
+    fn sqrt(x: f64) -> f64
+}
 
+@capabilities(ffi)
 fn main() {
     println(to_string(sqrt(2.0)))    // → 1.414...
 }
 ```
 
-Generate idiomatic bindings from C headers with `kryos bindgen /usr/include/math.h`. See [13 · FFI](../13-ffi.md) for the full story including memory ownership across the boundary.
+Foreign functions are declared in an `extern "C" { ... }` block; calling one requires the `ffi` capability. Generate bindings from C headers with `kryos bindgen /usr/include/math.h`. See [13 · FFI](../13-ffi.md) for the full story including memory ownership across the boundary — note that only calls into the `kryos_*` runtime surface are currently linked/emitted end-to-end; arbitrary third-party C library FFI (`-l` linking of a real `extern "C"` symbol) is still landing.
 
 ---
 

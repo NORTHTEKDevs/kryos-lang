@@ -34,8 +34,8 @@ curl -X POST http://localhost:8080/echo -d "hello"
 
 ## What this teaches
 
-- **`tcp_listen` / `tcp_accept`** are the low-level networking primitives.
-- **`http_read_request` / `http_write_response`** parse and emit HTTP/1.1 messages.
+- **`tcp_listen` / `tcp_accept`** are the low-level networking primitives `http_serve` is built on.
+- **`parse_request` / `serialize_response`** (internal to `std::http`) parse and emit HTTP/1.1 messages.
 - **`spawn { ... }`** runs the handler on a fresh task; the main loop returns to `accept` immediately. The TCP stack does not serialize through a global mutex, so workers actually run concurrently.
 - **`@capabilities(net, io)`** is declared explicitly. The compiler will reject any helper this calls that doesn't carry these capabilities.
 

@@ -87,6 +87,5 @@ kryos run dates.kry
 ## Things to know
 
 - All breakdowns are UTC. There is no built-in timezone library yet; if you need local time, compute the offset yourself with `env_get("TZ")` and add it to the epoch value.
-- `time_format_rfc3339_utc` always emits the `Z` suffix.
-- `time_from_ymdhms_utc(...)` returns -1 on out-of-range input (month outside 1..12, day outside 1..31). Always check.
-- `time_sleep_millis` parks the thread — the same caveat as Rust: don't call inside a hot loop unless you mean it.
+- `std::datetime`'s `DateTime.to_iso()` / `format_timestamp(epoch_secs)` / `now_iso()` always emit the `Z` suffix (`YYYY-MM-DDTHH:MM:SSZ`). Per the resolver bug noted above, prefer the raw builtins (`time_now_secs`, `time_now_millis`) plus the inline helpers shown here over importing `std::datetime` directly.
+- `std::datetime::sleep_millis(ms)` (module function, not a bare builtin) parks the thread — the same caveat as Rust: don't call inside a hot loop unless you mean it. This recipe uses the bare `sleep_ms(100)` builtin instead, which needs no import.

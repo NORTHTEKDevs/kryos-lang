@@ -2,7 +2,7 @@
 
 `std::random` ships a splitmix64-based PRNG with seeded determinism, range
 selection, float [0, 1), byte fill, and in-place Fisher–Yates shuffle.
-**Not cryptographic** — use `std::crypto::rand_bytes` for that.
+**Not cryptographic** — use `std::crypto::random_bytes` for that.
 
 ## The program
 
@@ -47,5 +47,5 @@ fn main() {
 ## When NOT to use this
 
 For **anything cryptographic** (auth tokens, password salts, signing nonces),
-use `std::crypto::rand_bytes` instead. The splitmix64 generator is fast +
+use `std::crypto::random_bytes` instead. The splitmix64 generator is fast +
 deterministic but small-state and predictable from a few outputs.

@@ -18,6 +18,7 @@ Save as `fetch_many.kry`:
 ```kryos
 use std::net::{http_get}
 
+@capabilities(net)
 fn main() {
     let urls = [
         "https://example.com",
@@ -71,8 +72,9 @@ kryos run fetch_many.kry
   Results arrive in completion order, not URL order — if you need to correlate
   a result with its URL, send a tagged id and look it up, or use an actor that
   holds a result map.
-- **`@capabilities(net)` is inferred** from `http_get`; you don't have to write
-  it explicitly on the spawned block.
+- **`@capabilities(net)` is declared on `main`** (the boundary); the compiler
+  infers it through the `spawn` block automatically, so you don't have to
+  write it again there.
 
 ## Why not async/await?
 

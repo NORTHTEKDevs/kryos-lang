@@ -21,7 +21,8 @@ fn main() {
 }
 
 fn to_hex(n: i64) -> str {
-    // Convert i64 to 8-char hex string.
+    // Convert i64 to a 16-char hex string (all 64 bits; CRC32's upper
+    // 32 bits are always zero, so its hex form is zero-padded on the left).
     let digits: [str] = ["0","1","2","3","4","5","6","7","8","9","a","b","c","d","e","f"]
     let mut out: str = ""
     let mut shift: i64 = 60

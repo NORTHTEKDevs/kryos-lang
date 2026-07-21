@@ -87,4 +87,4 @@ kryos run app.log.kry
 - `split_lines` handles both `\n` and `\r\n` — safe across platforms.
 - `parse` throws on a malformed line; wrap the call in `try`/`catch` if your input may contain bad lines you want to skip rather than abort on.
 - Counts are kept in `let mut` locals — no need for a `map<str, i64>` for the four well-known levels. For arbitrary user-defined levels, switch to `map<str, i64>` and use `m["new_level"] = (m["new_level"] + 1)`.
-- For 100M-line files this loop is the bottleneck; switch to a buffered iterator if you hit memory pressure (see `std::stream::file_lines`).
+- For 100M-line files, `file_read` + `split_lines` loads the whole file into memory at once; switch to `std::io::open` + `buf_reader(file)` and loop `reader.read_line()` until `reader.is_eof()` if you hit memory pressure.

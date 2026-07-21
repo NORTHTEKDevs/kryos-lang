@@ -8,7 +8,12 @@ Syntax at a glance, one screenful. For deeper detail, link to the language refer
 let x: i64 = 42              // immutable
 let mut y: i64 = 10          // mutable
 let s = "hi"                 // inferred
-const PI: f64 = 3.14         // compile-time constant
+```
+
+Top-level constants use a top-level `let` (`const` is not a Kryos keyword):
+
+```kryos
+let PI: f64 = 3.14           // top-level constant
 ```
 
 ## Types
@@ -27,6 +32,8 @@ const PI: f64 = 3.14         // compile-time constant
 ## Control flow
 
 ```kryos
+use std::option::{Some, None}
+
 if x > 0 { ... } elif x == 0 { ... } else { ... }
 
 while i < 10 { i = i + 1 }
@@ -80,7 +87,8 @@ enum Shape {
 ```kryos
 use std::string::{split_lines}
 let n = 42
-let msg = "n = " + to_string(n)             // no interpolation; use +
+let msg = "n = {n}"                         // every string interpolates with { }
+let literal = "use {{double braces}}"       // literal brace: double it ({{ }}) or use \{ \}
 let parts = split_lines(file_read("x.txt"))
 let has_e = contains("hello", "e")
 ```
@@ -98,6 +106,8 @@ for x in arr { ... }
 ## Errors
 
 ```kryos
+use std::result::{Result, Ok, Err}
+
 fn divide(a: i64, b: i64) -> Result<i64, str> {
     if b == 0 { return Err("div by zero") }
     return Ok(a / b)

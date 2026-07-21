@@ -5,7 +5,7 @@ Production services typically read configuration from env vars rather than files
 ## The program
 
 ```kryos
-@capabilities(io)
+@capabilities(process)
 fn main() {
     let port = env_int("PORT", 8080)
     let log_level = env_str("LOG_LEVEL", "info")

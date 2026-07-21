@@ -7,7 +7,9 @@ data-pipeline patterns without a hash set.
 ## The program
 
 ```kryos
-// sort, reverse, min, max are builtins — no import needed.
+// sort, reverse are builtins — no import needed. min/max are also builtins
+// but only take two scalar args (min(a, b)); there's no array-reducing
+// min/max, so this recipe finds the extremes with a manual loop below.
 
 // Remove consecutive duplicates from a sorted array.
 fn dedup_sorted(nums: [i64]) -> [i64] {

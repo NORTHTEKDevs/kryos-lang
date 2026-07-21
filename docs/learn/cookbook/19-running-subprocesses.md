@@ -32,7 +32,7 @@ fn main() {
 
 ## CommandResult fields
 
-- `exit_code: i64` — the process exit code; `0` on success
+- `exit_code: i32` — the process exit code; `0` on success
 - `success: bool` — `true` when `exit_code == 0`
 - `stdout: str` — captured stdout
 - `stderr: str` — captured stderr
@@ -40,6 +40,6 @@ fn main() {
 ## Things to know
 
 - Chain `.arg("...")` calls to add arguments; never join args with spaces into a single string (no shell expansion).
-- The subprocess inherits no stdin. For piping-in, pass stdin via `.stdin_input("data")` before `.run()`.
+- The subprocess inherits no stdin. For piping-in, pass stdin via `.stdin("data")` before `.run()`.
 - Captures are unbounded — don't run commands that output gigabytes.
 - Capability required: `@capabilities(process)`.
