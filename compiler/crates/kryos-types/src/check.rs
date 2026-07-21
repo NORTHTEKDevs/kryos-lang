@@ -2425,6 +2425,86 @@ impl TypeChecker {
     /// mutable.  Per-element `mut` inside the pattern
     /// (`let (mut a, b) = ...`) is also honored — the binding is
     /// mutable if either source says so.
+    /// In a MATCH ARM, a bare CAPITALIZED identifier is a variant TAG test
+    /// (`Red`, `Some`), not a binding -- Kryos bindings are lowercase by
+    /// convention (as in Rust). If the subject is a known enum/Option/Result
+    /// and the capitalized name is NOT one of its variants, it is a typo
+    /// (`Bluee`) that `bind_pattern` would otherwise silently accept as a
+    /// catch-all binding -- masking the intended arm and making the match
+    /// spuriously exhaustive. Report it with a did-you-mean, matching the
+    /// qualified-variant and struct-field-typo diagnostics. Recurses into
+    /// or-pattern alternatives (`Red | Bluee`) and tuple elements so a typo in
+    /// any position is caught; lowercase idents (real bindings) are untouched.
+    fn check_arm_variant_typo(&mut self, pattern: &Pattern, subject_ty: &Type) {
+        match pattern {
+            Pattern::Ident { name, span, .. } => {
+                if name == "_" || !name.chars().next().is_some_and(|c| c.is_uppercase()) {
+                    return;
+                }
+                let resolved = self.engine.resolve(subject_ty);
+                let (variants, ty_label) = match &resolved {
+                    Type::Enum { name: en, .. } => match self.env.lookup_enum(en) {
+                        Some(d) => (
+                            d.variants.iter().map(|(v, _)| v.clone()).collect::<Vec<_>>(),
+                            format!(" on type `{en}`"),
+                        ),
+                        None => return,
+                    },
+                    Type::Option { .. } => {
+                        (vec!["Some".to_string(), "None".to_string()], " on `Option`".to_string())
+                    }
+                    Type::Result { .. } => {
+                        (vec!["Ok".to_string(), "Err".to_string()], " on `Result`".to_string())
+                    }
+                    _ => return,
+                };
+                if !variants.iter().any(|v| v == name) {
+                    // Distinguish a TYPO from an intentional capitalized catch-
+                    // all binding. A typo is CLOSE (small edit distance) to a
+                    // real variant; report only then. A capitalized ident far
+                    // from every variant -- or one that names a real
+                    // struct/enum (a binding named after a type, as some
+                    // examples do) -- is an intentional binding, so leave it to
+                    // `bind_pattern`. Without this guard a legitimate catch-all
+                    // like `Rect => ..` on a `Shape` value (variants Circle /
+                    // Rectangle) was wrongly rejected.
+                    let suggestion =
+                        crate::suggest::closest_match(name, variants.iter().map(|s| s.as_str()));
+                    let is_known_type =
+                        self.env.lookup_struct(name).is_some() || self.env.lookup_enum(name).is_some();
+                    if let Some(s) = suggestion {
+                        if !is_known_type {
+                            self.error_with_code(
+                                format!("unknown variant `{name}`{ty_label}"),
+                                *span,
+                                kryos_errors::codes::E0102,
+                            );
+                            if let Some(diag) = self.diagnostics.last_mut() {
+                                diag.notes.push(format!("did you mean `{s}`?"));
+                            }
+                        }
+                    }
+                }
+            }
+            Pattern::Or { patterns, .. } => {
+                for alt in patterns {
+                    self.check_arm_variant_typo(alt, subject_ty);
+                }
+            }
+            Pattern::Tuple { elements, .. } => {
+                let resolved = self.engine.resolve(subject_ty);
+                if let Type::Tuple { elements: ts } = &resolved {
+                    for (i, elem) in elements.iter().enumerate() {
+                        if let Some(et) = ts.get(i) {
+                            self.check_arm_variant_typo(elem, et);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn bind_pattern(&mut self, pattern: &Pattern, subject_ty: &Type) {
         let fresh_dup_scope = self.pattern_dup_seen.is_none();
         if fresh_dup_scope {
@@ -4717,6 +4797,7 @@ impl TypeChecker {
                 let mut result_ty: Option<Type> = None;
                 for arm in arms {
                     self.env.push_scope();
+                    self.check_arm_variant_typo(&arm.pattern, &subject_ty);
                     self.bind_pattern(&arm.pattern, &subject_ty);
                     let arm_ty = self.infer_expr(&arm.body);
                     // An arm body that diverges (always returns/throws) does

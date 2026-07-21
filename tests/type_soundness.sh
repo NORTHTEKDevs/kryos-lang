@@ -923,6 +923,40 @@ fn main() {
 }
 '
 
+# A mistyped enum variant in a match arm (capitalized, not a real variant)
+# was silently accepted as a catch-all binding -- masking the intended arm and
+# making the match spuriously exhaustive. It must be a typo error now.
+want_reject match_variant_typo '
+enum Color { Red, Green, Blue }
+fn f(c: Color) -> i64 { match c { Red => 1, Green => 2, Bluee => 3 } }
+fn main() { println(to_string(f(Blue))) }
+'
+want_reject match_option_variant_typo '
+use std::option::{Option, Some, None}
+fn main() { let o: Option<i64> = Some(5)  match o { Somee => println("x"), None() => println("n") } }
+'
+# ...but valid bare variants, a lowercase catch-all binding, and Some/None
+# must still be accepted.
+want_pass match_bare_variants_ok '
+enum Color { Red, Green, Blue }
+fn f(c: Color) -> i64 { match c { Red => 1, Green => 2, Blue => 3 } }
+fn main() { println(to_string(f(Green))) }
+'
+want_pass match_lowercase_catchall_ok '
+enum Color { Red, Green, Blue }
+fn f(c: Color) -> i64 { match c { Red => 1, other => 99 } }
+fn main() { println(to_string(f(Blue))) }
+'
+# A CAPITALIZED catch-all binding that is NOT close to any variant (and may
+# name a real struct) is intentional, not a typo -- must be accepted (only a
+# near-miss to an actual variant is flagged).
+want_pass match_capitalized_catchall_ok '
+struct Rect { w: i64 }
+enum Shape { Circle(i64), Rectangle(i64, i64) }
+fn tag(s: Shape) -> str { match s { Circle => "c", Rect => "other" } }
+fn main() { println(tag(Shape.Circle(5))) }
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
