@@ -22,6 +22,8 @@ Kryos has a built-in runtime for AI and machine learning workloads. Instead of b
 
 The tensor runtime provides N-dimensional arrays with shape tracking, broadcasting, element-wise operations, reductions, linear algebra, and ML-specific ops. All tensor functions are backed by native Rust FFI in `kryos-rt/src/tensor.rs`, registered in both the Cranelift JIT and LLVM AOT backends.
 
+All the functions below live in `std::tensor` and must be imported: `use std::tensor::{tensor_zeros, tensor_ones, ...}`. Internally each one wraps a raw `kryos_tensor_*` FFI extern (declared in the module itself) and marshals pointers/`f64` payloads correctly — do not hand-declare your own `extern { fn kryos_tensor_* }` block and call the raw externs directly: they expect a pointer to the array's *data buffer*, not the array handle/header that a plain cast yields, and scalar-returning raw externs hand back `f64` bits packed into an `i64` that only the module's internal decoder unpacks. Always go through the `tensor_*` wrapper functions.
+
 ### Creating Tensors
 
 ```
@@ -30,20 +32,20 @@ let o = tensor_ones([4, 4])          // 4x4 tensor of ones
 let r = tensor_rand([3, 3])          // uniform random [0, 1)
 let n = tensor_randn([3, 3])         // normal distribution
 let eye = tensor_eye(3)              // 3x3 identity matrix
-let seq = tensor_arange(0.0, 10.0, 1.0)  // [0, 1, ..., 9]
+let seq = tensor_arange(0, 10, 1)    // [0, 1, ..., 9] -- start/end/step are i64
 ```
 
-Tensor handles are i64 values (pointers to heap-allocated `KryosTensor` structs). The runtime manages memory; call `kryos_tensor_free(handle)` when done.
+Tensor handles are i64 values (pointers to heap-allocated `KryosTensor` structs). The runtime manages memory; call `tensor_free(handle)` when done.
 
 ### Element-Wise Operations
 
 ```
-let sum = kryos_tensor_add(a, b)
-let diff = kryos_tensor_sub(a, b)
-let prod = kryos_tensor_mul(a, b)
-let quot = kryos_tensor_div(a, b)
-let power = kryos_tensor_pow(a, b)
-let scaled = kryos_tensor_scale(t, 2.0)
+let sum = tensor_add(a, b)
+let diff = tensor_sub(a, b)
+let prod = tensor_mul(a, b)
+let quot = tensor_div(a, b)
+let power = tensor_pow(a, b)
+let scaled = tensor_scale(t, 2.0)
 ```
 
 Broadcasting supports same-shape and scalar operations.
@@ -51,87 +53,86 @@ Broadcasting supports same-shape and scalar operations.
 ### Unary Math Operations
 
 ```
-kryos_tensor_exp(t)       // e^x
-kryos_tensor_log(t)       // natural log
-kryos_tensor_sqrt(t)      // square root
-kryos_tensor_tanh(t)      // hyperbolic tangent
-kryos_tensor_sigmoid(t)   // 1 / (1 + e^-x)
-kryos_tensor_relu(t)      // max(0, x)
-kryos_tensor_neg(t)       // -x
+tensor_exp(t)       // e^x
+tensor_log(t)       // natural log
+tensor_sqrt(t)      // square root
+tensor_tanh(t)      // hyperbolic tangent
+tensor_sigmoid(t)   // 1 / (1 + e^-x)
+tensor_relu(t)      // max(0, x)
+tensor_neg(t)       // -x
 ```
 
 ### Reductions
 
 ```
-kryos_tensor_sum(t)       // sum all elements -> f64 (as i64 bits)
-kryos_tensor_mean(t)      // mean -> f64 (as i64 bits)
-kryos_tensor_max(t)       // max element -> f64 (as i64 bits)
-kryos_tensor_min(t)       // min element -> f64 (as i64 bits)
-kryos_tensor_argmax(t)    // index of max
-kryos_tensor_argmin(t)    // index of min
+tensor_sum(t)       // sum all elements -> f64
+tensor_mean(t)      // mean -> f64
+tensor_max(t)       // max element -> f64
+tensor_min(t)       // min element -> f64
+tensor_argmax(t)    // index of max -> i64
+tensor_argmin(t)    // index of min -> i64
 ```
 
-Note: scalar returns use the i64 slot model (f64 bits reinterpreted as i64).
+These already return real `f64`/`i64` values — the wrapper decodes the raw FFI's bit-packed scalar internally, so no manual unpacking is needed.
 
 ### Linear Algebra
 
 ```
-let c = kryos_tensor_matmul(a, b)    // matrix multiply
-let t = kryos_tensor_transpose(a)     // 2D transpose
+let c = tensor_matmul(a, b)    // matrix multiply
+let t = tensor_transpose(a)     // 2D transpose
 ```
 
 Matrix multiplication supports:
 - 2D x 2D: `[M,K] x [K,N] -> [M,N]`
 - 2D x 1D: `[M,K] x [K] -> [M]`
-- 1D x 1D: dot product -> scalar
+- 1D x 1D: dot product -> scalar (1-element tensor)
 
 ### Shape Operations
 
 ```
-kryos_tensor_reshape(t, new_shape, ndim)  // reshape (supports -1 inference)
-kryos_tensor_flatten(t)                    // flatten to 1D
-kryos_tensor_ndim(t)                       // number of dimensions
-kryos_tensor_numel(t)                      // total element count
-kryos_tensor_shape_dim(t, dim)             // size of dimension
+tensor_reshape(t, new_shape)   // reshape (supports -1 inference); ndim comes from len(new_shape)
+tensor_flatten(t)              // flatten to 1D
+tensor_ndim(t)                 // number of dimensions
+tensor_numel(t)                // total element count
+tensor_shape_dim(t, dim)       // size of dimension
 ```
 
 ### ML-Specific Operations
 
 ```
-kryos_tensor_softmax(logits, dim)          // softmax along last dim
-kryos_tensor_cross_entropy(logits, targets) // cross-entropy loss
-kryos_tensor_mse_loss(predictions, actuals) // mean squared error
+tensor_softmax(logits, dim)             // softmax along last dim (dim = -1)
+tensor_cross_entropy(logits, targets)   // cross-entropy loss
+tensor_mse_loss(predictions, actuals)   // mean squared error
 ```
+
+`tensor_softmax` returns a normal tensor handle you can pass to `tensor_get`/`tensor_numel`/etc. `tensor_cross_entropy` and `tensor_mse_loss` are the one exception to the "reductions already decode to f64" rule above: they return the raw scalar loss as `f64` bits packed into an `i64` (there is currently no public function to unpack it), so **do not** pass their return value to `tensor_get`/`tensor_free`/`tensor_numel` — doing so treats the bit pattern as a pointer and crashes. Use them only to feed a value you print as an opaque diagnostic (`to_string(loss_handle)`) or as a placeholder until a public decoder is added.
 
 ### Neural Network Example
 
 ```
-extern {
-    fn kryos_tensor_rand(shape_ptr: i64, ndim: i64) -> i64
-    fn kryos_tensor_randn(shape_ptr: i64, ndim: i64) -> i64
-    fn kryos_tensor_matmul(a: i64, b: i64) -> i64
-    fn kryos_tensor_relu(handle: i64) -> i64
-    fn kryos_tensor_softmax(handle: i64, dim: i64) -> i64
-    fn kryos_tensor_numel(handle: i64) -> i64
-}
+use std::tensor::{tensor_rand, tensor_randn, tensor_matmul, tensor_relu, tensor_softmax, tensor_numel}
 
 fn main() {
     // 2-layer network: input(4) -> hidden(8) -> output(3)
-    let w1_shape = [4, 8]
-    let w2_shape = [8, 3]
-    let x_shape = [2, 4]
-
-    let x = kryos_tensor_rand(arr_to_ptr(x_shape), 2)
-    let w1 = kryos_tensor_randn(arr_to_ptr(w1_shape), 2)
-    let w2 = kryos_tensor_randn(arr_to_ptr(w2_shape), 2)
+    let x = tensor_rand([2, 4])
+    let w1 = tensor_randn([4, 8])
+    let w2 = tensor_randn([8, 3])
 
     // Forward: relu(X @ W1) then softmax(H @ W2)
-    let hidden = kryos_tensor_relu(kryos_tensor_matmul(x, w1))
-    let probs = kryos_tensor_softmax(kryos_tensor_matmul(hidden, w2), -1)
+    let hidden = tensor_relu(tensor_matmul(x, w1))
+    let probs = tensor_softmax(tensor_matmul(hidden, w2), -1)
 
-    println("Output: " + to_string(kryos_tensor_numel(probs)) + " probabilities")
+    println("Output: " + to_string(tensor_numel(probs)) + " probabilities")
 }
 ```
+
+Output:
+
+```
+Output: 6 probabilities
+```
+
+(2 rows x 3 classes = 6 elements; each row of `probs` sums to 1.0.)
 
 ## Automatic Differentiation (Roadmap)
 
@@ -170,6 +171,7 @@ Every agent has three types of memory:
 - **Episodic memory**: Append-only log of past actions with timestamps
 
 ```
+let mut agent = agent   // mutating a field requires `let mut`
 agent.memory = agent.memory.remember("query", "transformers", "working")
 let value = agent.memory.recall("query")
 agent.memory = agent.memory.clear_working()
@@ -189,7 +191,7 @@ let full = agent_with_alignment("autonomous", "Run free", ALIGNMENT_UNRESTRICTED
 ```
 fn web_search(query: str) -> str {
     // ... implementation
-    return results
+    return "results for " + query
 }
 
 let agent = agent.add_tool("search", web_search, "Search the web")
@@ -201,6 +203,8 @@ let result = agent.use_tool("search", "Kryos documentation")
 ```
 let child = agent.spawn_child("worker", "Process batch 1")
 
+let agent_1 = agent_new("a1", "task1")
+let agent_2 = agent_new("a2", "task2")
 let swarm = agent_swarm("analysis_team")
 let swarm = swarm.add(agent_1)
 let swarm = swarm.add(agent_2)
@@ -209,6 +213,7 @@ let swarm = swarm.add(agent_2)
 ### Lifecycle
 
 ```
+let mut agent = agent
 agent = agent.pause()
 agent = agent.resume()
 agent = agent.terminate()
@@ -218,26 +223,31 @@ Agent states: `CREATED`, `RUNNING`, `PAUSED`, `COMPLETED`, `FAILED`, `TERMINATED
 
 ## Probable\<T\>
 
-Confidence-aware values for AI predictions. Implemented in `stdlib/probable.kry`.
+Confidence-aware values for AI predictions. Implemented in `stdlib/probable.kry`. Operations are free generic functions, not methods — there is no `impl Probable<T>` block (the checker doesn't yet support generic `impl`), so call `is_confident(p, x)` rather than `p.is_confident(x)`.
 
 ```
-let result = probable("cat", 0.92)
-let certain = probable_certain("yes")
+use std::probable::{probable, certain, is_confident, or_else, require_confidence}
 
-if result.is_confident(0.8) {
+let result = probable("cat", 0.92)
+let sure = certain("yes")
+
+if is_confident(result, 0.8) {
     // act on the result
 }
 
-let safe = result.or_else("unknown")
-let required = result.require_confidence(0.9)  // throws if below
-println(result.explain())
+let safe = or_else(result, "unknown")
+let required = require_confidence(result, 0.9)  // throws if below
+println(result.value)         // "cat" -- fields are still accessed with `.`
+println(to_string(result.confidence))  // 0.92
 ```
 
 ### Ensemble
 
 ```
-let consensus = ensemble_majority_vote(predictions)
-let best = ensemble_best_confidence(predictions)
+use std::probable::{majority_vote, best_of}
+
+let consensus = majority_vote(predictions)   // highest summed-confidence value wins
+let best = best_of(predictions)              // single highest-confidence prediction
 ```
 
 ## Reactive Streams
@@ -256,14 +266,19 @@ Available operations: `map`, `filter`, `take`, `skip`, `collect`, `reduce`, `cou
 
 ## Data Lineage
 
-Track data provenance for AI safety and compliance. Implemented in `stdlib/tracked.kry`.
+Track data provenance for AI safety and compliance. Implemented in `stdlib/tracked.kry`. Like `Probable<T>`, `Tracked<T>` operations are free functions, not methods (no `impl Tracked<T>` block) — call `explain(t)`/`to_json(t)`, not `t.explain()`/`t.to_json()`.
 
 ```
+use std::tracked::{tracked_source, transform, inference, explain, to_json}
+
+let raw_data = "raw customer rows"
 let data = tracked_source(raw_data, "database", "Customer records Q4")
-let cleaned = data.transform(clean_result, "clean", "Remove nulls")
-let predicted = cleaned.inference("gpt-4", result, 0.87)
-println(predicted.explain())
-let json = predicted.to_json()
+let clean_result = "cleaned customer rows"
+let cleaned = transform(data, clean_result, "clean", "Remove nulls")
+let result = "prediction: churn=low"
+let predicted = inference(cleaned, "gpt-4", result, 0.87)
+println(explain(predicted))
+let json = to_json(predicted)
 ```
 
 ## Cost Tracking

@@ -55,7 +55,7 @@ Every `kryos` subcommand at a glance. For full options, run `kryos <command> --h
 | --- | --- |
 | `kryos lsp` | Start the language server on stdin/stdout (point your editor at it) |
 | `kryos doc [files]` | Generate markdown or HTML docs from `///` comments |
-| `kryos doc serve` | Generate HTML docs and serve them on http://127.0.0.1:8088 |
+| `kryos doc-serve [files]` | Generate HTML docs and serve them on http://127.0.0.1:8088 (separate top-level command, NOT `kryos doc serve`) |
 | `kryos explain <Exxx>` | rustc-style long-form explanation for any diagnostic code |
 | `kryos bindgen <header.h>` | Generate Kryos `extern` declarations from a C header |
 | `kryos repl` | Interactive REPL with persistent `~/.kryos_history` |
@@ -89,7 +89,7 @@ The full per-release detail lives in [`CHANGELOG.md`](../CHANGELOG.md). The high
 | v3.12 | `kryos doctor` + `kryos tree` + LSP `codeAction` |
 | v3.13 | `where`-clauses on functions + `kryos coverage` |
 | v3.14 | LSP semantic tokens + `kryos run --time` |
-| v3.15 | `kryos doc serve` + LSP member-access completion |
+| v3.15 | `kryos doc-serve` + LSP member-access completion |
 | v3.16 | `kryos check --watch` + `kryos eval` |
 | v3.17 | This command reference + polish |
 

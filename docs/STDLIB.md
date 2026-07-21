@@ -24,9 +24,7 @@ a one-line summary. Return types follow Kryos naming: `i64`, `f64`, `str`,
 | `println(msg, ...)`             | void    | Write a line to stdout with interpolation support.     |
 | `print(msg, ...)`               | void    | Same but without trailing newline.                     |
 | `eprintln(msg, ...)`            | void    | Write a line to stderr.                                |
-| `input(prompt)`                 | str     | Read a line of input.                                  |
-| `readline()`                    | str     | Read a line from stdin (no prompt).                    |
-| `read_line()`                   | str     | Alias of `readline()`.                                 |
+| `read_line()`                   | str     | Read a line from stdin (no prompt). There is no `input(prompt)` or `readline()` — only `read_line()` exists. |
 | `exit(code)`                    | void    | Terminate the process with `code`.                     |
 | `args()`                        | [str]   | Program arguments. `args()[0]` is the first user arg.  |
 | `env_get(name)`                 | str     | Read an environment variable (empty string if unset).  |
@@ -49,7 +47,7 @@ a one-line summary. Return types follow Kryos naming: `i64`, `f64`, `str`,
 | `len(s)`                        | i64     | Length in bytes (for ASCII strings, character count). |
 | `to_string(x)`                  | str     | Convert int/float/bool/char to string.           |
 | `to_upper(s)` / `to_lower(s)`   | str     | Case conversion.                                 |
-| `trim(s)` / `trim_start` / `trim_end` | str | Whitespace trimming.                             |
+| `trim(s)`                       | str     | Whitespace trimming (global builtin). `trim_start(s)` / `trim_end(s)` are one-sided variants but are **not** global — `use std::string::{trim_start, trim_end}`. |
 | `substr(s, start, end)`         | str     | Slice by byte offset.                            |
 | `contains(s, needle)`           | bool    | Substring test (also works for arrays).          |
 | `starts_with(s, prefix)`        | bool    |                                                  |
@@ -57,14 +55,29 @@ a one-line summary. Return types follow Kryos naming: `i64`, `f64`, `str`,
 | `replace(s, from, to)`          | str     | First-occurrence replace.                        |
 | `split(s, sep)`                 | [str]   | Returns an array of strings.                     |
 | `join(arr, sep)`                | str     | Join `[str]` with separator.                     |
-| `index_of(s, needle)`           | i64     | Returns -1 when not found.                       |
 | `char_code(s)` / `char_from(n)` | i64/str | ASCII helpers.                                   |
 | `byte_at(s, i)` / `chr(n)`      | i64/str | Byte access / inverse of `char_code`.            |
-| `format(fmt, args...)`          | str     | printf-style formatter (also covered by interpolation). |
 | `parse_int(s)` / `parse_float(s)` | i64/f64 | String to number.                              |
 
 String interpolation lives in the lexer: `"hello {name}, you have {count} items"`. Literal
 braces are written as `{{` and `}}` (v2.8+), or `\{` and `\}` (still supported).
+
+There is **no global `index_of` builtin** despite being wired into the codegen backends —
+the type checker never registers it, so calling it bare fails with `undefined variable
+index_of`. For substring search, import `find` from `std::string`:
+`use std::string::{find}` then `find(haystack, needle) -> i64` (byte offset, or -1 when
+missing).
+
+`format` is also not a global builtin — it lives in `std::fmt` (`use std::fmt::{format}`)
+and its signature is `format(template: str, args: [any]) -> str` (one array argument, not
+variadic C-style args). It is also **currently broken for non-i64 arguments**: because
+`[any]` erases every element to a raw i64 slot, `to_string(args[i])` inside `format`
+renders a `str` argument as its erased index rather than its value —
+`format("Hello, {0}! You are {1}.", ["Alice", "30"])` (the example in the stdlib source
+itself) prints `"Hello, 0! You are 1."`, not `"Hello, Alice! You are 30."` (verified on
+`kryos run`). This is the same `any`-erasure limitation documented in the project
+`CLAUDE.md`. Prefer building strings with `+` and per-value `to_string()` instead of
+`format` until `any` carries a runtime type tag.
 
 ### 1.4 Numbers & math
 
@@ -79,7 +92,7 @@ braces are written as `{{` and `}}` (v2.8+), or `\{` and `\}` (still supported).
 | `log(f)` / `log2(f)` / `log10(f)`    | f64     | Natural, base-2, base-10.                        |
 | `int(x)` / `float(x)`                | i64/f64 | Cross-cast (truncating for int).                 |
 | `wrapping_add/sub/mul`               | i64     | Two's-complement wrap on overflow.               |
-| `checked_add/sub/mul`                | i64     | Throws on overflow (Result-style sites pending). |
+| `checked_add/sub/mul`                | i64     | **Panics** (uncatchably, exit 98) on overflow — not a catchable `throw`. See gotcha #18-class panics below. |
 | `saturating_add/sub/mul`             | i64     | Saturates at i64::MIN / i64::MAX.                |
 | `time_now()` / `time_now_secs()` / `time_now_millis()` | i64 | Wall-clock time.                |
 
@@ -129,9 +142,13 @@ always available. See the corresponding stdlib doc page for each module.
 
 ### 1.10 Concurrency & channels
 
-`chan(capacity)`, `send(ch, v)`, `recv(ch)`, `close_chan(ch)`,
+`chan()`, `send(ch, v)`, `recv(ch)`, `close_chan(ch)`,
 `mutex_new()`, `mutex_lock(m)`, `mutex_unlock(m)`, `mutex_drop(m)`.
-Actor model lives in `std::agent`.
+**`chan()` takes zero arguments** — `chan(5)` is a compile error
+(`E0110: function 'chan' expects 0 arguments, found 1`); there is no capacity
+parameter. `chan_try_recv`/`chan_is_closed` distinguish a closed, drained
+channel (`recv` on one returns a plain `0`, indistinguishable from a real
+`send(ch, 0)`). Actor model lives in `std::agent`.
 
 ### 1.11 Browser host (WASM target)
 
@@ -200,13 +217,13 @@ comes from one of these.
 | `upper(s)`          | `to_upper(s)`                                   |
 | `lower(s)`          | `to_lower(s)`                                   |
 | `slice(s, a, b)`    | `substr(s, a, b)`                               |
-| `find(s, n)`        | `index_of(s, n)` (returns -1 when missing)      |
+| `index_of(s, n)`    | `use std::string::{find}` then `find(s, n)` (returns -1 when missing) — there is no global `index_of`, despite being wired into codegen |
 | `range_contains(a)` | `contains(arr, a)`                              |
-| `read_input`        | `input(prompt)` / `readline()` / `read_line()`  |
+| `read_input`, `input(prompt)`, `readline()` | `read_line()` (top-level builtin, no prompt arg) — neither `input` nor `readline` exists |
 | `os.getenv`         | `env_get(name)` (top-level builtin)             |
 | `sys.exit`          | `exit(code)` (top-level builtin)                |
 | `Array::new()`      | Literal: `let a: [i64] = []`                    |
-| `Map::new()`        | Builtin: `let m = map_new()`                    |
+| `Map::new()`, `map_new()` | Literal: `let m: map<str, i64> = {}` — `map_new()` is undefined on the native toolchain (it only exists as a `--backend wasm` codegen alias) |
 | `now()`             | `time_now()` (seconds-resolution wall clock)    |
 
 Other things that catch people:
@@ -221,8 +238,10 @@ Other things that catch people:
 - Plain integer arithmetic (`+`, `-`, `*`) WRAPS modulo 2^64 on overflow --
   the same on both backends (`kryos run` and `kryos build --release`), never a
   panic. Use the `checked_*` family when you want an overflow to panic, or the
-  `wrapping_*` / `saturating_*` family for explicit wrap / clamp semantics.
-  (Integer division/modulo by zero and `i64::MIN / -1` DO panic; see gotcha #18.)
+  `wrapping_*` / `saturating_*` family for explicit wrap / clamp semantics. A
+  `checked_*` overflow panic is **uncatchable** (`try`/`catch` does not run;
+  the process exits 98) — same class as division/modulo by zero and
+  `i64::MIN / -1`, which also panic; see gotcha #18.
 - `json_parse` returns an opaque handle (`i64`). Use `json_get` /
   `json_to_str` / `json_to_int` / `json_to_float` to extract values.
 - String interpolation uses `{expr}` braces. Use `{{` / `}}` (v2.8+) for
@@ -290,8 +309,9 @@ subcommand:
 | `kryos test [FILTER]` | Discover and run `@test fn ...` tests. Flags: `--exact`, `--list`, `--format pretty\|json`, `--nocapture`, `--path`. |
 | `kryos fmt [FILES...]` | Format `.kry` files. `--check` for dry-run.                            |
 | `kryos doc [FILES...]` | Generate Markdown (default) or HTML docs from sources. `--html`, `-o`. |
+| `kryos doc-serve [FILES...]` | Generate HTML docs and serve them on `127.0.0.1:8088`. A **separate top-level command**, not `kryos doc serve` — `kryos doc serve` fails (`doc` treats `serve` as a filename argument, so it reports `cannot read 'serve'`). |
 | `kryos bindgen HEADER` | Generate Kryos `extern "C"` bindings from a C header.                  |
-| `kryos pkg <init\|add\|remove\|update\|install\|lock\|publish\|search\|info\|sync\|outdated>` | Package manager (registry currently empty). |
+| `kryos pkg <init\|add\|remove\|update\|install\|lock\|publish\|show\|audit\|badge\|search\|info\|sync\|outdated\|list-local>` | Package manager (registry currently empty). |
 | `kryos lsp`           | Start the language server (stdio).                                      |
 | `kryos explain CODE`  | Long-form explanation of an error code (`kryos explain E0302`). `--list` to see every code. |
 | `kryos version`       | Detailed build info (compiler version, commit, target).                 |
