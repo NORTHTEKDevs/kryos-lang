@@ -310,21 +310,23 @@ fn wait_group() -> WaitGroup {
 // A Once ensures a piece of code runs exactly once.
 
 struct Once {
-    executed: AtomicBool
+    executed: AtomicInt
 }
 
 impl Once {
     // Execute the callback if it has not been executed yet.
     // Returns true if the callback was executed, false if it was already run.
     fn call_once(self: Once, callback: fn() -> str) -> bool {
-        let was_executed = self.executed.load()
-        if was_executed {
-            return false
-        }
-        // Use toggle to atomically check and set
-        let prev = self.executed.toggle()
-        if not prev {
-            // We were the first to toggle -- run the callback
+        // Atomic compare-and-swap 0 -> 1: exactly ONE racing thread wins the
+        // transition and runs the callback; every other caller sees the CAS
+        // fail and returns false. The old load()-then-toggle() sequence was a
+        // non-atomic check-then-act: k threads that all read the flag as unset
+        // before any toggled would each flip the bit, and toggle() flips
+        // UNCONDITIONALLY (returning the old value), so a second racer flipped
+        // it back to unset and a third ran the callback again -- the callback
+        // fired (k+1)/2 times under contention instead of exactly once (same
+        // bug class as the pre-CAS SpinLock).
+        if self.executed.compare_and_swap(0, 1) {
             callback()
             return true
         }
@@ -333,7 +335,7 @@ impl Once {
 
     // Check if the Once has been executed.
     fn is_done(self: Once) -> bool {
-        return self.executed.load()
+        return self.executed.load() != 0
     }
 
     // Drop the underlying resources.
@@ -344,7 +346,7 @@ impl Once {
 
 // Create a new Once.
 fn once() -> Once {
-    return Once { executed: atomic_bool(false) }
+    return Once { executed: atomic_int(0) }
 }
 
 // --- SpinLock (lightweight alternative to Mutex) ----------------------------
