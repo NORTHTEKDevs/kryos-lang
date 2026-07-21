@@ -45,7 +45,11 @@ fn main() {
 
     loop {
         let conn = listener.accept()
-        let raw = conn.read_all()
+        // Read the request with a single bounded recv. Do NOT use read_all()
+        // here: it blocks reading until the client half-closes its write side,
+        // which a normal HTTP client never does on a keep-alive connection, so
+        // the server would hang (or throw and crash) on the first request.
+        let raw = conn.read(8192)
         let req = parse_request(raw)
         let resp = route(req)
         conn.write_all(resp)
