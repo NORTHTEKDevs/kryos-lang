@@ -241,12 +241,16 @@ fn tensor_flatten(t: i64) -> i64 {
 
 // --- Losses -----------------------------------------------------------------
 
-fn tensor_cross_entropy(logits: i64, targets: i64) -> i64 {
-    return kryos_tensor_cross_entropy(logits, targets)
+fn tensor_cross_entropy(logits: i64, targets: i64) -> f64 {
+    // The native op returns the scalar loss as f64 BITS packed in an i64;
+    // decode it like every other reduction wrapper (tensor_sum/tensor_mean).
+    // Without this the wrapper returned the raw bit pattern, and treating it
+    // as a tensor handle (tensor_get/tensor_numel) dereferenced it -> segfault.
+    return kryos_f64_from_bits(kryos_tensor_cross_entropy(logits, targets))
 }
 
-fn tensor_mse_loss(a: i64, b: i64) -> i64 {
-    return kryos_tensor_mse_loss(a, b)
+fn tensor_mse_loss(a: i64, b: i64) -> f64 {
+    return kryos_f64_from_bits(kryos_tensor_mse_loss(a, b))
 }
 
 // --- Display and cleanup ----------------------------------------------------

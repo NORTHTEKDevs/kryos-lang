@@ -105,7 +105,7 @@ tensor_cross_entropy(logits, targets)   // cross-entropy loss
 tensor_mse_loss(predictions, actuals)   // mean squared error
 ```
 
-`tensor_softmax` returns a normal tensor handle you can pass to `tensor_get`/`tensor_numel`/etc. `tensor_cross_entropy` and `tensor_mse_loss` are the one exception to the "reductions already decode to f64" rule above: they return the raw scalar loss as `f64` bits packed into an `i64` (there is currently no public function to unpack it), so **do not** pass their return value to `tensor_get`/`tensor_free`/`tensor_numel` — doing so treats the bit pattern as a pointer and crashes. Use them only to feed a value you print as an opaque diagnostic (`to_string(loss_handle)`) or as a placeholder until a public decoder is added.
+`tensor_softmax` returns a normal tensor handle you can pass to `tensor_get`/`tensor_numel`/etc. `tensor_cross_entropy` and `tensor_mse_loss` return the scalar loss directly as an `f64` (decoded like the other reductions — `tensor_mse_loss` of `[1,2,3,4]` vs `[5,6,7,8]` is `16.0`), so use the value as a plain number; do not treat it as a tensor handle.
 
 ### Neural Network Example
 
