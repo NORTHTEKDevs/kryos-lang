@@ -189,6 +189,40 @@ want_pass cap_shadow_builtin_name_helper \
 fn c() -> i64 { return http_get(5) }
 fn main() { println(to_string(c())) }'
 
+# --- capability ESCAPE via an ACTOR message handler -------------------------
+# An @capabilities-annotated actor whose handler reaches a gated builtin must
+# NOT be invokable from an unannotated boundary: `w.dump(..)` exercises the
+# actor authority, so the caller must declare it. (Was a critical escape: the
+# cap-collection passes never recursed into actor handlers, so the handler name
+# never entered fn_capabilities and the call site was ungated -- check passed
+# and the program actually wrote the file, in BOTH inferred and strict modes.)
+want_reject actor_handler_escape \
+'@capabilities(io)
+actor Writer { tag: i64,
+  fn dump(self, path: str, content: str) { file_write(path, content) } }
+fn main() { let w = Writer()  w.dump("/tmp/z", "a") }'
+
+want_reject actor_handler_escape_via_helper \
+'@capabilities(io)
+actor Writer { tag: i64,
+  fn dump(self, path: str, content: str) { do_write(path, content) } }
+fn do_write(p: str, c: str) { file_write(p, c) }
+fn main() { let w = Writer()  w.dump("/tmp/z", "a") }'
+
+# ...but a caller that DECLARES the actor authority is accepted, and a
+# no-authority actor invoked from an unannotated main is accepted.
+want_pass actor_caller_declares \
+'@capabilities(io)
+actor Writer { tag: i64,
+  fn dump(self, path: str, content: str) { file_write(path, content) } }
+@capabilities(io)
+fn main() { let w = Writer()  w.dump("/tmp/z", "a") }'
+
+want_pass actor_pure_handler \
+'actor Counter { n: i64,
+  fn bump(self, x: i64) { println(to_string(x + 1)) } }
+fn main() { let c = Counter()  c.bump(41) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else

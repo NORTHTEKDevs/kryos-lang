@@ -241,6 +241,32 @@ impl CapabilityChecker {
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     self.build_fn_capability_map(methods);
                 }
+                // An actor's message handlers are message-passing entry points:
+                // invoking a handler from outside (`w.dump(..)`) exercises the
+                // actor's declared authority. Record each handler name under the
+                // actor's declared caps (its ceiling) so the call site is gated
+                // like a call to an annotated function. Without this, handler
+                // names never entered `fn_capabilities` (neither this map nor the
+                // inferred pass recursed into actors), so `enforce_callee_name`
+                // found nothing and an unannotated caller reached a gated builtin
+                // inside a capability-annotated actor's handler for free -- a
+                // capability escape past deny-by-default. An unannotated actor
+                // contributes the empty set here (a no-op); its handler bodies are
+                // still checked against the empty scope in `check_actor`.
+                Decl::Actor {
+                    annotations,
+                    handlers,
+                    ..
+                } => {
+                    let caps = CapabilitySet::from_annotations(annotations);
+                    for handler in handlers {
+                        let merged = match self.fn_capabilities.get(&handler.name) {
+                            Some(existing) => existing.union(&caps),
+                            None => caps.clone(),
+                        };
+                        self.fn_capabilities.insert(handler.name.clone(), merged);
+                    }
+                }
                 _ => {}
             }
         }
