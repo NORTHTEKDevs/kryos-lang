@@ -1,6 +1,6 @@
 # Error Handling
 
-> **Implementation Status:** `try`/`catch`/`throw` is fully implemented -- parsed, lowered to Result-enum-based control flow in MIR, and compiled through both backends. Nested try/catch, throwing any value type, and catching runtime errors all work. The **self-healing runtime** (automatic recovery from division by zero, index clamping, `@intent`, `@constraint`, `@fallback` attributes, and `--heal-report`) is a **roadmap feature** and is not yet implemented.
+> **Implementation Status:** `try`/`catch`/`throw` is fully implemented -- parsed, lowered to Result-enum-based control flow in MIR, and compiled through both backends. Nested try/catch and throwing any value type all work. `catch` catches any `throw` (including stdlib functions that fail by throwing); it does **not** catch runtime panics such as division by zero or index-out-of-bounds (see "What `catch` catches" below). The **self-healing runtime** (automatic recovery from division by zero, index clamping, `@intent`, `@constraint`, `@fallback` attributes, and `--heal-report`) is a **roadmap feature** and is not yet implemented.
 
 Kryos has two complementary systems for dealing with errors: explicit `try`/`catch`/`throw` for errors you expect, and a self-healing runtime that automatically recovers from common runtime faults. Understanding when to use each is key to writing robust programs.
 
@@ -112,23 +112,39 @@ try {
 
 This is useful for layered error handling -- handle what you can at the inner level, and escalate anything else.
 
-### Catching runtime errors
+### What `catch` catches (and what it does not)
 
-`catch` does not only catch explicit `throw` statements. It also catches runtime errors like type mismatches and built-in function failures:
+`catch` catches any `throw` -- including standard-library functions that
+signal failure by throwing, such as `std::json::parse` and `std::fs::read_file`:
 
 ```
 try {
     let result = parse("not valid json")   // use std::json::{parse}
 } catch e {
-    println("Parse failed: " + e)
+    println("Parse failed: " + e)          // caught: json: expected ...
 }
 ```
 
-Any error that would normally crash the program can be caught and handled.
+`catch` does **not** catch runtime *panics*. Integer division by zero,
+array/string index out of bounds, and builtin failures such as `file_read`,
+`parse_int`, or `parse_float` on invalid input abort the process (exit 98) and
+are **not** recoverable with `try`/`catch`:
+
+```
+try {
+    let x = 10 / 0        // PANIC: aborts here -- the catch never runs
+} catch e {
+    println("never runs")
+}
+```
+
+Guard those with an explicit precondition (`if b != 0 { ... }`, a bounds check,
+`file_exists` before `file_read`) or a `Result`-returning wrapper. Only an
+explicit `throw` (or a library that throws) unwinds to a `catch`.
 
 ## The self-healing runtime (roadmap)
 
-> **Not yet implemented.** The self-healing runtime is a planned feature. The design below describes the target behavior. Currently, division by zero, index out of bounds, and type mismatches produce hard errors caught by `try`/`catch`.
+> **Not yet implemented.** The self-healing runtime is a planned feature. The design below describes the target behavior. Currently, division by zero and index out of bounds produce hard *panics* that abort the process -- they are **not** caught by `try`/`catch` (only an explicit `throw`, or a library that throws, unwinds to a catch; see "What `catch` catches" above).
 
 This is where Kryos will diverge from every other language. When self-healing is enabled, the runtime will automatically recover from certain classes of errors instead of crashing.
 

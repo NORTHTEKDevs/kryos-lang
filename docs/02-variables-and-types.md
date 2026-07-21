@@ -92,7 +92,16 @@ Explicit annotations are useful when you want a specific numeric width, when the
 
 ### Integer promotions
 
-Smaller integers can be assigned to larger integers of the same signedness without explicit conversion. Unsigned integers can be assigned to a signed integer if there is room (e.g., `u8` to `i16`). Integers can also widen to floats automatically.
+Integers of the **same signedness** can be assigned across widths without an explicit conversion (e.g. `i32` to `i64`). Crossing signedness (`u8` to `i16`) or converting an integer to a float requires an explicit cast with `as`:
+
+```
+let a: i32 = 5
+let b: i64 = a          // OK -- same-signedness widening
+
+let u: u8 = 200
+let s: i16 = u as i16   // required: u8 -> i16 crosses signedness
+let f: f64 = a as f64   // required: int -> float is not implicit
+```
 
 ## Integer literal formats
 

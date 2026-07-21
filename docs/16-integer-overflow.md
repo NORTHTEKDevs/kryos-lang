@@ -90,9 +90,10 @@ let x = 10 / 0
 //   0: main() at file.kry:N
 ```
 
-Integer division/remainder of `INT64_MIN / -1` currently wraps to
-`INT64_MIN` (no overflow trap). Use `checked_div` (planned) if you need
-the panic.
+Integer division or remainder of `INT64_MIN / -1` (and `INT64_MIN % -1`)
+**panics** with `integer division overflow` on both backends, because the
+mathematically-correct quotient (2^63) is not representable in `i64`. Guard the
+divisor if this input is reachable (`if d != -1 || n != INT64_MIN { ... }`).
 
 ## Float overflow
 
