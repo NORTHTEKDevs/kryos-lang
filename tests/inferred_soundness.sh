@@ -177,6 +177,18 @@ fn main() {
     println(u.host + "?" + u.query)
 }'
 
+# A USER function that SHADOWS a gated builtin's NAME but does pure work must
+# NOT be force-gated by the builtin table (the checker gated by name, not by
+# resolved symbol). Direct, via-helper, and as-value forms all accepted.
+want_pass cap_shadow_builtin_name_direct \
+'fn file_write(x: i64) -> i64 { return x * 2 }
+fn main() { println(to_string(file_write(3))) }'
+
+want_pass cap_shadow_builtin_name_helper \
+'fn http_get(x: i64) -> i64 { return x + 1 }
+fn c() -> i64 { return http_get(5) }
+fn main() { println(to_string(c())) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else

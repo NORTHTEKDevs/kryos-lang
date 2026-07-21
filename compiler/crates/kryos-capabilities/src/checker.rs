@@ -120,6 +120,12 @@ struct CapabilityChecker {
     /// local named like one of the 1000+ stdlib functions (`query`, `connect`,
     /// `find`, ...) spuriously inherited its capability.
     current_locals: std::collections::HashSet<String>,
+    /// Every USER-defined (non-extern) function/method name in the module. A
+    /// user function that SHADOWS a gated builtin's name (`fn http_get(x) { x+1 }`)
+    /// resolves to the user function, so its calls must NOT be attributed the
+    /// builtin's capability -- the checker otherwise gated by name alone and
+    /// spuriously required, e.g., `net:http` for a pure user `http_get`.
+    defined_fns: std::collections::HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -132,6 +138,7 @@ impl CapabilityChecker {
             fn_capabilities: HashMap::new(),
             extern_fns: std::collections::HashSet::new(),
             current_locals: std::collections::HashSet::new(),
+            defined_fns: std::collections::HashSet::new(),
             mode,
         }
     }
@@ -165,6 +172,23 @@ impl CapabilityChecker {
                 }
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     self.collect_extern_fns(methods);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Record every USER-defined (non-extern) function/method name so a call to
+    /// a user function that shadows a gated builtin's name is not force-gated by
+    /// the builtin table (see `defined_fns`).
+    fn collect_defined_fns(&mut self, decls: &[Decl]) {
+        for d in decls {
+            match d {
+                Decl::Function { name, .. } => {
+                    self.defined_fns.insert(name.clone());
+                }
+                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
+                    self.collect_defined_fns(methods);
                 }
                 _ => {}
             }
@@ -427,12 +451,25 @@ impl CapabilityChecker {
             Expr::FnCall { callee, args, span: _ } => {
                 // The capability contribution of THIS call.
                 let segments = self.resolve_path(callee);
-                if let Some(cap) = required_capability_for_path(&segments) {
-                    acc.insert(cap);
+                // A single-segment USER function that shadows a builtin/path
+                // name resolves to the user function, so its call carries no
+                // builtin authority (its real requirement comes from working).
+                let shadows_user_fn =
+                    segments.len() == 1 && self.defined_fns.contains(&segments[0]);
+                if !shadows_user_fn {
+                    if let Some(cap) = required_capability_for_path(&segments) {
+                        acc.insert(cap);
+                    }
                 }
                 if segments.len() == 1 {
-                    if let Some(cap) = required_capability_for_builtin(&segments[0]) {
-                        acc.insert(cap);
+                    // A user function that SHADOWS a builtin's name resolves to
+                    // the user function, so do not attribute the builtin's
+                    // capability by name (its real requirement comes from
+                    // `working.get` below).
+                    if !self.defined_fns.contains(&segments[0]) {
+                        if let Some(cap) = required_capability_for_builtin(&segments[0]) {
+                            acc.insert(cap);
+                        }
                     }
                     // Extern calls contribute their FFI capability to inference
                     // so helpers calling raw externs propagate the requirement
@@ -558,7 +595,16 @@ impl CapabilityChecker {
             // grants rather than silently propagating -- see the capability
             // escape fix; propagating here would over-approximate any local
             // variable that shares a name with a stdlib function.)
-            Expr::Identifier { .. } => acc = acc.union(&Self::builtin_value_caps(expr)),
+            // Skip when the name is a USER-defined function shadowing a builtin
+            // (it resolves to the user fn, no builtin authority). This arm also
+            // receives the recursed callee of a FnCall, so without this a call
+            // to a user `file_write`/`http_get` spuriously inherited the
+            // builtin's capability.
+            Expr::Identifier { name, .. } => {
+                if !self.defined_fns.contains(name) {
+                    acc = acc.union(&Self::builtin_value_caps(expr));
+                }
+            }
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
@@ -573,6 +619,7 @@ impl CapabilityChecker {
         // Pass 0: record every extern-declared function name so call sites
         // can require the corresponding capability (see extern_fns).
         self.collect_extern_fns(&module.declarations);
+        self.collect_defined_fns(&module.declarations);
 
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
@@ -1259,7 +1306,10 @@ impl CapabilityChecker {
             return;
         }
 
-        if is_builtin_name {
+        // A user function that SHADOWS a builtin's name resolves to the user
+        // function (gated only by its own propagated caps below), so it must not
+        // be force-gated by the builtin table.
+        if is_builtin_name && !self.defined_fns.contains(name) {
             if let Some(required_cap) = required_capability_for_builtin(name) {
                 if let Some(caps) = self.current_caps() {
                     if !caps.satisfies_required(&required_cap) {
@@ -1349,7 +1399,8 @@ impl CapabilityChecker {
                     }
                 }
             }
-            if let Some(required_cap) = required_capability_for_builtin(name) {
+            if !self.defined_fns.contains(name) {
+              if let Some(required_cap) = required_capability_for_builtin(name) {
                 if let Some(caps) = self.current_caps() {
                     if !caps.satisfies_required(&required_cap) {
                         self.diagnostics.push(
@@ -1365,6 +1416,7 @@ impl CapabilityChecker {
                         );
                     }
                 }
+              }
             }
             // A USER FUNCTION (or method) with capabilities used as a first-class
             // value hands out ITS authority too. `fn h(p) { file_read(p) }` then
