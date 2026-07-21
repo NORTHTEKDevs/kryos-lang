@@ -5646,6 +5646,11 @@ fn lower_try_catch(
         value: RValue::Use(Operand::Constant(Constant::Int(0))),
     });
 
+    // Locals allocated from here on belong to the TRY body; recorded so they can
+    // be hidden from name resolution before the catch block is lowered (a
+    // try-body `let e = ..` otherwise shadowed the catch binding `e`).
+    let try_scope_start = ctx.locals.len();
+
     // Pre-allocate the tag-check block so `throw` can jump to it.
     let check_bb = ctx.alloc_block();
 
@@ -5823,6 +5828,16 @@ fn lower_try_catch(
     ctx.emit(Instruction::Drop {
         local: result_local,
     });
+    // Hide every local declared INSIDE the try body from name resolution before
+    // lowering the catch block. The try body's locals are out of scope in the
+    // catch block, but they share the function-flat locals vec with the catch
+    // binding and are MORE RECENT, so `find_local_by_name` resolved the catch
+    // block's `catch_name` to a try-body `let <catch_name> = ..` instead of the
+    // real error binding -- the handler read the stale try value (or SEGFAULTED
+    // when that local was a non-str type read as the str catch binding).
+    for i in try_scope_start..ctx.locals.len() {
+        ctx.hidden_locals.insert(ctx.locals[i].id.0);
+    }
     // Value position: the catch block's tail expression is the result.
     if let Some(dest) = value_dest {
         lower_block_as_value(ctx, &catch_block.stmts, dest);

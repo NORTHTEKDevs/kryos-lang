@@ -1,0 +1,20 @@
+// Conformance: a catch variable that shadows a try-block local of the same
+// name must bind the THROWN value, not read the stale try-block local (which
+// printed garbage for str and SEGFAULTED when the local was a non-str type).
+fn expect(cond: bool, msg: str) { if cond { return }  println("FAIL: " + msg)  exit(1) }
+fn main() {
+    let mut got = ""
+    try { let e: str = "hello"  throw "real message" } catch e { got = e }
+    expect(got == "real message", "str-shadow catch binds thrown value")
+
+    let mut got2 = ""
+    try { let e: i64 = 42  throw "msg4" } catch e { got2 = e }
+    expect(got2 == "msg4", "i64-shadow catch binds thrown value (no segfault)")
+
+    // nested catch, both named e, must rethrow the correct value
+    let mut got3 = ""
+    try { try { throw "inner" } catch e { throw "outer: " + e } } catch e { got3 = e }
+    expect(got3 == "outer: inner", "nested same-name catch rethrows correctly")
+
+    println("conformance try-catch shadow: PASS")
+}
