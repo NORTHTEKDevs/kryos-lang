@@ -34,6 +34,23 @@ pub fn execute(files: &[String], output_dir: Option<&str>, html: bool) -> Result
         let source =
             std::fs::read_to_string(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
+        // Surface parse errors instead of silently emitting an empty doc page.
+        // `kryos doc` on a file that does not parse used to exit 0 with an empty
+        // module, hiding broken source from a doc-generation CI step.
+        let tokens = kryos_lexer::Lexer::new(&source, 0).tokenize();
+        if let Err(diags) = kryos_parser::parse(tokens) {
+            let errs: Vec<_> = diags.iter().filter(|d| d.is_error()).collect();
+            for d in &errs {
+                eprintln!("error: {}", d.message);
+            }
+            let n = errs.len().max(1);
+            return Err(format!(
+                "`{path}` has {n} parse error{} and cannot be documented \
+                 (run `kryos check {path}` for details)",
+                if n == 1 { "" } else { "s" }
+            ));
+        }
+
         let items = extract_docs(&source);
 
         // Derive module name from file path.
