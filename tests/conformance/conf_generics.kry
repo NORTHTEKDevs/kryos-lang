@@ -373,7 +373,31 @@ fn main() {
     expect(g39s2.has(G39Pt { x: 1, y: 1 }), "Set<Struct> membership true for a present value")
     expect(g39s2.has(G39Pt { x: 9, y: 9 }) == false, "Set<Struct> membership false for an absent value")
 
+    // Generic INSTANCE method that OPERATES on a T-typed self FIELD (not a
+    // bare passthrough) must monomorphize per receiver so the field carries
+    // its concrete type. The erased single copy computed on the i64-erased
+    // slot: a str field did pointer arithmetic (SIGSEGV on `self.v + self.v`)
+    // and to_string printed the pointer; an f64 field used its bit pattern.
+    // Bare passthrough getters (`get -> T`) keep the erased fast path.
+    let gmS: GmBox<str> = GmBox { v: "ab" }
+    expect(gmS.dbl() == "abab", "impl<T> str-concat on self field (was SIGSEGV)")
+    expect(gmS.show() == "ab", "impl<T> to_string(self str field) (was pointer bits)")
+    expect(gmS.get() == "ab", "impl<T> bare passthrough getter still correct (str)")
+    let gmF: GmBox<f64> = GmBox { v: 2.5 }
+    expect(gmF.dbl() == 5.0, "impl<T> f64 arithmetic on self field (was bit pattern)")
+    expect(gmF.as_i() == 2, "impl<T> cast self f64 field to i64")
+    let gmI: GmBox<i64> = GmBox { v: 42 }
+    expect(gmI.dbl() == 84, "impl<T> i64 arithmetic on self field (control)")
+
     println("conformance generics: PASS")
+}
+
+struct GmBox<T> { v: T }
+impl<T> GmBox<T> {
+    fn dbl(self: GmBox<T>) -> T { return self.v + self.v }
+    fn show(self: GmBox<T>) -> str { return to_string(self.v) }
+    fn as_i(self: GmBox<T>) -> i64 { return self.v as i64 }
+    fn get(self: GmBox<T>) -> T { return self.v }
 }
 
 struct G39Pt { x: i64, y: i64 }

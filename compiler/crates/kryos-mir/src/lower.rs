@@ -1461,9 +1461,24 @@ pub fn lower_module_with_lambda_params(
                                             .any(|gp| type_expr_mentions_param(t, gp))
                                     })
                             });
+                        // A `has_self` method whose BODY operates on `self`
+                        // beyond a bare passthrough return also needs per-
+                        // receiver monomorphization: `self.<generic-field>`
+                        // used in `+`/`to_string`/a cast (or bound to a local
+                        // then used) is computed on the i64-erased slot by the
+                        // single copy -- a str field then does pointer
+                        // arithmetic (SIGSEGV) and an f64 field bit arithmetic
+                        // (wrong value). The bare passthrough getters the self-
+                        // host leans on (`get`/`len` = a single `return
+                        // self.f`) are EXCLUDED and keep the erased fast path.
+                        let body_operates_on_self = has_self
+                            && body
+                                .as_ref()
+                                .is_some_and(|b| generic_instance_method_needs_body_monomorph(b));
                         let is_ctor_instance_method = has_self
                             && (instance_ret_needs_monomorphization(ret_ty, &impl_generic_names)
-                                || has_generic_value_param);
+                                || has_generic_value_param
+                                || body_operates_on_self);
                         // A no-`self` (associated) method inside a generic
                         // impl block must be registered as a monomorphization
                         // TEMPLATE, not lowered/resolved once here: resolving
@@ -13554,6 +13569,157 @@ fn instance_ret_needs_monomorphization(
             .any(|a| impl_generics.iter().any(|gp| type_expr_mentions_param(a, gp))),
         _ => false,
     }
+}
+
+/// True if the expression references `self` (the receiver) anywhere. Used to
+/// decide whether a generic INSTANCE method's body must be monomorphized per
+/// concrete receiver type. A body that OPERATES on `self` (reads a field and
+/// does arithmetic / to_string / a cast on it, binds it to a local, passes it
+/// along) can touch a generic-typed field, which the single erased-to-i64 copy
+/// mis-handles: a `str` field flows through `+`/`to_string` as its raw pointer
+/// (SIGSEGV on concat, garbage on print) and an `f64` field as its bit pattern.
+/// See [`generic_instance_method_needs_body_monomorph`].
+fn expr_mentions_self(e: &ast::Expr) -> bool {
+    use ast::Expr::*;
+    match e {
+        Identifier { name, .. } => name == "self",
+        IntLiteral { .. }
+        | FloatLiteral { .. }
+        | StringLiteral { .. }
+        | CharLiteral { .. }
+        | BoolLiteral { .. }
+        | NoneLiteral { .. } => false,
+        InterpolatedString { parts, .. } => parts.iter().any(|p| match p {
+            ast::StringPart::Expr(inner) => expr_mentions_self(inner),
+            ast::StringPart::Literal(_) => false,
+        }),
+        FieldAccess { object, .. } => expr_mentions_self(object),
+        IndexAccess { object, index, .. } => {
+            expr_mentions_self(object) || expr_mentions_self(index)
+        }
+        BinaryOp { left, right, .. } => expr_mentions_self(left) || expr_mentions_self(right),
+        UnaryOp { operand, .. } => expr_mentions_self(operand),
+        FnCall { callee, args, .. } => {
+            expr_mentions_self(callee) || args.iter().any(expr_mentions_self)
+        }
+        MethodCall { object, args, .. } => {
+            expr_mentions_self(object) || args.iter().any(expr_mentions_self)
+        }
+        StaticMethodCall { args, .. } => args.iter().any(expr_mentions_self),
+        ArrayLiteral { elements, .. } | TupleLiteral { elements, .. } => {
+            elements.iter().any(expr_mentions_self)
+        }
+        MapLiteral { entries, .. } => entries
+            .iter()
+            .any(|(k, v)| expr_mentions_self(k) || expr_mentions_self(v)),
+        StructLiteral { fields, .. } => fields.iter().any(|(_, v)| expr_mentions_self(v)),
+        Lambda { body, .. } => expr_mentions_self(body),
+        IfExpr {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            expr_mentions_self(condition)
+                || block_mentions_self(then_branch)
+                || else_branch.as_ref().is_some_and(block_mentions_self)
+        }
+        MatchExpr { subject, arms, .. } => {
+            expr_mentions_self(subject)
+                || arms.iter().any(|a| {
+                    a.guard.as_ref().is_some_and(|g| expr_mentions_self(g))
+                        || expr_mentions_self(&a.body)
+                })
+        }
+        RangeExpr { start, end, .. } => {
+            start.as_ref().is_some_and(|s| expr_mentions_self(s))
+                || end.as_ref().is_some_and(|e| expr_mentions_self(e))
+        }
+        PipeExpr { left, right, .. } => expr_mentions_self(left) || expr_mentions_self(right),
+        Borrow { inner, .. }
+        | Deref { inner, .. }
+        | SharedExpr { inner, .. }
+        | MoveExpr { inner, .. }
+        | WeakExpr { inner, .. } => expr_mentions_self(inner),
+        ComptimeBlock { body, .. } | QuantumBlock { body, .. } | UnsafeBlock { body, .. } => {
+            block_mentions_self(body)
+        }
+        Block { block, .. } => block_mentions_self(block),
+        Cast { expr, .. } => expr_mentions_self(expr),
+        Await { value, .. } => expr_mentions_self(value),
+    }
+}
+
+/// True if any statement in the block references `self`. See [`expr_mentions_self`].
+fn block_mentions_self(b: &ast::Block) -> bool {
+    b.stmts.iter().any(stmt_mentions_self)
+}
+
+fn stmt_mentions_self(s: &ast::Stmt) -> bool {
+    use ast::Stmt::*;
+    match s {
+        Let { value, .. } => value.as_ref().is_some_and(|v| expr_mentions_self(v)),
+        Assign { target, value, .. } => expr_mentions_self(target) || expr_mentions_self(value),
+        Return { value, .. } => value.as_ref().is_some_and(|v| expr_mentions_self(v)),
+        If {
+            condition,
+            then_block,
+            elif_clauses,
+            else_block,
+            ..
+        } => {
+            expr_mentions_self(condition)
+                || block_mentions_self(then_block)
+                || elif_clauses
+                    .iter()
+                    .any(|(c, b)| expr_mentions_self(c) || block_mentions_self(b))
+                || else_block.as_ref().is_some_and(block_mentions_self)
+        }
+        For { iterable, body, .. } => expr_mentions_self(iterable) || block_mentions_self(body),
+        While { condition, body, .. } => expr_mentions_self(condition) || block_mentions_self(body),
+        Break { .. } | Continue { .. } => false,
+        Expr { expr, .. } | Spawn { expr, .. } | Throw { expr, .. } => expr_mentions_self(expr),
+        // Select is rare in a generic method body; conservatively monomorphize.
+        Select { .. } => true,
+        TryCatch {
+            try_block,
+            catch_block,
+            ..
+        } => block_mentions_self(try_block) || block_mentions_self(catch_block),
+        DenyBlock { body, .. } => block_mentions_self(body),
+    }
+}
+
+/// True when the block is exactly one bare passthrough of a `self` field --
+/// `return self.<f>` or a tail `self.<f>`. These (the self-host's hot generic
+/// getters `get`/`len`/...) stay on the erased single-lowered-copy fast path:
+/// the returned field is a uniform 8-byte slot that reinterprets correctly at
+/// each call site (see `impl_method_generic_info`/`ret_is_bare_param`), so
+/// monomorphizing them would be needless churn on the hottest generic path.
+fn is_single_bare_self_passthrough(b: &ast::Block) -> bool {
+    if b.stmts.len() != 1 {
+        return false;
+    }
+    let e = match &b.stmts[0] {
+        ast::Stmt::Return { value: Some(e), .. } => e,
+        ast::Stmt::Expr { expr, .. } => expr,
+        _ => return false,
+    };
+    matches!(e, ast::Expr::FieldAccess { object, .. }
+        if matches!(object.as_ref(), ast::Expr::Identifier { name, .. } if name == "self"))
+}
+
+/// Decide whether a generic INSTANCE method's body must be monomorphized per
+/// concrete receiver type. TRUE when the body operates on `self` beyond a bare
+/// passthrough return -- that is where a generic-typed `self` field would be
+/// mis-computed by the single erased copy (SIGSEGV / wrong value for str/f64
+/// fields). A bare passthrough getter keeps the erased fast path; a body that
+/// never touches `self` (returns a literal / only its non-self params) also
+/// stays erased (nothing generic to specialize). Monomorphizing is always
+/// SOUND inside a generic impl -- the i64 instantiation equals the erased body
+/// -- so this errs toward specializing whenever `self` is used non-trivially.
+fn generic_instance_method_needs_body_monomorph(body: &ast::Block) -> bool {
+    !is_single_bare_self_passthrough(body) && block_mentions_self(body)
 }
 
 /// Monomorphize a generic struct template with concrete type arguments.
