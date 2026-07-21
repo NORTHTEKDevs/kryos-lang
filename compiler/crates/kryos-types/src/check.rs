@@ -2147,6 +2147,13 @@ impl TypeChecker {
                 if ty.is_none() {
                     let record = match value.as_ref() {
                         Some(Expr::ArrayLiteral { elements, .. }) => elements.is_empty(),
+                        // Empty map `let m = {}` -- like the empty-array case, the
+                        // key/value types come from later `m[k] = v` assignments,
+                        // which unify the map's fresh type vars. Without recording
+                        // the authoritative type, MIR defaulted the value slot to
+                        // i64 and a str/aggregate value read back as raw pointer
+                        // bits (silent miscompile).
+                        Some(Expr::MapLiteral { entries, .. }) => entries.is_empty(),
                         Some(Expr::Block { .. }) => true,
                         _ => false,
                     };

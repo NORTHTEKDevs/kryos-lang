@@ -1,0 +1,33 @@
+// Conformance: an untyped empty map `let m = {}` must infer its key/value
+// types from later `m[k] = v` index-assignments (mirroring untyped `[]` arrays).
+// Regression: a str/struct value used to read back as raw pointer bits because
+// the value slot defaulted to i64 -- a silent miscompile on both backends.
+
+struct P { name: str, age: i64 }
+
+fn expect(cond: bool, msg: str) {
+    if cond {
+        return
+    }
+    println("FAIL: " + msg)
+    exit(1)
+}
+
+fn main() {
+    let mut s = {}
+    s["a"] = "alpha"
+    s["b"] = "beta"
+    expect(s["a"] == "alpha", "untyped map str value a")
+    expect(s["b"] == "beta", "untyped map str value b")
+
+    let mut n = {}
+    n["x"] = 100
+    expect(n["x"] + 1 == 101, "untyped map int value")
+
+    let mut people = {}
+    people["k"] = P { name: "kris", age: 30 }
+    expect(people["k"].name == "kris", "untyped map struct value name")
+    expect(people["k"].age == 30, "untyped map struct value age")
+
+    println("conformance untyped-map infer: PASS")
+}
