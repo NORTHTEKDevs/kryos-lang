@@ -350,22 +350,27 @@ fn once() -> Once {
 // --- SpinLock (lightweight alternative to Mutex) ----------------------------
 
 struct SpinLock {
-    flag: AtomicBool
+    flag: AtomicInt
 }
 
 impl SpinLock {
-    // Acquire the spin lock (busy-wait).
+    // Acquire the spin lock (busy-wait on an atomic 0->1 compare-and-swap).
     fn lock(self: SpinLock) -> SpinLock {
-        while self.flag.load() {
-            // Spin until the flag is false
+        // The old implementation spun on AtomicBool with a load-then-store
+        // test-and-set (`while flag.load() {}  flag.store(true)`). AtomicBool
+        // has NO compare-and-swap, so that was NON-atomic: two threads could
+        // both observe the flag false and both enter the critical section,
+        // losing updates. AtomicInt.compare_and_swap IS atomic, so spin until
+        // this thread wins the 0(unlocked)->1(locked) transition.
+        while !self.flag.compare_and_swap(0, 1) {
+            // another thread holds the lock; spin
         }
-        let new_flag = self.flag.store(true)
-        return SpinLock { flag: new_flag }
+        return self
     }
 
     // Release the spin lock.
     fn unlock(self: SpinLock) -> SpinLock {
-        let new_flag = self.flag.store(false)
+        let new_flag = self.flag.store(0)
         return SpinLock { flag: new_flag }
     }
 
@@ -390,5 +395,5 @@ impl SpinLock {
 
 // Create a new SpinLock.
 fn spin_lock() -> SpinLock {
-    return SpinLock { flag: atomic_bool(false) }
+    return SpinLock { flag: atomic_int(0) }
 }

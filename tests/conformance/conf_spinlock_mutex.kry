@@ -1,0 +1,32 @@
+// Conformance: SpinLock provides real mutual exclusion under concurrent
+// threads. The old AtomicBool load-then-store test-and-set raced (two threads
+// entered the critical section), losing counter updates; AtomicInt CAS fixes
+// it. 8 threads x 2000 protected increments must total exactly 16000.
+use std::sync::{spin_lock, atomic_int, wait_group}
+fn main() {
+    let lock = spin_lock()
+    let counter = atomic_int(0)
+    let wg = wait_group()
+    wg.add(8)
+    let mut t = 0
+    while t < 8 {
+        spawn {
+            let mut i = 0
+            while i < 2000 {
+                let l = lock.lock()
+                let old = counter.load()
+                counter.store(old + 1)
+                l.unlock()
+                i = i + 1
+            }
+            wg.done()
+        }
+        t = t + 1
+    }
+    wg.wait()
+    if counter.load() != 16000 {
+        println("FAIL: spinlock lost updates, got " + to_string(counter.load()))
+        exit(1)
+    }
+    println("conformance spinlock mutex: PASS")
+}
