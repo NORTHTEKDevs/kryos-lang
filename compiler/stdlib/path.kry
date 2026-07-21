@@ -87,6 +87,13 @@ fn dirname(p: str) -> str {
         i = i - 1
     }
 
+    // A bare Windows drive root ("C:/" or "C:") is its own parent, like the
+    // Unix root "/" (dirname("/") == "/"). Without this it fell through to the
+    // generic `.` fallback and silently discarded the drive. Guard against a
+    // non-root like "a:b" (a real char, not a separator, follows the colon).
+    if last_sep < 0 and plen >= 2 and normalized[1] == ":" and (plen == 2 or normalized[2] == "/") {
+        return substr(normalized, 0, 2) + "/"
+    }
     if last_sep < 0 {
         return "."
     }
