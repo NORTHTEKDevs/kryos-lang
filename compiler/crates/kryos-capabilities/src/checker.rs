@@ -113,6 +113,13 @@ struct CapabilityChecker {
     /// deny-by-default bypass (declared top-level, called from unannotated
     /// code, no capability ever demanded).
     extern_fns: std::collections::HashSet<String>,
+    /// Names bound as LOCALS (params + let/for/match/catch bindings) in the
+    /// function currently being checked. A value-position identifier in this
+    /// set is a local variable, NOT a function reference, so it must not be
+    /// attributed a same-named function's capabilities -- without this, any
+    /// local named like one of the 1000+ stdlib functions (`query`, `connect`,
+    /// `find`, ...) spuriously inherited its capability.
+    current_locals: std::collections::HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -124,6 +131,7 @@ impl CapabilityChecker {
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
             extern_fns: std::collections::HashSet::new(),
+            current_locals: std::collections::HashSet::new(),
             mode,
         }
     }
@@ -544,7 +552,12 @@ impl CapabilityChecker {
             }
             // A gated builtin used as a VALUE (bound to a `let`, returned,
             // stored in an array/struct, piped, ...) delegates its authority.
-            // This single arm covers every non-call value position.
+            // This single arm covers every non-call value position. (A user
+            // FUNCTION used as a value is enforced at the reference site by
+            // `check_builtin_value_ref`, which rejects it against the boundary's
+            // grants rather than silently propagating -- see the capability
+            // escape fix; propagating here would over-approximate any local
+            // variable that shares a name with a stdlib function.)
             Expr::Identifier { .. } => acc = acc.union(&Self::builtin_value_caps(expr)),
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
@@ -593,16 +606,96 @@ impl CapabilityChecker {
         }
     }
 
+    /// Collect every name bound as a LOCAL in a block (let/for/while-let/
+    /// match/catch), recursing into nested statement blocks. Used to exclude
+    /// locals from function-value capability attribution.
+    fn collect_local_names(block: &kryos_ast::Block, out: &mut std::collections::HashSet<String>) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let { name, pattern, .. } => {
+                    out.insert(name.clone());
+                    if let Some(p) = pattern {
+                        Self::pattern_names(p, out);
+                    }
+                }
+                Stmt::For { pattern, body, .. } => {
+                    Self::pattern_names(pattern, out);
+                    Self::collect_local_names(body, out);
+                }
+                Stmt::If { then_block, elif_clauses, else_block, .. } => {
+                    Self::collect_local_names(then_block, out);
+                    for (_, b) in elif_clauses {
+                        Self::collect_local_names(b, out);
+                    }
+                    if let Some(b) = else_block {
+                        Self::collect_local_names(b, out);
+                    }
+                }
+                Stmt::While { body, .. } | Stmt::DenyBlock { body, .. } => {
+                    Self::collect_local_names(body, out);
+                }
+                Stmt::TryCatch { try_block, catch_name, catch_block, .. } => {
+                    Self::collect_local_names(try_block, out);
+                    out.insert(catch_name.clone());
+                    Self::collect_local_names(catch_block, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Add every identifier a pattern binds.
+    fn pattern_names(p: &kryos_ast::Pattern, out: &mut std::collections::HashSet<String>) {
+        use kryos_ast::Pattern;
+        match p {
+            Pattern::Ident { name, .. } => {
+                out.insert(name.clone());
+            }
+            Pattern::Tuple { elements, .. } => {
+                for e in elements {
+                    Self::pattern_names(e, out);
+                }
+            }
+            Pattern::Or { patterns, .. } => {
+                for e in patterns {
+                    Self::pattern_names(e, out);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, fp) in fields {
+                    Self::pattern_names(fp, out);
+                }
+            }
+            Pattern::Enum { fields, .. } => {
+                for fp in fields {
+                    Self::pattern_names(fp, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn check_decl(&mut self, decl: &Decl) {
         match decl {
             Decl::Function {
                 name,
                 annotations,
+                params,
                 body,
                 span,
                 ..
             } => {
+                // Record this function's local bindings so a value-position
+                // identifier that is a local (not a function reference) is not
+                // attributed a same-named function's capabilities.
+                let mut locals: std::collections::HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
+                if let Some(b) = body {
+                    Self::collect_local_names(b, &mut locals);
+                }
+                self.current_locals = locals;
                 self.check_function(name, annotations, body.as_ref(), *span);
+                self.current_locals.clear();
             }
             Decl::Actor {
                 name,
@@ -1269,6 +1362,39 @@ impl CapabilityChecker {
                                  add `@capabilities({required_cap})` to the enclosing function"
                             ))
                             .with_code(kryos_errors::codes::E0505),
+                        );
+                    }
+                }
+            }
+            // A USER FUNCTION (or method) with capabilities used as a first-class
+            // value hands out ITS authority too. `fn h(p) { file_read(p) }` then
+            // `let f = h; f(x)` / `apply(h, x)` / `Reader { f: h }` / `[h]` reached
+            // a gated op through a local holding the function, which the call-site
+            // gate never sees -- a capability ESCAPE. Require the function's full
+            // set at the reference site, against the enclosing boundary's grants.
+            // Skip names bound as LOCALS: a local variable that merely shares a
+            // name with a function is not a reference to that function.
+            if self.current_locals.contains(name) {
+                return;
+            }
+            if let Some(fn_caps) = self.fn_capabilities.get(name).cloned() {
+                if let Some(caps) = self.current_caps() {
+                    if !fn_caps.is_subset_of(caps) {
+                        let excess = fn_caps.excess_over(caps);
+                        let excess_names: Vec<String> =
+                            excess.iter().map(|c| c.to_string()).collect();
+                        self.diagnostics.push(
+                            Diagnostic::error(format!(
+                                "function `{name}` used as a value requires capabilities [{}] not granted here",
+                                excess_names.join(", ")
+                            ))
+                            .with_label(span, "delegates its authority")
+                            .with_note(format!(
+                                "referencing `{name}` as a value hands out its authority; \
+                                 add `@capabilities({})` to the enclosing function",
+                                excess_names.join(", ")
+                            ))
+                            .with_code(kryos_errors::codes::E0507),
                         );
                     }
                 }

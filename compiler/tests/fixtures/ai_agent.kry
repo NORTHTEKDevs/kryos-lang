@@ -151,6 +151,7 @@ fn tool_ask_claude(question: str) -> str {
 
 // ---- Main -------------------------------------------------------------------
 
+@capabilities(net, process)
 fn main() {
     // Build the primary research agent.
     let mut agent = agent_new("researcher", "Answer questions using available tools")

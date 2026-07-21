@@ -133,6 +133,50 @@ impl FileSink { fn write(self: FileSink) { file_write("/tmp/z", "d") } }
 @capabilities(process)
 fn main() { let f: FileSink = FileSink { t: 1 }  f.write() }'
 
+# --- capability ESCAPE via a user function used as a first-class VALUE -------
+# A helper wrapping a gated builtin, aliased/passed/stored instead of called
+# directly, must NOT slip its authority past an unannotated boundary. (Was a
+# critical escape: check passed and the program actually read the file / env.)
+want_reject cap_escape_local_alias \
+'fn h(p: str) -> str { return file_read(p) }
+fn main() { let f = h  let c = f("/tmp/z")  println(c) }'
+
+want_reject cap_escape_fn_arg \
+'fn h(p: str) -> str { return file_read(p) }
+fn ap(g: fn(str)->str, p: str) -> str { return g(p) }
+fn main() { println(ap(h, "/tmp/z")) }'
+
+want_reject cap_escape_returned \
+'fn h(p: str) -> str { return file_read(p) }
+fn gr() -> fn(str)->str { return h }
+fn main() { let f = gr()  println(f("/tmp/z")) }'
+
+want_reject cap_escape_env_alias \
+'fn ge(k: str) -> str { return env_get(k) }
+fn main() { let f = ge  println(f("PATH")) }'
+
+# ...but a correctly-declared alias is accepted, a pure alias is accepted, and a
+# LOCAL merely named like a gated stdlib function (e.g. `query`, `connect`) must
+# NOT be spuriously attributed that function's capability.
+want_pass cap_alias_declared \
+'@capabilities(fs:read)
+fn h(p: str) -> str { return file_read(p) }
+@capabilities(fs:read)
+fn main() { let f = h  println(f("/tmp/z")) }'
+
+want_pass cap_alias_pure \
+'fn add(a: i64, b: i64) -> i64 { return a + b }
+fn main() { let f = add  println(to_string(f(2, 3))) }'
+
+want_pass cap_local_named_like_gated_fn \
+'struct U { host: str, query: str }
+fn main() {
+    let host = "example.com"
+    let query = "a=1"
+    let u = U { host: host, query: query }
+    println(u.host + "?" + u.query)
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else
