@@ -121,9 +121,9 @@ fn main() {
     let w2_shape = [8, 3]
     let x_shape = [2, 4]
 
-    let x = kryos_tensor_rand(x_shape as i64, 2)
-    let w1 = kryos_tensor_randn(w1_shape as i64, 2)
-    let w2 = kryos_tensor_randn(w2_shape as i64, 2)
+    let x = kryos_tensor_rand(arr_to_ptr(x_shape), 2)
+    let w1 = kryos_tensor_randn(arr_to_ptr(w1_shape), 2)
+    let w2 = kryos_tensor_randn(arr_to_ptr(w2_shape), 2)
 
     // Forward: relu(X @ W1) then softmax(H @ W2)
     let hidden = kryos_tensor_relu(kryos_tensor_matmul(x, w1))

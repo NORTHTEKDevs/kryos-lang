@@ -58,8 +58,8 @@ extern {
 fn main() {
     let w_shape = [4, 8]
     let x_shape = [2, 4]
-    let x = kryos_tensor_rand(x_shape as i64, 2)
-    let w = kryos_tensor_rand(w_shape as i64, 2)
+    let x = kryos_tensor_rand(arr_to_ptr(x_shape), 2)
+    let w = kryos_tensor_rand(arr_to_ptr(w_shape), 2)
     let hidden = kryos_tensor_relu(kryos_tensor_matmul(x, w))
 }
 ```
@@ -71,10 +71,12 @@ The runtime includes 38 tensor operations backed by native Rust, autonomous agen
 Functions declare what system resources they need. The compiler enforces these constraints at compile time -- no runtime overhead, no surprises.
 
 ```kryos
+use std::net::{http_get}
+
 @capabilities(net, io)
 fn fetch_and_save(url: str, path: str) {
     let data = http_get(url)
-    file_write(path, data)
+    file_write(path, data.body)   // http_get returns HttpResponse; .body is the str
 }
 
 // Calling a function that needs 'gpu' from here would be a compile error
@@ -100,10 +102,15 @@ trait Drawable {
     fn draw(self) -> str
 }
 
-fn render(items: [dyn Drawable]) {
-    // Runtime dispatch -- useful for heterogeneous collections
+fn render(item: dyn Drawable) -> str {
+    return item.draw()   // runtime dispatch through the trait object
 }
 ```
+
+> For a heterogeneous **collection**, use an enum with one variant per concrete
+> type and `match`. Trait objects stored inside a container (`[dyn Drawable]`,
+> `Option<dyn Drawable>`, a map value, ...) are rejected at compile time
+> (`E0110`) and are not yet supported.
 
 ### Concurrency Primitives
 
@@ -150,17 +157,17 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos 1.0.0-beta.1 is a feature-complete compiler (beta: one primary author, not yet externally stress-tested) with:
+Kryos 1.0.0-rc.2 is a feature-complete compiler (release candidate: one primary author, not yet externally stress-tested) with:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release; see BENCHMARKS.md for measured ratios vs Rust/C)
 - 1,000+ Rust tests plus a Cranelift/LLVM backend-parity matrix, 0 clippy warnings
 - Self type in traits, associated function syntax (`Type::method()`)
 - @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy on assignment (both backends; param passing documented in gotcha #23)
-- 847 functions across 28 standard library modules (0 stubs)
+- 1,200+ functions across 66 standard library modules (0 stubs)
 - Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL with persistent state
 - Self-hosting compiler: ~19K lines of Kryos implementing the full pipeline (stage-1 is Cranelift-compiled — a different backend — so it is not byte-identical to later stages)
-- Bootstrap fixed point: SHA-256 proof that stage-2, stage-3, and stage-4 binaries are byte-identical, reached with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`); see `compiler/self-host/bootstrap-win.sh`. The per-module standalone compile check (`compiler/self-host/test_bootstrap.sh`) currently passes 11/16 modules.
+- Bootstrap fixed point: SHA-256 proof that stage-2, stage-3, and stage-4 binaries are byte-identical, reached with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`); see `compiler/self-host/bootstrap-win.sh`. The per-module standalone compile check (`compiler/self-host/test_bootstrap.sh`) currently passes 16/16 modules.
 
 ## Who Is Kryos For?
 

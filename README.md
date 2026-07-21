@@ -157,7 +157,8 @@ async fn worker(name: str, n: i64) {
 fn main() {
     coop_spawn(worker("A", 3))
     coop_spawn(worker("B", 3))
-    coop_run()                  // → A0 B0 A1 B1 A2 B2 (genuinely interleaved)
+    coop_run()
+    println(coop_order())       // → A0 B0 A1 B1 A2 B2 (genuinely interleaved)
 }
 ```
 
