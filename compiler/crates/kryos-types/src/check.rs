@@ -2281,10 +2281,36 @@ impl TypeChecker {
                 ..
             } => {
                 // Infer the iterable type and determine element type.
-                let iter_ty = self.infer_expr(iterable);
+                let raw_iter_ty = self.infer_expr(iterable);
+                let iter_ty = self.engine.resolve(&raw_iter_ty);
                 let elem_ty = match &iter_ty {
                     Type::Array { element, .. } => *element.clone(),
-                    _ => Type::I64, // default for range() and other builtins
+                    // `range(a,b)` returns `[i64]`; a bare `a..b` infers to the
+                    // `Range` struct. Both are special-cased in MIR lowering to a
+                    // counter loop with an i64 element.
+                    Type::Struct { name, .. } if name == "Range" => Type::I64,
+                    // Unresolved (still-generic) or already-errored iterables are
+                    // left permissive so we never reject legitimately-inferred code.
+                    Type::Var(_) | Type::Error => Type::I64,
+                    // Every other concrete type (str, map, set, scalars, tuples,
+                    // non-Range structs/enums, ...) is NOT iterable by the array
+                    // desugar: it read the value's bytes as an array header and
+                    // SEGFAULTED at runtime (e.g. `for c in some_string`). Reject
+                    // at type-check with an actionable message instead of crashing.
+                    other => {
+                        self.error(
+                            format!(
+                                "cannot iterate over a value of type `{other}`; \
+                                 `for x in ...` requires an array `[T]` or a range. \
+                                 To iterate a string, split it into an array first \
+                                 (e.g. `split(s, \" \")`, `split_lines(s)`) or index \
+                                 characters with `substr(s, i, i + 1)`. \
+                                 To iterate a map, loop over `keys(m)`."
+                            ),
+                            iterable.span(),
+                        );
+                        Type::I64
+                    }
                 };
 
                 self.env.push_scope();

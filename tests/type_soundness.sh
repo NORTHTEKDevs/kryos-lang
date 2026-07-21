@@ -903,6 +903,26 @@ fn main() {
 }
 '
 
+# --- for-over-non-iterable: must be a compile error, NOT a runtime segfault ---
+# `for c in <str>` (and map/set/scalar) read the value as an array header and
+# segfaulted (exit 139). The type checker must reject them; array/range iterate.
+want_reject for_over_str '
+fn main() { let s = "hi"  for c in s { println("x") } }
+'
+want_reject for_over_map '
+fn main() { let mut m: map<str,i64> = {}  m["a"] = 1  for x in m { println("y") } }
+'
+want_pass for_over_array_and_ranges '
+fn main() {
+    for x in [1, 2, 3] { println(to_string(x)) }
+    for i in range(0, 2) { println(to_string(i)) }
+    for i in 0..2 { println(to_string(i)) }
+    let mut m: map<str, i64> = {}
+    m["a"] = 1
+    for k in keys(m) { println(k) }
+}
+'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
