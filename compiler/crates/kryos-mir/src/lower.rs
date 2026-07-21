@@ -9698,6 +9698,29 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         };
                     }
                 }
+                // `to_string(str)` is the identity, but the RESULT is a
+                // DISTINCT owned str the caller drops (like any str-returning
+                // call). Returning the argument's handle UNRETAINED made the
+                // result alias the argument, so both drops freed the same
+                // buffer -- a double-free of any rc=1 string reaching
+                // to_string (a freshly computed/returned value, or a caught
+                // exception's owned copy; a string LITERAL's rc masked it).
+                // Retain so the result carries its own reference, matching the
+                // `throw` site's retain when a str enters a second owner.
+                if matches!(aty, MirType::Str) {
+                    let s = lower_expr_to_operand(ctx, &args[0]);
+                    if let Operand::Local(_) = &s {
+                        let sink = ctx.alloc_temp(MirType::I64);
+                        ctx.emit(Instruction::Assign {
+                            dest: sink,
+                            value: RValue::Call {
+                                func: "kryos_string_retain_opt".to_string(),
+                                args: vec![s.clone()],
+                            },
+                        });
+                    }
+                    return RValue::Use(s);
+                }
                 let placeholder = match &aty {
                     MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{n}>")),
                     MirType::Array(..) => Some("<array>".to_string()),
