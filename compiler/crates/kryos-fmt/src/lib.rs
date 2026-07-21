@@ -45,6 +45,56 @@ pub fn format_module(module: &Module) -> String {
 pub fn format_source_preserving_comments(source: &str) -> Result<Option<String>, Vec<Diagnostic>> {
     let formatted = format_source(source)?;
 
+    // Block comments (`/* ... */`) are not carried by the AST and are invisible
+    // to the `//`-only extractor below, so reformatting would SILENTLY DELETE
+    // them (a critical data-loss bug: `let x = 1 + /* note */ 2` became
+    // `let x = 1 + 2`). The re-anchoring machinery here handles only line
+    // comments, so refuse to format any file containing a block comment --
+    // skip it (leave it untouched) rather than destroy the comment.
+    if has_block_comment(source) {
+        return Ok(None);
+    }
+
+    /// True if `src` contains a `/* ... */` block comment outside a string/char
+    /// literal or a `//` line comment.
+    fn has_block_comment(src: &str) -> bool {
+        let b = src.as_bytes();
+        let n = b.len();
+        let mut i = 0;
+        while i < n {
+            match b[i] {
+                b'"' => {
+                    i += 1;
+                    while i < n && b[i] != b'"' {
+                        if b[i] == b'\\' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                b'\'' => {
+                    i += 1;
+                    while i < n && b[i] != b'\'' {
+                        if b[i] == b'\\' {
+                            i += 1;
+                        }
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                b'/' if i + 1 < n && b[i + 1] == b'*' => return true,
+                b'/' if i + 1 < n && b[i + 1] == b'/' => {
+                    while i < n && b[i] != b'\n' {
+                        i += 1;
+                    }
+                }
+                _ => i += 1,
+            }
+        }
+        false
+    }
+
     // ---- extract comments with anchors --------------------------------
     #[derive(Debug)]
     struct CommentItem {

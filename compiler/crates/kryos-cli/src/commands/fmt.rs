@@ -116,20 +116,14 @@ fn has_non_doc_comment(src: &str) -> bool {
                 i += 1;
             }
             b'/' if i + 1 < n && b[i + 1] == b'*' => {
-                // Skip a (possibly nested) block comment.
-                let mut depth = 1;
-                i += 2;
-                while i < n && depth > 0 {
-                    if i + 1 < n && b[i] == b'/' && b[i + 1] == b'*' {
-                        depth += 1;
-                        i += 2;
-                    } else if i + 1 < n && b[i] == b'*' && b[i + 1] == b'/' {
-                        depth -= 1;
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
+                // A `/* ... */` block comment is a non-doc comment the plain
+                // formatter would DELETE (the AST drops it), so route to the
+                // comment-preserving path -- which refuses to format a file
+                // with a block comment rather than silently dropping it.
+                // Previously this arm just skipped the comment and returned
+                // false, so a block-comment-only file took the plain path and
+                // lost the comment (`let x = 1 + /* n */ 2` -> `let x = 1 + 2`).
+                return true;
             }
             b'/' if i + 1 < n && b[i + 1] == b'/' => {
                 // A doc comment `///` is preserved by the formatter; anything

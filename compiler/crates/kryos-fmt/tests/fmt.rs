@@ -609,3 +609,27 @@ fn test_lambda_prints_bar_form() {
     assert!(out.contains("|x: i64| x * 2"), "bar form preserved: {out}");
     assert!(!out.contains("fn(x"), "no fn-form rewrite: {out}");
 }
+
+#[test]
+fn test_block_comment_is_skipped_not_deleted() {
+    // Regression: `kryos fmt` used to silently DELETE `/* ... */` block
+    // comments. The comment-preserving path must refuse to format a file
+    // containing a block comment (return None -> caller leaves it untouched)
+    // rather than drop it.
+    let src = "fn main() {\n    let x = 1 + /* keep me */ 2\n    print(to_string(x))\n}\n";
+    let result = kryos_fmt::format_source_preserving_comments(src).expect("no parse error");
+    assert!(
+        result.is_none(),
+        "a file with a block comment must be skipped (None), not formatted-with-deletion; got {result:?}"
+    );
+
+    // A `/*` inside a string literal is NOT a block comment -- that file must
+    // still format normally (Some).
+    let str_src = "fn main() { let s = \"a /* not a comment */ b\"  print(s) }\n";
+    let str_result =
+        kryos_fmt::format_source_preserving_comments(str_src).expect("no parse error");
+    assert!(
+        str_result.is_some(),
+        "`/*` inside a string must not be treated as a block comment"
+    );
+}
