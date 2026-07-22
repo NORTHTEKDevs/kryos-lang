@@ -88,7 +88,10 @@ impl<T> List<T> {
     /// Append a value to the end, returning the new list.
     fn push(self: List<T>, val: T) -> List<T> {
         let nd = push(self.data, val)
-        return List { data: nd, length: len(self.data) + 1 }
+        // len(nd), NOT len(self.data)+1: the builtin push grows self.data's
+        // shared buffer IN PLACE, so len(self.data) already reflects the
+        // post-push count -- a trailing +1 double-counts the .length field.
+        return List { data: nd, length: len(nd) }
     }
 
     /// Remove and return the last element. Throws if empty.
@@ -450,7 +453,8 @@ impl<T> Stack<T> {
     /// Push a value onto the top, returning the new stack.
     fn push(self: Stack<T>, val: T) -> Stack<T> {
         let nd = push(self.data, val)
-        return Stack { data: nd, length: len(self.data) + 1 }
+        // See List.push: len(nd), not len(self.data)+1 (push mutates in place).
+        return Stack { data: nd, length: len(nd) }
     }
 
     /// Pop the top value. Throws if empty. (See module note on mutation.)

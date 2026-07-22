@@ -13,7 +13,20 @@ fn new_filter(bits: i64) -> [i64] {
     // least one word so a misconfigured (e.g. dynamically-sized-to-0) filter
     // degenerates safely instead of crashing.
     let safe_bits = if bits < 1 { 1 } else { bits }
-    let words = (safe_bits + 63) / 64
+    // ceil(safe_bits/64) WITHOUT the `safe_bits + 63` add, which overflowed i64
+    // to a negative `words` (hence a 0-length array + a crash on the next add())
+    // for a bits value within 63 of i64::MAX.
+    let mut words = safe_bits / 64
+    if safe_bits % 64 != 0 {
+        words = words + 1
+    }
+    // Reject an absurd capacity outright: allocating the correct word count for
+    // a bits near i64::MAX would need exabytes (OOM/hang). 2^30 words = 8 GiB of
+    // addressable bits is already far past any real filter -- a clear throw
+    // beats an OOM hang or (via the old overflow) an out-of-bounds crash.
+    if words > 1073741824 {
+        throw "bloom: bit capacity too large (bits must be < ~6.8e10)"
+    }
     let mut out: [i64] = []
     let mut i: i64 = 0
     while i < words {

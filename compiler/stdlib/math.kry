@@ -535,6 +535,11 @@ fn factorial(n: i64) -> i64 {
     if n < 0 {
         throw "factorial: negative argument"
     }
+    // 21! exceeds i64::MAX and would wrap to a negative/garbage value with no
+    // error; reject it. 20! = 2432902008176640000 is the largest that fits.
+    if n > 20 {
+        throw "factorial: n > 20 overflows i64"
+    }
     let mut result = 1
     let mut i = 2
     while i <= n {

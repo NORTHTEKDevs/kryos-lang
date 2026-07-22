@@ -94,6 +94,12 @@ impl Budget {
     // NOTE: to_string(f64) is unsupported in the Cranelift JIT. Cast f64 USD
     // fields to micro-USD (i64) before stringifying.
     fn charge(self: Budget, cost: ComputeCost) -> Budget {
+        // Reject a negative charge: a cost is spend, never a refund. A negative
+        // token/call count would drive `spent` below zero and PERMANENTLY
+        // disable the cap (every later charge stays under max).
+        if cost.tokens_used < 0 or cost.api_calls < 0 {
+            throw "cost error: negative charge is not allowed"
+        }
         let new_usd = self.spent_usd + cost.money_usd
         let new_tokens = self.spent_tokens + cost.tokens_used
         let new_calls = self.spent_api_calls + cost.api_calls

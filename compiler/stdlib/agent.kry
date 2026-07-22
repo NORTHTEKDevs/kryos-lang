@@ -12,16 +12,36 @@ let ALIGNMENT_UNRESTRICTED = 3
 // advisory. Only STRICT is gated; STANDARD/MINIMAL/UNRESTRICTED allow all tools,
 // so default (STANDARD) agents are unaffected. It is a name-heuristic guardrail,
 // not a sandbox - pair with @capabilities for hard enforcement.
+fn _tool_lower(s: str) -> str {
+    let mut out = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c >= 65 and c <= 90 {
+            out = out + char_from(c + 32)
+        } else {
+            out = out + substr(s, i, i + 1)
+        }
+        i = i + 1
+    }
+    return out
+}
+
 fn _tool_is_risky(tool_name: str) -> bool {
-    if contains(tool_name, "delete") { return true }
-    if contains(tool_name, "remove") { return true }
-    if contains(tool_name, "write") { return true }
-    if contains(tool_name, "exec") { return true }
-    if contains(tool_name, "spawn") { return true }
-    if contains(tool_name, "pay") { return true }
-    if contains(tool_name, "transfer") { return true }
-    if contains(tool_name, "send") { return true }
-    if contains(tool_name, "email") { return true }
+    // Case-fold first: the deny-list verbs are lowercase and `contains` is a
+    // case-sensitive byte match, so a PascalCase/UPPER tool name (DeleteFile,
+    // SendEmail, EXEC) slipped past a STRICT-alignment agent's refusal.
+    let name = _tool_lower(tool_name)
+    if contains(name, "delete") { return true }
+    if contains(name, "remove") { return true }
+    if contains(name, "write") { return true }
+    if contains(name, "exec") { return true }
+    if contains(name, "spawn") { return true }
+    if contains(name, "pay") { return true }
+    if contains(name, "transfer") { return true }
+    if contains(name, "send") { return true }
+    if contains(name, "email") { return true }
     return false
 }
 

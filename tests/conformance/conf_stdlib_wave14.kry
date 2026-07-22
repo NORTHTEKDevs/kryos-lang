@@ -1,0 +1,69 @@
+// Conformance: wave-14 stdlib fixes (collections push field, backoff, ratelimit,
+// cost, factorial, bloom, agent).
+use std::collections::{List, Stack}
+use std::backoff::{next_delay, total_delay}
+use std::ratelimit::{new_bucket, try_acquire, tokens}
+use std::math::{factorial}
+use std::cost::{budget_new, ComputeCost}
+use std::bloom::{new_filter}
+use std::agent::{agent_with_alignment, ALIGNMENT_STRICT}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn danger(x: str) -> str { return "DELETED" }
+fn safe_tool(x: str) -> str { return "OK" }
+
+fn main() {
+    // collections: the public .length field matches len() after push (was off-by-one)
+    let mut xs: List<i64> = List.new()
+    xs = xs.push(1)
+    xs = xs.push(2)
+    xs = xs.push(3)
+    expect(xs.length == 3 and xs.len() == 3, "List.length field matches len() after push")
+    let mut st: Stack<i64> = Stack.new()
+    st = st.push(9)
+    expect(st.length == 1, "Stack.length field matches after push")
+
+    // backoff: no overflow to negative for a large prev_ms / max_ms
+    expect(next_delay(4611686018427387904, 100, 9223372036854775807) == 9223372036854775807, "next_delay no overflow")
+    expect(total_delay(1, 9223372036854775807, 70) > 0, "total_delay no negative overflow")
+
+    // ratelimit: large-capacity bucket refill does not overflow (own guard was buggy)
+    let b = new_bucket(10000000000, 1, 0)
+    let ok = try_acquire(b, 5000000000)
+    expect(tokens(b) == 9999999999, "ratelimit large-cap no corruption")
+
+    // math: factorial rejects the overflow point instead of returning garbage
+    expect(factorial(20) == 2432902008176640000, "factorial(20) exact")
+    let mut ft = false
+    try { let x = factorial(21) } catch e { ft = true }
+    expect(ft, "factorial(21) throws instead of wrapping negative")
+
+    // cost: negative charge is rejected (would permanently disable the cap)
+    let budget = budget_new(100.0, 1000, 100)
+    let neg = ComputeCost { wall_time_ms: 0.0, tokens_used: -1000000, api_calls: 0, money_usd: 0.0, energy_kwh: 0.0 }
+    let mut ct = false
+    try { let b2 = budget.charge(neg) } catch e { ct = true }
+    expect(ct, "cost rejects negative charge")
+
+    // bloom: absurd bits throws instead of hanging/crashing
+    let mut bt = false
+    try { let f = new_filter(9223372036854775800) } catch e { bt = true }
+    expect(bt, "bloom rejects absurd bit capacity")
+
+    // agent: STRICT agent refuses a PascalCase risky tool (case-insensitive deny-list)
+    let mut ag = agent_with_alignment("bot", "help", ALIGNMENT_STRICT)
+    ag = ag.add_tool("DeleteFile", danger, "d")
+    ag = ag.add_tool("readData", safe_tool, "r")
+    let mut refused = false
+    try { let r = ag.use_tool("DeleteFile", "x") } catch e { refused = true }
+    expect(refused, "STRICT agent refuses PascalCase DeleteFile")
+    expect(ag.use_tool("readData", "x") == "OK", "STRICT agent allows safe tool")
+
+    println("conformance stdlib wave14: PASS")
+}

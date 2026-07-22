@@ -18,7 +18,9 @@ fn next_delay(prev_ms: i64, base_ms: i64, max_ms: i64) -> i64 {
     // Clamp BEFORE doubling: `prev_ms * 2` overflows i64 for a large prev_ms
     // and wraps to a NEGATIVE value, which the `> max_ms` cap then fails to
     // catch (it's already below max_ms), silently returning a negative delay.
-    if prev_ms >= max_ms {
+    // Two cases overflow: prev_ms already >= max_ms, OR prev_ms > i64::MAX/2
+    // (doubling wraps even when prev_ms < a near-i64::MAX max_ms sentinel).
+    if prev_ms >= max_ms or prev_ms > 4611686018427387903 {
         return max_ms
     }
     let mut d = prev_ms * 2
@@ -30,13 +32,27 @@ fn next_delay(prev_ms: i64, base_ms: i64, max_ms: i64) -> i64 {
 
 /// Total cumulative delay over `attempts` retries (no jitter).
 fn total_delay(base_ms: i64, max_ms: i64, attempts: i64) -> i64 {
+    let max_i64 = 9223372036854775807
     let mut total: i64 = 0
     let mut d = base_ms
+    if d > max_ms { d = max_ms }
     let mut i: i64 = 0
     while i < attempts {
-        total = total + d
-        d = d * 2
-        if d > max_ms { d = max_ms }
+        // Saturating accumulate: a huge cumulative would otherwise wrap to a
+        // nonsensical negative total.
+        if total > max_i64 - d {
+            total = max_i64
+        } else {
+            total = total + d
+        }
+        // Clamp BEFORE doubling (same overflow the neighboring next_delay
+        // guards against): d*2 wraps negative once d exceeds i64::MAX/2.
+        if d >= max_ms or d > 4611686018427387903 {
+            d = max_ms
+        } else {
+            d = d * 2
+            if d > max_ms { d = max_ms }
+        }
         i = i + 1
     }
     return total

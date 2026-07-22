@@ -73,8 +73,16 @@ fn sign_hs256(payload_json: str, secret: str) -> str {
     return signing_input + "." + sig_b64
 }
 
-// Verify an HS256 token against `secret`. Returns true only if the
+// Verify an HS256 token's SIGNATURE against `secret`. Returns true only if the
 // recomputed tag matches the token's signature segment.
+//
+// SECURITY: this checks the cryptographic signature ONLY. It does NOT validate
+// temporal or any other claims -- an EXPIRED token (past `exp`), a not-yet-valid
+// one (before `nbf`), or a token for the wrong audience still returns true if
+// the signature is authentic. A `true` result means "authentically signed by a
+// holder of `secret`", NOT "this token is currently valid to accept". Decode
+// the payload with decode_payload() and check exp/nbf/aud yourself before
+// trusting the token.
 fn verify_hs256(token: str, secret: str) -> bool {
     let dot1 = find(token, ".")
     if dot1 < 0 {
@@ -105,7 +113,10 @@ fn sign_eddsa(payload_json: str, pkcs8_hex: str) -> str {
     return signing_input + "." + sig_b64
 }
 
-// Verify an EdDSA token against a hex-encoded Ed25519 public key.
+// Verify an EdDSA token's SIGNATURE against a hex-encoded Ed25519 public key.
+// SECURITY: signature-only, exactly like verify_hs256 -- it does NOT check
+// exp/nbf/aud. An expired but authentically-signed token returns true. Decode
+// and validate claims yourself before accepting the token.
 fn verify_eddsa(token: str, pub_hex: str) -> bool {
     let dot1 = find(token, ".")
     if dot1 < 0 {
