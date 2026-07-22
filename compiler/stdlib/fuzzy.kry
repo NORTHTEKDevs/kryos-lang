@@ -14,7 +14,23 @@ use std::utf8::{codepoint_count}
 /// character length, so a multibyte character (accent, CJK, emoji) counts as a
 /// single edit. (The old byte-indexed version returned 2 for
 /// levenshtein("café","cafe") instead of the correct 1.)
+fn _cps(s: str) -> [i64] {
+    let mut out: [i64] = []
+    let slen = len(s)
+    let mut i = 0
+    while i < slen {
+        let b = char_code(substr(s, i, i + 1))
+        let mut step = 1
+        if b >= 240 { step = 4 } elif b >= 224 { step = 3 } elif b >= 192 { step = 2 }
+        out = push(out, char_code(substr(s, i, i + step)))
+        i = i + step
+    }
+    return out
+}
+
 fn levenshtein(a: str, b: str) -> i64 {
+    let a_cps = _cps(a)
+    let b_cps = _cps(b)
     let m = codepoint_count(a)
     let n = codepoint_count(b)
     // codepoint_count returns -1 for invalid UTF-8; fall back to a
@@ -43,8 +59,8 @@ fn levenshtein(a: str, b: str) -> i64 {
         cur[0] = i
         let mut j2: i64 = 1
         while j2 <= n {
-            let ac = byte_at(a, i - 1)
-            let bc = byte_at(b, j2 - 1)
+            let ac = a_cps[i - 1]
+            let bc = b_cps[j2 - 1]
             let cost = if ac == bc { 0 } else { 1 }
             let del = prev[j2] + 1
             let ins = cur[j2 - 1] + 1
@@ -87,6 +103,8 @@ fn closest(query: str, candidates: [str], max_dist: i64) -> i64 {
 
 /// Jaro similarity in [0.0, 1.0]: 1.0 = identical, 0.0 = no match.
 fn jaro(a: str, b: str) -> f64 {
+    let a_cps = _cps(a)
+    let b_cps = _cps(b)
     // Codepoint lengths (see levenshtein): byte lengths mis-scored non-ASCII.
     // Invalid UTF-8 yields a negative length, which harmlessly short-circuits
     // every loop below to 0 matches -> returns 0.0 (no out-of-bounds).
@@ -122,7 +140,7 @@ fn jaro(a: str, b: str) -> f64 {
         if hi > lb { hi = lb }
         let mut j = lo
         while j < hi {
-            if b_match[j] == 0 and byte_at(a, i) == byte_at(b, j) {
+            if b_match[j] == 0 and a_cps[i] == b_cps[j] {
                 a_match[i] = 1
                 b_match[j] = 1
                 matches = matches + 1
@@ -144,7 +162,7 @@ fn jaro(a: str, b: str) -> f64 {
             while b_match[k] == 0 {
                 k = k + 1
             }
-            if byte_at(a, i) != byte_at(b, k) {
+            if a_cps[i] != b_cps[k] {
                 transpositions = transpositions + 1
             }
             k = k + 1
@@ -160,6 +178,8 @@ fn jaro(a: str, b: str) -> f64 {
 /// Jaro-Winkler similarity in [0.0, 1.0]. Boosts the Jaro score for
 /// strings sharing a common prefix (up to 4 chars), scaling factor 0.1.
 fn jaro_winkler(a: str, b: str) -> f64 {
+    let a_cps = _cps(a)
+    let b_cps = _cps(b)
     let j = jaro(a, b)
     let mut prefix = 0
     let la = codepoint_count(a)
@@ -169,7 +189,7 @@ fn jaro_winkler(a: str, b: str) -> f64 {
     if lb < max_prefix { max_prefix = lb }
     let mut i = 0
     while i < max_prefix {
-        if byte_at(a, i) == byte_at(b, i) {
+        if a_cps[i] == b_cps[i] {
             prefix = prefix + 1
             i = i + 1
         } else {

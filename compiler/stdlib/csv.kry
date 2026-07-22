@@ -15,6 +15,8 @@
 // ============================================================
 
 @copy
+use std::string::{string_builder}
+
 struct CsvRow {
     fields: [str]
 }
@@ -37,10 +39,14 @@ fn parse_line(line: str) -> [str] {
 fn parse(input: str) -> [CsvRow] {
     let mut rows: [CsvRow] = []
     let mut fields: [str] = []
-    let mut cur = ""
-    // Accumulate contiguous ordinary chars as a RUN and flush it in ONE substr,
-    // instead of `cur = cur + c` per character (O(n^2) -- a single ~1.6MB field
-    // took >40s, a DoS). run_start marks the first not-yet-flushed input index.
+    // Field accumulator as a string_builder (O(n)). The wave-17 run-flush made
+    // the common large-field case O(n), but a field DENSE with escaped quotes
+    // ("") still hit `cur = cur + ...` per pair -> O(n^2). string_builder is O(n)
+    // regardless. cur_has replaces the old len(cur) checks (a builder has no
+    // cheap length).
+    let mut cur_sb = string_builder()
+    let mut cur_has = false
+    // run_start marks the first not-yet-flushed input index of the current run.
     let mut run_start = 0
     let mut in_quotes = false
     let n = len(input)
@@ -51,9 +57,10 @@ fn parse(input: str) -> [CsvRow] {
         let c = substr(input, i, i + 1)
         if in_quotes {
             if c == "\"" {
-                if i > run_start { cur = cur + substr(input, run_start, i) }
+                if i > run_start { cur_sb.append(substr(input, run_start, i))  cur_has = true }
                 if i + 1 < n and substr(input, i + 1, i + 2) == "\"" {
-                    cur = cur + "\""
+                    cur_sb.append("\"")
+                    cur_has = true
                     i = i + 2
                 } else {
                     in_quotes = false
@@ -64,7 +71,7 @@ fn parse(input: str) -> [CsvRow] {
                 i = i + 1
             }
         } else {
-            if c == "\"" and len(cur) == 0 and run_start == i {
+            if c == "\"" and not cur_has and run_start == i {
                 // RFC 4180: a quote only opens a quoted field when it is the
                 // FIRST character of the field. A quote appearing mid-field
                 // (an inch mark, an unescaped quotation) is literal data --
@@ -77,20 +84,22 @@ fn parse(input: str) -> [CsvRow] {
                 i = i + 1
                 run_start = i
             } elif c == "\"" {
-                if i > run_start { cur = cur + substr(input, run_start, i) }
-                cur = cur + "\""
+                if i > run_start { cur_sb.append(substr(input, run_start, i))  cur_has = true }
+                cur_sb.append("\"")
+                cur_has = true
                 row_has_content = true
                 i = i + 1
                 run_start = i
             } elif c == "," {
-                if i > run_start { cur = cur + substr(input, run_start, i) }
-                fields = push(fields, cur)
-                cur = ""
+                if i > run_start { cur_sb.append(substr(input, run_start, i))  cur_has = true }
+                fields = push(fields, cur_sb.build())
+                cur_sb = string_builder()
+                cur_has = false
                 row_has_content = true
                 i = i + 1
                 run_start = i
             } elif c == "\n" or c == "\r" {
-                if i > run_start { cur = cur + substr(input, run_start, i) }
+                if i > run_start { cur_sb.append(substr(input, run_start, i))  cur_has = true }
                 if c == "\r" and i + 1 < n and substr(input, i + 1, i + 2) == "\n" {
                     i = i + 2
                 } else {
@@ -105,13 +114,17 @@ fn parse(input: str) -> [CsvRow] {
                 // line (no chars, no commas) must be 0 fields, not one empty
                 // field. `a,` (trailing comma) still yields ["a",""] because
                 // len(fields) > 0; `,` yields ["",""]; `\n` alone yields [].
-                if row_has_content or len(cur) > 0 or len(fields) > 0 {
-                    fields = push(fields, cur)
+                // build() always (frees the buffer); push only if the row has
+                // real content -- a truly blank line stays 0 fields.
+                let field_val = cur_sb.build()
+                if row_has_content or cur_has or len(fields) > 0 {
+                    fields = push(fields, field_val)
                 }
                 rows = push(rows, CsvRow { fields: fields })
                 let fresh: [str] = []
                 fields = fresh
-                cur = ""
+                cur_sb = string_builder()
+                cur_has = false
                 row_has_content = false
                 run_start = i
             } else {
@@ -122,9 +135,10 @@ fn parse(input: str) -> [CsvRow] {
             }
         }
     }
-    if i > run_start { cur = cur + substr(input, run_start, i) }
-    if row_has_content or len(cur) > 0 or len(fields) > 0 {
-        fields = push(fields, cur)
+    if i > run_start { cur_sb.append(substr(input, run_start, i))  cur_has = true }
+    let last_val = cur_sb.build()
+    if row_has_content or cur_has or len(fields) > 0 {
+        fields = push(fields, last_val)
         rows = push(rows, CsvRow { fields: fields })
     }
     return rows
@@ -147,34 +161,37 @@ fn _needs_quoting(field: str) -> bool {
 /// Serialize fields into one CSV line (no trailing newline). Quotes are
 /// added only where required; embedded quotes are doubled.
 fn to_line(fields: [str]) -> str {
-    let mut out = ""
+    // string_builder (O(n)) instead of per-char `quoted = quoted + c` for a
+    // quoted field, which re-copied the accumulator each char (O(n^2) DoS on a
+    // large field).
+    let out = string_builder()
     let count = len(fields)
     let mut idx = 0
     while idx < count {
         let f = fields[idx]
         if idx > 0 {
-            out = out + ","
+            out.append(",")
         }
         if _needs_quoting(f) {
-            let mut quoted = "\""
+            out.append("\"")
             let n = len(f)
             let mut i = 0
             while i < n {
                 let c = substr(f, i, i + 1)
                 if c == "\"" {
-                    quoted = quoted + "\"\""
+                    out.append("\"\"")
                 } else {
-                    quoted = quoted + c
+                    out.append(c)
                 }
                 i = i + 1
             }
-            out = out + quoted + "\""
+            out.append("\"")
         } else {
-            out = out + f
+            out.append(f)
         }
         idx = idx + 1
     }
-    return out
+    return out.build()
 }
 
 /// Serialize rows into a CSV document with \n separators and a trailing
