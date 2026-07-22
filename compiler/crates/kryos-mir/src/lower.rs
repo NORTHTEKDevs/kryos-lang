@@ -7515,9 +7515,22 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     } else {
         None
     };
+    // A match with NO wildcard/default arm that is NOT statically exhaustive
+    // (an int/str match, or an enum match missing variants) must PANIC at
+    // runtime if no arm matches. Routing the switch/compare default to
+    // `merge_bb` read back an UNINITIALIZED `result_local` -- a silent
+    // non-exhaustive miss that yielded garbage (0 / empty string) instead of
+    // failing loud (`match n { 1 => .., 2 => .. }` on 99 returned 0). Route it
+    // to a dedicated panic block (sealed below like `refut_nomatch_block`).
+    let nonexhaustive_nomatch_block = if default_arm.is_none() && unreachable_default.is_none() {
+        Some(ctx.alloc_block())
+    } else {
+        None
+    };
     let default_bb = default_arm
         .map(|(bb, _)| bb)
         .or(unreachable_default)
+        .or(nonexhaustive_nomatch_block)
         .unwrap_or(merge_bb);
 
     // Fail targets for arms with REFUTABLE sub-patterns (nested variants,
@@ -8127,6 +8140,25 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 func: "panic".to_string(),
                 args: vec![Operand::Constant(Constant::Str(
                     "match: no arm matched (nested pattern refuted)".to_string(),
+                ))],
+            },
+        });
+        ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
+    }
+
+    // Seal the non-exhaustive no-match block: a runtime panic (like division by
+    // zero), so a non-exhaustive int/str match that misses fails loud instead
+    // of reading uninitialized memory. Does NOT touch result_local (panic
+    // diverges; a store here would reference an alloca the arms may not emit).
+    if let Some(nm_bb) = nonexhaustive_nomatch_block {
+        ctx.current_block = nm_bb;
+        let sink = ctx.alloc_temp(MirType::Void);
+        ctx.emit(Instruction::Assign {
+            dest: sink,
+            value: RValue::Call {
+                func: "panic".to_string(),
+                args: vec![Operand::Constant(Constant::Str(
+                    "match: no arm matched (non-exhaustive match)".to_string(),
                 ))],
             },
         });
