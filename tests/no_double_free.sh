@@ -52,6 +52,36 @@ no_df tostring_loop \
     }
 }'
 
+# --- array/tuple LITERAL with a bare-identifier heap element: the element box
+# was shared with the source local, so container teardown + the source's own
+# scope drop both freed it. Retain the element so both drops balance. ---
+no_df array_literal_nested \
+'fn main() {
+    let inner1: [str] = ["a1", "a2"]
+    let inner2: [str] = ["b1"]
+    let outer: [[str]] = [inner1, inner2]
+    println(outer[0][0])
+    println(inner1[0])
+}'
+
+no_df tuple_literal_arrays \
+'fn main() {
+    let a: [str] = ["x", "y"]
+    let b: [str] = ["z"]
+    let t = (a, b)
+    println(t.0[0])
+    println(a[1])
+}'
+
+no_df array_literal_str_idents \
+'fn main() {
+    let s1 = "hello" + "!"
+    let s2 = "world" + "!"
+    let arr = [s1, s2]
+    println(arr[0])
+    println(s1)
+}'
+
 # --- plain catch-variable use (was already clean; guard against regressions) ---
 no_df catch_plain_println \
 'fn throw_it() { throw "boom" }

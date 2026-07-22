@@ -10582,23 +10582,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .iter()
                 .map(|e| {
                     let op = lower_expr_to_operand(ctx, e);
-                    // A struct LOCAL placed in an array literal hands its box
-                    // to the array: `let e = Entry {..}; let a = [e]` stores
-                    // e's box pointer as the element. Scope cleanup must not
-                    // drop `e` afterward -- that freed the box the array
-                    // still references (STATUS_HEAP_CORRUPTION at teardown;
-                    // tracked_source's lineage was the repro).
-                    if let (ast::Expr::Identifier { .. }, Operand::Local(id)) = (e, &op) {
-                        let is_struct = ctx
-                            .locals
-                            .iter()
-                            .find(|l| l.id == *id)
-                            .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
-                            .unwrap_or(false);
-                        if is_struct {
-                            ctx.partial_moved_locals.insert(id.0);
-                        }
-                    }
+                    retain_or_move_literal_element(ctx, e, &op);
                     op
                 })
                 .collect();
@@ -10608,7 +10592,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::TupleLiteral { elements, .. } => {
             let ops: Vec<Operand> = elements
                 .iter()
-                .map(|e| lower_expr_to_operand(ctx, e))
+                .map(|e| {
+                    let op = lower_expr_to_operand(ctx, e);
+                    retain_or_move_literal_element(ctx, e, &op);
+                    op
+                })
                 .collect();
             RValue::Tuple(ops)
         }
@@ -13743,6 +13731,58 @@ fn is_single_bare_self_passthrough(b: &ast::Block) -> bool {
 /// -- so this errs toward specializing whenever `self` is used non-trivially.
 fn generic_instance_method_needs_body_monomorph(body: &ast::Block) -> bool {
     !is_single_bare_self_passthrough(body) && block_mentions_self(body)
+}
+
+/// Balance ownership for a BARE-IDENTIFIER heap element placed into an array or
+/// tuple LITERAL. Both backends store the element as a raw i64 slot (the box
+/// POINTER for a str/array/map, an inline aggregate for a struct/enum) with NO
+/// clone or refcount bump (see `RValue::Array` in both codegens), so a source
+/// local placed into the literal ends up sharing its box with the container:
+/// the container's teardown AND the source local's own scope-end Drop both free
+/// it -- a double-free (`let outer = [inner1]` then inner1 dropped freed inner1's
+/// buffer twice). Fix, mirroring the struct-literal path:
+///   - str/array/map -> RETAIN the box (kryos_string/array/map_retain) so the
+///     container's reference is its own and both drops balance;
+///   - struct/enum -> no refcounted box to retain (raw aggregate value), so mark
+///     the source local's scope-end drop as already accounted for (its ownership
+///     moved into the literal).
+/// Only a BARE IDENTIFIER is handled: a fresh temp (literal / call / concat)
+/// already hands over its own +1. A PARAM or BORROWED source is skipped -- it
+/// gets no scope-end Drop, so retaining/moving it would leak or double-account.
+fn retain_or_move_literal_element(ctx: &mut LoweringContext, e: &ast::Expr, op: &Operand) {
+    let Operand::Local(id) = op else { return };
+    if !matches!(e, ast::Expr::Identifier { .. }) {
+        return;
+    }
+    if ctx.param_locals.contains(&id.0) || ctx.borrowed_locals.contains(&id.0) {
+        return;
+    }
+    let ty = ctx
+        .locals
+        .iter()
+        .find(|l| l.id == *id)
+        .map(|l| l.ty.clone());
+    let Some(ty) = ty else { return };
+    let retain_fn = match ty {
+        MirType::Str => Some("kryos_string_retain"),
+        MirType::Array(_, _) => Some("kryos_array_retain"),
+        MirType::Map { .. } => Some("kryos_map_retain"),
+        MirType::Struct(_) | MirType::Enum(_) => {
+            ctx.partial_moved_locals.insert(id.0);
+            None
+        }
+        _ => None,
+    };
+    if let Some(f) = retain_fn {
+        let scratch = ctx.alloc_temp(MirType::I64);
+        ctx.emit(Instruction::Assign {
+            dest: scratch,
+            value: RValue::Call {
+                func: f.into(),
+                args: vec![op.clone()],
+            },
+        });
+    }
 }
 
 /// Monomorphize a generic struct template with concrete type arguments.
