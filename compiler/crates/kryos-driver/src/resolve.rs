@@ -112,6 +112,10 @@ pub enum ResolveError {
         path: PathBuf,
         diagnostics: Vec<Diagnostic>,
     },
+    /// A module file matched only because the host filesystem is
+    /// case-insensitive (Windows/macOS). The import would fail on a
+    /// case-sensitive filesystem (Linux/CI), so reject it for portability.
+    CaseMismatch { requested: String, actual: String },
 }
 
 impl std::fmt::Display for ResolveError {
@@ -143,6 +147,14 @@ impl std::fmt::Display for ResolveError {
             ResolveError::ParseError { path, .. } => {
                 write!(f, "failed to parse module '{}'", path.display())
             }
+            ResolveError::CaseMismatch { requested, actual } => {
+                write!(
+                    f,
+                    "module `{requested}` resolved to `{actual}` only because this \
+                     filesystem is case-insensitive; the import would fail on \
+                     Linux/CI -- use the exact case `{actual}`"
+                )
+            }
         }
     }
 }
@@ -151,7 +163,58 @@ impl std::fmt::Display for ResolveError {
 ///
 /// `segments` contains the path components, e.g. `["ml", "math"]` for `use ml::math`.
 /// `importing_file` is the path to the file that contains the `use` statement.
+/// Verify that the resolved file's on-disk leaf name matches the requested
+/// module's final segment case-sensitively. On a case-insensitive filesystem
+/// (Windows/macOS) `is_file()` matches `String.kry` for a `string` request,
+/// which would then fail to compile on a case-sensitive filesystem. Returns
+/// the real on-disk leaf name when it differs (caller turns it into an error);
+/// `None` means the case is fine (or the check could not run -- fail open).
+fn resolved_leaf_case_mismatch(resolved: &Path, segments: &[String]) -> Option<String> {
+    let last = segments.last()?;
+    let canon = std::fs::canonicalize(resolved).ok()?;
+    let comps: Vec<String> = canon
+        .components()
+        .filter_map(|c| c.as_os_str().to_str().map(str::to_string))
+        .collect();
+    let n = comps.len();
+    if n == 0 {
+        return None;
+    }
+    let leaf = &comps[n - 1];
+    // A directory module resolves to `<name>/mod.kry`; the module leaf is the
+    // directory name one component up. A file module is `<name>.kry`.
+    let (actual_leaf, requested_ok) = if leaf.eq_ignore_ascii_case("mod.kry") {
+        if n < 2 {
+            return None;
+        }
+        (comps[n - 2].clone(), comps[n - 2] == *last)
+    } else {
+        let stem = leaf.strip_suffix(".kry").unwrap_or(leaf).to_string();
+        let ok = stem == *last;
+        (stem, ok)
+    };
+    if requested_ok {
+        None
+    } else {
+        Some(actual_leaf)
+    }
+}
+
 pub fn resolve_module_path(
+    segments: &[String],
+    importing_file: &Path,
+) -> Result<PathBuf, ResolveError> {
+    let resolved = resolve_module_path_inner(segments, importing_file)?;
+    if let Some(actual) = resolved_leaf_case_mismatch(&resolved, segments) {
+        return Err(ResolveError::CaseMismatch {
+            requested: segments.join("::"),
+            actual,
+        });
+    }
+    Ok(resolved)
+}
+
+fn resolve_module_path_inner(
     segments: &[String],
     importing_file: &Path,
 ) -> Result<PathBuf, ResolveError> {

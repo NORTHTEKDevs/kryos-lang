@@ -541,13 +541,21 @@ impl Parser {
                             // Only reachable inside nested parens.
                             buf.push(',');
                         }
+                        TokenKind::Colon => {
+                            // A sub-capability separator (`fs:write`, `net:http`)
+                            // must stay glued -- padding it produced `fs : write`
+                            // in raw-display consumers (kryos audit / manifest).
+                            buf.push(':');
+                        }
                         _ => {
                             // Re-introduce a separator between adjacent
                             // word-ish tokens. Avoid spaces immediately
-                            // after `(` or before `)`/`,`.
+                            // after `(` or before `)`/`,`, and keep `:` glued
+                            // to the scope that follows it.
                             let needs_space = !buf.is_empty()
                                 && !buf.ends_with('(')
-                                && !buf.ends_with(',');
+                                && !buf.ends_with(',')
+                                && !buf.ends_with(':');
                             if needs_space {
                                 buf.push(' ');
                             }

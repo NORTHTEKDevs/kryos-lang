@@ -2234,20 +2234,21 @@ mod tests {
     }
 
     #[test]
-    fn inferred_free_fn_named_like_builtin_is_conservatively_gated() {
-        // A FREE function named `file_write` is indistinguishable at a call site
-        // from the gated builtin / stdlib wrapper of the same name (they merge
-        // into one module), so it is conservatively gated. A safe
-        // over-approximation, not a leak -- the alternative (global name
-        // shadowing) unsoundly UN-gates the stdlib wrappers (env_get, http_get,
-        // write_file, ...) that deliberately share builtin names.
+    fn inferred_free_fn_named_like_builtin_is_not_gated() {
+        // A user-DEFINED free function named `file_write` that does pure work
+        // resolves (via `defined_fns`) to the user function -- codegen dispatches
+        // to it, not the builtin -- so it must NOT be forced to declare fs:write
+        // (commit 69a18a3: attribute caps by resolved symbol, not by name). The
+        // real, non-shadowed builtin call is still gated (see
+        // inferred_unannotated_main_direct_builtin_is_error), and the value-position
+        // authority escape is still caught (inferred_builtin_passed_as_value_is_caught).
         let shadow = fn_decl("file_write", vec![], vec![call("some_noop")]);
         let noop = fn_decl("some_noop", vec![], vec![]);
         let main = fn_decl("main", vec![], vec![call("file_write")]);
         let diags = infer(vec![shadow, noop, main]);
         assert!(
-            diags.iter().any(|d| d.is_error()),
-            "free fn colliding with a builtin name is conservatively gated, got {diags:?}"
+            diags.is_empty(),
+            "a pure user fn shadowing a builtin name must not be gated, got {diags:?}"
         );
     }
 
