@@ -3520,7 +3520,26 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         Some("__kryos_struct_index_clone");
                                 }
                                 _ => {
-                                    ctx.dropped_locals.insert(src.0);
+                                    // A struct/enum/tuple whose field graph the
+                                    // clone helpers can't fully deep-copy (an
+                                    // enum/tuple/fn-typed field). `let h2 = h1`
+                                    // aliases the SAME value (non-@copy
+                                    // JIT-aliases), so the OLD move semantics
+                                    // (mark the SOURCE consumed, skip its drop)
+                                    // only balanced a SINGLE copy: two copies
+                                    // from one source (`let h2 = h1; let h3 =
+                                    // h1`) left h2 AND h3 both owning the shared
+                                    // value, so both dropped its heap/fn fields
+                                    // -> a double-free (arc release-after-free of
+                                    // the fn field / str field, exit 127). Mark
+                                    // the NEW binding non-owning instead: only
+                                    // the ORIGINAL source drops the shared value,
+                                    // for ANY number of aliases. Safe for `let`
+                                    // because the source is in scope at this
+                                    // point, so it outlives the new binding's
+                                    // block (the new binding can never be read
+                                    // after the source is dropped).
+                                    ctx.borrowed_locals.insert(local.0);
                                 }
                             }
                         }

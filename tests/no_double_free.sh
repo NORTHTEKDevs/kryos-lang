@@ -93,6 +93,32 @@ fn main() {
     println("[" + sb2.build() + "]")
 }'
 
+# --- a non-@copy struct with a fn field (not cleanly deep-clonable), copied
+# 2+ times from the SAME source, aliased the shared value; each alias dropped
+# its heap/fn fields -> arc release-after-free (exit 127). Now only the source
+# owns/drops. ---
+no_df struct_fnfield_two_copies \
+'fn mk() -> str { return "x" }
+struct Handler { route: str, fn_: fn() -> str }
+fn main() {
+    let h1 = Handler { route: "/a", fn_: mk }
+    let h2 = h1
+    let h3 = h1
+    println(h1.route + h2.route + h3.route + h1.fn_())
+}'
+
+no_df struct_fnfield_closure_copies \
+'struct Handler { route: str, fn_: fn() -> str }
+fn main() {
+    let base = "resp-"
+    let h1 = Handler { route: "/a", fn_: || base + "a" }
+    let h2 = h1
+    let h3 = h1
+    println(h1.fn_())
+    println(h2.fn_())
+    println(h3.fn_())
+}'
+
 # --- plain catch-variable use (was already clean; guard against regressions) ---
 no_df catch_plain_println \
 'fn throw_it() { throw "boom" }
