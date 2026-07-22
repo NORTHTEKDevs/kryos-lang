@@ -1,0 +1,34 @@
+// Conformance: dyn Trait vtable slot order must follow TRAIT-declaration order,
+// not impl-block textual order. An impl that declares methods in a different
+// order than the trait miscompiled dyn dispatch (d.first() ran second's body).
+trait Ops {
+    fn one(self: Self) -> str
+    fn two(self: Self) -> str
+    fn three(self: Self) -> str
+}
+struct W { x: i64 }
+impl Ops for W {
+    // Deliberately declared out of trait order.
+    fn three(self: W) -> str { return "THREE" }
+    fn one(self: W) -> str { return "ONE" }
+    fn two(self: W) -> str { return "TWO" }
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let w = W { x: 0 }
+    // static dispatch (sanity)
+    expect(w.one() == "ONE" and w.two() == "TWO" and w.three() == "THREE", "static dispatch")
+    // dynamic dispatch must match by trait-declared method, not impl order
+    let d: dyn Ops = w
+    expect(d.one() == "ONE", "dyn one -> ONE (was THREE)")
+    expect(d.two() == "TWO", "dyn two -> TWO")
+    expect(d.three() == "THREE", "dyn three -> THREE (was ONE)")
+    println("conformance dyn method order: PASS")
+}

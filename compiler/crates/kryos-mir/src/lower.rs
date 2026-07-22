@@ -1627,26 +1627,47 @@ pub fn lower_module_with_lambda_params(
                             }
                         }
                     }
-                    let mut mangled_names: Vec<String> = methods
-                        .iter()
-                        .filter_map(|m| {
-                            if let ast::Decl::Function { name, .. } = m {
-                                Some(format!("{target}__{name}"))
-                            } else {
-                                None
-                            }
-                        })
-                        .collect();
-                    // Add default methods to the impl_map as well.
-                    if let Some(defaults) = ctx.trait_default_methods.get(trait_name).cloned() {
-                        for default_method in &defaults {
-                            if let ast::Decl::Function { name, .. } = default_method {
-                                if !explicit_names.contains(name.as_str()) {
-                                    mangled_names.push(format!("{target}__{name}"));
+                    // Build the vtable in TRAIT-DECLARATION order so vtable slot
+                    // i matches the call site's method index (computed from
+                    // trait_defs). Building it in impl-block TEXTUAL order
+                    // miscompiled dyn dispatch whenever the impl declared its
+                    // methods in a different order than the trait -- e.g. an impl
+                    // written `second` then `first` made a dyn `d.first()` call
+                    // dispatch to `second`'s body. `{target}__{name}` is the
+                    // mangled symbol for both explicitly-impl'd and
+                    // non-overridden default methods, so trait order covers both.
+                    let mangled_names: Vec<String> = if let Some(sigs) =
+                        ctx.trait_defs.get(trait_name).cloned()
+                    {
+                        sigs.iter()
+                            .map(|sig| format!("{target}__{}", sig.name))
+                            .collect()
+                    } else {
+                        // No trait signature on record (defensive) -> fall back
+                        // to impl-block order plus non-overridden defaults.
+                        let mut names: Vec<String> = methods
+                            .iter()
+                            .filter_map(|m| {
+                                if let ast::Decl::Function { name, .. } = m {
+                                    Some(format!("{target}__{name}"))
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        if let Some(defaults) =
+                            ctx.trait_default_methods.get(trait_name).cloned()
+                        {
+                            for default_method in &defaults {
+                                if let ast::Decl::Function { name, .. } = default_method {
+                                    if !explicit_names.contains(name.as_str()) {
+                                        names.push(format!("{target}__{name}"));
+                                    }
                                 }
                             }
                         }
-                    }
+                        names
+                    };
                     ctx.impl_map
                         .insert((target.clone(), trait_name.clone()), mangled_names);
                 }
@@ -1951,8 +1972,23 @@ pub fn lower_module_with_lambda_params(
                             }
                         }
                     }
+                    // Order the vtable by TRAIT-declaration order so the slot
+                    // index matches the call-site method_index (computed from
+                    // trait_defs, lower.rs ~10446). impl_method_names is in
+                    // impl-block textual order, which miscompiled dyn dispatch
+                    // when the impl declared methods in a different order than
+                    // the trait. This second-pass insert overwrites the
+                    // first-pass one, so the same ordering must be applied here.
+                    let ordered_names: Vec<String> =
+                        if let Some(sigs) = ctx.trait_defs.get(trait_name).cloned() {
+                            sigs.iter()
+                                .map(|sig| format!("{target}__{}", sig.name))
+                                .collect()
+                        } else {
+                            impl_method_names
+                        };
                     ctx.impl_map
-                        .insert((target.clone(), trait_name.clone()), impl_method_names);
+                        .insert((target.clone(), trait_name.clone()), ordered_names);
                 }
 
                 ctx.current_self_type = prev_self;
