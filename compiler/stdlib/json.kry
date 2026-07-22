@@ -553,17 +553,21 @@ fn _stringify_array(items: [JsonValue]) -> str {
     if count == 0 {
         return "[]"
     }
-    let mut result = "["
+    // string_builder (O(n)) instead of `result = result + stringify(...)` per
+    // element, which re-copied the accumulator each time (O(n^2) serializing a
+    // large array).
+    let sb = string_builder()
+    sb.append("[")
     let mut i = 0
     while i < count {
         if i > 0 {
-            result = result + ","
+            sb.append(",")
         }
-        result = result + stringify(items[i])
+        sb.append(stringify(items[i]))
         i = i + 1
     }
-    result = result + "]"
-    return result
+    sb.append("]")
+    return sb.build()
 }
 
 fn _stringify_object(keys: [str], values: [JsonValue]) -> str {
@@ -571,17 +575,18 @@ fn _stringify_object(keys: [str], values: [JsonValue]) -> str {
     if count == 0 {
         return char_from(123) + char_from(125)
     }
-    let mut result = char_from(123)
+    let sb = string_builder()
+    sb.append(char_from(123))
     let mut i = 0
     while i < count {
         if i > 0 {
-            result = result + ","
+            sb.append(",")
         }
-        result = result + _escape_string(keys[i]) + ":" + stringify(values[i])
+        sb.append(_escape_string(keys[i]) + ":" + stringify(values[i]))
         i = i + 1
     }
-    result = result + char_from(125)
-    return result
+    sb.append(char_from(125))
+    return sb.build()
 }
 
 /// Pretty-print a JsonValue with the given indent level (spaces per level).
