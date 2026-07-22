@@ -120,6 +120,13 @@ fn to_json<T>(t: Tracked<T>) -> str {
         let vals = [json_string(entry.operation), json_string(entry.description), json_number(entry.timestamp as f64)]
         entries = push(entries, json_object(keys, vals))
     }
+    // LIMITATION: the wrapped value is always emitted as a JSON STRING, so a
+    // Tracked<i64>/Tracked<f64>/Tracked<bool> serializes its value quoted
+    // ("99", not 99). A runtime type dispatch cannot fix this: branches like
+    // json_number(t.value)/json_bool(t.value) don't type-check against the
+    // single concrete T (the checker evaluates every branch), and there is no
+    // tagged-value/type-dispatch primitive for a generic T (same erasure family
+    // as the deferred [any] rewrite). The value round-trips as a string.
     let root_keys = ["value", "source", "lineage"]
     let root_vals = [json_string("{t.value}"), json_string(t.source), json_array(entries)]
     return json_stringify(json_object(root_keys, root_vals))

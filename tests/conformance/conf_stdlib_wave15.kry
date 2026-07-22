@@ -1,0 +1,48 @@
+// Conformance: wave-15 stdlib fixes (http request-line, math angle, iter find/flatten, log, path UNC).
+use std::http::{new_request, serialize_request}
+use std::math::{sin, cos}
+use std::iter::{find, flatten}
+use std::log::{info}
+use std::path::{normalize}
+use std::option::{Option, Some, None}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn fclose(a: f64, b: f64) -> bool {
+    let d = a - b
+    return d < 0.0001 and d > (0.0 - 0.0001)
+}
+
+fn main() {
+    // http: request line (path/query from a URL) is CRLF-stripped
+    let req = new_request("GET", "http://example.com/foo\r\nX-Injected: evil")
+    expect(not contains(serialize_request(req), "\r\nX-Injected"), "request-line CRLF stripped")
+
+    // math: large angle does not hang and small angles stay correct
+    expect(fclose(sin(0.0), 0.0), "sin(0)")
+    expect(fclose(cos(0.0), 1.0), "cos(0)")
+    expect(fclose(sin(1.5707963267948966), 1.0), "sin(pi/2)")
+    let big = sin(1000000000000.0)
+    expect(big <= 1.0 and big >= -1.0, "sin(1e12) bounded (no hang)")
+
+    // iter.find: [f64] element keeps its real value through Option
+    match find([1.5, 2.5, 3.5], |x| x > 2.0) {
+        Some(v) => expect(fclose(v, 2.5), "find [f64] real value"),
+        None() => expect(false, "find should have matched"),
+    }
+
+    // iter.flatten: [[T]] -> [T] actually flattens
+    let fl = flatten([[1, 2, 3], [4, 5]])
+    expect(len(fl) == 5 and fl[0] == 1 and fl[4] == 5, "flatten [[i64]]")
+
+    // path: UNC root is an anchor (".." cannot escape past server/share)
+    expect(normalize("//server/share/a/../../../x") == "//server/share/x", "UNC anchor no escape")
+    expect(normalize("C:/a/../../x") == "C:/x", "drive anchor still works")
+
+    println("conformance stdlib wave15: PASS")
+}

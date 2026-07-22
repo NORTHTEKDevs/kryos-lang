@@ -225,11 +225,11 @@ fn all(arr: [any], pred: fn) -> bool {
 }
 
 /// Find the first element satisfying pred, or None.
-fn find(arr: [any], pred: fn) -> Option<any> {
-    // Return a REAL Option, not a hand-rolled {"tag":"Some",...} dict. Assigning
-    // the old dict to an `Option<T>` binding and matching `Some(x)/None()` read a
-    // mismatched byte layout and CRASHED (the dict is a string-keyed map, not the
-    // compiled Option enum).
+fn find<T>(arr: [T], pred: fn(T) -> bool) -> Option<T> {
+    // Generic <T> (not [any]): the erased [any] slot returned a str/f64 element
+    // as its raw i64 bit pattern through Some(..). A monomorphized [T] has real
+    // typed elements, so Some(arr[i]) carries the real value (same fix as
+    // sum/min/max). Return a REAL Option, not a hand-rolled dict.
     let alen = len(arr)
     let mut i = 0
     while i < alen {
@@ -280,21 +280,22 @@ fn count_if(arr: [any], pred: fn) -> i64 {
 /// `[[T], T]` shape), which a clean `[[T]] -> [T]` signature can't express, and
 /// the naive `[[T]]` conversion erased the inner reads (corrupted non-i64
 /// elements). Flattening a non-i64 nested array is a documented gap.
-fn flatten(arr: [any]) -> [any] {
-    let mut result = []
+fn flatten<T>(arr: [[T]]) -> [T] {
+    // Generic [[T]] -> [T]. The old [any] form used type_of(inner)=="array" to
+    // decide whether to descend, but through an [any] parameter type_of
+    // misreports the erased element as a scalar, so it NEVER flattened (returned
+    // the outer arrays unmodified). A monomorphized [[T]] element is always a
+    // real inner array, so no type check is needed.
+    let mut result: [T] = []
     let alen = len(arr)
     let mut i = 0
     while i < alen {
         let inner = arr[i]
-        if type_of(inner) == "array" {
-            let ilen = len(inner)
-            let mut j = 0
-            while j < ilen {
-                push(result, inner[j])
-                j = j + 1
-            }
-        } else {
-            push(result, inner)
+        let ilen = len(inner)
+        let mut j = 0
+        while j < ilen {
+            result = push(result, inner[j])
+            j = j + 1
         }
         i = i + 1
     }

@@ -209,8 +209,16 @@ fn normalize(p: str) -> str {
     // silently lost the drive and read as a bare relative path (a traversal
     // footgun for callers that trust is_absolute() then join the result).
     let mut drive = ""
+    let mut unc = ""
     let mut start_i = 0
-    if count > 0 {
+    // UNC anchor: \\server\share (normalized //server/share). The server AND
+    // share segments are the root -- ".." must not pop past them, else
+    // "\\server\share\a\..\..\..\x" escaped to a bare "/x".
+    let is_unc = len(normalized) >= 2 and substr(normalized, 0, 2) == "//"
+    if is_unc and count >= 2 {
+        unc = "//" + segments[0] + "/" + segments[1]
+        start_i = 2
+    } else if count > 0 {
         let s0 = segments[0]
         if len(s0) == 2 and substr(s0, 1, 2) == ":" {
             let c0 = char_code(substr(s0, 0, 1))
@@ -220,7 +228,7 @@ fn normalize(p: str) -> str {
             }
         }
     }
-    let anchored = is_abs or len(drive) > 0
+    let anchored = is_abs or len(drive) > 0 or len(unc) > 0
 
     let mut result = []
     let mut i = start_i
@@ -250,6 +258,9 @@ fn normalize(p: str) -> str {
 
     let rlen = len(result)
     if rlen == 0 {
+        if len(unc) > 0 {
+            return unc
+        }
         if len(drive) > 0 {
             return drive + "/"
         }
@@ -260,7 +271,9 @@ fn normalize(p: str) -> str {
     }
 
     let mut output = ""
-    if len(drive) > 0 {
+    if len(unc) > 0 {
+        output = unc + "/"
+    } else if len(drive) > 0 {
         output = drive + "/"
     } else if is_abs {
         output = "/"

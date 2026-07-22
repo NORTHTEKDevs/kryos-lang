@@ -69,9 +69,16 @@ fn normalize(p: str) -> str {
     // "/C:/Users/foo", and "C:/a/../../x" popped past the drive to a bogus
     // relative "x" (a path-traversal footgun).
     let mut drive: str = ""
+    let mut unc: str = ""
     let mut start_idx: i64 = 0
     let np = len(parts)
-    if np > 0 {
+    // UNC anchor: \\server\share (normalized //server/share). server AND share
+    // are the root; ".." must not pop past them (else it escapes to "/x").
+    let is_unc = len(cleaned) >= 2 && substr(cleaned, 0, 2) == "//"
+    if is_unc && np >= 2 {
+        unc = "//" + parts[0] + "/" + parts[1]
+        start_idx = 2
+    } elif np > 0 {
         let p0 = parts[0]
         if len(p0) == 2 && substr(p0, 1, 2) == ":" {
             let c0 = char_code(substr(p0, 0, 1))
@@ -102,7 +109,7 @@ fn normalize(p: str) -> str {
         }
         i = i + 1
     }
-    let mut out: str = if len(drive) > 0 { drive + "/" } elif is_abs { "/" } else { "" }
+    let mut out: str = if len(unc) > 0 { unc + "/" } elif len(drive) > 0 { drive + "/" } elif is_abs { "/" } else { "" }
     let mut j: i64 = 0
     let sl = len(stack)
     while j < sl {

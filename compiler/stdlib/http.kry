@@ -355,11 +355,16 @@ fn with_json_body(req: Request, body: str) -> Request {
 /// Serialize a request into an HTTP/1.1 message string.
 fn serialize_request(req: Request) -> str {
     let u = req.url
-    let mut path = u.path
+    // Strip CR/LF from the request-line components too. set_header sanitizes
+    // header values, but the method/path/query (from parse_url, often built from
+    // attacker-controlled input like a URL suffix) feed the request line
+    // directly -- an embedded CRLF there smuggles a whole injected request
+    // (request splitting), worse than header injection.
+    let mut path = _strip_crlf(u.path)
     if len(u.query) > 0 {
-        path = path + "?" + u.query
+        path = path + "?" + _strip_crlf(u.query)
     }
-    let mut msg = req.method + " " + path + " HTTP/1.1\r\n"
+    let mut msg = _strip_crlf(req.method) + " " + path + " HTTP/1.1\r\n"
     msg = msg + headers_to_string(req.headers)
     msg = msg + "\r\n"
     if len(req.body) > 0 {

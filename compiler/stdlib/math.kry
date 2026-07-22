@@ -291,12 +291,14 @@ fn log10(x: f64) -> f64 {
 
 /// Normalize angle to [-PI, PI] for better series convergence.
 fn _normalize_angle(x: f64) -> f64 {
-    let mut a = x
-    while a > PI {
+    // Reduce modulo TAU in O(1). The old loop subtracted TAU one step at a time,
+    // so it HUNG for a large magnitude (sin(1e12) ran ~1.6e11 iterations). This
+    // brings a into [0, TAU) then into (-PI, PI]. (Precision for a huge angle is
+    // limited by f64 -- true libm uses Payne-Hanek -- but the result is bounded
+    // and correct for ordinary angles; the point is to never hang.)
+    let mut a = x - TAU * floor(x / TAU)
+    if a > PI {
         a = a - TAU
-    }
-    while a < -PI {
-        a = a + TAU
     }
     return a
 }
