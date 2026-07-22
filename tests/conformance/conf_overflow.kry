@@ -12,7 +12,7 @@ use std::crypto::{hmac_sha256}
 
 use std::numfmt::{hex, bin, decimal_padded}
 
-use std::fmt::{oct, thousands, duration, float_sci, pad_left, center}
+use std::fmt::{oct, thousands, duration, float_sci, float_fixed, pad_left, center}
 
 use std::math::{atan, lcm}
 
@@ -210,6 +210,22 @@ fn main() {
     // ...and a narrow var promoted via an explicit i64 cast still computes wide.
     let ni_k: u8 = 255
     expect((ni_k as i64) + 1 == 256, "u8-as-i64 + 1 is NOT masked (explicit widen)")
+
+    // NaN / +-Infinity float formatting: float_sci must NOT hang (its
+    // mantissa-normalization loop spun forever on inf: inf/10 == inf), and
+    // neither float_sci nor float_fixed may silently render them as a finite
+    // value (NaN was "0.00", inf a bogus huge number).
+    let posinf: f64 = 1.0 / 0.0
+    let neginf: f64 = -1.0 / 0.0
+    let nan: f64 = posinf - posinf
+    expect(float_sci(posinf, 2) == "inf", "float_sci(+inf) = inf (was infinite loop)")
+    expect(float_sci(neginf, 2) == "-inf", "float_sci(-inf) = -inf")
+    expect(float_sci(nan, 2) == "nan", "float_sci(nan) = nan")
+    expect(float_fixed(posinf, 2) == "inf", "float_fixed(+inf) = inf (was bogus huge)")
+    expect(float_fixed(neginf, 2) == "-inf", "float_fixed(-inf) = -inf")
+    expect(float_fixed(nan, 2) == "nan", "float_fixed(nan) = nan (was 0.00)")
+    expect(float_fixed(3.14159, 2) == "3.14", "float_fixed finite unchanged")
+    expect(float_sci(12345.6, 2) == "1.23e+4", "float_sci finite unchanged")
 
     println("conformance overflow: PASS")
 }

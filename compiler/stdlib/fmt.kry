@@ -246,6 +246,20 @@ fn bin(n: i64) -> str {
 ///   float_fixed(3.14159, 2) => "3.14"
 ///   float_fixed(42.0, 4)   => "42.0000"
 fn float_fixed(n: f64, decimals: i64) -> str {
+    // NaN and +/-Infinity have no finite decimal expansion. Without this guard
+    // NaN formatted as "0.00" (indistinguishable from a real zero) and
+    // Infinity as a bogus huge finite number (through the saturating
+    // float->int cast). `n != n` is true only for NaN; `n - n` is NaN (so
+    // != 0) for +/-Infinity and exactly 0 for any finite value.
+    if n != n {
+        return "nan"
+    }
+    if n - n != 0.0 {
+        if n > 0.0 {
+            return "inf"
+        }
+        return "-inf"
+    }
     let negative = n < 0.0
     let mut val = n
     if negative {
@@ -302,6 +316,18 @@ fn _floor_f64(x: f64) -> f64 {
 ///   float_sci(12345.6, 2) => "1.23e+4"
 ///   float_sci(0.00042, 3) => "4.200e-4"
 fn float_sci(n: f64, decimals: i64) -> str {
+    // NaN / Infinity guard BEFORE the mantissa-normalization loop below, which
+    // never terminates for Infinity (inf / 10.0 == inf, so `while mantissa >=
+    // 10.0` spins at 100% CPU forever).
+    if n != n {
+        return "nan"
+    }
+    if n - n != 0.0 {
+        if n > 0.0 {
+            return "inf"
+        }
+        return "-inf"
+    }
     if n == 0.0 {
         return float_fixed(0.0, decimals) + "e+0"
     }
