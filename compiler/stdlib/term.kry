@@ -8,6 +8,8 @@
 
 // --- Native FFI declarations ------------------------------------------------
 
+use std::string::{string_builder}
+
 extern {
     fn kryos_term_raw_enable() -> i32
     fn kryos_term_raw_disable() -> i32
@@ -407,12 +409,13 @@ fn write_at(col: i32, row: i32, text: str) -> bool {
 @capabilities(term)
 fn draw_hline(col: i32, row: i32, ch: str, length: i32) -> bool {
     cursor_move(col, row)
-    let mut line = ""
+    let lsb = string_builder()
     let mut i = 0
     while i < length {
-        line = line + ch
+        lsb.append(ch)
         i = i + 1
     }
+    let line = lsb.build()
     kryos_stdout_write(str_to_ptr(line), len(line))
     return true
 }
@@ -433,14 +436,15 @@ fn draw_vline(col: i32, row: i32, ch: str, height: i32) -> bool {
 @capabilities(term)
 fn draw_box(col: i32, row: i32, w: i32, h: i32) -> bool {
     // Top edge
-    let mut top = "\u250c"
+    let tsb = string_builder()
+    tsb.append("\u250c")
     let mut i = 0
     while i < w - 2 {
-        top = top + "\u2500"
+        tsb.append("\u2500")
         i = i + 1
     }
-    top = top + "\u2510"
-    write_at(col, row, top)
+    tsb.append("\u2510")
+    write_at(col, row, tsb.build())
 
     // Sides
     i = 1
@@ -451,14 +455,15 @@ fn draw_box(col: i32, row: i32, w: i32, h: i32) -> bool {
     }
 
     // Bottom edge
-    let mut bottom = "\u2514"
+    let bsb = string_builder()
+    bsb.append("\u2514")
     i = 0
     while i < w - 2 {
-        bottom = bottom + "\u2500"
+        bsb.append("\u2500")
         i = i + 1
     }
-    bottom = bottom + "\u2518"
-    write_at(col, row + h - 1, bottom)
+    bsb.append("\u2518")
+    write_at(col, row + h - 1, bsb.build())
 
     return true
 }

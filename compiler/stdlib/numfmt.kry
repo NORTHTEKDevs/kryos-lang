@@ -4,6 +4,8 @@
 // ============================================================
 
 /// Hex representation of n with "0x" prefix.
+use std::string::{string_builder}
+
 fn hex(n: i64) -> str {
     let digits = "0123456789abcdef"
     if n == 0 {
@@ -69,12 +71,15 @@ fn decimal_padded(n: i64, width: i64) -> str {
         if neg { return "-" + digits }
         return digits
     }
-    let mut pad: str = ""
+    // string_builder (O(width)): `width` is a caller-controlled i64, so the old
+    // `pad = pad + "0"` loop was O(width^2) -- a huge width value hangs.
+    let psb = string_builder()
     let mut i: i64 = 0
     while i < width - total {
-        pad = pad + "0"
+        psb.append("0")
         i = i + 1
     }
+    let pad = psb.build()
     if neg {
         return "-" + pad + digits
     }

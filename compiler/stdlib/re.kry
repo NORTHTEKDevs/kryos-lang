@@ -365,14 +365,14 @@ impl Regex {
 // in a groupless replacement pass through unchanged).
 fn _expand_groups(replacement: str, groups: [str]) -> str {
     let n = len(replacement)
-    let mut out = ""
+    let sb = string_builder()
     let mut i = 0
     while i < n {
         let ch = substr(replacement, i, i + 1)
         if ch == "$" and i + 1 < n {
             let nxt = substr(replacement, i + 1, i + 2)
             if nxt == "$" {
-                out = out + "$"
+                sb.append("$")
                 i = i + 2
             } elif char_code(nxt) >= 48 and char_code(nxt) <= 57 {
                 // Consume the LONGEST run of digits that still names a valid
@@ -393,23 +393,23 @@ fn _expand_groups(replacement: str, groups: [str]) -> str {
                     }
                 }
                 if matched {
-                    out = out + groups[idx]
+                    sb.append(groups[idx])
                     i = j
                 } else {
                     // No valid group index -> emit the "$" literally.
-                    out = out + "$"
+                    sb.append("$")
                     i = i + 1
                 }
             } else {
-                out = out + ch
+                sb.append(ch)
                 i = i + 1
             }
         } else {
-            out = out + ch
+            sb.append(ch)
             i = i + 1
         }
     }
-    return out
+    return sb.build()
 }
 
 // --- Public API: compile and match ------------------------------------------

@@ -11,6 +11,8 @@
 // ============================================================
 
 /// Level constants.
+use std::string::{string_builder}
+
 fn TRACE() -> i64 { return 0 }
 fn DEBUG() -> i64 { return 1 }
 fn INFO()  -> i64 { return 2 }
@@ -45,40 +47,40 @@ fn level_name(level: i64) -> str {
 /// new log line: a `"` closes the msg="..." field early and a newline starts a
 /// forged record (CWE-117 log injection). Escape both.
 fn _log_escape(s: str) -> str {
-    let mut out = ""
+    let sb = string_builder()
     let mut i = 0
     let n = len(s)
     while i < n {
         let ch = substr(s, i, i + 1)
         if ch == "\"" {
-            out = out + "\\\""
+            sb.append("\\\"")
         } elif ch == "\n" {
-            out = out + "\\n"
+            sb.append("\\n")
         } elif ch == "\r" {
-            out = out + "\\r"
+            sb.append("\\r")
         } else {
-            out = out + ch
+            sb.append(ch)
         }
         i = i + 1
     }
-    return out
+    return sb.build()
 }
 
 fn _log_strip_lines(s: str) -> str {
     // kv is caller-formatted structured data (key="value" pairs), so quotes are
     // structural and must NOT be escaped -- but an embedded CR/LF still forges a
     // new log line. Strip line breaks only.
-    let mut out = ""
+    let sb = string_builder()
     let mut i = 0
     let n = len(s)
     while i < n {
         let ch = substr(s, i, i + 1)
         if ch != "\n" and ch != "\r" {
-            out = out + ch
+            sb.append(ch)
         }
         i = i + 1
     }
-    return out
+    return sb.build()
 }
 
 fn emit(state: [i64], level: i64, msg: str, kv: str) {
