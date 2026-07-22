@@ -37,10 +37,11 @@ pub extern "C" fn kryos_regex_is_match(re: *mut u8, text_ptr: *const u8, text_le
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     if re.is_match(text) {
         1
     } else {
@@ -64,10 +65,11 @@ pub extern "C" fn kryos_regex_find(
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     match re.find(text) {
         Some(m) => {
             unsafe {
@@ -101,10 +103,11 @@ pub extern "C" fn kryos_regex_find_at(
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     let mut s = start as usize;
     if s > text.len() {
         return 0;
@@ -150,10 +153,11 @@ pub extern "C" fn kryos_regex_capture_at(
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     let mut s = start as usize;
     if s > text.len() {
         return 0;
@@ -207,10 +211,11 @@ pub extern "C" fn kryos_regex_replace_all(
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     let repl = unsafe { std::slice::from_raw_parts(repl_ptr, repl_len) };
     let repl = match std::str::from_utf8(repl) {
         Ok(s) => s,
@@ -258,10 +263,11 @@ pub extern "C" fn kryos_regex_capture(
     }
     let re = unsafe { &*(re as *const Regex) };
     let text = unsafe { std::slice::from_raw_parts(text_ptr, text_len) };
-    let text = match std::str::from_utf8(text) {
-        Ok(s) => s,
-        Err(_) => return -1,
-    };
+    // SAFETY: Kryos strings maintain the UTF-8 invariant, so validating the
+    // full text on EVERY call (find_all/replace_all/split invoke find_at /
+    // capture_at once per match) was a redundant O(n) revalidation -> O(n^2)
+    // total. from_utf8_unchecked makes each call O(1) validation.
+    let text = unsafe { std::str::from_utf8_unchecked(text) };
     if group_idx < 0 {
         return -1;
     }
