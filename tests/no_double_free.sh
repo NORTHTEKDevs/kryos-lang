@@ -82,6 +82,17 @@ no_df array_literal_str_idents \
     println(s1)
 }'
 
+# --- StringBuilder.build() called twice was a use-after-free of the freed
+# buffer (segfault). build() is now idempotent (2nd call returns ""). ---
+no_df stringbuilder_double_build \
+'use std::string::{string_builder}
+fn main() {
+    let sb = string_builder()
+    let sb2 = sb.append("one").append("-").append("two")
+    println(sb2.build())
+    println("[" + sb2.build() + "]")
+}'
+
 # --- plain catch-variable use (was already clean; guard against regressions) ---
 no_df catch_plain_println \
 'fn throw_it() { throw "boom" }

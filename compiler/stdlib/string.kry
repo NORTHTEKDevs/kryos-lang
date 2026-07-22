@@ -487,37 +487,64 @@ fn format(template: str, args: [str]) -> str {
 // invalid afterward (its buffer is freed).
 
 struct StringBuilder {
-    buf: i64
+    // A heap CELL (8 bytes) holding the actual KryosBuf handle -- one level of
+    // indirection so `build()` can null the SHARED handle. Struct methods take
+    // `self` by value, so writing `self.buf = 0` would not reach the caller's
+    // builder; writing THROUGH the shared cell pointer does. This makes a
+    // second `build()` a safe no-op (it sees the nulled handle and returns "")
+    // instead of a use-after-free of the already-freed buffer (which
+    // segfaulted). The buffer itself is still freed on the first build; only
+    // the 8-byte cell is not reclaimed (Kryos has no auto-drop for structs) --
+    // a small, bounded leak per builder, traded for eliminating the segfault.
+    cell: i64
 }
 
 fn string_builder() -> StringBuilder {
-    return StringBuilder { buf: buf_new(0) }
+    let c = alloc(8)
+    ptr_write_i64(c, 0, buf_new(0))
+    return StringBuilder { cell: c }
 }
 
 impl StringBuilder {
     /// Append a string chunk. Returns self for chaining.
     fn append(self: StringBuilder, s: str) -> StringBuilder {
-        buf_write_str(self.buf, s)
+        let b = ptr_read_i64(self.cell, 0)
+        if b != 0 {
+            buf_write_str(b, s)
+        }
         return self
     }
 
     /// Append a chunk followed by a newline. Returns self for chaining.
     fn append_line(self: StringBuilder, s: str) -> StringBuilder {
-        buf_write_str(self.buf, s)
-        buf_write_str(self.buf, "\n")
+        let b = ptr_read_i64(self.cell, 0)
+        if b != 0 {
+            buf_write_str(b, s)
+            buf_write_str(b, "\n")
+        }
         return self
     }
 
     /// Current byte length of the accumulated content.
     fn len(self: StringBuilder) -> i64 {
-        return buf_len(self.buf)
+        let b = ptr_read_i64(self.cell, 0)
+        if b == 0 {
+            return 0
+        }
+        return buf_len(b)
     }
 
     /// Materialize the accumulated string and free the builder's buffer.
-    /// Call exactly once; the builder must not be used afterward.
+    /// Idempotent: a second call safely returns "" (the builder is empty
+    /// after the first build), rather than a use-after-free.
     fn build(self: StringBuilder) -> str {
-        let out = buf_str(self.buf)
-        buf_free(self.buf)
+        let b = ptr_read_i64(self.cell, 0)
+        if b == 0 {
+            return ""
+        }
+        let out = buf_str(b)
+        buf_free(b)
+        ptr_write_i64(self.cell, 0, 0)
         return out
     }
 }
