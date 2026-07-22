@@ -16,6 +16,8 @@ use std::string::{find}
 
 // Read one or more chunks until the accumulated reply ends in a final
 // SMTP line ("NNN " -- space, not "NNN-" continuation) or reads stall.
+use std::string::{string_builder}
+
 fn _read_reply(tls: TlsStream) -> str {
     let mut acc = ""
     let mut tries = 0
@@ -93,6 +95,28 @@ fn _send_line(tls: TlsStream, line: str) -> str {
 // Send an email via SMTPS (implicit TLS, typically port 465) using
 // AUTH LOGIN. `from_addr` / `to_addr` are bare addresses (no angle
 // brackets). Returns "ok" or "error: ...".
+/// RFC 5321 5.8.1 dot-stuffing: on each DATA-body line beginning with ".",
+/// prepend an extra "." (the receiver strips it). Without this, an
+/// attacker-controlled body line of exactly "." is read as the end-of-DATA
+/// terminator, letting the body inject arbitrary SMTP commands (MAIL FROM /
+/// RCPT TO / ...) into the app's already-authenticated session.
+fn _dot_stuff(body: str) -> str {
+    let sb = string_builder()
+    let n = len(body)
+    let mut i = 0
+    let mut at_line_start = true
+    while i < n {
+        let ch = substr(body, i, i + 1)
+        if at_line_start and ch == "." {
+            sb.append(".")
+        }
+        sb.append(ch)
+        at_line_start = ch == "\n"
+        i = i + 1
+    }
+    return sb.build()
+}
+
 /// Strip CR and LF so an attacker-controlled address/subject cannot inject
 /// extra SMTP commands (RCPT TO, a silent Bcc) or header lines. Mirrors
 /// std::http::_strip_crlf. user/password are base64-encoded on the wire, so
@@ -177,14 +201,14 @@ fn send_mail(
         return "error: DATA " + data_r
     }
 
-    // Message: headers + blank line + body + terminator. A line that is
-    // exactly "." ends DATA; bodies starting a line with "." need dot-
-    // stuffing, omitted here for brevity (callers should avoid it).
+    // Message: headers + blank line + dot-stuffed body + terminator. The body
+    // MUST be dot-stuffed (RFC 5321 5.8.1) so a body line of "." cannot be read
+    // as the end-of-DATA terminator and inject SMTP commands into the session.
     let msg = "From: " + from_s + "\r\n" +
               "To: " + to_s + "\r\n" +
               "Subject: " + subject_s + "\r\n" +
               "\r\n" +
-              body + "\r\n" +
+              _dot_stuff(body) + "\r\n" +
               ".\r\n"
     tls.write_all(msg)
     let final_r = _read_reply(tls)

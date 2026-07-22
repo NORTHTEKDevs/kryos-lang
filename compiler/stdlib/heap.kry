@@ -40,13 +40,17 @@ fn pop_min(h: [i64]) -> [i64] {
     if n == 1 {
         return []
     }
-    let mut out = h
-    out[0] = out[n - 1]
-    // We can't shrink Kryos arrays in-place; build a new one of length n-1.
+    // Build the shrunk heap DIRECTLY from h, without `let mut out = h`. That
+    // alias (a function-parameter array assigned to a mutated local, then
+    // discarded while a different array is returned) is NOT freed by the AOT
+    // backend -> a catastrophic O(n^2) leak that OOM-crashes a full heap drain
+    // (~70k elements). std::queue::dequeue avoids the alias and does not leak;
+    // mirror it. Slot 0 gets the moved-up last element (h[n-1]).
     let mut shrunk: [i64] = []
-    let mut i: i64 = 0
+    shrunk = push(shrunk, h[n - 1])
+    let mut i: i64 = 1
     while i < n - 1 {
-        shrunk = push(shrunk, out[i])
+        shrunk = push(shrunk, h[i])
         i = i + 1
     }
     sift_down(shrunk, len(shrunk), 0)
