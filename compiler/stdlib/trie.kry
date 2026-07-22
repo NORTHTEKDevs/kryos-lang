@@ -7,6 +7,13 @@
 //
 // Functional API: every op returns a new trie. Convenient for small
 // dictionaries; for huge tries port to a hash-based variant.
+//
+// PERF: children are a linked SIBLING LIST, so locating a child is O(fan-out)
+// per character. A node with a WIDE fan-out (many keys sharing a prefix then
+// diverging) makes insert/lookup of the whole set O(keys * fan-out), which is
+// effectively O(n^2) for a large, wide dictionary (~40k keys measured at ~30s).
+// For a large key SET prefer std::set / std::collections; the hash-per-node
+// variant that would make this O(1)-per-char is backlogged.
 // ============================================================
 
 /// Empty trie. The root is a single node with no character.
