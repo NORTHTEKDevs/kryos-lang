@@ -279,6 +279,15 @@ fn _parse_string(p: Parser) -> ParseResult {
             parser = _advance(parser)
         }
         if ch != "\\" {
+            // RFC 8259: an unescaped control character (U+0000-U+001F) is
+            // invalid inside a JSON string -- it must be escaped (\n, \t,
+            // \uXXXX). Parse silently accepted raw control bytes while
+            // stringify escapes them (an asymmetric, non-round-tripping pair).
+            // A multibyte UTF-8 byte has char_code >= 0x80, so this only
+            // catches genuine control bytes.
+            if char_code(ch) < 32 {
+                throw "json: invalid unescaped control character (code " + to_string(char_code(ch)) + ") in string at position " + to_string(parser.pos)
+            }
             result = result + ch
             parser = _advance(parser)
         }

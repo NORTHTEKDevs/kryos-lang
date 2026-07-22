@@ -1,0 +1,50 @@
+// Conformance: json::parse must REJECT a raw unescaped control character
+// (U+0000-U+001F) inside a string per RFC 8259 -- it silently accepted them
+// while stringify escapes them (an asymmetric, non-round-tripping pair). An
+// escaped control char (\t) and normal JSON must still parse.
+use std::json::{parse, stringify}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // {"a":"x<TAB>y"} with a RAW tab (code 9) inside the string -> must throw.
+    let raw_ctrl = char_from(123) + char_from(34) + "a" + char_from(34) + ":" + char_from(34) + "x" + char_from(9) + "y" + char_from(34) + char_from(125)
+    let mut rejected = false
+    try {
+        let bad = parse(raw_ctrl)
+        rejected = false
+    } catch e {
+        rejected = true
+    }
+    expect(rejected, "json::parse rejects a raw unescaped control character (RFC 8259)")
+
+    // Same JSON with the tab \t-ESCAPED (backslash + t) -> must parse.
+    let bs = char_from(92)
+    let esc_ctrl = char_from(123) + char_from(34) + "a" + char_from(34) + ":" + char_from(34) + "x" + bs + "ty" + char_from(34) + char_from(125)
+    let mut esc_ok = false
+    try {
+        let good = parse(esc_ctrl)
+        esc_ok = true
+    } catch e {
+        esc_ok = false
+    }
+    expect(esc_ok, "json::parse accepts an escaped control char")
+
+    // Normal JSON unaffected.
+    let normal = char_from(123) + char_from(34) + "n" + char_from(34) + ":" + "42" + char_from(125)
+    let mut normal_ok = false
+    try {
+        let r = parse(normal)
+        normal_ok = true
+    } catch e {
+        normal_ok = false
+    }
+    expect(normal_ok, "json::parse accepts normal JSON")
+
+    println("conformance json control: PASS")
+}
