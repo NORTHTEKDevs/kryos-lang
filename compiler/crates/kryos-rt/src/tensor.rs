@@ -184,9 +184,13 @@ pub unsafe extern "C" fn kryos_tensor_arange(
     end_bits: i64,
     step_bits: i64,
 ) -> i64 {
-    let start = f64::from_bits(start_bits as u64);
-    let end = f64::from_bits(end_bits as u64);
-    let step_raw = f64::from_bits(step_bits as u64);
+    // The std::tensor wrapper (and the docs) pass start/end/step as plain i64
+    // integers, NOT f64 bit patterns -- reading them via f64::from_bits decoded
+    // 0/5/1 as subnormal garbage (~1e-322), so every element came out ~0. Read
+    // them as integers and widen to f64 for the (f64-valued) sequence.
+    let start = start_bits as f64;
+    let end = end_bits as f64;
+    let step_raw = step_bits as f64;
     let step = if step_raw == 0.0 { 1.0 } else { step_raw };
     let n = ((end - start) / step).ceil().max(0.0) as usize;
     let shape = [n as i64];
@@ -540,8 +544,19 @@ pub unsafe extern "C" fn kryos_tensor_matmul(a: i64, b: i64) -> i64 {
 pub unsafe extern "C" fn kryos_tensor_transpose(h: i64) -> i64 {
     let t = as_tensor(h);
     if (*t).ndim != 2 {
-        return h;
-    } // only 2D
+        // A non-2D transpose is a no-op on the data, but returning the INPUT
+        // handle ALIASES it: the caller then tensor_free()s both the original
+        // and the "transpose", double-freeing the same allocation (crash).
+        // Return an independent copy so each handle owns its own buffer.
+        let ndim = (*t).ndim as usize;
+        let shape: Vec<i64> = (0..ndim).map(|i| *(*t).shape.add(i)).collect();
+        let out = alloc_tensor(&shape);
+        let numel = (*t).numel as usize;
+        for i in 0..numel {
+            *(*out).data.add(i) = *(*t).data.add(i);
+        }
+        return out as i64;
+    } // only 2D transposes the layout
     let rows = *(*t).shape as usize;
     let cols = *(*t).shape.add(1) as usize;
     let shape = [cols as i64, rows as i64];
@@ -664,8 +679,14 @@ pub unsafe extern "C" fn kryos_tensor_cross_entropy(logits: i64, targets: i64) -
     let probs_h = kryos_tensor_softmax(logits, -1);
     let tl = as_tensor(logits);
     let tt = as_tensor(targets);
-    let batch = *(*tl).shape as usize;
-    let classes = *(*tl).shape.add(1) as usize;
+    // 1D logits are a single sample of `shape[0]` classes. Reading shape.add(1)
+    // unconditionally read PAST the 1-element shape array -> garbage `classes`
+    // and an out-of-bounds data index -> SIGSEGV. Guard on ndim.
+    let (batch, classes) = if (*tl).ndim >= 2 {
+        (*(*tl).shape as usize, *(*tl).shape.add(1) as usize)
+    } else {
+        (1usize, *(*tl).shape as usize)
+    };
     let probs = as_tensor(probs_h);
     let mut loss = 0.0f64;
     for b in 0..batch {

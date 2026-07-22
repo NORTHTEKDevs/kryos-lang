@@ -1,0 +1,40 @@
+// Conformance: std::tensor native runtime correctness.
+// - tensor_arange read its i64 args as f64 BITS -> subnormal garbage (~0).
+// - tensor_cross_entropy read shape.add(1) on 1D logits -> OOB -> SIGSEGV.
+// - tensor_transpose aliased the input handle for non-2D -> tensor_free double-free.
+use std::tensor::{tensor_arange, tensor_get, tensor_numel, tensor_from_data, tensor_mse_loss, tensor_cross_entropy, tensor_transpose, tensor_free}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn near(a: f64, b: f64) -> bool {
+    let d = a - b
+    return d < 0.0001 and d > -0.0001
+}
+
+fn main() {
+    let ar = tensor_arange(0, 5, 1)
+    expect(tensor_numel(ar) == 5, "arange numel")
+    expect(near(tensor_get(ar, 0), 0.0) and near(tensor_get(ar, 2), 2.0) and near(tensor_get(ar, 4), 4.0), "arange produces the integer sequence (was subnormal garbage)")
+
+    let a = tensor_from_data([1.0, 2.0, 3.0, 4.0], [4])
+    let b = tensor_from_data([5.0, 6.0, 7.0, 8.0], [4])
+    expect(near(tensor_mse_loss(a, b), 16.0), "mse_loss matches the documented 16.0")
+
+    let logits1d = tensor_from_data([1.0, 2.0, 3.0], [3])
+    let tgt1d = tensor_from_data([2.0, 0.0, 0.0], [3])
+    let ce = tensor_cross_entropy(logits1d, tgt1d)
+    expect(ce > 0.0, "cross_entropy on 1D logits does not segfault and returns a positive loss")
+
+    let v = tensor_from_data([1.0, 2.0, 3.0], [3])
+    let vt = tensor_transpose(v)
+    expect(tensor_numel(vt) == 3, "transpose of a 1D tensor keeps its elements")
+    tensor_free(v)
+    tensor_free(vt)
+
+    println("conformance tensor: PASS")
+}
