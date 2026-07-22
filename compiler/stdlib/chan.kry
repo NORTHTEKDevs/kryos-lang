@@ -269,45 +269,64 @@ fn pipe(source: Channel, dest: Channel) -> void {
 
 // --- WaitGroup ---------------------------------------------------------------
 
+// The counter lives in a heap CELL (a raw i64 slot), NOT a plain struct field.
+// A `spawn` block DEEP-COPIES its captured WaitGroup, so a plain `count: i64`
+// field gave every worker thread its OWN private counter (each started at N and
+// decremented to N-1) -- the shared count never reached 0 for more than one
+// worker, `wg_done`'s `if new_count == 0` never fired, and `wg_wait` blocked
+// forever (deadlock for any worker count > 1). The `count_cell` pointer is a
+// scalar copied by value across the spawn deep-copy, so every worker shares the
+// SAME cell; `lock_ch` (a buffered(1) channel pre-seeded with one token) is a
+// channel-based mutex making the read-modify-write of the shared count atomic
+// across threads (channels are already thread-safe native queues). The 8-byte
+// cell is not reclaimed (no struct auto-drop) -- a small bounded per-group leak.
 struct WaitGroup {
-    count: i64,
+    count_cell: i64,
+    lock_ch: Channel,
     done_ch: Channel
 }
 
 /// Create a new WaitGroup.
 fn new_wait_group() -> WaitGroup {
+    let cell = alloc(8)
+    ptr_write_i64(cell, 0, 0)
+    let lk = buffered(1)
+    send(lk.raw, 1)
     return WaitGroup {
-        count: 0,
+        count_cell: cell,
+        lock_ch: lk,
         done_ch: buffered(1)
     }
 }
 
 /// Add n to the WaitGroup counter. Call before spawning work.
 fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
-    let new_count = wg.count + n
-    return WaitGroup {
-        count: new_count,
-        done_ch: wg.done_ch
-    }
+    recv(wg.lock_ch.raw)
+    ptr_write_i64(wg.count_cell, 0, ptr_read_i64(wg.count_cell, 0) + n)
+    send(wg.lock_ch.raw, 1)
+    return wg
 }
 
 /// Signal that one unit of work is done. Decrements the counter.
 /// When the counter reaches zero, send on done_ch to unblock waiters.
 fn wg_done(wg: WaitGroup) -> WaitGroup {
-    let new_count = wg.count - 1
+    recv(wg.lock_ch.raw)
+    let new_count = ptr_read_i64(wg.count_cell, 0) - 1
+    ptr_write_i64(wg.count_cell, 0, new_count)
+    send(wg.lock_ch.raw, 1)
     assert(new_count >= 0, "chan: WaitGroup counter went negative")
     if new_count == 0 {
         send(wg.done_ch.raw, 1)
     }
-    return WaitGroup {
-        count: new_count,
-        done_ch: wg.done_ch
-    }
+    return wg
 }
 
 /// Block until the WaitGroup counter reaches zero.
 fn wg_wait(wg: WaitGroup) -> void {
-    if wg.count <= 0 {
+    recv(wg.lock_ch.raw)
+    let c = ptr_read_i64(wg.count_cell, 0)
+    send(wg.lock_ch.raw, 1)
+    if c <= 0 {
         return
     }
     recv(wg.done_ch.raw)
