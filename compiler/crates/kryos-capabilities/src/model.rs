@@ -422,8 +422,16 @@ pub fn required_capability_for_native_symbol(sym: &str) -> Option<Capability> {
         "dir_create" | "dir_remove" | "file_remove" | "fs_delete" | "file_append" => {
             Some(Capability::FsWrite)
         }
-        // fs:read — enumerate/open/stat on disk
-        "dir_list" | "dir_walk" | "file_open" | "fs_exists" => Some(Capability::FsRead),
+        // fs:read — enumerate/stat on disk
+        "dir_list" | "dir_walk" | "fs_exists" => Some(Capability::FsRead),
+        // NOTE: `file_open` is NEUTRAL and stays ambient. Opening a file handle
+        // (with a read/write/append mode arg) carries no authority by itself --
+        // the actual read is `kryos_file_read` (fs:read) and the actual write is
+        // `kryos_file_write` (fs:write), both gated above. Mapping file_open to
+        // fs:read made std::fs::write_file / append_file (which open with a
+        // WRITE mode) demand fs:read, so a caller declaring fs:write could not
+        // use them at all (they were uncallable under every declaration,
+        // including a shipped example).
         // net:http — the outbound-HTTP natives whose bare name isn't in the table
         "https_get" | "http_request" | "http2_get" | "http2_post" | "http2_request" => {
             Some(Capability::NetHttp)

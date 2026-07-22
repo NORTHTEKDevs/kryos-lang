@@ -299,6 +299,27 @@ want_pass cap_self_shadow_pure_fn \
 'fn add(a: i64, b: i64) -> i64 { return a + b }
 fn main() { let add = add  println(to_string(add(2, 3))) }'
 
+# --- std::fs write helpers must be CALLABLE with fs:write ---------------------
+# write_file / append_file open the file with a WRITE mode via the neutral
+# kryos_file_open extern. Mapping file_open to fs:read made them demand fs:read,
+# so a caller declaring fs:write could not use them at all (uncallable under
+# every declaration). Opening is neutral; the write authority is kryos_file_write.
+want_pass stdlib_write_file_fs_write \
+'use std::fs::{write_file}
+@capabilities(fs:write)
+fn main() { write_file("/tmp/kx_probe", "d") }'
+
+want_pass stdlib_append_file_fs_write \
+'use std::fs::{append_file}
+@capabilities(fs:write)
+fn main() { append_file("/tmp/kx_probe", "d") }'
+
+# ...and read_file still requires fs:read (opening for read is neutral, but the
+# actual kryos_file_read carries the authority).
+want_reject stdlib_read_file_needs_read \
+'use std::fs::{read_file}
+fn main() { let s = read_file("/tmp/kx_probe")  println(s) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else
