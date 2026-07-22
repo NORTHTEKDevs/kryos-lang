@@ -7869,11 +7869,27 @@ impl LlvmCodegen {
                 };
 
                 let vtable_key = (concrete_type.clone(), trait_name.clone());
-                let method_names = self
+                let mut method_names = self
                     .trait_vtables
                     .get(&vtable_key)
                     .cloned()
                     .unwrap_or_default();
+                // A monomorphized generic struct (`Wrap___i64`) uses the vtable
+                // registered under its BASE name (`Wrap`) -- `impl<T> Trait for
+                // Wrap<T>` registers once under the generic base. Retry under the
+                // demangled base so the fat-pointer function slots are
+                // initialized (else an uninitialized fn pointer -> SIGSEGV).
+                if method_names.is_empty() {
+                    if let Some(base) = concrete_type.split("___").next() {
+                        if base != concrete_type {
+                            method_names = self
+                                .trait_vtables
+                                .get(&(base.to_string(), trait_name.clone()))
+                                .cloned()
+                                .unwrap_or_default();
+                        }
+                    }
+                }
                 let num_methods = method_names.len().max(1);
                 let alloc_size = 8 + 8 * num_methods;
 

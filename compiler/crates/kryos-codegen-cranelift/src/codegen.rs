@@ -5884,11 +5884,29 @@ fn translate_rvalue<M: Module>(
 
             // Look up the trait method(s) for this concrete type.
             let vtable_key = (concrete_type.clone(), trait_name.clone());
-            let method_names = translator
+            let mut method_names = translator
                 .mir_module_trait_methods
                 .get(&vtable_key)
                 .cloned()
                 .unwrap_or_default();
+            // A MONOMORPHIZED generic struct (`Wrap___i64`) uses the vtable
+            // registered under its BASE name (`Wrap`): `impl<T> Trait for
+            // Wrap<T>` registers the impl once under the generic base, not per
+            // instantiation. Without this fallback the lookup returned an empty
+            // method list, the fat pointer's function slot was left as
+            // uninitialized malloc memory, and the vtable call jumped through
+            // garbage -> SIGSEGV. Retry under the demangled base name.
+            if method_names.is_empty() {
+                if let Some(base) = concrete_type.split("___").next() {
+                    if base != concrete_type {
+                        method_names = translator
+                            .mir_module_trait_methods
+                            .get(&(base.to_string(), trait_name.clone()))
+                            .cloned()
+                            .unwrap_or_default();
+                    }
+                }
+            }
 
             // Heap-allocate fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
             let num_methods = method_names.len().max(1) as u32;

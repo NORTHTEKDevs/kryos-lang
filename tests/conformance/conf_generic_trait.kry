@@ -46,5 +46,25 @@ fn main() {
     expect(b.first() == 5, "generic trait T param+return: first")
     expect(b.combine(10) == 15, "generic trait T param+return: combine")
 
+    // A monomorphized generic struct passed as a dyn Trait (Wrap<i64> as dyn
+    // Describe) must vtable-dispatch correctly. Was: the vtable was keyed by the
+    // monomorphized name (Wrap___i64) but the impl registered under the base
+    // (Wrap), leaving an uninitialized fn pointer -> SIGSEGV; and a field-using
+    // trait method had no erased base copy -> link failure.
+    expect(show_desc(GDWrap { v: 42 }) == "gd(42)", "generic struct as dyn Trait (field-using method)")
+    let gdd: dyn Describe = GDWrap { v: 7 }
+    expect(gdd.describe() == "gd(7)", "generic struct in a dyn local")
+    // ...and a DIRECT call on a str instantiation still stringifies correctly
+    // (routes to the monomorphized copy, not the erased-i64 dyn copy).
+    let gds: GDWrap<str> = GDWrap { v: "hi" }
+    expect(gds.describe() == "gd(hi)", "direct call on a str generic keeps the real value")
+
     println("conformance generic-trait: PASS")
 }
+
+trait Describe { fn describe(self: Self) -> str }
+struct GDWrap<T> { v: T }
+impl<T> Describe for GDWrap<T> {
+    fn describe(self: GDWrap<T>) -> str { return "gd(" + to_string(self.v) + ")" }
+}
+fn show_desc(d: dyn Describe) -> str { return d.describe() }

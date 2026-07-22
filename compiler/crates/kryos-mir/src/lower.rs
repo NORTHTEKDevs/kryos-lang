@@ -1826,7 +1826,22 @@ pub fn lower_module_with_lambda_params(
                         // plain `has_self` bare `-> T` method is NOT in the
                         // map and correctly falls through to the unconditional
                         // single-lowered-copy path below (unchanged fast path).
+                        // A generic impl method registered as a monomorphization
+                        // template is normally NOT lowered once here (its call
+                        // sites monomorphize on demand). EXCEPTION: a TRAIT impl
+                        // method also needs its ERASED single copy under the base
+                        // mangled name (`Wrap__describe`), because a dyn-Trait
+                        // vtable for a monomorphized generic struct (`Wrap___i64`)
+                        // references that base name (see MakeTraitObject's base-
+                        // name fallback in codegen). Without the erased copy the
+                        // vtable's function symbol was undefined -> link failure
+                        // (and, before the fallback, an uninitialized fn pointer
+                        // -> SIGSEGV). Direct calls still route to the
+                        // monomorphized copy; only dyn dispatch uses this erased
+                        // one (i64-correct; a non-i64 generic field via dyn is a
+                        // narrow residual, better than a link error).
                         if !impl_generics.is_empty()
+                            && trait_name.is_none()
                             && ctx
                                 .generic_impl_fn_templates
                                 .contains_key(&(target.clone(), name.clone()))
