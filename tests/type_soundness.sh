@@ -993,6 +993,23 @@ actor Worker { n: i64,  fn bump(self) { self.n = self.n + 1  println("ok") } }
 struct Holder { w: Worker }
 fn main() { let h = Holder { w: Worker() }  h.w.bump() }
 '
+# A @pure function calling an IMPURE function through a fn-typed value (a param
+# or a returned/inline closure) bypassed the purity check -- the side effect ran
+# and the fn was still marked pure. Reject the indirect call (unverifiable
+# callee); direct calls to pure functions still work.
+want_reject pure_indirect_impure '
+@pure
+fn apply(f: fn() -> i64) -> i64 { return f() }
+fn do_impure() -> i64 { println("SIDE EFFECT")  return 1 }
+fn main() { println(to_string(apply(do_impure))) }
+'
+want_pass pure_direct_pure '
+@pure
+fn helper(x: i64) -> i64 { return x + 1 }
+@pure
+fn use_it(x: i64) -> i64 { return helper(x) * 2 }
+fn main() { println(to_string(use_it(5))) }
+'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

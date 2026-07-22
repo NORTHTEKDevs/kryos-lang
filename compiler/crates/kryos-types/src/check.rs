@@ -240,6 +240,25 @@ impl TypeChecker {
             );
             return;
         }
+        // An INDIRECT call through a fn-typed VALUE (`f()` where `f` is a
+        // function parameter or a local holding a closure, not a named
+        // function) has an unverifiable callee -- it could be impure. A @pure
+        // function calling one silently ran the side effect (check passed, run
+        // did the I/O, and the enclosing fn was still marked pure -> a CSE/dead-
+        // call miscompile). Reject it, like method/static dispatch, to keep
+        // @pure sound. (Kryos has no "pure fn" parameter type to verify against,
+        // so the conservative rejection is the only sound choice.)
+        if let Some(vty) = self.env.lookup_var(name).cloned() {
+            if matches!(self.engine.resolve(&vty), Type::Function { .. }) {
+                self.error(
+                    format!(
+                        "`@pure` function cannot call through the function value `{name}` -- the callee's purity cannot be verified"
+                    ),
+                    span,
+                );
+                return;
+            }
+        }
         if self.pure_functions.contains(name) {
             return;
         }
@@ -3702,6 +3721,16 @@ impl TypeChecker {
                 if self.in_pure_function {
                     if let Some(ref name) = callee_name_str {
                         self.check_pure_free_call(name, *span);
+                    } else {
+                        // A callee that is not a plain name -- an inline/returned
+                        // closure or an indexed/field function value invoked
+                        // directly -- is an indirect call whose purity cannot be
+                        // verified. Reject it in a @pure fn (same reasoning as a
+                        // fn-typed variable in check_pure_free_call).
+                        self.error(
+                            "`@pure` function cannot call through an unnamed function value -- the callee's purity cannot be verified".to_string(),
+                            *span,
+                        );
                     }
                 }
 
