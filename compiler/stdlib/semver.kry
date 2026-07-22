@@ -46,7 +46,11 @@ fn parse(s: str) -> Version {
     // Reject any non-numeric segment (e.g. an extra ".4": pat_s would be
     // "3.4", which parse_int silently truncated to 0). A valid core has
     // exactly three numeric segments.
-    if not is_all_digits(maj_s) or not is_all_digits(min_s) or not is_all_digits(pat_s) {
+    // Also reject a numeric segment too long to fit i64 (>= 19 digits can
+    // exceed i64::MAX; parse_int PANICS on overflow, breaking the documented
+    // "malformed input returns major=-1, never throws" contract). 18 digits
+    // (<= 1e18) always fits; that is a far larger version number than real.
+    if not is_all_digits(maj_s) or len(maj_s) > 18 or not is_all_digits(min_s) or len(min_s) > 18 or not is_all_digits(pat_s) or len(pat_s) > 18 {
         return Version { major: -1, minor: 0, patch: 0, has_pre: false, pre: "" }
     }
     return Version {

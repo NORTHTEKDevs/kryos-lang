@@ -369,26 +369,35 @@ fn try_acquire(sem: Semaphore) -> bool {
 // --- Once (run-once primitive) -----------------------------------------------
 
 struct Once {
-    done: bool,
-    result: i64
+    // State in a heap CELL ([done(0/1), result]) so it is SHARED across the
+    // by-value struct copy the callee receives. Plain `done: bool` fields were
+    // mutated on the callee's copy and lost on the AOT backend (the caller's
+    // Once still saw done=false), so call_once re-ran the callback on the
+    // second call -- a JIT/AOT divergence that silently broke Once semantics.
+    // An array handle is shared shallowly on both backends, so writes through
+    // it reach the caller. Mirrors the WaitGroup heap-cell fix.
+    cell: [i64]
 }
 
 /// Create a new Once.
 fn new_once() -> Once {
-    return Once { done: false, result: 0 }
+    let mut c: [i64] = []
+    c = push(c, 0)
+    c = push(c, 0)
+    return Once { cell: c }
 }
 
 /// Execute a function exactly once. Subsequent calls return the
 /// cached result. (Not currently atomic across spawn-tasks; use
 /// a semaphore or external mutex for cross-task once semantics.)
 fn call_once(once: Once, f: fn) -> i64 {
-    if once.done {
-        return once.result
+    if once.cell[0] == 1 {
+        return once.cell[1]
     }
     let result = f()
-    once.result = result
-    once.done = true
-    return once.result
+    once.cell[1] = result
+    once.cell[0] = 1
+    return once.cell[1]
 }
 
 // --- Producer/Consumer helpers -----------------------------------------------

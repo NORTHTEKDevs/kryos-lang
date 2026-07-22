@@ -74,6 +74,9 @@ impl Stream {
     fn skip(self: Stream, n: i64) -> Stream {
         let mut result = []
         let mut i = n
+        if i < 0 {
+            i = 0
+        }
         while i < self.count {
             result = push(result, self.data[i])
             i = i + 1

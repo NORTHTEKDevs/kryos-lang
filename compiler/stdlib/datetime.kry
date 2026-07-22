@@ -89,7 +89,10 @@ impl Duration {
         if minutes > 0 {
             result = result + to_string(minutes) + "m"
         }
-        if seconds > 0 or (hours == 0 and minutes == 0) {
+        // Also emit the seconds+ms block when there is a sub-second remainder,
+        // even on an exact minute/hour boundary (seconds == 0). Otherwise
+        // 60123ms rendered as "1m", dropping the 123ms.
+        if seconds > 0 or ms > 0 or (hours == 0 and minutes == 0) {
             result = result + to_string(seconds)
             if ms > 0 {
                 result = result + "." + _pad_left(to_string(ms), 3, "0")
@@ -326,6 +329,22 @@ fn from_timestamp(epoch_secs: i64) -> DateTime {
 
     // Calculate year
     let mut year = 1970
+    // Fast-forward whole 400-year Gregorian cycles first (each is EXACTLY
+    // 146097 days regardless of start year, so the jump is exact). Without
+    // this the year-by-year loops below are O(number of years), so a large
+    // epoch (near i64::MAX) hung the process for hours. This bounds the
+    // residual loops to at most ~400 iterations.
+    let secs_per_400y = 12622780800
+    if remaining < 0 {
+        let cycles = (0 - remaining) / secs_per_400y + 1
+        year = year - cycles * 400
+        remaining = remaining + cycles * secs_per_400y
+    }
+    if remaining >= secs_per_400y {
+        let cycles = remaining / secs_per_400y
+        year = year + cycles * 400
+        remaining = remaining - cycles * secs_per_400y
+    }
     // Pre-epoch (negative) timestamps: walk years backward, borrowing a full
     // year of seconds each step, until `remaining` is non-negative. Without this
     // the forward loop below exited immediately at 1970 and propagated a negative

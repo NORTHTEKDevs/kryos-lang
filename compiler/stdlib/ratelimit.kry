@@ -41,8 +41,17 @@ fn refill(state: [i64], now_nanos: i64) {
     if rate <= 0 { return }
     let elapsed = now_nanos - state[3]
     if elapsed <= 0 { return }
+    // Cap elapsed before multiplying: `rate * elapsed` overflows i64 for a high
+    // rate * long idle and wraps to a negative `add`, corrupting the token
+    // count. The bucket saturates at capacity, so any elapsed beyond the time
+    // needed to overfill by one token adds nothing more -- clamp to it.
+    let max_useful_ns = ((state[0] + 1) * 1000000000) / rate
+    let mut eff = elapsed
+    if eff > max_useful_ns {
+        eff = max_useful_ns
+    }
     // tokens to add = (refill_per_sec * elapsed) / 1_000_000_000
-    let add = (rate * elapsed) / 1000000000
+    let add = (rate * eff) / 1000000000
     let new_tokens = state[1] + add
     if new_tokens >= state[0] {
         // Bucket full: reset the baseline to now.

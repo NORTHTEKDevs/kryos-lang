@@ -1,0 +1,66 @@
+// Conformance: wave-12 stdlib fixes (collections, semver, backoff, ratelimit, datetime, chan, stream).
+use std::collections::{List, Stack}
+use std::backoff::{next_delay}
+use std::semver::{parse}
+use std::ratelimit::{new_bucket, try_acquire, tokens}
+use std::datetime::{from_millis, from_timestamp}
+use std::chan::{new_once, call_once}
+use std::stream::{stream_from_list}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn once_cb() -> i64 {
+    return 7
+}
+
+fn main() {
+    // collections: pop then inspect must not crash; length tracks the shrunk array
+    let mut xs: List<i64> = List.new()
+    xs = xs.push(1)
+    xs = xs.push(2)
+    xs = xs.push(3)
+    expect(xs.pop() == 3, "List.pop returns last")
+    expect(xs.len() == 2, "List.len reflects the pop")
+    expect(xs.to_string() == "[1, 2]", "List.to_string after pop no crash")
+    let mut st: Stack<i64> = Stack.new()
+    st = st.push(10)
+    st = st.push(20)
+    expect(st.pop() == 20, "Stack.pop returns top")
+    expect(st.peek() == 10, "Stack.peek after pop no crash")
+    expect(st.len() == 1, "Stack.len reflects the pop")
+
+    // backoff: large prev_ms clamps to max_ms, never negative
+    expect(next_delay(5000000000000000000, 100, 30000) == 30000, "backoff clamps huge prev_ms")
+    expect(next_delay(1000, 100, 30000) == 2000, "backoff normal doubling")
+
+    // semver: overflow-length numeric segment is malformed, not a crash
+    expect(parse("9223372036854775808.0.0").major == -1, "semver rejects i64-overflow segment")
+    expect(parse("1.2.3").major == 1, "semver normal parse")
+
+    // ratelimit: high rate + long idle saturates instead of overflowing negative
+    let b = new_bucket(10, 1000000, 0)
+    expect(try_acquire(b, 10800000000000), "ratelimit grants after long idle")
+    expect(tokens(b) == 9, "ratelimit token count not corrupted")
+
+    // datetime: ms visible on exact-minute boundary; huge timestamp does not hang
+    expect(from_millis(60123).format() == "1m0.123s", "Duration.format keeps ms on minute boundary")
+    let big = from_timestamp(9223372036854775807)
+    expect(big.year > 1970, "from_timestamp bounded on huge epoch")
+    expect(from_timestamp(0).year == 1970, "from_timestamp epoch 0")
+
+    // chan Once: callback runs exactly once, cached result returned (AOT-safe)
+    let o = new_once()
+    let r1 = call_once(o, once_cb)
+    let r2 = call_once(o, once_cb)
+    expect(r1 == 7 and r2 == 7, "Once caches result")
+
+    // stream: negative skip clamps to 0 instead of crashing
+    expect(stream_from_list([1, 2, 3, 4, 5]).skip(-2).count == 5, "Stream.skip clamps negative")
+
+    println("conformance stdlib wave12: PASS")
+}

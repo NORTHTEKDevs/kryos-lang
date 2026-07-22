@@ -88,13 +88,13 @@ impl<T> List<T> {
     /// Append a value to the end, returning the new list.
     fn push(self: List<T>, val: T) -> List<T> {
         let nd = push(self.data, val)
-        return List { data: nd, length: self.length + 1 }
+        return List { data: nd, length: len(self.data) + 1 }
     }
 
     /// Remove and return the last element. Throws if empty.
     /// (See module note on the in-place mutation model.)
     fn pop(self: List<T>) -> T {
-        if self.length == 0 {
+        if len(self.data) == 0 {
             throw "List.pop: empty list"
         }
         let mut d = self.data
@@ -103,7 +103,7 @@ impl<T> List<T> {
 
     /// Get the element at index. Throws if out of bounds.
     fn get(self: List<T>, index: i64) -> T {
-        if index < 0 or index >= self.length {
+        if index < 0 or index >= len(self.data) {
             throw "List.get: index out of bounds"
         }
         return self.data[index]
@@ -111,28 +111,28 @@ impl<T> List<T> {
 
     /// Set the element at index, returning the new list. Throws if OOB.
     fn set(self: List<T>, index: i64, val: T) -> List<T> {
-        if index < 0 or index >= self.length {
+        if index < 0 or index >= len(self.data) {
             throw "List.set: index out of bounds"
         }
         self.data[index] = val
-        return List { data: self.data, length: self.length }
+        return List { data: self.data, length: len(self.data) }
     }
 
     /// Number of elements.
     fn len(self: List<T>) -> i64 {
-        return self.length
+        return len(self.data)
     }
 
     /// True if the list has no elements.
     fn is_empty(self: List<T>) -> bool {
-        return self.length == 0
+        return len(self.data) == 0
     }
 
     /// True if the list contains the given value (i64-slot equality;
     /// pointer identity for non-i64 element types).
     fn contains(self: List<T>, val: T) -> bool {
         let mut i = 0
-        while i < self.length {
+        while i < len(self.data) {
             if self.data[i] == val {
                 return true
             }
@@ -144,7 +144,7 @@ impl<T> List<T> {
     /// First index of a value, or -1.
     fn index_of(self: List<T>, val: T) -> i64 {
         let mut i = 0
-        while i < self.length {
+        while i < len(self.data) {
             if self.data[i] == val {
                 return i
             }
@@ -155,7 +155,7 @@ impl<T> List<T> {
 
     /// Insert a value at index, shifting elements right. Returns a new list.
     fn insert(self: List<T>, index: i64, val: T) -> List<T> {
-        if index < 0 or index > self.length {
+        if index < 0 or index > len(self.data) {
             throw "List.insert: index out of bounds"
         }
         let mut nd: [T] = []
@@ -165,27 +165,27 @@ impl<T> List<T> {
             i = i + 1
         }
         nd = push(nd, val)
-        while i < self.length {
+        while i < len(self.data) {
             nd = push(nd, self.data[i])
             i = i + 1
         }
-        return List { data: nd, length: self.length + 1 }
+        return List { data: nd, length: len(self.data) + 1 }
     }
 
     /// Remove the element at index, shifting elements left. Returns a new list.
     fn remove(self: List<T>, index: i64) -> List<T> {
-        if index < 0 or index >= self.length {
+        if index < 0 or index >= len(self.data) {
             throw "List.remove: index out of bounds"
         }
         let mut nd: [T] = []
         let mut i = 0
-        while i < self.length {
+        while i < len(self.data) {
             if i != index {
                 nd = push(nd, self.data[i])
             }
             i = i + 1
         }
-        return List { data: nd, length: self.length - 1 }
+        return List { data: nd, length: len(self.data) - 1 }
     }
 
     /// Sub-list from start (inclusive) to end (exclusive). Returns a new list.
@@ -193,7 +193,7 @@ impl<T> List<T> {
         let mut a = start
         let mut b = end
         if a < 0 { a = 0 }
-        if b > self.length { b = self.length }
+        if b > len(self.data) { b = len(self.data) }
         if a >= b {
             return List.new()
         }
@@ -209,12 +209,12 @@ impl<T> List<T> {
     /// Reverse the list. Returns a new list.
     fn reverse(self: List<T>) -> List<T> {
         let mut nd: [T] = []
-        let mut i = self.length - 1
+        let mut i = len(self.data) - 1
         while i >= 0 {
             nd = push(nd, self.data[i])
             i = i - 1
         }
-        return List { data: nd, length: self.length }
+        return List { data: nd, length: len(self.data) }
     }
 
     /// Remove all elements. Returns a new empty list.
@@ -231,7 +231,7 @@ impl<T> List<T> {
     fn to_string(self: List<T>) -> str {
         let mut result = "["
         let mut i = 0
-        while i < self.length {
+        while i < len(self.data) {
             if i > 0 {
                 result = result + ", "
             }
@@ -450,12 +450,12 @@ impl<T> Stack<T> {
     /// Push a value onto the top, returning the new stack.
     fn push(self: Stack<T>, val: T) -> Stack<T> {
         let nd = push(self.data, val)
-        return Stack { data: nd, length: self.length + 1 }
+        return Stack { data: nd, length: len(self.data) + 1 }
     }
 
     /// Pop the top value. Throws if empty. (See module note on mutation.)
     fn pop(self: Stack<T>) -> T {
-        if self.length == 0 {
+        if len(self.data) == 0 {
             throw "Stack.pop: empty stack"
         }
         let mut d = self.data
@@ -464,20 +464,20 @@ impl<T> Stack<T> {
 
     /// View the top value without removing it.
     fn peek(self: Stack<T>) -> T {
-        if self.length == 0 {
+        if len(self.data) == 0 {
             throw "Stack.peek: empty stack"
         }
-        return self.data[self.length - 1]
+        return self.data[len(self.data) - 1]
     }
 
     /// Number of elements.
     fn len(self: Stack<T>) -> i64 {
-        return self.length
+        return len(self.data)
     }
 
     /// True if the stack is empty.
     fn is_empty(self: Stack<T>) -> bool {
-        return self.length == 0
+        return len(self.data) == 0
     }
 
     /// Remove all elements. Returns a new empty stack.
