@@ -190,5 +190,26 @@ fn main() {
     let mw_u2: u16 = 100
     expect(mw_s2 * mw_u2 == 65336, "i8(-2) * u16(100) = -200 wrapped into u16 (65336)")
 
+    // A narrow-int operand combined with a bare LITERAL keeps the narrow width,
+    // so overflow WRAPS consistently whether the result is stored to a narrow
+    // slot OR used directly (comparison / to_string / call). Was: `u8 255 + 1`
+    // gave the unmasked 256 inline (corrupting control flow -- `if (g+1) > 100`
+    // took the true branch) but 0 when stored to a u8; the SAME subexpression
+    // yielded two different values.
+    let ni_g: u8 = 255
+    expect(ni_g + 1 == 0, "u8 255 + 1 wraps to 0 inline (not the unmasked 256)")
+    let ni_over: bool = (ni_g + 1) > 100
+    expect(ni_over == false, "u8 overflow does not corrupt a comparison")
+    expect(to_string(ni_g + 1) == "0", "u8 overflow through to_string prints wrapped 0")
+    let ni_h: u8 = 200
+    expect(ni_h + 100 == 44, "u8 200 + 100 wraps to 44 inline")
+    let ni_i: i8 = 127
+    expect(ni_i + 1 == 0 - 128, "i8 127 + 1 wraps to -128 inline")
+    let ni_j: u16 = 65535
+    expect(ni_j + 1 == 0, "u16 65535 + 1 wraps to 0 inline")
+    // ...and a narrow var promoted via an explicit i64 cast still computes wide.
+    let ni_k: u8 = 255
+    expect((ni_k as i64) + 1 == 256, "u8-as-i64 + 1 is NOT masked (explicit widen)")
+
     println("conformance overflow: PASS")
 }

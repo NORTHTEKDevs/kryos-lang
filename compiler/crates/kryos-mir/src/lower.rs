@@ -6206,6 +6206,15 @@ fn desugar_pipe(left: &ast::Expr, right: &ast::Expr, span: kryos_errors::Span) -
 /// same-typed operands). Signedness follows the wider operand; on a
 /// same-width signed/unsigned mix the left wins (rare, and the value bits
 /// are identical either way).
+/// True for the sub-i64 integer types (their arithmetic must be masked to
+/// width, unlike i64/u64/i128/u128 which fill the register).
+fn is_narrow_int_ty(t: &MirType) -> bool {
+    matches!(
+        t,
+        MirType::I8 | MirType::U8 | MirType::I16 | MirType::U16 | MirType::I32 | MirType::U32
+    )
+}
+
 fn wider_int_type(lty: &MirType, rty: &MirType) -> MirType {
     fn rank(t: &MirType) -> Option<u8> {
         match t {
@@ -8484,6 +8493,28 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             match (&lty, &rty) {
                 (MirType::F64, _) | (_, MirType::F64) => MirType::F64,
                 (MirType::F32, _) | (_, MirType::F32) => MirType::F32,
+                // A narrow-int operand combined with a bare integer LITERAL
+                // keeps the NARROW width: the literal has no inherent width (it
+                // defaults to i64 only for lack of context), so it adapts to the
+                // sized variable. Ranking it i64 (via wider_int_type) typed
+                // `u8_var + 1` as an i64 EXPRESSION, so its overflow (256) leaked
+                // UNMASKED whenever the result was consumed DIRECTLY -- in a
+                // comparison, a call argument, or to_string -- instead of stored
+                // to a narrow slot (the ONLY place the width mask fired). That
+                // corrupted control flow: `if (g + 1) > 100` branched on 256,
+                // not the wrapped 0. Keeping the narrow type makes the result
+                // temp narrow, so the store-time ireduce masks it consistently,
+                // matching the documented narrow-int truncation-on-overflow.
+                _ if is_narrow_int_ty(&lty)
+                    && matches!(right.as_ref(), ast::Expr::IntLiteral { .. }) =>
+                {
+                    lty.clone()
+                }
+                _ if is_narrow_int_ty(&rty)
+                    && matches!(left.as_ref(), ast::Expr::IntLiteral { .. }) =>
+                {
+                    rty.clone()
+                }
                 // Mixed-width integer arithmetic PROMOTES to the wider type:
                 // `i8 + i64` is an i64 operation. Taking the LEFT type made
                 // the result local i8-sized, so the (correctly i64-computed)
