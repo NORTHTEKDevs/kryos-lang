@@ -195,16 +195,28 @@ fn _parse_false(p: Parser) -> ParseResult {
 fn _parse_string(p: Parser) -> ParseResult {
     let mut parser = _expect_char(p, "\"")
     let mut result = ""
+    // Track a RUN of unescaped chars and flush it in ONE substr, instead of
+    // `result = result + ch` per character (O(n^2) -- a ~1MB string field made
+    // parse() take ~19s, a single-request DoS). run_start marks where the
+    // current unescaped run began.
+    let mut run_start = parser.pos
 
     while parser.pos < parser.input_len {
         let ch = parser.input[parser.pos]
 
         if ch == "\"" {
+            if parser.pos > run_start {
+                result = result + substr(parser.input, run_start, parser.pos)
+            }
             parser = _advance(parser)
             return ParseResult { value: JsonValue.String(result), parser: parser }
         }
 
         if ch == "\\" {
+            // Flush the run accumulated before this escape.
+            if parser.pos > run_start {
+                result = result + substr(parser.input, run_start, parser.pos)
+            }
             parser = _advance(parser)
             let escape = _current_char(parser)
             let mut found_escape = false
@@ -277,6 +289,8 @@ fn _parse_string(p: Parser) -> ParseResult {
                 throw "json: invalid escape sequence '\\" + escape + "' at position " + to_string(parser.pos)
             }
             parser = _advance(parser)
+            // The next unescaped run begins after this escape.
+            run_start = parser.pos
         }
         if ch != "\\" {
             // RFC 8259: an unescaped control character (U+0000-U+001F) is
@@ -288,7 +302,8 @@ fn _parse_string(p: Parser) -> ParseResult {
             if char_code(ch) < 32 {
                 throw "json: invalid unescaped control character (code " + to_string(char_code(ch)) + ") in string at position " + to_string(parser.pos)
             }
-            result = result + ch
+            // The char stays in the current run; it is flushed in ONE substr
+            // when the next escape or the closing quote is reached.
             parser = _advance(parser)
         }
     }

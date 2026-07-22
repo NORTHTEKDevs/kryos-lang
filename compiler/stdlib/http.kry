@@ -617,7 +617,10 @@ fn parse_request(raw: str) -> Request {
 
 /// Create a response string for sending over TCP.
 fn serialize_response(resp: Response) -> str {
-    let mut msg = "HTTP/1.1 " + to_string(resp.status) + " " + resp.status_text + "\r\n"
+    // Strip CR/LF from the status text (attacker-controlled reason phrase) --
+    // the mirror of the serialize_request fix. An embedded CRLF here injects
+    // response headers / splits the response (CWE-113).
+    let mut msg = "HTTP/1.1 " + to_string(resp.status) + " " + _strip_crlf(resp.status_text) + "\r\n"
     let mut headers = resp.headers
     if not has_header(headers, "Content-Length") {
         headers = set_header(headers, "Content-Length", to_string(len(resp.body)))

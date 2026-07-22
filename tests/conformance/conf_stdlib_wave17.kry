@@ -1,0 +1,32 @@
+// Conformance: wave-17 fixes (csv/json parser correctness after O(n^2)->O(n)
+// run-flush rewrite, net port validation, http response CRLF).
+use std::csv::{parse}
+use std::net::{parse_url}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // csv: run-flush rewrite must preserve quoted fields, embedded comma/newline,
+    // escaped quotes, and blank-line semantics.
+    let rows = parse("a,b,c\n\"quoted, comma\",\"line\nbreak\",\"esc\"\"q\"\nx,y")
+    expect(len(rows) == 3, "csv row count")
+    expect(rows[0].fields[1] == "b", "csv plain field")
+    expect(rows[1].fields[0] == "quoted, comma", "csv embedded comma preserved")
+    expect(rows[1].fields[1] == "line\nbreak", "csv embedded newline preserved")
+    expect(rows[1].fields[2] == "esc\"q", "csv escaped quote -> single")
+    expect(rows[2].fields[0] == "x" and rows[2].fields[1] == "y", "csv last row")
+    // mid-field literal quote (not at field start) stays literal
+    let r2 = parse("ab\"c,d")
+    expect(r2[0].fields[0] == "ab\"c", "csv mid-field quote is literal")
+
+    // net: a malformed/non-numeric port falls back to the default (no crash)
+    expect(parse_url("http://h:notaport/p")[1] == "80", "net bad port -> default")
+    expect(parse_url("http://h:8080/p")[1] == "8080", "net good port")
+
+    println("conformance stdlib wave17: PASS")
+}

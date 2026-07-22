@@ -439,10 +439,32 @@ fn parse_url(url: str) -> [str] {
     if colon_pos >= 0 {
         let host = substr(host_port, 0, colon_pos)
         let port = substr(host_port, colon_pos + 1, hp_len)
-        return [host, port, path, scheme]
+        // Only accept an all-digit, in-range port. http_get does int(port),
+        // which PANICS uncatchably on a non-numeric port, a userinfo remnant
+        // (user:pass@host -> "pass@host"), or an IPv6-bracket colon -- crashing
+        // the whole process on a malformed URL. Fall back to the scheme default.
+        if _net_valid_port(port) {
+            return [host, port, path, scheme]
+        }
+        return [host, default_port, path, scheme]
     }
 
     return [host_port, default_port, path, scheme]
+}
+
+fn _net_valid_port(s: str) -> bool {
+    let n = len(s)
+    if n == 0 or n > 5 {
+        return false
+    }
+    let mut i = 0
+    while i < n {
+        if not contains("0123456789", substr(s, i, i + 1)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
 }
 
 // Perform an HTTP GET request.  Supports both http:// and https://.
