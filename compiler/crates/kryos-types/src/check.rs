@@ -286,6 +286,26 @@ impl TypeChecker {
                 );
                 return true;
             }
+            // An ACTOR value stored in an array/tuple/map loses its logical
+            // actor type through the handle erasure (actors are opaque i64
+            // handles), so a later `container[i].handler(...)` is lowered as an
+            // ordinary unmangled call and fails to LINK (unresolved external
+            // symbol = bare handler name) even though `check` passed. The
+            // compiler only recovers an actor's type through a struct FIELD or a
+            // function RETURN, not an array element / map value. Reject up front
+            // with a clear diagnostic instead of the cryptic linker error.
+            if let TypeExpr::Simple { name, span } = a {
+                if self.actor_names.contains(name) {
+                    self.error_with_code(
+                        format!(
+                            "actor `{name}` cannot be stored in {container} yet -- an actor in an array/map/tuple loses its type through the handle erasure, so a method call on it fails to link; hold it in a struct field or a plain local instead"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                    return true;
+                }
+            }
         }
         false
     }

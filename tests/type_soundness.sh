@@ -975,6 +975,24 @@ fn main() {
     println(to_string(a) + p.1)
 }
 '
+# An actor stored in an array/map/tuple loses its type through the handle
+# erasure, so a method call on it fails to LINK -- reject at check time with a
+# clear diagnostic instead of silently accepting it and failing at the linker.
+want_reject actor_in_array '
+actor Worker { n: i64,  fn bump(self) { self.n = self.n + 1 } }
+fn main() { let ws: [Worker] = [Worker()]  ws[0].bump() }
+'
+want_reject actor_in_map '
+actor Worker { n: i64,  fn bump(self) { self.n = self.n + 1 } }
+fn main() { let m: map<str, Worker> = {}  m["a"] = Worker()  m["a"].bump() }
+'
+# ...but an actor in a STRUCT FIELD or a plain local still works (the compiler
+# recovers the actor type through a field / return).
+want_pass actor_in_struct_field '
+actor Worker { n: i64,  fn bump(self) { self.n = self.n + 1  println("ok") } }
+struct Holder { w: Worker }
+fn main() { let h = Holder { w: Worker() }  h.w.bump() }
+'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
