@@ -69,6 +69,16 @@ fn dirname(p: str) -> str {
         return "."
     }
 
+    // A UNC root (//server/share) has no parent -- return it whole, like
+    // dirname("/") == "/". Without this, dirname("//server/share") dropped the
+    // mandatory share to a malformed "//server".
+    if plen >= 2 and substr(normalized, 0, 2) == "//" {
+        let uparts = _split_path(normalized)
+        if len(uparts) == 2 {
+            return "//" + uparts[0] + "/" + uparts[1]
+        }
+    }
+
     // Find the last separator
     let mut last_sep = -1
     let mut i = plen - 1

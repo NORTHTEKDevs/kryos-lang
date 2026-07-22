@@ -62,6 +62,11 @@ fn total(counts: [i64]) -> i64 {
 
 /// Percentile: returns the edge above which fraction p/100 of samples fall.
 fn percentile(edges: [i64], counts: [i64], p: i64) -> i64 {
+    // A zero-edge histogram (single catch-all bucket) has no edges to index;
+    // return 0 rather than panic on edges[...] (sibling of the record() guard).
+    if len(edges) == 0 {
+        return 0
+    }
     let t = total(counts)
     if t == 0 {
         return edges[len(edges) - 1]

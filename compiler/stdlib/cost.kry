@@ -97,7 +97,7 @@ impl Budget {
         // Reject a negative charge: a cost is spend, never a refund. A negative
         // token/call count would drive `spent` below zero and PERMANENTLY
         // disable the cap (every later charge stays under max).
-        if cost.tokens_used < 0 or cost.api_calls < 0 {
+        if cost.tokens_used < 0 or cost.api_calls < 0 or cost.money_usd < 0.0 {
             throw "cost error: negative charge is not allowed"
         }
         let new_usd = self.spent_usd + cost.money_usd

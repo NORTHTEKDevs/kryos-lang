@@ -134,7 +134,17 @@ fn _next_dot(s: str, from: i64) -> i64 {
 fn _cmp_identifier(a: str, b: str) -> i64 {
     let a_num = is_all_digits(a)
     let b_num = is_all_digits(b)
-    if a_num && b_num { return cmp_i64(parse_int(a), parse_int(b)) }
+    if a_num && b_num {
+        // parse_int PANICS on an all-digit identifier >= 19 digits (i64
+        // overflow). Numeric identifiers compare numerically; for overflow-long
+        // ones a longer digit string is numerically larger, and equal lengths
+        // compare lexicographically (both are pure digits).
+        if len(a) <= 18 && len(b) <= 18 {
+            return cmp_i64(parse_int(a), parse_int(b))
+        }
+        if len(a) != len(b) { return cmp_i64(len(a), len(b)) }
+        return _cmp_ascii(a, b)
+    }
     // A numeric identifier ranks below an alphanumeric one.
     if a_num && !b_num { return -1 }
     if !a_num && b_num { return 1 }

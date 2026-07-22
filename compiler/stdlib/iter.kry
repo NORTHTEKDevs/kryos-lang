@@ -199,7 +199,7 @@ fn for_each(arr: [any], f: fn) -> any {
 // --- Searching ---------------------------------------------------------------
 
 /// True if any element satisfies pred.
-fn any(arr: [any], pred: fn) -> bool {
+fn any<T>(arr: [T], pred: fn(T) -> bool) -> bool {
     let alen = len(arr)
     let mut i = 0
     while i < alen {
@@ -212,7 +212,7 @@ fn any(arr: [any], pred: fn) -> bool {
 }
 
 /// True if all elements satisfy pred.
-fn all(arr: [any], pred: fn) -> bool {
+fn all<T>(arr: [T], pred: fn(T) -> bool) -> bool {
     let alen = len(arr)
     let mut i = 0
     while i < alen {
@@ -242,7 +242,7 @@ fn find<T>(arr: [T], pred: fn(T) -> bool) -> Option<T> {
 }
 
 /// Find the index of the first element satisfying pred, or -1.
-fn position(arr: [any], pred: fn) -> i64 {
+fn position<T>(arr: [T], pred: fn(T) -> bool) -> i64 {
     let alen = len(arr)
     let mut i = 0
     while i < alen {
@@ -260,7 +260,7 @@ fn count(arr: [any]) -> i64 {
 }
 
 /// Count elements satisfying pred.
-fn count_if(arr: [any], pred: fn) -> i64 {
+fn count_if<T>(arr: [T], pred: fn(T) -> bool) -> i64 {
     let mut c = 0
     let alen = len(arr)
     let mut i = 0
@@ -701,7 +701,7 @@ fn group_by<T, K>(arr: [T], key_fn: fn(T) -> K) -> map<str, [T]> {
 }
 
 /// Partition into two arrays: [matches, non_matches].
-fn partition(arr: [any], pred: fn) -> [any] {
+fn partition<T>(arr: [T], pred: fn(T) -> bool) -> [[T]] {
     let mut yes = []
     let mut no = []
     let alen = len(arr)

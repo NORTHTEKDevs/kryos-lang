@@ -244,6 +244,16 @@ fn sleep(dur: Duration) -> bool {
 
 // Internal: pad a string on the left with a character.
 fn _pad_left(s: str, width: i32, pad_char: str) -> str {
+    // Pad AFTER a leading '-' so a negative year zero-pads as "-0049", not the
+    // garbled "0-49" (pad inserted before the sign) that to_iso produced for a
+    // pre-1AD / negative epoch DateTime.
+    if len(s) > 0 and substr(s, 0, 1) == "-" {
+        let mut rest = substr(s, 1, len(s))
+        while len(rest) < width {
+            rest = pad_char + rest
+        }
+        return "-" + rest
+    }
     let mut result = s
     while len(result) < width {
         result = pad_char + result

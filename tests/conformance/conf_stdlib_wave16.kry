@@ -1,0 +1,56 @@
+// Conformance: wave-16 stdlib fixes (iter generics, test asserts, http/semver/cost/path/histogram siblings).
+use std::iter::{any, all, position, count_if, partition}
+use std::test::{assert_empty, assert_not_empty}
+use std::http::{parse_url}
+use std::semver::{parse, compare}
+use std::cost::{budget_new, ComputeCost}
+use std::path::{dirname}
+use std::histogram::{new_counts, percentile}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // iter: generic HOFs work for [str] (were erased to i64 bits -> wrong)
+    let sa: [str] = ["aa", "bb", "cc"]
+    expect(any(sa, |x| x == "bb"), "any [str]")
+    expect(all(sa, |x| len(x) == 2), "all [str]")
+    expect(position(sa, |x| x == "cc") == 2, "position [str]")
+    expect(count_if(sa, |x| x == "bb") == 1, "count_if [str]")
+    let part = partition(sa, |x| x == "bb")
+    expect(len(part[0]) == 1 and len(part[1]) == 2, "partition [str]")
+
+    // std::test: assert_empty/not_empty work for str (were [any]-erased)
+    assert_empty("")
+    assert_not_empty("hello")
+    let mut te = false
+    try { assert_not_empty("") } catch e { te = true }
+    expect(te, "assert_not_empty rejects empty str")
+
+    // http: overflow-length port does not crash parse_url
+    expect(parse_url("http://host:99999999999999999999/p").port == 80, "http rejects overflow port")
+
+    // semver: overlong numeric prerelease does not crash compare
+    expect(compare(parse("1.0.0-99999999999999999999999"), parse("1.0.0-1")) == 1, "semver overlong prerelease")
+
+    // cost: negative money charge rejected
+    let b = budget_new(100.0, 1000, 100)
+    let neg = ComputeCost { wall_time_ms: 0.0, tokens_used: 0, api_calls: 0, money_usd: -50.0, energy_kwh: 0.0 }
+    let mut ce = false
+    try { let b2 = b.charge(neg) } catch e { ce = true }
+    expect(ce, "cost rejects negative money")
+
+    // path: dirname keeps the UNC share
+    expect(dirname("//server/share") == "//server/share", "dirname UNC root")
+
+    // histogram: percentile on empty edges does not crash
+    let edges: [i64] = []
+    let mut c = new_counts(edges)
+    expect(percentile(edges, c, 50) == 0, "percentile empty edges")
+
+    println("conformance stdlib wave16: PASS")
+}

@@ -54,7 +54,7 @@ fn assert_false(val: bool) -> void {
 
 /// Assert that a value is empty/zero. Kryos has no null literal; this checks
 /// against the conventional sentinel values (0, "", []).
-fn assert_empty(val: any) -> void {
+fn assert_empty<T>(val: T) -> void {
     let s = to_string(val)
     if s != "" and s != "0" and s != "[]" {
         throw "assertion failed: expected empty/zero value but got " + s
@@ -62,7 +62,7 @@ fn assert_empty(val: any) -> void {
 }
 
 /// Assert that a value is not empty/zero.
-fn assert_not_empty(val: any) -> void {
+fn assert_not_empty<T>(val: T) -> void {
     let s = to_string(val)
     if s == "" or s == "0" or s == "[]" {
         throw "assertion failed: expected non-empty value"

@@ -33,6 +33,9 @@ struct Url {
 /// uncatchable panic.
 fn _parse_port(s: str) -> i64 {
     if len(s) == 0 { return 0 - 1 }
+    // A valid port is <= 65535 (5 digits); anything longer is invalid AND would
+    // overflow parse_int (uncatchable panic) for a ~20-digit all-digit string.
+    if len(s) > 5 { return 0 - 1 }
     let mut j = 0
     while j < len(s) {
         let ch = _substring(s, j, j + 1)
