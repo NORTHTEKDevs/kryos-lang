@@ -3885,7 +3885,33 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 }
                                 _ => None,
                             };
-                            let rvalue = lower_expr_to_rvalue(ctx, value);
+                            let mut rvalue = lower_expr_to_rvalue(ctx, value);
+                            // dyn Trait coercion on REASSIGNMENT: `d = Square {
+                            // .. }` where `d: dyn Shape` must wrap the concrete
+                            // struct in a trait fat-pointer (MakeTraitObject),
+                            // exactly like the Let-initializer / return / call-
+                            // argument / struct-field-init paths already do.
+                            // Without it a RAW struct pointer was stored into the
+                            // dyn slot, and the next `d.method()` vtable call read
+                            // offset 0/8 of raw struct memory as {data_ptr,
+                            // fn_ptr} and jumped through garbage -> SIGSEGV.
+                            if let Some(MirType::DynTrait(trait_name)) = dest_ty.clone() {
+                                if let MirType::Struct(concrete_type) =
+                                    infer_expr_type(ctx, value)
+                                {
+                                    let struct_tmp =
+                                        ctx.alloc_temp(MirType::Struct(concrete_type.clone()));
+                                    ctx.emit(Instruction::Assign {
+                                        dest: struct_tmp,
+                                        value: rvalue,
+                                    });
+                                    rvalue = RValue::MakeTraitObject {
+                                        value: Operand::Local(struct_tmp),
+                                        concrete_type,
+                                        trait_name,
+                                    };
+                                }
+                            }
                             // Exception-safety: `dest = fails()` where `fails`
                             // THROWS must leave `dest` holding its OLD value.
                             // `Assign { dest, Call }` is a single instruction
@@ -4136,6 +4162,15 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // of the inner struct (JIT only worked by pointer
                             // aliasing; AOT emitted invalid `inttoptr %Agg`).
                             let val_op = lower_expr_to_operand(ctx, value);
+                            // dyn Trait coercion when the FIELD is dyn-typed
+                            // (`h.shape = Circle { .. }`): wrap the concrete
+                            // struct in a trait fat-pointer, or the later
+                            // `h.shape.method()` vtable-dispatches through raw
+                            // struct memory -> SIGSEGV (same class as the local-
+                            // reassignment case above; struct-literal FIELD INIT
+                            // already coerces, reassignment did not).
+                            let field_ty = infer_expr_type(ctx, target);
+                            let val_op = coerce_to_dyn_if_needed(ctx, val_op, &field_ty, value);
                             lower_nested_field_assign(ctx, object, field, val_op);
                         } else {
                             // Fallback: evaluate RHS into a temp (may have side effects).

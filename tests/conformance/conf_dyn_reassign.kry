@@ -1,0 +1,36 @@
+// Conformance: reassigning a dyn-Trait local or struct field to a new concrete
+// value must coerce the RHS into a trait fat-pointer (MakeTraitObject) -- was a
+// SIGSEGV because Stmt::Assign stored a raw struct pointer into the dyn slot and
+// the next vtable call dispatched through garbage. Let-init/return/args already
+// coerced; reassignment did not.
+trait Shape { fn area(self: Self) -> f64 }
+struct Circle { r: f64 }
+impl Shape for Circle { fn area(self: Circle) -> f64 { return 3.0 * self.r * self.r } }
+struct Square { s: f64 }
+impl Shape for Square { fn area(self: Square) -> f64 { return self.s * self.s } }
+struct Holder { shape: dyn Shape }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let mut d: dyn Shape = Circle { r: 2.0 }
+    expect(d.area() == 12.0, "dyn local initial (Circle)")
+    d = Square { s: 3.0 }
+    expect(d.area() == 9.0, "dyn local reassigned to a DIFFERENT concrete type")
+    d = Circle { r: 1.0 }
+    expect(d.area() == 3.0, "dyn local reassigned back")
+
+    let mut h: Holder = Holder { shape: Circle { r: 2.0 } }
+    expect(h.shape.area() == 12.0, "dyn struct field initial")
+    h.shape = Square { s: 4.0 }
+    expect(h.shape.area() == 16.0, "dyn struct FIELD reassigned")
+    h.shape = Circle { r: 5.0 }
+    expect(h.shape.area() == 75.0, "dyn field reassigned to same concrete type")
+
+    println("conformance dyn reassign: PASS")
+}
