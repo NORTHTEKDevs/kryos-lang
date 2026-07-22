@@ -1,0 +1,63 @@
+// Conformance: wave-11 stdlib fixes (math, random, string, re, http).
+use std::math::{sqrt, cbrt}
+use std::random::{new_rng, next_bit}
+use std::string::{format}
+use std::re::{compile, is_email, is_url}
+use std::http::{parse_response, get_header, new_request, serialize_request, set_header, Request}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn rel_close(a: f64, b: f64) -> bool {
+    let d = (a - b) / b
+    return d < 0.000000001 and d > (0.0 - 0.000000001)
+}
+
+fn main() {
+    // math: large-magnitude sqrt/cbrt converge (were unconverged, off by orders of magnitude)
+    expect(rel_close(sqrt(1.0e50), 1.0e25), "sqrt(1e50)==1e25")
+    expect(rel_close(sqrt(1.0e308), 1.0e154), "sqrt(1e308)==1e154")
+    expect(rel_close(sqrt(2.0), 1.4142135623730951), "sqrt(2) still exact")
+    expect(rel_close(cbrt(1.0e30), 1.0e10), "cbrt(1e30)==1e10")
+    expect(rel_close(cbrt(27.0), 3.0), "cbrt(27)==3")
+
+    // random: next_bit is not biased (~50%, was ~75%)
+    let rng = new_rng(12345)
+    let mut ones = 0
+    let mut i = 0
+    while i < 10000 {
+        if next_bit(rng) == 1 {
+            ones = ones + 1
+        }
+        i = i + 1
+    }
+    expect(ones > 4000 and ones < 6000, "next_bit ~50 percent not 75")
+
+    // string.format: a substituted arg containing a later placeholder is not re-substituted
+    expect(format("{{0}}{{1}}", ["{{1}}", "X"]) == "{{1}}X", "format no re-substitution")
+
+    // re: $N followed by literal digits; anchored validators
+    let re = compile("(\w+)")
+    expect(re.replace("cost", "$1000") == "cost000", "re $1 + literal 000")
+    expect(is_email("user@example.com"), "is_email full match")
+    expect(not is_email("x user@example.com y"), "is_email rejects embedded")
+    expect(is_url("https://example.com/x"), "is_url full match")
+    expect(not is_url("x https://example.com/x y"), "is_url rejects embedded")
+
+    // http: malformed status line does not crash; header value CRLF stripped
+    let r = parse_response("HTTP/1.1  200 OK\r\nContent-Type:application/json\r\n\r\n{{}}")
+    expect(r.status == 200, "parse_response double-space status")
+    expect(get_header(r.headers, "Content-Type") == "application/json", "parse_headers no-space colon")
+
+    let req = new_request("GET", "http://example.com/")
+    let injected = set_header(req.headers, "X-Custom", "safe\r\nX-Injected: evil")
+    let req2 = Request { method: req.method, url: req.url, headers: injected, body: req.body }
+    let msg = serialize_request(req2)
+    expect(not contains(msg, "\r\nX-Injected"), "set_header strips CRLF (no header injection)")
+
+    println("conformance stdlib wave11: PASS")
+}

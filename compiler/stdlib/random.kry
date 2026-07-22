@@ -65,7 +65,9 @@ fn random_f64(state: [i64]) -> f64 {
 /// Random bit (0 or 1).
 fn next_bit(state: [i64]) -> i64 {
     let v = next_i64(state)
-    if v < 0 { return 1 }
+    // `v & 1` already yields the correct low bit for a two's-complement
+    // negative i64 (e.g. -2 & 1 == 0). The old `if v < 0 { return 1 }` forced
+    // EVERY negative draw to 1, biasing the generator to ~75% ones.
     return v & 1
 }
 

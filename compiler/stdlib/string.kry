@@ -456,15 +456,45 @@ fn _str_pad_build(target_bytes: i64, fill: str) -> str {
 
 /// Simple template formatting. Replaces {0}, {1}, ... with positional args.
 fn format(template: str, args: [str]) -> str {
-    let mut result = template
+    // Single-pass scan of the template: each {N} placeholder is replaced with
+    // args[N] emitted DIRECTLY into the output, so substituted text is never
+    // re-scanned. The old approach ran replace() sequentially over the SAME
+    // growing accumulator, so an argument whose text happened to contain a
+    // later placeholder (e.g. arg[0] == "{1}") got re-substituted on the next
+    // iteration -- format("{0}{1}", ["{1}", "X"]) wrongly produced "XX".
     let argc = len(args)
+    let n = len(template)
+    let mut out = ""
     let mut i = 0
-    while i < argc {
-        let placeholder = "{{" + to_string(i) + "}}"
-        result = replace(result, placeholder, args[i])
-        i = i + 1
+    while i < n {
+        let ch = substr(template, i, i + 1)
+        if ch == "{" {
+            let mut j = i + 1
+            let mut idx = 0
+            let mut had_digit = false
+            while j < n and char_code(substr(template, j, j + 1)) >= 48 and char_code(substr(template, j, j + 1)) <= 57 {
+                idx = idx * 10 + (char_code(substr(template, j, j + 1)) - 48)
+                had_digit = true
+                j = j + 1
+            }
+            if had_digit and j < n and substr(template, j, j + 1) == "}" {
+                if idx < argc {
+                    out = out + args[idx]
+                } else {
+                    // Placeholder index out of range: keep it literal.
+                    out = out + substr(template, i, j + 1)
+                }
+                i = j + 1
+            } else {
+                out = out + ch
+                i = i + 1
+            }
+        } else {
+            out = out + ch
+            i = i + 1
+        }
     }
-    return result
+    return out
 }
 
 // --- StringBuilder -----------------------------------------------------------

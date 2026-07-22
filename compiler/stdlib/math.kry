@@ -103,11 +103,28 @@ fn sqrt(x: f64) -> f64 {
     if x == 0.0 {
         return 0.0
     }
-    let mut guess = x / 2.0
+    // Seed Newton with a magnitude-correct guess. A plain x/2 seed is many
+    // orders of magnitude above sqrt(x) for large x, so early Newton steps
+    // behave like bisection (halving) and the old 64-iteration cap ran out
+    // before converging -- sqrt(1e50) silently returned ~2.7e30, not 1e25.
+    // Normalize x into [1,4) by factoring out 4^k (sqrt(4)=2); the seed is
+    // then within ~1.4x of the true root and Newton converges in a few steps
+    // across the full f64 range. Convergence uses a RELATIVE tolerance.
+    let mut m = x
+    let mut scale = 1.0
+    while m >= 4.0 {
+        m = m / 4.0
+        scale = scale * 2.0
+    }
+    while m < 1.0 {
+        m = m * 4.0
+        scale = scale / 2.0
+    }
+    let mut guess = scale * 1.5
     let mut i = 0
     while i < 64 {
         let next = (guess + x / guess) / 2.0
-        if abs(next - guess) < 1.0e-15 {
+        if abs(next - guess) <= abs(next) * 1.0e-15 {
             return next
         }
         guess = next
@@ -123,11 +140,25 @@ fn cbrt(x: f64) -> f64 {
     }
     let negative = x < 0.0
     let mut val = abs(x)
-    let mut guess = val / 3.0
+    // Magnitude-correct seed (same fix as sqrt): a plain val/3 seed is far
+    // above cbrt(val) for large val, so Newton ran out of iterations and
+    // returned an unconverged value (cbrt(1e30) gave ~1.8e18, not 1e10).
+    // Normalize val into [1,8) by factoring out 8^k (cbrt(8)=2).
+    let mut m = val
+    let mut scale = 1.0
+    while m >= 8.0 {
+        m = m / 8.0
+        scale = scale * 2.0
+    }
+    while m < 1.0 {
+        m = m * 8.0
+        scale = scale / 2.0
+    }
+    let mut guess = scale * 1.5
     let mut i = 0
     while i < 64 {
         let next = (2.0 * guess + val / (guess * guess)) / 3.0
-        if abs(next - guess) < 1.0e-15 {
+        if abs(next - guess) <= abs(next) * 1.0e-15 {
             if negative {
                 return -next
             }

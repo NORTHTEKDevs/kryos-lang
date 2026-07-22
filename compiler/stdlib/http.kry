@@ -42,6 +42,43 @@ fn _parse_port(s: str) -> i64 {
     return parse_int(s)
 }
 
+/// Remove CR and LF from a header key/value. Unsanitized CR/LF in a header
+/// value lets attacker-controlled data inject extra header lines into the wire
+/// message (HTTP request splitting / response header injection) -- every
+/// production HTTP library rejects or strips them.
+fn _strip_crlf(s: str) -> str {
+    let mut out = ""
+    let mut i = 0
+    let n = len(s)
+    while i < n {
+        let ch = _substring(s, i, i + 1)
+        if ch != "\r" and ch != "\n" {
+            out = out + ch
+        }
+        i = i + 1
+    }
+    return out
+}
+
+/// Parse the leading run of digits in `s` as an i64, returning 0 when there are
+/// no leading digits. Unlike parse_int/int this never panics -- HTTP status
+/// codes come from the network and may be non-canonical (double spaces, a
+/// missing/garbled code), which must never crash the whole process.
+fn _parse_status_code(s: str) -> i64 {
+    let mut i = 0
+    let n = len(s)
+    let mut val = 0
+    while i < n {
+        let ch = _substring(s, i, i + 1)
+        if _find("0123456789", ch) < 0 {
+            break
+        }
+        val = val * 10 + parse_int(ch)
+        i = i + 1
+    }
+    return val
+}
+
 fn parse_url(raw: str) -> Url {
     let mut scheme = "http"
     let mut rest = raw
@@ -177,20 +214,23 @@ fn new_headers() -> Headers {
 
 /// Set a header value (case-insensitive key).  Replaces if exists.
 fn set_header(h: Headers, key: str, value: str) -> Headers {
-    let lower_key = _to_lower(key)
+    // Strip CR/LF so attacker-controlled data cannot inject extra header lines.
+    let ckey = _strip_crlf(key)
+    let cvalue = _strip_crlf(value)
+    let lower_key = _to_lower(ckey)
     let mut keys = h.keys
     let mut values = h.values
     let count = len(keys)
     let mut i = 0
     while i < count {
         if _to_lower(keys[i]) == lower_key {
-            values[i] = value
+            values[i] = cvalue
             return Headers { keys: keys, values: values }
         }
         i = i + 1
     }
-    push(keys, key)
-    push(values, value)
+    push(keys, ckey)
+    push(values, cvalue)
     return Headers { keys: keys, values: values }
 }
 
@@ -233,10 +273,18 @@ fn parse_headers(raw: str) -> Headers {
     let mut i = 0
     while i < count {
         let line = lines[i]
-        let colon = _find(line, ": ")
+        let colon = _find(line, ":")
         if colon >= 0 {
             let key = _substring(line, 0, colon)
-            let value = _substring(line, colon + 2, len(line))
+            // RFC 7230 allows zero optional whitespace after the colon
+            // (`field-name ":" OWS field-value`); some servers omit the space.
+            // Skip exactly one leading space if present, otherwise take the
+            // value from right after the colon.
+            let mut vstart = colon + 1
+            if vstart < len(line) and _substring(line, vstart, vstart + 1) == " " {
+                vstart = vstart + 1
+            }
+            let value = _substring(line, vstart, len(line))
             headers = set_header(headers, key, value)
         }
         i = i + 1
@@ -340,19 +388,24 @@ fn parse_response(raw: str) -> Response {
         remaining_headers = _substring(header_section, first_newline + 2, len(header_section))
     }
 
-    // Status line: "HTTP/1.1 200 OK"
+    // Status line: "HTTP/1.1 200 OK" (tolerate extra spaces / a garbled code
+    // from a hostile or non-canonical server WITHOUT crashing -- network input
+    // must never panic the process via parse_int on non-digits).
     let mut status = 0
     let mut status_text = ""
     let first_space = _find(status_line, " ")
     if first_space >= 0 {
         let after_version = _substring(status_line, first_space + 1, len(status_line))
-        let second_space = _find(after_version, " ")
-        if second_space >= 0 {
-            let status_str = _substring(after_version, 0, second_space)
-            status = parse_int(status_str)
-            status_text = _substring(after_version, second_space + 1, len(after_version))
-        } else {
-            status = int(after_version)
+        // Skip any extra spaces between the version and the status code.
+        let mut k = 0
+        while k < len(after_version) and _substring(after_version, k, k + 1) == " " {
+            k = k + 1
+        }
+        let code_and_text = _substring(after_version, k, len(after_version))
+        status = _parse_status_code(code_and_text)
+        let sp = _find(code_and_text, " ")
+        if sp >= 0 {
+            status_text = _substring(code_and_text, sp + 1, len(code_and_text))
         }
     }
 

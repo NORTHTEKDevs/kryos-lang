@@ -373,18 +373,31 @@ fn _expand_groups(replacement: str, groups: [str]) -> str {
                 out = out + "$"
                 i = i + 2
             } elif char_code(nxt) >= 48 and char_code(nxt) <= 57 {
+                // Consume the LONGEST run of digits that still names a valid
+                // group. "$1000" with one capture group is group 1 followed by
+                // literal "000" (JS-style), not a lookup of nonexistent group
+                // 1000 that greedily ate all the digits and silently no-oped.
                 let mut j = i + 1
                 let mut idx = 0
+                let mut matched = false
                 while j < n and char_code(substr(replacement, j, j + 1)) >= 48 and char_code(substr(replacement, j, j + 1)) <= 57 {
-                    idx = idx * 10 + (char_code(substr(replacement, j, j + 1)) - 48)
-                    j = j + 1
+                    let cand = idx * 10 + (char_code(substr(replacement, j, j + 1)) - 48)
+                    if cand < len(groups) {
+                        idx = cand
+                        matched = true
+                        j = j + 1
+                    } else {
+                        break
+                    }
                 }
-                if idx < len(groups) {
+                if matched {
                     out = out + groups[idx]
+                    i = j
                 } else {
-                    out = out + substr(replacement, i, j)
+                    // No valid group index -> emit the "$" literally.
+                    out = out + "$"
+                    i = i + 1
                 }
-                i = j
             } else {
                 out = out + ch
                 i = i + 1
@@ -481,12 +494,16 @@ fn count(pattern: str, text: str) -> i32 {
 
 // Match an email address (simplified).
 fn is_email(text: str) -> bool {
-    return is_match("[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]\{2,\}", text)
+    // Anchored (^...$) so the WHOLE string must be an email, matching the
+    // is_X validator contract (see is_hex/is_ipv4). Without anchors this did a
+    // substring search and returned true for any text CONTAINING an
+    // email-shaped run -- a validation-bypass footgun.
+    return is_match("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]\{2,\}$", text)
 }
 
-// Match a URL (simplified).
+// Match a URL (simplified). Anchored so the whole string must be a URL.
 fn is_url(text: str) -> bool {
-    return is_match("https?://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~:/?#@!$&'()*+,;=-]*)?", text)
+    return is_match("^https?://[a-zA-Z0-9.-]+(/[a-zA-Z0-9._~:/?#@!$&'()*+,;=-]*)?$", text)
 }
 
 // Match an IPv4 address: exactly four dot-separated octets, each a 1-3 digit

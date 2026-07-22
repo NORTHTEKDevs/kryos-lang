@@ -290,6 +290,24 @@ struct HttpResponse {
 // --- HTTP response parsing --------------------------------------------------
 
 // Parse a raw HTTP/1.x response string into an HttpResponse struct.
+/// Parse leading digits of `s` as an i64, 0 if the code is empty/non-numeric.
+/// A raw `int(code_str)` on a non-canonical status code from the network
+/// panics uncatchably and hard-crashes the whole process.
+fn _safe_status_code(s: str) -> i64 {
+    let n = len(s)
+    let mut i = 0
+    let mut val = 0
+    while i < n {
+        let ch = substr(s, i, i + 1)
+        if not contains("0123456789", ch) {
+            return val
+        }
+        val = val * 10 + int(ch)
+        i = i + 1
+    }
+    return val
+}
+
 fn parse_http_response(raw: str) -> HttpResponse {
     let raw_len = len(raw)
 
@@ -333,8 +351,13 @@ fn parse_http_response(raw: str) -> HttpResponse {
     }
 
     let code_str = substr(status_line, space1 + 1, space2)
-    let status_code = int(code_str)
-    let status_text = substr(status_line, space2 + 1, len(status_line))
+    let status_code = _safe_status_code(code_str)
+    // No second space (a garbled/reason-less status line) leaves space2 at
+    // len(status_line); substr(space2 + 1, len) would slice out of bounds.
+    let mut status_text = ""
+    if space2 + 1 <= len(status_line) {
+        status_text = substr(status_line, space2 + 1, len(status_line))
+    }
 
     // Find header/body separator (\r\n\r\n)
     let mut body_start = raw_len
