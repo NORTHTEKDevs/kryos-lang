@@ -389,6 +389,18 @@ fn main() {
     let gmI: GmBox<i64> = GmBox { v: 42 }
     expect(gmI.dbl() == 84, "impl<T> i64 arithmetic on self field (control)")
 
+    // Self-referential generic struct (a linked list / tree node) must
+    // construct without unbounded monomorphization recursion. Was: check
+    // passed but `kryos run` stack-overflowed (exit 253) building even the
+    // base case, because monomorphize_struct had no placeholder cycle-guard.
+    let sr1: SrNode<i64> = SrNode { v: 1, next: None() }
+    let sr2: SrNode<i64> = SrNode { v: 2, next: Some(sr1) }
+    expect(sr2.v == 2, "self-referential generic struct constructs (was stack overflow)")
+    match sr2.next {
+        Some(inner) => expect(inner.v == 1, "self-ref struct payload reads through Option"),
+        None() => expect(false, "self-ref next should be Some"),
+    }
+
     println("conformance generics: PASS")
 }
 
@@ -406,3 +418,5 @@ impl G39Pt {
         return "(" + to_string(self.x) + "," + to_string(self.y) + ")"
     }
 }
+
+struct SrNode<T> { v: T, next: Option<SrNode<T>> }

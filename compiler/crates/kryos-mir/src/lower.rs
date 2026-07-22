@@ -13891,6 +13891,18 @@ fn monomorphize_struct(
         return mangled;
     }
 
+    // Insert a PLACEHOLDER before substituting field types. A self-referential
+    // generic struct (`struct Node<T> { next: Option<Node<T>> }`) resolves a
+    // field whose type mentions THIS same instantiation, which recurses back
+    // into monomorphize_struct for the same mangled name. Without the
+    // placeholder present, the "already monomorphized" check above never fired
+    // (the entry is inserted only at the END), so the recursion was unbounded
+    // -> stack overflow at runtime (`kryos run` exit 253) on the mere
+    // construction of the base case, while `kryos check` passed. Mirrors the
+    // identical placeholder guard in monomorphize_enum; overwritten with the
+    // real field list below once substitution finishes.
+    ctx.struct_defs.insert(mangled.clone(), Vec::new());
+
     // Substitute type parameters in the field types.
     let field_list: Vec<(String, MirType)> = fields
         .iter()
@@ -13906,7 +13918,7 @@ fn monomorphize_struct(
         })
         .collect();
 
-    // Insert the monomorphized struct definition.
+    // Insert the monomorphized struct definition (overwrites the placeholder).
     ctx.struct_defs.insert(mangled.clone(), field_list);
 
     mangled
