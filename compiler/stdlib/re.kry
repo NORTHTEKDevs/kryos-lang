@@ -31,6 +31,8 @@ extern {
 
 // --- Regex struct -----------------------------------------------------------
 
+use std::string::{string_builder}
+
 struct Regex {
     handle: i64,
     pattern: str,
@@ -234,7 +236,7 @@ impl Regex {
             throw "re error: replace_all on dropped regex"
         }
         let ngroups = kryos_regex_capture_count(self.handle)
-        let mut result = ""
+        let sb = string_builder()
         let text_len = len(text)
         let mut pos = 0
         let mut last = 0
@@ -248,13 +250,13 @@ impl Regex {
                 pos = text_len + 1
             } else {
                 // Append text before the match
-                result = result + substr(text, last, m.start)
+                sb.append(substr(text, last, m.start))
                 // Append the (group-expanded) replacement
                 if ngroups > 0 {
                     let caps = self.captures_at(text, pos)
-                    result = result + _expand_groups(replacement, caps.groups)
+                    sb.append(_expand_groups(replacement, caps.groups))
                 } else {
-                    result = result + _expand_groups(replacement, [m.text])
+                    sb.append(_expand_groups(replacement, [m.text]))
                 }
                 // Advance past the match
                 pos = m.end
@@ -262,7 +264,7 @@ impl Regex {
                 if m.end == m.start {
                     // Zero-width match: include the current char and advance
                     if pos < text_len {
-                        result = result + substr(text, pos, pos + 1)
+                        sb.append(substr(text, pos, pos + 1))
                     }
                     pos = pos + 1
                     last = pos
@@ -272,10 +274,10 @@ impl Regex {
         // `last` can advance one PAST text_len after a zero-width match at the
         // end; only append a genuine remaining tail.
         if last < text_len {
-            result = result + substr(text, last, text_len)
+            sb.append(substr(text, last, text_len))
         }
 
-        return result
+        return sb.build()
     }
 
     // Split text by the regex pattern.

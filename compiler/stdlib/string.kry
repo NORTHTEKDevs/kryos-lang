@@ -300,13 +300,15 @@ fn repeat(s: str, n: i64) -> str {
     if n <= 0 {
         return ""
     }
-    let mut result = ""
+    // string_builder (O(n)) instead of `result = result + s` per iteration,
+    // which re-copied the whole accumulator each time (O(n^2) for a large n).
+    let sb = string_builder()
     let mut i = 0
     while i < n {
-        result = result + s
+        sb.append(s)
         i = i + 1
     }
-    return result
+    return sb.build()
 }
 
 // --- Reversal ----------------------------------------------------------------
@@ -321,7 +323,10 @@ fn reverse(s: str) -> str {
     if slen == 0 {
         return ""
     }
-    let mut result = ""
+    // Collect each whole codepoint (forward), then append them in REVERSE via a
+    // builder. The old `result = cp + result` prepend re-copied the growing
+    // result every step -> O(n^2) on a large string.
+    let mut cps: [str] = []
     let mut i = 0
     while i < slen {
         let b = char_code(substr(s, i, i + 1))
@@ -337,11 +342,16 @@ fn reverse(s: str) -> str {
             // so we never slice mid-sequence into an invalid substring.
             step = 1
         }
-        let cp = substr(s, i, i + step)
-        result = cp + result
+        cps = push(cps, substr(s, i, i + step))
         i = i + step
     }
-    return result
+    let sb = string_builder()
+    let mut k = len(cps) - 1
+    while k >= 0 {
+        sb.append(cps[k])
+        k = k - 1
+    }
+    return sb.build()
 }
 
 // --- Character access --------------------------------------------------------
@@ -442,10 +452,14 @@ fn pad_right(s: str, width: i64, fill: str) -> str {
 /// fill -> whole chars (may overshoot by < len(fill), never a sliced char).
 fn _str_pad_build(target_bytes: i64, fill: str) -> str {
     let ff = if len(fill) > 0 { fill } else { " " }
-    let mut pad = ""
-    while len(pad) < target_bytes {
-        pad = pad + ff
+    // string_builder (O(n)) instead of `pad = pad + ff` per iteration.
+    let sb = string_builder()
+    let mut cur_len = 0
+    while cur_len < target_bytes {
+        sb.append(ff)
+        cur_len = cur_len + len(ff)
     }
+    let pad = sb.build()
     if len(ff) == 1 {
         return substr(pad, 0, target_bytes)
     }
@@ -464,7 +478,7 @@ fn format(template: str, args: [str]) -> str {
     // iteration -- format("{0}{1}", ["{1}", "X"]) wrongly produced "XX".
     let argc = len(args)
     let n = len(template)
-    let mut out = ""
+    let sb = string_builder()
     let mut i = 0
     while i < n {
         let ch = substr(template, i, i + 1)
@@ -479,22 +493,22 @@ fn format(template: str, args: [str]) -> str {
             }
             if had_digit and j < n and substr(template, j, j + 1) == "}" {
                 if idx < argc {
-                    out = out + args[idx]
+                    sb.append(args[idx])
                 } else {
                     // Placeholder index out of range: keep it literal.
-                    out = out + substr(template, i, j + 1)
+                    sb.append(substr(template, i, j + 1))
                 }
                 i = j + 1
             } else {
-                out = out + ch
+                sb.append(ch)
                 i = i + 1
             }
         } else {
-            out = out + ch
+            sb.append(ch)
             i = i + 1
         }
     }
-    return out
+    return sb.build()
 }
 
 // --- StringBuilder -----------------------------------------------------------
