@@ -565,34 +565,42 @@ fn unique<T>(arr: [T]) -> [T] {
 // --- Aggregation -------------------------------------------------------------
 
 /// Sum all elements (assumes numeric).
-fn sum(arr: [any]) -> f64 {
-    let mut total = 0.0
+fn sum<T>(arr: [T]) -> f64 {
+    // Accumulate in the ELEMENT type T, then cast once. Calling float(arr[i])
+    // per element mis-read the monomorphized f64 slot on the AOT backend (it
+    // converted the raw bit pattern as an integer), so sum([f64]) came out
+    // garbage. Using arr[i] directly in a T-typed accumulator (as min/max do)
+    // reads the real value on both backends.
     let alen = len(arr)
-    let mut i = 0
+    if alen == 0 {
+        return 0.0
+    }
+    let mut total = arr[0]
+    let mut i = 1
     while i < alen {
-        total = total + float(arr[i])
+        total = total + arr[i]
         i = i + 1
     }
-    return total
+    return total as f64
 }
 
 /// Product of all elements.
-fn product(arr: [any]) -> f64 {
-    if len(arr) == 0 {
+fn product<T>(arr: [T]) -> f64 {
+    let alen = len(arr)
+    if alen == 0 {
         return 1.0
     }
-    let mut result = 1.0
-    let alen = len(arr)
-    let mut i = 0
+    let mut result = arr[0]
+    let mut i = 1
     while i < alen {
-        result = result * float(arr[i])
+        result = result * arr[i]
         i = i + 1
     }
-    return result
+    return result as f64
 }
 
 /// Minimum element in the array.
-fn min(arr: [any]) -> any {
+fn min<T>(arr: [T]) -> T {
     let alen = len(arr)
     if alen == 0 {
         throw "min: empty array"
@@ -609,7 +617,7 @@ fn min(arr: [any]) -> any {
 }
 
 /// Maximum element in the array.
-fn max(arr: [any]) -> any {
+fn max<T>(arr: [T]) -> T {
     let alen = len(arr)
     if alen == 0 {
         throw "max: empty array"
@@ -626,7 +634,7 @@ fn max(arr: [any]) -> any {
 }
 
 /// Minimum element by a key function.
-fn min_by_key(arr: [any], key_fn: fn) -> any {
+fn min_by_key<T, K>(arr: [T], key_fn: fn(T) -> K) -> T {
     let alen = len(arr)
     if alen == 0 {
         throw "min_by_key: empty array"
@@ -646,7 +654,7 @@ fn min_by_key(arr: [any], key_fn: fn) -> any {
 }
 
 /// Maximum element by a key function.
-fn max_by_key(arr: [any], key_fn: fn) -> any {
+fn max_by_key<T, K>(arr: [T], key_fn: fn(T) -> K) -> T {
     let alen = len(arr)
     if alen == 0 {
         throw "max_by_key: empty array"

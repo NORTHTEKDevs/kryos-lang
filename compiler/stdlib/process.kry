@@ -322,8 +322,12 @@ impl Command {
     // Execute the command with inherited I/O (prints to terminal).
     @capabilities(process)
     fn run_simple(self: Command) -> i64 {
-        let cmd_str = self.to_string()
-        return kryos_process_exec_simple(str_to_ptr(cmd_str), len(cmd_str))
+        // Delegate to run() so each .arg() is passed as a DISTINCT argv entry.
+        // The old path space-joined the args via to_string() and the native
+        // exec_simple re-split on whitespace, silently splitting an argument
+        // that contains a space (arg("hello world") became two argv entries).
+        let result = self.run()
+        return result.exit_code as i64
     }
 }
 

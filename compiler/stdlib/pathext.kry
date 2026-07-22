@@ -8,7 +8,8 @@
 fn is_absolute(p: str) -> bool {
     let n = len(p)
     if n == 0 { return false }
-    if substr(p, 0, 1) == "/" { return true }
+    // A leading `/` (POSIX root) or `\` (Windows/UNC root, e.g. \\server\share).
+    if substr(p, 0, 1) == "/" || substr(p, 0, 1) == "\\" { return true }
     if n >= 3 {
         let c0 = char_code(substr(p, 0, 1))
         let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
@@ -62,9 +63,27 @@ fn normalize(p: str) -> str {
     let cleaned = normalize_slashes(p)
     let is_abs = is_absolute(cleaned)
     let parts = split_on_slash(cleaned)
-    let mut stack: [str] = []
-    let mut i: i64 = 0
+    // Detect a Windows drive-letter anchor ("C:") in the first component so it
+    // is the ROOT: not popped by "..", not treated as a poppable segment, and
+    // not POSIX-slash-prefixed. Without this, normalize("C:/Users/foo") gave
+    // "/C:/Users/foo", and "C:/a/../../x" popped past the drive to a bogus
+    // relative "x" (a path-traversal footgun).
+    let mut drive: str = ""
+    let mut start_idx: i64 = 0
     let np = len(parts)
+    if np > 0 {
+        let p0 = parts[0]
+        if len(p0) == 2 && substr(p0, 1, 2) == ":" {
+            let c0 = char_code(substr(p0, 0, 1))
+            let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+            if is_alpha {
+                drive = p0
+                start_idx = 1
+            }
+        }
+    }
+    let mut stack: [str] = []
+    let mut i: i64 = start_idx
     while i < np {
         let seg = parts[i]
         if len(seg) == 0 || seg == "." {
@@ -76,12 +95,14 @@ fn normalize(p: str) -> str {
             } elif !is_abs {
                 stack = push(stack, "..")
             }
+            // Absolute (drive or "/"): a ".." at the root is dropped -- you
+            // cannot traverse above the root.
         } else {
             stack = push(stack, seg)
         }
         i = i + 1
     }
-    let mut out: str = if is_abs { "/" } else { "" }
+    let mut out: str = if len(drive) > 0 { drive + "/" } elif is_abs { "/" } else { "" }
     let mut j: i64 = 0
     let sl = len(stack)
     while j < sl {

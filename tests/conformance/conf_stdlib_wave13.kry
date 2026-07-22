@@ -1,0 +1,57 @@
+// Conformance: wave-13 stdlib fixes (stat, iter, cost, histogram, path).
+use std::stat::{variance_x1000, mean_x1000}
+use std::iter::{sum, product, min, max}
+use std::cost::{budget_new, ComputeCost}
+use std::histogram::{new_counts, record, total}
+use std::path::{normalize, is_absolute}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn fclose(a: f64, b: f64) -> bool {
+    let d = a - b
+    return d < 0.001 and d > (0.0 - 0.001)
+}
+
+fn main() {
+    // stat: no i64 overflow on ordinary-magnitude data
+    expect(variance_x1000([0, 10000000]) == 50000000000000000, "variance no overflow")
+    expect(mean_x1000([4700000000000000, 4700000000000000]) == 4700000000000000000, "mean no overflow")
+
+    // iter: sum/product/min/max correct for [f64] (were erased to garbage)
+    expect(fclose(sum([1.5, 2.5, 3.0]), 7.0), "sum [f64]")
+    expect(fclose(sum([1, 2, 3]), 6.0), "sum [i64]")
+    expect(fclose(product([1.5, 2.5, 3.0]), 11.25), "product [f64]")
+    expect(fclose(min([3.0, -9.5, 8.0]), -9.5), "min [f64]")
+    expect(fclose(max([3.0, -9.5, 8.0]), 8.0), "max [f64]")
+    expect(min([5, 2, 9]) == 2, "min [i64]")
+
+    // cost: token overflow does not defeat the budget cap
+    let b = budget_new(100.0, 9223372036854775807, 1000)
+    let c = ComputeCost { wall_time_ms: 0.0, tokens_used: 9223372036854775707, api_calls: 1, money_usd: 0.0, energy_kwh: 0.0 }
+    let b2 = b.charge(c)
+    let mut threw = false
+    try {
+        let b3 = b2.charge(c)
+    } catch e {
+        threw = true
+    }
+    expect(threw, "cost budget throws on token overflow instead of wrapping")
+
+    // histogram: empty-edges record does not crash
+    let edges: [i64] = []
+    let mut counts = new_counts(edges)
+    record(edges, counts, 42)
+    expect(total(counts) == 1, "histogram empty edges no crash")
+
+    // path: Windows drive letter is a root anchor (not popped, not slash-prefixed)
+    expect(normalize("C:/foo/../../etc/passwd") == "C:/etc/passwd", "path drive anchor + no escape")
+    expect(normalize("/foo/../../etc/passwd") == "/etc/passwd", "path posix root")
+    expect(is_absolute("C:/x"), "path drive is absolute")
+
+    println("conformance stdlib wave13: PASS")
+}

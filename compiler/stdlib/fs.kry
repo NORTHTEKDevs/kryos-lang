@@ -64,7 +64,9 @@ fn is_dir(path: str) -> bool {
 
 // --- Directory operations ---------------------------------------------------
 
-// Create a single directory.  Throws if the parent does not exist.
+// Create a directory, including any missing parent directories (idempotent).
+// NOTE: this currently behaves identically to create_dir_all -- the native
+// layer creates parents. Do NOT rely on it throwing when a parent is absent.
 @capabilities(fs:write)
 fn create_dir(path: str) -> bool {
     let result = kryos_dir_create(str_to_ptr(path), len(path))

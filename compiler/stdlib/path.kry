@@ -203,8 +203,27 @@ fn normalize(p: str) -> str {
     let segments = _split_path(normalized)
     let count = len(segments)
 
+    // Windows drive anchor: recognize a leading "C:" so it is the ROOT -- not
+    // popped by ".." and not POSIX-slash-prefixed. Without this, is_abs was
+    // false for a drive path, "C:" was a poppable segment, and "C:/a/../../x"
+    // silently lost the drive and read as a bare relative path (a traversal
+    // footgun for callers that trust is_absolute() then join the result).
+    let mut drive = ""
+    let mut start_i = 0
+    if count > 0 {
+        let s0 = segments[0]
+        if len(s0) == 2 and substr(s0, 1, 2) == ":" {
+            let c0 = char_code(substr(s0, 0, 1))
+            if (c0 >= 65 and c0 <= 90) or (c0 >= 97 and c0 <= 122) {
+                drive = s0
+                start_i = 1
+            }
+        }
+    }
+    let anchored = is_abs or len(drive) > 0
+
     let mut result = []
-    let mut i = 0
+    let mut i = start_i
     while i < count {
         let seg = segments[i]
         if seg == "." or len(seg) == 0 {
@@ -220,7 +239,7 @@ fn normalize(p: str) -> str {
                     j = j + 1
                 }
                 result = new_result
-            } else if not is_abs {
+            } else if not anchored {
                 push(result, "..")
             }
         } else {
@@ -231,6 +250,9 @@ fn normalize(p: str) -> str {
 
     let rlen = len(result)
     if rlen == 0 {
+        if len(drive) > 0 {
+            return drive + "/"
+        }
         if is_abs {
             return "/"
         }
@@ -238,7 +260,9 @@ fn normalize(p: str) -> str {
     }
 
     let mut output = ""
-    if is_abs {
+    if len(drive) > 0 {
+        output = drive + "/"
+    } else if is_abs {
         output = "/"
     }
     let mut k = 0

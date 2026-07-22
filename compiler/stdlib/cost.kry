@@ -98,6 +98,17 @@ impl Budget {
         let new_tokens = self.spent_tokens + cost.tokens_used
         let new_calls = self.spent_api_calls + cost.api_calls
 
+        // Overflow guard: adding a non-negative charge that DECREASES the total
+        // means it wrapped past i64::MAX -- the budget is definitively exceeded.
+        // Without this, the wrapped-negative sum slipped under the `> max` check
+        // and the cap was silently defeated.
+        if cost.tokens_used >= 0 and new_tokens < self.spent_tokens {
+            throw "BudgetExceeded: token limit (" + to_string(self.max_tokens) + ") exceeded"
+        }
+        if cost.api_calls >= 0 and new_calls < self.spent_api_calls {
+            throw "BudgetExceeded: API call limit (" + to_string(self.max_api_calls) + ") exceeded"
+        }
+
         if new_usd > self.max_usd {
             let max_usd_int: i64 = (self.max_usd * 1000000.0) as i64
             throw "BudgetExceeded: USD limit ($" + to_string(max_usd_int) + "e-6) exceeded"

@@ -22,6 +22,12 @@ fn new_counts(edges: [i64]) -> [i64] {
 /// Increment the bucket whose range contains `value`.
 fn record(edges: [i64], counts: [i64], value: i64) {
     let n_edges = len(edges)
+    // A zero-edge histogram has a single catch-all bucket; reading edges[0]
+    // would panic on an out-of-bounds index.
+    if n_edges == 0 {
+        counts[0] = counts[0] + 1
+        return
+    }
     if value < edges[0] {
         counts[0] = counts[0] + 1
         return

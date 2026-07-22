@@ -263,8 +263,15 @@ fn exec_multi(conn: Connection, sql: str) -> i64 {
     let mut start = 0
     let sql_len = len(sql)
     let mut i = 0
+    let mut in_str = false
     while i < sql_len {
-        if sql[i] == ";" {
+        let ch = sql[i]
+        if ch == "'" {
+            // Toggle single-quote string state. A doubled '' (SQL's escaped
+            // quote) toggles twice, netting the same state. Semicolons INSIDE a
+            // string literal are data, not statement separators.
+            in_str = not in_str
+        } elif ch == ";" and not in_str {
             let stmt = trim(substr(sql, start, i))
             if len(stmt) > 0 {
                 total = total + execute(conn, stmt)

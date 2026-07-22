@@ -24,7 +24,13 @@ fn sum(xs: [i64]) -> i64 {
 fn mean_x1000(xs: [i64]) -> i64 {
     let n = len(xs)
     if n == 0 { return 0 }
-    return (sum(xs) * 1000) / n
+    // Divide BEFORE scaling by 1000, then add the scaled remainder for the
+    // fractional part. `sum(xs) * 1000` overflowed i64 for a large aggregate
+    // sum (> ~9.2e15) and wrapped negative even when the true mean*1000 fits.
+    let s = sum(xs)
+    let q = s / n
+    let r = s % n
+    return q * 1000 + (r * 1000) / n
 }
 
 fn min(xs: [i64]) -> i64 {
@@ -56,19 +62,25 @@ fn max(xs: [i64]) -> i64 {
 fn variance_x1000(xs: [i64]) -> i64 {
     let n = len(xs)
     if n < 2 { return 0 }
-    let mu = mean_x1000(xs)
-    let mut acc: i64 = 0
+    // Compute in f64. The old integer form squared the milli-scaled deviation
+    // (xs[i]*1000 - mu), so d*d overflowed i64 for a raw deviation of only
+    // ~3 million and wrapped NEGATIVE, silently corrupting ordinary-magnitude
+    // datasets. f64 avoids the overflow while preserving the fractional mean;
+    // the final variance*1000 is well within i64 range.
+    let mut s: f64 = 0.0
     let mut i: i64 = 0
     while i < n {
-        // d is the deviation in milli-units (xs scaled by 1000). Square it
-        // WITHOUT dividing first: `(d/1000)` truncated the entire sub-1.0
-        // fraction of every deviation before squaring, throwing away most
-        // of the variance for any non-integer mean. Accumulate d*d (micro²)
-        // and rescale once at the end.
-        let d = xs[i] * 1000 - mu
+        s = s + (xs[i] as f64)
+        i = i + 1
+    }
+    let mean = s / (n as f64)
+    let mut acc: f64 = 0.0
+    i = 0
+    while i < n {
+        let d = (xs[i] as f64) - mean
         acc = acc + d * d
         i = i + 1
     }
-    // acc = Σ(deviation*1000)² = Σdev² * 1e6; variance*1000 = acc/(1000*(n-1)).
-    return acc / (1000 * (n - 1))
+    let variance = acc / ((n - 1) as f64)
+    return (variance * 1000.0) as i64
 }
