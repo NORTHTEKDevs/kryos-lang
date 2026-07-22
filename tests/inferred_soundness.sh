@@ -266,6 +266,39 @@ want_pass native_extern_pure_alloc \
 'extern { fn kryos_arc_alloc_i64(n: i64) -> i64 }
 fn main() { let r = kryos_arc_alloc_i64(8)  println(to_string(r)) }'
 
+# --- capability ESCAPE via SELF-SHADOW of an annotated function -------------
+# `let leaker = leaker` (and the laundering variant `let x = leaker; let leaker
+# = x`, and a sibling-block shadow) made an annotated function name look like a
+# plain local, so the value-authority gate was skipped and its gated builtins
+# ran from an unannotated main. The locals set is now ORDER-SENSITIVE + block-
+# scoped, so a self-shadow RHS still resolves to the function and is gated.
+want_reject cap_self_shadow_direct \
+'@capabilities(process)
+fn leaker() -> str { return env_get("PATH") }
+fn main() { let leaker = leaker  let f = leaker  println(f()) }'
+
+want_reject cap_self_shadow_field \
+'@capabilities(process)
+fn leaker() -> str { return env_get("PATH") }
+struct Box { f: fn() -> str }
+fn main() { let leaker = leaker  let b = Box { f: leaker }  println(b.f()) }'
+
+want_reject cap_self_shadow_launder \
+'@capabilities(process)
+fn leaker() -> str { return env_get("PATH") }
+fn main() { let x = leaker  let leaker = x  println(leaker()) }'
+
+want_reject cap_self_shadow_sibling_block \
+'@capabilities(process)
+fn leaker() -> str { return env_get("PATH") }
+fn main() { let c = true  if c { let leaker = leaker  println(leaker()) } else { println("no") } }'
+
+# ...but self-shadowing a PURE (unannotated, no-authority) function is fine, and
+# a local merely NAMED like a stdlib function is still not force-gated.
+want_pass cap_self_shadow_pure_fn \
+'fn add(a: i64, b: i64) -> i64 { return a + b }
+fn main() { let add = add  println(to_string(add(2, 3))) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "inferred-soundness: all probes correct (leaks rejected, safe code accepted)"
 else

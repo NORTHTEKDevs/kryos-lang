@@ -685,44 +685,6 @@ impl CapabilityChecker {
         }
     }
 
-    /// Collect every name bound as a LOCAL in a block (let/for/while-let/
-    /// match/catch), recursing into nested statement blocks. Used to exclude
-    /// locals from function-value capability attribution.
-    fn collect_local_names(block: &kryos_ast::Block, out: &mut std::collections::HashSet<String>) {
-        for stmt in &block.stmts {
-            match stmt {
-                Stmt::Let { name, pattern, .. } => {
-                    out.insert(name.clone());
-                    if let Some(p) = pattern {
-                        Self::pattern_names(p, out);
-                    }
-                }
-                Stmt::For { pattern, body, .. } => {
-                    Self::pattern_names(pattern, out);
-                    Self::collect_local_names(body, out);
-                }
-                Stmt::If { then_block, elif_clauses, else_block, .. } => {
-                    Self::collect_local_names(then_block, out);
-                    for (_, b) in elif_clauses {
-                        Self::collect_local_names(b, out);
-                    }
-                    if let Some(b) = else_block {
-                        Self::collect_local_names(b, out);
-                    }
-                }
-                Stmt::While { body, .. } | Stmt::DenyBlock { body, .. } => {
-                    Self::collect_local_names(body, out);
-                }
-                Stmt::TryCatch { try_block, catch_name, catch_block, .. } => {
-                    Self::collect_local_names(try_block, out);
-                    out.insert(catch_name.clone());
-                    Self::collect_local_names(catch_block, out);
-                }
-                _ => {}
-            }
-        }
-    }
-
     /// Add every identifier a pattern binds.
     fn pattern_names(p: &kryos_ast::Pattern, out: &mut std::collections::HashSet<String>) {
         use kryos_ast::Pattern;
@@ -764,14 +726,20 @@ impl CapabilityChecker {
                 span,
                 ..
             } => {
-                // Record this function's local bindings so a value-position
-                // identifier that is a local (not a function reference) is not
-                // attributed a same-named function's capabilities.
-                let mut locals: std::collections::HashSet<String> =
+                // Track this function's IN-SCOPE local bindings so a value-
+                // position identifier that is a local (not a function
+                // reference) is not attributed a same-named function's
+                // capabilities. Seed with the PARAMS only; each `let`/`for`/
+                // `catch` binding is added as the walk reaches it (see
+                // check_stmt / check_block), so a binding is in scope only AFTER
+                // its initializer. Building the whole-body set up front made it
+                // ORDER-INDEPENDENT, which let `let leaker = leaker` (and the
+                // laundering variant `let x = leaker; let leaker = x`) shadow an
+                // annotated function's name: the value-authority gate saw the
+                // RHS function reference as "just a local" and let its
+                // capabilities escape to an unannotated caller.
+                let locals: std::collections::HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
-                if let Some(b) = body {
-                    Self::collect_local_names(b, &mut locals);
-                }
                 self.current_locals = locals;
                 self.check_function(name, annotations, body.as_ref(), *span);
                 self.current_locals.clear();
@@ -987,9 +955,15 @@ impl CapabilityChecker {
     }
 
     fn check_block(&mut self, block: &kryos_ast::Block) {
+        // Lexical scope for `current_locals`: bindings introduced inside this
+        // block go out of scope at its end, so a sibling/later block does not
+        // wrongly see them as locals (which would re-open the self-shadow gate
+        // bypass). Snapshot on entry, restore on exit.
+        let saved_locals = self.current_locals.clone();
         for stmt in &block.stmts {
             self.check_stmt(stmt);
         }
+        self.current_locals = saved_locals;
     }
 
     /// Check a `deny!(caps) { body }` block. Narrows the active capability set by
@@ -1026,9 +1000,23 @@ impl CapabilityChecker {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match stmt {
-            Stmt::Let { value, .. } => {
+            Stmt::Let {
+                value,
+                name,
+                pattern,
+                ..
+            } => {
                 if let Some(expr) = value {
                     self.check_expr(expr);
+                }
+                // The binding comes INTO SCOPE only now, AFTER its initializer
+                // is checked -- so `let leaker = leaker` checks the RHS while
+                // `leaker` still resolves to the (annotated) function, and the
+                // value-authority gate fires. Uses on later statements see it as
+                // a local (as intended for a local named like a stdlib fn).
+                self.current_locals.insert(name.clone());
+                if let Some(p) = pattern {
+                    Self::pattern_names(p, &mut self.current_locals);
                 }
             }
             Stmt::Assign { value, target, .. } => {
@@ -1057,9 +1045,18 @@ impl CapabilityChecker {
                     self.check_block(block);
                 }
             }
-            Stmt::For { iterable, body, .. } => {
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
                 self.check_expr(iterable);
+                // The loop pattern binds locals scoped to the body.
+                let saved = self.current_locals.clone();
+                Self::pattern_names(pattern, &mut self.current_locals);
                 self.check_block(body);
+                self.current_locals = saved;
             }
             Stmt::While {
                 condition, body, ..
@@ -1075,11 +1072,16 @@ impl CapabilityChecker {
             }
             Stmt::TryCatch {
                 try_block,
+                catch_name,
                 catch_block,
                 ..
             } => {
                 self.check_block(try_block);
+                // The catch variable is scoped to the catch block.
+                let saved = self.current_locals.clone();
+                self.current_locals.insert(catch_name.clone());
                 self.check_block(catch_block);
+                self.current_locals = saved;
             }
             Stmt::Throw { expr, .. } => {
                 self.check_expr(expr);
