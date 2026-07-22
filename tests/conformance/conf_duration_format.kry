@@ -1,0 +1,24 @@
+// Conformance: std::datetime Duration.format() must handle NEGATIVE durations
+// (was: any |value| >= 60000ms formatted to an empty string, and 1.5s dropped
+// the ms remainder -- negative i64 division truncated every component to <= 0
+// so none of the `> 0` branches fired).
+use std::datetime::{from_millis}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    expect(from_millis(0 - 500).format() == "-500ms", "negative sub-second duration")
+    expect(from_millis(0 - 1500).format() == "-1.500s", "negative duration keeps ms remainder")
+    expect(from_millis(0 - 65000).format() == "-1m5s", "negative >=1min duration (was empty)")
+    expect(from_millis(0 - 3661000).format() == "-1h1m1s", "negative >=1hr duration (was empty)")
+    // positive controls unchanged
+    expect(from_millis(1500).format() == "1.500s", "positive duration unchanged")
+    expect(from_millis(3661000).format() == "1h1m1s", "positive hours unchanged")
+    expect(from_millis(0).format() == "0ms", "zero duration")
+    println("conformance duration format: PASS")
+}

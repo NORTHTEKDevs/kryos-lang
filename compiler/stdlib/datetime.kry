@@ -61,6 +61,16 @@ impl Duration {
     // inside the method body and the user-defined version would shadow it,
     // breaking the body's own calls to convert i64 components to strings.
     fn format(self: Duration) -> str {
+        // Negative durations: format the MAGNITUDE and prepend "-". The
+        // component logic below assumes a non-negative value -- a negative
+        // millis truncated every term (total_secs/hours/minutes/seconds/ms)
+        // toward zero to <= 0, so the `> 0` branches never fired and format()
+        // silently returned "" for |value| >= 60000ms (and dropped the ms
+        // remainder otherwise).
+        if self.millis < 0 {
+            let pos = Duration { millis: 0 - self.millis }
+            return "-" + pos.format()
+        }
         let total_secs = self.millis / 1000
         let ms = self.millis % 1000
 
