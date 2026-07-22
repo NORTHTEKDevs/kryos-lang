@@ -956,6 +956,25 @@ enum Shape { Circle(i64), Rectangle(i64, i64) }
 fn tag(s: Shape) -> str { match s { Circle => "c", Rect => "other" } }
 fn main() { println(tag(Shape.Circle(5))) }
 '
+# A GENERIC type alias parses but is not fully lowered (it leaks an unsized
+# type into the AOT backend inside a generic function); it must be rejected
+# with a clear diagnostic, not silently accepted then miscompiled.
+want_reject generic_type_alias '
+use std::result::{Result, Ok, Err}
+type Pair<T> = Result<T, str>
+fn wrap<T>(x: T) -> Pair<T> { return Ok(x) }
+fn main() { match wrap("hi") { Ok(v) => println(v), Err(e) => println(e) } }
+'
+# ...but a NON-generic alias (the common case) is fully supported.
+want_pass nongeneric_type_alias '
+type IntRes = i64
+type Pairi = (i64, str)
+fn main() {
+    let a: IntRes = 5
+    let p: Pairi = (1, "x")
+    println(to_string(a) + p.1)
+}
+'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

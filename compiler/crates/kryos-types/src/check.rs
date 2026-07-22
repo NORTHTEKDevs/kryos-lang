@@ -368,6 +368,14 @@ impl TypeChecker {
                 if self.reject_dyn_in_container(&format!("`{name}<..>`"), args.iter()) {
                     return Type::Error;
                 }
+                // A rejected GENERIC type alias is registered as `Type::Error`
+                // at its definition (which already reported the clear
+                // not-yet-supported diagnostic). Resolve its uses to `Error` too
+                // so they do not cascade into phantom-struct / enum-vs-struct
+                // errors.
+                if matches!(self.env.lookup_var(name), Some(Type::Error)) {
+                    return Type::Error;
+                }
                 let resolved_args: Vec<Type> =
                     args.iter().map(|a| self.resolve_type_expr(a)).collect();
 
@@ -1321,10 +1329,40 @@ impl TypeChecker {
 
                 self.current_self_type = prev_self;
             }
-            Decl::TypeAlias { name, ty, .. } => {
-                let resolved = self.resolve_type_expr(ty);
-                // Register as a variable in the type namespace for lookup.
-                self.env.define_var(name.clone(), resolved);
+            Decl::TypeAlias {
+                name,
+                generics,
+                ty,
+                span,
+                ..
+            } => {
+                if !generics.is_empty() {
+                    // A GENERIC type alias (`type Pair<T> = Result<T, str>`)
+                    // parses, but is not yet fully lowered: expanding it per use
+                    // works for a concrete instantiation but leaks an unsized
+                    // `%T` into the LLVM IR when the alias is used inside a
+                    // generic function (`fn f<T>() -> Pair<T>`), an AOT build
+                    // failure. Reject it up front with a clear, actionable
+                    // message instead of the old cascade (the alias's own `T`
+                    // was reported as an unknown type at the definition, then
+                    // every use of the alias cascaded). Register the name as an
+                    // error type so uses do not additionally report "unknown
+                    // type". (Non-generic aliases are fully supported.)
+                    self.error_with_code(
+                        format!(
+                            "generic type alias `{name}` is not yet supported -- use the \
+                             underlying generic type directly (e.g. `Result<T, str>` in \
+                             place of `{name}<T>`)"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                    self.env.define_var(name.clone(), Type::Error);
+                } else {
+                    let resolved = self.resolve_type_expr(ty);
+                    // Register as a variable in the type namespace for lookup.
+                    self.env.define_var(name.clone(), resolved);
+                }
             }
             Decl::Const {
                 name,
