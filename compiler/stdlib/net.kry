@@ -464,6 +464,12 @@ fn _net_valid_port(s: str) -> bool {
         }
         i = i + 1
     }
+    // Reject an out-of-range port (a 5-digit value > 65535 like 99999 is not a
+    // valid TCP port; accepting it would silently connect to a truncated/wrong
+    // port). parse_int is safe here -- at most 5 digits, no overflow.
+    if parse_int(s) > 65535 {
+        return false
+    }
     return true
 }
 

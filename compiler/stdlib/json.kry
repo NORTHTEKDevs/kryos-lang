@@ -25,6 +25,8 @@ enum JsonValue {
 
 // --- Constructors (convenience) ----------------------------------------------
 
+use std::string::{string_builder}
+
 fn json_null() -> JsonValue {
     return JsonValue.Null
 }
@@ -194,7 +196,7 @@ fn _parse_false(p: Parser) -> ParseResult {
 
 fn _parse_string(p: Parser) -> ParseResult {
     let mut parser = _expect_char(p, "\"")
-    let mut result = ""
+    let sb = string_builder()
     // Track a RUN of unescaped chars and flush it in ONE substr, instead of
     // `result = result + ch` per character (O(n^2) -- a ~1MB string field made
     // parse() take ~19s, a single-request DoS). run_start marks where the
@@ -206,50 +208,50 @@ fn _parse_string(p: Parser) -> ParseResult {
 
         if ch == "\"" {
             if parser.pos > run_start {
-                result = result + substr(parser.input, run_start, parser.pos)
+                sb.append(substr(parser.input, run_start, parser.pos))
             }
             parser = _advance(parser)
-            return ParseResult { value: JsonValue.String(result), parser: parser }
+            return ParseResult { value: JsonValue.String(sb.build()), parser: parser }
         }
 
         if ch == "\\" {
             // Flush the run accumulated before this escape.
             if parser.pos > run_start {
-                result = result + substr(parser.input, run_start, parser.pos)
+                sb.append(substr(parser.input, run_start, parser.pos))
             }
             parser = _advance(parser)
             let escape = _current_char(parser)
             let mut found_escape = false
             if escape == "\"" {
-                result = result + "\""
+                sb.append("\"")
                 found_escape = true
             }
             if escape == "\\" {
-                result = result + "\\"
+                sb.append("\\")
                 found_escape = true
             }
             if escape == "/" {
-                result = result + "/"
+                sb.append("/")
                 found_escape = true
             }
             if escape == "b" {
-                result = result + "\b"
+                sb.append("\b")
                 found_escape = true
             }
             if escape == "f" {
-                result = result + "\f"
+                sb.append("\f")
                 found_escape = true
             }
             if escape == "n" {
-                result = result + "\n"
+                sb.append("\n")
                 found_escape = true
             }
             if escape == "r" {
-                result = result + "\r"
+                sb.append("\r")
                 found_escape = true
             }
             if escape == "t" {
-                result = result + "\t"
+                sb.append("\t")
                 found_escape = true
             }
             if escape == "u" {
@@ -274,7 +276,7 @@ fn _parse_string(p: Parser) -> ParseResult {
                         }
                     }
                 }
-                result = result + char_from(code_point)
+                sb.append(char_from(code_point))
                 // Advance 3 more (the 4th advance happens below)
                 parser = _advance(parser)
                 parser = _advance(parser)
@@ -489,38 +491,39 @@ fn _format_number(n: f64) -> str {
 }
 
 fn _escape_string(s: str) -> str {
-    let mut result = "\""
+    let sb = string_builder()
+    sb.append("\"")
     let slen = len(s)
     let mut i = 0
     while i < slen {
         let ch = s[i]
         let mut found_special = false
         if ch == "\"" {
-            result = result + "\\\""
+            sb.append("\\\"")
             found_special = true
         }
         if ch == "\\" {
-            result = result + "\\\\"
+            sb.append("\\\\")
             found_special = true
         }
         if ch == "\n" {
-            result = result + "\\n"
+            sb.append("\\n")
             found_special = true
         }
         if ch == "\r" {
-            result = result + "\\r"
+            sb.append("\\r")
             found_special = true
         }
         if ch == "\t" {
-            result = result + "\\t"
+            sb.append("\\t")
             found_special = true
         }
         if ch == "\b" {
-            result = result + "\\b"
+            sb.append("\\b")
             found_special = true
         }
         if ch == "\f" {
-            result = result + "\\f"
+            sb.append("\\f")
             found_special = true
         }
         if not found_special {
@@ -534,15 +537,15 @@ fn _escape_string(s: str) -> str {
                 let hexd = "0123456789abcdef"
                 let hi = code / 16
                 let lo = code % 16
-                result = result + "\\u00" + substr(hexd, hi, hi + 1) + substr(hexd, lo, lo + 1)
+                sb.append("\\u00" + substr(hexd, hi, hi + 1) + substr(hexd, lo, lo + 1))
             } else {
-                result = result + ch
+                sb.append(ch)
             }
         }
         i = i + 1
     }
-    result = result + "\""
-    return result
+    sb.append("\"")
+    return sb.build()
 }
 
 fn _stringify_array(items: [JsonValue]) -> str {

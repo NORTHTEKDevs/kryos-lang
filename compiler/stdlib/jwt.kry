@@ -12,6 +12,7 @@
 // ============================================================
 
 use std::string::{find}
+use std::crypto::{constant_time_eq}
 
 // --- base64url of a (UTF-8 text) string -------------------------------------
 // base64_encode yields standard base64 (with +/ and = padding); convert to
@@ -98,7 +99,10 @@ fn verify_hs256(token: str, secret: str) -> bool {
     let provided_sig = substr(token, sig_start, len(token))
     let expected_hex = hmac_sha256(secret, signing_input)
     let expected_sig = hex_to_base64url(expected_hex)
-    return provided_sig == expected_sig
+    // Constant-time comparison: a plain `==` short-circuits on the first
+    // differing byte, leaking (via timing) how many leading bytes of the tag an
+    // attacker guessed correctly -- enough to forge a signature byte-by-byte.
+    return constant_time_eq(provided_sig, expected_sig)
 }
 
 // --- EdDSA (Ed25519) --------------------------------------------------------
