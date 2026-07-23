@@ -9164,7 +9164,23 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     for (p, pty) in params.iter().zip(param_tys.iter()) {
                         ctx.alloc_local(Some(p.name.clone()), pty.clone(), false);
                     }
-                    let inferred = infer_expr_type(ctx, body);
+                    let mut inferred = infer_expr_type(ctx, body);
+                    // A BLOCK-body lambda whose value flows out through
+                    // `return` statements (`|x| { if c { return "even" }
+                    // return "odd" }`) has no tail expression, so the block
+                    // inference above erases to Void/i64 -- a generic HOF then
+                    // bound its result var to i64 and a str/f64 return read
+                    // back as raw bits (CLAUDE.md: block-body closure return
+                    // inference gap). Recover the type from the first
+                    // `return <expr>` in the body (params are still
+                    // registered here, so a `return x` resolves).
+                    if matches!(inferred, MirType::Void | MirType::I64) {
+                        if let ast::Expr::Block { block, .. } = body.as_ref() {
+                            if let Some(rt) = infer_block_return_type(ctx, block) {
+                                inferred = rt;
+                            }
+                        }
+                    }
                     ctx.locals.truncate(saved_len);
                     ctx.next_local = saved_next;
                     match inferred {
@@ -13413,6 +13429,75 @@ fn extract_type_bindings(
 /// type on the AOT backend). Falls back to the ordinary type-based
 /// extraction for every shape it doesn't specifically recognize, so existing
 /// behavior for non-enum-constructor arguments is unchanged.
+/// Type of the first `return <expr>` in a block, in statement order,
+/// recursing into nested if/elif/else, while, for, and try/catch bodies.
+/// Registers each `let` binding it walks past (as a temp local) so a
+/// `return s` referencing an earlier block-local resolves to its real type.
+/// The CALLER is responsible for truncating `ctx.locals` back afterwards
+/// (the lambda-return-inference site already saves/restores around this).
+/// Used to infer a BLOCK-body lambda's return type when the block has no
+/// tail expression (its value flows out only through `return` statements).
+fn infer_block_return_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
+    for s in &block.stmts {
+        match s {
+            ast::Stmt::Let {
+                name, ty, value, ..
+            } => {
+                let lty = match ty.as_ref() {
+                    Some(t) => ctx.resolve_type(t),
+                    None => value
+                        .as_ref()
+                        .map(|v| infer_expr_type(ctx, v))
+                        .unwrap_or(MirType::I64),
+                };
+                ctx.alloc_local(Some(name.clone()), lty, false);
+            }
+            ast::Stmt::Return { value: Some(e), .. } => {
+                return Some(infer_expr_type(ctx, e));
+            }
+            ast::Stmt::If {
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                if let Some(t) = infer_block_return_type(ctx, then_block) {
+                    return Some(t);
+                }
+                for (_, b) in elif_clauses {
+                    if let Some(t) = infer_block_return_type(ctx, b) {
+                        return Some(t);
+                    }
+                }
+                if let Some(b) = else_block {
+                    if let Some(t) = infer_block_return_type(ctx, b) {
+                        return Some(t);
+                    }
+                }
+            }
+            ast::Stmt::While { body, .. } | ast::Stmt::For { body, .. } => {
+                if let Some(t) = infer_block_return_type(ctx, body) {
+                    return Some(t);
+                }
+            }
+            ast::Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
+                if let Some(t) = infer_block_return_type(ctx, try_block) {
+                    return Some(t);
+                }
+                if let Some(t) = infer_block_return_type(ctx, catch_block) {
+                    return Some(t);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn extract_type_bindings_from_arg(
     ctx: &mut LoweringContext,
     param_ty: &ast::TypeExpr,
