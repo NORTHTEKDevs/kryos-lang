@@ -9010,10 +9010,25 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                                     // `Box<map<str,i64>>.get()` (index lookup
                                     // panicked on the erased type), so both
                                     // are included here too.
+                                    // `MirType::Bool` is included for a
+                                    // different reason than the pointer-shaped
+                                    // types: the erased slot's LOW BIT is the
+                                    // bool (always correct), but its upper 63
+                                    // bits are UNDEFINED on AOT (the caller
+                                    // allocas the 1-byte monomorphized struct
+                                    // while the erased callee reads it as an
+                                    // 8-byte slot). Left typed i64, a
+                                    // full-width read -- `g as i64`,
+                                    // `to_string(g)` -- saw stack garbage.
+                                    // Typed Bool, the backend truncs the call
+                                    // result to i1 (keeping the correct low
+                                    // bit) and any later widening is a proper
+                                    // zext. CLAUDE.md gotcha #22.
                                     if matches!(
                                         resolved,
                                         MirType::F64
                                             | MirType::F32
+                                            | MirType::Bool
                                             | MirType::Struct(_)
                                             | MirType::Enum(_)
                                             | MirType::Str
