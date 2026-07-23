@@ -106,7 +106,19 @@ pub fn format_source_preserving_comments(source: &str) -> Result<Option<String>,
     }
 
     fn normalize(line: &str) -> String {
-        line.split_whitespace().collect::<Vec<_>>().join(" ")
+        // Canonicalize beyond whitespace so an anchor still matches its
+        // formatted counterpart when the formatter rewrites the line:
+        //  - strip a TRAILING comma (fmt drops separators on enum variants,
+        //    struct fields, and match arms: `Red,` -> `Red`)
+        //  - fold `.` to `::` (fmt rewrites `Color.Red =>` to `Color::Red
+        //    =>`); applied to BOTH sides, so ordinary method-call lines stay
+        //    self-consistent -- this is only a matching key, never output.
+        line.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_end_matches(',')
+            .trim_end()
+            .replace('.', "::")
     }
 
     /// Strip a trailing `//` comment from a line, respecting string literals.
@@ -208,10 +220,85 @@ pub fn format_source_preserving_comments(source: &str) -> Result<Option<String>,
     // insertions: line_idx -> (before-lines, trailing-comments)
     let mut before: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
     let mut trail: std::collections::HashMap<usize, Vec<String>> = std::collections::HashMap::new();
+    // Formatted lines already claimed by a prefix-fallback match, so two
+    // comments on identical-looking split arms anchor to distinct lines in
+    // source order. Comments sharing the SAME (anchor, occurrence) -- a
+    // multi-line comment block above one code line -- must all attach to the
+    // same resolved line, so cache the resolution per anchor identity and
+    // reuse it instead of re-searching (the claimed-set would otherwise send
+    // the block's second comment hunting for a different line and skip the
+    // whole file).
+    let mut prefix_claimed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut prefix_cache: std::collections::HashMap<(String, usize), usize> =
+        std::collections::HashMap::new();
     for item in &items {
         let Some(anchor) = &item.anchor else { return Ok(None) };
-        let Some(cands) = fmt_counts.get(anchor) else { return Ok(None) };
-        let Some(&line_idx) = cands.get(item.occurrence) else { return Ok(None) };
+        let line_idx = if let Some(cands) = fmt_counts.get(anchor) {
+            match cands.get(item.occurrence) {
+                Some(&i) => i,
+                None => return Ok(None),
+            }
+        } else {
+            // Structural fallbacks, tried in order. A miss still skips the
+            // file; a mismatch is caught by the reparse check below, and a
+            // comment can at worst sit one line off -- never be deleted.
+            //
+            // 1. SPLIT: the formatter split the anchor line (a one-line match
+            //    arm `Color.Red => { return "red" }` becomes `Color::Red => {`
+            //    + a body line) -- attach to the earliest UNCLAIMED formatted
+            //    line whose canonical form is a PREFIX of the anchor (>= 4
+            //    chars, so bare braces never match). Claimed-tracking keeps
+            //    two identical-looking split arms anchored in source order.
+            // 2. JOINED: the formatter merged the anchor's multi-line
+            //    construct into one longer line (`let x = if c {` + arms ->
+            //    one line) -- attach to the first formatted line the anchor
+            //    is a PREFIX of. Sharing is fine here (several comments may
+            //    stack before the same joined line).
+            // 3. ABSORBED: the anchor line was folded into the MIDDLE of a
+            //    joined line -- attach to the first formatted line that
+            //    CONTAINS it (>= 8 chars to keep this conservative).
+            let cache_key = (anchor.clone(), item.occurrence);
+            if let Some(&cached) = prefix_cache.get(&cache_key) {
+                cached
+            } else {
+                let mut found: Option<usize> = None;
+                for (i, l) in fmt_lines.iter().enumerate() {
+                    if prefix_claimed.contains(&i) {
+                        continue;
+                    }
+                    let k = normalize(l);
+                    if k.len() >= 4 && anchor.starts_with(&k) {
+                        found = Some(i);
+                        prefix_claimed.insert(i);
+                        break;
+                    }
+                }
+                if found.is_none() {
+                    for (i, l) in fmt_lines.iter().enumerate() {
+                        let k = normalize(l);
+                        if k.starts_with(anchor.as_str()) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                if found.is_none() && anchor.len() >= 8 {
+                    for (i, l) in fmt_lines.iter().enumerate() {
+                        if normalize(l).contains(anchor.as_str()) {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                }
+                match found {
+                    Some(i) => {
+                        prefix_cache.insert(cache_key, i);
+                        i
+                    }
+                    None => return Ok(None),
+                }
+            }
+        };
         if item.trailing {
             trail.entry(line_idx).or_default().push(item.text.clone());
         } else {
