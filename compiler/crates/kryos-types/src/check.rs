@@ -4101,6 +4101,39 @@ impl TypeChecker {
                                     self.check_int_literal_range(param_ty, arg, arg.span());
                                 }
                             }
+                            // A `dyn` method returning a by-value AGGREGATE
+                            // (tuple, enum, Option, Result, or a multi-field
+                            // struct) cannot be dispatched: the uniform i64
+                            // dyn-thunk ABI passes ONE i64 slot back, so a
+                            // multi-slot aggregate truncates to its first field.
+                            // On AOT this previously emitted invalid LLVM IR
+                            // (`add %Agg, 0`) -- a cryptic build failure; on the
+                            // JIT it silently truncated. Reject here with a clear
+                            // diagnostic + workaround so both backends agree.
+                            // Scalars and heap handles (str/array/map) pass fine.
+                            let ret_is_byval_agg = match &sig.ret {
+                                Type::Tuple { .. }
+                                | Type::Option { .. }
+                                | Type::Result { .. }
+                                | Type::Enum { .. } => true,
+                                Type::Struct { name, .. } => self
+                                    .env
+                                    .lookup_struct(name)
+                                    .map(|sd| sd.fields.len() > 1)
+                                    .unwrap_or(false),
+                                _ => false,
+                            };
+                            if ret_is_byval_agg {
+                                self.error_with_code(
+                                    format!(
+                                        "`dyn {trait_name}` method `{method}` returns a by-value aggregate (`{}`), which trait-object dispatch cannot pass through its uniform handle ABI yet -- it truncates to the first field. Return a scalar or a heap handle (str/array/map), return the fields individually, or call the method via static dispatch (a concrete-typed receiver, not `dyn`).",
+                                        sig.ret
+                                    ),
+                                    *span,
+                                    kryos_errors::codes::E0110,
+                                );
+                                return Type::Error;
+                            }
                             return sig.ret.clone();
                         }
                     }
