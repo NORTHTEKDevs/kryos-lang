@@ -174,6 +174,39 @@ impl TypeChecker {
         }
     }
 
+    /// Bidirectional inference for a TAIL-position closure literal (implicit
+    /// return): `fn mk() -> fn(f64) -> f64 { |x| x * x }`. If the body's last
+    /// statement is a bare un-annotated lambda and the enclosing function's
+    /// declared return type is `fn(A) -> B`, seed `lambda_expected_types` so
+    /// the lambda's params/return infer from the declaration -- the same
+    /// seeding the FnCall-arg and `return <lambda>` paths do. Without this the
+    /// tail lambda type-checked with FRESH vars that never unified against the
+    /// declared return (check_block validates statements only), so its params
+    /// silently defaulted to i64 -- an f64 body computed on garbage bits.
+    /// Call after `current_return_type` is set, before `check_block(body)`.
+    fn seed_tail_lambda_expected(&mut self, body: &Block) {
+        if let Some(Stmt::Expr {
+            expr:
+                Expr::Lambda {
+                    params: lparams,
+                    span: lspan,
+                    ..
+                },
+            ..
+        }) = body.stmts.last()
+        {
+            if let Some(ref expected) = self.current_return_type {
+                let resolved = self.engine.resolve(expected);
+                if let Type::Function { params: eps, ret: er } = &resolved {
+                    if eps.len() == lparams.len() {
+                        self.lambda_expected_types
+                            .insert(*lspan, (eps.clone(), (**er).clone()));
+                    }
+                }
+            }
+        }
+    }
+
     fn check_duplicate_generics(
         &mut self,
         generics: &[kryos_ast::GenericParam],
@@ -1626,6 +1659,7 @@ impl TypeChecker {
                 }
 
                 self.current_function_name = Some(name.clone());
+                self.seed_tail_lambda_expected(body);
                 self.check_block(body);
                 self.current_function_name = None;
 
@@ -1990,6 +2024,7 @@ impl TypeChecker {
                             self.current_return_type = Some(sig.ret.clone());
                             let prev_fn = self.current_function_name.take();
                             self.current_function_name = Some(mname.clone());
+                            self.seed_tail_lambda_expected(body);
                             self.check_block(body);
                             self.current_function_name = prev_fn;
                             self.current_return_type = prev_ret;
@@ -2010,6 +2045,7 @@ impl TypeChecker {
                                 m_ret.as_ref().map(|t| self.resolve_type_expr(t));
                             let prev_fn = self.current_function_name.take();
                             self.current_function_name = Some(mname.clone());
+                            self.seed_tail_lambda_expected(body);
                             self.check_block(body);
                             self.current_function_name = prev_fn;
                             self.current_return_type = prev_ret;
@@ -2293,6 +2329,32 @@ impl TypeChecker {
                 }
             }
             Stmt::Return { value, span } => {
+                // Bidirectional inference for `return <lambda>`: a closure
+                // literal returned from a function whose declared return type
+                // is `fn(A) -> B` infers its un-annotated params/return from
+                // that declaration, exactly like a lambda passed to a typed
+                // call param (the FnCall arg path). Without this, `fn mk() ->
+                // fn(f64) -> f64 { return |x| x * x }` failed E0100 (`x` only
+                // inferred from typed expressions inside the body). Seeding
+                // lambda_expected_types also records the resolved params in
+                // resolved_lambda_params, so MIR types the closure params too
+                // (no silent i64 erasure).
+                if let Some(Expr::Lambda {
+                    params: lparams,
+                    span: lspan,
+                    ..
+                }) = value.as_ref()
+                {
+                    if let Some(ref expected) = self.current_return_type {
+                        let resolved_ret = self.engine.resolve(expected);
+                        if let Type::Function { params: eps, ret: er } = &resolved_ret {
+                            if eps.len() == lparams.len() {
+                                self.lambda_expected_types
+                                    .insert(*lspan, (eps.clone(), (**er).clone()));
+                            }
+                        }
+                    }
+                }
                 let ret_ty = value
                     .as_ref()
                     .map(|v| self.infer_expr(v))
