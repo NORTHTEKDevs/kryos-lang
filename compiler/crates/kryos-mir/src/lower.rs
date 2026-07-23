@@ -3651,6 +3651,30 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             ],
                         },
                     });
+                    // Balance emit_param_source_retain: for `let mut out = <param
+                    // array>` we retained the aliased param, expecting out's
+                    // scope-end Drop to release it. But the dup above rebinds out
+                    // to an INDEPENDENT clone, so that Drop frees the clone and
+                    // the param retain is ORPHANED -> the aliased buffer leaks
+                    // (an AOT-only O(n) leak per call; a full heap drain OOMs).
+                    // Release the old (pre-rebind) value here; release_if_ne is a
+                    // no-op if it somehow equals the fresh clone, so it can never
+                    // double-free.
+                    if let Some(src) = param_src {
+                        if ctx.param_locals.contains(&src.0) {
+                            let rel_sink = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: rel_sink,
+                                value: RValue::Call {
+                                    func: "kryos_array_release_if_ne".to_string(),
+                                    args: vec![
+                                        Operand::Local(local),
+                                        Operand::Local(dup_tmp),
+                                    ],
+                                },
+                            });
+                        }
+                    }
                     ctx.emit(Instruction::Assign {
                         dest: local,
                         value: RValue::Use(Operand::Local(dup_tmp)),
@@ -4425,6 +4449,60 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             operand = Some(Operand::Local(cloned));
                         }
                         _ => {}
+                    }
+                }
+            }
+            // Drop live named heap locals before returning. Mirrors the
+            // tail-expression and block-as-value paths (which already do this);
+            // the explicit `return <expr>` STATEMENT path historically did not,
+            // so every non-returned heap local it left live leaked. The AOT
+            // backend frees a local only via its MIR Drop, so a `let mut out =
+            // <param array>` (or any heap local) with no emitted Drop leaked one
+            // buffer per call -- an O(n^2) leak that OOM-crashes a tight drain
+            // loop. (The JIT frees such locals through its own last-use cleanup,
+            // so the leak was AOT-only.) dropped_locals only ever SUPPRESSES a
+            // later drop, so this can never double-free; the worst case on a
+            // branched early return is a leak on a sibling path.
+            let returned_local_id = match &operand {
+                Some(Operand::Local(id)) => Some(id.0),
+                _ => None,
+            };
+            // A field read (`return s.field`) hands back a value aliasing the
+            // source struct's buffer; excluding the source struct from drops
+            // prevents freeing the buffer we just returned (use-after-free),
+            // exactly as the tail-expression path does.
+            let source_struct_local_id =
+                if let Some(ast::Expr::FieldAccess { object, .. }) = value.as_ref() {
+                    if let ast::Expr::Identifier { name, .. } = object.as_ref() {
+                        ctx.locals
+                            .iter()
+                            .rev()
+                            .find(|l| l.name.as_deref() == Some(name.as_str()))
+                            .map(|l| l.id.0)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+            let scope_end = ctx.locals.len();
+            for i in (0..scope_end).rev() {
+                if ctx.locals[i].name.is_some() {
+                    let local_id = ctx.locals[i].id;
+                    // Params are caller-owned; borrowed locals are aliases.
+                    if ctx.param_locals.contains(&local_id.0)
+                        || ctx.borrowed_locals.contains(&local_id.0)
+                    {
+                        continue;
+                    }
+                    if !ctx.dropped_locals.contains(&local_id.0)
+                        && returned_local_id != Some(local_id.0)
+                        && source_struct_local_id != Some(local_id.0)
+                        && !ctx.partial_moved_locals.contains(&local_id.0)
+                    {
+                        drop_tag(ctx, "return-stmt-scope-end");
+                        ctx.emit(Instruction::Drop { local: local_id });
+                        ctx.dropped_locals.insert(local_id.0);
                     }
                 }
             }
