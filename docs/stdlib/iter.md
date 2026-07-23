@@ -46,48 +46,51 @@ println(range_step(10, 0, -2))  // [10, 8, 6, 4, 2]
 
 ### enumerate
 
-`enumerate(arr: [any]) -> [any]`
+`enumerate<T>(arr: [T]) -> [(i64, T)]`
 
-Return an array of two-element arrays `[index, value]` for each element.
+Pair each element with its index as a tuple `(index, value)`. Tuples preserve the element's real type -- read with `p.0` / `p.1` or destructure.
 
 **Example:**
 ```kryos
 use std::iter
 
 let pairs = enumerate(["a", "b", "c"])
-// [[0, "a"], [1, "b"], [2, "c"]]
+// [(0, "a"), (1, "b"), (2, "c")]
+let (i, v) = pairs[1]   // i = 1, v = "b"
 ```
 
 ---
 
 ### zip
 
-`zip(a: [any], b: [any]) -> [any]`
+`zip<A, B>(a: [A], b: [B]) -> [(A, B)]`
 
-Pair corresponding elements from `a` and `b` into two-element arrays. Stops at the shorter array.
+Pair corresponding elements from `a` and `b` into tuples. Stops at the shorter array. Both element types are preserved.
 
 **Example:**
 ```kryos
 use std::iter
 
 let zipped = zip([1, 2, 3], ["a", "b", "c"])
-// [[1, "a"], [2, "b"], [3, "c"]]
+// [(1, "a"), (2, "b"), (3, "c")]
+let p = zipped[0]
+println(to_string(p.0) + p.1)   // 1a
 ```
 
 ---
 
 ### unzip
 
-`unzip(pairs: [any]) -> [any]`
+`unzip<A, B>(pairs: [(A, B)]) -> ([A], [B])`
 
-Split an array of two-element arrays into two separate arrays. Returns `[left_array, right_array]`.
+Split an array of tuples into a pair of arrays. Destructure the result.
 
 **Example:**
 ```kryos
 use std::iter
 
-let result = unzip([[1, "a"], [2, "b"], [3, "c"]])
-// [[1, 2, 3], ["a", "b", "c"]]
+let (nums, names) = unzip([(1, "a"), (2, "b"), (3, "c")])
+// nums = [1, 2, 3], names = ["a", "b", "c"]
 ```
 
 ---
@@ -146,7 +149,7 @@ println(evens)   // [2, 4, 6]
 
 ### flat_map
 
-`flat_map(arr: [any], f: fn(any) -> [any]) -> [any]`
+`flat_map<T, U>(arr: [T], f: fn(T) -> [U]) -> [U]`
 
 Apply `f` to each element (which must return an array) and flatten the results into a single array.
 
@@ -196,7 +199,7 @@ Reduce from right to left.
 
 ### for_each
 
-`for_each(arr: [any], f: fn(any))`
+`for_each<T, U>(arr: [T], f: fn(T) -> U)`
 
 Call `f` for each element. Does not return a value.
 
@@ -483,7 +486,7 @@ let parts = partition([1, 2, 3, 4, 5], fn(x: i64) -> bool { return x % 2 == 0 })
 
 ### chunks
 
-`chunks(arr: [any], n: i64) -> [any]`
+`chunks<T>(arr: [T], n: i64) -> [[T]]`
 
 Split `arr` into consecutive sub-arrays of size `n`. The last chunk may be smaller.
 
@@ -498,7 +501,7 @@ println(chunks([1, 2, 3, 4, 5], 2))   // [[1, 2], [3, 4], [5]]
 
 ### windows
 
-`windows(arr: [any], n: i64) -> [any]`
+`windows<T>(arr: [T], n: i64) -> [[T]]`
 
 Return all overlapping sub-arrays of size `n`.
 
@@ -550,8 +553,8 @@ let by_mod3 = group_by(range(1, 10), fn(x: i64) -> i64 { return x % 3 })
 // {0: [3, 6, 9], 1: [1, 4, 7], 2: [2, 5, 8]}
 
 // Labeled enumeration
-for_each(enumerate(["alice", "bob", "carol"]), fn(pair: [any]) {
-    println(pair[0] + ": " + pair[1])
+for_each(enumerate(["alice", "bob", "carol"]), |pair| {
+    println(to_string(pair.0) + ": " + pair.1)
 })
 // 0: alice
 // 1: bob

@@ -5560,6 +5560,7 @@ fn is_flowable_param_type(ty: &Type) -> bool {
             | Type::Pointer { .. }
             | Type::F32
             | Type::F64
+            | Type::Function { .. }
     )
 }
 
@@ -5630,6 +5631,19 @@ fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
                 concrete_type_to_type_expr(err)?,
             ],
         ),
+        // Closure element/param types: lets an UNTYPED `let mut fns = []`
+        // holding pushed closures export its resolved `[fn(..) -> R]` element
+        // type to MIR, so `fns[k]()`'s return is typed (was erased to i64 --
+        // a str/f64-returning closure read out of an untyped array printed
+        // raw handle bits; CLAUDE.md untyped-closure-array gotcha).
+        Type::Function { params, ret } => TypeExpr::Function {
+            params: params
+                .iter()
+                .map(concrete_type_to_type_expr)
+                .collect::<Option<Vec<_>>>()?,
+            ret: Box::new(concrete_type_to_type_expr(ret)?),
+            span: sp,
+        },
         _ => return None,
     })
 }
