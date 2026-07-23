@@ -9208,7 +9208,14 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                         // function-typed and the call site emits CallIndirect
                         // (an i64-typed result emitted a direct call to a
                         // symbol named after the variable -> link error).
-                        | MirType::Function { .. } => inferred,
+                        | MirType::Function { .. }
+                        // Bool: a directly-called bool closure (`let is5 =
+                        // || x == 5; to_string(is5())`) otherwise types its
+                        // result i64 and renders 1/0 instead of true/false
+                        // (CLAUDE.md gotcha #20 exception). The uniform i64
+                        // closure slot's low bit is the bool; the call site
+                        // truncs it back, same as the generic bare-T bool.
+                        | MirType::Bool => inferred,
                         _ => MirType::I64,
                     }
                 }

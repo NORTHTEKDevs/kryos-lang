@@ -37,10 +37,12 @@ struct SelectCase {
 
 ---
 
-### WaitGroup
+### ChanWaitGroup
+
+> Type names are prefixed `Chan*` so `std::chan` and `std::sync` (which has its own spinlock-based `WaitGroup`/`Once`) can be imported together. The function names (`new_wait_group`, `wg_add`, `new_once`, `call_once`, ...) are unchanged.
 
 ```kryos
-struct WaitGroup {
+struct ChanWaitGroup {
     count:   shared i64,
     done_ch: Channel
 }
@@ -58,10 +60,10 @@ struct Semaphore {
 
 ---
 
-### Once
+### ChanOnce
 
 ```kryos
-struct Once {
+struct ChanOnce {
     done:   shared bool,
     result: shared any
 }
@@ -255,21 +257,21 @@ fan_out(work, 4, fn(item: any) {
 
 ---
 
-## WaitGroup
+## ChanWaitGroup
 
 Coordinate completion of concurrent tasks.
 
 ### new_wait_group
 
-`new_wait_group() -> WaitGroup`
+`new_wait_group() -> ChanWaitGroup`
 
-Create a `WaitGroup` with `count = 0`.
+Create a `ChanWaitGroup` with `count = 0`.
 
 ---
 
 ### wg_add
 
-`wg_add(wg: WaitGroup, n: i64)`
+`wg_add(wg: ChanWaitGroup, n: i64)`
 
 Increment the counter by `n`. Call before spawning tasks.
 
@@ -277,7 +279,7 @@ Increment the counter by `n`. Call before spawning tasks.
 
 ### wg_done
 
-`wg_done(wg: WaitGroup)`
+`wg_done(wg: ChanWaitGroup)`
 
 Decrement the counter by 1. Call when a task finishes.
 
@@ -285,7 +287,7 @@ Decrement the counter by 1. Call when a task finishes.
 
 ### wg_wait
 
-`wg_wait(wg: WaitGroup)`
+`wg_wait(wg: ChanWaitGroup)`
 
 Block until the counter reaches zero.
 
@@ -351,21 +353,21 @@ release(sem)
 
 ---
 
-## Once
+## ChanOnce
 
 Execute a function exactly once across all goroutines.
 
 ### new_once
 
-`new_once() -> Once`
+`new_once() -> ChanOnce`
 
-Create an unexecuted `Once` guard.
+Create an unexecuted `ChanOnce` guard.
 
 ---
 
 ### call_once
 
-`call_once(once: Once, f: fn() -> any) -> any`
+`call_once(once: ChanOnce, f: fn() -> any) -> any`
 
 Execute `f` the first time this is called and return its result. All subsequent calls return the cached result without calling `f` again.
 

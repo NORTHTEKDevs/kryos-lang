@@ -267,10 +267,10 @@ fn pipe(source: Channel, dest: Channel) -> void {
     }
 }
 
-// --- WaitGroup ---------------------------------------------------------------
+// --- ChanWaitGroup ---------------------------------------------------------------
 
 // The counter lives in a heap CELL (a raw i64 slot), NOT a plain struct field.
-// A `spawn` block DEEP-COPIES its captured WaitGroup, so a plain `count: i64`
+// A `spawn` block DEEP-COPIES its captured ChanWaitGroup, so a plain `count: i64`
 // field gave every worker thread its OWN private counter (each started at N and
 // decremented to N-1) -- the shared count never reached 0 for more than one
 // worker, `wg_done`'s `if new_count == 0` never fired, and `wg_wait` blocked
@@ -280,27 +280,27 @@ fn pipe(source: Channel, dest: Channel) -> void {
 // channel-based mutex making the read-modify-write of the shared count atomic
 // across threads (channels are already thread-safe native queues). The 8-byte
 // cell is not reclaimed (no struct auto-drop) -- a small bounded per-group leak.
-struct WaitGroup {
+struct ChanWaitGroup {
     count_cell: i64,
     lock_ch: Channel,
     done_ch: Channel
 }
 
-/// Create a new WaitGroup.
-fn new_wait_group() -> WaitGroup {
+/// Create a new ChanWaitGroup.
+fn new_wait_group() -> ChanWaitGroup {
     let cell = alloc(8)
     ptr_write_i64(cell, 0, 0)
     let lk = buffered(1)
     send(lk.raw, 1)
-    return WaitGroup {
+    return ChanWaitGroup {
         count_cell: cell,
         lock_ch: lk,
         done_ch: buffered(1)
     }
 }
 
-/// Add n to the WaitGroup counter. Call before spawning work.
-fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
+/// Add n to the ChanWaitGroup counter. Call before spawning work.
+fn wg_add(wg: ChanWaitGroup, n: i64) -> ChanWaitGroup {
     recv(wg.lock_ch.raw)
     ptr_write_i64(wg.count_cell, 0, ptr_read_i64(wg.count_cell, 0) + n)
     send(wg.lock_ch.raw, 1)
@@ -309,20 +309,20 @@ fn wg_add(wg: WaitGroup, n: i64) -> WaitGroup {
 
 /// Signal that one unit of work is done. Decrements the counter.
 /// When the counter reaches zero, send on done_ch to unblock waiters.
-fn wg_done(wg: WaitGroup) -> WaitGroup {
+fn wg_done(wg: ChanWaitGroup) -> ChanWaitGroup {
     recv(wg.lock_ch.raw)
     let new_count = ptr_read_i64(wg.count_cell, 0) - 1
     ptr_write_i64(wg.count_cell, 0, new_count)
     send(wg.lock_ch.raw, 1)
-    assert(new_count >= 0, "chan: WaitGroup counter went negative")
+    assert(new_count >= 0, "chan: ChanWaitGroup counter went negative")
     if new_count == 0 {
         send(wg.done_ch.raw, 1)
     }
     return wg
 }
 
-/// Block until the WaitGroup counter reaches zero.
-fn wg_wait(wg: WaitGroup) -> void {
+/// Block until the ChanWaitGroup counter reaches zero.
+fn wg_wait(wg: ChanWaitGroup) -> void {
     recv(wg.lock_ch.raw)
     let c = ptr_read_i64(wg.count_cell, 0)
     send(wg.lock_ch.raw, 1)
@@ -366,31 +366,31 @@ fn try_acquire(sem: Semaphore) -> bool {
     return attempt.ok
 }
 
-// --- Once (run-once primitive) -----------------------------------------------
+// --- ChanOnce (run-once primitive) -----------------------------------------------
 
-struct Once {
+struct ChanOnce {
     // State in a heap CELL ([done(0/1), result]) so it is SHARED across the
     // by-value struct copy the callee receives. Plain `done: bool` fields were
     // mutated on the callee's copy and lost on the AOT backend (the caller's
-    // Once still saw done=false), so call_once re-ran the callback on the
-    // second call -- a JIT/AOT divergence that silently broke Once semantics.
+    // ChanOnce still saw done=false), so call_once re-ran the callback on the
+    // second call -- a JIT/AOT divergence that silently broke ChanOnce semantics.
     // An array handle is shared shallowly on both backends, so writes through
-    // it reach the caller. Mirrors the WaitGroup heap-cell fix.
+    // it reach the caller. Mirrors the ChanWaitGroup heap-cell fix.
     cell: [i64]
 }
 
-/// Create a new Once.
-fn new_once() -> Once {
+/// Create a new ChanOnce.
+fn new_once() -> ChanOnce {
     let mut c: [i64] = []
     c = push(c, 0)
     c = push(c, 0)
-    return Once { cell: c }
+    return ChanOnce { cell: c }
 }
 
 /// Execute a function exactly once. Subsequent calls return the
 /// cached result. (Not currently atomic across spawn-tasks; use
 /// a semaphore or external mutex for cross-task once semantics.)
-fn call_once(once: Once, f: fn) -> i64 {
+fn call_once(once: ChanOnce, f: fn) -> i64 {
     if once.cell[0] == 1 {
         return once.cell[1]
     }
