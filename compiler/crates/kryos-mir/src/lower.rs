@@ -2651,12 +2651,34 @@ pub fn lower_function(
         }
     }
 
+    // Sanitize leaked generic type parameters. A generic fn monomorphized
+    // with an UNBOUND type param (e.g. `display(none_value())` -- nothing
+    // binds T) can leave a local typed `Struct("T")`: the raw parameter name
+    // echoed back as if it were a struct (the same leak
+    // `substitute_type_expr_to_mir` guards against, reached through a
+    // different local-typing path such as a match-arm payload bind). The
+    // LLVM backend then emits `alloca %T` -- an undefined opaque type clang
+    // rejects ("Cannot allocate unsized type"). Erase such locals to the
+    // uniform i64 slot model used everywhere else for an unresolved generic.
+    let mut locals = ctx.locals.clone();
+    for l in &mut locals {
+        if let MirType::Struct(ref n) = l.ty {
+            if !ctx.struct_defs.contains_key(n)
+                && !ctx.generic_struct_templates.contains_key(n)
+                && !ctx.enum_defs.contains_key(n)
+                && !ctx.generic_enum_templates.contains_key(n)
+            {
+                l.ty = MirType::I64;
+            }
+        }
+    }
+
     MirFunction {
         name: name.to_string(),
         params: mir_params,
         ret_ty: mir_ret_ty,
         blocks: ctx.blocks.clone(),
-        locals: ctx.locals.clone(),
+        locals,
         attributes: MirAttributes::default(),
         source_file: None,
         source_line: 0,

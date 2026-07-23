@@ -4,6 +4,12 @@
 // The Option type represents a value that may or may not exist.
 // Use it instead of null/nil to make absence explicit and safe.
 //
+// All combinators are GENERIC over the payload type, so str/f64
+// payloads round-trip with their real types on both backends (a
+// bare `Option`/`any` signature erases the payload to an i64 slot;
+// see the and_then note below for the failure mode that motivated
+// full parameterization).
+//
 // Usage:
 //   let x = std.option.some(42)
 //   let y = std.option.none_value()
@@ -11,6 +17,9 @@
 // ============================================================
 
 // --- Type definition ---------------------------------------------------------
+
+// Result is used by `ok_or` (a real Option -> Result conversion).
+use std::result::{Result, Ok, Err}
 
 enum Option {
     Some(any),
@@ -20,7 +29,7 @@ enum Option {
 // --- Constructors ------------------------------------------------------------
 
 /// Wrap a value in Some.
-fn some(val: any) -> Option {
+fn some<T>(val: T) -> Option<T> {
     return Option.Some(val)
 }
 
@@ -33,7 +42,7 @@ fn none_value() -> Option {
 // --- Querying ----------------------------------------------------------------
 
 /// True if the option contains a value.
-fn is_some(opt: Option) -> bool {
+fn is_some<T>(opt: Option<T>) -> bool {
     return match opt {
         Option.Some(_) => true,
         Option.None => false,
@@ -41,7 +50,7 @@ fn is_some(opt: Option) -> bool {
 }
 
 /// True if the option is empty.
-fn is_none(opt: Option) -> bool {
+fn is_none<T>(opt: Option<T>) -> bool {
     return match opt {
         Option.Some(_) => false,
         Option.None => true,
@@ -51,7 +60,7 @@ fn is_none(opt: Option) -> bool {
 // --- Extracting --------------------------------------------------------------
 
 /// Extract the contained value. Throws if None.
-fn unwrap(opt: Option) -> any {
+fn unwrap<T>(opt: Option<T>) -> T {
     return match opt {
         Option.Some(v) => v,
         Option.None => throw "unwrap called on None",
@@ -59,7 +68,7 @@ fn unwrap(opt: Option) -> any {
 }
 
 /// Extract the contained value, or return the default.
-fn unwrap_or(opt: Option, default: any) -> any {
+fn unwrap_or<T>(opt: Option<T>, default: T) -> T {
     return match opt {
         Option.Some(v) => v,
         Option.None => default,
@@ -67,7 +76,7 @@ fn unwrap_or(opt: Option, default: any) -> any {
 }
 
 /// Extract the value, or compute a default with a function.
-fn unwrap_or_else(opt: Option, f: fn) -> any {
+fn unwrap_or_else<T>(opt: Option<T>, f: fn() -> T) -> T {
     return match opt {
         Option.Some(v) => v,
         Option.None => f(),
@@ -78,7 +87,7 @@ fn unwrap_or_else(opt: Option, f: fn) -> any {
 
 /// Apply a function to the contained value, if present.
 /// Returns Some(f(val)) or None.
-fn map(opt: Option, f: fn) -> Option {
+fn map<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<U> {
     return match opt {
         Option.Some(v) => Option.Some(f(v)),
         Option.None => Option.None,
@@ -107,7 +116,7 @@ fn or_else<T>(opt: Option<T>, f: fn() -> Option<T>) -> Option<T> {
 }
 
 /// Keep the value only if the predicate returns true.
-fn filter(opt: Option, pred: fn) -> Option {
+fn filter<T>(opt: Option<T>, pred: fn(T) -> bool) -> Option<T> {
     return match opt {
         Option.Some(v) => {
             if pred(v) {
@@ -121,34 +130,29 @@ fn filter(opt: Option, pred: fn) -> Option {
 
 // --- Combining ---------------------------------------------------------------
 
-/// Return the inner option if self is Some, otherwise None.
-/// Flattens Option(Option(T)) to Option(T).
-fn flatten(opt: Option) -> Option {
+/// Flatten Option(Option(T)) to Option(T): the inner option if Some,
+/// otherwise None.
+fn flatten<T>(opt: Option<Option<T>>) -> Option<T> {
     return match opt {
-        Option.Some(inner) => {
-            if is_some(inner) {
-                return inner
-            }
-            if is_none(inner) {
-                return inner
-            }
-            // Not a nested Option -- wrap it back
-            return Option.Some(inner)
-        },
+        Option.Some(inner) => inner,
         Option.None => Option.None,
     }
 }
 
 /// Zip two Options together. Returns Some((a, b)) if both are Some.
-fn zip(a: Option, b: Option) -> Option {
-    if is_some(a) and is_some(b) {
-        return Option.Some([unwrap(a), unwrap(b)])
+/// The pair is a TUPLE -- read with `.0` / `.1` or destructure.
+fn zip<A, B>(a: Option<A>, b: Option<B>) -> Option<(A, B)> {
+    return match a {
+        Option.Some(av) => match b {
+            Option.Some(bv) => Option.Some((av, bv)),
+            Option.None => Option.None,
+        },
+        Option.None => Option.None,
     }
-    return Option.None
 }
 
 /// Replace the value inside Some, preserving Some/None status.
-fn replace(opt: Option, val: any) -> Option {
+fn replace<T>(opt: Option<T>, val: T) -> Option<T> {
     return match opt {
         Option.Some(_) => Option.Some(val),
         Option.None => Option.None,
@@ -158,7 +162,7 @@ fn replace(opt: Option, val: any) -> Option {
 // --- Conversion --------------------------------------------------------------
 
 /// Convert an Option to a single-element or empty array.
-fn to_array(opt: Option) -> [any] {
+fn to_array<T>(opt: Option<T>) -> [T] {
     return match opt {
         Option.Some(v) => [v],
         Option.None => [],
@@ -166,28 +170,28 @@ fn to_array(opt: Option) -> [any] {
 }
 
 /// Convert an Option to a Result. None becomes Err(err_msg).
-///
-/// Note: returns the wrapped value on Some, or the error message on None.
-/// Use `is_some` / `unwrap_or` if you need branching at the call site.
-fn ok_or(opt: Option, err_msg: str) -> any {
+fn ok_or<T>(opt: Option<T>, err_msg: str) -> Result<T, str> {
     return match opt {
-        Option.Some(v) => v,
-        Option.None => err_msg,
+        Option.Some(v) => Result.Ok(v),
+        Option.None => Result.Err(err_msg),
     }
 }
 
 // --- Inspection --------------------------------------------------------------
 
 /// Apply a function to the value for side effects, then return the option unchanged.
-fn inspect(opt: Option, f: fn) -> Option {
-    if is_some(opt) {
-        f(unwrap(opt))
+fn inspect<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<T> {
+    return match opt {
+        Option.Some(v) => {
+            f(v)
+            return Option.Some(v)
+        },
+        Option.None => Option.None,
     }
-    return opt
 }
 
 /// Convert to a human-readable string.
-fn display(opt: Option) -> str {
+fn display<T>(opt: Option<T>) -> str {
     return match opt {
         Option.Some(v) => "Some(" + to_string(v) + ")",
         Option.None => "None",
@@ -195,7 +199,7 @@ fn display(opt: Option) -> str {
 }
 
 /// True if the option contains the given value.
-fn contains(opt: Option, val: any) -> bool {
+fn contains<T>(opt: Option<T>, val: T) -> bool {
     return match opt {
         Option.Some(v) => v == val,
         Option.None => false,
@@ -203,7 +207,7 @@ fn contains(opt: Option, val: any) -> bool {
 }
 
 /// Apply f to the value if Some, otherwise return the provided default.
-fn map_or(opt: Option, default: any, f: fn) -> any {
+fn map_or<T, U>(opt: Option<T>, default: U, f: fn(T) -> U) -> U {
     return match opt {
         Option.Some(v) => f(v),
         Option.None => default,
@@ -211,7 +215,7 @@ fn map_or(opt: Option, default: any, f: fn) -> any {
 }
 
 /// Apply f to the value if Some, otherwise call default_fn.
-fn map_or_else(opt: Option, default_fn: fn, f: fn) -> any {
+fn map_or_else<T, U>(opt: Option<T>, default_fn: fn() -> U, f: fn(T) -> U) -> U {
     return match opt {
         Option.Some(v) => f(v),
         Option.None => default_fn(),
@@ -219,7 +223,7 @@ fn map_or_else(opt: Option, default_fn: fn, f: fn) -> any {
 }
 
 /// Logical AND: return other if self is Some, else None.
-fn and_opt(a: Option, b: Option) -> Option {
+fn and_opt<T, U>(a: Option<T>, b: Option<U>) -> Option<U> {
     return match a {
         Option.Some(_) => b,
         Option.None => Option.None,
@@ -227,7 +231,7 @@ fn and_opt(a: Option, b: Option) -> Option {
 }
 
 /// Logical OR: return self if Some, else other.
-fn or_opt(a: Option, b: Option) -> Option {
+fn or_opt<T>(a: Option<T>, b: Option<T>) -> Option<T> {
     return match a {
         Option.Some(v) => Option.Some(v),
         Option.None => b,
@@ -235,7 +239,7 @@ fn or_opt(a: Option, b: Option) -> Option {
 }
 
 /// Exclusive OR: return Some if exactly one is Some.
-fn xor(a: Option, b: Option) -> Option {
+fn xor<T>(a: Option<T>, b: Option<T>) -> Option<T> {
     let a_some = is_some(a)
     let b_some = is_some(b)
     if a_some and not b_some {

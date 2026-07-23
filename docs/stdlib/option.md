@@ -23,7 +23,7 @@ enum Option {
 
 ### some
 
-`some(val: any) -> Option`
+`some<T>(val: T) -> Option<T>`
 
 Create an `Option` containing `val`.
 
@@ -49,7 +49,7 @@ let b = none()
 
 ### is_some
 
-`is_some(opt: Option) -> bool`
+`is_some<T>(opt: Option<T>) -> bool`
 
 Return `true` if the option contains a value.
 
@@ -57,7 +57,7 @@ Return `true` if the option contains a value.
 
 ### is_none
 
-`is_none(opt: Option) -> bool`
+`is_none<T>(opt: Option<T>) -> bool`
 
 Return `true` if the option is empty.
 
@@ -76,7 +76,7 @@ println(is_none(x))   // false
 
 ### unwrap
 
-`unwrap(opt: Option) -> any`
+`unwrap<T>(opt: Option<T>) -> T`
 
 Return the contained value. Throws if the option is `None`.
 
@@ -84,7 +84,7 @@ Return the contained value. Throws if the option is `None`.
 
 ### unwrap_or
 
-`unwrap_or(opt: Option, default: any) -> any`
+`unwrap_or<T>(opt: Option<T>, default: T) -> T`
 
 Return the contained value, or `default` if empty.
 
@@ -92,7 +92,7 @@ Return the contained value, or `default` if empty.
 
 ### unwrap_or_else
 
-`unwrap_or_else(opt: Option, f: fn() -> any) -> any`
+`unwrap_or_else<T>(opt: Option<T>, f: fn() -> T) -> T`
 
 Return the contained value, or call `f` and return its result if empty.
 
@@ -114,7 +114,7 @@ println(unwrap_or_else(y, fn() -> i64 { return 99 }))   // 99
 
 ### map
 
-`map(opt: Option, f: fn(any) -> any) -> Option`
+`map<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<U>`
 
 If `opt` is `Some(v)`, return `Some(f(v))`. If empty, return `None`.
 
@@ -159,7 +159,7 @@ If `opt` is `Some`, return it unchanged. If empty, call `f` and return its resul
 
 ### filter
 
-`filter(opt: Option, pred: fn(any) -> bool) -> Option`
+`filter<T>(opt: Option<T>, pred: fn(T) -> bool) -> Option<T>`
 
 If `opt` is `Some(v)` and `pred(v)` is `true`, return `Some(v)`. Otherwise return `None`.
 
@@ -180,7 +180,7 @@ println(is_none(odd))    // true
 
 ### flatten
 
-`flatten(opt: Option) -> Option`
+`flatten<T>(opt: Option<Option<T>>) -> Option<T>`
 
 If `opt` is `Some(Some(v))`, return `Some(v)`. Removes one level of nesting.
 
@@ -188,17 +188,17 @@ If `opt` is `Some(Some(v))`, return `Some(v)`. Removes one level of nesting.
 
 ### zip
 
-`zip(a: Option, b: Option) -> Option`
+`zip<A, B>(a: Option<A>, b: Option<B>) -> Option<(A, B)>`
 
-If both `a` and `b` are `Some`, return `Some([a_val, b_val])`. Otherwise return `None`.
+If both `a` and `b` are `Some`, return `Some((a_val, b_val))` -- a TUPLE pair (read `.0` / `.1` or destructure). Otherwise return `None`. Both payload types are preserved.
 
 ---
 
 ### replace
 
-`replace(opt: Option, val: any) -> Option`
+`replace<T>(opt: Option<T>, val: T) -> Option<T>`
 
-Return `Some(val)` regardless of whether `opt` was `Some` or `None`.
+Return `Some(val)` if `opt` was `Some`, preserving `None` otherwise.
 
 ---
 
@@ -206,7 +206,7 @@ Return `Some(val)` regardless of whether `opt` was `Some` or `None`.
 
 ### to_array
 
-`to_array(opt: Option) -> [any]`
+`to_array<T>(opt: Option<T>) -> [T]`
 
 Return `[v]` if `Some(v)`, or `[]` if `None`.
 
@@ -214,9 +214,9 @@ Return `[v]` if `Some(v)`, or `[]` if `None`.
 
 ### ok_or
 
-`ok_or(opt: Option, err_msg: any) -> any`
+`ok_or<T>(opt: Option<T>, err_msg: str) -> Result<T, str>`
 
-Convert to a Result-like value: `{ok: true, value: v}` if `Some(v)`, or `{ok: false, error: err_msg}` if `None`.
+Convert to a real `Result`: `Result.Ok(v)` if `Some(v)`, or `Result.Err(err_msg)` if `None`. Match on the result with `Result.Ok(v) => ...` / `Result.Err(e) => ...`.
 
 ---
 
@@ -224,7 +224,7 @@ Convert to a Result-like value: `{ok: true, value: v}` if `Some(v)`, or `{ok: fa
 
 ### inspect
 
-`inspect(opt: Option, f: fn(any)) -> Option`
+`inspect<T, U>(opt: Option<T>, f: fn(T) -> U) -> Option<T>`
 
 If `opt` is `Some(v)`, call `f(v)` as a side effect and return `opt` unchanged.
 
@@ -232,7 +232,7 @@ If `opt` is `Some(v)`, call `f(v)` as a side effect and return `opt` unchanged.
 
 ### display
 
-`display(opt: Option) -> str`
+`display<T>(opt: Option<T>) -> str`
 
 Return `"Some(v)"` or `"None"` as a string.
 
@@ -240,7 +240,7 @@ Return `"Some(v)"` or `"None"` as a string.
 
 ### contains
 
-`contains(opt: Option, val: any) -> bool`
+`contains<T>(opt: Option<T>, val: T) -> bool`
 
 Return `true` if `opt` is `Some(val)` using equality comparison.
 
@@ -248,7 +248,7 @@ Return `true` if `opt` is `Some(val)` using equality comparison.
 
 ### map_or
 
-`map_or(opt: Option, default: any, f: fn(any) -> any) -> any`
+`map_or<T, U>(opt: Option<T>, default: U, f: fn(T) -> U) -> U`
 
 Apply `f` to the contained value, or return `default` if empty.
 
@@ -256,7 +256,7 @@ Apply `f` to the contained value, or return `default` if empty.
 
 ### map_or_else
 
-`map_or_else(opt: Option, default_fn: fn() -> any, f: fn(any) -> any) -> any`
+`map_or_else<T, U>(opt: Option<T>, default_fn: fn() -> U, f: fn(T) -> U) -> U`
 
 Apply `f` to the contained value, or call `default_fn()` if empty.
 
@@ -264,7 +264,7 @@ Apply `f` to the contained value, or call `default_fn()` if empty.
 
 ### and_opt
 
-`and_opt(a: Option, b: Option) -> Option`
+`and_opt<T, U>(a: Option<T>, b: Option<U>) -> Option<U>`
 
 Return `b` if `a` is `Some`, otherwise return `None`.
 
@@ -272,7 +272,7 @@ Return `b` if `a` is `Some`, otherwise return `None`.
 
 ### or_opt
 
-`or_opt(a: Option, b: Option) -> Option`
+`or_opt<T>(a: Option<T>, b: Option<T>) -> Option<T>`
 
 Return `a` if it is `Some`, otherwise return `b`.
 
@@ -280,7 +280,7 @@ Return `a` if it is `Some`, otherwise return `b`.
 
 ### xor
 
-`xor(a: Option, b: Option) -> Option`
+`xor<T>(a: Option<T>, b: Option<T>) -> Option<T>`
 
 Return `Some` if exactly one of `a` or `b` is `Some`. Return `None` if both are `Some` or both are `None`.
 
@@ -320,5 +320,6 @@ println(unwrap(processed))   // 36
 let a = some(3)
 let b = some(4)
 let pair = zip(a, b)
-println(display(pair))   // "Some([3, 4])"
+let (x, y) = unwrap(pair)
+println(to_string(x) + "," + to_string(y))   // 3,4
 ```
