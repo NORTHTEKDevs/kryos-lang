@@ -6750,15 +6750,22 @@ fn lower_match_sequential(
                 Some(Operand::Local(cmp))
             }
             ast::Pattern::Ident { name, mutable, .. } => {
-                let bound = ctx.alloc_local(
-                    Some(name.clone()),
-                    ctx.locals
-                        .iter()
-                        .find(|l| l.id == subj_local)
-                        .map(|l| l.ty.clone())
-                        .unwrap_or(MirType::I64),
-                    *mutable,
-                );
+                let bound_ty = ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == subj_local)
+                    .map(|l| l.ty.clone())
+                    .unwrap_or(MirType::I64);
+                let bound = ctx.alloc_local(Some(name.clone()), bound_ty.clone(), *mutable);
+                // The binding ALIASES the subject handle (RValue::Use, no
+                // retain), so it must never take ownership: otherwise the
+                // binding AND the subject's real owner each drop the same
+                // buffer. `match s { v if .. => "x", .. }` on any heap subject
+                // (str/array/map/struct/enum) was a double-free at scope exit.
+                // Same idiom as the payload/field/tuple binding sites.
+                if !is_copy_type(ctx, &bound_ty) {
+                    ctx.borrowed_locals.insert(bound.0);
+                }
                 ctx.emit(Instruction::Assign {
                     dest: bound,
                     value: RValue::Use(Operand::Local(subj_local)),
@@ -7514,7 +7521,14 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         let next_bb = ctx.alloc_block();
         if let ast::Pattern::Ident { name, mutable, .. } = &first.pattern {
             let subj_ty_now = infer_expr_type(ctx, subject);
-            let bound = ctx.alloc_local(Some(name.clone()), subj_ty_now, *mutable);
+            let bound = ctx.alloc_local(Some(name.clone()), subj_ty_now.clone(), *mutable);
+            // The binding ALIASES the subject handle (no retain), so it must
+            // never take ownership -- otherwise both it and the subject's own
+            // owner drop the same buffer (double-free of any heap subject).
+            // Same idiom the other pattern-binding sites use.
+            if !is_copy_type(ctx, &subj_ty_now) {
+                ctx.borrowed_locals.insert(bound.0);
+            }
             ctx.emit(Instruction::Assign {
                 dest: bound,
                 value: RValue::Use(subj_op.clone()),

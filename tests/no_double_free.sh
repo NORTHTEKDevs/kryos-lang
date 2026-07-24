@@ -128,6 +128,47 @@ no_df catch_concat \
 'fn throw_it() { throw "boom" }
 fn main() { try { throw_it() } catch e { println("caught: " + e) } }'
 
+# --- match arm binding the WHOLE heap subject to a name (`match s { v if .. }`).
+# The binding aliased the subject handle with no retain and was then dropped at
+# scope exit alongside the subject's real owner -- a double-free of any heap
+# subject (str/array/map/struct). Guarded arms and a bare binding arm both
+# route through the sequential path that created the binding. ---
+no_df match_bind_str_subject \
+'fn main() {
+    let key = "k" + "1"
+    let r = match key { v if len(v) > 0 => "hit", "k1" => "one", _ => "rest" }
+    println(r + key)
+}'
+
+no_df match_bind_str_subject_loop \
+'fn main() {
+    let mut t = 0
+    let mut i = 0
+    while i < 40 {
+        let key = "k" + to_string(i % 7)
+        let r = match key { v if i % 2 == 0 => v + "-even", "k1" => "one", _ => "rest" }
+        t = t + len(r)
+        i = i + 1
+    }
+    println(to_string(t))
+}'
+
+no_df match_bind_array_subject \
+'fn main() {
+    let mut a = [1, 2]
+    a = push(a, 3)
+    let n = match a { v if len(v) > 0 => len(v), _ => 0 }
+    println(to_string(n + len(a)))
+}'
+
+no_df match_bind_struct_subject \
+'struct Rec { name: str, n: i64 }
+fn main() {
+    let r = Rec { name: "n" + "ame", n: 1 }
+    let s = match r { v if v.n > 0 => v.name, _ => "none" }
+    println(s + r.name)
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else
