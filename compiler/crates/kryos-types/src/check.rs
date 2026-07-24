@@ -384,6 +384,27 @@ impl TypeChecker {
                         key: Box::new(self.engine.fresh_var()),
                         value: Box::new(self.engine.fresh_var()),
                     }
+                } else if name == "f32" {
+                    // f32 works as a SCALAR: `let a: f32 = 3.14` (literal
+                    // inference), arithmetic, and `as f32` casts -- those two
+                    // positions resolve f32 directly WITHOUT reaching here
+                    // (see Stmt::Let and Expr::Cast). Every OTHER annotation
+                    // position (struct fields, fn params/returns, array/tuple
+                    // elements, generic args) is NOT wired through either
+                    // code generator: both backends ICE on an f32 struct
+                    // field store or an f32 call argument (invalid cast
+                    // float->i64 on AOT, verifier error on JIT). Reject with
+                    // a clear diagnostic instead of crashing; mirrors the
+                    // i128/u128 arm below. Full f32 layout support is
+                    // backlogged.
+                    self.error_with_code(
+                        format!(
+                            "`f32` is currently supported only for scalar locals, arithmetic, and `as f32` casts -- use `f64` in this position (f32 struct fields, params, returns, and collection elements are not yet wired through the code generators)"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                    Type::Error
                 } else if name == "i128" || name == "u128" {
                     // 128-bit integers are declared in the type system but the
                     // code generators do not implement them: the Cranelift JIT
@@ -2216,7 +2237,16 @@ impl TypeChecker {
                 span,
                 pattern,
             } => {
-                let declared_ty = ty.as_ref().map(|t| self.resolve_type_expr(t));
+                // A BARE `f32` let-annotation is one of the two legal scalar
+                // f32 positions (with `as f32` casts) -- resolve it directly,
+                // bypassing resolve_type_expr's composite-position rejection.
+                let declared_ty = ty.as_ref().map(|t| {
+                    if matches!(t, TypeExpr::Simple { name, .. } if name == "f32") {
+                        Type::F32
+                    } else {
+                        self.resolve_type_expr(t)
+                    }
+                });
                 // A plain `let name = |...| { ... }` binding (no destructuring
                 // pattern) may recurse through its own name -- this is exactly
                 // what a nested/local `fn name(...) { ... }` desugars to in the
@@ -5274,7 +5304,13 @@ impl TypeChecker {
             Expr::Cast { expr, ty, span } => {
                 // Check the source expression, then return the target type.
                 let src = self.infer_expr(expr);
-                let dst = self.resolve_type_expr(ty);
+                // `as f32` is a legal scalar-f32 position; bypass the
+                // composite-position rejection in resolve_type_expr.
+                let dst = if matches!(ty, TypeExpr::Simple { name, .. } if name == "f32") {
+                    Type::F32
+                } else {
+                    self.resolve_type_expr(ty)
+                };
                 // Enforce the closed cast set (docs/19-language-reference.md
                 // §3.1): integer<->integer, integer<->float, bool->integer,
                 // char<->integer, and reference->raw-pointer. Casting to/from
