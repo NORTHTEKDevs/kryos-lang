@@ -850,6 +850,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_map_free(i64)");
         self.emit_line("declare void @kryos_map_free_typed(i64, i64, i64, i64)");
         self.emit_line("declare i64 @kryos_map_clone(i64)");
+        self.emit_line("declare i64 @kryos_map_snapshot(i64, i64, i64)");
         self.emit_line("declare ptr @kryos_string_clone(ptr)");
         self.emit_line("declare ptr @kryos_array_clone(ptr)");
         self.emit_line("; Builtin runtime");
@@ -3804,19 +3805,45 @@ impl LlvmCodegen {
                                 self.emit_line(&format!("  {ci} = ptrtoint ptr {cl} to i64"));
                                 ci
                             }
-                            Some(MirType::Array(_, _)) => {
+                            Some(MirType::Array(elem, _)) => {
+                                // Deep dup (elements cloned per kind), not a
+                                // bare header clone: the parent's elem-typed
+                                // release could otherwise free element strings/
+                                // arrays the spawned OS thread still reads.
+                                let elem_kind: i64 = match elem.as_ref() {
+                                    MirType::Str => 1,
+                                    MirType::Array(_, _) => 2,
+                                    MirType::Map { .. } => 3,
+                                    _ => 0,
+                                };
                                 let cl = self.next_temp();
                                 self.emit_line(&format!(
-                                    "  {cl} = call ptr @kryos_array_clone(ptr {val})"
+                                    "  {cl} = call ptr @kryos_array_dup(ptr {val}, i64 {elem_kind})"
                                 ));
                                 let ci = self.next_temp();
                                 self.emit_line(&format!("  {ci} = ptrtoint ptr {cl} to i64"));
                                 ci
                             }
-                            Some(MirType::Map { .. }) => {
+                            Some(MirType::Map { key, value }) => {
+                                // A real SNAPSHOT, not kryos_map_clone (a
+                                // retain): a map shared with an OS thread
+                                // violated the spawn isolation contract (the
+                                // spawned `m[k] = v` was visible to the
+                                // parent while array/struct captures were
+                                // not) and raced the non-atomic bucket table.
+                                let kind_of = |t: &MirType| -> i64 {
+                                    match t {
+                                        MirType::Str => 1,
+                                        MirType::Array(_, _) => 2,
+                                        MirType::Map { .. } => 3,
+                                        _ => 0,
+                                    }
+                                };
+                                let kk = kind_of(key.as_ref());
+                                let vk = kind_of(value.as_ref());
                                 let cl = self.next_temp();
                                 self.emit_line(&format!(
-                                    "  {cl} = call i64 @kryos_map_clone(i64 {val})"
+                                    "  {cl} = call i64 @kryos_map_snapshot(i64 {val}, i64 {kk}, i64 {vk})"
                                 ));
                                 cl
                             }

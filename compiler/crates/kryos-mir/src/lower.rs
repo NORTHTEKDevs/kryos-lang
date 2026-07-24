@@ -14761,6 +14761,18 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
             extract_type_bindings_from_arg(ctx, param_ty, arg_expr, &generic_params, &mut type_map);
         }
     }
+    // Bind any UNBOUND generic param to the erased i64 slot IN THE MAP, not
+    // just in the mangled name. The name already defaulted unbound params to
+    // i64, but substitution ran with the param missing from type_map, so the
+    // BODY lowered with a raw leaked `T` (param `Option___T`, locals typed
+    // Struct("T") whose to_string prints "<T>") -- and that bogus body was
+    // CACHED under the ___i64 name, poisoning every later REAL T=i64 call in
+    // the program (`display(none_value())` then `display(some(42))` printed
+    // "Some(<T>)"). With the map filled, the first instantiation lowers a
+    // genuine i64 body, correct for both the unbound and the i64 callers.
+    for gp in &generic_params {
+        type_map.entry(gp.clone()).or_insert(MirType::I64);
+    }
 
     // Build the list of concrete types in generic_params order for the mangled name.
     let concrete_ordered: Vec<MirType> = generic_params
@@ -14959,6 +14971,15 @@ fn monomorphize_impl_fn(
                 extract_type_bindings(ctx, ret_te, &expected, &generic_params, &mut type_map);
             }
         }
+    }
+
+    // Bind any still-UNBOUND generic param to the erased i64 slot in the map
+    // itself, not just the mangled name -- see the matching fill in
+    // `monomorphize` (free functions): substituting with the param missing
+    // lowered a body with a raw leaked `T` and cached it under the ___i64
+    // name, poisoning later real T=i64 calls.
+    for gp in &generic_params {
+        type_map.entry(gp.clone()).or_insert(MirType::I64);
     }
 
     // Build the list of concrete types in generic_params order for the

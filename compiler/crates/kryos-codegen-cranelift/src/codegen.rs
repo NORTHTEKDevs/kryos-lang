@@ -3333,26 +3333,56 @@ fn translate_instruction<M: Module>(
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
-                        Some(MirType::Array(_, _)) => {
+                        Some(MirType::Array(elem, _)) => {
+                            // Deep dup (elements cloned per kind), not a bare
+                            // header clone: the parent's elem-typed release of
+                            // its own array could otherwise free element
+                            // strings/arrays the spawned OS thread still reads.
+                            let elem_kind: i64 = match elem.as_ref() {
+                                MirType::Str => 1,
+                                MirType::Array(_, _) => 2,
+                                MirType::Map { .. } => 3,
+                                _ => 0,
+                            };
                             let f = ensure_func_ref_with_args(
-                                "kryos_array_clone",
+                                "kryos_array_dup",
                                 builder,
                                 translator,
                                 module,
-                                1,
+                                2,
                             )?;
-                            let c = builder.ins().call(f, &[val]);
+                            let k = builder.ins().iconst(types::I64, elem_kind);
+                            let c = builder.ins().call(f, &[val, k]);
                             builder.inst_results(c)[0]
                         }
-                        Some(MirType::Map { .. }) => {
+                        Some(MirType::Map { key, value }) => {
+                            // A real SNAPSHOT, not kryos_map_clone (which is a
+                            // retain -- a SHARED handle). A map shared with an
+                            // OS thread violated the documented spawn contract
+                            // ("assignments inside the block do not mutate the
+                            // parent": a spawned `m[k] = v` WAS visible to the
+                            // parent while array/struct captures were not) and
+                            // raced the non-atomic bucket table across threads.
+                            let kind_of = |t: &MirType| -> i64 {
+                                match t {
+                                    MirType::Str => 1,
+                                    MirType::Array(_, _) => 2,
+                                    MirType::Map { .. } => 3,
+                                    _ => 0,
+                                }
+                            };
+                            let kk =
+                                builder.ins().iconst(types::I64, kind_of(key.as_ref()));
+                            let vk =
+                                builder.ins().iconst(types::I64, kind_of(value.as_ref()));
                             let f = ensure_func_ref_with_args(
-                                "kryos_map_clone",
+                                "kryos_map_snapshot",
                                 builder,
                                 translator,
                                 module,
-                                1,
+                                3,
                             )?;
-                            let c = builder.ins().call(f, &[val]);
+                            let c = builder.ins().call(f, &[val, kk, vk]);
                             builder.inst_results(c)[0]
                         }
                         Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
@@ -5057,30 +5087,58 @@ fn translate_rvalue<M: Module>(
                                 _ => val,
                             }
                         } else {
-                            // Non-copy struct: retain reference-counted fields so
-                            // both the source and destination own the allocation
-                            // and `kryos_array_free` only frees when the last
-                            // owner drops it.
+                            // Non-copy struct: give the new struct INDEPENDENT
+                            // heap fields.
+                            //
+                            // Arrays must be CLONED, not retained. The runtime's
+                            // kryos_array_push mutates in place with no
+                            // copy-on-write, so a retained (shared) buffer let a
+                            // later `copy.vals = push(copy.vals, ..)` grow the
+                            // SOURCE's array too: `Node { vals: n.vals }` then
+                            // push made len(orig.vals) change under the caller -- a
+                            // JIT-only aliasing bug (the LLVM backend already
+                            // clones array fields at struct-literal construction;
+                            // both backends now agree on value semantics).
                             //
                             // For strings (which are not ref-counted), clone so each
                             // struct field owns an independent allocation. Otherwise
                             // aliased sources (e.g. `let o = ident(p); Box{a: p, b: o}`
                             // where `ident` returns its argument) put the same pointer
                             // in two fields and double-free on drop.
+                            //
+                            // (Maps intentionally stay SHARED handles on both
+                            // backends -- the documented capture-by-shared-handle
+                            // boundary.)
                             let field_mir_ty = struct_def
                                 .iter()
                                 .find(|(n, _)| n == field_name)
                                 .map(|(_, t)| t);
                             match field_mir_ty {
-                                Some(MirType::Array(_, _)) => {
-                                    let retain_ref = ensure_func_ref_with_args(
-                                        "kryos_array_retain",
+                                Some(MirType::Array(elem, _)) => {
+                                    // Deep dup, not a bare header clone: a
+                                    // header clone shares ELEMENT handles, and
+                                    // the source local's own release (elem-typed)
+                                    // then frees the strings/arrays the new
+                                    // struct's field still references (dangling
+                                    // reads -- conf_nested_arrays' Row{cells}
+                                    // caught this). kryos_array_dup clones
+                                    // elements per kind; elem_kind=0 degenerates
+                                    // to the plain header clone for scalars.
+                                    let elem_kind: i64 = match elem.as_ref() {
+                                        MirType::Str => 1,
+                                        MirType::Array(_, _) => 2,
+                                        MirType::Map { .. } => 3,
+                                        _ => 0,
+                                    };
+                                    let dup_ref = ensure_func_ref_with_args(
+                                        "kryos_array_dup",
                                         builder,
                                         translator,
                                         module,
-                                        1,
+                                        2,
                                     )?;
-                                    let c = builder.ins().call(retain_ref, &[val]);
+                                    let k = builder.ins().iconst(types::I64, elem_kind);
+                                    let c = builder.ins().call(dup_ref, &[val, k]);
                                     builder.inst_results(c)[0]
                                 }
                                 Some(MirType::Str) => {
@@ -5950,11 +6008,31 @@ fn translate_rvalue<M: Module>(
                 .ins()
                 .load(types::I64, MemFlags::new(), fat_ptr, fn_offset);
 
-            // Build argument list: data_ptr (self) + any extra args.
+            // Build argument list: data_ptr (self) + any extra args. The
+            // signature's param types must match the VALUES actually passed:
+            // the old all-I64 signature ICEd the Cranelift verifier ("arg has
+            // type f64, expected i64") for any dyn method taking an f64 or
+            // bool parameter, because translate_operand naturally produces
+            // F64/I8-typed values. The vtable holds the impl method's DIRECT
+            // function pointer (no adapter thunk on this backend), so the
+            // call must use the method's natural ABI: f64 args stay F64
+            // (XMM), narrow ints/bools widen to the I64 the method's own
+            // prologue expects.
+            let mut translated: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(args.len());
+            for arg in args {
+                let a = translate_operand(arg, builder, translator, module)?;
+                let vt = builder.func.dfg.value_type(a);
+                let a = if vt.is_int() && vt.bits() < 64 {
+                    builder.ins().uextend(types::I64, a)
+                } else {
+                    a
+                };
+                translated.push(a);
+            }
             let mut sig = module.make_signature();
             sig.params.push(AbiParam::new(types::I64)); // self/data
-            for _ in args {
-                sig.params.push(AbiParam::new(types::I64));
+            for a in &translated {
+                sig.params.push(AbiParam::new(builder.func.dfg.value_type(*a)));
             }
 
             // Use the actual return type from the trait method signature.
@@ -5971,10 +6049,7 @@ fn translate_rvalue<M: Module>(
 
             let sig_ref = builder.import_signature(sig);
             let mut call_args = vec![data_ptr];
-            for arg in args {
-                let a = translate_operand(arg, builder, translator, module)?;
-                call_args.push(a);
-            }
+            call_args.extend(translated.iter().copied());
 
             let call = builder.ins().call_indirect(sig_ref, fn_ptr, &call_args);
             if is_void {

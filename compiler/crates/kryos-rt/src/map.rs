@@ -777,6 +777,84 @@ unsafe fn free_entry_slot(handle: i64, kind: i64, elem_kind: i64) {
     }
 }
 
+/// Independent top-level COPY of a map for the `spawn` capture boundary.
+/// `kryos_map_clone` is a retain (shared handle) -- adequate everywhere the
+/// language's shared-map semantics apply, but a map captured by a real OS
+/// thread must be a SNAPSHOT: the doc contract is that a spawn block's
+/// assignments do not mutate the parent, and a shared bucket table mutated
+/// from two threads is also a data race (the rc is atomic; the entries are
+/// not). Copies the entry table; heap-typed keys/values are RETAINED
+/// (shared sub-objects, same depth as every other capture boundary), so
+/// insert/delete/set on either side stays local to that side.
+/// Kinds: 0=scalar, 1=str, 2=array, 3=map (same encoding as
+/// `kryos_map_free_typed`).
+#[no_mangle]
+pub extern "C" fn kryos_map_snapshot(map: i64, key_kind: i64, value_kind: i64) -> i64 {
+    if map == 0 {
+        return kryos_map_new();
+    }
+    unsafe {
+        let src = map as *mut MapHeader;
+        let capacity = (*src).capacity as usize;
+        if capacity == 0 {
+            return kryos_map_new();
+        }
+        let layout = Layout::from_size_align_unchecked(std::mem::size_of::<MapHeader>(), 8);
+        let ptr = MAP_HDR_POOL.get().unwrap_or_else(|| alloc_zeroed(layout));
+        if ptr.is_null() {
+            return 0;
+        }
+        let dst = ptr as *mut MapHeader;
+        // The copy must keep the EXACT source capacity: entries are copied at
+        // their existing bucket indices, and probe sequences are a function
+        // of (hash mod capacity) -- a different table size would orphan them.
+        let entries = alloc_entries(capacity);
+        if entries.is_null() {
+            dealloc(ptr, layout);
+            return 0;
+        }
+        (*dst).len = (*src).len;
+        (*dst).capacity = capacity as i64;
+        (*dst).entries = entries;
+        (*dst).ref_count = 1;
+        let src_entries = (*src).entries;
+        for i in 0..capacity {
+            let e = &*src_entries.add(i);
+            if e.occupied {
+                retain_entry_slot(e.key, key_kind);
+                retain_entry_slot(e.value, value_kind);
+                *entries.add(i) = MapEntry {
+                    key: e.key,
+                    value: e.value,
+                    occupied: true,
+                };
+            }
+        }
+        ptr as i64
+    }
+}
+
+/// Retain one entry slot's key or value handle according to its
+/// compile-time kind (0=scalar: no-op, 1=str, 2=array, 3=map). The retain
+/// mirror of `free_entry_slot`, used by `kryos_map_snapshot`.
+unsafe fn retain_entry_slot(handle: i64, kind: i64) {
+    if handle == 0 {
+        return;
+    }
+    match kind {
+        1 => {
+            crate::string::kryos_string_retain_opt(handle as *mut crate::string::KryosString);
+        }
+        2 => {
+            crate::array::kryos_array_retain_opt(handle as *mut crate::array::KryosArray);
+        }
+        3 => {
+            kryos_map_retain(handle);
+        }
+        _ => {}
+    }
+}
+
 /// Reassignment release: free `old` unless it is the SAME handle as `new`.
 /// Map handles are i64; 0 = uninitialized. Emitted by the compiler before
 /// storing a new value into a mutable map local.

@@ -2275,6 +2275,26 @@ impl TypeChecker {
                     }
                 }
 
+                // Binding the result of the IN-PLACE builtins `sort`/`reverse`
+                // (typed Void deliberately -- see the FnCall arm) previously
+                // surfaced only as downstream "type `void` is not indexable" /
+                // "cannot iterate over `void`" errors that never mentioned the
+                // actual mistake. Steer directly at the binding site.
+                if self.engine.resolve(&final_ty) == Type::Void {
+                    if let Some(Expr::FnCall { callee, .. }) = value.as_ref() {
+                        if let Expr::Identifier { name: cn, .. } = callee.as_ref() {
+                            if cn == "sort" || cn == "reverse" {
+                                self.error(
+                                    format!(
+                                        "the builtin `{cn}` sorts in place and returns nothing -- call `{cn}(arr)` as a statement, or `use std::iter::{{{cn}}}` for the copy-returning version"
+                                    ),
+                                    *span,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 if let Some(pat) = pattern {
                     // Tuple / struct destructuring: bind each variable in the pattern.
                     // Pass through the outer `let mut` so `let mut (a, b) = ...`
@@ -4975,6 +4995,58 @@ impl TypeChecker {
                 let subject_ty = self.infer_expr(subject);
                 if arms.is_empty() {
                     return Type::Void;
+                }
+                // Unreachable-arm check: any arm AFTER an unguarded catch-all
+                // (`_` wildcard or a bare binding `x =>`) can never run. This
+                // must be a hard error, not a lint: the switch-dispatch
+                // lowering is value-directed, so a specific arm placed after
+                // an early `_` previously WON at runtime (`match n { _ =>
+                // "wild", 0 => "zero" }` on 0 printed "zero") -- silently
+                // violating first-match-wins. Rejecting the dead arm keeps
+                // both backends trivially consistent.
+                // A bare `Pattern::Ident` is only a catch-all when it is a
+                // real BINDING -- a bare enum-VARIANT arm (`Red =>`, `Some =>`)
+                // parses as Ident too but is refutable. Classify against the
+                // resolved subject type, conservatively (an unresolved subject
+                // never flags).
+                let subj_resolved = self.engine.resolve(&subject_ty);
+                let ident_is_catch_all = |n: &str| -> bool {
+                    match &subj_resolved {
+                        Type::Enum { name: en, .. } => self
+                            .env
+                            .lookup_enum(en)
+                            .map(|d| !d.variants.iter().any(|(v, _)| v == n))
+                            .unwrap_or(false),
+                        Type::Option { .. } => n != "Some" && n != "None",
+                        Type::Result { .. } => n != "Ok" && n != "Err",
+                        Type::Var(_) | Type::Error => false,
+                        _ => true,
+                    }
+                };
+                let mut catch_all_at: Option<usize> = None;
+                for (i, arm) in arms.iter().enumerate() {
+                    if let Some(prev) = catch_all_at {
+                        let what = if matches!(&arms[prev].pattern, Pattern::Wildcard { .. }) {
+                            "a wildcard `_`".to_string()
+                        } else {
+                            "a binding".to_string()
+                        };
+                        self.error(
+                            format!(
+                                "unreachable match arm: {what} arm above already matches every value -- move the catch-all arm last or delete this arm"
+                            ),
+                            arm.body.span(),
+                        );
+                        break;
+                    }
+                    let is_catch_all = match &arm.pattern {
+                        Pattern::Wildcard { .. } => true,
+                        Pattern::Ident { name, .. } => ident_is_catch_all(name),
+                        _ => false,
+                    };
+                    if arm.guard.is_none() && is_catch_all && i + 1 < arms.len() {
+                        catch_all_at = Some(i);
+                    }
                 }
                 let mut result_ty: Option<Type> = None;
                 for arm in arms {

@@ -247,6 +247,10 @@ impl JitCompiler {
             kryos_rt::map::kryos_map_clone as *const u8,
         );
         jit_builder.symbol(
+            "kryos_map_snapshot",
+            kryos_rt::map::kryos_map_snapshot as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_map_retain",
             kryos_rt::map::kryos_map_retain as *const u8,
         );
@@ -2063,6 +2067,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_map_len", "kryos_map_len", sig(1));
     decl!("kryos_map_free", "kryos_map_free", sig(1));
     decl!("kryos_map_clone", "kryos_map_clone", sig(1));
+    decl!("kryos_map_snapshot", "kryos_map_snapshot", sig(3));
     decl!("kryos_map_retain", "kryos_map_retain", sig(1));
     decl!("kryos_map_has", "kryos_map_has", sig(2));
     decl!("kryos_map_has_str", "kryos_map_has_str", sig(2));

@@ -36,7 +36,7 @@ The compiler inserts a `kryos_spawn_wait_all()` call at the end of `main`, so al
 3. Runs the block body in that thread
 4. Returns immediately to the caller
 
-The spawned block runs in its own child environment. It can read variables from the parent scope, but assignments inside the block create new local bindings -- they do not mutate the parent.
+The spawned block runs in its own child environment. It can read variables from the parent scope, but every capture is a **snapshot**: assignments inside the block -- including index and field mutation (`arr[0] = v`, `s.field = v`, `m["k"] = v`) -- act on the thread's own copy and are never visible to the parent. This holds uniformly for arrays, structs, maps, and strings. For real cross-thread state use the designed tools: **channels** (`std::chan`) to transfer values, **atomics** (`std::sync::atomic_int` / `atomic_bool`) for shared counters and flags, and a `ChanWaitGroup` / `WaitGroup` to join. (`coop_spawn` cooperative tasks run on the parent thread and DO share captured heap objects -- only OS-thread `spawn` snapshots.)
 
 ### Error handling in spawned blocks
 

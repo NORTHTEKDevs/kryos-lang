@@ -220,7 +220,30 @@ fn main() {
     let arc_b = arc_firstw(arc_rows)
     expect(arc_a.tag + arc_b.tag == 14, "[Struct] array element returned from a fn called twice (no double-release)")
 
+    // Struct-LITERAL construction takes an independent COPY of an array
+    // operand (JIT previously only retained -- a shared buffer -- so a later
+    // push through the new struct's field grew the SOURCE array too; the AOT
+    // backend always cloned. Both backends must agree on value semantics at
+    // the literal. NOTE: plain field ASSIGNMENT `b.vals = src` intentionally
+    // SHARES on both backends -- only the literal deep-copies.)
+    let sl_orig = SLNode { vals: [7] }
+    let sl_grown = sl_grow(sl_orig)
+    expect(len(sl_orig.vals) == 1, "struct-literal array field is an independent copy (push through the copy must not grow the source)")
+    expect(len(sl_grown.vals) == 2, "pushed copy has the appended element")
+    let sl_local_src = [1]
+    let sl_local = SLNode { vals: sl_local_src }
+    let sl_local2 = SLNode { vals: push(sl_local.vals, 5) }
+    expect(len(sl_local_src) == 1, "same-frame struct-literal array field is independent of the source local")
+    expect(len(sl_local2.vals) == 2, "chained literal from pushed field")
+
     println("conformance ownership: PASS")
+}
+
+struct SLNode { vals: [i64] }
+fn sl_grow(n: SLNode) -> SLNode {
+    let mut copy = SLNode { vals: n.vals }
+    copy.vals = push(copy.vals, 99)
+    return copy
 }
 
 enum ArcExpr {
