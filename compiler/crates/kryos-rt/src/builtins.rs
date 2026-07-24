@@ -622,7 +622,23 @@ pub extern "C" fn kryos_builtin_parse_int(s_handle: i64) -> i64 {
     let text = parse_str_arg(s_handle);
     match text.trim().parse::<i64>() {
         Ok(v) => v,
-        Err(_) => parse_panic("parse_int", &text),
+        Err(e) => {
+            // Distinguish a syntactically-valid number that merely exceeds
+            // i64's range from garbage input -- the blanket "invalid numeric
+            // input" message claimed a well-formed decimal (e.g. a u64-sized
+            // value round-tripped through to_string) was malformed.
+            if matches!(
+                e.kind(),
+                std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow
+            ) {
+                let msg = format!(
+                    "parse_int: '{}' is out of i64 range (-9223372036854775808..9223372036854775807)",
+                    text.trim()
+                );
+                crate::panic::kryos_panic(msg.as_ptr(), msg.len())
+            }
+            parse_panic("parse_int", &text)
+        }
     }
 }
 

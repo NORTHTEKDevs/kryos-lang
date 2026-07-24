@@ -2915,7 +2915,17 @@ fn translate_instruction<M: Module>(
                 )?;
                 let val_ty = builder.func.dfg.value_type(val);
                 let coerced = if val_ty != dest_ty {
-                    if is_float_type(dest_ty) && !is_float_type(val_ty) {
+                    if is_float_type(dest_ty) && is_float_type(val_ty) {
+                        // Float width change (f64 value into an f32 local --
+                        // e.g. an f32-adapted literal -- or vice versa). The
+                        // int-width branches below would ireduce/sextend a
+                        // FLOAT value: a verifier error.
+                        if dest_ty.bits() < val_ty.bits() {
+                            builder.ins().fdemote(dest_ty, val)
+                        } else {
+                            builder.ins().fpromote(dest_ty, val)
+                        }
+                    } else if is_float_type(dest_ty) && !is_float_type(val_ty) {
                         // Int -> float: bitcast to reinterpret bits as float.
                         // Runtime builtins like kryos_builtin_float return f64
                         // bits packed into an i64 at the C ABI level.

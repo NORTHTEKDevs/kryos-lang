@@ -2228,7 +2228,27 @@ impl TypeChecker {
                 let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
 
                 let final_ty = match (declared_ty, inferred_ty) {
-                    (Some(decl), Some(inferred)) => {
+                    (Some(decl), Some(mut inferred)) => {
+                        // A bare FLOAT LITERAL adapts to a narrower declared
+                        // float type: `let a: f32 = 3.14` types the literal
+                        // f32, mirroring narrow-int literal inference
+                        // (`let b: u8 = 200`). Literal-only by design --
+                        // a COMPUTED f64 still needs an explicit `as f32`
+                        // (lossy narrowing must be visible), and negated
+                        // literals (`-1.5`, a unary op on a literal) count.
+                        let is_float_literal = match value.as_ref() {
+                            Some(Expr::FloatLiteral { .. }) => true,
+                            Some(Expr::UnaryOp { operand, .. }) => {
+                                matches!(operand.as_ref(), Expr::FloatLiteral { .. })
+                            }
+                            _ => false,
+                        };
+                        if is_float_literal
+                            && inferred == Type::F64
+                            && self.engine.resolve(&decl) == Type::F32
+                        {
+                            inferred = Type::F32;
+                        }
                         // Both declared and inferred: unify them.
                         if let Err(diag) = self.engine.unify(&decl, &inferred, *span) {
                             self.diagnostics.push(diag);
@@ -2317,8 +2337,24 @@ impl TypeChecker {
                 ..
             } => {
                 let target_ty = self.infer_expr(target);
-                let value_ty = self.infer_expr(value);
+                let mut value_ty = self.infer_expr(value);
                 self.check_int_literal_range(&target_ty, value, *span);
+                // Float-literal adaptation to an f32 target, mirroring the
+                // `let` path: `m = 2.5` on an f32 var types the literal f32.
+                // Literal-only; computed f64 still needs an explicit cast.
+                let assign_is_float_literal = match value {
+                    Expr::FloatLiteral { .. } => true,
+                    Expr::UnaryOp { operand, .. } => {
+                        matches!(operand.as_ref(), Expr::FloatLiteral { .. })
+                    }
+                    _ => false,
+                };
+                if assign_is_float_literal
+                    && value_ty == Type::F64
+                    && self.engine.resolve(&target_ty) == Type::F32
+                {
+                    value_ty = Type::F32;
+                }
                 if let Err(diag) = self.engine.unify(&target_ty, &value_ty, *span) {
                     self.diagnostics.push(diag);
                 }

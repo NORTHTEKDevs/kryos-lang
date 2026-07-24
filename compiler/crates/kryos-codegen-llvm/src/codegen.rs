@@ -6698,7 +6698,16 @@ impl LlvmCodegen {
                 }
             }
             RValue::ConstFloat(v) => {
-                let hex = float_to_llvm_hex(*v);
+                // An `f32`-typed destination needs the constant ROUNDED to f32
+                // first: LLVM `float` constants must be exactly float-
+                // representable (still written as 64-bit hex), and the raw f64
+                // bits of e.g. 3.14 are not ("floating point constant invalid
+                // for type" -- surfaced by f32 literal inference).
+                let hex = if dest_ty == "float" {
+                    float_to_llvm_hex((*v as f32) as f64)
+                } else {
+                    float_to_llvm_hex(*v)
+                };
                 if is_mutable {
                     let tmp = self.next_temp();
                     self.emit_line(&format!("  {tmp} = fadd {dest_ty} {hex}, -0.0"));

@@ -162,6 +162,9 @@ fn _parse_value(p: Parser, depth: i64) -> ParseResult {
     if ch == "-" or _is_digit(ch) {
         return _parse_number(parser)
     }
+    if ch == "" {
+        throw "json: unexpected end of input at position " + to_string(parser.pos) + " (truncated document)"
+    }
     throw "json: unexpected character '" + ch + "' at position " + to_string(parser.pos)
 }
 
