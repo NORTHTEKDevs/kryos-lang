@@ -5076,18 +5076,27 @@ impl TypeChecker {
                 // resolved subject type, conservatively (an unresolved subject
                 // never flags).
                 let subj_resolved = self.engine.resolve(&subject_ty);
-                let ident_is_catch_all = |n: &str| -> bool {
-                    match &subj_resolved {
-                        Type::Enum { name: en, .. } => self
-                            .env
-                            .lookup_enum(en)
-                            .map(|d| !d.variants.iter().any(|(v, _)| v == n))
-                            .unwrap_or(false),
-                        Type::Option { .. } => n != "Some" && n != "None",
-                        Type::Result { .. } => n != "Ok" && n != "Err",
-                        Type::Var(_) | Type::Error => false,
-                        _ => true,
-                    }
+                let arm_catch_all: Vec<bool> = {
+                    let ident_is_catch_all = |n: &str| -> bool {
+                        match &subj_resolved {
+                            Type::Enum { name: en, .. } => self
+                                .env
+                                .lookup_enum(en)
+                                .map(|d| !d.variants.iter().any(|(v, _)| v == n))
+                                .unwrap_or(false),
+                            Type::Option { .. } => n != "Some" && n != "None",
+                            Type::Result { .. } => n != "Ok" && n != "Err",
+                            Type::Var(_) | Type::Error => false,
+                            _ => true,
+                        }
+                    };
+                    arms.iter()
+                        .map(|arm| match &arm.pattern {
+                            Pattern::Wildcard { .. } => true,
+                            Pattern::Ident { name, .. } => ident_is_catch_all(name),
+                            _ => false,
+                        })
+                        .collect()
                 };
                 let mut catch_all_at: Option<usize> = None;
                 for (i, arm) in arms.iter().enumerate() {
@@ -5105,13 +5114,35 @@ impl TypeChecker {
                         );
                         break;
                     }
-                    let is_catch_all = match &arm.pattern {
-                        Pattern::Wildcard { .. } => true,
-                        Pattern::Ident { name, .. } => ident_is_catch_all(name),
-                        _ => false,
-                    };
-                    if arm.guard.is_none() && is_catch_all && i + 1 < arms.len() {
+                    if arm.guard.is_none() && arm_catch_all[i] && i + 1 < arms.len() {
                         catch_all_at = Some(i);
+                    }
+                }
+                // A GUARDED catch-all placed BETWEEN specific arms of an
+                // ENUM/Option/Result match cannot be honored by the tag-
+                // dispatch lowering (the switch jumps straight to the
+                // scrutinee's tag arm, silently skipping it even when the
+                // guard is true). A LEADING guarded catch-all is fine (it is
+                // hoisted to an ordered pre-switch test), and scalar subjects
+                // use the order-respecting sequential path. Reject the one
+                // unsupported shape with guidance rather than mis-dispatch.
+                if matches!(
+                    subj_resolved,
+                    Type::Enum { .. } | Type::Option { .. } | Type::Result { .. }
+                ) {
+                    let mut seen_specific = false;
+                    for (i, arm) in arms.iter().enumerate() {
+                        if !arm_catch_all[i] {
+                            seen_specific = true;
+                        } else if arm.guard.is_some() && seen_specific {
+                            self.error(
+                                format!(
+                                    "a guarded catch-all arm between specific variant arms is not supported by enum tag dispatch yet -- move it BEFORE the variant arms (it runs as an ordered pre-check there) or restructure the guard into the variant arms"
+                                ),
+                                arm.body.span(),
+                            );
+                            break;
+                        }
                     }
                 }
                 let mut result_ty: Option<Type> = None;
@@ -5611,6 +5642,40 @@ impl TypeChecker {
                         self.error(
                             format!(
                                 "cannot apply `{op_sym}` to type `{resolved}`: it has an array or map field (directly or nested) -- structural equality for array/map fields is not supported; compare those fields explicitly"
+                            ),
+                            span,
+                        );
+                        return Type::Error;
+                    }
+                }
+                // ORDERING (< > <= >=) is defined only for scalars and
+                // strings. On a struct/enum/array/map it type-checked clean
+                // and codegen compared the raw HANDLES -- two equal-valued
+                // structs ordered nondeterministically by heap address
+                // (allocation-order dependent, differs across backends/runs).
+                if matches!(op, BinOp::Lt | BinOp::Gt | BinOp::LtEq | BinOp::GtEq) {
+                    let resolved = self.engine.resolve(&left_ty);
+                    let ordered = resolved.is_numeric()
+                        || matches!(
+                            resolved,
+                            Type::Str
+                                | Type::Char
+                                | Type::Bool
+                                | Type::USize
+                                | Type::ISize
+                                | Type::Var(_)
+                                | Type::Error
+                        );
+                    if !ordered {
+                        let op_sym = match op {
+                            BinOp::Lt => "<",
+                            BinOp::Gt => ">",
+                            BinOp::LtEq => "<=",
+                            _ => ">=",
+                        };
+                        self.error(
+                            format!(
+                                "cannot apply `{op_sym}` to type `{resolved}`: ordering is defined for numbers, strings, and chars only -- compare specific fields instead"
                             ),
                             span,
                         );

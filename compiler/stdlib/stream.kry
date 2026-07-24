@@ -201,11 +201,21 @@ impl Stream {
 // --- Combining streams ------------------------------------------------------
 
 fn stream_concat(a: Stream, b: Stream) -> Stream {
-    let mut items = a.data
+    // Build a FRESH buffer. `let mut items = a.data` aliased the caller's
+    // array handle, and the in-place pushes below then grew `a` itself --
+    // after stream_concat(a, b), a.collect() silently returned b's elements
+    // too while a.count still said the old length (self-inconsistent,
+    // cascading corruption for a caller who innocently reuses `a`).
+    let mut items: [i64] = []
     let mut i = 0
-    while i < b.count {
-        items = push(items, b.data[i])
+    while i < a.count {
+        items = push(items, a.data[i])
         i = i + 1
+    }
+    let mut j = 0
+    while j < b.count {
+        items = push(items, b.data[j])
+        j = j + 1
     }
     let n = len(items)
     return Stream { data: items, count: n }

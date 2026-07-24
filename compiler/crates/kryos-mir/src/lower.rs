@@ -7381,6 +7381,36 @@ fn infer_match_result_type(
 }
 
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
+    // Normalize BARE enum-variant idents (`Red =>`, parsed as Pattern::Ident)
+    // into the qualified `Pattern::Enum` shape before any dispatch decision.
+    // The tag-switch machinery below chains SAME-TAG guarded arms correctly
+    // for Pattern::Enum arms (`Color.Red if g => .. , Color.Red => ..`), but
+    // a bare-Ident variant arm bypassed that grouping: the second same-tag
+    // arm never wired in, so a failed guard fell off the match to the type's
+    // ZERO default (`Red if n > 10 => .., Red => ..` on n=5 returned "").
+    let normalized_arms: Vec<ast::MatchArm> = arms
+        .iter()
+        .map(|a| {
+            if let ast::Pattern::Ident { name, .. } = &a.pattern {
+                if let Some((enum_name, _idx)) = find_enum_variant(ctx, name) {
+                    return ast::MatchArm {
+                        pattern: ast::Pattern::Enum {
+                            name: enum_name,
+                            variant: name.clone(),
+                            fields: Vec::new(),
+                            span: a.pattern.span(),
+                        },
+                        guard: a.guard.clone(),
+                        body: a.body.clone(),
+                        span: a.span,
+                    };
+                }
+            }
+            a.clone()
+        })
+        .collect();
+    let arms: &[ast::MatchArm] = &normalized_arms;
+
     let subj_op = lower_expr_to_operand(ctx, subject);
     let result_ty = infer_match_result_type(ctx, subject, arms);
     let result_local = ctx.alloc_temp(result_ty);
@@ -7460,6 +7490,65 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             return lower_match_sequential(ctx, subj_op, subj_ty_early, arms, result_local, merge_bb);
         }
     }
+
+    // LEADING guarded catch-all arms (`_ if g => ..` / `x if g => ..` before
+    // the variant arms) cannot be expressed inside a tag-directed switch: the
+    // switch dispatched straight to the scrutinee's tag arm, silently
+    // SKIPPING an earlier guarded catch-all even when its guard was true
+    // (the common "general override before specific cases" idiom). Emit each
+    // leading guarded catch-all as an ordered pre-switch test: guard true ->
+    // arm body -> merge; guard false -> fall through toward the switch over
+    // the REMAINING arms. (Bare-variant idents were normalized to
+    // Pattern::Enum above, so a Pattern::Ident here is a genuine binding.)
+    let mut arms_rest: &[ast::MatchArm] = arms;
+    loop {
+        let Some(first) = arms_rest.first() else { break };
+        let is_catch_all = matches!(
+            &first.pattern,
+            ast::Pattern::Wildcard { .. } | ast::Pattern::Ident { .. }
+        );
+        if !(is_catch_all && first.guard.is_some()) || arms_rest.len() == 1 {
+            break;
+        }
+        let body_bb = ctx.alloc_block();
+        let next_bb = ctx.alloc_block();
+        if let ast::Pattern::Ident { name, mutable, .. } = &first.pattern {
+            let subj_ty_now = infer_expr_type(ctx, subject);
+            let bound = ctx.alloc_local(Some(name.clone()), subj_ty_now, *mutable);
+            ctx.emit(Instruction::Assign {
+                dest: bound,
+                value: RValue::Use(subj_op.clone()),
+            });
+        }
+        let cond = lower_expr_to_operand(ctx, first.guard.as_deref().unwrap());
+        ctx.finish_block(
+            Terminator::Branch {
+                cond,
+                then_block: body_bb,
+                else_block: next_bb,
+            },
+            body_bb,
+        );
+        let body_val = lower_expr_to_operand(ctx, &first.body);
+        if let Operand::Local(src) = &body_val {
+            let src_ty = ctx
+                .locals
+                .iter()
+                .find(|l| l.id == *src)
+                .map(|l| l.ty.clone())
+                .unwrap_or(MirType::I64);
+            if !is_copy_type(ctx, &src_ty) {
+                ctx.dropped_locals.insert(src.0);
+            }
+        }
+        ctx.emit(Instruction::Assign {
+            dest: result_local,
+            value: RValue::Use(body_val),
+        });
+        ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
+        arms_rest = &arms_rest[1..];
+    }
+    let arms: &[ast::MatchArm] = arms_rest;
 
     // Detect enum match: either explicit Pattern::Enum, or bare ident patterns
     // where the subject type is an enum (e.g., `match c { Red => ... }`).

@@ -1,0 +1,81 @@
+// Conformance: match guard dispatch on enum subjects (wave-22 criticals).
+//
+// 1. SAME-TAG guarded tiers via BARE variant idents (`Red if g => ..` then
+//    `Red => ..`): a failed guard must chain to the next same-tag arm, not
+//    fall off the match to the type's zero default (previously returned ""
+//    -- bare-Ident variants bypassed the switch path's same-tag grouping;
+//    they are now normalized to qualified Pattern::Enum before dispatch).
+// 2. LEADING guarded catch-all before variant arms (`_ if g => ..` first):
+//    must be honored in source order (previously the tag switch jumped
+//    straight past it to the scrutinee's variant arm even when the guard
+//    was true; it is now hoisted to an ordered pre-switch test).
+// (A guarded catch-all BETWEEN variant arms is a clean compile error --
+// tag dispatch cannot express it; scalar subjects keep full ordering via
+// the sequential path.)
+
+enum MgColor { Red, Green, Blue }
+
+fn tier(c: MgColor, n: i64) -> str {
+    return match c {
+        Red if n > 100 => "red-huge",
+        Red if n > 10 => "red-big",
+        Red => "red-small",
+        Green => "green",
+        _ => "other",
+    }
+}
+
+fn override_first(c: MgColor, n: i64) -> str {
+    return match c {
+        _ if n > 100 => "huge",
+        Red => "red",
+        Blue => "blue",
+        _ => "other",
+    }
+}
+
+fn qualified_tier(c: MgColor, n: i64) -> str {
+    return match c {
+        MgColor.Red if n > 10 => "q-big",
+        MgColor.Red => "q-small",
+        _ => "q-other",
+    }
+}
+
+fn scalar_mid(x: i64, n: i64) -> str {
+    return match x {
+        5 => "five",
+        _ if n > 100 => "huge",
+        7 => "seven",
+        _ => "other",
+    }
+}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn main() {
+    expect(tier(MgColor.Red, 500) == "red-huge", "bare-variant tier: first guard true")
+    expect(tier(MgColor.Red, 50) == "red-big", "bare-variant tier: second guard true after first fails")
+    expect(tier(MgColor.Red, 5) == "red-small", "bare-variant tier: unguarded same-tag arm after both guards fail")
+    expect(tier(MgColor.Green, 5) == "green", "bare-variant tier: other variant unaffected")
+    expect(tier(MgColor.Blue, 5) == "other", "bare-variant tier: wildcard fallthrough")
+
+    expect(override_first(MgColor.Red, 200) == "huge", "leading guarded wildcard wins when true (Red)")
+    expect(override_first(MgColor.Blue, 200) == "huge", "leading guarded wildcard wins when true (Blue)")
+    expect(override_first(MgColor.Red, 5) == "red", "leading guarded wildcard falls to variant arm when false")
+    expect(override_first(MgColor.Green, 5) == "other", "leading guarded wildcard + trailing catch-all")
+
+    expect(qualified_tier(MgColor.Red, 50) == "q-big", "qualified same-tag guard true")
+    expect(qualified_tier(MgColor.Red, 5) == "q-small", "qualified same-tag guard false chains")
+
+    expect(scalar_mid(7, 200) == "huge", "scalar middle guard honored in order")
+    expect(scalar_mid(7, 5) == "seven", "scalar middle guard false falls to later literal")
+    expect(scalar_mid(5, 200) == "five", "scalar earlier literal wins over middle guard")
+
+    println("conformance match guards: PASS")
+}
