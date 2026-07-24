@@ -20,6 +20,21 @@ CEIL_MB=250   # steady state ~4MB; pre-fix build blew past this in seconds
 
 prog="$(mktemp --suffix=.kry 2>/dev/null || echo /tmp/mem_plateau.kry)"
 cat > "$prog" <<'KRY'
+// Helpers returning a heap value, consumed INLINE below (never bound to a
+// local). That result used to be classified non-owning, so it was never
+// dropped -- one leaked buffer per call, O(n) growth in any hot loop.
+// Both helpers bind their result to a named local before returning, so this
+// exercises the caller-side drop only.
+fn mk_str(i: i64) -> str {
+    let s = "row-" + to_string(i)
+    return s
+}
+
+fn mk_arr(i: i64) -> [str] {
+    let a = ["x", "y"]
+    return a
+}
+
 fn main() {
     let mut r = 0
     let mut total = 0
@@ -32,6 +47,8 @@ fn main() {
             let mut xs: [i64] = [i, i + 1]
             xs = push(xs, i * 2)
             acc = acc + xs[2]
+            acc = acc + len(mk_str(i))
+            acc = acc + len(mk_arr(i))
             i = i + 1
         }
         total = total + acc

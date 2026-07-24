@@ -3165,6 +3165,21 @@ fn drop_unescaped_str_temps(
                                     &ctx.current_instructions[inst_mark..],
                                     id,
                                 ))
+                            // A USER function returning a heap type hands the
+                            // caller an owned reference (a fresh allocation,
+                            // or a retained borrow -- the return path retains
+                            // either way). Without this, the result of
+                            // `len(build(i))` -- any call consumed INLINE
+                            // rather than bound to a named local -- was never
+                            // dropped, leaking one buffer per call: O(n)
+                            // growth in any hot loop (~218MB over 1.6M calls).
+                            // A result BOUND to a local was already freed by
+                            // the scope drops, which is why this only bit the
+                            // inline-argument form.
+                            || ctx
+                                .func_ret_types
+                                .get(func.as_str())
+                                .is_some_and(|rt| !is_copy_type(ctx, rt))
                     }
                     // `id = src` where `src`'s OWN definition in this same
                     // window is a map-get of a container-typed value,
