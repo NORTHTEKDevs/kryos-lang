@@ -47,6 +47,12 @@ pub struct LoweringContext {
     /// pre-seeded with the whole builtin table, so `pop`/`push` would look
     /// like user functions and their arguments would stop being consumed.
     user_fn_names: std::collections::HashSet<String>,
+    /// Names in the BUILTIN table. A program can define a method whose bare
+    /// name collides with one (`impl List { fn push }` vs the `push` builtin),
+    /// and that name then also lands in `user_fn_names` -- so any
+    /// "is this a user function" decision must exclude these, or a builtin
+    /// call gets user-function argument semantics.
+    builtin_fn_names: std::collections::HashSet<String>,
     /// Method ownership: (TypeName, method_name) -> mangled function name.
     method_owners: HashMap<(String, String), String>,
     /// Trait definitions: trait_name -> list of required method signatures.
@@ -398,6 +404,7 @@ impl LoweringContext {
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
             user_fn_names: std::collections::HashSet::new(),
+            builtin_fn_names: std::collections::HashSet::new(),
             method_owners: HashMap::new(),
             trait_defs: HashMap::new(),
             trait_default_methods: HashMap::new(),
@@ -1188,6 +1195,7 @@ pub fn lower_module_with_lambda_params(
         ("ptr_write_i64", MirType::Void),
         ("handle_to_str", MirType::Str),
     ] {
+        ctx.builtin_fn_names.insert(name.to_string());
         ctx.func_ret_types.insert(name.to_string(), ret_ty);
     }
 
@@ -3200,6 +3208,15 @@ fn drop_unescaped_str_temps(
                     RValue::Call { func, .. } => {
                         func == "to_string"
                             || func == "kryos_string_concat"
+                            // These allocate a FRESH string and hand it back;
+                            // the temp holding it is its only owner. They were
+                            // missing here, so a character comparison inside a
+                            // loop -- `if s[i] != d[j]`, which is how
+                            // std::string::split scans for its delimiter --
+                            // leaked both operands on every iteration.
+                            || func == "kryos_string_char_at"
+                            || func == "__kry_pm_string_substring"
+                            || func == "substr"
                             // `id` IS the map-get destination itself (the
                             // Borrow-to-own temp from `lower_expr_to_rvalue`'s
                             // Map IndexAccess arm), immediately followed in
@@ -3275,7 +3292,8 @@ fn drop_unescaped_str_temps(
                         // heap arguments were freed: `consume(build(i))` still
                         // leaked its intermediate, 76MB per 1M calls.
                         if BORROWING_CALL_ARGS.contains(&func.as_str())
-                            || ctx.user_fn_names.contains(func.as_str())
+                            || (ctx.user_fn_names.contains(func.as_str())
+                                && !ctx.builtin_fn_names.contains(func.as_str()))
                             // `push` RETAINS a heap value argument for the
                             // array's own share (see the push_like path in
                             // `consume_call_args`), so the caller's temp still
@@ -5210,7 +5228,26 @@ fn lower_if(
     elif_clauses: &[(ast::Expr, ast::Block)],
     else_block: &Option<ast::Block>,
 ) {
+    // Drop the condition's own heap temporaries before branching -- see the
+    // matching comment in `lower_while`. `if len(build(i)) > 0 { .. }` in a
+    // loop leaked one buffer per evaluation.
+    let cond_inst_mark = ctx.current_instructions.len();
+    let cond_block_mark = ctx.next_block;
+    let cond_locals_mark = ctx.locals.len();
+    let cond_partial_moved = ctx.partial_moved_locals.clone();
     let cond_op = lower_expr_to_operand(ctx, condition);
+    let cond_escaping = match &cond_op {
+        Operand::Local(id) => Some(id.0),
+        _ => None,
+    };
+    drop_unescaped_str_temps(
+        ctx,
+        cond_inst_mark,
+        cond_block_mark,
+        cond_locals_mark,
+        &cond_partial_moved,
+        cond_escaping,
+    );
     let then_bb = ctx.alloc_block();
     let else_bb = ctx.alloc_block();
     let merge_bb = ctx.alloc_block();
@@ -5281,8 +5318,29 @@ fn lower_while(ctx: &mut LoweringContext, condition: &ast::Expr, body: &ast::Blo
     // Jump to loop header.
     ctx.finish_block(Terminator::Goto(header_bb), header_bb);
 
-    // Header: evaluate condition, branch.
+    // Header: evaluate condition, branch. Any heap TEMPORARY the condition
+    // allocates (`while len(build(i)) > 0`, or the char_at comparisons inside
+    // std::string::split) had no drop path at all: the statement-end cleanup
+    // runs after the whole statement and bails on one that created blocks, so
+    // a condition re-evaluated every iteration leaked once per iteration.
+    // Drop them here, before the branch, exactly as the return path does.
+    let cond_inst_mark = ctx.current_instructions.len();
+    let cond_block_mark = ctx.next_block;
+    let cond_locals_mark = ctx.locals.len();
+    let cond_partial_moved = ctx.partial_moved_locals.clone();
     let cond_op = lower_expr_to_operand(ctx, condition);
+    let cond_escaping = match &cond_op {
+        Operand::Local(id) => Some(id.0),
+        _ => None,
+    };
+    drop_unescaped_str_temps(
+        ctx,
+        cond_inst_mark,
+        cond_block_mark,
+        cond_locals_mark,
+        &cond_partial_moved,
+        cond_escaping,
+    );
     ctx.finish_block(
         Terminator::Branch {
             cond: cond_op,
@@ -8752,7 +8810,8 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
     // conf_spinlock_mutex, where a borrowed `self` on a Mutex method made a
     // spawned thread read `dropped` out of freed memory). Runtime/native
     // callees are not in `user_fn_names` and are unaffected.
-    let user_fn_borrows_heap_args = ctx.user_fn_names.contains(func);
+    let user_fn_borrows_heap_args =
+        ctx.user_fn_names.contains(func) && !ctx.builtin_fn_names.contains(func);
     // `push` transfers ownership of its value argument into the array: the
     // array stores the (pointer-sized) value and later drops it when the
     // array itself is dropped. This includes @copy STRUCTS, which despite
@@ -8761,7 +8820,31 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
     // observed as non-deterministic garbage in array elements). So for push
     // we consume @copy struct args too, not just non-copy args.
     let push_like = func == "push";
-    for arg in args {
+    // The receiver retain below exists to give the CALL RESULT its own
+    // reference: `push` hands back the receiver handle, so `let nd =
+    // push(self.data, v)` makes `nd` a second owner and the array must count
+    // it. It is already skipped when the result is assigned straight back
+    // (`a = push(a, v)`, caught by the `== dest` test below).
+    //
+    // When the result is DISCARDED -- a bare `push(arr, v)` statement, which
+    // the stdlib uses in ~70 places (iter, json, path, http, string, fmt) --
+    // nobody new owns the handle, so that retain is pure imbalance. The
+    // array's ref_count never came back down, and its drop then bailed on the
+    // `ref_count > 1` guard and freed NEITHER the buffer NOR any element:
+    // std::string::split leaked ~870MB per 1M calls. Leave the receiver
+    // completely alone in that case -- a discarded push neither takes nor
+    // gives ownership of the array.
+    let push_result_discarded = push_like
+        && ctx
+            .locals
+            .iter()
+            .find(|l| l.id == dest)
+            .map(|l| matches!(l.ty, MirType::Void))
+            .unwrap_or(false);
+    for (arg_idx, arg) in args.iter().enumerate() {
+        if push_result_discarded && arg_idx == 0 {
+            continue;
+        }
         if let Operand::Local(local_id) = arg {
             if *local_id == dest {
                 continue;
