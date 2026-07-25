@@ -3237,7 +3237,16 @@ fn drop_unescaped_str_temps(
                 RValue::BinOp { left, right, .. } => mentions(left, id) || mentions(right, id),
                 RValue::Call { func, args } => {
                     if args.iter().any(|a| mentions(a, id)) {
-                        if BORROWING_CALL_ARGS.contains(&func.as_str()) {
+                        // A USER function borrows its Str/Array/Map arguments
+                        // (see `consume_call_args`), and candidates here are
+                        // already filtered to exactly those types -- so
+                        // passing a temp to one is not an escape, and the temp
+                        // still needs its own drop. Without this, only NAMED
+                        // heap arguments were freed: `consume(build(i))` still
+                        // leaked its intermediate, 76MB per 1M calls.
+                        if BORROWING_CALL_ARGS.contains(&func.as_str())
+                            || ctx.user_fn_names.contains(func.as_str())
+                        {
                             true
                         } else {
                             continue 'cand; // unknown callee may take ownership
