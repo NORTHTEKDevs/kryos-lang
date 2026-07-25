@@ -51,7 +51,13 @@ fn reads_arg(s: str, a: [str]) -> i64 {
     return len(s) + len(a)
 }
 
+struct Holder { name: str }
+
 fn main() {
+    let mut slots = {}
+    slots["k"] = "seed"
+    let mut cells: [str] = ["c0", "c1"]
+    let mut rec = Holder { name: "seed" }
     let mut r = 0
     let mut total = 0
     while r < 40 {
@@ -68,6 +74,15 @@ fn main() {
             acc = acc + len(mk_expr(i))
             let held = mk_arr(i)
             acc = acc + reads_arg(s, held)
+            // Overwriting an occupied heap SLOT must release what it replaced:
+            // map value, array element and struct field each leaked one buffer
+            // per assignment. The element READ below also used to leak -- both
+            // backends give the reader its own ownership (LLVM retains,
+            // Cranelift clones a str) and nothing balanced it.
+            slots["k"] = mk_str(i)
+            cells[0] = mk_str(i)
+            rec.name = mk_str(i)
+            acc = acc + len(slots["k"]) + len(cells[0]) + len(rec.name)
             i = i + 1
         }
         total = total + acc

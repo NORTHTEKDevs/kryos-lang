@@ -1,0 +1,97 @@
+// Conformance: overwriting a heap SLOT releases the value it replaced,
+// without freeing anything another holder still references (wave-25).
+//
+// `m[k] = v`, `a[i] = v` and `s.field = v` all replaced the stored handle
+// while nothing released the previous one -- one leaked buffer per
+// assignment, which a cache or a state object does on every iteration. The
+// release is guarded by pointer inequality, and a value read OUT of the
+// container beforehand took its own reference, so both must survive the
+// overwrite. This test asserts the VALUES; tests/mem_plateau_check.sh
+// asserts the memory does not grow.
+
+struct Rec { name: str, tags: [str] }
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- map value ---
+    let mut m = {}
+    m["k"] = "first" + ""
+    let m_alias = m["k"]
+    m["k"] = "second" + ""
+    expect(m_alias == "first", "map: value read out before the overwrite survives")
+    expect(m["k"] == "second", "map: slot holds the new value")
+
+    // int-keyed map takes the same path through kryos_map_insert
+    let mut mi: map<i64, str> = {}
+    mi[7] = "i-first" + ""
+    let mi_alias = mi[7]
+    mi[7] = "i-second" + ""
+    expect(mi_alias == "i-first", "int-key map: previous value survives")
+    expect(mi[7] == "i-second", "int-key map: slot updated")
+
+    // --- array element ---
+    let mut a: [str] = ["a" + "0", "a1"]
+    let a_alias = a[0]
+    a[0] = "b" + "0"
+    expect(a_alias == "a0", "array: element read out before the overwrite survives")
+    expect(a[0] == "b0", "array: slot holds the new value")
+    expect(a[1] == "a1", "array: untouched sibling element intact")
+
+    // --- struct field ---
+    let mut r = Rec { name: "n" + "1", tags: ["t1"] }
+    let r_alias = r.name
+    r.name = "n" + "2"
+    expect(r_alias == "n1", "field: value read out before the overwrite survives")
+    expect(r.name == "n2", "field: slot holds the new value")
+    expect(r.tags[0] == "t1", "field: sibling field intact")
+
+    // --- storing the SAME handle back must not free it ---
+    let same = "same" + ""
+    m["s"] = same
+    m["s"] = same
+    expect(m["s"] == "same", "map: re-storing the same handle is a no-op")
+    a[1] = same
+    a[1] = same
+    expect(a[1] == "same", "array: re-storing the same handle is a no-op")
+    r.name = same
+    r.name = same
+    expect(r.name == "same", "field: re-storing the same handle is a no-op")
+    expect(same == "same", "the shared handle itself is still readable")
+
+    // --- container-typed values (array element that is itself an array) ---
+    let mut nested: [[str]] = [["x1"], ["x2"]]
+    let n_alias = nested[0]
+    nested[0] = ["y1"]
+    expect(n_alias[0] == "x1", "nested: array read out before the overwrite survives")
+    expect(nested[0][0] == "y1", "nested: slot holds the new array")
+
+    let mut mm: map<str, [str]> = {}
+    mm["arr"] = ["p1"]
+    let mm_alias = mm["arr"]
+    mm["arr"] = ["q1"]
+    expect(mm_alias[0] == "p1", "map-of-array: previous array survives")
+    expect(mm["arr"][0] == "q1", "map-of-array: slot updated")
+
+    // --- repeated overwrite in a loop, values stay correct throughout ---
+    let mut acc = 0
+    let mut i = 0
+    while i < 200 {
+        m["loop"] = "v" + to_string(i)
+        a[0] = "e" + to_string(i)
+        r.name = "f" + to_string(i)
+        acc = acc + len(m["loop"]) + len(a[0]) + len(r.name)
+        i = i + 1
+    }
+    expect(m["loop"] == "v199", "loop: map slot correct at the end")
+    expect(a[0] == "e199", "loop: array slot correct at the end")
+    expect(r.name == "f199", "loop: field correct at the end")
+    expect(acc > 0, "loop: lengths accumulated")
+
+    println("conformance slot overwrite: PASS")
+}

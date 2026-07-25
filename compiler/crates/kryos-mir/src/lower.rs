@@ -2987,6 +2987,13 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     // either.
     "kryos_map_insert",
     "kryos_map_insert_str",
+    // `a[i] = v` (array element store) is the exact counterpart of the map
+    // inserts above: the store site emits its OWN retain for the array's
+    // share, so the caller's value temp still holds its own reference and
+    // must still get its normal drop. Without this entry the walk bailed on
+    // the unrecognized callee and the element store leaked the value it had
+    // just written, once per assignment.
+    "kryos_array_set",
     // Compiler-emitted compensating retains (kryos_map_insert(_str)'s value-
     // arg retain, "let copy = container" bindings, borrow-to-own wrapping,
     // etc.) always just bump a refcount and return the SAME handle -- they
@@ -3002,6 +3009,17 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "kryos_array_retain_opt",
     "kryos_map_retain",
     "kryos_map_retain_opt",
+    // The compensating release emitted when a container slot is OVERWRITTEN
+    // (`m[k] = v`, `a[i] = v`). Same reasoning as the retains above: the walk
+    // must not bail on it. It frees its FIRST argument (the replaced value,
+    // which is read straight out of the container and is never a drop
+    // candidate itself -- a plain container read is not classified as owning)
+    // and only compares the SECOND, so the new value is borrowed here and
+    // still needs its own statement-end drop. Without this entry the new
+    // value was disqualified and the overwrite leaked what it just stored.
+    "kryos_string_release_if_ne",
+    "kryos_array_release_if_ne",
+    "kryos_map_release_if_ne",
 ];
 
 /// Does `src`'s definition, within this instruction window, match the
@@ -3167,6 +3185,18 @@ fn drop_unescaped_str_temps(
                     // candidates are pre-filtered to Str-typed temps, so an
                     // Add-defined one is a fresh concat allocation it owns.
                     RValue::BinOp { op: MirBinOp::Add, .. } => true,
+                    // An ELEMENT read of a heap-typed element gives the reader
+                    // its own ownership on BOTH backends -- LLVM retains it
+                    // ("borrow-to-own"), Cranelift goes further and CLONES a
+                    // str element into a fresh allocation. Nothing balanced
+                    // that, so every `arr[i]` read of a str/array/map element
+                    // leaked one reference (a whole copy on Cranelift). This
+                    // is the same reasoning the struct-FIELD read already uses
+                    // below via `field_source`; candidates are pre-filtered to
+                    // exactly the heap types the backends act on. The escape
+                    // walk still disqualifies any temp that leaves the
+                    // statement, so only a provably non-escaping read drops.
+                    RValue::Index { .. } => true,
                     RValue::Call { func, .. } => {
                         func == "to_string"
                             || func == "kryos_string_concat"
@@ -4253,6 +4283,49 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // (insert_str deep-copies the key).
                             let val_ty = infer_expr_type(ctx, value);
                             let val_retain = retain_for_ty(&val_ty);
+                            let val_op_for_release = val_op.clone();
+                            // Overwriting an occupied slot REPLACES the stored
+                            // handle. The runtime cannot release the previous
+                            // one (only the compiler knows whether the slot is
+                            // a scalar or a pointer), so `m[k] = v` on a key
+                            // that already had a heap value leaked it -- one
+                            // buffer per overwrite, which a cache/counter loop
+                            // does on every iteration. Read the old value
+                            // first, then release it after the store, guarded
+                            // by pointer inequality so re-storing the SAME
+                            // handle is a no-op.
+                            let old_slot = release_if_ne_fn(&val_ty).map(|rel| {
+                                let old_tmp = ctx.alloc_temp(val_ty.clone());
+                                let read = if matches!(obj_ty, MirType::Map { .. }) {
+                                    let idx_ty = infer_expr_type(ctx, index);
+                                    let get_fn = if idx_ty == MirType::Str {
+                                        "kryos_map_get_str"
+                                    } else {
+                                        "kryos_map_get"
+                                    };
+                                    RValue::Call {
+                                        func: get_fn.to_string(),
+                                        args: vec![map_op.clone(), key_op.clone()],
+                                    }
+                                } else {
+                                    // The RAW runtime getter, deliberately not
+                                    // `RValue::Index`: an element read through
+                                    // the normal path emits a "borrow-to-own"
+                                    // retain, so releasing that handle would
+                                    // only undo the read's own retain and
+                                    // leave the container's reference intact --
+                                    // the replaced value would still leak.
+                                    RValue::Call {
+                                        func: "kryos_array_get".to_string(),
+                                        args: vec![map_op.clone(), key_op.clone()],
+                                    }
+                                };
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: read,
+                                });
+                                (rel, old_tmp)
+                            });
                             if matches!(obj_ty, MirType::Map { .. }) {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
@@ -4299,6 +4372,20 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     });
                                 }
                             }
+                            // Release the REPLACED value (see the read above).
+                            // Guarded by pointer inequality, so storing the
+                            // same handle back is a no-op, and null-safe for a
+                            // key that had no previous value.
+                            if let Some((rel, old_tmp)) = old_slot {
+                                let sink = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: sink,
+                                    value: RValue::Call {
+                                        func: rel.to_string(),
+                                        args: vec![Operand::Local(old_tmp), val_op_for_release],
+                                    },
+                                });
+                            }
                         } else if let ast::Expr::Deref { inner, .. } = target {
                             // Deref assignment: *ptr = value → store through pointer.
                             let ptr_op = lower_expr_to_operand(ctx, inner);
@@ -4323,7 +4410,53 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // already coerces, reassignment did not).
                             let field_ty = infer_expr_type(ctx, target);
                             let val_op = coerce_to_dyn_if_needed(ctx, val_op, &field_ty, value);
-                            lower_nested_field_assign(ctx, object, field, val_op);
+                            // Overwriting a heap FIELD replaces the stored
+                            // handle, and nothing released the previous one:
+                            // `r.name = compute()` in a loop leaked a buffer
+                            // per assignment. Read the old handle first, then
+                            // release it after the store, guarded by pointer
+                            // inequality (re-storing the same handle is a
+                            // no-op) -- the same treatment `m[k] = v` and
+                            // `a[i] = v` get above.
+                            let old_field = release_if_ne_fn(&field_ty).map(|rel| {
+                                let old_tmp = ctx.alloc_temp(field_ty.clone());
+                                let obj_op = lower_expr_to_operand(ctx, object);
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: RValue::Field {
+                                        object: obj_op,
+                                        field: field.clone(),
+                                    },
+                                });
+                                (rel, old_tmp)
+                            });
+                            lower_nested_field_assign(ctx, object, field, val_op.clone());
+                            if let Some((rel, old_tmp)) = old_field {
+                                // TWO releases, both guarded by old != new.
+                                // Unlike the map/array paths there is no raw
+                                // field getter -- a `RValue::Field` read emits
+                                // a "borrow-to-own" retain, so the handle read
+                                // above carries a reference of its own ON TOP
+                                // of the one the slot holds. The first release
+                                // balances the read, the second drops the slot's
+                                // reference (the one the overwrite orphaned).
+                                // Any OTHER live holder of that value retained
+                                // when it read it, so it keeps its own count and
+                                // survives -- covered by the alias oracle.
+                                for _ in 0..2 {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rel.to_string(),
+                                            args: vec![
+                                                Operand::Local(old_tmp),
+                                                val_op.clone(),
+                                            ],
+                                        },
+                                    });
+                                }
+                            }
                         } else {
                             // Fallback: evaluate RHS into a temp (may have side effects).
                             let temp = ctx.alloc_temp(MirType::I64);
