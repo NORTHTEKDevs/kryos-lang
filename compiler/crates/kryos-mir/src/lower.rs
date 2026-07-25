@@ -3276,6 +3276,20 @@ fn drop_unescaped_str_temps(
                         // leaked its intermediate, 76MB per 1M calls.
                         if BORROWING_CALL_ARGS.contains(&func.as_str())
                             || ctx.user_fn_names.contains(func.as_str())
+                            // `push` RETAINS a heap value argument for the
+                            // array's own share (see the push_like path in
+                            // `consume_call_args`), so the caller's temp still
+                            // holds its own reference and must still drop it --
+                            // the same contract as kryos_array_set / the map
+                            // inserts. It cannot be listed in
+                            // BORROWING_CALL_ARGS itself, because
+                            // `consume_call_args` returns EARLY on that list
+                            // and would skip emitting the retain. Without this,
+                            // every `push(arr, <fresh heap value>)` leaked one
+                            // reference: an array built by push in a loop --
+                            // which is how most of the stdlib builds arrays --
+                            // never freed its elements.
+                            || func == "push"
                         {
                             true
                         } else {
