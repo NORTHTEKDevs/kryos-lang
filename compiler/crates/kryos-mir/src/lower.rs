@@ -3187,6 +3187,17 @@ fn drop_unescaped_str_temps(
                                 .get(func.as_str())
                                 .is_some_and(|rt| !is_copy_type(ctx, rt))
                     }
+                    // A CLOSURE call (`f(i)`) and a DYN method call
+                    // (`obj.label()`) hand back an owned reference exactly
+                    // like a direct call to a named function -- the callee
+                    // returns through the same path, which retains a borrowed
+                    // return. Neither carries a resolvable callee NAME, so the
+                    // arm above could not see them and their heap results were
+                    // never dropped when consumed inline: 800k calls leaked
+                    // 57MB through a closure and 43MB through a dyn method.
+                    // Candidates are already filtered to Str/Array/Map temps,
+                    // so reaching here means the result is a heap handle.
+                    RValue::CallIndirect { .. } | RValue::VtableCall { .. } => true,
                     // `id = src` where `src`'s OWN definition in this same
                     // window is a map-get of a container-typed value,
                     // immediately compensated by a "Borrow-to-own" retain on
