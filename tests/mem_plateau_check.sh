@@ -43,6 +43,14 @@ fn mk_expr(i: i64) -> str {
     return "row-" + to_string(i)
 }
 
+// Takes a heap ARGUMENT and only reads it. The caller used to mark the
+// argument consumed (assuming the callee took ownership) while the callee
+// treated params as caller-owned and never dropped them, so nobody freed it:
+// one leaked buffer per call, on both backends. Parameters are borrows now.
+fn reads_arg(s: str, a: [str]) -> i64 {
+    return len(s) + len(a)
+}
+
 fn main() {
     let mut r = 0
     let mut total = 0
@@ -58,6 +66,8 @@ fn main() {
             acc = acc + len(mk_str(i))
             acc = acc + len(mk_arr(i))
             acc = acc + len(mk_expr(i))
+            let held = mk_arr(i)
+            acc = acc + reads_arg(s, held)
             i = i + 1
         }
         total = total + acc

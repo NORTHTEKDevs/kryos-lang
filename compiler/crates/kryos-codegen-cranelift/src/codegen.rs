@@ -2762,12 +2762,17 @@ pub fn translate_function<M: Module>(
     // arg without a matching retain, leaving rc imbalance.
     for (i, param) in mir_func.params.iter().enumerate() {
         let val = builder.block_params(entry_block)[i];
-        let retain_fn = match &param.ty {
-            MirType::Array(_, _) => Some("kryos_array_retain"),
-            MirType::Str => Some("kryos_string_retain"),
-            MirType::Map { .. } => Some("kryos_map_retain"),
-            _ => None,
-        };
+        // A parameter is a BORROW: the caller holds the reference and drops
+        // it (see `consume_call_args`). This used to retain Str/Array/Map
+        // params here, claiming the retain was "matched by drop at scope
+        // exit" -- nothing matched it, because `emit_named_scope_drops`
+        // deliberately skips params, so every call with a heap argument
+        // bumped the count for good and the value could never reach rc 0.
+        // The LLVM backend never emitted this retain; the two backends now
+        // agree. Params cannot be reassigned (E0302), so no interior release
+        // observes the missing count, and `let mut copy = param` still
+        // retains through `emit_param_source_retain`.
+        let retain_fn: Option<&str> = None;
         let final_val = if let Some(fname) = retain_fn {
             let f = ensure_func_ref_with_args(fname, builder, &mut translator, module, 1)?;
             let c = builder.ins().call(f, &[val]);

@@ -39,6 +39,14 @@ pub struct LoweringContext {
     enum_defs: HashMap<String, Vec<EnumVariantDef>>,
     /// Function return types: func_name -> MirType.
     func_ret_types: HashMap<String, MirType>,
+    /// Names of functions DEFINED IN THIS PROGRAM (free functions, impl
+    /// methods, trait defaults) as opposed to the builtin/runtime entries that
+    /// also live in `func_ret_types`. Used to decide argument ownership: a
+    /// user function borrows its heap arguments, a runtime callee may take
+    /// them. Keying that decision off `func_ret_types` is WRONG -- it is
+    /// pre-seeded with the whole builtin table, so `pop`/`push` would look
+    /// like user functions and their arguments would stop being consumed.
+    user_fn_names: std::collections::HashSet<String>,
     /// Method ownership: (TypeName, method_name) -> mangled function name.
     method_owners: HashMap<(String, String), String>,
     /// Trait definitions: trait_name -> list of required method signatures.
@@ -389,6 +397,7 @@ impl LoweringContext {
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
+            user_fn_names: std::collections::HashSet::new(),
             method_owners: HashMap::new(),
             trait_defs: HashMap::new(),
             trait_default_methods: HashMap::new(),
@@ -1299,7 +1308,8 @@ pub fn lower_module_with_lambda_params(
                         None => MirType::Void,
                     }
                 };
-                ctx.func_ret_types.insert(name.clone(), mir_ret);
+                ctx.user_fn_names.insert(name.clone());
+                        ctx.func_ret_types.insert(name.clone(), mir_ret);
                 // If the return type names an actor, `resolve_type` just
                 // erased it to a bare `I64` handle. Record the logical actor
                 // name in `fn_return_actor_types` BEFORE that's lost, so a
@@ -1507,6 +1517,7 @@ pub fn lower_module_with_lambda_params(
                                     },
                                 );
                             }
+                            ctx.user_fn_names.insert(mangled.clone());
                             ctx.func_ret_types.insert(mangled, MirType::I64);
                         } else {
                             let mir_ret = match ret_ty {
@@ -1544,6 +1555,7 @@ pub fn lower_module_with_lambda_params(
                                 })
                                 .collect();
                             ctx.func_param_types.insert(mangled.clone(), param_types);
+                            ctx.user_fn_names.insert(mangled.clone());
                             ctx.func_ret_types.insert(mangled, mir_ret);
                         }
                         // Record the self-param + return TypeExprs so an
@@ -1602,6 +1614,7 @@ pub fn lower_module_with_lambda_params(
                                         Some(ty) => ctx.resolve_type(ty),
                                         None => MirType::Void,
                                     };
+                                    ctx.user_fn_names.insert(mangled.clone());
                                     ctx.func_ret_types.insert(mangled.clone(), mir_ret);
                                     // Param types (self excluded) so the
                                     // method-call arg coercion sees a `dyn
@@ -1687,6 +1700,7 @@ pub fn lower_module_with_lambda_params(
                             Some(ty) => ctx.resolve_type(ty),
                             None => MirType::Void,
                         };
+                        ctx.user_fn_names.insert(name.clone());
                         ctx.func_ret_types.insert(name.clone(), mir_ret);
                     }
                 }
@@ -8564,6 +8578,25 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
     if BORROWING_CALL_ARGS.contains(&func) {
         return;
     }
+    // A USER function BORROWS a str/array/map argument. The callee records
+    // params in `param_locals` and never drops them, so treating the argument
+    // as MOVED here left NOBODY freeing it -- passing a string to your own
+    // function leaked one buffer per call on both backends.
+    //
+    // This is one half of the parameter-ownership model; the other half is
+    // that no backend may take a reference of its own for such a param (the
+    // Cranelift prologue used to retain exactly these three types with
+    // nothing releasing it). Together: the caller holds the one reference and
+    // drops it, like any other local.
+    //
+    // Deliberately limited to Str/Array/Map -- the three types the prologue
+    // retained. STRUCT/enum arguments keep the ownership-transfer treatment:
+    // a struct handle is shared by `spawn` snapshots and container reads, so
+    // dropping it in the caller frees it under another live holder (proven by
+    // conf_spinlock_mutex, where a borrowed `self` on a Mutex method made a
+    // spawned thread read `dropped` out of freed memory). Runtime/native
+    // callees are not in `user_fn_names` and are unaffected.
+    let user_fn_borrows_heap_args = ctx.user_fn_names.contains(func);
     // `push` transfers ownership of its value argument into the array: the
     // array stores the (pointer-sized) value and later drops it when the
     // array itself is dropped. This includes @copy STRUCTS, which despite
@@ -8583,6 +8616,14 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 .find(|l| l.id == *local_id)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
+            if user_fn_borrows_heap_args
+                && matches!(
+                    local_ty,
+                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                )
+            {
+                continue; // borrowed: the caller keeps its reference and drop
+            }
             // A container element pushed into an array is SHARED, not moved:
             // the language allows reading the source after the push (the
             // checker does not flag it), and the Cranelift backend's array
