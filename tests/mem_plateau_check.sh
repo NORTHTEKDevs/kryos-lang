@@ -35,6 +35,14 @@ fn mk_arr(i: i64) -> [str] {
     return a
 }
 
+// Returns an expression with an UNNAMED intermediate. Those temps had no
+// drop path on the return route -- the statement-end cleanup runs after the
+// return terminator, so its drops were dead code -- and leaked one buffer
+// per call on top of the caller-side leak above.
+fn mk_expr(i: i64) -> str {
+    return "row-" + to_string(i)
+}
+
 fn main() {
     let mut r = 0
     let mut total = 0
@@ -49,6 +57,7 @@ fn main() {
             acc = acc + xs[2]
             acc = acc + len(mk_str(i))
             acc = acc + len(mk_arr(i))
+            acc = acc + len(mk_expr(i))
             i = i + 1
         }
         total = total + acc

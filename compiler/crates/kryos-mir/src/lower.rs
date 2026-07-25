@@ -2905,7 +2905,7 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     // out of src" -- only the former is safe to reverse.
     let partial_moved_before = ctx.partial_moved_locals.clone();
     lower_stmt_inner(ctx, stmt);
-    drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before);
+    drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before, None);
 }
 
 /// Calls that read a heap-typed argument and neither store nor free it --
@@ -3069,6 +3069,11 @@ fn drop_unescaped_str_temps(
     block_mark: u32,
     locals_mark: usize,
     partial_moved_before: &std::collections::HashSet<u32>,
+    // Local that must never be dropped by this pass because it is about to
+    // ESCAPE the window as a return value. Only the `Stmt::Return` caller
+    // passes it; the statement-end caller has no escaping temp (a temp that
+    // escapes into a named local disqualifies itself in the walk below).
+    escaping: Option<u32>,
 ) {
     // Diagnostic kill-switch (KRYOS_NO_TEMP_DROPS=1) for bisecting runtime
     // faults to this pass without a rebuild.
@@ -3094,6 +3099,7 @@ fn drop_unescaped_str_temps(
             l.name.is_none()
                 && matches!(l.ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
                 && !l.mutable
+                && escaping != Some(l.id.0)
         })
         .map(|l| l.id)
         .collect();
@@ -4422,6 +4428,15 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Without this the caller received a raw struct through a
             // `dyn`-typed return slot and the later vtable_call segfaulted.
             let ret_ty = ctx.current_ret_ty.clone();
+            // Window marks for the unescaped-temp cleanup below. The
+            // statement-end pass cannot help here: it runs AFTER the arm
+            // emits `Terminator::Return`, so anything it emitted would be
+            // dead code. Captured before the value expression is lowered so
+            // the window covers exactly this return's temporaries.
+            let ret_inst_mark = ctx.current_instructions.len();
+            let ret_block_mark = ctx.next_block;
+            let ret_locals_mark = ctx.locals.len();
+            let ret_partial_moved_before = ctx.partial_moved_locals.clone();
             let mut operand = value.as_ref().map(|e| {
                 let op = lower_expr_to_operand(ctx, e);
                 coerce_to_dyn_if_needed(ctx, op, &ret_ty, e)
@@ -4504,6 +4519,22 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 Some(Operand::Local(id)) => Some(id.0),
                 _ => None,
             };
+            // Drop the return expression's own unescaped TEMPORARIES (the
+            // `to_string(i)` feeding `return "p-" + to_string(i)`, and the
+            // like). Named locals are handled by the loop below; temps had no
+            // drop path on this route at all, leaking one buffer per call.
+            // The returned operand is excluded, and the shared pass keeps its
+            // usual conservatism: it bails outright if the expression created
+            // control flow, and disqualifies any temp whose uses are not
+            // provably borrowing.
+            drop_unescaped_str_temps(
+                ctx,
+                ret_inst_mark,
+                ret_block_mark,
+                ret_locals_mark,
+                &ret_partial_moved_before,
+                returned_local_id,
+            );
             // A field read (`return s.field`) hands back a value aliasing the
             // source struct's buffer; excluding the source struct from drops
             // prevents freeing the buffer we just returned (use-after-free),
