@@ -1,0 +1,99 @@
+// Conformance: std::matrix shape validation (wave-24).
+//
+// add/mul/transpose take the shape from the CALLER and then index the flat
+// buffer with it. A shape that did not match the buffer ran off the end and
+// PANICKED (exit 98), which try/catch cannot intercept -- a caller could not
+// recover from its own bad input. A huge shape silently overflowed
+// `rows * cols` to a negative, so every loop fell through and an EMPTY
+// matrix came back as if the call had succeeded. Both are catchable throws
+// now, and the valid paths are unchanged.
+
+use std::matrix::{add, mul, transpose, scale}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn threw(happened: bool, msg: str) {
+    expect(happened, msg)
+}
+
+fn main() {
+    let a = [1, 2, 3, 4]
+    let b = [10, 20, 30, 40]
+
+    // --- valid shapes are unaffected ---
+    let s = add(a, b, 2, 2)
+    expect(len(s) == 4, "add returns 4 elements")
+    expect(s[0] == 11, "add element 0")
+    expect(s[3] == 44, "add element 3")
+
+    let p = mul(a, b, 2, 2, 2)
+    expect(len(p) == 4, "mul returns 4 elements")
+    expect(p[0] == 70, "mul element 0")
+    expect(p[3] == 220, "mul element 3")
+
+    let t = transpose(a, 2, 2)
+    expect(t[1] == 3, "transpose element 1")
+    expect(t[2] == 2, "transpose element 2")
+
+    expect(scale(a, 3)[3] == 12, "scale element 3")
+
+    // a non-square shape still works end to end
+    let r = [1, 2, 3, 4, 5, 6]
+    let rt = transpose(r, 2, 3)
+    expect(len(rt) == 6, "non-square transpose length")
+    expect(rt[0] == 1, "non-square transpose first")
+    expect(rt[1] == 4, "non-square transpose second")
+
+    // --- bad shapes throw instead of panicking ---
+    let mut caught = false
+    try {
+        let bad = add(a, [1, 2], 2, 2)
+        caught = false
+    } catch e {
+        caught = true
+    }
+    threw(caught, "add with a short second matrix throws")
+
+    caught = false
+    try {
+        let bad = mul(a, [1, 2], 2, 2, 2)
+        caught = false
+    } catch e {
+        caught = true
+    }
+    threw(caught, "mul with a short second matrix throws")
+
+    caught = false
+    try {
+        let bad = transpose([1, 2, 3], 2, 2)
+        caught = false
+    } catch e {
+        caught = true
+    }
+    threw(caught, "transpose with a short buffer throws")
+
+    caught = false
+    try {
+        let bad = transpose(a, -1, 2)
+        caught = false
+    } catch e {
+        caught = true
+    }
+    threw(caught, "negative dimension throws")
+
+    caught = false
+    try {
+        let bad = add(a, b, 4611686018427387904, 4)
+        caught = false
+    } catch e {
+        caught = true
+    }
+    threw(caught, "overflowing shape throws instead of returning empty")
+
+    println("conformance stdlib wave24: PASS")
+}

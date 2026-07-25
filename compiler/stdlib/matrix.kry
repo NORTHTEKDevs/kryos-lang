@@ -3,9 +3,34 @@
 // Stored as flat [i64] of length rows * cols.
 // ============================================================
 
-/// Element-wise add. Caller provides equal-shape matrices.
-fn add(a: [i64], b: [i64], rows: i64, cols: i64) -> [i64] {
+/// Element count for a rows x cols shape, validated against the flat buffer.
+///
+/// Every entry point takes the shape from the CALLER, then indexes the flat
+/// array with it. A shape that does not match the buffer used to run off the
+/// end and PANIC (exit 98, uncatchable -- try/catch only intercepts `throw`),
+/// so a caller could not recover from its own bad input. Worse, `rows * cols`
+/// silently overflowed to a negative for huge dimensions, which made every
+/// loop below fall through and return an EMPTY matrix as if it had succeeded.
+/// Both are now catchable throws.
+fn _shape_len(a: [i64], rows: i64, cols: i64, who: str) -> i64 {
+    if rows < 0 or cols < 0 {
+        throw who + ": negative dimension (rows=" + to_string(rows) + ", cols=" + to_string(cols) + ")"
+    }
+    if rows > 0 and cols > 9223372036854775807 / rows {
+        throw who + ": dimensions overflow i64 (rows=" + to_string(rows) + ", cols=" + to_string(cols) + ")"
+    }
     let n = rows * cols
+    if len(a) < n {
+        throw who + ": matrix holds " + to_string(len(a)) + " elements but shape needs " + to_string(n)
+    }
+    return n
+}
+
+/// Element-wise add. Both matrices must hold at least rows*cols elements.
+/// Throws on a shape mismatch or an overflowing shape.
+fn add(a: [i64], b: [i64], rows: i64, cols: i64) -> [i64] {
+    let n = _shape_len(a, rows, cols, "matrix::add(a)")
+    let _nb = _shape_len(b, rows, cols, "matrix::add(b)")
     let mut out: [i64] = []
     let mut i: i64 = 0
     while i < n {
@@ -16,7 +41,10 @@ fn add(a: [i64], b: [i64], rows: i64, cols: i64) -> [i64] {
 }
 
 /// Multiply (m × k) by (k × n) → (m × n).
+/// Throws when either buffer is smaller than its stated shape.
 fn mul(a: [i64], b: [i64], m: i64, k: i64, n: i64) -> [i64] {
+    let _na = _shape_len(a, m, k, "matrix::mul(a)")
+    let _nb = _shape_len(b, k, n, "matrix::mul(b)")
     let mut out: [i64] = []
     let mut i: i64 = 0
     while i < m {
@@ -37,8 +65,9 @@ fn mul(a: [i64], b: [i64], m: i64, k: i64, n: i64) -> [i64] {
 }
 
 /// Transpose. rows × cols → cols × rows.
+/// Throws when the buffer is smaller than rows*cols.
 fn transpose(a: [i64], rows: i64, cols: i64) -> [i64] {
-    let n = rows * cols
+    let n = _shape_len(a, rows, cols, "matrix::transpose")
     let mut out: [i64] = []
     let mut i: i64 = 0
     while i < n {
