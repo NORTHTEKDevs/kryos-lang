@@ -7,7 +7,21 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
     let targets = if files.is_empty() {
         discover_kry_files(Path::new("."))?
     } else {
-        files.to_vec()
+        // Expand any DIRECTORY argument the same way the no-argument case
+        // expands the project root. `kryos fmt .` and `kryos fmt src/` are
+        // the natural things to type, and they used to be read as if they
+        // were source files -- which surfaced a raw OS error ("cannot read
+        // `.`: Access is denied") instead of formatting anything.
+        let mut expanded = Vec::new();
+        for f in files {
+            let p = Path::new(f);
+            if p.is_dir() {
+                expanded.extend(discover_kry_files(p)?);
+            } else {
+                expanded.push(f.clone());
+            }
+        }
+        expanded
     };
 
     if targets.is_empty() {
