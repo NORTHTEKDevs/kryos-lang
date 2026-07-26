@@ -663,6 +663,17 @@ impl LoweringContext {
         self.param_locals.clear();
         self.hidden_locals.clear();
         self.partial_moved_locals.clear();
+        // `borrowed_locals` was the one ownership set never reset here, and
+        // local IDs restart at 0 for every function -- so an ID marked
+        // borrowed while lowering one function silently suppressed the
+        // scope-end drop of the UNRELATED local that happened to get the same
+        // ID in a later one. The symptom was a leak that depended on which
+        // modules a program imported: `use std::json::{parse}` alone was
+        // enough to stop `let s = mk()` in a loop in `main` from ever being
+        // freed, because lowering json's parser marked those IDs borrowed
+        // first. Every other per-function set is cleared right here; this one
+        // was simply missed.
+        self.borrowed_locals.clear();
         self.try_catch_target = None;
         self.local_actor_types.clear();
     }
@@ -709,6 +720,12 @@ impl LoweringContext {
             // struct's recursive field-drop and once via the source local's
             // own (should-have-stayed-suppressed) drop.
             dropped_locals: std::mem::take(&mut self.dropped_locals),
+            // Saved for the same reason as the sets above: `reset()` now
+            // clears it, so a nested lowering would otherwise wipe the
+            // ENCLOSING function's borrow marks (a spawn body inside a
+            // function is lowered mid-function, and the WaitGroup smoke
+            // tests segfault when those marks are lost).
+            borrowed_locals: std::mem::take(&mut self.borrowed_locals),
             param_locals: std::mem::take(&mut self.param_locals),
             partial_moved_locals: std::mem::take(&mut self.partial_moved_locals),
         }
@@ -732,11 +749,13 @@ impl LoweringContext {
         self.dropped_locals = state.dropped_locals;
         self.param_locals = state.param_locals;
         self.partial_moved_locals = state.partial_moved_locals;
+        self.borrowed_locals = state.borrowed_locals;
     }
 }
 
 /// Saved per-function lowering state (used during monomorphization).
 struct FunctionState {
+    borrowed_locals: std::collections::HashSet<u32>,
     locals: Vec<MirLocal>,
     blocks: Vec<BasicBlock>,
     current_instructions: Vec<Instruction>,
@@ -3159,6 +3178,13 @@ fn drop_unescaped_str_temps(
     let mentions = |op: &Operand, id: LocalId| matches!(op, Operand::Local(l) if *l == id);
     let mut to_drop: Vec<LocalId> = Vec::new();
     'cand: for id in candidates {
+        // Type of THIS candidate, needed by the struct-literal arm below.
+        let cand_ty = ctx
+            .locals
+            .iter()
+            .find(|l| l.id == id)
+            .map(|l| l.ty.clone())
+            .unwrap_or(MirType::I64);
         let mut owns = false;
         // Set when `id`'s definition is `RValue::Field { object: Local(src), .. }`
         // -- a borrowed field read, not a fresh allocation. If `id` survives the
@@ -3326,6 +3352,21 @@ fn drop_unescaped_str_temps(
                 // appearing as the object/index of some OTHER instruction's
                 // read.)
                 RValue::Index { object, index } => mentions(object, id) || mentions(index, id),
+                // A struct literal DUPS an ARRAY field -- both backends emit
+                // `kryos_array_dup(val, elem_kind)` so the struct owns an
+                // independent copy (the spawn-isolation contract) -- which
+                // means the source temp still owns ITS array and has to drop
+                // it. Nothing did, so `S { xs: [..] }` in a loop leaked the
+                // whole array plus every element: 150MB per 1M constructions.
+                // A STR field is different: the handle is MOVED into the
+                // struct (a bare insertvalue) and the struct's own drop frees
+                // it, so a str temp here is still an escape and must bail.
+                RValue::Struct { fields, .. }
+                    if matches!(cand_ty, MirType::Array(_, _))
+                        && fields.iter().any(|(_, op)| mentions(op, id)) =>
+                {
+                    true
+                }
                 // Any other rvalue shape touching this temp is a potential
                 // escape (Use copies the pointer, aggregate inits store it...).
                 other => {
