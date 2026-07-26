@@ -773,6 +773,16 @@ pub fn discover_annotated_tests(dir: &Path) -> Vec<(PathBuf, Vec<String>)> {
 }
 
 /// Discover `@test`-annotated functions in a single file.
+/// Set when test DISCOVERY aborted because a file failed to compile, so the
+/// caller can say that instead of claiming the file contains no tests.
+static DISCOVERY_COMPILE_FAILED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// True if the last discovery pass hit a file that did not compile.
+pub fn discovery_hit_compile_error() -> bool {
+    DISCOVERY_COMPILE_FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub fn discover_annotated_tests_in_file(path: &Path) -> Vec<(PathBuf, Vec<String>)> {
     let mut results = Vec::new();
     if path.extension().and_then(|e| e.to_str()) != Some("kry") {
@@ -791,6 +801,22 @@ pub fn discover_annotated_tests_in_file(path: &Path) -> Vec<(PathBuf, Vec<String
         // Use compile_file so `use` imports (sibling modules) resolve correctly.
         let result = compile_file(path, &config);
         if !result.success {
+            // A file that does not COMPILE is not a file with no tests. This
+            // used to return silently, so the caller reported "no @test
+            // functions discovered; nothing was verified" -- a user with a
+            // typo in a test file was told they had written no tests, with
+            // the real diagnostic thrown away. Surface it here; the caller
+            // still exits non-zero, now for a reason the user can act on.
+            DISCOVERY_COMPILE_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "error: cannot discover tests in `{}` -- it failed to compile:",
+                path.display()
+            );
+            for d in &result.diagnostics {
+                if matches!(d.level, kryos_errors::Level::Error) {
+                    eprintln!("  {}", d.message);
+                }
+            }
             return results;
         }
         if let Some(ref mir) = result.mir {

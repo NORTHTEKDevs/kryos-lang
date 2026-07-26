@@ -194,6 +194,11 @@ pub fn execute(opts: TestOptions) -> Result<(), String> {
             // Still emit a parseable empty suite for tooling, then fail.
             print!("{}", format_report_json(&empty_report()));
         } else {
+            if kryos_test_runner::discovery_hit_compile_error() {
+                // The real cause was already printed by discovery; do not also
+                // claim the file contains no tests.
+                return Err("nothing was verified -- fix the compile error above".to_string());
+            }
             eprintln!("warning: no {noun} found in `{target}`; nothing was verified");
             if filter_opt.is_some() {
                 eprintln!("  note: a filter was active and matched nothing");
