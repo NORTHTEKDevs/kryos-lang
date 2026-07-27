@@ -2974,6 +2974,34 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "substr",
     "char_code",
     "parse_int",
+    // Read-only string builtins. Each was audited in the runtime for whether
+    // it stores or frees its argument; none do -- they read the bytes and
+    // return a fresh value (to_upper/trim via kryos_string_new), a bool, or
+    // write the bytes somewhere external (tcp_send to a socket, file_write to
+    // disk).
+    //
+    // Leaving them off this list leaked one buffer per call, and worse, the
+    // consume mark is STATIC and path-insensitive: a single `to_upper(s)` in
+    // one branch suppressed s's scope-end drop on EVERY path, so a sibling
+    // branch doing nothing but `len(s)` leaked too. Measured with a local
+    // built per loop iteration: ~72-78MB per 800k iterations for every shape,
+    // flat afterwards. This is also why a TCP server leaked its response --
+    // `tcp_send(c, body)` consumed the computed string and nothing freed it.
+    "to_upper",
+    "to_lower",
+    "trim",
+    "trim_start",
+    "trim_end",
+    "starts_with",
+    "ends_with",
+    "sha256",
+    "base64_encode",
+    "base64_decode",
+    "byte_at",
+    "tcp_send",
+    "file_write",
+    "file_append",
+    "file_exists",
     "parse_float",
     // Reads both operands, returns a fresh allocation; never stores or
     // frees its inputs (the binary `+` runtime path).

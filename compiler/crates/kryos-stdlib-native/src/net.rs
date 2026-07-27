@@ -280,14 +280,16 @@ pub extern "C" fn kryos_tcp_recv_ks(fd: i64, max_bytes: i64) -> i64 {
     let n = kryos_tcp_recv(fd, buf.as_mut_ptr(), buf_len);
     let n = n.max(0) as usize;
     // Build a heap KryosString from the received bytes.
-    let data = buf[..n].to_vec();
-    let boxed = Box::new(KryosString {
-        len: n as i64,
-        cap: n as i64,
-        data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
-        ref_count: 1,
-    });
-    Box::into_raw(boxed) as i64
+    // Build the string with the RUNTIME's constructor, not a hand-rolled
+    // Box. kryos_string_free deallocates the data buffer with
+    // KryosString::layout(cap) -- size cap+1, for the null terminator -- but
+    // a `Vec::into_boxed_slice` allocation is exactly `len` bytes, so every
+    // received buffer was freed under a layout it was never allocated with.
+    // Rust's allocator contract makes that undefined, and in practice the
+    // block was not returned: a TCP server leaked one receive buffer per
+    // request (isolated to ~250 bytes/request over 60k requests; the same
+    // server with the recv removed was perfectly flat).
+    unsafe { kryos_rt::string::kryos_string_new(buf.as_ptr(), n as i64) as i64 }
 }
 
 /// `tcp_close(fd: i64) -> void`
@@ -400,25 +402,22 @@ pub extern "C" fn kryos_tcp_try_recv_ks(fd: i64, max_bytes: i64) -> i64 {
         Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => 0,
         Err(_) => 0,
     };
-    let data = buf[..n].to_vec();
-    let boxed = Box::new(KryosString {
-        len: n as i64,
-        cap: n as i64,
-        data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
-        ref_count: 1,
-    });
-    Box::into_raw(boxed) as i64
+    // Build the string with the RUNTIME's constructor, not a hand-rolled
+    // Box. kryos_string_free deallocates the data buffer with
+    // KryosString::layout(cap) -- size cap+1, for the null terminator -- but
+    // a `Vec::into_boxed_slice` allocation is exactly `len` bytes, so every
+    // received buffer was freed under a layout it was never allocated with.
+    // Rust's allocator contract makes that undefined, and in practice the
+    // block was not returned: a TCP server leaked one receive buffer per
+    // request (isolated to ~250 bytes/request over 60k requests; the same
+    // server with the recv removed was perfectly flat).
+    unsafe { kryos_rt::string::kryos_string_new(buf.as_ptr(), n as i64) as i64 }
 }
 
 fn empty_string_handle() -> i64 {
-    let v: Vec<u8> = Vec::new();
-    let boxed = Box::new(KryosString {
-        len: 0,
-        cap: 0,
-        data: Box::into_raw(v.into_boxed_slice()) as *mut u8,
-        ref_count: 1,
-    });
-    Box::into_raw(boxed) as i64
+    // Same allocator-contract reason as the recv paths above: let the runtime
+    // build the header and its buffer.
+    unsafe { kryos_rt::string::kryos_string_new(std::ptr::null(), 0) as i64 }
 }
 
 // kryos_sleep_ms lives in kryos-rt::spawn; do not duplicate here.
