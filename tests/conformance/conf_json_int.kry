@@ -1,0 +1,66 @@
+// Conformance: JSON integers keep their exact i64 value (wave-31).
+//
+// Every JSON number used to be stored as `Number(f64)`, so an integer above
+// 2^53 was silently corrupted -- 1234567890123456789 came back as
+// 1234567890123456768, through both a stringify round-trip AND the `to_int`
+// accessor. That is the JavaScript behaviour and the reason APIs send 64-bit
+// IDs as strings, but Kryos has i64. An integral token that fits in i64 is now
+// stored as `Int(i64)`; anything with a fraction or exponent, or too large for
+// i64, stays a double.
+
+use std::json::{parse, stringify, to_int, to_float, get, is_number, json_int, json_number}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn round(src: str) -> str {
+    return stringify(parse(src))
+}
+
+fn main() {
+    // --- exact integers, including past 2^53 ---
+    expect(round("{{\"x\":42}}") == "{{\"x\":42}}", "small int")
+    expect(round("{{\"x\":-42}}") == "{{\"x\":-42}}", "negative int")
+    expect(round("{{\"x\":0}}") == "{{\"x\":0}}", "zero")
+    expect(round("{{\"x\":9007199254740992}}") == "{{\"x\":9007199254740992}}", "2^53")
+    expect(round("{{\"x\":9007199254740993}}") == "{{\"x\":9007199254740993}}", "2^53+1 keeps its exact value")
+    expect(round("{{\"x\":1234567890123456789}}") == "{{\"x\":1234567890123456789}}", "19-digit id round-trips")
+    expect(round("{{\"x\":9223372036854775807}}") == "{{\"x\":9223372036854775807}}", "i64 max")
+    expect(round("{{\"x\":-9223372036854775808}}") == "{{\"x\":-9223372036854775808}}", "i64 min")
+
+    // --- the accessor path must be exact too, not just stringify ---
+    let big = parse("{{\"id\":1234567890123456789}}")
+    expect(to_int(get(big, "id")) == 1234567890123456789, "to_int keeps the exact id")
+
+    // --- floats stay floats ---
+    expect(round("{{\"x\":1.5}}") == "{{\"x\":1.5}}", "float")
+    expect(round("{{\"x\":-0.25}}") == "{{\"x\":-0.25}}", "negative float")
+    expect(round("{{\"x\":1e3}}") == "{{\"x\":1000}}", "exponent is a number")
+
+    // --- both variants answer to the same accessors ---
+    let v = parse("{{\"i\":7,\"f\":2.5}}")
+    expect(is_number(get(v, "i")), "int is a number")
+    expect(is_number(get(v, "f")), "float is a number")
+    expect(to_int(get(v, "i")) == 7, "to_int on an int")
+    expect(to_int(get(v, "f")) == 2, "to_int on a float truncates")
+    expect(to_float(get(v, "i")) > 6.9, "to_float on an int")
+    expect(to_float(get(v, "f")) > 2.4, "to_float on a float")
+
+    // --- constructors ---
+    expect(stringify(json_int(1234567890123456789)) == "1234567890123456789", "json_int constructor")
+    expect(stringify(json_number(2.5)) == "2.5", "json_number constructor")
+
+    // --- too large for i64 falls back to a double instead of panicking ---
+    let huge = round("{{\"x\":99999999999999999999}}")
+    expect(len(huge) > 0, "20-digit integer does not panic")
+
+    // --- a whole document survives intact ---
+    let doc = "{{\"i\":7,\"f\":2.5,\"s\":\"a\",\"b\":true,\"n\":null,\"a\":[1,2.5]}}"
+    expect(round(doc) == doc, "mixed document round-trips")
+
+    println("conformance json int: PASS")
+}

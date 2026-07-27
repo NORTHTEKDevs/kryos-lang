@@ -14,21 +14,21 @@
 
 // --- JSON value type ---------------------------------------------------------
 
-// PRECISION CONTRACT: every JSON number is stored as `Number(f64)`, so an
-// INTEGER larger than 2^53 loses precision on parse -- exactly the JavaScript
-// behaviour, and the reason APIs send large IDs as strings. Measured:
-// 1234567890123456789 parses (and `to_int`s) back as 1234567890123456768, and
-// 9007199254740993 becomes 9007199254740992. Values up to 2^53 round-trip
-// exactly, as do floats.
+// NUMBER REPRESENTATION: a JSON number that is written as an INTEGER (no
+// fraction, no exponent) and fits in i64 is stored as `Int(i64)` and printed
+// back verbatim; everything else is `Number(f64)`. Storing every number as a
+// double silently corrupted 64-bit IDs -- 1234567890123456789 came back as
+// 1234567890123456768 -- which is the JavaScript behaviour but a poor fit for
+// a language that has i64. An integer too large for i64 still falls back to
+// `Number(f64)` (lossy, like JS) rather than throwing.
 //
-// If you handle 64-bit IDs, carry them as JSON STRINGS. Fixing this properly
-// means adding an `Int(i64)` variant to JsonValue and routing parse/stringify/
-// to_int/to_float/is_number through it -- a breaking change to this enum, so
-// it is a deliberate follow-up rather than a silent behaviour change.
+// `is_number` is true for BOTH variants, `to_float` accepts both, and
+// `to_int` accepts both -- so accessor-based code needs no change.
 enum JsonValue {
     Null,
     Bool(bool),
     Number(f64),
+    Int(i64),
     String(str),
     Array([JsonValue]),
     Object([str], [JsonValue])
@@ -48,6 +48,12 @@ fn json_bool(v: bool) -> JsonValue {
 
 fn json_number(v: f64) -> JsonValue {
     return JsonValue.Number(v)
+}
+
+/// Build an integer JSON number, printed back without a decimal point and
+/// without the 2^53 precision loss a double would impose.
+fn json_int(v: i64) -> JsonValue {
+    return JsonValue.Int(v)
 }
 
 fn json_string(v: str) -> JsonValue {
@@ -327,6 +333,44 @@ fn _parse_string(p: Parser) -> ParseResult {
     throw "json: unterminated string starting at position " + to_string(p.pos)
 }
 
+/// True when the numeric token carries a leading minus.
+fn char_at_is_minus(num_str: str) -> bool {
+    if len(num_str) == 0 {
+        return false
+    }
+    return substr(num_str, 0, 1) == "-"
+}
+
+fn _minus_width(neg: bool) -> i64 {
+    if neg {
+        return 1
+    }
+    return 0
+}
+
+/// Does a 19-digit integer token fit in i64? Compares digit-by-digit against
+/// the exact limit so no overflow happens during the check itself.
+fn _fits_i64(num_str: str, neg: bool) -> bool {
+    let limit = if neg { "9223372036854775808" } else { "9223372036854775807" }
+    let body = if neg { substr(num_str, 1, len(num_str)) } else { num_str }
+    if len(body) != 19 {
+        return len(body) < 19
+    }
+    let mut i = 0
+    while i < 19 {
+        let a = char_code(substr(body, i, i + 1))
+        let b = char_code(substr(limit, i, i + 1))
+        if a < b {
+            return true
+        }
+        if a > b {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
 fn _parse_number(p: Parser) -> ParseResult {
     let mut parser = p
     let start = parser.pos
@@ -383,6 +427,24 @@ fn _parse_number(p: Parser) -> ParseResult {
     }
 
     let num_str = substr(parser.input, start, parser.pos)
+    // An integer token keeps its exact i64 value. Parsing everything as a
+    // double silently truncated 64-bit IDs (1234567890123456789 came back as
+    // ...768). `is_float` is set above by the fraction/exponent branches, so
+    // this is exactly "written as an integer".
+    if not is_float {
+        // `int()` PANICS on overflow (uncatchable), so bound the digit count
+        // first: i64::MAX has 19 digits, and any token of 18 digits or fewer
+        // always fits. A 19-digit token is checked against the exact limits.
+        let neg = char_at_is_minus(num_str)
+        let digits = len(num_str) - _minus_width(neg)
+        if digits <= 18 {
+            return ParseResult { value: JsonValue.Int(int(num_str)), parser: parser }
+        }
+        if digits == 19 and _fits_i64(num_str, neg) {
+            return ParseResult { value: JsonValue.Int(int(num_str)), parser: parser }
+        }
+        // Too large for i64: fall back to the lossy double, like JavaScript.
+    }
     let value = float(num_str)
     return ParseResult { value: JsonValue.Number(value), parser: parser }
 }
@@ -480,6 +542,7 @@ fn stringify(val: JsonValue) -> str {
         JsonValue::Null => "null",
         JsonValue::Bool(b) => _bool_to_str(b),
         JsonValue::Number(n) => _format_number(n),
+        JsonValue::Int(i) => to_string(i),
         JsonValue::String(s) => _escape_string(s),
         JsonValue::Array(items) => _stringify_array(items),
         JsonValue::Object(keys, values) => _stringify_object(keys, values)
@@ -613,6 +676,7 @@ fn _pretty_print_inner(val: JsonValue, indent: i64, depth: i64) -> str {
         JsonValue::Null => "null",
         JsonValue::Bool(b) => _bool_to_str(b),
         JsonValue::Number(n) => _format_number(n),
+        JsonValue::Int(i) => to_string(i),
         JsonValue::String(s) => _escape_string(s),
         JsonValue::Array(items) => _pretty_array(items, indent, depth),
         JsonValue::Object(keys, values) => _pretty_object(keys, values, indent, depth)
@@ -778,6 +842,7 @@ fn to_bool(val: JsonValue) -> bool {
 fn to_int(val: JsonValue) -> i64 {
     return match val {
         JsonValue::Number(n) => int(n),
+        JsonValue::Int(i) => i,
         _ => _throw_json_int("json.to_int: value is not a number")
     }
 }
@@ -787,6 +852,7 @@ fn to_float(val: JsonValue) -> f64 {
     let mut result: f64 = 0.0
     match val {
         JsonValue::Number(n) => { result = n }
+        JsonValue::Int(i) => { result = float(i) }
         _ => { throw "json.to_float: value is not a number" }
     }
     return result
@@ -835,6 +901,7 @@ fn is_bool(val: JsonValue) -> bool {
 fn is_number(val: JsonValue) -> bool {
     return match val {
         JsonValue::Number(_) => true,
+        JsonValue::Int(_) => true,
         _ => false
     }
 }
