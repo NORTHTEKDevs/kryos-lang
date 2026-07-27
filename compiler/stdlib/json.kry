@@ -14,6 +14,17 @@
 
 // --- JSON value type ---------------------------------------------------------
 
+// PRECISION CONTRACT: every JSON number is stored as `Number(f64)`, so an
+// INTEGER larger than 2^53 loses precision on parse -- exactly the JavaScript
+// behaviour, and the reason APIs send large IDs as strings. Measured:
+// 1234567890123456789 parses (and `to_int`s) back as 1234567890123456768, and
+// 9007199254740993 becomes 9007199254740992. Values up to 2^53 round-trip
+// exactly, as do floats.
+//
+// If you handle 64-bit IDs, carry them as JSON STRINGS. Fixing this properly
+// means adding an `Int(i64)` variant to JsonValue and routing parse/stringify/
+// to_int/to_float/is_number through it -- a breaking change to this enum, so
+// it is a deliberate follow-up rather than a silent behaviour change.
 enum JsonValue {
     Null,
     Bool(bool),
