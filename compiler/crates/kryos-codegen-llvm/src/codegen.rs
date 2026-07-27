@@ -5311,28 +5311,37 @@ impl LlvmCodegen {
                     let mut arg_parts = Vec::new();
                     for (i, a) in args.iter().enumerate() {
                         let actual_ty = self.operand_type(a, func);
-                        // A `bool` operand is an `i1`, but EVERY runtime symbol
-                        // declares its scalar params `i64` -- no runtime
-                        // declaration takes an i1 (kryos_string_eq only
-                        // RETURNS one). When the callee has no known signature
-                        // the expected type falls back to the operand's own
-                        // type, which emitted `call i64 @kryos_json_bool(i1 %b)`
-                        // against `declare i64 @kryos_json_bool(i64)`. That
-                        // mismatch leaves the upper 63 bits of the argument
-                        // register undefined, so the callee's `val != 0` test
-                        // read garbage: json_bool(false) produced a JSON `true`
-                        // on --release (the JIT was correct, and any nearby
-                        // read of the same bool -- e.g. a to_string -- masked
-                        // it by forcing a normalized value into the slot).
-                        // Promote the FALLBACK only; a declared i1 param on a
-                        // real user function stays i1.
+                        // Runtime symbols take their scalar params in i64
+                        // slots. When the callee has no known signature the
+                        // expected type falls back to the operand's OWN type,
+                        // which emitted narrow-against-wide calls such as
+                        //     call i64 @kryos_json_bool(i1 %b)
+                        //     call ptr @kryos_string_char_at(ptr %s, i32 %i)
+                        // against `(i64)` / `(ptr, i64)` declarations. A narrow
+                        // argument leaves the upper bits of the argument
+                        // register UNDEFINED while the callee reads the full
+                        // width. That is how json_bool(false) produced a JSON
+                        // `true` on --release: the callee's `val != 0` test read
+                        // garbage. (The i32 cases happen to survive today only
+                        // because 32-bit x86-64 ops zero the upper half -- an
+                        // accident of the target, not a guarantee.)
+                        //
+                        // Promote the FALLBACK only. A narrow param declared on
+                        // a real user function is in callee_param_types and
+                        // stays exactly as declared.
                         let expected_ty = match callee_param_types
                             .as_ref()
                             .and_then(|pts| pts.get(i))
                             .cloned()
                         {
                             Some(t) => t,
-                            None if actual_ty == "i1" => "i64".to_string(),
+                            None if matches!(
+                                actual_ty.as_str(),
+                                "i1" | "i8" | "i16" | "i32"
+                            ) =>
+                            {
+                                "i64".to_string()
+                            }
                             None => actual_ty.clone(),
                         };
                         let val = self.operand_to_llvm(a, func);

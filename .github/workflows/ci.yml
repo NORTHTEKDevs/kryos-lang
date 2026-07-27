@@ -150,6 +150,13 @@ jobs:
         # output, and asserts on real HTTP response bodies.
         run: bash tests/run_examples_e2e.sh
 
+      - name: IR signature gate (calls must match their declarations)
+        # Guards the bug CLASS behind the json_bool miscompile: a narrow value
+        # passed where a wider one is declared leaves the upper bits of the
+        # argument register undefined. Found two more latent instances
+        # (char_from, string_char_at) that had never surfaced as a failure.
+        run: bash tests/ir_signature_gate.sh
+
       - name: Package selftests (execute every packages/*/src/selftest.kry)
         # ecosystem_check.sh only typechecks packages/; these actually RUN.
         # The dotenv selftest is what exposed the map-value use-after-free.
