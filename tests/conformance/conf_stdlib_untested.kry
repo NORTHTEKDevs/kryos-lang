@@ -1,0 +1,176 @@
+// Conformance: the stdlib modules that NO test or example imported (wave-33).
+//
+// A coverage audit found 16 of the 66 shipped stdlib modules were never
+// imported by any test, fixture, or example -- shipped, documented, and
+// entirely unverified. This file covers the ones that need no network or
+// target-specific host: stack, queue, utf8, duration, bytes, interval,
+// pathext, trie, circuit, semaphore, diff_ops, jwt.
+//
+// They held up well; the audit found exactly one defect, duration::format
+// truncating 1500ms to "1s" (asserted below).
+//
+// Still uncovered by design, because they need a peer or a host this suite
+// does not provide: smtp (mail server), ffi (a C library), wasm (a JS host),
+// term (a tty).
+
+use std::stack::{push_top, top, pop_top, slen}
+use std::queue::{enqueue, front, dequeue, qlen}
+use std::utf8::{byte_len, codepoint_count, is_valid}
+use std::duration::{from_millis, from_secs, from_mins, from_hours, format}
+use std::bytes::{find_byte, find_seq, compare, is_ascii}
+use std::interval::{merge, total_length}
+use std::pathext::{is_absolute, component_count, normalize_slashes, normalize}
+use std::trie::{new_trie, insert, contains, has_prefix}
+use std::circuit::{new_breaker, allow, record_success, record_failure}
+use std::semaphore::{new_sem, try_acquire, release, permits}
+use std::diff_ops::{lcs_len, edit_count}
+use std::jwt::{sign_hs256, verify_hs256, decode_payload}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+@capabilities(all)
+fn main() {
+    // --- stack: LIFO ---
+    let mut s: [i64] = []
+    s = push_top(s, 1)
+    s = push_top(s, 2)
+    s = push_top(s, 3)
+    expect(slen(s) == 3, "stack length")
+    expect(top(s) == 3, "stack top is the last pushed")
+    s = pop_top(s)
+    expect(top(s) == 2, "stack top after pop")
+    expect(slen(s) == 2, "stack length after pop")
+
+    // --- queue: FIFO (the opposite order, which is the whole point) ---
+    let mut q: [i64] = []
+    q = enqueue(q, 10)
+    q = enqueue(q, 20)
+    q = enqueue(q, 30)
+    expect(qlen(q) == 3, "queue length")
+    expect(front(q) == 10, "queue front is the FIRST enqueued")
+    q = dequeue(q)
+    expect(front(q) == 20, "queue front after dequeue")
+
+    // --- utf8 ---
+    expect(byte_len(65) == 1, "utf8 byte_len ascii")
+    expect(byte_len(233) == 2, "utf8 byte_len latin-1 accent")
+    expect(byte_len(26085) == 3, "utf8 byte_len CJK")
+    expect(codepoint_count("abc") == 3, "utf8 codepoint_count ascii")
+    expect(codepoint_count("aé日") == 3, "utf8 codepoint_count counts CODEPOINTS, not bytes")
+    expect(is_valid("hello"), "utf8 is_valid")
+
+    // --- duration ---
+    expect(from_millis(1) == 1000000, "duration ms to nanos")
+    expect(from_secs(1) == 1000000000, "duration s to nanos")
+    expect(from_mins(1) == from_secs(60), "duration 1min == 60s")
+    expect(from_hours(1) == from_mins(60), "duration 1h == 60min")
+    // format carries the remainder in the next unit down. 1500ms used to
+    // print "1s" -- a third of the duration silently dropped -- while the
+    // minute branch already did this correctly.
+    expect(format(from_millis(1500)) == "1s500ms", "format keeps the sub-second remainder")
+    expect(format(from_millis(1000)) == "1s", "format omits a ZERO remainder")
+    expect(format(from_secs(90)) == "1min30s", "format min+s")
+    expect(format(from_secs(60)) == "1min", "format exact minute")
+    expect(format(from_hours(2)) == "2h", "format exact hour")
+    expect(format(from_hours(2) + from_mins(30)) == "2h30min", "format h+min")
+    expect(format(500) == "500ns", "format nanos")
+    expect(format(1500) == "1us500ns", "format us+ns")
+    expect(format(1500000) == "1ms500us", "format ms+us")
+    expect(format(0 - from_millis(1500)) == "-1s500ms", "format keeps the sign")
+
+    // --- bytes ---
+    expect(find_byte("hello", 108) == 2, "find_byte")
+    expect(find_byte("hello", 122) == -1, "find_byte missing is -1")
+    expect(find_seq("hello world", "world") == 6, "find_seq")
+    expect(find_seq("hello", "zz") == -1, "find_seq missing is -1")
+    expect(find_seq("hello", "") == 0, "find_seq empty needle is 0")
+    expect(compare("abc", "abc") == 0, "compare equal")
+    expect(compare("abc", "abd") < 0, "compare less")
+    expect(compare("abd", "abc") > 0, "compare greater")
+    expect(compare("ab", "abc") < 0, "compare shorter prefix sorts first")
+    expect(is_ascii("hello"), "is_ascii true")
+    expect(not is_ascii("héllo"), "is_ascii false on a non-ascii codepoint")
+
+    // --- interval: flat [start, end, start, end, ...] ---
+    let iv: [i64] = [1, 3, 2, 6, 8, 10]
+    let m = merge(iv)
+    expect(len(m) == 4, "merge collapses the overlap to 2 intervals")
+    expect(m[0] == 1, "merged interval start")
+    expect(m[1] == 6, "merged interval end covers both")
+    expect(total_length(m) == 7, "total_length is 5 + 2")
+
+    // --- pathext ---
+    expect(is_absolute("/usr/bin"), "is_absolute")
+    expect(not is_absolute("usr/bin"), "relative is not absolute")
+    expect(component_count("/a/b/c") == 3, "component_count")
+    expect(normalize_slashes("a\\b/c") == "a/b/c", "normalize_slashes")
+    expect(normalize("a/./b/../c") == "a/c", "normalize resolves . and ..")
+
+    // --- trie ---
+    let mut t = new_trie()
+    t = insert(t, "cat")
+    t = insert(t, "car")
+    t = insert(t, "dog")
+    expect(contains(t, "cat"), "trie contains an inserted word")
+    expect(contains(t, "car"), "trie contains a word sharing a prefix")
+    expect(not contains(t, "ca"), "trie does NOT contain a prefix-only string")
+    expect(not contains(t, "cow"), "trie does not contain an absent word")
+    expect(has_prefix(t, "ca"), "trie has_prefix")
+    expect(not has_prefix(t, "z"), "trie has_prefix is false for an absent branch")
+
+    // --- semaphore ---
+    let sem = new_sem(2)
+    expect(permits(sem) == 2, "semaphore starts with its permits")
+    expect(try_acquire(sem), "semaphore first acquire")
+    expect(try_acquire(sem), "semaphore second acquire")
+    expect(not try_acquire(sem), "semaphore REFUSES past zero")
+    expect(permits(sem) == 0, "semaphore exhausted")
+    release(sem)
+    expect(permits(sem) == 1, "semaphore release returns a permit")
+    expect(try_acquire(sem), "semaphore acquire after release")
+
+    // --- circuit breaker ---
+    let b = new_breaker(2, 1000)
+    expect(allow(b, 0), "breaker starts closed")
+    record_failure(b)
+    expect(allow(b, 0), "breaker stays closed below the threshold")
+    record_failure(b)
+    expect(not allow(b, 0), "breaker OPENS at the threshold")
+    expect(allow(b, 5000), "breaker half-opens after the reset window")
+    record_success(b)
+    expect(allow(b, 6000), "breaker closes again after a success")
+
+    // --- diff_ops ---
+    let a: [i64] = [1, 2, 3, 4]
+    let bb: [i64] = [2, 4, 5]
+    let empty: [i64] = []
+    expect(lcs_len(a, bb) == 2, "lcs length")
+    expect(lcs_len(a, a) == 4, "lcs with self is the full length")
+    expect(lcs_len(a, empty) == 0, "lcs with empty is 0")
+    expect(edit_count(a, a) == 0, "edit_count with self is 0")
+    expect(edit_count(a, bb) > 0, "edit_count is positive for different inputs")
+
+    // --- jwt: the tamper cases matter more than the happy path ---
+    let payload = "{{\"sub\":\"user1\",\"exp\":9999999999}}"
+    let secret = "super-secret-key"
+    let tok = sign_hs256(payload, secret)
+    expect(verify_hs256(tok, secret), "jwt verifies with the right secret")
+    expect(not verify_hs256(tok, "wrong-secret"), "jwt REJECTS a wrong secret")
+    expect(not verify_hs256(tok, ""), "jwt REJECTS an empty secret")
+    expect(not verify_hs256(tok + "x", secret), "jwt REJECTS a tampered token")
+    expect(not verify_hs256("", secret), "jwt REJECTS an empty token")
+    expect(not verify_hs256("a.b.c", secret), "jwt REJECTS garbage")
+    expect(not verify_hs256("a.b", secret), "jwt REJECTS a two-segment token")
+    // alg=none is the classic JWT bypass: a token claiming no signature must
+    // never verify against an HS256 check.
+    expect(not verify_hs256("eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiJ9.", secret),
+           "jwt REJECTS an alg=none token")
+    expect(decode_payload(tok) == payload, "jwt decode_payload round-trips")
+
+    println("conformance stdlib untested: PASS")
+}

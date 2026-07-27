@@ -34,24 +34,51 @@ fn format(nanos: i64) -> str {
     let n = if nanos == -9223372036854775807 - 1 { nanos + 1 } else { nanos }
     let abs = if n < 0 { -n } else { n }
     let sign = if n < 0 { "-" } else { "" }
+    // Every branch renders the largest unit plus its remainder in the next
+    // unit down, and omits the remainder when it is zero. Previously only the
+    // min/hour branches carried a remainder while the smaller units truncated,
+    // so 1500ms printed as "1s" -- a third of the duration silently gone --
+    // while 90s correctly printed "1min30s". The zero-remainder cases also
+    // read better: 2h instead of "2h0min".
     if abs < 1000 {
         return sign + to_string(abs) + "ns"
     }
     if abs < 1000000 {
-        return sign + to_string(abs / 1000) + "us"
+        let u = abs / 1000
+        let rem_ns = abs - u * 1000
+        if rem_ns == 0 {
+            return sign + to_string(u) + "us"
+        }
+        return sign + to_string(u) + "us" + to_string(rem_ns) + "ns"
     }
     if abs < 1000000000 {
-        return sign + to_string(abs / 1000000) + "ms"
+        let ms = abs / 1000000
+        let rem_us = (abs - ms * 1000000) / 1000
+        if rem_us == 0 {
+            return sign + to_string(ms) + "ms"
+        }
+        return sign + to_string(ms) + "ms" + to_string(rem_us) + "us"
     }
     if abs < 60000000000 {
-        return sign + to_string(abs / 1000000000) + "s"
+        let sec = abs / 1000000000
+        let rem_ms = (abs - sec * 1000000000) / 1000000
+        if rem_ms == 0 {
+            return sign + to_string(sec) + "s"
+        }
+        return sign + to_string(sec) + "s" + to_string(rem_ms) + "ms"
     }
     if abs < 3600000000000 {
         let m = abs / 60000000000
         let rem_s = (abs - m * 60000000000) / 1000000000
+        if rem_s == 0 {
+            return sign + to_string(m) + "min"
+        }
         return sign + to_string(m) + "min" + to_string(rem_s) + "s"
     }
     let h = abs / 3600000000000
     let rem_m = (abs - h * 3600000000000) / 60000000000
+    if rem_m == 0 {
+        return sign + to_string(h) + "h"
+    }
     return sign + to_string(h) + "h" + to_string(rem_m) + "min"
 }
