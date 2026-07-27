@@ -5311,11 +5311,30 @@ impl LlvmCodegen {
                     let mut arg_parts = Vec::new();
                     for (i, a) in args.iter().enumerate() {
                         let actual_ty = self.operand_type(a, func);
-                        let expected_ty = callee_param_types
+                        // A `bool` operand is an `i1`, but EVERY runtime symbol
+                        // declares its scalar params `i64` -- no runtime
+                        // declaration takes an i1 (kryos_string_eq only
+                        // RETURNS one). When the callee has no known signature
+                        // the expected type falls back to the operand's own
+                        // type, which emitted `call i64 @kryos_json_bool(i1 %b)`
+                        // against `declare i64 @kryos_json_bool(i64)`. That
+                        // mismatch leaves the upper 63 bits of the argument
+                        // register undefined, so the callee's `val != 0` test
+                        // read garbage: json_bool(false) produced a JSON `true`
+                        // on --release (the JIT was correct, and any nearby
+                        // read of the same bool -- e.g. a to_string -- masked
+                        // it by forcing a normalized value into the slot).
+                        // Promote the FALLBACK only; a declared i1 param on a
+                        // real user function stays i1.
+                        let expected_ty = match callee_param_types
                             .as_ref()
                             .and_then(|pts| pts.get(i))
                             .cloned()
-                            .unwrap_or_else(|| actual_ty.clone());
+                        {
+                            Some(t) => t,
+                            None if actual_ty == "i1" => "i64".to_string(),
+                            None => actual_ty.clone(),
+                        };
                         let val = self.operand_to_llvm(a, func);
                         // kryos_array_set stores an OWNED element that the array
                         // later frees via __kryos_drop_<T> at teardown. When the
