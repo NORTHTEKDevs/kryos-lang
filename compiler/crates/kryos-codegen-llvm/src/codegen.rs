@@ -1144,6 +1144,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_retain_i64(i64)");
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
+        self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
         self.emit_line("declare ptr @kryos_string_retain(ptr)");
         self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
         self.emit_line("declare i64 @kryos_diag_site(i64)");
@@ -2121,6 +2122,24 @@ impl LlvmCodegen {
                 "  br i1 {struct_null_chk}, label %struct_drop_ret_{name}, label %struct_drop_body_{name}"
             ));
             self.emit_line(&format!("struct_drop_body_{name}:"));
+            // Shared-ownership bail-out, mirroring the Cranelift helper. A
+            // struct box can have more than one owner (an array-of-structs dup
+            // shares its elements), and this helper frees the struct's FIELDS
+            // before the box -- so guarding only the box free let two owners
+            // free the same `str`/array twice. `struct Tree { kids: [Tree] }`
+            // corrupted the heap that way. Consume an extra owner and return.
+            {
+                let shared = self.next_temp();
+                self.emit_line(&format!(
+                    "  {shared} = call i64 @kryos_struct_release_shared(ptr %ptr)"
+                ));
+                let is_shared = self.next_temp();
+                self.emit_line(&format!("  {is_shared} = icmp ne i64 {shared}, 0"));
+                self.emit_line(&format!(
+                    "  br i1 {is_shared}, label %struct_drop_ret_{name}, label %struct_drop_owned_{name}"
+                ));
+                self.emit_line(&format!("struct_drop_owned_{name}:"));
+            }
 
             // Delegate to emit_struct_drop, which uses struct-indexed GEP
             // (`getelementptr %Name, ptr val, i32 0, i32 idx`) so multi-word

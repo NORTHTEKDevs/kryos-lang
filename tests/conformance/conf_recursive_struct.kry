@@ -10,6 +10,7 @@
 
 use std::option::{Option, some}
 
+struct Tree { label: str, kids: [Tree] }
 struct Entry { name: str, next: Option<Entry> }
 struct Index { by_name: map<str, Index>, depth: i64 }
 
@@ -21,12 +22,21 @@ fn expect(cond: bool, msg: str) {
 }
 
 fn main() {
-    // NOTE: self-reference through an ARRAY (`struct Tree { kids: [Tree] }`)
-    // is deliberately NOT exercised here. It is correct on `build --release`
-    // (the struct-literal array-field clone now adds an owner for STRUCT
-    // elements) but still corrupts the heap on `kryos run` -- the Cranelift
-    // path shares element boxes elsewhere. Tracked in CLAUDE.md; this file
-    // stays green on both backends.
+    // self-reference through an ARRAY: a tree. Building one and letting it
+    // drop used to corrupt the heap (exit 127) on BOTH backends -- the struct
+    // literal clones its array field, a clone shares the element boxes, and
+    // the source array's drop then freed what the new field pointed at.
+    let leaf = Tree { label: "leaf", kids: [] }
+    let root = Tree { label: "root", kids: [leaf] }
+    expect(root.label == "root", "tree root label")
+    expect(len(root.kids) == 1, "tree has one child")
+    expect(root.kids[0].label == "leaf", "child reachable through the array field")
+
+    // deeper: a struct element that itself carries children
+    let mid = Tree { label: "mid", kids: [Tree { label: "gc", kids: [] }] }
+    let top = Tree { label: "top", kids: [mid] }
+    expect(top.kids[0].kids[0].label == "gc", "grandchild reachable")
+    expect(len(top.kids) == 1, "top has one child")
 
     // self-reference through Option
     let tail = Entry { name: "tail", next: none_entry() }

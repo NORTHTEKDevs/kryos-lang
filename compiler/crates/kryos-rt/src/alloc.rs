@@ -420,3 +420,30 @@ pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
     }
     ptr
 }
+
+
+/// Consume one EXTRA owner of a `kryos_calloc` box, if any.
+///
+/// Returns 1 when the caller must stop -- the box is still owned by someone
+/// else (or is null) -- and 0 when the caller is the last owner and should go
+/// ahead and release the contents.
+///
+/// A generated `__kryos_drop_<T>` helper frees the struct's FIELDS before it
+/// ever reaches the box, so guarding only `kryos_free` is not enough: two
+/// owners would each free the same `str`/array fields. The helper calls this
+/// first instead.
+#[no_mangle]
+pub extern "C" fn kryos_struct_release_shared(ptr: *mut u8) -> i64 {
+    if ptr.is_null() {
+        return 1;
+    }
+    unsafe {
+        let block = ptr.sub(HEADER);
+        let rc = &*(block.add(8) as *const std::sync::atomic::AtomicU64);
+        if rc.load(std::sync::atomic::Ordering::Acquire) > 0 {
+            rc.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            return 1;
+        }
+    }
+    0
+}

@@ -609,6 +609,18 @@ pub fn compile_module_with_options(
                 func_ids.insert(name.to_string(), id);
             }
         }
+        // Ownership check used at the top of every generated `__kryos_drop_<T>`:
+        // the helper frees the struct's FIELDS before the box, so a shared
+        // struct must bail BEFORE that or two owners each free the same
+        // str/array fields.
+        if !func_ids.contains_key("kryos_struct_release_shared") {
+            let id = object_module.declare_function(
+                "kryos_struct_release_shared",
+                Linkage::Import,
+                &one_in_one_out,
+            )?;
+            func_ids.insert("kryos_struct_release_shared".to_string(), id);
+        }
         // kryos_array_clone_deep(arr, elem_clone_fn) -> arr
         // Per-element deep clone moved into the runtime: takes the array
         // and a (i64) -> i64 clone function pointer (same shape as
@@ -1890,6 +1902,29 @@ pub fn compile_module_with_options(
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             let ptr = builder.block_params(entry)[0];
+
+            // Shared-ownership bail-out. A struct box can be referenced by more
+            // than one owner (an array-of-structs dup shares its elements), and
+            // this helper frees the struct's FIELDS before it reaches the box --
+            // so guarding the box free alone let two owners free the same
+            // `str`/array twice. `struct Tree { kids: [Tree] }` corrupted the
+            // heap that way. Consume an extra owner and return instead.
+            {
+                let fid = func_ids["kryos_struct_release_shared"];
+                let fref = object_module.declare_func_in_func(fid, builder.func);
+                let call = builder.ins().call(fref, &[ptr]);
+                let still_shared = builder.inst_results(call)[0];
+                let shared_ret = builder.create_block();
+                let owned = builder.create_block();
+                builder
+                    .ins()
+                    .brif(still_shared, shared_ret, &[], owned, &[]);
+                builder.seal_block(shared_ret);
+                builder.switch_to_block(shared_ret);
+                builder.ins().return_(&[]);
+                builder.seal_block(owned);
+                builder.switch_to_block(owned);
+            }
 
             if let Some(struct_def) = module.struct_defs.get(type_name) {
                 // Struct drop: free each heap-owning field, then free the struct.
