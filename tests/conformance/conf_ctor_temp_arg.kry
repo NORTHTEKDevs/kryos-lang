@@ -1,0 +1,85 @@
+// Conformance: a CONSTRUCTOR handed a computed string temp keeps its data
+// (wave-35).
+//
+// This guards the exact corruption that made the "a user function borrows its
+// heap arguments" rule get reverted once before (366cb89), and that EVERY
+// existing gate missed when it was re-enabled: conformance, no_double_free,
+// bootstrap, examples, strict-caps, the response-body e2e gate and the IR
+// signature gate were all green while `@copy` structs on the Cranelift backend
+// read back garbage.
+//
+// The mechanism: the caller now drops a computed temp after passing it to a
+// user function, so any constructor that merely SHARED the pointer into a
+// struct field left that field dangling. Cranelift's `@copy` struct-literal
+// path did exactly that (the Str arm stored the value directly); the LLVM
+// backend already cloned. Both now copy the string at construction.
+//
+// Symptom when it regresses: `make_copy(200, "copy-" + to_string(7))` returns a
+// struct whose `.body` is garbage or empty while the struct itself looks fine
+// -- silent data corruption, not a crash, which is why a value assertion is
+// the only thing that catches it.
+
+struct Resp { status: i64, body: str }
+
+@copy
+struct CopyResp { status: i64, body: str }
+
+struct Nested { inner: Resp, tag: str }
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn make(status: i64, body: str) -> Resp {
+    return Resp { status: status, body: body }
+}
+
+fn make_copy(status: i64, body: str) -> CopyResp {
+    return CopyResp { status: status, body: body }
+}
+
+fn make_nested(b: str, t: str) -> Nested {
+    return Nested { inner: Resp { status: 1, body: b }, tag: t }
+}
+
+@capabilities(all)
+fn main() {
+    // --- plain struct built from a COMPUTED temp argument ---
+    let r = make(200, "body-" + to_string(42))
+    expect(r.body == "body-42", "plain struct keeps a computed body")
+    expect(len(r.body) == 7, "plain struct body length intact")
+    expect(r.status == 200, "plain struct scalar field intact")
+
+    // --- @copy struct: the path that SHARED the pointer on Cranelift ---
+    let c = make_copy(200, "copy-" + to_string(7))
+    expect(c.body == "copy-7", "@copy struct keeps a computed body")
+    expect(len(c.body) == 6, "@copy struct body length intact")
+
+    // --- nested construction, both levels from computed temps ---
+    let nz = make_nested("in-" + to_string(1), "tag-" + to_string(2))
+    expect(nz.inner.body == "in-1", "nested inner body intact")
+    expect(nz.tag == "tag-2", "nested tag intact")
+
+    // --- a loop: the field must survive being collected and read back later ---
+    let mut keep: [str] = []
+    let mut i = 0
+    while i < 200 {
+        let rr = make(200, "row-" + to_string(i))
+        keep = push(keep, rr.body)
+        i = i + 1
+    }
+    expect(len(keep) == 200, "200 bodies collected")
+    expect(keep[0] == "row-0", "first collected body intact after the loop")
+    expect(keep[199] == "row-199", "last collected body intact after the loop")
+
+    // --- a struct field fed onward into a container ---
+    let m = make(1, "x" + "y")
+    let mut mm: map<str, str> = {}
+    mm["k"] = m.body
+    expect(mm["k"] == "xy", "struct field stored into a map survives")
+
+    println("conformance ctor temp arg: PASS")
+}

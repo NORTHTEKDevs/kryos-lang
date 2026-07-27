@@ -5124,8 +5124,30 @@ fn translate_rvalue<M: Module>(
                                     builder.inst_results(c)[0]
                                 }
                                 Some(MirType::Str) => {
-                                    // SHARE the string pointer (immutable + leak-on-free).
-                                    val
+                                    // CLONE, do not share. Sharing was safe only
+                                    // while the caller never freed the value it
+                                    // passed in. Now that a user function borrows
+                                    // its heap arguments (see the escape walk in
+                                    // kryos-mir), the caller DOES drop a computed
+                                    // temp after the call, so a shared pointer
+                                    // left the field dangling: `make_copy(200,
+                                    // "copy-" + to_string(7))` read back garbage
+                                    // on the JIT while the LLVM backend, which
+                                    // already clones str fields at construction,
+                                    // was correct. One memcpy per str field at
+                                    // construction; unlike the array arm this is
+                                    // not O(N) per element, so it does not have
+                                    // the quadratic bootstrap cost that made
+                                    // arrays share.
+                                    let clone_ref = ensure_func_ref_with_args(
+                                        "kryos_string_clone",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
+                                    )?;
+                                    let c = builder.ins().call(clone_ref, &[val]);
+                                    builder.inst_results(c)[0]
                                 }
                                 Some(MirType::Struct(_inner_name)) => {
                                     // H21: share nested @copy struct fields at @copy
