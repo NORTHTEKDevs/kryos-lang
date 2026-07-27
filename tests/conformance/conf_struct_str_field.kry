@@ -1,0 +1,76 @@
+// Conformance: a struct keeps its own reference to a `str` field (wave-31).
+//
+// The LLVM backend moved a str field into a struct literal bare, with no
+// clone or retain, while Cranelift already cloned it. Whichever scope drop
+// ran first -- the caller's temp drop, or the callee's return-path drop of a
+// named local it had already handed to a constructor -- then freed the buffer
+// the struct still pointed at. Every `build --release` HTTP response body
+// came back EMPTY while Content-Length still reported the original length,
+// and `kryos run` was unaffected, so the gates never saw it.
+
+struct Wrap { body: str, tag: str }
+
+fn from_temp() -> Wrap {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    return Wrap { body: ob + "computed" + cb, tag: "t" }
+}
+
+fn from_local() -> Wrap {
+    let ob = char_from(123)
+    let cb = char_from(125)
+    let body = ob + "computed" + cb
+    return Wrap { body: body, tag: "t" }
+}
+
+fn passthrough(s: str) -> Wrap {
+    return Wrap { body: s, tag: "t" }
+}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn main() {
+    // built from a temporary inside the constructor call
+    let a = from_temp()
+    expect(len(a.body) == 10, "temp-built body survives the return")
+    expect(a.body == "{{computed}}", "temp-built body content")
+
+    // built from a NAMED local the return path also drops
+    let b = from_local()
+    expect(len(b.body) == 10, "local-built body survives the return")
+    expect(b.body == "{{computed}}", "local-built body content")
+
+    // NOTE: calling a struct-returning function through a fn VALUE is NOT
+    // exercised here. It returns garbage on `build --release` for an
+    // unrelated reason -- the indirect-call path expects the callee to BOX an
+    // aggregate return, but a bare function reference stores the raw pointer,
+    // so the caller unboxes something that was never boxed. Tracked
+    // separately in CLAUDE.md; `kryos run` is correct.
+
+    // a computed argument handed straight to a constructor
+    let d = passthrough("x" + "y" + "z")
+    expect(d.body == "xyz", "computed argument stored by a constructor")
+
+    // the source local must still be readable afterwards
+    let src = "s" + "rc"
+    let e = passthrough(src)
+    expect(e.body == "src", "constructor stored the value")
+    expect(src == "src", "source string still intact after being stored")
+
+    // many constructions in a loop, values stay correct
+    let mut i = 0
+    let mut ok = true
+    while i < 200 {
+        let w = passthrough("v" + to_string(i))
+        if w.body != "v" + to_string(i) { ok = false }
+        i = i + 1
+    }
+    expect(ok, "200 constructions all kept their body")
+
+    println("conformance struct str field: PASS")
+}

@@ -8937,6 +8937,26 @@ impl LlvmCodegen {
             // arrays), elem_kind=1 additionally retains each non-null element
             // once so both the source local's drop and this new field's
             // eventual drop each release their own reference safely.
+            // A `str` FIELD needs its own reference for exactly the same
+            // reason the array field below does, and it did not have one: the
+            // handle was moved in bare, so whichever scope drop ran first --
+            // the caller's temp drop, or the callee's return-path drop of a
+            // named local it had already handed to a constructor -- freed the
+            // buffer the struct still pointed at. Every `--release` HTTP
+            // response body came back EMPTY while Content-Length still
+            // reported the original length, and `kryos run` was unaffected
+            // because the Cranelift struct literal already clones str fields.
+            // Clone here too, so both backends agree and the struct owns what
+            // it stores.
+            if let Some(MirType::Str) = field_mir_tys.get(def_i) {
+                if coerced_val != "null" && coerced_val != "zeroinitializer" {
+                    let cl = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {cl} = call ptr @kryos_string_clone(ptr {coerced_val})"
+                    ));
+                    coerced_val = cl;
+                }
+            }
             if let Some(MirType::Array(elem_ty, _)) = field_mir_tys.get(def_i) {
                 if coerced_val != "null" && coerced_val != "zeroinitializer" {
                     let elem_kind: i64 = match elem_ty.as_ref() {
