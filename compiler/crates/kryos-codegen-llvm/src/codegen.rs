@@ -1832,6 +1832,48 @@ impl LlvmCodegen {
                     "  call void @{func_name}({arg_list})"
                 ));
                 self.emit_line("  ret i64 0");
+            } else if self
+                .func_sig_aggs
+                .get(func_name.as_str())
+                .and_then(|(ret_agg, _)| ret_agg.clone())
+                .is_some()
+            {
+                // AGGREGATE return via sret. The function is DEFINED with an sret
+                // pointer (`define void @mk(ptr sret(%W))`), so calling it as
+                // `call %W @mk()` -- which this used to do before boxing the
+                // result -- mismatches the ABI and hands back garbage: reading
+                // a field of the returned struct produced a raw pointer
+                // reinterpreted as data. That is what made a router storing
+                // handlers in a table return nonsense on `build --release`
+                // while `kryos run` was fine.
+                //
+                // Allocate the box FIRST and let the callee write straight
+                // into it through sret; that is both correct and one copy
+                // cheaper than materializing the aggregate and storing it.
+                let agg_ty = self
+                    .func_sig_aggs
+                    .get(func_name.as_str())
+                    .and_then(|(ret_agg, _)| ret_agg.clone())
+                    .unwrap_or_else(|| underlying_ret.clone());
+                let size_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {size_ptr} = getelementptr {agg_ty}, ptr null, i32 1"
+                ));
+                let size_i64 = self.next_temp();
+                self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                let buf = self.next_temp();
+                self.emit_line(&format!(
+                    "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                ));
+                let sret_args = if arg_list.is_empty() {
+                    format!("ptr sret({agg_ty}) {buf}")
+                } else {
+                    format!("ptr sret({agg_ty}) {buf}, {arg_list}")
+                };
+                self.emit_line(&format!("  call void @{func_name}({sret_args})"));
+                let i = self.next_temp();
+                self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
+                self.emit_closure_thunk_return(mutated_slot, &i);
             } else {
                 let r = self.next_temp();
                 self.emit_line(&format!(

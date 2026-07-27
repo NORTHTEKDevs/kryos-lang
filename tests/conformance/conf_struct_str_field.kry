@@ -45,12 +45,17 @@ fn main() {
     expect(len(b.body) == 10, "local-built body survives the return")
     expect(b.body == "{{computed}}", "local-built body content")
 
-    // NOTE: calling a struct-returning function through a fn VALUE is NOT
-    // exercised here. It returns garbage on `build --release` for an
-    // unrelated reason -- the indirect-call path expects the callee to BOX an
-    // aggregate return, but a bare function reference stores the raw pointer,
-    // so the caller unboxes something that was never boxed. Tracked
-    // separately in CLAUDE.md; `kryos run` is correct.
+    // through a fn VALUE, the shape a router uses to store handlers. The
+    // env-thunk used to call an sret-returning function as though it returned
+    // the aggregate directly, so this read back a raw pointer as data.
+    let f = from_local
+    let c = f()
+    expect(c.body == "{{computed}}", "body survives a call through a fn value")
+
+    // a table of handlers, dispatched by index
+    let table: [fn() -> Wrap] = [from_temp, from_local]
+    expect(table[0]().body == "{{computed}}", "handler table entry 0")
+    expect(table[1]().body == "{{computed}}", "handler table entry 1")
 
     // a computed argument handed straight to a constructor
     let d = passthrough("x" + "y" + "z")
