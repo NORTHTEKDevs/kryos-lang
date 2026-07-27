@@ -1,0 +1,88 @@
+// Reproduction for the open struct-argument leak.
+//
+// Passing a struct that has HEAP FIELDS to any function -- a free function or
+// a method, it makes no difference -- leaks that struct's heap body, roughly
+// 85 bytes per call. Everything else in this file is FLAT, which is what makes
+// the diagnosis precise.
+//
+// Measured peak RSS (Windows, --release), 250k vs 1M iterations. A leak grows
+// with the iteration count; a fixed shape does not:
+//
+//   bare_array           4.4 MB -> 3.9 MB    flat   (no struct at all)
+//   scalar_method        4.0 MB -> 3.9 MB    flat   (struct, but no heap field)
+//   heap_field_direct    4.5 MB -> 4.5 MB    flat   (heap fields, NO call)
+//   heap_field_method   25.7 MB -> 95.5 MB   LEAKS
+//   free_fn_scalar_ret  11.8 MB -> 84.8 MB   LEAKS  (a free fn leaks the same)
+//   method_chain        72.7 MB -> 279.5 MB  LEAKS  (each link leaks)
+//
+// So the trigger is a struct with heap fields crossing a CALL boundary. It is
+// NOT specific to method receivers, and reading fields directly is fine.
+//
+// WHY IT IS STILL OPEN. consume_call_args treats a struct argument as MOVED,
+// so the caller drops its scope-end Drop; the callee records params in
+// param_locals and never drops them. Nobody frees. The obvious fix -- add
+// MirType::Struct to the Str/Array/Map borrow list -- makes the caller free a
+// handle that `spawn` still shares: conf_spinlock_mutex throws "lock on
+// dropped mutex" and segfaults. Retaining struct captures at the spawn site
+// (giving the thread its own owner count in the header word kryos_calloc
+// already reserves) does NOT rescue it either -- verified, the retain is
+// emitted and the test still fails, because the generated __kryos_drop_<T>
+// tears the mutex FIELD down regardless of the box's owner count. Closing
+// this needs the drop helpers, container reads, spawn capture and
+// reassignment converted together, which is the representation change the
+// gotcha list describes -- not an incremental patch.
+//
+// Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./struct_arg_leak
+// Modes: bare_array scalar_method heap_field_direct heap_field_method
+//        free_fn_scalar_ret method_chain
+
+struct Bag { items: [str], name: str }
+impl Bag {
+    fn size(self: Bag) -> i64 { return len(self.items) }
+    fn add(self: Bag, s: str) -> Bag {
+        return Bag { items: push(self.items, s), name: self.name }
+    }
+}
+
+struct Plain { a: i64, b: i64 }
+impl Plain {
+    fn sum(self: Plain) -> i64 { return self.a + self.b }
+}
+
+fn size_fn(b: Bag) -> i64 { return len(b.items) }
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 250000 } else { parse_int(raw) }
+
+    let mut acc = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "bare_array" {
+            let arr: [str] = ["p", "q"]
+            acc = acc + len(arr)
+        } elif mode == "scalar_method" {
+            let p = Plain { a: 1, b: 2 }
+            acc = acc + p.sum()
+        } elif mode == "heap_field_direct" {
+            let b = Bag { items: ["p", "q"], name: "n" }
+            acc = acc + len(b.items)
+        } elif mode == "heap_field_method" {
+            let b = Bag { items: ["p", "q"], name: "n" }
+            acc = acc + b.size()
+        } elif mode == "free_fn_scalar_ret" {
+            let b = Bag { items: ["p", "q"], name: "n" }
+            acc = acc + size_fn(b)
+        } elif mode == "method_chain" {
+            let b = Bag { items: [], name: "n" }
+            acc = acc + b.add("x").add("y").size()
+        } else {
+            println("unknown LEAK_MODE: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println(mode + " iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
