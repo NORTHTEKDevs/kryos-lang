@@ -1,0 +1,45 @@
+// Conformance: a struct cycle through PLAIN struct fields is rejected, and a
+// cycle through an indirection still works (wave-28).
+//
+// `struct A { b: B }  struct B { a: A }` type-checked clean and then made the
+// COMPILER recurse forever computing the layout -- it died with "stack
+// overflow (unbounded recursion?)" and no diagnostic. A struct stores its
+// fields inline, so that value has infinite size. Arrays, maps and Option are
+// handles, so a cycle through one of them is finite and must keep working --
+// that is how you write a tree or a linked list.
+
+use std::option::{Option, some}
+
+struct Entry { name: str, next: Option<Entry> }
+struct Index { by_name: map<str, Index>, depth: i64 }
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn main() {
+    // NOTE: self-reference through an ARRAY (`struct Tree { kids: [Tree] }`)
+    // is deliberately NOT exercised here. It is correct on `build --release`
+    // (the struct-literal array-field clone now adds an owner for STRUCT
+    // elements) but still corrupts the heap on `kryos run` -- the Cranelift
+    // path shares element boxes elsewhere. Tracked in CLAUDE.md; this file
+    // stays green on both backends.
+
+    // self-reference through Option
+    let tail = Entry { name: "tail", next: none_entry() }
+    expect(tail.name == "tail", "option-linked entry")
+
+    // self-reference through a map
+    let idx = Index { by_name: {}, depth: 0 }
+    expect(idx.depth == 0, "map-linked index")
+    expect(len(idx.by_name) == 0, "map field empty")
+
+    println("conformance recursive struct: PASS")
+}
+
+fn none_entry() -> Option<Entry> {
+    return Option.None
+}

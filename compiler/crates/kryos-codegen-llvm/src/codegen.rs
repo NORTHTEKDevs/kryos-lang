@@ -3642,6 +3642,11 @@ impl LlvmCodegen {
                                 MirType::Str => 1,
                                 MirType::Array(_, _) => 2,
                                 MirType::Map { .. } => 3,
+                                // A dup of an array of STRUCTS is a header clone that
+                                // shares the element boxes, so the copy must add an
+                                // owner or the source's element-free releases boxes the
+                                // copy still points at.
+                                MirType::Struct(_) => 4,
                                 _ => 0,
                             }
                         };
@@ -3814,6 +3819,11 @@ impl LlvmCodegen {
                                     MirType::Str => 1,
                                     MirType::Array(_, _) => 2,
                                     MirType::Map { .. } => 3,
+                                    // A dup of an array of STRUCTS is a header clone that
+                                    // shares the element boxes, so the copy must add an
+                                    // owner or the source's element-free releases boxes the
+                                    // copy still points at.
+                                    MirType::Struct(_) => 4,
                                     _ => 0,
                                 };
                                 let cl = self.next_temp();
@@ -3836,6 +3846,11 @@ impl LlvmCodegen {
                                         MirType::Str => 1,
                                         MirType::Array(_, _) => 2,
                                         MirType::Map { .. } => 3,
+                                        // A dup of an array of STRUCTS is a header clone that
+                                        // shares the element boxes, so the copy must add an
+                                        // owner or the source's element-free releases boxes the
+                                        // copy still points at.
+                                        MirType::Struct(_) => 4,
                                         _ => 0,
                                     }
                                 };
@@ -8907,6 +8922,13 @@ impl LlvmCodegen {
                 if coerced_val != "null" && coerced_val != "zeroinitializer" {
                     let elem_kind: i64 = match elem_ty.as_ref() {
                         MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                        // A STRUCT element is shared by a header clone too, so
+                        // it needs its own owner. Without this, `struct Tree {
+                        // kids: [Tree] }` corrupted the heap: the struct
+                        // literal cloned the array, then the source array's
+                        // drop freed the element boxes the new field still
+                        // pointed at.
+                        MirType::Struct(_) => 4,
                         _ => 0,
                     };
                     let cl = self.next_temp();
@@ -10062,6 +10084,13 @@ impl LlvmCodegen {
                     // to a plain header clone in that case).
                     let elem_kind: i64 = match elem_ty.as_ref() {
                         MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                        // A STRUCT element is shared by a header clone too, so
+                        // it needs its own owner. Without this, `struct Tree {
+                        // kids: [Tree] }` corrupted the heap: the struct
+                        // literal cloned the array, then the source array's
+                        // drop freed the element boxes the new field still
+                        // pointed at.
+                        MirType::Struct(_) => 4,
                         _ => 0,
                     };
                     let cl = self.next_temp();

@@ -255,7 +255,16 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
         None => return std::ptr::null_mut(),
     };
     if plain_alloc() {
-        return unsafe { calloc(count as usize, size as usize) };
+        // Header in plain mode too, so the owner count below sits at the same
+        // offset in both modes and `kryos_free` finds it uniformly.
+        let raw = unsafe { calloc(1, HEADER + payload) };
+        if raw.is_null() {
+            return std::ptr::null_mut();
+        }
+        unsafe {
+            *(raw as *mut u64) = CLASS_SYSTEM;
+            return raw.add(HEADER);
+        }
     }
     // The class tag occupies the first HEADER bytes of the block, so the
     // block must cover header + payload.
@@ -291,11 +300,19 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    if plain_alloc() {
-        unsafe { free(ptr) };
+    let block = unsafe { ptr.sub(HEADER) };
+    // Shared-ownership check. The second header word counts EXTRA owners: 0
+    // means "one owner", which is every box that predates struct sharing, so
+    // a box nobody retained frees exactly as it always did.
+    let rc = unsafe { &*(block.add(8) as *const std::sync::atomic::AtomicU64) };
+    if rc.load(std::sync::atomic::Ordering::Acquire) > 0 {
+        rc.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return;
     }
-    let block = unsafe { ptr.sub(HEADER) };
+    if plain_alloc() {
+        unsafe { free(block) };
+        return;
+    }
     let class = unsafe { *(block as *const u64) };
     if class == CLASS_SYSTEM {
         unsafe { free(block) };
@@ -381,4 +398,25 @@ mod pool_tests {
         assert!(kryos_calloc(1, 0).is_null());
         kryos_free(std::ptr::null_mut()); // must not crash
     }
+}
+
+
+/// Add an owner to a `kryos_calloc` box. Pairs with `kryos_free`, which
+/// consumes one extra owner before actually releasing the box.
+///
+/// Structs have no `ref_count` field the way `str`/`[T]`/`map` do; this uses
+/// the second word of the allocation header, which `kryos_calloc` already
+/// reserves and zeroes, so codegen never sees it and field offsets are
+/// unaffected.
+#[no_mangle]
+pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
+    if ptr.is_null() {
+        return ptr;
+    }
+    unsafe {
+        let block = ptr.sub(HEADER);
+        let rc = &*(block.add(8) as *const std::sync::atomic::AtomicU64);
+        rc.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    ptr
 }

@@ -366,6 +366,12 @@ pub unsafe extern "C" fn kryos_array_dup(arr: *const KryosArray, elem_kind: i64)
             *rc += 1;
         } else if elem_kind == 2 {
             crate::arc::kryos_arc_retain(elem as *mut u8);
+        } else if elem_kind == 4 {
+            // STRUCT elements. A dup is a header clone, so both arrays point
+            // at the SAME element boxes; without this the source array's
+            // element-free released boxes the copy still referenced -- which
+            // is what corrupted the heap for `struct Tree { kids: [Tree] }`.
+            crate::alloc::kryos_struct_retain(elem as *mut u8);
         }
     }
     result

@@ -3357,6 +3357,11 @@ fn translate_instruction<M: Module>(
                                 MirType::Str => 1,
                                 MirType::Array(_, _) => 2,
                                 MirType::Map { .. } => 3,
+                                // A dup of an array of STRUCTS is a header clone that
+                                // shares the element boxes, so the copy must add an
+                                // owner or the source's element-free releases boxes the
+                                // copy still points at.
+                                MirType::Struct(_) => 4,
                                 _ => 0,
                             };
                             let f = ensure_func_ref_with_args(
@@ -3383,6 +3388,11 @@ fn translate_instruction<M: Module>(
                                     MirType::Str => 1,
                                     MirType::Array(_, _) => 2,
                                     MirType::Map { .. } => 3,
+                                    // A dup of an array of STRUCTS is a header clone that
+                                    // shares the element boxes, so the copy must add an
+                                    // owner or the source's element-free releases boxes the
+                                    // copy still points at.
+                                    MirType::Struct(_) => 4,
                                     _ => 0,
                                 }
                             };
@@ -5143,6 +5153,11 @@ fn translate_rvalue<M: Module>(
                                         MirType::Str => 1,
                                         MirType::Array(_, _) => 2,
                                         MirType::Map { .. } => 3,
+                                        // A dup of an array of STRUCTS is a header clone that
+                                        // shares the element boxes, so the copy must add an
+                                        // owner or the source's element-free releases boxes the
+                                        // copy still points at.
+                                        MirType::Struct(_) => 4,
                                         _ => 0,
                                     };
                                     let dup_ref = ensure_func_ref_with_args(
@@ -7286,6 +7301,11 @@ fn emit_drop_for_value<M: Module>(
                     MirType::Str => 1,
                     MirType::Array(_, _) => 2,
                     MirType::Map { .. } => 3,
+                    // A dup of an array of STRUCTS is a header clone that
+                    // shares the element boxes, so the copy must add an
+                    // owner or the source's element-free releases boxes the
+                    // copy still points at.
+                    MirType::Struct(_) => 4,
                     _ => 0,
                 }
             };

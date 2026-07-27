@@ -1011,6 +1011,37 @@ fn use_it(x: i64) -> i64 { return helper(x) * 2 }
 fn main() { println(to_string(use_it(5))) }
 '
 
+# --- recursive struct layout (wave-28) ---------------------------------------
+# A struct stores its fields INLINE, so a cycle of plain struct fields is a
+# value of infinite size. These type-checked clean and then made the COMPILER
+# recurse forever computing the layout ("stack overflow (unbounded
+# recursion?)"), with no diagnostic. A cycle through a HANDLE (array/map/
+# Option) is finite and must keep working -- that is how trees and lists are
+# written.
+want_reject recursive_struct_self 'struct S { s: S }
+fn main() { }'
+
+want_reject recursive_struct_mutual 'struct A { b: B }
+struct B { a: A }
+fn main() { }'
+
+want_reject recursive_struct_three_cycle 'struct A { b: B }
+struct B { c: C }
+struct C { a: A }
+fn main() { }'
+
+want_pass recursive_struct_via_array 'struct Tree { label: str, kids: [Tree] }
+fn main() {
+    let t = Tree { label: "root", kids: [] }
+    println(t.label)
+}'
+
+want_pass recursive_struct_via_map 'struct Index { by_name: map<str, Index>, depth: i64 }
+fn main() {
+    let i = Index { by_name: {}, depth: 0 }
+    println(to_string(i.depth))
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

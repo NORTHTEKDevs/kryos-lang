@@ -647,6 +647,82 @@ impl TypeChecker {
                     _ => {}
                 }
             }
+            // A struct stores its fields INLINE, so a cycle of plain
+            // struct-typed fields describes a value of infinite size. Nothing
+            // rejected it: `struct A { b: B }  struct B { a: A }` type-checked
+            // clean and then made the COMPILER recurse forever computing the
+            // layout, dying with "stack overflow (unbounded recursion?)" --
+            // a crash on a plausible modelling mistake, with no diagnostic
+            // pointing at the cause. Report the cycle instead.
+            //
+            // Only DIRECT embedding counts. `[S]`, `map<K, S>` and `Option<S>`
+            // are handles, so a cycle through one of them is finite and stays
+            // legal (self-referential trees and linked lists keep working).
+            {
+                use std::collections::HashMap;
+                fn direct_fields(t: &kryos_ast::TypeExpr, out: &mut Vec<String>) {
+                    match t {
+                        kryos_ast::TypeExpr::Simple { name, .. } => out.push(name.clone()),
+                        // A tuple is stored inline too, so it propagates the cycle.
+                        kryos_ast::TypeExpr::Tuple { elements, .. } => {
+                            for e in elements {
+                                direct_fields(e, out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let mut edges: HashMap<String, Vec<String>> = HashMap::new();
+                let mut spans: HashMap<String, kryos_errors::Span> = HashMap::new();
+                for decl in &module.declarations {
+                    if let Decl::Struct { name, fields, span, .. } = decl {
+                        let mut outs = Vec::new();
+                        for f in fields {
+                            direct_fields(&f.ty, &mut outs);
+                        }
+                        edges.insert(name.clone(), outs);
+                        spans.insert(name.clone(), *span);
+                    }
+                }
+                // Report each cycle once, at the declaration that closes it.
+                let mut reported: std::collections::HashSet<String> = Default::default();
+                for start in edges.keys() {
+                    if reported.contains(start) {
+                        continue;
+                    }
+                    // Depth-first walk back to `start`; `path` records the route.
+                    let mut stack = vec![(start.clone(), vec![start.clone()])];
+                    let mut seen: std::collections::HashSet<String> = Default::default();
+                    while let Some((node, path)) = stack.pop() {
+                        for next in edges.get(&node).into_iter().flatten() {
+                            if next == start {
+                                let mut route = path.clone();
+                                route.push(next.clone());
+                                for n in &route {
+                                    reported.insert(n.clone());
+                                }
+                                let Some(span) = spans.get(start).copied() else {
+                                    continue;
+                                };
+                                self.error(
+                                    format!(
+                                        "recursive struct `{start}` has infinite size: {} -- a struct stores its fields inline, so this cycle can never be laid out; put one field behind an indirection (`[{next}]`, `map<str, {next}>`, or `Option<{next}>`)",
+                                        route.join(" -> ")
+                                    ),
+                                    span,
+                                );
+                                stack.clear();
+                                break;
+                            }
+                            if edges.contains_key(next) && seen.insert(next.clone()) {
+                                let mut route = path.clone();
+                                route.push(next.clone());
+                                stack.push((next.clone(), route));
+                            }
+                        }
+                    }
+                }
+            }
             for decl in &module.declarations {
                 if let Decl::Actor { name, span, .. } = decl {
                     if structy_names.contains(name) {
