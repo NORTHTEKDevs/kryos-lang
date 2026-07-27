@@ -141,6 +141,15 @@ jobs:
         # past the deny-by-default flip until a manual run caught it.
         run: bash tests/run_examples_gate.sh
 
+      - name: Examples E2E gate (differential run + served response bodies)
+        # The gate above only COMPILES the showcase apps. Three real defects
+        # shipped through it: json_bool(false) serving JSON `true` on
+        # --release, a struct-returning fn value returning garbage through a
+        # router, and tiny_kv self-recursing to a stack overflow on its first
+        # command. This one RUNS the apps on both backends, diffs their
+        # output, and asserts on real HTTP response bodies.
+        run: bash tests/run_examples_e2e.sh
+
       - name: Package selftests (execute every packages/*/src/selftest.kry)
         # ecosystem_check.sh only typechecks packages/; these actually RUN.
         # The dotenv selftest is what exposed the map-value use-after-free.
