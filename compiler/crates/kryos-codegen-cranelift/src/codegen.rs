@@ -603,6 +603,33 @@ pub fn compile_module_with_options(
             let id = object_module.declare_function("calloc", Linkage::Import, &calloc_sig)?;
             func_ids.insert("calloc".to_string(), id);
         }
+        // Struct/enum BOXES must come from `kryos_calloc`, never libc `calloc`.
+        // `kryos_calloc` reserves a HEADER (16 bytes) in front of the payload:
+        // word 0 is the pool size-class tag, word 1 is the EXTRA-owner count
+        // that `kryos_struct_retain` bumps and that `kryos_struct_release_shared`
+        // and `kryos_free` read at `ptr - 8`. A box from libc `calloc` has no
+        // such header, so the generated `__kryos_drop_<T>` preamble reads 8
+        // bytes BEFORE the allocation and the matching free lands on a bogus
+        // block base — glibc then reports "corrupted size vs. prev_size" or
+        // "double free or corruption" at teardown. The LLVM backend has always
+        // used `kryos_calloc` here; this keeps the two backends on one layout.
+        if !func_ids.contains_key("kryos_calloc") {
+            let id = object_module.declare_function("kryos_calloc", Linkage::Import, &calloc_sig)?;
+            func_ids.insert("kryos_calloc".to_string(), id);
+        }
+        // `kryos_free` MUST be declared here, at the earliest declaration point,
+        // and with its true void signature. `ensure_func_ref_with_args` falls
+        // back to a generic `(i64, ...) -> i64` signature for names it has never
+        // seen, and Cranelift rejects a later void re-declaration of the same
+        // symbol ("signature ... is incompatible with previous declaration").
+        // Declaring it up front means every call site — helper bodies, thunks,
+        // droppers, and translated functions — resolves the same FuncId.
+        if !func_ids.contains_key("kryos_free") {
+            let mut void_sig = Signature::new(object_module.isa().default_call_conv());
+            void_sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_free", Linkage::Import, &void_sig)?;
+            func_ids.insert("kryos_free".to_string(), id);
+        }
         for name in ["kryos_string_clone", "kryos_array_clone", "kryos_map_clone"] {
             if !func_ids.contains_key(name) {
                 let id = object_module.declare_function(name, Linkage::Import, &one_in_one_out)?;
@@ -1814,6 +1841,10 @@ pub fn compile_module_with_options(
             ("kryos_array_free", true),
             ("kryos_map_free", true),
             ("free", true),
+            // Paired with `kryos_calloc`: subtracts the HEADER before releasing
+            // and honours the extra-owner count, so a shared box survives the
+            // first owner's drop. Every struct/enum box free goes through this.
+            ("kryos_free", true),
         ] {
             if !func_ids.contains_key(rt_name) {
                 let sig = if is_void {
@@ -1853,7 +1884,7 @@ pub fn compile_module_with_options(
                         Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                             Some("kryos_arc_release")
                         }
-                        Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("free"),
+                        Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("kryos_free"),
                         _ => None,
                     };
                     if let Some(fn_name) = rt_fn_name {
@@ -1949,7 +1980,7 @@ pub fn compile_module_with_options(
                                         // Will resolve below
                                         None
                                     } else {
-                                        Some("free")
+                                        Some("kryos_free")
                                     }
                                 }
                                 MirType::Enum(n) => {
@@ -1957,7 +1988,7 @@ pub fn compile_module_with_options(
                                     if func_ids.contains_key(&dn) {
                                         None
                                     } else {
-                                        Some("free")
+                                        Some("kryos_free")
                                     }
                                 }
                                 _ => continue,
@@ -2042,7 +2073,7 @@ pub fn compile_module_with_options(
                                     builder.ins().call(fref, &[field_val]);
                                     continue;
                                 }
-                                "free"
+                                "kryos_free"
                             }
                             _ => continue,
                         };
@@ -2060,8 +2091,9 @@ pub fn compile_module_with_options(
                 builder.switch_to_block(merge_block);
             }
 
-            // Free the struct/enum allocation itself.
-            let free_id = func_ids["free"];
+            // Free the struct/enum allocation itself. Header-aware: bails out if
+            // another owner still holds the box.
+            let free_id = func_ids["kryos_free"];
             let free_ref = object_module.declare_func_in_func(free_id, builder.func);
             builder.ins().call(free_ref, &[ptr]);
 
@@ -2125,7 +2157,8 @@ pub fn compile_module_with_options(
 
             let one_v = builder.ins().iconst(types::I64, 1);
             let size_v = builder.ins().iconst(types::I64, layout.total_size as i64);
-            let calloc_id = func_ids["calloc"];
+            // Boxed clone: header-bearing allocation (see kryos_calloc note above).
+            let calloc_id = func_ids["kryos_calloc"];
             let calloc_ref = object_module.declare_func_in_func(calloc_id, builder.func);
             let alloc_call = builder.ins().call(calloc_ref, &[one_v, size_v]);
             let dst = builder.inst_results(alloc_call)[0];
@@ -2440,7 +2473,7 @@ fn emit_struct_deep_copy_inner<M: Module>(
     let layout = compute_struct_layout(&struct_def)?;
     let one_val = builder.ins().iconst(types::I64, 1);
     let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
-    let calloc_ref = ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+    let calloc_ref = ensure_func_ref_with_args("kryos_calloc", builder, translator, module, 2)?;
     let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
     let new_ptr = builder.inst_results(alloc_call)[0];
 
@@ -2581,7 +2614,7 @@ fn emit_enum_deep_copy_inner<M: Module>(
 
     let one_val = builder.ins().iconst(types::I64, 1);
     let size_val = builder.ins().iconst(types::I64, total_size as i64);
-    let calloc_ref = ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+    let calloc_ref = ensure_func_ref_with_args("kryos_calloc", builder, translator, module, 2)?;
     let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
     let new_ptr = builder.inst_results(alloc_call)[0];
 
@@ -5085,7 +5118,7 @@ fn translate_rvalue<M: Module>(
                 let one_val = builder.ins().iconst(types::I64, 1);
                 let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
                 let calloc_ref =
-                    ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+                    ensure_func_ref_with_args("kryos_calloc", builder, translator, module, 2)?;
                 let call = builder.ins().call(calloc_ref, &[one_val, size_val]);
                 let ptr = builder.inst_results(call)[0];
 
@@ -5577,9 +5610,17 @@ fn translate_rvalue<M: Module>(
                 .unwrap_or(0);
             let total_size = (1 + max_fields) as u32 * 8;
 
+            // `kryos_calloc`, not libc malloc: the enum box carries the same
+            // 16-byte header as a struct box, because `__kryos_drop_<Enum>`
+            // runs the identical shared-owner preamble and free path.
+            // calloc also zeroes the unused payload slots, so a drop helper
+            // never sees a garbage pointer in a slot the active variant
+            // does not use.
+            let one_val = builder.ins().iconst(types::I64, 1);
             let size_val = builder.ins().iconst(types::I64, total_size as i64);
-            let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
-            let call = builder.ins().call(malloc_ref, &[size_val]);
+            let calloc_ref =
+                ensure_func_ref_with_args("kryos_calloc", builder, translator, module, 2)?;
+            let call = builder.ins().call(calloc_ref, &[one_val, size_val]);
             let ptr = builder.inst_results(call)[0];
 
             // Store tag at offset 0.
@@ -7250,7 +7291,7 @@ fn emit_deep_copy_struct<M: Module>(
     // garbage pointers passed to them cause STATUS_HEAP_CORRUPTION.
     let one_val = builder.ins().iconst(types::I64, 1);
     let size_val = builder.ins().iconst(types::I64, layout.total_size as i64);
-    let calloc_ref = ensure_func_ref_with_args("calloc", builder, translator, module, 2)?;
+    let calloc_ref = ensure_func_ref_with_args("kryos_calloc", builder, translator, module, 2)?;
     let alloc_call = builder.ins().call(calloc_ref, &[one_val, size_val]);
     let new_ptr = builder.inst_results(alloc_call)[0];
 
@@ -7469,7 +7510,7 @@ fn emit_drop_for_value<M: Module>(
                     }
                 }
             }
-            let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
+            let free_ref = ensure_func_ref_with_args("kryos_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
             builder.ins().jump(after_block, &[]);
             builder.seal_block(after_block);
@@ -7492,7 +7533,7 @@ fn emit_drop_for_value<M: Module>(
                     if translator.func_ids.contains_key(&drop_name) {
                         Some(drop_name)
                     } else {
-                        Some("free".to_string())
+                        Some("kryos_free".to_string())
                     }
                 }
                 MirType::Enum(n) => {
@@ -7500,7 +7541,7 @@ fn emit_drop_for_value<M: Module>(
                     if translator.func_ids.contains_key(&drop_name) {
                         Some(drop_name)
                     } else {
-                        Some("free".to_string())
+                        Some("kryos_free".to_string())
                     }
                 }
                 _ => None,
@@ -7725,8 +7766,9 @@ fn emit_drop_for_value<M: Module>(
                     builder.switch_to_block(merge_block);
                 }
             }
-            // Enum is heap-allocated via malloc — free the enum pointer.
-            let free_ref = ensure_func_ref_with_args("free", builder, translator, module, 1)?;
+            // Enum box came from `kryos_calloc` — release it through the
+            // matching header-aware free.
+            let free_ref = ensure_func_ref_with_args("kryos_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
 
             builder.ins().jump(enum_after_block, &[]);

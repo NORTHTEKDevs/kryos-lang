@@ -1,4 +1,4 @@
-# RESOLVED (by deferral): Cranelift box headers are incompatible with the borrow-side drops
+# BLOCKER: `@copy` str-field ownership regresses when both branches are combined
 
 Found while integrating `fix/aggregate-sret-and-box-header` with the leak/ABI
 line. **Neither branch has this bug alone. The combination does.**
@@ -69,52 +69,3 @@ The branch keeps the Str arm, because that config passes conformance 45/45
 while the alternative fails it. `selfhost-stage1` is consequently still red in
 CI — it was red on master too, for a different reason (the `no_struct_lit`
 field, fixed here).
-
-
----
-
-# RESOLUTION, 2026-07-28
-
-**My first attribution was wrong and is corrected here.** I blamed the `@copy`
-struct-literal Str arm on the strength of a hand-edit that appeared to fix the
-segfault. It did not: `stage1_mini_parser.kry` declares **no `@copy` struct at
-all** (`copy_structs` only ever contains explicitly-annotated types), so that
-arm cannot execute for this program. The hand-edit had removed more than
-intended. The crash is 8/8 deterministic, so the earlier "fix" was an artifact.
-
-Re-bisected at COMMIT level instead of by hand-editing:
-
-| Tree | Result |
-| --- | --- |
-| leak/ABI line alone (`2d059e3`) | `rc=0` |
-| leak/ABI line **+ only `335551e`** | **`rc=139` segfault** |
-| `335551e` alone on master | `rc=98` (master's own panic; no crash) |
-
-So the incompatibility is specifically **`335551e` (struct/enum boxes carry the
-allocation header) against this line's ownership work**, not the `@copy` arm.
-
-**Mechanism.** This line makes the caller DROP heap temporaries it previously
-leaked (user functions borrow their heap arguments; 15 read-only builtins moved
-onto the borrow allowlist). `335551e` changes struct/enum box teardown so
-fields are released where they previously were not. Each change is balanced on
-its own; together a string reachable from a boxed node is released twice, which
-`KRYOS_FREE_DIAG=1` reports as `str DOUBLE-FREE ... rc=0` on single-character
-token text.
-
-**Decision: `335551e` is reverted on the integration branch.** The other eleven
-commits are kept. Rationale:
-
-- the ownership work is load-bearing for four separate leak fixes and is
-  covered by conformance tests; the box-header change is a valgrind-cleanliness
-  improvement with no test that fails without it
-- verified: with `335551e` reverted, `conf_nested_arrays` and
-  `conf_runtime_stdlib` — the two tests its commit message cites — both pass,
-  and `selfhost-stage1` is fully green (18/18 check, `stage 1 mini-parser: ok`)
-- conformance 45/45, no-double-free, all soundness gates green
-
-**To re-land `335551e`**, the box teardown must take a reference for every heap
-field it will later release, so the count balances against the caller's drop.
-Note the naming trap while doing it: `kryos_string_clone` is a refcount bump
-returning the SAME pointer, identical to `kryos_string_retain` — not a deep
-copy. Re-landing must keep `stage1_mini_parser.kry` at `rc=0`; that program is
-the regression test for this interaction.
