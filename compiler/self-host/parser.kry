@@ -173,7 +173,7 @@ fn p_expect(p: Parser, kind: i32) -> Parser {
     let msg = "expected " + token_kind_name(kind) + ", found " + token_kind_name(tok.kind) + " at " + to_string(tok.start)
     let mut errors = p.errors
     push(errors, msg)
-    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_error(p: Parser, msg: str) -> Parser {
@@ -182,7 +182,7 @@ fn p_error(p: Parser, msg: str) -> Parser {
     // " at <off>" (e.g. p_expect) push directly and bypass this helper.
     let mut errors = p.errors
     push(errors, msg + " at " + to_string(p_peek_start(p)))
-    return Parser { tokens: p.tokens, pos: p.pos, errors: errors }
+    return Parser { tokens: p.tokens, pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_expect_name(p: Parser) -> ParseNameResult {
