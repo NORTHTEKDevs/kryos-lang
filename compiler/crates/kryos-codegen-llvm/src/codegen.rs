@@ -430,6 +430,22 @@ impl LlvmCodegen {
 
         for func in functions {
             self.prescan_function(func);
+            // -g emits a kryos_trace_enter frame registration per function,
+            // whose two `ptr` arguments are interned string globals. Those
+            // interns happen while the FUNCTION body is emitted, which is
+            // after emit_header_section() has already flushed
+            // emit_string_globals() -- so the call referenced `@.str.N` that
+            // was never defined and clang rejected the module with "use of
+            // undefined value". Intern them here, during the prescan, so the
+            // definitions land in the header like every other literal.
+            // (`kryos build --release -g` was broken outright; the Windows
+            // CodeView smoke job caught it.)
+            if self.options.debug_info {
+                let name = func.name.clone();
+                self.intern_string(&name);
+                let file = func.source_file.clone().unwrap_or_default();
+                self.intern_string(&file);
+            }
             let param_types: Vec<String> = func
                 .params
                 .iter()
