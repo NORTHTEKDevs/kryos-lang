@@ -20,22 +20,30 @@ trap 'rm -rf "$TMP"' EXIT
 fail=0
 n=0
 
+# Every invocation is time-boxed. Without this, a program that DEADLOCKS (rather
+# than crashing) does not make the suite fail -- it makes the suite hang, and a
+# CI job blocks until the platform's step limit with no useful output. A hang is
+# a failure; report it as one. 240s is ~20x the slowest passing program.
+TB=240
+run_tb() { timeout "$TB" "$@"; }
+
 for f in "$REPO"/tests/conformance/conf_*.kry; do
     base="$(basename "$f" .kry)"
     n=$((n+1))
-    if ! "$KRYOS" run "$f" >/dev/null 2>&1; then
+    if ! run_tb "$KRYOS" run "$f" >/dev/null 2>&1; then
         echo "  CL FAIL   $base"
-        "$KRYOS" run "$f" 2>&1 | tail -3
+        run_tb "$KRYOS" run "$f" 2>&1 | tail -3
         fail=1
         continue
     fi
-    if ! "$KRYOS" build "$f" --release --backend llvm -o "$TMP/$base" >/dev/null 2>&1; then
+    if ! run_tb "$KRYOS" build "$f" --release --backend llvm -o "$TMP/$base" >/dev/null 2>&1; then
         echo "  AOT BUILD FAIL $base"
         fail=1
         continue
     fi
-    if ! "$TMP/$base" >/dev/null 2>&1; then
-        echo "  AOT RUN FAIL $base"
+    if ! run_tb "$TMP/$base" >/dev/null 2>&1; then
+        rc=$?
+        [[ $rc -eq 124 ]] && echo "  AOT HANG ($TB s) $base" || echo "  AOT RUN FAIL $base"
         fail=1
         continue
     fi
