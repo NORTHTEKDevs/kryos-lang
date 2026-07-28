@@ -92,10 +92,34 @@ message (the second good `add`) either never gets dequeued or its
 3. Mailbox dequeue losing the message that was in flight when the throw
    happened.
 
-Next concrete step: run the AOT binary under `valgrind --trace-children=yes`
-(required — `kryos run` execs the compiled program as a CHILD, so plain
-valgrind sees nothing) and check whether the post-throw `send` touches freed
-memory. If it does, suspect 1 is confirmed and this is not a separate bug.
+**Valgrind result (run, and it REFUTES suspect 1).** Under
+`valgrind --trace-children=yes` (required — `kryos run` execs the compiled
+program as a CHILD, so plain valgrind sees nothing) the first and only memory
+error is NOT in the actor dispatch loop and NOT a freed receiver:
+
+    Thread 11:
+    Invalid read of size 1
+       at kryos_chan_send
+       by kryos_chan_send_i64
+       by __spawn_6
+       by ... kryos_rt::spawn::kryos_spawn::{closure#0}
+     Address 0x5566f74 is 28 bytes before a block of size 16 in arena "client"
+
+So a SPAWNED closure (`__spawn_6`, from `spawn`, not an actor handler) calls
+`send` on a channel handle that points 28 bytes outside any live block. That
+is a bogus handle, not a use-after-free of a released box — different
+signature from `conf_spinlock_mutex`.
+
+Revised conclusion: **suspect 1 is unlikely and the two blockers are probably
+NOT one fix.** Treat this as a separate bug in how a spawned closure captures
+a channel handle. Note the `[actor error]` line prints before the error, so
+the throw is not obviously causal — the actor recovery may be a red herring
+and the real defect may be in the spawn/channel section of the program.
+
+Next concrete step: bisect `conf_errors_concurrency` by section to find which
+`spawn` produces `__spawn_6`, then check how the channel handle is captured
+into that closure's environment. Also confirm whether the hang is this thread
+or a different one blocked on a receive.
 
 **Secondary issue, same root:** `tests/conformance/run_conformance.sh` runs each
 program with NO timeout, so these two do not make the suite fail -- they make it

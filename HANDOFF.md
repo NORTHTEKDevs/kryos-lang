@@ -66,16 +66,21 @@ reference: a use-after-free reachable from ordinary `Mutex` use. This is the
 issue CLAUDE.md gotcha #22 documents as needing a representation/ABI change,
 and it is also behind the ~79MB-per-1M-calls method leak.
 
-**Blocker 2 — `conf_errors_concurrency`.** Already narrowed; see the
-"Investigation notes" section in `docs/BUGS.md`. The runtime reporter and the
-shared MIR are both proven correct, and the recovery block demonstrably runs.
-The leading suspect is that the throw path drops the receiver, so the actor's
-state box is gone by the next message — **the same root as blocker 1.**
+**Blocker 2 — `conf_errors_concurrency`.** Narrowed further, and the valgrind
+run **refuted** the shared-root hypothesis. Full detail in `docs/BUGS.md`. The
+runtime reporter and the shared MIR are both proven correct and the recovery
+block demonstrably runs. The single memory error is a bad channel handle inside
+a SPAWNED closure (`kryos_chan_send` reading 28 bytes outside any live block,
+reached from `__spawn_6`), not a freed actor receiver.
 
-**Next concrete action:** run the `conf_errors_concurrency` AOT binary under
-`valgrind --trace-children=yes` and check whether the post-throw
-`send(reply, sum)` touches freed memory. If yes, the two blockers collapse into
-one fix and the estimate improves a lot.
+So **do not assume one ABI fix closes both blockers** — I initially thought it
+would and the evidence says otherwise. Treat blocker 2 as an independent bug in
+how a spawned closure captures a channel handle. It is also probably much
+smaller than blocker 1.
+
+**Next concrete action:** bisect `conf_errors_concurrency` by section to find
+which `spawn` becomes `__spawn_6`, then inspect how the channel handle enters
+that closure's environment.
 
 ## Structural fix worth doing alongside
 
@@ -93,7 +98,9 @@ path had no such guard, which is exactly why it miscompiled silently.
 
 ## Remaining queue (my ordering)
 
-1. Valgrind triage of blocker 2 to confirm shared root — hours, do this first.
+1. ~~Valgrind triage of blocker 2~~ **done** — refuted the shared root; blocker 2
+   is an independent spawned-closure channel-handle bug. Bisect it next; it looks
+   smaller than blocker 1 and may be days rather than weeks.
 2. Receiver representation/ABI change — 2–4 weeks, unblocks both blockers.
 3. Box layout behind one shared helper — 2–3 days.
 4. Capability-gate the raw-memory builtins — 2–4 days. Currently ungated, which
