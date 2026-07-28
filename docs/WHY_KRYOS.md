@@ -157,7 +157,7 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos 1.0.0-rc.2 is a feature-complete compiler (release candidate: one primary author, not yet externally stress-tested) with:
+Kryos 0.9.0 is a feature-complete compiler (pre-1.0: one primary author, not yet externally stress-tested, two known concurrency release blockers in docs/BUGS.md) with:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release; see BENCHMARKS.md for measured ratios vs Rust/C)

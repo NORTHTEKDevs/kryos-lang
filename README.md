@@ -35,7 +35,7 @@ kryos run hello.kry
 - **Stdlib is broad.** 66 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
 - **It governs AI agents at compile time — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 90 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, or a builtin passed as a value. `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
 
-> **Status:** Kryos is **1.0.0-rc.2** — a feature-complete beta with one primary author, not yet externally stress-tested. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are frozen for 1.x backwards compatibility. See [STABILITY.md](STABILITY.md) for the contract.
+> **Status:** Kryos is **0.9.0** — feature-complete, self-hosting, and usable, but *not* production ready. Two known deadlocks are reachable from ordinary `Mutex` and actor code (see [docs/BUGS.md](docs/BUGS.md)); they block 1.0. The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are shaped for 1.x compatibility but are **not frozen until 1.0**. See [STABILITY.md](STABILITY.md) for the contract.
 
 ---
 
@@ -84,7 +84,7 @@ kryos new hello && cd hello && kryos run
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 1.0.0-rc.2
+./target/release/kryos --version   # → kryos 0.9.0
 ```
 
 Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
@@ -275,7 +275,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v1.0.0-rc.2**. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
+Kryos is **v0.9.0** — feature-complete but pre-1.0; see [docs/BUGS.md](docs/BUGS.md) for the two release blockers. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver

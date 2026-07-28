@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-07-06 (v1.0.0-rc.2).
+Last updated: 2026-07-28 (v0.9.0).
 
 ---
 
@@ -65,7 +65,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v1.0.0-rc.2)
+## 4. Current pass rates (v0.9.0)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
@@ -84,10 +84,24 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 5. Known limitations (v1.0.0-rc.2)
+## 5. Known limitations (v0.9.0)
 
-There are no architectural failures in the release-gating sweep at
-v1.0.0-rc.2. Honest, non-blocking residuals:
+**Two release blockers.** These are architectural, not residual, and are why
+this is 0.9 and not 1.0. Full write-ups in [docs/BUGS.md](docs/BUGS.md):
+
+- **`Mutex` is not sound under contention.** `conf_spinlock_mutex` reports
+  `sync error: lock on dropped mutex` from spawned threads and then
+  deadlocks indefinitely on the LLVM AOT backend. The mutex box is released
+  while workers still hold a reference, so this is a use-after-free
+  reachable from ordinary `Mutex` use. Root cause is the struct-method
+  receiver representation (see the CLAUDE.md gotcha list); fixing it is an
+  ABI change, not a patch.
+- **An unhandled exception in an actor deadlocks the process.**
+  `conf_errors_concurrency` prints the actor error and then never shuts
+  down: the mailbox loop does not unwind. The process hangs instead of
+  failing.
+
+Other honest, non-blocking residuals:
 
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
