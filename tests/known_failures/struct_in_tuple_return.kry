@@ -1,7 +1,14 @@
 // KNOWN FAILURE: returning a struct INSIDE A TUPLE loses field mutations.
 //
 // Expected: name=t0 out=3
-// Actual:   name=t0 out=0     (both backends, identically)
+// Actual:   name=t0 out=1     (both backends, identically)
+//
+// PARTIALLY FIXED. Was out=0 with 2 double-frees; the temp-drop pass no
+// longer releases a struct field-read temp when the source struct escapes
+// the statement inside a tuple (see the guard in drop_unescaped_str_temps).
+// One accumulation path remains: each iteration returns a struct carrying
+// only its own push, not the running total, so a second release is still
+// unbalanced somewhere in the copy/dup chain. 1 double-free left.
 //
 // `store` pushes into `np.out` and returns `(np, len)`. The caller rebinds
 // `p` from the tuple, so the pushes must be visible. They are not: the

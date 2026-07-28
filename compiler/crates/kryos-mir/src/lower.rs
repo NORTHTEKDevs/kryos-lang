@@ -3448,7 +3448,29 @@ fn drop_unescaped_str_temps(
             // be balanced by dropping `id` here same as any other owned
             // temp -- this is true regardless of the source's own drop
             // status, since the retain always fires.
-            to_drop.push(id);
+            // ...UNLESS the source struct itself escapes this statement by
+            // being packed into an aggregate. `return (np, len(np.out))`
+            // reads np's array field, and dropping that temp released the
+            // array the RETURNED np still points at -- the caller got the
+            // struct back with an empty field (`out=0` where 3 were pushed)
+            // and the freed buffer double-freed later. Returning the struct
+            // DIRECTLY was always fine, so this was an inconsistency between
+            // two spellings, and it is the shape the self-host parser is
+            // built on (every `p_*` returns `(Parser, i64)`).
+            //
+            // A field read feeding a value that leaves with its own source
+            // is not a droppable borrow: the escaping aggregate keeps the
+            // struct alive past this window, so the retain this drop was
+            // meant to balance is still needed.
+            let src_escapes_in_aggregate =
+                ctx.current_instructions[inst_mark..].iter().any(|inst| {
+                    matches!(inst,
+                        Instruction::Assign { value: RValue::Tuple(ops), .. }
+                            if ops.iter().any(|o| matches!(o, Operand::Local(l) if *l == src)))
+                });
+            if !src_escapes_in_aggregate {
+                to_drop.push(id);
+            }
             // Separately: undo a partial-move mark THIS statement's field
             // read put on `src`, so the struct's own scope-end Drop (which
             // frees its other fields too) isn't left spuriously suppressed.
