@@ -77,7 +77,8 @@ no-double-free are clean; each blocker passes 3/3 consecutive AOT runs.
    before theorising about shared roots.
 2. The struct-method receiver representation (CLAUDE.md gotcha #22) is
    **no longer on the 1.0 critical path.** It is still worth doing for the
-   ~79MB-per-1M-calls method leak, but that is a performance item, not a
+   struct-argument leak (see the correction below -- it is NOT method-specific),
+   but that is a performance item, not a
    correctness blocker. My earlier 2–4 week estimate for it was gating the
    whole schedule; it should not.
 
@@ -110,7 +111,8 @@ path had no such guard, which is exactly why it miscompiled silently.
    hoisted out of the loop in the Cranelift capture-boxing path — start there.
 4. Box layout behind one shared helper — 2–3 days.
 5. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
-   (the ~79MB/1M-call method leak), not a 1.0 blocker.
+   (the struct-argument leak, ~86MB/1M -- see the correction below), not a
+   1.0 blocker.
 4. Capability-gate the raw-memory builtins — 2–4 days. Currently ungated, which
    undercuts the central pitch under `--strict-capabilities`.
 5. Generate the docs' status sections from real test output rather than by hand.
@@ -132,3 +134,67 @@ path had no such guard, which is exactly why it miscompiled silently.
 **Explicitly deferred past 1.0:** catchable runtime panics (needs an unwinding
 strategy decision, 1–2 weeks and a design commitment) and `i128`/`u128`
 (nonfunctional — document as unimplemented).
+
+
+---
+
+# Merge, 2026-07-28 — this branch integrated with the leak/ABI line
+
+Both lines branched from `ac45392` and neither was pushed, so they never saw
+each other. Integrated on `integrate/leaks-abi-and-concurrency`. Nothing from
+either side was dropped except one genuine duplicate.
+
+## The duplicate, and why a clean auto-merge was the hazard
+
+**The sret fn-value bug was fixed twice, independently and almost identically.**
+`d9b41d6` here and `3d8b2b0` on the other line both looked up `func_sig_aggs`,
+allocated via `kryos_arc_alloc`, and passed `ptr sret(agg)`. Only the placement
+differed. Git auto-merged BOTH arms with no conflict: this branch's matches
+first, so the other became unreachable dead code behind an `else if ...
+.is_some()` that can never be true. The duplicate arm was deleted, this
+branch's kept. Worth remembering — the two codegen files reported "auto-merging"
+and only `CLAUDE.md` conflicted, which reads like a safe merge and was not.
+
+## Why the two lines disagreed about test state
+
+Platform. This branch ran on Linux and reported `conf_spinlock_mutex` and
+`conf_errors_concurrency` hanging under LLVM AOT; the other line ran on Windows
+and had them green the whole time. The `ptr byval(T)` spawn-capture bug is
+System V-specific — a by-value-in-memory aggregate consumes no integer register
+on x86-64 SysV, shifting every later parameter. Windows x64 uses a different
+convention and did not manifest it. **Both sets of results were correct and
+neither validated the other platform.** Same caveat applies in reverse:
+`module_case_gate.sh` fails on Linux (a wrong-case `use std::String` is not
+rejected on a case-insensitive filesystem) and passes on Windows.
+
+## Correction to the struct-receiver characterization
+
+The remaining-queue item above described this as a "method leak". Measured, it
+is **not** method-specific: a free function leaks identically. The trigger is a
+struct with HEAP FIELDS crossing any call boundary, roughly 85 bytes per call.
+Flat for comparison: a struct with only scalar fields through a method, and the
+same struct's fields read directly without a call. Repro and the full
+rule-out list: `tests/mem/struct_arg_leak.kry`. Still open; still not a 1.0
+blocker.
+
+## Verified here on Windows after the merge
+
+- conformance **45/45** both backends (43 + this branch's `conf_fnval_agg_return`
+  and `conf_spawn_agg_capture_abi`)
+- both concurrency blockers and both new tests: **3/3 consecutive AOT runs each**
+- no-double-free, type-soundness, inferred-soundness, match-exhaustiveness,
+  concurrency-smoke, module-case, bootstrap 16/16 (serial), examples,
+  strict-caps 90/90, examples-e2e 12/12 response-body assertions, ir-signatures
+- leak repros still flat: computed-argument and TCP round-trip (360k round
+  trips, 0MB delta). Struct-argument leak still present at 86.2MB/1M, as expected.
+- **this branch's newly-filed loop-capture bug independently reproduced**: JIT
+  prints `30 30 30 30`, AOT prints the four distinct values. Report accurate.
+
+## Build gotcha that cost the other line hours
+
+`cargo build -p kryos-cli` does **not** regenerate `kryos_rt.lib` /
+`kryos_stdlib_native.lib`, the staticlib archives an AOT-compiled program
+links — only the rlibs the compiler itself uses. Any measurement of a
+kryos-rt or kryos-stdlib-native change after a `-p` build silently tests the
+old runtime. Run a full `cargo build --release` before measuring anything in
+those crates.
