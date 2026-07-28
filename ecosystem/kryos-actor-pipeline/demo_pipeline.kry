@@ -69,6 +69,10 @@ fn run_report(in_ch: i64, out_ch: i64) -> i64 {
     return 0
 }
 
+// Referencing a stage body AS A VALUE hands out that function's authority, so
+// this builder must itself hold everything the three stages need: `compute` for
+// ingest/square and `io` for report.
+@capabilities(compute, io)
 fn build_stages() -> [Stage] {
     return [
         stage_new("ingest", ["compute"], run_ingest),
@@ -77,6 +81,9 @@ fn build_stages() -> [Stage] {
     ]
 }
 
+// main assembles the stage table, so it holds the union of the stage bodies'
+// authority (`compute` + `io`) as well as the `io` it uses for its own output.
+@capabilities(compute, io)
 fn main() {
     let n = 8
     println("=== kryos-actor-pipeline: source -> transform -> sink ===")
