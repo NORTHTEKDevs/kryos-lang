@@ -201,10 +201,14 @@ println(backup[0])  // 90 -- independent copy
 Struct fields are accessed through the owning variable as usual, and reuse after copying/passing is fine:
 
 ```kryos
-let p = Point { x: 2, y: 3 }
-let q = p
-println(p.x)  // 2 -- still valid
-println(q.x)  // 2
+struct Point { x: i64, y: i64 }
+
+fn main() {
+    let p = Point { x: 2, y: 3 }
+    let q = p
+    println(to_string(p.x))  // 2 -- still valid
+    println(to_string(q.x))  // 2
+}
 ```
 
 ## How Kryos differs from Rust
@@ -260,9 +264,15 @@ If you wanted `backup` to observe mutations made through `scores` (or vice versa
 **Assuming you need `.clone()` before reusing a value**
 
 ```kryos
-let s = "hello"
-consume(s)
-println(s)   // fine -- no .clone() needed, this is not an error
+fn consume(x: str) {
+    println(x)
+}
+
+fn main() {
+    let s = "hello"
+    consume(s)
+    println(s)   // fine -- no .clone() needed, this is not an error
+}
 ```
 
 This is the opposite of a Rust habit worth unlearning: in Kryos, reuse-after-pass just works.
