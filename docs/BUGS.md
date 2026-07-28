@@ -28,6 +28,57 @@ under "Active".
 
 ## Active
 
+(none currently tracked)
+
+The two concurrency deadlocks that were tracked here -- `conf_spinlock_mutex`
+and `conf_errors_concurrency` -- were BOTH caused by a single defect and were
+fixed on 2026-07-28: spawn wrappers declared aggregate captures as
+`ptr byval(T)`, which is the by-value-in-memory ABI, while the runtime passes
+one pointer-sized word per env slot. See the commit "fix: spawn wrappers take
+aggregate captures as a plain ptr, not byval".
+
+Conformance is 40/40 on both backends.
+
+Two process notes worth keeping, because both cost real time:
+
+- The valgrind trace pointed at `__spawn_6` and a bad channel handle, and I
+  concluded from it that the two blockers were independent bugs. That was
+  wrong -- the trace was accurate but my inference from it was not. The single
+  spawn-ABI fix closed both. Prefer testing a candidate fix against every open
+  failure over reasoning about whether they share a root.
+- `kryos run` execs the compiled program as a CHILD, so plain valgrind sees
+  nothing. Always `valgrind --trace-children=yes`.
+
+# Known Bugs
+
+## Resolved
+
+### String-in-struct ownership leak across function returns (v0.4)
+
+**Status**: Fixed. Tracked by regression tests in
+`compiler/crates/kryos-test-runner/tests/e2e/ownership/struct_with_strings_return_run.kry`
+and `struct_with_strings_stress_run.kry` (1000-iter loop).
+`examples/showcase/agent_runtime.kry` was rewritten to return the planner's
+`Action` struct directly (with str fields) instead of using `[str]`
+out-parameter slots; both JIT and `kryos build --release` are verified.
+
+Original symptom (v0.4-era): a function returning a struct whose `str`
+field was assigned from a previously-moved local would surface garbage
+values, e.g. `len(action.arg_s) = 7305790164731371552` and empty string
+content.
+
+Root cause: partial-move tracking for struct field reads
+(`partial_moved_locals` in `kryos-mir::lower`) did not extend to the case
+where a non-copy struct local was moved wholesale into a return position
+after a field had separately been moved out via field access. The current
+MIR lowering tracks partial moves explicitly and the ownership analyzer
+emits the correct drop / no-drop combination at scope exit.
+
+If a new reproducer ever surfaces, please attach it to a fresh entry below
+under "Active".
+
+## Active
+
 ### Concurrency + struct receivers: two conformance tests hang on `build --release`
 
 **Status**: Open. Reproduced on `master` at `ac45392c` (Ubuntu 25.10,

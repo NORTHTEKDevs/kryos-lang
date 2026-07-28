@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — both concurrency release blockers, one root cause (Pass 47)
+
+- **Spawn wrappers passed aggregate captures with the wrong ABI.**
+  `conf_spinlock_mutex` and `conf_errors_concurrency` both deadlocked under
+  LLVM AOT while passing under Cranelift, and were tracked as two separate
+  bugs. They were one. A `__spawn_`/`__coopspawn_` wrapper's aggregate param
+  was emitted as `ptr byval(T)` — the by-value-in-memory ABI, which consumes
+  no integer register on x86-64 SysV — while the runtime passes one
+  pointer-sized word per captured env slot. The wrapper read its enum off the
+  stack and took the next declared param from the first integer register, i.e.
+  env slot 0 (the boxed enum pointer), so a `send` used that pointer as its
+  channel handle and the matching `recv` blocked forever. Spawn wrappers now
+  take a plain `ptr`. **Conformance is 40/40 on both backends.**
+
 ### Fixed — two aggregate/ownership miscompiles, one per backend (Pass 46)
 
 - **LLVM/AOT: an aggregate-returning function called through a fn VALUE

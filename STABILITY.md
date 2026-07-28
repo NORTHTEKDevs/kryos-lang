@@ -86,22 +86,12 @@ A release tag is cut when **all** of the following hold:
 
 ## 5. Known limitations (v0.9.0)
 
-**Two release blockers.** These are architectural, not residual, and are why
-this is 0.9 and not 1.0. Full write-ups in [docs/BUGS.md](docs/BUGS.md):
+Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
+use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 40/40
+on both backends. See [docs/BUGS.md](docs/BUGS.md).
 
-- **`Mutex` is not sound under contention.** `conf_spinlock_mutex` reports
-  `sync error: lock on dropped mutex` from spawned threads and then
-  deadlocks indefinitely on the LLVM AOT backend. The mutex box is released
-  while workers still hold a reference, so this is a use-after-free
-  reachable from ordinary `Mutex` use. Root cause is the struct-method
-  receiver representation (see the CLAUDE.md gotcha list); fixing it is an
-  ABI change, not a patch.
-- **An unhandled exception in an actor deadlocks the process.**
-  `conf_errors_concurrency` prints the actor error and then never shuts
-  down: the mailbox loop does not unwind. The process hangs instead of
-  failing.
-
-Other honest, non-blocking residuals:
+Honest, non-blocking residuals:
 
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).

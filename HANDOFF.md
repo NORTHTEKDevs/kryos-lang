@@ -54,33 +54,32 @@ which shifts the schedule risk down substantially.
 
 ---
 
-## The critical path: struct-method receiver representation
+## Both 1.0 blockers are FIXED
 
-This is the long pole (**2–4 weeks**) and it is believed to be the single root
-cause of BOTH remaining blockers.
+Done on 2026-07-28, in commit "fix: spawn wrappers take aggregate captures as a
+plain ptr, not byval". `conf_spinlock_mutex` and `conf_errors_concurrency` were
+ONE bug, not two: `param_agg_ty` correctly decided that an aggregate capture in
+a `__spawn_`/`__coopspawn_` wrapper needs the runtime's one-word ABI, but the
+emitter rendered that as `ptr byval(T)` — the by-value-in-memory ABI, which on
+x86-64 consumes no integer register. The wrapper read its enum off the stack and
+took the next param from the first integer register, i.e. env slot 0 (the boxed
+enum pointer). A `send` then used that pointer as its channel handle and the
+matching `recv` blocked forever.
 
-**Blocker 1 — `conf_spinlock_mutex`.** Repeats `sync error: lock on dropped
-mutex` from spawned threads, then deadlocks (verified alive past 8 minutes,
-output frozen at 8 lines). The mutex box is released while workers still hold a
-reference: a use-after-free reachable from ordinary `Mutex` use. This is the
-issue CLAUDE.md gotcha #22 documents as needing a representation/ABI change,
-and it is also behind the ~79MB-per-1M-calls method leak.
+**Conformance is now 40/40 on both backends.** Concurrency-smoke and
+no-double-free are clean; each blocker passes 3/3 consecutive AOT runs.
 
-**Blocker 2 — `conf_errors_concurrency`.** Narrowed further, and the valgrind
-run **refuted** the shared-root hypothesis. Full detail in `docs/BUGS.md`. The
-runtime reporter and the shared MIR are both proven correct and the recovery
-block demonstrably runs. The single memory error is a bad channel handle inside
-a SPAWNED closure (`kryos_chan_send` reading 28 bytes outside any live block,
-reached from `__spawn_6`), not a freed actor receiver.
+### Two process lessons, both mine
 
-So **do not assume one ABI fix closes both blockers** — I initially thought it
-would and the evidence says otherwise. Treat blocker 2 as an independent bug in
-how a spawned closure captures a channel handle. It is also probably much
-smaller than blocker 1.
-
-**Next concrete action:** bisect `conf_errors_concurrency` by section to find
-which `spawn` becomes `__spawn_6`, then inspect how the channel handle enters
-that closure's environment.
+1. I read the valgrind trace correctly and then drew the wrong conclusion from
+   it — I recorded that the blockers were independent bugs. Testing the
+   candidate fix against BOTH open failures is what found the truth. Do that
+   before theorising about shared roots.
+2. The struct-method receiver representation (CLAUDE.md gotcha #22) is
+   **no longer on the 1.0 critical path.** It is still worth doing for the
+   ~79MB-per-1M-calls method leak, but that is a performance item, not a
+   correctness blocker. My earlier 2–4 week estimate for it was gating the
+   whole schedule; it should not.
 
 ## Structural fix worth doing alongside
 
@@ -98,11 +97,14 @@ path had no such guard, which is exactly why it miscompiled silently.
 
 ## Remaining queue (my ordering)
 
-1. ~~Valgrind triage of blocker 2~~ **done** — refuted the shared root; blocker 2
-   is an independent spawned-closure channel-handle bug. Bisect it next; it looks
-   smaller than blocker 1 and may be days rather than weeks.
-2. Receiver representation/ABI change — 2–4 weeks, unblocks both blockers.
+1. ~~Both concurrency blockers~~ **done** — one spawn-wrapper ABI fix closed both.
+2. Add a conformance test that pins the spawn-wrapper ABI directly (enum, struct,
+   and tuple captures in a `spawn` body, each with a channel arg AFTER the
+   aggregate). The existing coverage caught this only as a whole-program
+   deadlock, which is why it read as two separate bugs.
 3. Box layout behind one shared helper — 2–3 days.
+4. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
+   (the ~79MB/1M-call method leak), not a 1.0 blocker.
 4. Capability-gate the raw-memory builtins — 2–4 days. Currently ungated, which
    undercuts the central pitch under `--strict-capabilities`.
 5. Generate the docs' status sections from real test output rather than by hand.
