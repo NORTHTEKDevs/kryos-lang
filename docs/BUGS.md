@@ -61,6 +61,42 @@ Both are blocking for a production release: the first is a use-after-free
 reachable from ordinary `Mutex` use, and the second means an unhandled
 exception in an actor deadlocks the process rather than failing it.
 
+### Investigation notes — `conf_errors_concurrency` (2026-07-28)
+
+Narrowed, not fixed. What is already ruled OUT:
+
+- The runtime reporter is correct. `kryos_actor_report_exception`
+  (kryos-rt/src/exception.rs:121) prints and returns 1; it deliberately does
+  NOT kill the caller.
+- The MIR is correct and is SHARED by both backends.
+  `generate_actor_dispatch` (kryos-mir/src/lower.rs:13604) places a
+  `kryos_exception_check` right after every handler call, branches to a
+  per-handler recovery block that does `kryos_exception_take` +
+  `kryos_actor_report_exception`, and terminates that block with
+  `Goto(bb_poll)` — back into the mailbox loop. There is no path out of the
+  loop on the exception edge.
+- The recovery block DOES execute on AOT: the `[actor error]` line is printed
+  exactly once, so control reached the report call and then jumped to
+  `bb_poll`.
+
+So the loop resumes and the process still deadlocks, which means the third
+message (the second good `add`) either never gets dequeued or its
+`send(reply, sum)` never lands. The remaining suspects, in order:
+
+1. **Actor state box released during unwind.** The throw path may drop the
+   handler's locals including the receiver, so `sum` and the state box are
+   gone by the next message and the `send` writes into freed memory. This is
+   the SAME suspected root as `conf_spinlock_mutex` — the struct-method
+   receiver representation — which would mean one ABI fix closes both.
+2. Reply-channel handle clobbered by the unwind.
+3. Mailbox dequeue losing the message that was in flight when the throw
+   happened.
+
+Next concrete step: run the AOT binary under `valgrind --trace-children=yes`
+(required — `kryos run` execs the compiled program as a CHILD, so plain
+valgrind sees nothing) and check whether the post-throw `send` touches freed
+memory. If it does, suspect 1 is confirmed and this is not a separate bug.
+
 **Secondary issue, same root:** `tests/conformance/run_conformance.sh` runs each
 program with NO timeout, so these two do not make the suite fail -- they make it
 HANG. A CI job invoking the runner blocks until the platform's step limit rather
