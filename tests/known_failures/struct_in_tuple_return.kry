@@ -1,0 +1,73 @@
+// KNOWN FAILURE: returning a struct INSIDE A TUPLE loses field mutations.
+//
+// Expected: name=t0 out=3
+// Actual:   name=t0 out=0     (both backends, identically)
+//
+// `store` pushes into `np.out` and returns `(np, len)`. The caller rebinds
+// `p` from the tuple, so the pushes must be visible. They are not: the
+// returned struct's array field comes back empty.
+//
+// Returning the struct DIRECTLY is correct -- change `store` to
+// `-> P { ... return np }` and the same program prints out=3. Only the
+// tuple-wrapped return loses the state, which makes this an inconsistency
+// between two spellings of the same thing, not the documented value-copy
+// semantics.
+//
+// It also double-frees: KRYOS_FREE_DIAG=1 reports 2 str DOUBLE-FREEs here,
+// and the same shape at self-host scale segfaults.
+//
+// WHY THIS MATTERS MORE THAN IT LOOKS: it is the shape the self-host parser
+// is built on. Every `p_*` function in compiler/self-host/stage1_mini_parser.kry
+// returns `(Parser, i64)` and threads the parser through it. That program has
+// 7 remaining double-frees and dies with a segfault (`kryos run`), which is
+// the only red CI job. On master the same corruption surfaced as a bogus
+// `parse_int: invalid numeric input: '}'` panic -- under KRYOS_FREE_DIAG=1
+// (no deallocation) master runs it to completion, proving the "parse error"
+// was memory corruption, not parse logic.
+//
+// Reduction path, for anyone picking this up (each step verified):
+//   field read + advance                          clean
+//   + struct reassigned in a loop                 clean
+//   + push into a struct's array field            clean
+//   + return the struct in a TUPLE                BREAKS  <- this file
+//
+// Acceptance: this file prints `name=t0 out=3` on BOTH backends, and
+// `KRYOS_FREE_DIAG=1` reports 0 double-frees. Then re-check
+// stage1_mini_parser.kry reaches rc=0.
+
+struct Tok { text: str, kind: i64 }
+struct P { toks: [Tok], out: [str], pos: i64 }
+
+fn cur_text(p: P) -> str {
+    let t = p.toks[p.pos]
+    return t.text
+}
+
+fn store(p: P, s: str) -> (P, i64) {
+    let mut np = p
+    push(np.out, s)
+    return (np, len(np.out))
+}
+
+@capabilities(all)
+fn main() {
+    let mut toks: [Tok] = []
+    let mut i = 0
+    while i < 4 {
+        toks = push(toks, Tok { text: "t" + to_string(i), kind: i })
+        i = i + 1
+    }
+    let mut p = P { toks: toks, out: [], pos: 0 }
+
+    // a retained field read held live across the churn below
+    let name = cur_text(p)
+
+    let mut n = 0
+    while n < 3 {
+        let (p2, _) = store(p, "k")
+        p = p2
+        n = n + 1
+    }
+
+    println("name=" + name + " out=" + to_string(len(p.out)))
+}
