@@ -98,12 +98,18 @@ path had no such guard, which is exactly why it miscompiled silently.
 ## Remaining queue (my ordering)
 
 1. ~~Both concurrency blockers~~ **done** — one spawn-wrapper ABI fix closed both.
-2. Add a conformance test that pins the spawn-wrapper ABI directly (enum, struct,
-   and tuple captures in a `spawn` body, each with a channel arg AFTER the
-   aggregate). The existing coverage caught this only as a whole-program
-   deadlock, which is why it read as two separate bugs.
-3. Box layout behind one shared helper — 2–3 days.
-4. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
+2. ~~Conformance test pinning the spawn-wrapper ABI~~ **done** —
+   `tests/conformance/conf_spawn_agg_capture_abi.kry`, 6 sections, green on both
+   backends. The load-bearing shape is an aggregate capture FOLLOWED BY a scalar
+   that is used; capturing an aggregate alone cannot detect the slot shift.
+3. **NEW BUG, found by that test.** Cranelift shares ONE box for a loop-local
+   aggregate captured by `spawn`, so every thread reads the last iteration's
+   value (`30 30 30 30` instead of `0 10 20 30`). LLVM AOT is correct. Repro
+   `tests/known_failures/spawn_loop_capture.kry`, details in docs/BUGS.md. This
+   is a silent wrong answer, not a hang. Likely the per-iteration box is
+   hoisted out of the loop in the Cranelift capture-boxing path — start there.
+4. Box layout behind one shared helper — 2–3 days.
+5. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
    (the ~79MB/1M-call method leak), not a 1.0 blocker.
 4. Capability-gate the raw-memory builtins — 2–4 days. Currently ungated, which
    undercuts the central pitch under `--strict-capabilities`.

@@ -28,7 +28,48 @@ under "Active".
 
 ## Active
 
-(none currently tracked)
+### `spawn` capture of a loop-local aggregate is shared across iterations (Cranelift)
+
+**Backend divergence. Cranelift is wrong, LLVM AOT is correct.**
+
+Repro: `tests/known_failures/spawn_loop_capture.kry`
+
+```kryos
+let ch7 = chan()
+let mut k = 0
+while k < 4 {
+    let mk = Msg.Val(k * 10)          // fresh loop-local each iteration
+    spawn {
+        match mk {
+            Msg.Val(v) => send(ch7, v),
+            Msg.Nothing => send(ch7, -1),
+        }
+    }
+    k = k + 1
+}
+```
+
+Expected `0 10 20 30` in any order (four independent captures).
+
+- LLVM AOT: `0 20 30 10` — correct.
+- Cranelift: `30 30 30 30` — every thread observes the LAST iteration's value.
+
+So Cranelift allocates the capture box (or its backing slot) once for the whole
+loop and re-stores into it each iteration, instead of boxing per iteration. By
+the time the threads run, they all read the final store. Any `spawn` inside a
+loop that captures a loop-local aggregate is affected; the value is silently
+wrong rather than a crash, which makes it worse than a hang.
+
+Found by `tests/conformance/conf_spawn_agg_capture_abi.kry` while adding
+coverage for the spawn-wrapper ABI fix, and is a *different* bug from it — the
+ABI fix is in the LLVM backend, and LLVM is the backend that gets this case
+right. Section 7 of that conformance file is the intended home for this case;
+it is commented out with a pointer here. Fold it back in once fixed.
+
+Not a 1.0 blocker on the same footing as the two deadlocks were (it needs a
+`spawn` of a loop-local aggregate, and it is deterministic rather than a hang),
+but it is a wrong-answer miscompile and should be fixed before 1.0.
+
 
 The two concurrency deadlocks that were tracked here -- `conf_spinlock_mutex`
 and `conf_errors_concurrency` -- were BOTH caused by a single defect and were

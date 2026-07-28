@@ -1,0 +1,117 @@
+// Conformance: the ABI for AGGREGATE captures in a `spawn { }` body.
+// (Reference manual chapter 9, concurrency.)
+//
+// `kryos_spawn` transmutes the wrapper's function pointer and passes each
+// captured env slot as ONE pointer-sized word. An aggregate capture is boxed on
+// the store side, so the wrapper must receive a plain `ptr` and load through it.
+//
+// Emitting that param as `ptr byval(T)` instead looks equivalent but is not:
+// `byval` is the by-value-in-memory ABI, so on x86-64 SysV the aggregate
+// travels on the STACK and consumes no integer register. The wrapper then read
+// its aggregate from stack garbage and took every LATER param one slot early --
+// so a channel handle declared after an aggregate capture received the
+// aggregate's box POINTER, `send` wrote to a bogus channel, and the matching
+// `recv` blocked forever. That shipped as two apparently unrelated deadlocks
+// (conf_spinlock_mutex and conf_errors_concurrency) because the only symptom
+// was a whole-program hang.
+//
+// The load-bearing shape in every section below is therefore: an aggregate
+// capture FOLLOWED BY a scalar capture that is used. A test that captures an
+// aggregate alone cannot detect the shift.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+enum Msg {
+    Val(i64),
+    Pair(i64, i64),
+    Nothing,
+}
+
+struct Point { x: i64, y: i64 }
+
+fn main() {
+    // ---- 1. enum capture, then a channel ------------------------------
+    let m1 = Msg.Val(42)
+    let ch1 = chan()
+    spawn {
+        match m1 {
+            Msg.Val(v) => send(ch1, v),
+            Msg.Pair(a, b) => send(ch1, a + b),
+            Msg.Nothing => send(ch1, -1),
+        }
+    }
+    expect(recv(ch1) == 42, "enum capture then channel: payload and handle both intact")
+
+    // ---- 2. multi-payload enum arm ------------------------------------
+    // Exercises an arm that binds TWO payload slots, so a shifted load shows
+    // up as a wrong sum rather than only as a wrong tag.
+    let m2 = Msg.Pair(300, 45)
+    let ch2 = chan()
+    spawn {
+        match m2 {
+            Msg.Val(v) => send(ch2, v),
+            Msg.Pair(a, b) => send(ch2, a + b),
+            Msg.Nothing => send(ch2, -1),
+        }
+    }
+    expect(recv(ch2) == 345, "two-payload enum arm keeps both slots")
+
+    // ---- 3. struct capture, then a channel ----------------------------
+    let p3 = Point { x: 7, y: 11 }
+    let ch3 = chan()
+    spawn { send(ch3, p3.x * 100 + p3.y) }
+    expect(recv(ch3) == 711, "struct capture then channel")
+
+    // ---- 4. aggregate, then TWO scalars -------------------------------
+    // A one-slot shift would hand `ch4` the box pointer and `bonus` the
+    // channel handle, so both later captures are checked at once.
+    let p4 = Point { x: 2, y: 3 }
+    let ch4 = chan()
+    let bonus = 1000
+    spawn { send(ch4, p4.x + p4.y + bonus) }
+    expect(recv(ch4) == 1005, "aggregate then two scalar captures keep their order")
+
+    // ---- 5. scalar BEFORE and AFTER the aggregate ---------------------
+    let lead = 5
+    let m5 = Msg.Val(60)
+    let ch5 = chan()
+    spawn {
+        match m5 {
+            Msg.Val(v) => send(ch5, v + lead),
+            Msg.Pair(a, b) => send(ch5, a + b),
+            Msg.Nothing => send(ch5, -1),
+        }
+    }
+    expect(recv(ch5) == 65, "aggregate between two scalar captures")
+
+    // ---- 6. two aggregates in one env --------------------------------
+    // Two boxed slots plus a trailing channel: a per-aggregate shift would
+    // compound here rather than cancel out.
+    let m6 = Msg.Val(9)
+    let p6 = Point { x: 4, y: 6 }
+    let ch6 = chan()
+    spawn {
+        match m6 {
+            Msg.Val(v) => send(ch6, v * p6.x + p6.y),
+            Msg.Pair(a, b) => send(ch6, a + b),
+            Msg.Nothing => send(ch6, -1),
+        }
+    }
+    expect(recv(ch6) == 42, "two aggregate captures plus a trailing channel")
+
+    // ---- 7. per-iteration capture in a loop: NOT covered here ---------
+    // Deliberately omitted, because it currently FAILS on Cranelift and is a
+    // different bug from the ABI shift this file pins. Repro and details:
+    //   tests/known_failures/spawn_loop_capture.kry
+    //   docs/BUGS.md -> "spawn capture of a loop-local aggregate"
+    // Cranelift reuses ONE box across iterations (all threads observe the last
+    // value); LLVM AOT is correct. Fold that case back into this file once the
+    // Cranelift side is fixed.
+
+    println("conformance spawn aggregate-capture ABI: PASS")
+}
