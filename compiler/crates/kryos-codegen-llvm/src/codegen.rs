@@ -1827,7 +1827,54 @@ impl LlvmCodegen {
             // calls instead of resetting to the initial capture value.
             let mutated_slot = self.closure_mutated_slot.get(func_name.as_str()).copied();
 
-            if underlying_ret == "void" {
+            // Does the underlying function return its aggregate through the
+            // sret out-param ABI? `emit_function` lowers EVERY aggregate
+            // (struct/tuple) return that way -- `define void @mk(ptr
+            // sret(%W))` -- while `func_ret_types` keeps the LOGICAL type
+            // (`%W`). The generic aggregate arm below trusted the logical
+            // type and emitted `call %W @mk()`, a call with no sret argument
+            // against a callee that writes through its first parameter: the
+            // callee stored the struct through whatever happened to be in the
+            // sret register, so `let f = mk  let w = f()` returned garbage (a
+            // field read came back as a raw pointer reinterpreted as data)
+            // or overran the stack, while a DIRECT `mk()` was correct and the
+            // Cranelift JIT was correct on both forms. That is what made a
+            // router storing handlers in a table and returning a `Response`
+            // struct misbehave on `build --release`.
+            //
+            // Fix: honour the callee's real ABI. Allocate the heap box the
+            // uniform thunk return already needs FIRST and hand it to the
+            // callee AS the sret destination, so the aggregate is written
+            // straight into the box with no intermediate copy, then return
+            // the box pointer as i64 for `CallIndirect` to unbox
+            // (inttoptr + load). Mirrors `emit_vtable_thunks`' sret handling
+            // and `emit_user_agg_call`'s sret buffer.
+            let ret_agg = self
+                .func_sig_aggs
+                .get(func_name.as_str())
+                .and_then(|(r, _)| r.clone());
+
+            if let Some(agg) = ret_agg {
+                let size_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
+                ));
+                let size_i64 = self.next_temp();
+                self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                let buf = self.next_temp();
+                self.emit_line(&format!(
+                    "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                ));
+                let sret_args = if arg_list.is_empty() {
+                    format!("ptr sret({agg}) {buf}")
+                } else {
+                    format!("ptr sret({agg}) {buf}, {arg_list}")
+                };
+                self.emit_line(&format!("  call void @{func_name}({sret_args})"));
+                let i = self.next_temp();
+                self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
+                self.emit_closure_thunk_return(mutated_slot, &i);
+            } else if underlying_ret == "void" {
                 self.emit_line(&format!(
                     "  call void @{func_name}({arg_list})"
                 ));
