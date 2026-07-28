@@ -38,6 +38,33 @@
 //   + push into a struct's array field            clean
 //   + return the struct in a TUPLE                BREAKS  <- this file
 //
+// TRACE OF THE REMAINING HALF (instrument store() and the loop with println):
+//
+//   iter 0 before: len=0
+//     store: in len=0 / after copy len=0 / after push len=1
+//   iter 0 returned k=1  p2 len=1
+//   iter 0 after assign: len=1          <- correct
+//   iter 1 before: len=1
+//     store: in len=1 / after copy len=1 / after push len=2
+//   iter 1 returned k=2  p2 len=2       <- the callee is CORRECT
+//   iter 1 after assign: len=0          <- LOST HERE, on `p = p2`
+//
+// So the callee builds the right value and the tuple carries it out intact.
+// The loss is at `p = p2`: a struct assigned from another local aliases that
+// local's heap fields and takes no reference to them (retain_for_ty is None
+// for Struct, and emit_param_source_retain only fires for params). `p2` is a
+// tuple-destructured NAMED local, so it gets a scope-end Drop at the end of
+// the loop body, which frees the array `p` now points at. Iteration 0 survives
+// only because the array was still empty when it was freed.
+//
+// RULED OUT (each tested):
+//   * the guarded struct reassignment release
+//     (release_struct_heap_fields_if_ne) -- disabling it entirely does not
+//     change the result, so the pointer-equality guard is not the problem
+//   * adding a retain in the `param_src` branch of the reassignment path --
+//     no effect, that branch is not the one taken here; find the branch that
+//     actually fires for `p = p2` first (retain_container_src may be taking it)
+//
 // Acceptance: this file prints `name=t0 out=3` on BOTH backends, and
 // `KRYOS_FREE_DIAG=1` reports 0 double-frees. Then re-check
 // stage1_mini_parser.kry reaches rc=0.
