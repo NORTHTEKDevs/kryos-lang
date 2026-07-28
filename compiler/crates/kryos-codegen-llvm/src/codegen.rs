@@ -1827,37 +1827,37 @@ impl LlvmCodegen {
             // calls instead of resetting to the initial capture value.
             let mutated_slot = self.closure_mutated_slot.get(func_name.as_str()).copied();
 
-            if underlying_ret == "void" {
-                self.emit_line(&format!(
-                    "  call void @{func_name}({arg_list})"
-                ));
-                self.emit_line("  ret i64 0");
-            } else if self
+            // Does the underlying function return its aggregate through the
+            // sret out-param ABI? `emit_function` lowers EVERY aggregate
+            // (struct/tuple) return that way -- `define void @mk(ptr
+            // sret(%W))` -- while `func_ret_types` keeps the LOGICAL type
+            // (`%W`). The generic aggregate arm below trusted the logical
+            // type and emitted `call %W @mk()`, a call with no sret argument
+            // against a callee that writes through its first parameter: the
+            // callee stored the struct through whatever happened to be in the
+            // sret register, so `let f = mk  let w = f()` returned garbage (a
+            // field read came back as a raw pointer reinterpreted as data)
+            // or overran the stack, while a DIRECT `mk()` was correct and the
+            // Cranelift JIT was correct on both forms. That is what made a
+            // router storing handlers in a table and returning a `Response`
+            // struct misbehave on `build --release`.
+            //
+            // Fix: honour the callee's real ABI. Allocate the heap box the
+            // uniform thunk return already needs FIRST and hand it to the
+            // callee AS the sret destination, so the aggregate is written
+            // straight into the box with no intermediate copy, then return
+            // the box pointer as i64 for `CallIndirect` to unbox
+            // (inttoptr + load). Mirrors `emit_vtable_thunks`' sret handling
+            // and `emit_user_agg_call`'s sret buffer.
+            let ret_agg = self
                 .func_sig_aggs
                 .get(func_name.as_str())
-                .and_then(|(ret_agg, _)| ret_agg.clone())
-                .is_some()
-            {
-                // AGGREGATE return via sret. The function is DEFINED with an sret
-                // pointer (`define void @mk(ptr sret(%W))`), so calling it as
-                // `call %W @mk()` -- which this used to do before boxing the
-                // result -- mismatches the ABI and hands back garbage: reading
-                // a field of the returned struct produced a raw pointer
-                // reinterpreted as data. That is what made a router storing
-                // handlers in a table return nonsense on `build --release`
-                // while `kryos run` was fine.
-                //
-                // Allocate the box FIRST and let the callee write straight
-                // into it through sret; that is both correct and one copy
-                // cheaper than materializing the aggregate and storing it.
-                let agg_ty = self
-                    .func_sig_aggs
-                    .get(func_name.as_str())
-                    .and_then(|(ret_agg, _)| ret_agg.clone())
-                    .unwrap_or_else(|| underlying_ret.clone());
+                .and_then(|(r, _)| r.clone());
+
+            if let Some(agg) = ret_agg {
                 let size_ptr = self.next_temp();
                 self.emit_line(&format!(
-                    "  {size_ptr} = getelementptr {agg_ty}, ptr null, i32 1"
+                    "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
                 ));
                 let size_i64 = self.next_temp();
                 self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
@@ -1866,14 +1866,19 @@ impl LlvmCodegen {
                     "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
                 ));
                 let sret_args = if arg_list.is_empty() {
-                    format!("ptr sret({agg_ty}) {buf}")
+                    format!("ptr sret({agg}) {buf}")
                 } else {
-                    format!("ptr sret({agg_ty}) {buf}, {arg_list}")
+                    format!("ptr sret({agg}) {buf}, {arg_list}")
                 };
                 self.emit_line(&format!("  call void @{func_name}({sret_args})"));
                 let i = self.next_temp();
                 self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
                 self.emit_closure_thunk_return(mutated_slot, &i);
+            } else if underlying_ret == "void" {
+                self.emit_line(&format!(
+                    "  call void @{func_name}({arg_list})"
+                ));
+                self.emit_line("  ret i64 0");
             } else {
                 let r = self.next_temp();
                 self.emit_line(&format!(
@@ -3099,6 +3104,31 @@ impl LlvmCodegen {
                     // `closure_locals` direct-call path in kryos-mir), so
                     // changing this one param's ABI cannot affect any other
                     // caller.
+                    param_strs.push(format!("ptr %_{}_arg", p.local.0));
+                } else if name.starts_with("__spawn_") || name.starts_with("__coopspawn_") {
+                    // Spawn wrappers are invoked ONLY by the runtime, which
+                    // transmutes the function pointer and passes each captured
+                    // env slot as one pointer-sized WORD. `ptr byval(T)` does
+                    // not mean "pointer in a register" -- it is the by-value
+                    // aggregate ABI, so on x86-64 SysV the aggregate travels
+                    // in MEMORY and consumes no integer register. The callee
+                    // then read its 16-byte enum from the stack (garbage) and
+                    // took the NEXT declared param from the first integer
+                    // register -- i.e. env slot 0, the boxed enum POINTER.
+                    // `spawn { match spmsg { .. => send(spch, v) } }` therefore
+                    // called `kryos_chan_send_i64` with the enum box address as
+                    // its channel handle:
+                    //
+                    //   Invalid read of size 1 at kryos_chan_send
+                    //     by kryos_chan_send_i64  by __spawn_6
+                    //   Address is 28 bytes before a block of size 16
+                    //
+                    // and the matching `recv` blocked forever. A plain `ptr`
+                    // is the ABI the runtime actually calls with: the boxed
+                    // pointer arrives in a register and the prologue below
+                    // loads the aggregate through it (which is what the body
+                    // already expected). Keep this param OUT of
+                    // `ptr_slot_local_ids` so that prologue load still runs.
                     param_strs.push(format!("ptr %_{}_arg", p.local.0));
                 } else {
                     param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
