@@ -15,7 +15,7 @@ fn main() {
     let mut vals: [str] = []
     while true {
         print("> ")
-        let line = read_line()
+        let line = read_trimmed()
         if len(line) == 0 {
             break
         }
@@ -75,8 +75,10 @@ fn main() {
                 let last = len(keys) - 1
                 keys[idx] = keys[last]
                 vals[idx] = vals[last]
-                // For "shrink" we leave the slot in place — in a real lib you'd
-                // call a pop builtin. Here we just track size via find_idx logic.
+                // Then actually SHRINK. Leaving the slot in place made `list`
+                // print the swapped-in entry twice after any delete.
+                pop(keys)
+                pop(vals)
                 println("ok")
             } else {
                 println("<unset>")
@@ -87,8 +89,12 @@ fn main() {
     }
 }
 
-fn read_line() -> str {
-    // Read one line from stdin via the runtime helper.
+// NOT named `read_line`: a user function SHADOWS the same-named builtin, and
+// the shadow applies inside its own body too -- `fn read_line() { read_line() }`
+// calls ITSELF and overflows the stack on the first command. There is no way
+// to reach a shadowed builtin from within the shadowing function, so the
+// wrapper needs a distinct name.
+fn read_trimmed() -> str {
     let line = read_line()
     return rstrip(line)
 }

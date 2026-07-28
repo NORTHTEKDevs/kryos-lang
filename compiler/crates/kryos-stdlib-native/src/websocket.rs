@@ -38,15 +38,11 @@ unsafe fn handle_to_bytes(handle: i64) -> (*const u8, usize) {
 }
 
 fn vec_to_handle(v: Vec<u8>) -> i64 {
-    let len = v.len() as i64;
-    let cap = v.capacity() as i64;
-    let boxed = Box::new(KryosString {
-        len,
-        cap,
-        data: Box::into_raw(v.into_boxed_slice()) as *mut u8,
-        ref_count: 1,
-    });
-    Box::into_raw(boxed) as i64
+    // This one was doubly wrong: it recorded `cap = v.capacity()` while
+    // `into_boxed_slice()` SHRINKS the allocation to `len`, so kryos_string_free
+    // deallocated capacity+1 bytes from a len-byte block. Use the runtime
+    // constructor so the buffer and the layout the free path assumes agree.
+    unsafe { kryos_rt::string::kryos_string_new(v.as_ptr(), v.len() as i64) as i64 }
 }
 
 /// `ws_accept_key(key: str) -> str` — computes the Sec-WebSocket-Accept header.

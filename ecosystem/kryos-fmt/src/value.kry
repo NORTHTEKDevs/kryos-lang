@@ -220,13 +220,15 @@ fn _vals_to_json(values: [Value]) -> [JsonValue] {
     return out
 }
 
-/// Convert a JsonValue back into a Value. A Number that is integral (its value
-/// equals its truncation) becomes Int; otherwise Float.
+/// Convert a JsonValue back into a Value. An Int maps straight across (std::json
+/// keeps integers exact, so a 64-bit id survives the round trip). A Number that
+/// is integral (its value equals its truncation) becomes Int; otherwise Float.
 @capabilities(compute)
 fn from_json(j: JsonValue) -> Value {
     return match j {
         JsonValue::Null => Value.Null,
         JsonValue::Bool(b) => Value.Bool(b),
+        JsonValue::Int(i) => Value.Int(i),
         JsonValue::Number(n) => _num_to_value(n),
         JsonValue::String(s) => Value.Str(s),
         JsonValue::Array(items) => Value.Arr(_json_to_arr(items)),

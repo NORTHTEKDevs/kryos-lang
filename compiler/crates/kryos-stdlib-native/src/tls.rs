@@ -345,14 +345,16 @@ pub unsafe extern "C" fn kryos_tls_recv_ks(fd: i64, max_bytes: i64) -> i64 {
     let mut buf = vec![0u8; buf_len];
     let n = kryos_tls_recv(fd, buf.as_mut_ptr(), buf_len);
     let n = n.max(0) as usize;
-    let data = buf[..n].to_vec();
-    let boxed = Box::new(KryosString {
-        len: n as i64,
-        cap: n as i64,
-        data: Box::into_raw(data.into_boxed_slice()) as *mut u8,
-        ref_count: 1,
-    });
-    Box::into_raw(boxed) as i64
+    // Build the string with the RUNTIME's constructor, not a hand-rolled
+    // Box. kryos_string_free deallocates the data buffer with
+    // KryosString::layout(cap) -- size cap+1, for the null terminator -- but
+    // a `Vec::into_boxed_slice` allocation is exactly `len` bytes, so every
+    // received buffer was freed under a layout it was never allocated with.
+    // Rust's allocator contract makes that undefined, and in practice the
+    // block was not returned: a TCP server leaked one receive buffer per
+    // request (isolated to ~250 bytes/request over 60k requests; the same
+    // server with the recv removed was perfectly flat).
+    kryos_rt::string::kryos_string_new(buf.as_ptr(), n as i64) as i64
 }
 
 /// `tls_close(fd: i64) -> i64` — KS wrapper.

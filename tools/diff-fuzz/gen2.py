@@ -40,6 +40,7 @@ class Gen:
         self.fns = []         # (name, arity) user int helpers
         self.have_struct = False
         self.have_enum = False
+        self.have_agg = False    # aggregate-returning fns + fn-value carriers
 
     def nm(self, p):
         self.tmp += 1
@@ -339,6 +340,52 @@ class Gen:
             self.w(f'    println("{v}[0]=" + {v}[0])')
             self.w("}")
 
+    def emit_agg_block(self):
+        """Drive an aggregate-returning function through every carrier a fn
+        value can sit in. Each result is PRINTED, so a wrong sret destination
+        shows up as a stdout divergence between the backends rather than as a
+        crash we might not reproduce. Seeded offsets keep programs distinct."""
+        r = self.r
+        a = r.randint(0, 9)
+        b = r.randint(0, 9)
+        # bare fn value
+        self.w(f"let d1: fn(i64) -> Resp = mk_ok")
+        self.w(f'println("agg1=" + show(d1({a})))')
+        # array table of fn values
+        self.w("let tbl: [fn(i64) -> Resp] = [mk_ok, mk_err]")
+        self.w(f'println("agg2=" + show(tbl[0]({a})) + "|" + show(tbl[1]({b})))')
+        # map of fn values
+        self.w('let mp: map<str, fn(i64) -> Resp> = {"o": mk_ok, "e": mk_err}')
+        self.w(f'println("agg3=" + show(mp["o"]({b})))')
+        # fn-typed parameter
+        self.w(f'println("agg4=" + dispatch(mk_err, {a}))')
+        # fn value returned from a function
+        self.w(f"let pk = pick({a})")
+        self.w(f'println("agg5=" + show(pk({b})))')
+        # fn value in a struct field
+        self.w("let rt = Router { fallback: mk_err }")
+        self.w(f'println("agg6=" + show(rt.fallback({a})))')
+        # lambda returning an aggregate
+        self.w("let lam: fn(i64) -> Resp = |n| Resp { code: n + 1, body: \"L\" }")
+        self.w(f'println("agg7=" + show(lam({b})))')
+        # tuple aggregate through a fn value
+        self.w("let tf: fn(i64) -> (i64, str) = mk_tup")
+        self.w(f"let tv = tf({a})")
+        self.w('println("agg8=" + to_string(tv.0) + tv.1)')
+        # repeated indirect construction: each call needs a FRESH sret box, and
+        # the previously returned value must still read correctly afterwards
+        self.w("let mut aggsum = 0")
+        self.w("let mut ai = 0")
+        self.w("while ai < 40 {")
+        self.indent += 1
+        self.w("let rr = tbl[ai % 2](ai)")
+        self.w("aggsum = aggsum + rr.code + len(rr.body)")
+        self.w("ai = ai + 1")
+        self.indent -= 1
+        self.w("}")
+        self.w('println("agg9=" + to_string(aggsum))')
+        self.w(f'println("agg10=" + show(d1({b})))')
+
     def prelude(self):
         r = self.r
         out = []
@@ -362,6 +409,52 @@ class Gen:
             # str-field struct: container-in-aggregate through construction,
             # field read, and field reassignment
             out += ["struct SBox { tag: str, n: i64 }", ""]
+        # Aggregate returns reached through a fn VALUE. This shape is the one
+        # that produced a silent AOT miscompile (`emit_function` lowers every
+        # aggregate return through the sret out-param ABI, but the closure
+        # env-thunk trusted the LOGICAL return type and emitted a call with no
+        # sret argument). Nothing else in this generator makes an indirect call
+        # or returns an aggregate -- every other helper returns i64 or str --
+        # so the whole class was invisible to differential fuzzing.
+        if r.random() < 0.65:
+            self.have_agg = True
+            out += [
+                "struct Resp { code: i64, body: str }",
+                "",
+                "fn mk_ok(n: i64) -> Resp {",
+                '    return Resp { code: 200 + n, body: "ok" + to_string(n) }',
+                "}",
+                "",
+                "fn mk_err(n: i64) -> Resp {",
+                '    return Resp { code: 500 - n, body: "err" + to_string(n) }',
+                "}",
+                "",
+                "fn show(r: Resp) -> str {",
+                '    return to_string(r.code) + ":" + r.body',
+                "}",
+                "",
+                "// aggregate return through a fn-typed PARAMETER",
+                "fn dispatch(f: fn(i64) -> Resp, n: i64) -> str {",
+                "    return show(f(n))",
+                "}",
+                "",
+                "// a fn value RETURNED from a function, itself aggregate-returning",
+                "fn pick(which: i64) -> fn(i64) -> Resp {",
+                "    if which % 2 == 0 {",
+                "        return mk_ok",
+                "    }",
+                "    return mk_err",
+                "}",
+                "",
+                "// fn value living in a struct FIELD",
+                "struct Router { fallback: fn(i64) -> Resp }",
+                "",
+                "// tuple aggregate return (aggregate lowering covers tuples too)",
+                "fn mk_tup(n: i64) -> (i64, str) {",
+                '    return (n * 3, "t" + to_string(n))',
+                "}",
+                "",
+            ]
         # optional enum + classifier
         if r.random() < 0.6:
             self.have_enum = True
@@ -387,6 +480,8 @@ class Gen:
         if self.have_struct and self.r.random() < 0.7:
             self.w("let pr = Pair { a: 7, b: 11 }")
             self.w('println("pair=" + to_string(pr.a + pr.b))')
+        if self.have_agg:
+            self.emit_agg_block()
         while self.budget > 0:
             self.stmt(0)
         self.observe()

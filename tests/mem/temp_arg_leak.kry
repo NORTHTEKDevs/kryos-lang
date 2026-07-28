@@ -1,0 +1,85 @@
+// Reproduction for the open computed-string-argument leak.
+//
+// Passing a COMPUTED string directly to a user function leaks it. Passing a
+// literal, or binding the value to a named local first, is flat.
+//
+//   inline_lit        f(200, "root")                     4.4 -> 4.0 MB   flat
+//   wrap_lit          via a wrapper, literal arg         4.0 -> 4.0 MB   flat
+//   inline_computed   f(200, "count=" + to_string(i))    9.5 -> 32.2 MB  LEAKS
+//   wrap_computed     same through a wrapper            12.4 -> 33.4 MB  LEAKS
+//
+// (peak RSS at 100k vs 400k iterations, --release)
+//
+// This is the shape every request handler has -- `send(fd, render(body))`,
+// `log(prefix + msg)` -- so it shows up as steady growth in any server that
+// builds a string and hands it to a helper.
+//
+// ROOT CAUSE. Two passes in lower.rs disagree about who owns a heap argument:
+//
+//   * consume_call_args treats a user function as BORROWING its Str/Array/Map
+//     argument, so the caller keeps its scope-end Drop. That is correct and is
+//     what makes a NAMED local flat.
+//   * drop_unescaped_str_temps only drops a temp whose every use is a call in
+//     BORROWING_CALL_ARGS -- a list of builtins. A user function is not on it,
+//     so an UNNAMED temp fed to a user function is never dropped, and unlike a
+//     named local it has no scope-end Drop to fall back on.
+//
+// WHY THE OBVIOUS FIX IS BLOCKED. Adding "a user function borrows" to the
+// escape walk was tried and reverted (366cb89): a constructor does not merely
+// read its argument. On the Cranelift backend a struct literal SHARES a `str`
+// field pointer (see RValue::Struct in kryos-codegen-cranelift, the Str arm
+// stores `val` directly), so dropping the temp in the caller left the struct's
+// field dangling -- `json_response(200, ob + "..." + cb)` produced an EMPTY
+// body while Content-Length still claimed 33. Silent corruption is worse than
+// the leak.
+//
+// The LLVM backend was since taught to clone a `str` field at struct-literal
+// construction (ac45392), so that half of the prerequisite is done. Closing
+// this needs the SAME retain/clone in the Cranelift struct-literal path first;
+// only then can the escape walk treat a user call as borrowing.
+//
+// Run:  M=<mode> N=<iters> ./temp_arg_leak
+
+fn render(status: i64, body: str) -> str {
+    let head = "HTTP/1.1 " + to_string(status) + " OK\r\n"
+    return head + "Content-Length: " + to_string(len(body)) + "\r\n\r\n" + body
+}
+
+fn wrap_lit(i: i64) -> str {
+    return render(200, "root")
+}
+
+fn wrap_computed(i: i64) -> str {
+    return render(200, "count=" + to_string(i))
+}
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("M")
+    let raw = env_get("N")
+    let n = if len(raw) == 0 { 100000 } else { parse_int(raw) }
+
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+        if mode == "inline_lit" {
+            acc = acc + len(render(200, "root"))
+        } elif mode == "inline_computed" {
+            acc = acc + len(render(200, "count=" + to_string(i)))
+        } elif mode == "wrap_lit" {
+            acc = acc + len(wrap_lit(i))
+        } elif mode == "wrap_computed" {
+            acc = acc + len(wrap_computed(i))
+        } elif mode == "bound" {
+            // the workaround: bind the computed value to a named local, which
+            // gives it a scope-end Drop
+            let body = "count=" + to_string(i)
+            acc = acc + len(render(200, body))
+        } else {
+            println("unknown M: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println(mode + " n=" + to_string(n) + " acc=" + to_string(acc))
+}

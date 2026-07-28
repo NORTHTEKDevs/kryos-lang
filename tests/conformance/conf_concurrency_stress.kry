@@ -1,0 +1,124 @@
+// Conformance: the concurrency primitives under real CONTENTION (wave-34).
+//
+// conf_spinlock_mutex and concurrency_smoke.sh cover the happy path, but they
+// exercise atomics only through a lock. These assertions are the ones that
+// actually fail if a primitive is not what it claims:
+//
+//   * fetch_add with NO lock at all -- if it is not genuinely atomic the total
+//     comes out low and varies run to run
+//   * a deliberately NON-atomic read-modify-write inside a mutex -- if the
+//     mutex does not truly exclude, updates are lost
+//   * a channel drained by exactly as many receives as there were sends, with
+//     the SUM checked, so a lost or duplicated value cannot cancel out
+//   * Once across many threads, which must run its callback exactly once
+//
+// Counts are sized to contend hard enough to expose a race while still
+// finishing in a few seconds. A race here is non-deterministic, so a single
+// green run is weaker evidence than usual -- this was verified over 12 runs
+// (3 per backend per shape) before being committed.
+
+use std::sync::{mutex_new, atomic_int, wait_group, once}
+use std::chan::{buffered, send_val, receive, close, is_closed}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+@capabilities(all)
+fn main() {
+    // --- 1. unprotected atomic fetch_add ---
+    let threads = 8
+    let per = 5000
+    let counter = atomic_int(0)
+    let wg = wait_group()
+    wg.add(threads)
+    let mut t = 0
+    while t < threads {
+        spawn {
+            let mut i = 0
+            while i < per {
+                counter.fetch_add(1)
+                i = i + 1
+            }
+            wg.done()
+        }
+        t = t + 1
+    }
+    wg.wait()
+    expect(counter.load() == threads * per,
+           "fetch_add is atomic under contention (no lost increments)")
+
+    // --- 2. mutex genuinely excludes a non-atomic read-modify-write ---
+    let m = mutex_new()
+    let guarded = atomic_int(0)
+    let wg2 = wait_group()
+    let mper = 1500
+    wg2.add(threads)
+    let o = once()
+    let once_runs = atomic_int(0)
+    let mut t2 = 0
+    while t2 < threads {
+        spawn {
+            let mut i = 0
+            while i < mper {
+                let l = m.lock()
+                // NOT atomic on purpose: correct only if the mutex excludes
+                let old = guarded.load()
+                guarded.store(old + 1)
+                l.unlock()
+                i = i + 1
+            }
+            o.call_once(|| {
+                once_runs.fetch_add(1)
+                return "init"
+            })
+            wg2.done()
+        }
+        t2 = t2 + 1
+    }
+    wg2.wait()
+    expect(guarded.load() == threads * mper,
+           "mutex excludes a non-atomic read-modify-write (no lost updates)")
+
+    // --- 3. Once runs exactly once across every thread ---
+    expect(once_runs.load() == 1, "Once ran its callback exactly once")
+
+    // --- 4. channel: multi-producer, nothing lost or duplicated ---
+    let producers = 4
+    let cper = 1000
+    let ch = buffered(64)
+    let wg3 = wait_group()
+    wg3.add(producers)
+    let mut p = 0
+    while p < producers {
+        spawn {
+            let mut i = 1
+            while i <= cper {
+                send_val(ch, i)
+                i = i + 1
+            }
+            wg3.done()
+        }
+        p = p + 1
+    }
+    let total = producers * cper
+    let mut got = 0
+    let mut sum = 0
+    while got < total {
+        sum = sum + receive(ch)
+        got = got + 1
+    }
+    wg3.wait()
+    // Each producer sends 1..cper, so checking the SUM (not just the count)
+    // means a lost value cannot be masked by a duplicated one.
+    expect(sum == producers * (cper * (cper + 1) / 2),
+           "channel delivers every value exactly once under 4 producers")
+
+    let closed = close(ch)
+    expect(is_closed(closed), "channel reports closed after close()")
+
+    println("conformance concurrency stress: PASS")
+}

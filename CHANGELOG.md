@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — both concurrency release blockers, one root cause (Pass 47)
+
+- **Spawn wrappers passed aggregate captures with the wrong ABI.**
+  `conf_spinlock_mutex` and `conf_errors_concurrency` both deadlocked under
+  LLVM AOT while passing under Cranelift, and were tracked as two separate
+  bugs. They were one. A `__spawn_`/`__coopspawn_` wrapper's aggregate param
+  was emitted as `ptr byval(T)` — the by-value-in-memory ABI, which consumes
+  no integer register on x86-64 SysV — while the runtime passes one
+  pointer-sized word per captured env slot. The wrapper read its enum off the
+  stack and took the next declared param from the first integer register, i.e.
+  env slot 0 (the boxed enum pointer), so a `send` used that pointer as its
+  channel handle and the matching `recv` blocked forever. Spawn wrappers now
+  take a plain `ptr`. **Conformance is 40/40 on both backends.**
+
+### Fixed — two aggregate/ownership miscompiles, one per backend (Pass 46)
+
+- **LLVM/AOT: an aggregate-returning function called through a fn VALUE
+  returned garbage.** `let f = mk  let w = f()`, where `mk() -> Response`
+  returns a struct, read `w.body` as a raw pointer reinterpreted as data (a
+  string length in the trillions) or overran the stack on `build --release`,
+  while a direct `mk()` and `kryos run` were both correct. `emit_function`
+  lowers every aggregate return through the sret out-param ABI, but
+  `func_ret_types` records the LOGICAL return type, so the closure env-thunk
+  emitted `call %Response @mk()` — no sret argument — against a callee that
+  writes through its first parameter. The thunk now reads the callee's real
+  aggregate return from `func_sig_aggs`, allocates the box it has to return
+  anyway first, and passes it as the `ptr sret(...)` destination, mirroring
+  `emit_vtable_thunks`. This is what made a router storing handlers in a
+  `[fn(str) -> Response]` table misbehave on release builds. New gate:
+  `tests/conformance/conf_fnval_agg_return.kry` (11 sections covering bare fn
+  refs, handler tables, lambdas, fn-typed params, fn values returned from
+  functions, and fn values held in maps and struct fields).
+
+- **Cranelift/JIT: struct and enum boxes were missing the allocation header,
+  corrupting the heap at teardown.** `conf_nested_arrays` printed its PASS line
+  and then aborted with glibc `corrupted size vs. prev_size`, and
+  `conf_runtime_stdlib` with `double free or corruption (!prev)`. The Cranelift
+  backend allocated struct/enum boxes with libc `calloc`/`malloc` and released
+  them with libc `free`, but the shared-ownership work put an owner count in the
+  second word of the header `kryos_calloc` reserves, and every generated
+  `__kryos_drop_<T>` now opens by reading that count at `ptr - 8`. A
+  libc-`calloc` box has no header, so the drop preamble read before the
+  allocation and the matching free landed on a bogus block base — the two
+  backends were on different box layouts. All struct/enum box allocations now go
+  through `kryos_calloc` and all frees through `kryos_free`. Both tests are clean
+  under `valgrind --trace-children=yes` (0 errors, was 3).
+
+
 ### Fixed — duplicate-name soundness sweep (Pass 45)
 Eleven shapes of duplicate names that the checker silently accepted (which
 duplicate "won" was implementation-defined, or the program died later as an

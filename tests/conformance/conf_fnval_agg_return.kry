@@ -1,0 +1,162 @@
+// Conformance: calling an AGGREGATE-returning function through a fn VALUE
+// (wave-32).
+//
+// `emit_function` lowers every struct/tuple return through the sret out-param
+// ABI (`define void @mk(ptr sret(%W))`), but the closure env-thunk read the
+// LOGICAL return type out of `func_ret_types` and emitted `call %W @mk()` --
+// a call with no sret argument against a callee that writes through its first
+// parameter. The callee stored the aggregate through whatever happened to be
+// in the sret register, so `let f = mk  let w = f()` came back as garbage (a
+// str field read as a raw pointer reinterpreted as data, a length in the
+// trillions) or overran the stack, while a DIRECT `mk()` was correct and
+// `kryos run` was correct on BOTH forms. That is what made a ROUTER storing
+// handlers in a table and returning a `Response` struct misbehave on
+// `build --release`. Fix: the thunk allocates the heap box it has to return
+// anyway and hands it to the callee AS the sret destination.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Response { body: str, code: i64 }
+struct Pair { a: i64, b: i64 }
+
+// zero-arg, str field (the reported shape)
+fn mk() -> Response {
+    return Response { body: "hello-world", code: 200 }
+}
+
+// with args, body built from a temporary the return path also drops
+fn health(path: str) -> Response {
+    return Response { body: "route:" + path, code: 200 }
+}
+
+fn not_found(path: str) -> Response {
+    return Response { body: "missing:" + path, code: 404 }
+}
+
+// ---- extra indirect shapes (sections 8-11) --------------------------------
+// Every one of these reaches the callee through a fn VALUE rather than a
+// direct call, so each exercises the same thunk sret path by a different
+// route. They are grouped here so the section bodies below read as a list.
+struct Router { fallback: fn(str) -> Response }
+
+// fn value arriving as a PARAMETER, called inside the callee
+fn dispatch(h: fn(str) -> Response, path: str) -> Response {
+    return h(path)
+}
+
+// fn value RETURNED from a function, then called by the caller
+fn pick(code: i64) -> fn(str) -> Response {
+    if code == 200 {
+        return health
+    }
+    return not_found
+}
+
+// all-scalar aggregate: no heap field, still sret
+fn mk_pair(n: i64) -> Pair {
+    return Pair { a: n, b: n * n }
+}
+
+// tuple return (aggregate_llvm_ty covers tuples too)
+fn mk_tuple(n: i64) -> (i64, str) {
+    return (n, "t" + to_string(n))
+}
+
+fn main() {
+    // ---- 1. bare fn reference, zero args -------------------------------
+    let d = mk()
+    expect(d.body == "hello-world", "direct call, str field")
+    expect(len(d.body) == 11, "direct call, str field length")
+    expect(d.code == 200, "direct call, i64 field")
+
+    let f = mk
+    let w = f()
+    expect(w.body == "hello-world", "fn value, str field")
+    expect(len(w.body) == 11, "fn value, str field length")
+    expect(w.code == 200, "fn value, i64 field")
+
+    // ---- 2. bare fn reference WITH an argument -------------------------
+    let h: fn(str) -> Response = health
+    let r = h("/health")
+    expect(r.body == "route:/health", "fn value with a str arg, body content")
+    expect(r.code == 200, "fn value with a str arg, i64 field")
+
+    // ---- 3. all-scalar aggregate --------------------------------------
+    let p: fn(i64) -> Pair = mk_pair
+    let pr = p(7)
+    expect(pr.a == 7 and pr.b == 49, "fn value returning an all-scalar struct")
+
+    // ---- 4. tuple return ---------------------------------------------
+    let t: fn(i64) -> (i64, str) = mk_tuple
+    let tv = t(3)
+    expect(tv.0 == 3, "fn value returning a tuple, scalar element")
+    expect(tv.1 == "t3", "fn value returning a tuple, str element")
+
+    // ---- 5. router: handlers in a table, struct return -----------------
+    // The motivating shape. Each handler is stored as a fn VALUE and reached
+    // only indirectly.
+    let routes: [fn(str) -> Response] = [health, not_found]
+    let ok = routes[0]("/tasks")
+    expect(ok.code == 200, "router table handler, i64 field")
+    expect(ok.body == "route:/tasks", "router table handler, body content")
+    let miss = routes[1]("/nope")
+    expect(miss.code == 404, "router table fallback handler, i64 field")
+    expect(miss.body == "missing:/nope", "router table fallback handler, body content")
+
+    // ---- 6. lambda returning a struct through a fn value ---------------
+    let lam: fn(i64) -> Pair = |n| Pair { a: n + 1, b: n + 2 }
+    let lv = lam(10)
+    expect(lv.a == 11 and lv.b == 12, "lambda fn value returning a struct")
+
+    // ---- 7. repeated indirect construction ----------------------------
+    // 200 constructions through the fn value: the sret destination must be a
+    // fresh box each call, and the source must still read correctly after.
+    let mut sum = 0
+    let mut i = 0
+    while i < 200 {
+        let rr = h("/x")
+        expect(rr.code == 200, "loop: indirect struct return keeps its i64 field")
+        expect(len(rr.body) == 8, "loop: indirect struct return keeps its str field")
+        sum = sum + rr.code
+        i = i + 1
+    }
+    expect(sum == 40000, "200 indirect struct returns")
+
+    // the fn value is still callable after the loop
+    let after = f()
+    expect(after.body == "hello-world", "fn value still callable after a loop of calls")
+
+    // ---- 8. fn value as a function PARAMETER --------------------------
+    let p8 = dispatch(health, "/a")
+    expect(p8.body == "route:/a", "fn-typed parameter keeps the str field")
+    expect(p8.code == 200, "fn-typed parameter keeps the i64 field")
+
+    // ---- 9. fn value RETURNED from a function -------------------------
+    let f9 = pick(200)
+    let p9 = f9("/b")
+    expect(p9.body == "route:/b", "returned fn value keeps the str field")
+    expect(p9.code == 200, "returned fn value keeps the i64 field")
+    let g9 = pick(404)
+    let q9 = g9("/c")
+    expect(q9.body == "missing:/c", "second returned fn value keeps the str field")
+    expect(q9.code == 404, "second returned fn value keeps the i64 field")
+
+    // ---- 10. fn value stored in a MAP ---------------------------------
+    let m10: map<str, fn(str) -> Response> = {"ok": health, "no": not_found}
+    let p10 = m10["ok"]("/d")
+    expect(p10.body == "route:/d", "map-stored fn value keeps the str field")
+    expect(p10.code == 200, "map-stored fn value keeps the i64 field")
+
+    // ---- 11. fn value in a STRUCT FIELD -------------------------------
+    let r11 = Router { fallback: not_found }
+    let p11 = r11.fallback("/e")
+    expect(p11.body == "missing:/e", "struct-field fn value keeps the str field")
+    expect(p11.code == 404, "struct-field fn value keeps the i64 field")
+
+    println("conformance fn-value aggregate return: PASS")
+}

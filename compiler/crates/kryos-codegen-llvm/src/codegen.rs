@@ -430,6 +430,22 @@ impl LlvmCodegen {
 
         for func in functions {
             self.prescan_function(func);
+            // -g emits a kryos_trace_enter frame registration per function,
+            // whose two `ptr` arguments are interned string globals. Those
+            // interns happen while the FUNCTION body is emitted, which is
+            // after emit_header_section() has already flushed
+            // emit_string_globals() -- so the call referenced `@.str.N` that
+            // was never defined and clang rejected the module with "use of
+            // undefined value". Intern them here, during the prescan, so the
+            // definitions land in the header like every other literal.
+            // (`kryos build --release -g` was broken outright; the Windows
+            // CodeView smoke job caught it.)
+            if self.options.debug_info {
+                let name = func.name.clone();
+                self.intern_string(&name);
+                let file = func.source_file.clone().unwrap_or_default();
+                self.intern_string(&file);
+            }
             let param_types: Vec<String> = func
                 .params
                 .iter()
@@ -1827,7 +1843,54 @@ impl LlvmCodegen {
             // calls instead of resetting to the initial capture value.
             let mutated_slot = self.closure_mutated_slot.get(func_name.as_str()).copied();
 
-            if underlying_ret == "void" {
+            // Does the underlying function return its aggregate through the
+            // sret out-param ABI? `emit_function` lowers EVERY aggregate
+            // (struct/tuple) return that way -- `define void @mk(ptr
+            // sret(%W))` -- while `func_ret_types` keeps the LOGICAL type
+            // (`%W`). The generic aggregate arm below trusted the logical
+            // type and emitted `call %W @mk()`, a call with no sret argument
+            // against a callee that writes through its first parameter: the
+            // callee stored the struct through whatever happened to be in the
+            // sret register, so `let f = mk  let w = f()` returned garbage (a
+            // field read came back as a raw pointer reinterpreted as data)
+            // or overran the stack, while a DIRECT `mk()` was correct and the
+            // Cranelift JIT was correct on both forms. That is what made a
+            // router storing handlers in a table and returning a `Response`
+            // struct misbehave on `build --release`.
+            //
+            // Fix: honour the callee's real ABI. Allocate the heap box the
+            // uniform thunk return already needs FIRST and hand it to the
+            // callee AS the sret destination, so the aggregate is written
+            // straight into the box with no intermediate copy, then return
+            // the box pointer as i64 for `CallIndirect` to unbox
+            // (inttoptr + load). Mirrors `emit_vtable_thunks`' sret handling
+            // and `emit_user_agg_call`'s sret buffer.
+            let ret_agg = self
+                .func_sig_aggs
+                .get(func_name.as_str())
+                .and_then(|(r, _)| r.clone());
+
+            if let Some(agg) = ret_agg {
+                let size_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {size_ptr} = getelementptr {agg}, ptr null, i32 1"
+                ));
+                let size_i64 = self.next_temp();
+                self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                let buf = self.next_temp();
+                self.emit_line(&format!(
+                    "  {buf} = call ptr @kryos_arc_alloc(i64 {size_i64}, i64 8)"
+                ));
+                let sret_args = if arg_list.is_empty() {
+                    format!("ptr sret({agg}) {buf}")
+                } else {
+                    format!("ptr sret({agg}) {buf}, {arg_list}")
+                };
+                self.emit_line(&format!("  call void @{func_name}({sret_args})"));
+                let i = self.next_temp();
+                self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
+                self.emit_closure_thunk_return(mutated_slot, &i);
+            } else if underlying_ret == "void" {
                 self.emit_line(&format!(
                     "  call void @{func_name}({arg_list})"
                 ));
@@ -3057,6 +3120,31 @@ impl LlvmCodegen {
                     // `closure_locals` direct-call path in kryos-mir), so
                     // changing this one param's ABI cannot affect any other
                     // caller.
+                    param_strs.push(format!("ptr %_{}_arg", p.local.0));
+                } else if name.starts_with("__spawn_") || name.starts_with("__coopspawn_") {
+                    // Spawn wrappers are invoked ONLY by the runtime, which
+                    // transmutes the function pointer and passes each captured
+                    // env slot as one pointer-sized WORD. `ptr byval(T)` does
+                    // not mean "pointer in a register" -- it is the by-value
+                    // aggregate ABI, so on x86-64 SysV the aggregate travels
+                    // in MEMORY and consumes no integer register. The callee
+                    // then read its 16-byte enum from the stack (garbage) and
+                    // took the NEXT declared param from the first integer
+                    // register -- i.e. env slot 0, the boxed enum POINTER.
+                    // `spawn { match spmsg { .. => send(spch, v) } }` therefore
+                    // called `kryos_chan_send_i64` with the enum box address as
+                    // its channel handle:
+                    //
+                    //   Invalid read of size 1 at kryos_chan_send
+                    //     by kryos_chan_send_i64  by __spawn_6
+                    //   Address is 28 bytes before a block of size 16
+                    //
+                    // and the matching `recv` blocked forever. A plain `ptr`
+                    // is the ABI the runtime actually calls with: the boxed
+                    // pointer arrives in a register and the prologue below
+                    // loads the aggregate through it (which is what the body
+                    // already expected). Keep this param OUT of
+                    // `ptr_slot_local_ids` so that prologue load still runs.
                     param_strs.push(format!("ptr %_{}_arg", p.local.0));
                 } else {
                     param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
@@ -5269,11 +5357,39 @@ impl LlvmCodegen {
                     let mut arg_parts = Vec::new();
                     for (i, a) in args.iter().enumerate() {
                         let actual_ty = self.operand_type(a, func);
-                        let expected_ty = callee_param_types
+                        // Runtime symbols take their scalar params in i64
+                        // slots. When the callee has no known signature the
+                        // expected type falls back to the operand's OWN type,
+                        // which emitted narrow-against-wide calls such as
+                        //     call i64 @kryos_json_bool(i1 %b)
+                        //     call ptr @kryos_string_char_at(ptr %s, i32 %i)
+                        // against `(i64)` / `(ptr, i64)` declarations. A narrow
+                        // argument leaves the upper bits of the argument
+                        // register UNDEFINED while the callee reads the full
+                        // width. That is how json_bool(false) produced a JSON
+                        // `true` on --release: the callee's `val != 0` test read
+                        // garbage. (The i32 cases happen to survive today only
+                        // because 32-bit x86-64 ops zero the upper half -- an
+                        // accident of the target, not a guarantee.)
+                        //
+                        // Promote the FALLBACK only. A narrow param declared on
+                        // a real user function is in callee_param_types and
+                        // stays exactly as declared.
+                        let expected_ty = match callee_param_types
                             .as_ref()
                             .and_then(|pts| pts.get(i))
                             .cloned()
-                            .unwrap_or_else(|| actual_ty.clone());
+                        {
+                            Some(t) => t,
+                            None if matches!(
+                                actual_ty.as_str(),
+                                "i1" | "i8" | "i16" | "i32"
+                            ) =>
+                            {
+                                "i64".to_string()
+                            }
+                            None => actual_ty.clone(),
+                        };
                         let val = self.operand_to_llvm(a, func);
                         // kryos_array_set stores an OWNED element that the array
                         // later frees via __kryos_drop_<T> at teardown. When the

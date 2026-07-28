@@ -2974,6 +2974,34 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "substr",
     "char_code",
     "parse_int",
+    // Read-only string builtins. Each was audited in the runtime for whether
+    // it stores or frees its argument; none do -- they read the bytes and
+    // return a fresh value (to_upper/trim via kryos_string_new), a bool, or
+    // write the bytes somewhere external (tcp_send to a socket, file_write to
+    // disk).
+    //
+    // Leaving them off this list leaked one buffer per call, and worse, the
+    // consume mark is STATIC and path-insensitive: a single `to_upper(s)` in
+    // one branch suppressed s's scope-end drop on EVERY path, so a sibling
+    // branch doing nothing but `len(s)` leaked too. Measured with a local
+    // built per loop iteration: ~72-78MB per 800k iterations for every shape,
+    // flat afterwards. This is also why a TCP server leaked its response --
+    // `tcp_send(c, body)` consumed the computed string and nothing freed it.
+    "to_upper",
+    "to_lower",
+    "trim",
+    "trim_start",
+    "trim_end",
+    "starts_with",
+    "ends_with",
+    "sha256",
+    "base64_encode",
+    "base64_decode",
+    "byte_at",
+    "tcp_send",
+    "file_write",
+    "file_append",
+    "file_exists",
     "parse_float",
     // Reads both operands, returns a fresh allocation; never stores or
     // frees its inputs (the binary `+` runtime path).
@@ -3340,6 +3368,30 @@ fn drop_unescaped_str_temps(
                             // which is how most of the stdlib builds arrays --
                             // never freed its elements.
                             || func == "push"
+                            // A USER function BORROWS its Str/Array/Map
+                            // arguments -- the same contract consume_call_args
+                            // already applies, which is why a NAMED heap local
+                            // passed to a user function keeps its scope-end
+                            // Drop and stays flat. An unnamed TEMP has no
+                            // scope-end Drop to fall back on, so leaving it off
+                            // this list meant `render(200, "count=" +
+                            // to_string(i))` leaked its argument on every call:
+                            // 4.0MB with a literal or a named local versus
+                            // 35.4MB at 400k iterations with a computed one.
+                            //
+                            // This was reverted once (366cb89) because a
+                            // CONSTRUCTOR does not merely read its argument: a
+                            // struct literal shared the `str` field pointer, so
+                            // freeing the temp left the field dangling and HTTP
+                            // bodies came back empty. Both backends now COPY a
+                            // str field at struct-literal construction (LLVM in
+                            // ac45392, Cranelift's non-@copy path already did),
+                            // so the callee can no longer alias the caller's
+                            // temp. tests/run_examples_e2e.sh asserts real
+                            // response bodies over a socket, which is the check
+                            // that was missing when this was first attempted.
+                            || (ctx.user_fn_names.contains(func)
+                                && !ctx.builtin_fn_names.contains(func))
                         {
                             true
                         } else {

@@ -1,0 +1,101 @@
+// Conformance: a `bool` passed to a runtime builtin is zero-extended (wave-32).
+//
+// Every runtime symbol declares its scalar params `i64`, but a bool operand is
+// an `i1`. The LLVM call site fell back to the operand's OWN type when the
+// callee had no known signature, emitting
+//     call i64 @kryos_json_bool(i1 %b)
+// against `declare i64 @kryos_json_bool(i64)`. The upper 63 bits of the
+// argument register were then undefined, and the callee's `val != 0` test read
+// garbage -- `json_bool(false)` built a JSON `true` on `build --release` while
+// `kryos run` was correct.
+//
+// This is why examples/showcase/rest_api.kry reported `"done":true` for every
+// todo on a release build even though the store pushes 0.
+//
+// IMPORTANT for anyone editing this file: do NOT read the bool (e.g.
+// `to_string(done)`) between binding it and passing it. Any such read forces a
+// normalized value into the slot and MASKS the bug -- that is what made the
+// original repro so slippery.
+
+let mut FLAGS: [i64] = []
+let mut IDS: [i64] = []
+let mut TITLES: [str] = []
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn seed(v: i64) {
+    push(FLAGS, v)
+    push(IDS, v + 1)
+    push(TITLES, "row")
+}
+
+// Mirrors rest_api's todo_to_json exactly, and builds the FULL 3-field object, not just the bool: the two preceding
+// handle-producing calls are what put the bool's slot under enough register
+// pressure to expose the undefined upper bits. A bool-only version of this
+// function does NOT reproduce -- the garbage happens to be zero.
+fn flag_json(idx: i64) -> str {
+    let keys: [str] = ["id", "title", "done"]
+    let v_id: i64 = json_number(IDS[idx] as f64)
+    let v_title: i64 = json_string(TITLES[idx])
+    let mut b: bool = false
+    if FLAGS[idx] == 1 {
+        b = true
+    }
+    let v_done: i64 = json_bool(b)
+    let vals: [i64] = [v_id, v_title, v_done]
+    return json_stringify(json_object(keys, vals))
+}
+
+fn from_cmp(n: i64) -> bool {
+    return n > 100
+}
+
+fn main() {
+    seed(0)
+    seed(1)
+    seed(0)
+
+    expect(flag_json(0) == "{{\"id\":1,\"title\":\"row\",\"done\":false}}", "false from a global read stays false")
+    expect(flag_json(1) == "{{\"id\":2,\"title\":\"row\",\"done\":true}}", "true from a global read stays true")
+    expect(flag_json(2) == "{{\"id\":1,\"title\":\"row\",\"done\":false}}", "second false stays false")
+
+    // literal / let / comparison / call-result, each passed directly
+    expect(json_stringify(json_bool(false)) == "false", "literal false")
+    expect(json_stringify(json_bool(true)) == "true", "literal true")
+
+    let c: bool = false
+    expect(json_stringify(json_bool(c)) == "false", "let-bound false")
+
+    let d: bool = (1 == 2)
+    expect(json_stringify(json_bool(d)) == "false", "comparison false")
+
+    expect(json_stringify(json_bool(from_cmp(1))) == "false", "returned false")
+    expect(json_stringify(json_bool(from_cmp(999))) == "true", "returned true")
+
+    // inside an object, the shape the REST example actually serves
+    let keys: [str] = ["done"]
+    let vals: [i64] = [json_bool(false)]
+    expect(json_stringify(json_object(keys, vals)) == "{{\"done\":false}}", "false in an object")
+
+    // a loop, so the bool is re-materialized under register pressure
+    let mut i = 0
+    let mut falses = 0
+    while i < 50 {
+        let mut f: bool = false
+        if i == 999 {
+            f = true
+        }
+        if json_stringify(json_bool(f)) == "false" {
+            falses = falses + 1
+        }
+        i = i + 1
+    }
+    expect(falses == 50, "all 50 loop iterations stay false")
+
+    println("conformance bool builtin arg: PASS")
+}
