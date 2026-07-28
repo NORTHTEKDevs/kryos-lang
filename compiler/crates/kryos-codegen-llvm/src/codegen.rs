@@ -3105,6 +3105,31 @@ impl LlvmCodegen {
                     // changing this one param's ABI cannot affect any other
                     // caller.
                     param_strs.push(format!("ptr %_{}_arg", p.local.0));
+                } else if name.starts_with("__spawn_") || name.starts_with("__coopspawn_") {
+                    // Spawn wrappers are invoked ONLY by the runtime, which
+                    // transmutes the function pointer and passes each captured
+                    // env slot as one pointer-sized WORD. `ptr byval(T)` does
+                    // not mean "pointer in a register" -- it is the by-value
+                    // aggregate ABI, so on x86-64 SysV the aggregate travels
+                    // in MEMORY and consumes no integer register. The callee
+                    // then read its 16-byte enum from the stack (garbage) and
+                    // took the NEXT declared param from the first integer
+                    // register -- i.e. env slot 0, the boxed enum POINTER.
+                    // `spawn { match spmsg { .. => send(spch, v) } }` therefore
+                    // called `kryos_chan_send_i64` with the enum box address as
+                    // its channel handle:
+                    //
+                    //   Invalid read of size 1 at kryos_chan_send
+                    //     by kryos_chan_send_i64  by __spawn_6
+                    //   Address is 28 bytes before a block of size 16
+                    //
+                    // and the matching `recv` blocked forever. A plain `ptr`
+                    // is the ABI the runtime actually calls with: the boxed
+                    // pointer arrives in a register and the prologue below
+                    // loads the aggregate through it (which is what the body
+                    // already expected). Keep this param OUT of
+                    // `ptr_slot_local_ids` so that prologue load still runs.
+                    param_strs.push(format!("ptr %_{}_arg", p.local.0));
                 } else {
                     param_strs.push(format!("ptr byval({agg}) %_{}_arg", p.local.0));
                 }
