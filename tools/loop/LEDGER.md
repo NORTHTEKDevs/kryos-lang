@@ -51,76 +51,44 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. stage1_mini_parser: 2 remaining double-frees corrupt token text  `BLOCKS CI`
+### 1. A nested binary expression corrupts a LATER tokenize  `BLOCKS CI`
 
-Down from 7 (and from 60 on master). Progress this session: the returned-tuple
-drop and the field-read borrow rule together took it from SEGFAULT to a clean
-exit, and demo 1 now parses to completion.
+Runnable repro: `compiler/self-host/known_failure_nested_binop.kry`
+(write-up: `tests/known_failures/parse_nested_binop_corrupts_next.kry`).
 
-**Demo 1 is now CORRECT** (`Ident(x)`); what remains is demo 2, bisected:
+Parse `fn f() { return x + y * 2 }`, then tokenize an UNRELATED string: 1 token
+instead of 31. Under `KRYOS_FREE_DIAG=1` it instead dies in the lexer with
+`kryos_array_push: corrupt array header (len=0, cap=4, elem_size=<a POINTER>,
+ref_count=2)`. **It reproduces with nothing being freed, so it is NOT a
+use-after-free** -- a header is being read at the wrong offset or written over.
 
-| reduced input | result |
+**Bisected, each step run:**
+
+| case | result |
 | --- | --- |
-| `fn pick(..) { return f(x) }` | ok |
-| `fn pick(..) { if x > 0 { return 1 } }` | output truncated after tokenize |
-| `... if x > 0 { return f(x) }` (no else) | **panic: kind -1332565184** |
-| full if/else | **panic: kind 1588374336** |
+| two tokenizes back to back | ok |
+| tokenize + parser_new | ok |
+| + expect / cur_text / advance / alloc_node, each alone | ok |
+| + parse_expr / parse_stmt / parse_block, each alone | ok |
+| `parse_fn` on `fn f() {}` / `{ return 1 }` | ok |
+| + params, `fn f(x: i64) { return 1 }` | ok |
+| + one binop, `fn f() { return x + y }` | ok |
+| + return type, `fn f() -> i64 { return x + y }` | ok |
+| **`fn f() { return x + y * 2 }`** | **BREAKS** |
 
-Garbage token KINDS -- a `kind` is a plain i64 field, so the Token array itself
-is being corrupted, and the trigger is the `if`-STATEMENT path specifically
-(a call alone is fine).
+Trigger is `parse_expr` RECURSING through precedence climbing
+(`parse_expr(pp, prec + 1)` inside its own loop) -- not params, not the return
+type, not a single operator.
 
-Prime suspect, and it connects to a known open item: `parse_stmt`'s TK_IF arm
-does `let mut pp = p3` -- a non-@copy struct assigned from another local, which
-Cranelift lowers as a BARE POINTER ALIAS (codegen.rs ~3851 deep-copies only
-`@copy` structs). Two names for one malloc'd block, then reassigned in a branch.
-That is the same aliasing recorded under "Cranelift box aliasing" below.
+**NOT reproduced standalone yet.** Two hand-built models of that exact shape --
+a recursive precedence climber threading a struct and pushing into its array
+fields, once with 3 array fields and once matching the real Parser's 7 -- are
+both CLEAN. Something else in the real program is load-bearing. Find it before
+theorising; that is the same discipline that eventually cracked the last three.
 
-**Original symptom, for history:**
-
-```
---- demo 1 ---
-  Bin(+)
-    Ident(  )        <- BLANK. should be Ident(x)
-    Bin(*)
-      Ident(y)
-      Int(2)
---- demo 2 ---
-panic: expected 'fn', got kind 95 text ''      (95 = TK_EOF)
-```
-
-Demo 1's identifier text is blanked and demo 2's token stream is corrupted
-badly enough that `tokenize` yields nothing usable. Both are the SAME residual
-corruption, not two bugs.
-
-`KRYOS_FREE_DIAG=1` reports exactly 2:
-```
-str   DOUBLE-FREE rc=0 len=1 content="}"
-array DOUBLE-FREE rc=0 len=2 cap=0
-```
-
-**ATTRIBUTED (kill-switch, not theory):** `KRYOS_NO_TEMP_DROPS=1` makes demo 1
-print `Ident(x)` correctly and leaves only 1 double-free. So the residual
-corruption IS a `drop_unescaped_str_temps` drop. Categories already ruled out:
-
-- struct FIELD reads — fixed by the liveness/borrow rule; not the residual
-- ARRAY ELEMENT reads (`RValue::Index`) — tried the identical borrow rule on
-  them, **no change** (still `Ident(  )`, still 2). Reverted rather than kept.
-
-So the offending temp is in one of the remaining `owns = true` arms:
-StringConcat, Array/Map literal, `BinOp::Add`, or a Call result
-(`to_string` / `substr` / `char_at` / a user function). Bisect by making each
-arm conditional in turn and rerunning the mini-parser — the kill-switch
-already proves one of them is responsible.
-
-**Next step:** the freed values are a single-char string and a 2-element array,
-which is the `Token { text, kind }` shape and the token ARRAY. Bisect the same
-way that worked twice already -- reduce a program until the double-free
-vanishes, and use the `KRYOS_NO_TEMP_DROPS` / field-drop kill-switches to
-attribute a category before theorising.
-
-**Acceptance:** `stage1_mini_parser.kry` reaches rc=0 printing
-`stage 1 mini-parser: ok`, with 0 double-frees, and `Ident(x)` not `Ident(  )`.
+**Acceptance:** the repro prints `after parse: 31 tokens`, then
+`stage1_mini_parser.kry` reaches rc=0 with 0 double-frees, then
+`selfhost-stage1` goes green.
 
 ### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
