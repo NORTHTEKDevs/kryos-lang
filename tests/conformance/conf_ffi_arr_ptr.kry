@@ -15,6 +15,9 @@ fn expect(cond: bool, msg: str) {
     exit(1)
 }
 
+// arr_to_ptr hands a raw pointer across a trust boundary, which is ffi-level
+// authority by definition -- it is now gated as such.
+@capabilities(ffi)
 fn main() {
     // A non-null array handle must reinterpret to a non-zero pointer.
     let a: [i64] = [1, 2, 3]

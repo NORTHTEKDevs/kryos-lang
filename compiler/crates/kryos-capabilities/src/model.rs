@@ -294,6 +294,49 @@ pub fn is_escalation_action(name: &str) -> bool {
     PROHIBITED_SELF_HEAL_ACTIONS.contains(&name)
 }
 
+thread_local! {
+    /// When set, `required_capability_for_builtin` also gates the raw-memory
+    /// builtins. Off by default ON PURPOSE.
+    ///
+    /// These primitives fabricate and dereference pointers into memory the
+    /// runtime owns, so unguarded they defeat capability attenuation outright:
+    /// a tool granted ZERO authority can `str_to_ptr` a secret it was never
+    /// given and walk it byte by byte (verified exploit:
+    /// tests/security/cap_escape_raw_memory.kry).
+    ///
+    /// They cannot simply be added to the table below, because capability
+    /// requirements PROPAGATE through the call graph and the stdlib is built
+    /// on them -- `alloc` appears in 14 stdlib modules, `ptr_read_i64` in 7,
+    /// `str_to_ptr` in crypto/db/fs/io/net. Gating them unconditionally makes
+    /// `std::json::parse` demand `ffi` from every caller (measured), which
+    /// "closes" the hole by making the language unusable.
+    ///
+    /// So the rule is a trusted-computing-base split: raw memory is gated at
+    /// DIRECT USE IN USER CODE and the requirement does not propagate. The
+    /// stdlib may use these internally; your program may not, unless it says
+    /// `@capabilities(ffi)`. The driver switches this on for the ROOT module
+    /// only -- see `check_raw_memory_direct`.
+    static GATE_RAW_MEMORY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Raw-memory primitives: pointer fabrication and arbitrary dereference.
+pub const RAW_MEMORY_BUILTINS: &[&str] = &[
+    "alloc", "free_bytes", "ptr_read_i64", "ptr_write_i64", "ptr_byte_at",
+    "ptr_set_byte", "str_to_ptr", "arr_to_ptr",
+];
+
+/// Run `f` with raw-memory gating enabled. Restores the previous value.
+pub fn with_raw_memory_gate<T>(f: impl FnOnce() -> T) -> T {
+    GATE_RAW_MEMORY.with(|g| g.set(true));
+    let out = f();
+    GATE_RAW_MEMORY.with(|g| g.set(false));
+    out
+}
+
+pub fn raw_memory_gated() -> bool {
+    GATE_RAW_MEMORY.with(|g| g.get())
+}
+
 /// Map a bare builtin function name to its required capability.
 ///
 /// This catches calls like `file_write("out.txt", data)` where the caller
@@ -302,6 +345,9 @@ pub fn is_escalation_action(name: &str) -> bool {
 /// Returns `None` for functions that don't require any capability
 /// (e.g. `println`, `print`, `len`, `push`, `to_string`).
 pub fn required_capability_for_builtin(name: &str) -> Option<Capability> {
+    if raw_memory_gated() && RAW_MEMORY_BUILTINS.contains(&name) {
+        return Some(Capability::Ffi);
+    }
     match name {
         // Filesystem — read / stat (fs:read)
         "file_read" | "read_file" => Some(Capability::FsRead),

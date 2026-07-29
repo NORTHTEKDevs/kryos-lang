@@ -259,7 +259,7 @@ fn main() { let r = kryos_tcp_connect_ks(0, 0)  println(to_string(r)) }'
 # native (an allocator/pointer helper) stays ambient (not over-gated).
 want_pass native_extern_declared \
 'extern { fn kryos_dir_create(p: i64, n: i64) -> i64 }
-@capabilities(fs:write)
+@capabilities(fs:write, ffi)
 fn main() { let c = "x"  let r = kryos_dir_create(str_to_ptr(c), len(c))  println(to_string(r)) }'
 
 want_pass native_extern_pure_alloc \

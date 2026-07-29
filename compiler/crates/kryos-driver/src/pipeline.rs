@@ -397,6 +397,26 @@ fn compile_file_impl(
     let mut visited = HashSet::new();
     visited.insert(canonical);
 
+    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
+    // is still the ROOT module -- imported declarations have not been merged
+    // yet, so this sees the user's own code and treats the stdlib as the
+    // trusted computing base. See check_raw_memory_direct for why the
+    // requirement must not propagate.
+    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    let has_raw_mem_errors = !raw_mem_diags.is_empty();
+    diagnostics.extend(raw_mem_diags);
+    if has_raw_mem_errors {
+        return CompileResult {
+            diagnostics,
+            source_map,
+            success: false,
+            output_path: None,
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        };
+    }
+
     let mut imported_decls = Vec::new();
     resolve::reset_import_origins();
     if let Err(import_diags) = resolve::resolve_imports(
@@ -1190,6 +1210,15 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     let mut visited = HashSet::new();
     visited.insert(canonical);
 
+    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
+    // is still the ROOT module -- imported declarations have not been merged
+    // yet, so this sees the user's own code and treats the stdlib as the
+    // trusted computing base. See check_raw_memory_direct for why the
+    // requirement must not propagate.
+    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    let has_raw_mem_errors = !raw_mem_diags.is_empty();
+    diagnostics.extend(raw_mem_diags);
+
     let mut imported_decls = Vec::new();
     resolve::reset_import_origins();
     if let Err(import_diags) =
@@ -1280,6 +1309,15 @@ pub fn check_file_with_options_full(
     let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut visited = HashSet::new();
     visited.insert(canonical);
+
+    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
+    // is still the ROOT module -- imported declarations have not been merged
+    // yet, so this sees the user's own code and treats the stdlib as the
+    // trusted computing base. See check_raw_memory_direct for why the
+    // requirement must not propagate.
+    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    let has_raw_mem_errors = !raw_mem_diags.is_empty();
+    diagnostics.extend(raw_mem_diags);
 
     let mut imported_decls = Vec::new();
     resolve::reset_import_origins();

@@ -59,6 +59,37 @@ impl CapabilityMode {
 }
 
 /// Run the capability checking pass over a module in the given [`CapabilityMode`].
+/// Enforce that raw-memory primitives are only used by code that DECLARES
+/// `ffi`, at the direct call site, without that requirement propagating.
+///
+/// Call this on the ROOT module *before* imported declarations are merged in,
+/// so it sees user code only. The stdlib is the trusted computing base here:
+/// it is built on these primitives (`alloc` in 14 modules), and propagating a
+/// requirement out of it would make `std::json::parse` demand `ffi` from every
+/// caller -- measured, and it makes the language unusable.
+///
+/// Without this, capability attenuation is defeated outright: a program
+/// declaring NO capabilities passes `--strict-capabilities` and still reads
+/// any string in the host process via `str_to_ptr` + `ptr_byte_at`
+/// (tests/security/cap_escape_raw_memory.kry).
+pub fn check_raw_memory_direct(module: &Module) -> Vec<Diagnostic> {
+    let diags = crate::model::with_raw_memory_gate(|| {
+        check_capabilities_mode(module, CapabilityMode::Inferred)
+    });
+    // Report ONLY the raw-memory findings. Every other diagnostic from this
+    // extra pass is a duplicate of the real check that runs on the merged
+    // module, and the root module alone cannot see imported callees.
+    diags
+        .into_iter()
+        .filter(|d| {
+            d.is_error()
+                && crate::model::RAW_MEMORY_BUILTINS
+                    .iter()
+                    .any(|b| d.message.contains(&format!("`{b}`")))
+        })
+        .collect()
+}
+
 pub fn check_capabilities_mode(module: &Module, mode: CapabilityMode) -> Vec<Diagnostic> {
     let mut checker = CapabilityChecker::new(mode);
     checker.check_module(module);
