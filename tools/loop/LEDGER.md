@@ -94,13 +94,28 @@ owner count at `ptr - 8`. Either on a box without the 16-byte header writes
 outside the allocation -- which is exactly how a neighbouring array header ends
 up with `elem_size = <a pointer>`.
 
-**Concrete asymmetry found, prime suspect:** `kryos_array_dup` RETAINS every
+**Asymmetry found, but NOT the cause -- tested and reverted:** `kryos_array_dup` RETAINS every
 struct element (`elem_kind == 4` -> `kryos_struct_retain`, array.rs ~369), but
 `kryos_array_free_typed` has **no case for struct elements** (`_ => {}`,
 array.rs ~604 handles only kinds 1/2/3). Owner counts on struct elements
-therefore only ever go UP and are never released. Verified the retain is
-load-bearing: disabling it makes the repro SEGFAULT outright, so the fix is to
-add the matching RELEASE on the free side, not to remove the retain.
+therefore only ever go UP and are never released. Verified the retain is load-bearing (disabling it makes the repro SEGFAULT), so
+any fix must ADD the release rather than remove the retain. I added exactly
+that (`kryos_struct_release_shared` on elem_kind 4, decrement-only, never a
+free) and measured it:
+
+- the corruption is UNCHANGED (still 1 token)
+- the struct leak is UNCHANGED: 87-91MB/1M across three runs with and without
+- an array-of-struct dup loop, the shape it directly targets, is UNCHANGED:
+  14.2/15.3MB with vs 14.7/15.0MB without
+
+So it was reverted. **Correction to an earlier reading in this session:** a
+single measurement appeared to show 89.5MB -> 15.8MB, an "82% reduction". It
+did not reproduce -- three repeat runs of the same binary gave 90.1/86.7/90.8.
+That number was an artifact of the peak sampler missing the peak, and the
+claim was wrong. Treat any single RSS reading here as noise; always repeat.
+
+The imbalance is still real on paper (counts only ever rise), so it may matter
+for a shape not yet found -- but nothing measurable today justifies the change.
 
 **Also NOT reproduced standalone.** Two hand-built models of that exact shape --
 a recursive precedence climber threading a struct and pushing into its array
