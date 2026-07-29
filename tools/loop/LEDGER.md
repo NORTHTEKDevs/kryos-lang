@@ -80,7 +80,29 @@ Trigger is `parse_expr` RECURSING through precedence climbing
 (`parse_expr(pp, prec + 1)` inside its own loop) -- not params, not the return
 type, not a single operator.
 
-**NOT reproduced standalone yet.** Two hand-built models of that exact shape --
+**CRANELIFT-ONLY.** The same repro on `build --release` (LLVM) prints the
+correct 31 tokens. That collapses the search space to one backend.
+
+**CAUSED BY `335551e`** (struct/enum boxes carry the allocation header).
+Reverting just that commit makes the repro print 31. Do not simply revert it --
+that was tried and it breaks Linux/macOS (`test_re_anchors_captures`,
+`test_tracked_generic`), because it fixes real heap corruption there.
+
+**Mechanism, narrowed:** `kryos_free` does `ptr.sub(HEADER)` then indexes
+`freelists[class]` read from that memory, and `kryos_struct_retain` writes the
+owner count at `ptr - 8`. Either on a box without the 16-byte header writes
+outside the allocation -- which is exactly how a neighbouring array header ends
+up with `elem_size = <a pointer>`.
+
+**Concrete asymmetry found, prime suspect:** `kryos_array_dup` RETAINS every
+struct element (`elem_kind == 4` -> `kryos_struct_retain`, array.rs ~369), but
+`kryos_array_free_typed` has **no case for struct elements** (`_ => {}`,
+array.rs ~604 handles only kinds 1/2/3). Owner counts on struct elements
+therefore only ever go UP and are never released. Verified the retain is
+load-bearing: disabling it makes the repro SEGFAULT outright, so the fix is to
+add the matching RELEASE on the free side, not to remove the retain.
+
+**Also NOT reproduced standalone.** Two hand-built models of that exact shape --
 a recursive precedence climber threading a struct and pushing into its array
 fields, once with 3 array fields and once matching the real Parser's 7 -- are
 both CLEAN. Something else in the real program is load-bearing. Find it before
