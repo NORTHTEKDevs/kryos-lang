@@ -57,7 +57,26 @@ Down from 7 (and from 60 on master). Progress this session: the returned-tuple
 drop and the field-read borrow rule together took it from SEGFAULT to a clean
 exit, and demo 1 now parses to completion.
 
-**Current symptom is precise and visible in the output:**
+**Demo 1 is now CORRECT** (`Ident(x)`); what remains is demo 2, bisected:
+
+| reduced input | result |
+| --- | --- |
+| `fn pick(..) { return f(x) }` | ok |
+| `fn pick(..) { if x > 0 { return 1 } }` | output truncated after tokenize |
+| `... if x > 0 { return f(x) }` (no else) | **panic: kind -1332565184** |
+| full if/else | **panic: kind 1588374336** |
+
+Garbage token KINDS -- a `kind` is a plain i64 field, so the Token array itself
+is being corrupted, and the trigger is the `if`-STATEMENT path specifically
+(a call alone is fine).
+
+Prime suspect, and it connects to a known open item: `parse_stmt`'s TK_IF arm
+does `let mut pp = p3` -- a non-@copy struct assigned from another local, which
+Cranelift lowers as a BARE POINTER ALIAS (codegen.rs ~3851 deep-copies only
+`@copy` structs). Two names for one malloc'd block, then reassigned in a branch.
+That is the same aliasing recorded under "Cranelift box aliasing" below.
+
+**Original symptom, for history:**
 
 ```
 --- demo 1 ---
