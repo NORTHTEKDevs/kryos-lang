@@ -1216,7 +1216,6 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     // trusted computing base. See check_raw_memory_direct for why the
     // requirement must not propagate.
     let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
-    let has_raw_mem_errors = !raw_mem_diags.is_empty();
     diagnostics.extend(raw_mem_diags);
 
     let mut imported_decls = Vec::new();
@@ -1316,7 +1315,6 @@ pub fn check_file_with_options_full(
     // trusted computing base. See check_raw_memory_direct for why the
     // requirement must not propagate.
     let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
-    let has_raw_mem_errors = !raw_mem_diags.is_empty();
     diagnostics.extend(raw_mem_diags);
 
     let mut imported_decls = Vec::new();

@@ -3463,45 +3463,24 @@ fn drop_unescaped_str_temps(
             // is not a droppable borrow: the escaping aggregate keeps the
             // struct alive past this window, so the retain this drop was
             // meant to balance is still needed.
-            let src_escapes_in_aggregate =
-                ctx.current_instructions[inst_mark..].iter().any(|inst| {
-                    matches!(inst,
-                        Instruction::Assign { value: RValue::Tuple(ops), .. }
-                            if ops.iter().any(|o| matches!(o, Operand::Local(l) if *l == src)))
-                });
-            // ...and only when the SOURCE STRUCT is dead for the rest of this
-            // window. A field read is a BORROW: dropping its temp releases a
-            // reference the source still holds. The pass assumed both backends
-            // retain a field read unconditionally, so the drop was balanced --
-            // that assumption does not hold on every path, and in real code it
-            // over-releases. Measured on compiler/self-host/stage1_mini_parser.kry:
-            // field-read drops alone accounted for 5 of its 7 double-frees and
-            // turned a clean run into a SEGFAULT.
+            // A struct FIELD READ is a BORROW and is NOT dropped here.
             //
-            // `alloc_node` is the canonical shape -- it reads five array fields
-            // off `np` and keeps using `np` after every one:
+            // This used to drop unconditionally, on the stated assumption that
+            // both backends retain a field read so the drop is balanced. That
+            // assumption is false: measured on a 2M-iteration loop of throwaway
+            // field reads, peak RSS is 4.4MB with the drop and 4.4MB without --
+            // identical. There was no retain to balance, so the drop was pure
+            // OVER-RELEASE.
             //
-            //     _11 = _6.str_args
-            //     _12 = call push(_11, _2)
-            //     drop(_11)            <- released a buffer _6 still points at
-            //     _14 = _6.i_args      <- and _6 is read again right here
+            // What it cost: on compiler/self-host/stage1_mini_parser.kry it
+            // accounted for 5 of 7 double-frees and a SEGFAULT, and even after
+            // a liveness guard ("only drop when the source is dead") it still
+            // blanked token text -- the parser printed `Ident(  )` where the
+            // source said `x`. Silent wrong answers rank above leaks, and here
+            // there is not even a leak to trade.
             //
-            // If the source is never touched again the borrow really is over and
-            // the drop is safe, which keeps the leak this pass was added to fix
-            // closed for the throwaway-read case.
-            let src_used_later = ctx.current_instructions[inst_mark..]
-                .iter()
-                .skip_while(|inst| !matches!(inst,
-                    Instruction::Assign { dest, .. } if *dest == id))
-                .skip(1)
-                .any(|inst| match inst {
-                    Instruction::Assign { value, .. } => rvalue_mentions_local(value, src),
-                    Instruction::Drop { local } => *local == src,
-                    _ => false,
-                });
-            if !src_escapes_in_aggregate && !src_used_later {
-                to_drop.push(id);
-            }
+            // The `src` binding below is still used to undo a spurious
+            // partial-move mark.
             // Separately: undo a partial-move mark THIS statement's field
             // read put on `src`, so the struct's own scope-end Drop (which
             // frees its other fields too) isn't left spuriously suppressed.
