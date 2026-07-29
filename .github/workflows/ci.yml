@@ -150,6 +150,14 @@ jobs:
         # output, and asserts on real HTTP response bodies.
         run: bash tests/run_examples_e2e.sh
 
+      - name: Security gate (capability attenuation must attenuate)
+        # A zero-capability program could read any string in the host process
+        # via str_to_ptr + ptr_byte_at and deref arbitrary offsets, while
+        # passing --strict-capabilities. Asserts the escape is rejected, that
+        # declared ffi still works (no over-rejection), and that the stdlib
+        # does not cascade ffi onto ordinary callers.
+        run: bash tests/security_gate.sh
+
       - name: IR signature gate (calls must match their declarations)
         # Guards the bug CLASS behind the json_bool miscompile: a narrow value
         # passed where a wider one is declared leaves the upper bits of the
