@@ -72,6 +72,32 @@ that local's heap fields and takes no reference — `retain_for_ty` is `None` fo
 tuple-destructured *named* local, so its scope-end Drop frees the array `p` now
 points at.
 
+**MIR EVIDENCE (get this before theorising again):**
+`kryos build --release --emit-mir` on the repro, main's loop:
+
+```
+_9 = P { toks: _0, out: _8, pos: 0 }
+drop(_8)                 <- the `out` array temp is dropped right after the literal
+_10 = call cur_text(_9)
+bb6:
+_13 = call store(_9, "k")
+_14 = _13.0              <- struct extracted from the TUPLE
+_9  = _14                <- no retain on _14, and no drop of the tuple _13
+```
+
+Two candidates visible here, neither yet tested:
+1. `drop(_8)` — safe only if the struct literal genuinely DUPS the array field.
+   It is documented to (`kryos_array_dup`), but that has not been confirmed for
+   an EMPTY literal (`out: []`), and the failing value is exactly this field.
+2. `_14 = _13.0` — extracting a struct out of a tuple takes no reference, and
+   the tuple `_13` is never dropped. If `.0` aliases into the tuple's storage,
+   `_9` ends up naming memory nothing owns.
+
+Note the earlier "p2's scope-end Drop frees it" theory is CONTRADICTED by the
+lowering: `retain_container_src`'s else-branch does
+`ctx.dropped_locals.insert(src.0)` for non-copy structs, i.e. a struct source
+is MOVED, not dropped. Do not re-derive that.
+
 **Ruled out** (each tested, do not retry):
 - the guarded struct reassignment release (`release_struct_heap_fields_if_ne`) —
   disabling it entirely changes nothing
