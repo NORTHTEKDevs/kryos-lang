@@ -3150,6 +3150,7 @@ fn is_retained_container_get(instructions: &[Instruction], src: LocalId) -> bool
 /// field, not just the one read) forever after the first field read
 /// anywhere in the function. See `consume_call_args` for the analogous fix
 /// on the "passed as a call argument" side of the same over-eager-move bug.
+
 fn drop_unescaped_str_temps(
     ctx: &mut LoweringContext,
     inst_mark: usize,
@@ -3468,7 +3469,37 @@ fn drop_unescaped_str_temps(
                         Instruction::Assign { value: RValue::Tuple(ops), .. }
                             if ops.iter().any(|o| matches!(o, Operand::Local(l) if *l == src)))
                 });
-            if !src_escapes_in_aggregate {
+            // ...and only when the SOURCE STRUCT is dead for the rest of this
+            // window. A field read is a BORROW: dropping its temp releases a
+            // reference the source still holds. The pass assumed both backends
+            // retain a field read unconditionally, so the drop was balanced --
+            // that assumption does not hold on every path, and in real code it
+            // over-releases. Measured on compiler/self-host/stage1_mini_parser.kry:
+            // field-read drops alone accounted for 5 of its 7 double-frees and
+            // turned a clean run into a SEGFAULT.
+            //
+            // `alloc_node` is the canonical shape -- it reads five array fields
+            // off `np` and keeps using `np` after every one:
+            //
+            //     _11 = _6.str_args
+            //     _12 = call push(_11, _2)
+            //     drop(_11)            <- released a buffer _6 still points at
+            //     _14 = _6.i_args      <- and _6 is read again right here
+            //
+            // If the source is never touched again the borrow really is over and
+            // the drop is safe, which keeps the leak this pass was added to fix
+            // closed for the throwaway-read case.
+            let src_used_later = ctx.current_instructions[inst_mark..]
+                .iter()
+                .skip_while(|inst| !matches!(inst,
+                    Instruction::Assign { dest, .. } if *dest == id))
+                .skip(1)
+                .any(|inst| match inst {
+                    Instruction::Assign { value, .. } => rvalue_mentions_local(value, src),
+                    Instruction::Drop { local } => *local == src,
+                    _ => false,
+                });
+            if !src_escapes_in_aggregate && !src_used_later {
                 to_drop.push(id);
             }
             // Separately: undo a partial-move mark THIS statement's field
