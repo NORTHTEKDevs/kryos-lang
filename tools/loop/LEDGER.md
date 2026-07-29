@@ -51,83 +51,43 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. Struct assigned from a local doesn't retain its heap fields — CRANELIFT ONLY  `BLOCKS CI`
-`tests/known_failures/struct_in_tuple_return.kry`.
+### 1. stage1_mini_parser: 2 remaining double-frees corrupt token text  `BLOCKS CI`
 
-**Narrowed by the loop's own `repro` on its first run, and it changes the next
-step:** the backends now DIVERGE. AOT/LLVM prints `out=3` — **correct** — and
-JIT/Cranelift prints `out=1`. Both printed `out=0` before the partial fix, so
-that MIR guard fully fixed LLVM and only half-fixed Cranelift. The remaining
-defect is therefore in the **Cranelift backend**, not in shared MIR lowering.
-1 double-free left (`array DOUBLE-FREE rc=0 len=0 cap=4`), down from 2.
+Down from 7 (and from 60 on master). Progress this session: the returned-tuple
+drop and the field-read borrow rule together took it from SEGFAULT to a clean
+exit, and demo 1 now parses to completion.
 
-This is exactly why `repro` runs both backends before anything else: the
-previous ledger entry pointed at MIR ownership, which is now the wrong place
-to look.
-
-Traced exactly: the callee is correct and the tuple carries the value out
-intact; the loss is at `p = p2`. A struct assigned from another local aliases
-that local's heap fields and takes no reference — `retain_for_ty` is `None` for
-`Struct` and `emit_param_source_retain` only fires for params. `p2` is a
-tuple-destructured *named* local, so its scope-end Drop frees the array `p` now
-points at.
-
-**MIR EVIDENCE (get this before theorising again):**
-`kryos build --release --emit-mir` on the repro, main's loop:
+**Current symptom is precise and visible in the output:**
 
 ```
-_9 = P { toks: _0, out: _8, pos: 0 }
-drop(_8)                 <- the `out` array temp is dropped right after the literal
-_10 = call cur_text(_9)
-bb6:
-_13 = call store(_9, "k")
-_14 = _13.0              <- struct extracted from the TUPLE
-_9  = _14                <- no retain on _14, and no drop of the tuple _13
+--- demo 1 ---
+  Bin(+)
+    Ident(  )        <- BLANK. should be Ident(x)
+    Bin(*)
+      Ident(y)
+      Int(2)
+--- demo 2 ---
+panic: expected 'fn', got kind 95 text ''      (95 = TK_EOF)
 ```
 
-Two candidates visible here, neither yet tested:
-1. `drop(_8)` — safe only if the struct literal genuinely DUPS the array field.
-   It is documented to (`kryos_array_dup`), but that has not been confirmed for
-   an EMPTY literal (`out: []`), and the failing value is exactly this field.
-2. `_14 = _13.0` — extracting a struct out of a tuple takes no reference, and
-   the tuple `_13` is never dropped. If `.0` aliases into the tuple's storage,
-   `_9` ends up naming memory nothing owns.
+Demo 1's identifier text is blanked and demo 2's token stream is corrupted
+badly enough that `tokenize` yields nothing usable. Both are the SAME residual
+corruption, not two bugs.
 
-Note the earlier "p2's scope-end Drop frees it" theory is CONTRADICTED by the
-lowering: `retain_container_src`'s else-branch does
-`ctx.dropped_locals.insert(src.0)` for non-copy structs, i.e. a struct source
-is MOVED, not dropped. Do not re-derive that.
+`KRYOS_FREE_DIAG=1` reports exactly 2:
+```
+str   DOUBLE-FREE rc=0 len=1 content="}"
+array DOUBLE-FREE rc=0 len=2 cap=0
+```
 
-**Ruled out** (each tested, do not retry):
-- the guarded struct reassignment release (`release_struct_heap_fields_if_ne`) —
-  disabling it entirely changes nothing
-- adding the retain to the `param_src` branch of the reassignment path — no
-  effect; that branch is not the one taken for `p = p2`
-- **deep-copying a NON-`@copy` struct at the Cranelift assignment site**
-  (dropping the `copy_structs.contains(sname)` gate at codegen.rs ~3851).
-  Double-frees went 1 -> **0**, but the value got WORSE: `out` 1 -> 0. So the
-  box aliasing is real and this addresses it, but a struct deep copy calls
-  `kryos_array_clone` on the array field, which is a REFCOUNT BUMP rather than
-  a copy — the "independent" block still shares the buffer, and the accumulated
-  elements are still lost. Any fix here has to give the destination a genuinely
-  independent array, or leave the box shared and fix the Drop instead.
+**Next step:** the freed values are a single-char string and a 2-element array,
+which is the `Token { text, kind }` shape and the token ARRAY. Bisect the same
+way that worked twice already -- reduce a program until the double-free
+vanishes, and use the `KRYOS_NO_TEMP_DROPS` / field-drop kill-switches to
+attribute a category before theorising.
 
-**Confirmed mechanism:** at codegen.rs ~3851 Cranelift deep-copies a struct on
-assignment ONLY when it is `@copy`; a non-`@copy` struct is a bare pointer
-alias. `p` and `p2` therefore name ONE malloc'd block, and `p2`'s scope-end
-Drop frees it under `p`. That is the documented "JIT aliases, AOT copies"
-divergence (gotcha #23) turning into data loss.
-
-**Next step:** the two obvious repairs are in tension — copying the box loses
-the accumulated array (see the ruled-out entry), and leaving it shared keeps
-the premature Drop. So attack the DROP instead: `p2` should not free a box that
-`p` now names. Look at whether the assignment can mark the source consumed
-(`dropped_locals`) for the struct case, which is what suppresses a scope-end
-Drop elsewhere in the lowering.
-
-**Acceptance:** repro prints `out=3` on both backends with 0 double-frees, then
-`compiler/self-host/stage1_mini_parser.kry` reaches `rc=0`, then `selfhost-stage1`
-goes green — the last red CI job.
+**Acceptance:** `stage1_mini_parser.kry` reaches rc=0 printing
+`stage 1 mini-parser: ok`, with 0 double-frees, and `Ident(x)` not `Ident(  )`.
 
 ### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
