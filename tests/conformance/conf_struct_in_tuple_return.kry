@@ -1,0 +1,58 @@
+// REGRESSION TEST (was a known failure, now FIXED).
+//
+// A struct packed into a RETURNED TUPLE was dropped before the tuple carrying
+// it was returned, so the caller got a pointer to freed memory. The MIR was
+// unambiguous:
+//
+//     _8 = (_2, _7)
+//     drop(_2)          <- freed here
+//     return _8
+//
+// `returned_local_id` only recognised a bare `return x`; for
+// `return (np, len(np.out))` the operand is the TUPLE temp, so `np` was never
+// excluded from the scope-end drops. Returning the same struct DIRECTLY was
+// always correct, which is what made this look like a value-semantics quirk
+// rather than a use-after-free.
+//
+// Expected: name=t0 out=3 on BOTH backends, 0 double-frees under
+// KRYOS_FREE_DIAG=1. Before the fix: out=0, then out=1 after a partial fix,
+// with 2 then 1 double-frees.
+//
+// This is the shape every self-host `p_*` function uses (`-> (Parser, i64)`).
+
+struct Tok { text: str, kind: i64 }
+struct P { toks: [Tok], out: [str], pos: i64 }
+
+fn cur_text(p: P) -> str {
+    let t = p.toks[p.pos]
+    return t.text
+}
+
+fn store(p: P, s: str) -> (P, i64) {
+    let mut np = p
+    push(np.out, s)
+    return (np, len(np.out))
+}
+
+@capabilities(all)
+fn main() {
+    let mut toks: [Tok] = []
+    let mut i = 0
+    while i < 4 {
+        toks = push(toks, Tok { text: "t" + to_string(i), kind: i })
+        i = i + 1
+    }
+    let mut p = P { toks: toks, out: [], pos: 0 }
+
+    // a retained field read held live across the churn below
+    let name = cur_text(p)
+
+    let mut n = 0
+    while n < 3 {
+        let (p2, _) = store(p, "k")
+        p = p2
+        n = n + 1
+    }
+
+    println("name=" + name + " out=" + to_string(len(p.out)))
+}

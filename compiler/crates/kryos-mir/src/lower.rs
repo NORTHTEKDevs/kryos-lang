@@ -4873,6 +4873,39 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 } else {
                     None
                 };
+            // A local packed into a RETURNED TUPLE escapes exactly as a
+            // directly-returned local does, but `returned_local_id` only sees a
+            // bare `return x`: for `return (np, len(np.out))` the operand is the
+            // TUPLE temp, so `np` was not excluded here and got a scope-end
+            // Drop. The MIR was unambiguous --
+            //
+            //     _8 = (_2, _7)
+            //     drop(_2)          <- freed before the tuple carrying it returns
+            //     return _8
+            //
+            // -- so the caller received a tuple holding a pointer to a freed
+            // struct. Returning the same struct DIRECTLY was always correct,
+            // which is what made this look like a value-semantics quirk rather
+            // than a use-after-free. It is the shape every self-host `p_*`
+            // function uses (`-> (Parser, i64)`), and the cause of the
+            // stage1_mini_parser corruption.
+            let returned_tuple_locals: std::collections::HashSet<u32> =
+                if let Some(ast::Expr::TupleLiteral { elements, .. }) = value.as_ref() {
+                    elements
+                        .iter()
+                        .filter_map(|el| match el {
+                            ast::Expr::Identifier { name, .. } => ctx
+                                .locals
+                                .iter()
+                                .rev()
+                                .find(|l| l.name.as_deref() == Some(name.as_str()))
+                                .map(|l| l.id.0),
+                            _ => None,
+                        })
+                        .collect()
+                } else {
+                    std::collections::HashSet::new()
+                };
             let scope_end = ctx.locals.len();
             for i in (0..scope_end).rev() {
                 if ctx.locals[i].name.is_some() {
@@ -4885,6 +4918,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     }
                     if !ctx.dropped_locals.contains(&local_id.0)
                         && returned_local_id != Some(local_id.0)
+                        && !returned_tuple_locals.contains(&local_id.0)
                         && source_struct_local_id != Some(local_id.0)
                         && !ctx.partial_moved_locals.contains(&local_id.0)
                     {
