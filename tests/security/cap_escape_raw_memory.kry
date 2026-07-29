@@ -1,0 +1,52 @@
+// SECURITY — VERIFIED CAPABILITY ESCAPE. Currently EXPLOITABLE.
+//
+// This program declares NO capabilities. It compiles and runs under the
+// deny-by-default `inferred` mode AND passes `--strict-capabilities`.
+// It recovers a secret string byte-for-byte and dereferences memory 4096
+// bytes past a pointer it was handed, without faulting.
+//
+// Actual output:
+//   recovered: TOPSECRET-APIKEY
+//   far read did not fault: false
+//
+// WHY THIS IS THE MOST SERIOUS OPEN BUG: Kryos is sold on capability
+// attenuation for agent tooling -- a tool is handed exactly the authority it
+// needs and no more. `str_to_ptr` + `ptr_byte_at` defeats that completely: a
+// tool granted ZERO capabilities can read any string the host process holds,
+// including API keys, tokens, and other tools' arguments. Every
+// capability-attenuation guarantee in the ecosystem projects
+// (kryos-mcp-governed, kryos-injection-guard, kryos-fs-jail, the audit trail)
+// rests on a boundary this walks straight through.
+//
+// The raw-memory builtins -- alloc, free_bytes, ptr_read_i64, ptr_write_i64,
+// ptr_byte_at, ptr_set_byte, str_to_ptr, arr_to_ptr -- require no capability
+// and are not confined to `unsafe`. They are treated as internal runtime
+// plumbing, which is true of how the STDLIB uses them and false of what a
+// user program can do with them.
+//
+// WHY IT IS NOT A ONE-LINE FIX (measured, not assumed): the stdlib depends on
+// these heavily. `alloc` appears in 14 stdlib modules, `ptr_read_i64` in 7,
+// and `str_to_ptr` in crypto/db/fs/io/net. Adding them to
+// `required_capability_for_builtin` cascades: `std::fs` would start demanding
+// `ffi` from every caller. Closing this properly needs a trusted-computing-base
+// distinction -- stdlib internals may use raw memory, user code may not --
+// rather than a table entry.
+//
+// ACCEPTANCE: this file must FAIL to compile with a capability error, while
+// `tests/conformance/*` and the stdlib continue to build unchanged.
+
+fn main() {
+  let secret = "TOPSECRET-APIKEY"
+  let sp = str_to_ptr(secret)
+  // walk memory from a pointer we were handed, at arbitrary offsets
+  let mut i = 0
+  let mut out = ""
+  while i < 16 {
+    out = out + char_from(ptr_byte_at(sp, i))
+    i = i + 1
+  }
+  println("recovered: " + out)
+  // read a far offset we never allocated
+  let far = ptr_read_i64(sp, 4096)
+  println("far read did not fault: " + to_string(far != far))
+}

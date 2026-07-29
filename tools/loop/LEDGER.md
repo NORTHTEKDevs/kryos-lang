@@ -3,8 +3,12 @@
 The queue survives context loss; a session does not. Update this file in the
 SAME commit as the work. Anything not written here is lost.
 
-Ranked by (blocks a green CI) > (silent wrong answer) > (leak) > (papercut).
-A silent wrong answer outranks a crash: a crash announces itself.
+Ranked by SERIOUSNESS FOR THE INTENDED USE CASE, not by which gate is red.
+Kryos is deployed as capability-attenuated infrastructure for agent tooling,
+so: (breaks the capability/trust model) > (silent wrong answer) > (blocks a
+green CI) > (leak) > (papercut). A silent wrong answer outranks a crash — a
+crash announces itself. A trust-model hole outranks both: nothing above it in
+the stack can be sound if the boundary leaks.
 
 ---
 
@@ -47,7 +51,34 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. Struct assigned from a local doesn't retain its heap fields — CRANELIFT ONLY  `BLOCKS CI`
+### 1. Raw-memory builtins defeat capability attenuation  `EXPLOITABLE` `TRUST MODEL`
+`tests/security/cap_escape_raw_memory.kry` — **verified working exploit.**
+
+A program declaring NO capabilities compiles and runs under deny-by-default
+AND passes `--strict-capabilities`, then recovers a secret string
+byte-for-byte (`recovered: TOPSECRET-APIKEY`) and dereferences 4096 bytes past
+a pointer without faulting.
+
+This is the most serious open item because it invalidates the product's core
+claim. Every attenuation guarantee in the ecosystem projects
+(kryos-mcp-governed, kryos-injection-guard, kryos-fs-jail, the audit trail)
+rests on a boundary `str_to_ptr` + `ptr_byte_at` walks straight through: a tool
+granted zero authority reads any string in the host process, including the keys
+and tokens other tools were handed.
+
+**Not a one-line fix, measured:** `alloc` appears in 14 stdlib modules,
+`ptr_read_i64` in 7, `str_to_ptr` in crypto/db/fs/io/net. Adding them to
+`required_capability_for_builtin` cascades — `std::fs` would demand `ffi` from
+every caller. Needs a trusted-computing-base split: stdlib internals may use
+raw memory, user code may not. Options to weigh: mark stdlib modules trusted in
+the capability checker; or require `unsafe { }` around raw-pointer ops in user
+code and gate the block; or split the builtins into a `mem:raw` capability with
+a stdlib exemption.
+
+**Acceptance:** the exploit file fails to compile with a capability error while
+the stdlib and all conformance tests build unchanged.
+
+### 2. Struct assigned from a local doesn't retain its heap fields — CRANELIFT ONLY  `BLOCKS CI`
 `tests/known_failures/struct_in_tuple_return.kry`.
 
 **Narrowed by the loop's own `repro` on its first run, and it changes the next
@@ -99,13 +130,13 @@ Drop elsewhere in the lowering.
 `compiler/self-host/stage1_mini_parser.kry` reaches `rc=0`, then `selfhost-stage1`
 goes green — the last red CI job.
 
-### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
+### 3. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
 prints the four distinct values. **Silent wrong answer.** Independently
 reproduced. Likely the per-iteration box is hoisted out of the loop in the
 capture-boxing path.
 
-### 3. Struct-argument leak — ~86MB per 1M calls
+### 4. Struct-argument leak — ~86MB per 1M calls
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific — a free function leaks
 identically (that correction is measured; the older "method receiver" framing
@@ -113,20 +144,16 @@ was wrong). Flat for contrast: scalar-only struct through a method, and the
 same struct's fields read directly. Needs the receiver/box representation work;
 7 incremental attempts have failed, so treat it as a design change.
 
-### 4. Raw-memory builtins are ungated
-`alloc`/`free_bytes`/`ptr_read_i64`/`ptr_write_i64`/`str_to_ptr` need no
-capability and are not inside `unsafe`. A zero-capability program can read or
-write arbitrary addresses under `--strict-capabilities`, which undercuts the
-central pitch.
+### 5. RETIRED — promoted to item 1 with a working exploit.
 
 ### 5. `comptime { }` runs at RUNTIME while the docs sell compile-time
 Fix the docs (hours). Real compile-time evaluation is months and should not
 gate 1.0.
 
-### 6. `[dyn Handler]` reports a confusing `E0100` instead of `E0110`
+### 7. `[dyn Handler]` reports a confusing `E0100` instead of `E0110`
 Array-literal element unification ignores the annotated `dyn` element type.
 
-### 7. Docs status sections drift because they are hand-maintained
+### 8. Docs status sections drift because they are hand-maintained
 `docs/BUGS.md` said "none currently tracked" while two tests deadlocked.
 Generate from real test output.
 
