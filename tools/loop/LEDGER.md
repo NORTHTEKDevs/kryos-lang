@@ -73,12 +73,27 @@ points at.
   disabling it entirely changes nothing
 - adding the retain to the `param_src` branch of the reassignment path — no
   effect; that branch is not the one taken for `p = p2`
+- **deep-copying a NON-`@copy` struct at the Cranelift assignment site**
+  (dropping the `copy_structs.contains(sname)` gate at codegen.rs ~3851).
+  Double-frees went 1 -> **0**, but the value got WORSE: `out` 1 -> 0. So the
+  box aliasing is real and this addresses it, but a struct deep copy calls
+  `kryos_array_clone` on the array field, which is a REFCOUNT BUMP rather than
+  a copy — the "independent" block still shares the buffer, and the accumulated
+  elements are still lost. Any fix here has to give the destination a genuinely
+  independent array, or leave the box shared and fix the Drop instead.
 
-**Next step:** Cranelift's struct-assignment path — find where a struct local
-assigned from another local copies its fields and give the destination its own
-reference to the heap ones. LLVM already gets this right after the MIR guard,
-so diff the two backends' handling rather than re-deriving it. The remaining
-double-free is an ARRAY (`cap=4`), which points at the array field specifically.
+**Confirmed mechanism:** at codegen.rs ~3851 Cranelift deep-copies a struct on
+assignment ONLY when it is `@copy`; a non-`@copy` struct is a bare pointer
+alias. `p` and `p2` therefore name ONE malloc'd block, and `p2`'s scope-end
+Drop frees it under `p`. That is the documented "JIT aliases, AOT copies"
+divergence (gotcha #23) turning into data loss.
+
+**Next step:** the two obvious repairs are in tension — copying the box loses
+the accumulated array (see the ruled-out entry), and leaving it shared keeps
+the premature Drop. So attack the DROP instead: `p2` should not free a box that
+`p` now names. Look at whether the assignment can mark the source consumed
+(`dropped_locals`) for the struct case, which is what suppresses a scope-end
+Drop elsewhere in the lowering.
 
 **Acceptance:** repro prints `out=3` on both backends with 0 double-frees, then
 `compiler/self-host/stage1_mini_parser.kry` reaches `rc=0`, then `selfhost-stage1`
