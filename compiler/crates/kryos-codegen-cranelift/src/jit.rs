@@ -1597,12 +1597,12 @@ impl JitCompiler {
         // Declare runtime builtin functions with the same name mapping the
         // AOT codegen uses, so translate_function() can look them up. Each
         // symbol was already registered with the JIT builder in new().
-        declare_runtime_builtins(&mut self.module, call_conv, &mut func_ids)?;
+        let user_func_names: std::collections::HashSet<String> =
+            functions.iter().map(|f| f.name.clone()).collect();
+        declare_runtime_builtins(&mut self.module, call_conv, &mut func_ids, &user_func_names)?;
 
         // Phase 1: Declare ALL user functions so cross-calls resolve.
         let mut declared: Vec<FuncId> = Vec::new();
-        let user_func_names: std::collections::HashSet<String> =
-            functions.iter().map(|f| f.name.clone()).collect();
         for mir_func in functions {
             let sig = build_signature(mir_func, call_conv);
             let func_id = self
@@ -1940,6 +1940,7 @@ fn declare_runtime_builtins<M: Module>(
     module: &mut M,
     call_conv: cranelift_codegen::isa::CallConv,
     func_ids: &mut HashMap<String, cranelift_module::FuncId>,
+    user_shadowed: &std::collections::HashSet<String>,
 ) -> Result<(), CodegenError> {
     // All signatures use i64 params and i64 return (matching the generic
     // signature that `ensure_func_ref_with_args` creates). This prevents
@@ -1975,7 +1976,19 @@ fn declare_runtime_builtins<M: Module>(
     macro_rules! decl {
         ($codegen_name:expr, $symbol_name:expr, $sig:expr) => {
             let id = module.declare_function($symbol_name, Linkage::Import, &$sig)?;
-            func_ids.insert($codegen_name.to_string(), id);
+            // A USER function of the same bare name SHADOWS the builtin -- the
+            // documented contract, and what the LLVM backend already does via
+            // its `user_shadow` check. Binding the bare name to this Import
+            // meant the user's own definition could not be defined at all:
+            // `fn alloc(n: i64) -> i64` failed the whole compile with
+            // "Invalid to define identifier declared as an import:
+            // kryos_alloc_bytes", while AOT compiled it and printed the right
+            // answer. Leave the bare name free so Phase 1 can bind it to the
+            // user's function; the raw kryos_* symbol stays available for the
+            // codegen paths that call it directly.
+            if !user_shadowed.contains($codegen_name) {
+                func_ids.insert($codegen_name.to_string(), id);
+            }
             // Also store under symbol name if different, so the codegen can
             // find it regardless of which name path it uses.
             if $codegen_name != $symbol_name {

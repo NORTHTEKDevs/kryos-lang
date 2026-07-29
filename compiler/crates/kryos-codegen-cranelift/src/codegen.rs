@@ -327,6 +327,7 @@ pub fn compile_module_with_options(
     // imported modules). When a user-defined function shadows a builtin name
     // (e.g. std::io defines `fn print(msg: str) -> i64`), we skip declaring
     // the C-level builtin import for that name so the user fn wins.
+    let mut user_func_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
     let user_func_names: HashSet<String> = module
         .functions
         .iter()
@@ -372,6 +373,7 @@ pub fn compile_module_with_options(
             };
             let func_id = object_module.declare_function(&mir_func.name, user_linkage, &sig)?;
             func_ids.insert(mir_func.name.clone(), func_id);
+            user_func_ids.insert(mir_func.name.clone(), func_id);
         }
     }
 
@@ -1363,6 +1365,21 @@ pub fn compile_module_with_options(
     let mut global_string_constants: HashMap<String, DataId> = HashMap::new();
 
     // Second pass: translate each function body.
+    // A USER function SHADOWS a same-named builtin -- the documented contract,
+    // and what the LLVM backend already honours. The runtime-builtin block above
+    // runs AFTER user functions are declared and inserts under the BARE name
+    // (`func_ids["alloc"] = <import kryos_alloc_bytes>`), clobbering the user's
+    // entry. The definition loop below then looked up that import id and tried
+    // to define it: `fn alloc(n: i64) -> i64` failed the whole compile with
+    // "Invalid to define identifier declared as an import: kryos_alloc_bytes",
+    // while the LLVM backend compiled the same program and printed the right
+    // answer. Re-assert the user's ids so the shadow wins, for every builtin at
+    // once rather than one guard per name (println/print/exit already had
+    // individual guards; the FFI and raw-memory ones never got them).
+    for (name, id) in &user_func_ids {
+        func_ids.insert(name.clone(), *id);
+    }
+
     for mir_func in &module.functions {
         let func_id = func_ids[&mir_func.name];
         let sig = build_signature(mir_func, object_module.isa().default_call_conv());

@@ -1,0 +1,46 @@
+// Conformance: a USER function shadowing a runtime builtin compiles on BOTH
+// backends (wave-36).
+//
+// Defining `fn alloc(n: i64) -> i64` used to fail the whole compile on
+// Cranelift with an internal module error:
+//
+//   codegen (cranelift) failed: module error:
+//     Invalid to define identifier declared as an import: kryos_alloc_bytes
+//
+// while the LLVM backend compiled the same program and printed the right
+// answer. The runtime-builtin declarations run AFTER user functions are
+// declared and insert under the BARE name (`func_ids["alloc"]` -> the
+// kryos_alloc_bytes Import), clobbering the user's entry; the definition loop
+// then looked up that import id and tried to define it.
+//
+// `println`, `print` and `exit` had individual `if !user_func_names.contains`
+// guards, but the FFI and raw-memory builtins never got them -- so this is the
+// gate-enumeration shape again, and the fix re-asserts every user function
+// after the builtin block rather than adding one guard per name.
+//
+// Shadowing is the documented contract (gotcha #18: a user function shadowing
+// a builtin WINS on both backends), so this must compile AND call the user's
+// body, not the runtime's.
+
+fn alloc(n: i64) -> i64 { return n + 1 }
+fn str_to_ptr(s: str) -> i64 { return len(s) * 10 }
+fn ptr_read_i64(a: i64, b: i64) -> i64 { return a - b }
+fn free_bytes(a: i64, b: i64) -> i64 { return a * b }
+fn buf_to_str(a: i64, b: i64) -> str { return "shadowed" }
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+@capabilities(all)
+fn main() {
+    expect(alloc(41) == 42, "user alloc wins over the raw-memory builtin")
+    expect(str_to_ptr("abc") == 30, "user str_to_ptr wins")
+    expect(ptr_read_i64(50, 8) == 42, "user ptr_read_i64 wins")
+    expect(free_bytes(6, 7) == 42, "user free_bytes wins")
+    expect(buf_to_str(1, 2) == "shadowed", "user buf_to_str wins")
+    println("conformance builtin shadow codegen: PASS")
+}
