@@ -80,6 +80,20 @@ str   DOUBLE-FREE rc=0 len=1 content="}"
 array DOUBLE-FREE rc=0 len=2 cap=0
 ```
 
+**ATTRIBUTED (kill-switch, not theory):** `KRYOS_NO_TEMP_DROPS=1` makes demo 1
+print `Ident(x)` correctly and leaves only 1 double-free. So the residual
+corruption IS a `drop_unescaped_str_temps` drop. Categories already ruled out:
+
+- struct FIELD reads — fixed by the liveness/borrow rule; not the residual
+- ARRAY ELEMENT reads (`RValue::Index`) — tried the identical borrow rule on
+  them, **no change** (still `Ident(  )`, still 2). Reverted rather than kept.
+
+So the offending temp is in one of the remaining `owns = true` arms:
+StringConcat, Array/Map literal, `BinOp::Add`, or a Call result
+(`to_string` / `substr` / `char_at` / a user function). Bisect by making each
+arm conditional in turn and rerunning the mini-parser — the kill-switch
+already proves one of them is responsible.
+
 **Next step:** the freed values are a single-char string and a 2-element array,
 which is the `Token { text, kind }` shape and the token ARRAY. Bisect the same
 way that worked twice already -- reduce a program until the double-free

@@ -1,0 +1,487 @@
+// stage1_mini_parser.kry -- Stage 1 start: a tiny parser written in
+// Kryos, consuming tokens produced by the bootstrap lexer.
+//
+// This is intentionally a small subset, scoped to prove the technique
+// before tackling the full grammar. The supported language is:
+//
+//   stmt        := let | fn | return | if | while | block | exprstmt
+//   let         := "let" IDENT "=" expr
+//   fn          := "fn" IDENT "(" params? ")" ("->" type)? block
+//   return      := "return" expr
+//   if          := "if" expr block ("else" (if | block))?
+//   while       := "while" expr block
+//   block       := "{" stmt* "}"
+//   exprstmt    := expr
+//
+//   expr        := pratt-parsed binary expression of:
+//     INT | IDENT | "(" expr ")" | call(args)
+//     binary: + - * / == != < > <= >=
+//
+//   params      := IDENT ":" type ("," IDENT ":" type)*
+//   type        := IDENT
+//   args        := expr ("," expr)*
+//
+// Output: pretty-prints a parenthesised AST so we can eyeball the
+// shape. Asserts on a handful of expected reductions.
+//
+// Architecture decisions:
+//   - AST is encoded as parallel arrays keyed by node id. This keeps
+//     the data plain-old-i64 and avoids the heap-typed enum payload
+//     paths in lower.rs that are still maturing. Kind constants are
+//     just integers.
+//   - Parser state is a Parser struct carrying tokens, position, and
+//     the growing AST arrays. Helpers take and return Parser by value
+//     in the same style as the bootstrap lexer.
+//   - No error recovery yet; first syntax error panics with a span.
+
+use token
+use lexer
+
+// -------------------------------------------------------------------
+// AST node kinds (mini subset)
+// -------------------------------------------------------------------
+
+let N_INT       = 1
+let N_IDENT     = 2
+let N_BIN       = 3   // binary op: lhs op rhs (op stored in str_arg)
+let N_CALL      = 4   // f(args): callee in i_arg, first arg in i2_arg, count in i3_arg
+let N_LET       = 5   // let name = value: name in str_arg, value node in i_arg
+let N_RETURN    = 6   // return value in i_arg (or -1 for none)
+let N_IF        = 7   // cond i_arg, then i2_arg, else i3_arg (-1 if none)
+let N_WHILE     = 8   // cond i_arg, body i2_arg
+let N_BLOCK     = 9   // first stmt in i_arg, count in i2_arg
+let N_FN        = 10  // name str_arg, body i_arg, param-list start i2_arg, count i3_arg
+let N_EXPR_STMT = 11  // wraps an expression as a statement, expr in i_arg
+
+fn node_kind_name(k: i64) -> str {
+    if k == N_INT       { return "Int" }
+    if k == N_IDENT     { return "Ident" }
+    if k == N_BIN       { return "Bin" }
+    if k == N_CALL      { return "Call" }
+    if k == N_LET       { return "Let" }
+    if k == N_RETURN    { return "Return" }
+    if k == N_IF        { return "If" }
+    if k == N_WHILE     { return "While" }
+    if k == N_BLOCK     { return "Block" }
+    if k == N_FN        { return "Fn" }
+    if k == N_EXPR_STMT { return "ExprStmt" }
+    return "?"
+}
+
+// -------------------------------------------------------------------
+// Parser state
+// -------------------------------------------------------------------
+//
+// AST is encoded as four parallel arrays. Each node has a kind plus
+// up to one string and three integer arguments, sized to whatever the
+// kind needs (most use only a subset). This is ugly but lets us avoid
+// the heap-typed enum-payload path while we are bootstrapping.
+
+struct Parser {
+    tokens: [Token],
+    pos: i64,
+    // parallel AST arrays
+    kinds: [i64],
+    str_args: [str],
+    i_args: [i64],
+    i2_args: [i64],
+    i3_args: [i64],
+    // child-list pool: blocks/calls store (start, count) into this
+    children: [i64]
+}
+
+fn parser_new(tokens: [Token]) -> Parser {
+    return Parser {
+        tokens: tokens,
+        pos: 0,
+        kinds: [],
+        str_args: [],
+        i_args: [],
+        i2_args: [],
+        i3_args: [],
+        children: []
+    }
+}
+
+fn alloc_node(p: Parser, k: i64, s: str, a: i64, b: i64, c: i64) -> (Parser, i64) {
+    let mut np = p
+    let id = len(np.kinds)
+    push(np.kinds, k)
+    push(np.str_args, s)
+    push(np.i_args, a)
+    push(np.i2_args, b)
+    push(np.i3_args, c)
+    return (np, id)
+}
+
+fn cur_kind(p: Parser) -> i64 {
+    if p.pos >= len(p.tokens) { return TK_EOF }
+    let t = p.tokens[p.pos]
+    return t.kind
+}
+
+fn cur_text(p: Parser) -> str {
+    if p.pos >= len(p.tokens) { return "" }
+    let t = p.tokens[p.pos]
+    return t.text
+}
+
+fn advance(p: Parser) -> Parser {
+    let mut np = p
+    np.pos = np.pos + 1
+    return np
+}
+
+fn expect(p: Parser, kind: i64, what: str) -> Parser {
+    if cur_kind(p) != kind {
+        let got = cur_kind(p)
+        let got_text = cur_text(p)
+        panic("expected {what}, got kind {got} text '{got_text}'")
+    }
+    return advance(p)
+}
+
+// -------------------------------------------------------------------
+// Pratt-style expression parsing
+// -------------------------------------------------------------------
+//
+// Precedence table (higher binds tighter):
+//   1: == != < > <= >=
+//   2: + -
+//   3: * /
+//   4: call / primary
+
+fn op_precedence(k: i64) -> i64 {
+    if k == TK_EQ_EQ or k == TK_BANG_EQ or k == TK_LT or k == TK_GT or k == TK_LT_EQ or k == TK_GT_EQ { return 1 }
+    if k == TK_PLUS or k == TK_MINUS { return 2 }
+    if k == TK_STAR or k == TK_SLASH { return 3 }
+    return 0
+}
+
+fn op_text(k: i64) -> str {
+    if k == TK_EQ_EQ { return "==" }
+    if k == TK_BANG_EQ { return "!=" }
+    if k == TK_LT   { return "<"  }
+    if k == TK_GT   { return ">"  }
+    if k == TK_LT_EQ { return "<=" }
+    if k == TK_GT_EQ { return ">=" }
+    if k == TK_PLUS { return "+"  }
+    if k == TK_MINUS{ return "-"  }
+    if k == TK_STAR { return "*"  }
+    if k == TK_SLASH{ return "/"  }
+    return "?"
+}
+
+fn parse_primary(p: Parser) -> (Parser, i64) {
+    let k = cur_kind(p)
+    if k == TK_INTEGER {
+        let t = cur_text(p)
+        let v = parse_int(t)
+        let (p1, id) = alloc_node(advance(p), N_INT, t, v, 0, 0)
+        return (p1, id)
+    }
+    if k == TK_IDENT {
+        let name = cur_text(p)
+        let p1 = advance(p)
+        // Function call?
+        if cur_kind(p1) == TK_LPAREN {
+            let mut pp = advance(p1)
+            // Collect args locally first to avoid interleaving with the
+            // shared children pool while nested calls/blocks parse.
+            let mut args: [i64] = []
+            if cur_kind(pp) != TK_RPAREN {
+                let (pp2, a) = parse_expr(pp, 0)
+                pp = pp2
+                push(args, a)
+                while cur_kind(pp) == TK_COMMA {
+                    pp = advance(pp)
+                    let (pp3, b) = parse_expr(pp, 0)
+                    pp = pp3
+                    push(args, b)
+                }
+            }
+            pp = expect(pp, TK_RPAREN, "')'")
+            let arg_start = len(pp.children)
+            let count = len(args)
+            let mut ai = 0
+            while ai < count {
+                push(pp.children, args[ai])
+                ai = ai + 1
+            }
+            let (pp4, id) = alloc_node(pp, N_CALL, name, 0, arg_start, count)
+            return (pp4, id)
+        }
+        let (p2, id) = alloc_node(p1, N_IDENT, name, 0, 0, 0)
+        return (p2, id)
+    }
+    if k == TK_LPAREN {
+        let p1 = advance(p)
+        let (p2, inner) = parse_expr(p1, 0)
+        let p3 = expect(p2, TK_RPAREN, "')'")
+        return (p3, inner)
+    }
+    panic("expected primary expression, got kind {k}")
+    return (p, -1)
+}
+
+fn parse_expr(p: Parser, min_prec: i64) -> (Parser, i64) {
+    let (pp_a, lhs_a) = parse_primary(p)
+    let mut pp = pp_a
+    let mut lhs = lhs_a
+    while true {
+        let k = cur_kind(pp)
+        let prec = op_precedence(k)
+        if prec == 0 or prec < min_prec { break }
+        pp = advance(pp)
+        let (pp2, rhs) = parse_expr(pp, prec + 1)
+        pp = pp2
+        // Inline op_text to avoid any value-lifetime weirdness around
+        // string locals living across a recursive call.
+        let (pp3, new_lhs) = alloc_node(pp, N_BIN, op_text(k), lhs, rhs, 0)
+        pp = pp3
+        lhs = new_lhs
+    }
+    return (pp, lhs)
+}
+
+// -------------------------------------------------------------------
+// Statements
+// -------------------------------------------------------------------
+
+fn parse_block(p: Parser) -> (Parser, i64) {
+    let mut pp = expect(p, TK_LBRACE, "lbrace")
+    // Collect statement node ids into a local list first. The shared
+    // `children` pool is also used by call-argument lists, and nested
+    // calls inside our statements would interleave their args into the
+    // pool if we wrote directly there. Snapshot order locally, then
+    // copy into the pool in one shot at the end.
+    let mut stmts: [i64] = []
+    while cur_kind(pp) != TK_RBRACE and cur_kind(pp) != TK_EOF {
+        let (pp2, s) = parse_stmt(pp)
+        pp = pp2
+        push(stmts, s)
+    }
+    pp = expect(pp, TK_RBRACE, "rbrace")
+    let start = len(pp.children)
+    let count = len(stmts)
+    let mut k = 0
+    while k < count {
+        push(pp.children, stmts[k])
+        k = k + 1
+    }
+    let (pp3, id) = alloc_node(pp, N_BLOCK, "", start, count, 0)
+    return (pp3, id)
+}
+
+fn parse_stmt(p: Parser) -> (Parser, i64) {
+    let k = cur_kind(p)
+
+    if k == TK_LET {
+        let p1 = advance(p)
+        if cur_kind(p1) != TK_IDENT { panic("expected ident after let") }
+        let name = cur_text(p1)
+        let p2 = advance(p1)
+        let p3 = expect(p2, TK_EQ, "'='")
+        let (p4, val) = parse_expr(p3, 0)
+        let (p5, id) = alloc_node(p4, N_LET, name, val, 0, 0)
+        return (p5, id)
+    }
+
+    if k == TK_RETURN {
+        let p1 = advance(p)
+        // Allow bare `return` (no value): check for stmt-terminating tokens.
+        let nk = cur_kind(p1)
+        if nk == TK_RBRACE or nk == TK_EOF {
+            let (p2, id) = alloc_node(p1, N_RETURN, "", -1, 0, 0)
+            return (p2, id)
+        }
+        let (p2, val) = parse_expr(p1, 0)
+        let (p3, id) = alloc_node(p2, N_RETURN, "", val, 0, 0)
+        return (p3, id)
+    }
+
+    if k == TK_IF {
+        let p1 = advance(p)
+        let (p2, cond) = parse_expr(p1, 0)
+        let (p3, thn) = parse_block(p2)
+        let mut els: i64 = -1
+        let mut pp = p3
+        if cur_kind(pp) == TK_ELSE {
+            pp = advance(pp)
+            if cur_kind(pp) == TK_IF {
+                let (pp2, e) = parse_stmt(pp)
+                pp = pp2
+                els = e
+            } else {
+                let (pp2, e) = parse_block(pp)
+                pp = pp2
+                els = e
+            }
+        }
+        let (pp3, id) = alloc_node(pp, N_IF, "", cond, thn, els)
+        return (pp3, id)
+    }
+
+    if k == TK_WHILE {
+        let p1 = advance(p)
+        let (p2, cond) = parse_expr(p1, 0)
+        let (p3, body) = parse_block(p2)
+        let (p4, id) = alloc_node(p3, N_WHILE, "", cond, body, 0)
+        return (p4, id)
+    }
+
+    if k == TK_LBRACE {
+        return parse_block(p)
+    }
+
+    // Fallback: expression statement.
+    let (p1, e) = parse_expr(p, 0)
+    let (p2, id) = alloc_node(p1, N_EXPR_STMT, "", e, 0, 0)
+    return (p2, id)
+}
+
+fn parse_fn(p: Parser) -> (Parser, i64) {
+    let p1 = expect(p, TK_FN, "'fn'")
+    if cur_kind(p1) != TK_IDENT { panic("expected fn name") }
+    let name = cur_text(p1)
+    let p2 = advance(p1)
+    let p3 = expect(p2, TK_LPAREN, "'('")
+    // We do not record parameter info in this mini subset; just skip
+    // to the matching ')'. Adding parameters to the AST is mechanical
+    // and not what this milestone is about.
+    let mut pp = p3
+    while cur_kind(pp) != TK_RPAREN and cur_kind(pp) != TK_EOF {
+        pp = advance(pp)
+    }
+    pp = expect(pp, TK_RPAREN, "')'")
+    // Optional return type "-> type".
+    if cur_kind(pp) == TK_ARROW {
+        pp = advance(pp)
+        // skip a single type token (identifier or builtin-type word)
+        pp = advance(pp)
+    }
+    let (pp2, body) = parse_block(pp)
+    let (pp3, id) = alloc_node(pp2, N_FN, name, body, 0, 0)
+    return (pp3, id)
+}
+
+// -------------------------------------------------------------------
+// Pretty printer
+// -------------------------------------------------------------------
+
+fn print_node(p: Parser, id: i64, depth: i64) {
+    if id < 0 {
+        return
+    }
+    let k = p.kinds[id]
+    let s = p.str_args[id]
+    let a = p.i_args[id]
+    let b = p.i2_args[id]
+    let c = p.i3_args[id]
+    let kname = node_kind_name(k)
+
+    // Indent
+    let mut indent = ""
+    let mut i = 0
+    while i < depth {
+        indent = indent + "  "
+        i = i + 1
+    }
+
+    if k == N_INT {
+        println("{indent}{kname}({a})")
+        return
+    }
+    if k == N_IDENT {
+        println("{indent}{kname}({s})")
+        return
+    }
+    if k == N_BIN {
+        println("{indent}{kname}({s})")
+        print_node(p, a, depth + 1)
+        print_node(p, b, depth + 1)
+        return
+    }
+    if k == N_CALL {
+        println("{indent}{kname}({s}, argc={c})")
+        let mut j = 0
+        while j < c {
+            let child = p.children[b + j]
+            print_node(p, child, depth + 1)
+            j = j + 1
+        }
+        return
+    }
+    if k == N_LET {
+        println("{indent}{kname}({s})")
+        print_node(p, a, depth + 1)
+        return
+    }
+    if k == N_RETURN {
+        println("{indent}{kname}")
+        print_node(p, a, depth + 1)
+        return
+    }
+    if k == N_IF {
+        println("{indent}{kname}")
+        print_node(p, a, depth + 1)
+        print_node(p, b, depth + 1)
+        print_node(p, c, depth + 1)
+        return
+    }
+    if k == N_WHILE {
+        println("{indent}{kname}")
+        print_node(p, a, depth + 1)
+        print_node(p, b, depth + 1)
+        return
+    }
+    if k == N_BLOCK {
+        println("{indent}{kname}(stmts={b})")
+        let mut j = 0
+        while j < b {
+            let child = p.children[a + j]
+            print_node(p, child, depth + 1)
+            j = j + 1
+        }
+        return
+    }
+    if k == N_FN {
+        println("{indent}{kname}({s})")
+        print_node(p, a, depth + 1)
+        return
+    }
+    if k == N_EXPR_STMT {
+        println("{indent}{kname}")
+        print_node(p, a, depth + 1)
+        return
+    }
+    println("{indent}?({k})")
+}
+
+// -------------------------------------------------------------------
+// Driver
+// -------------------------------------------------------------------
+
+fn parse_one_fn(src: str) -> i64 {
+    let tokens = tokenize(src)
+    let p = parser_new(tokens)
+    let (_, id) = parse_fn(p)
+    return id
+}
+
+@capabilities(all)
+fn main() {
+    let lb = char_from(123)
+    let rb = char_from(125)
+    let s = "fn add(x: i64, y: i64) -> i64 " + lb + " return x + y * 2 " + rb
+    let toks = tokenize(s)
+    println("count=" + to_string(len(toks)))
+    let mut i = 0
+    let mut out = ""
+    while i < len(toks) {
+        let t = toks[i]
+        out = out + "[" + t.text + "]"
+        i = i + 1
+    }
+    println(out)
+}
