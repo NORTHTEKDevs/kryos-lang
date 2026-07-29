@@ -148,6 +148,29 @@ Generate from real test output.
 
 ---
 
+## CAPABILITY SURFACE AUDIT (2026-07-29)
+
+Enumerated all 157 builtins the LLVM codegen maps against the 82 the capability
+model gates, filtered to authority-bearing names, and probed each survivor.
+
+- **Raw memory — REAL ESCAPE, fixed.** See the closed table.
+- `file_append` — looked ungated to a first-pass grep; it is gated, just in a
+  different match arm than `append_file`. No gap.
+- `buf_get_byte` / `buf_set_byte` — probed for out-of-bounds access. **Safe:**
+  the runtime bounds-checks and returns `-1`. My first probe appeared to show a
+  4096-byte over-read only because it counted the `-1` sentinel as data. Verify
+  the VALUES, not just that something came back.
+- `buf_write_*` — write into an owned buffer, no external authority.
+- `read_line`, `time_now_*` — input and clock reads; ambient by design, matching
+  the documented model.
+
+**Minor wart, not security:** `buf_get_byte` returns `-1` out of range while
+array/string indexing PANICS. Same undocumented-sentinel class as `pop([])`
+returning `0`. Inconsistent, and `-1` is a plausible real byte value in signed
+contexts. Worth unifying.
+
+---
+
 ## MEASUREMENT TRAPS (each cost real time)
 
 - **`cargo build -p kryos-cli` leaves the staticlibs stale.** Runtime edits are
