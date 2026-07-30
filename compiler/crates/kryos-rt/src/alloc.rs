@@ -263,7 +263,11 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
         }
         unsafe {
             *(raw as *mut u64) = CLASS_SYSTEM;
-            return raw.add(HEADER);
+            let p = raw.add(HEADER);
+            if box_diag() {
+                box_diag_note_alloc(p);
+            }
+            return p;
         }
     }
     // The class tag occupies the first HEADER bytes of the block, so the
@@ -277,7 +281,11 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
             unsafe {
                 std::ptr::write_bytes(block, 0, CLASSES[class]);
                 *(block as *mut u64) = class as u64;
-                block.add(HEADER)
+                let p = block.add(HEADER);
+                if box_diag() {
+                    box_diag_note_alloc(p);
+                }
+                p
             }
         }
         None => {
@@ -288,7 +296,11 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
             }
             unsafe {
                 *(raw as *mut u64) = CLASS_SYSTEM;
-                raw.add(HEADER)
+                let p = raw.add(HEADER);
+                if box_diag() {
+                    box_diag_note_alloc(p);
+                }
+                p
             }
         }
     }
@@ -300,6 +312,9 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    if box_diag() {
+        box_diag_check(ptr, "kryos_free");
+    }
     let block = unsafe { ptr.sub(HEADER) };
     // Shared-ownership check. The second header word counts EXTRA owners: 0
     // means "one owner", which is every box that predates struct sharing, so
@@ -309,6 +324,9 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
         rc.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
         return;
     }
+    if box_diag() {
+        box_diag_note_free(ptr);
+    }
     if plain_alloc() {
         unsafe { free(block) };
         return;
@@ -316,6 +334,15 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
     let class = unsafe { *(block as *const u64) };
     if class == CLASS_SYSTEM {
         unsafe { free(block) };
+        return;
+    }
+    if class as usize >= CLASSES.len() {
+        // Not a pooled block: the header did not come from `kryos_calloc`.
+        // Publishing it on a freelist would hand live memory back out as a
+        // fresh box, so drop it on the floor and say so.
+        crate::diag_report(&format!(
+            "kryos_free: bogus size class {class} at {ptr:p} (header not from kryos_calloc); block leaked"
+        ));
         return;
     }
     POOL.with(|p| p.borrow_mut().freelists[class as usize].push(block));
@@ -401,6 +428,64 @@ mod pool_tests {
 }
 
 
+// ---------------------------------------------------------------------------
+// Box provenance diagnostic (KRYOS_BOX_DIAG=1).
+//
+// `kryos_free`, `kryos_struct_retain` and `kryos_struct_release_shared` all
+// read or WRITE the 16-byte header that sits BEFORE the pointer they are
+// handed. Applied to a pointer that did not come from `kryos_calloc` they
+// corrupt whatever precedes that allocation -- and `kryos_free` additionally
+// publishes the foreign block on a size-class freelist, so a later
+// `kryos_calloc` hands out live memory as a fresh box.
+//
+// This registry answers the only question that matters: is every pointer
+// reaching those three entry points actually a box? Diag-only; the fast path
+// is one relaxed atomic load.
+// ---------------------------------------------------------------------------
+
+static BOX_DIAG: AtomicU8 = AtomicU8::new(0);
+
+fn box_diag() -> bool {
+    match BOX_DIAG.load(Ordering::Relaxed) {
+        1 => false,
+        2 => true,
+        _ => {
+            let v = unsafe { getenv(c"KRYOS_BOX_DIAG".as_ptr() as *const u8) };
+            let on = !v.is_null() && unsafe { *v != 0 && *v != b'0' };
+            BOX_DIAG.store(if on { 2 } else { 1 }, Ordering::Relaxed);
+            on
+        }
+    }
+}
+
+static LIVE_BOXES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<usize>>> =
+    std::sync::OnceLock::new();
+
+fn live_boxes() -> &'static std::sync::Mutex<std::collections::HashSet<usize>> {
+    LIVE_BOXES.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+fn box_diag_note_alloc(ptr: *mut u8) {
+    if let Ok(mut s) = live_boxes().lock() {
+        s.insert(ptr as usize);
+    }
+}
+
+fn box_diag_note_free(ptr: *mut u8) {
+    if let Ok(mut s) = live_boxes().lock() {
+        s.remove(&(ptr as usize));
+    }
+}
+
+/// Report when `ptr` never came out of `kryos_calloc`. Names the Kryos frame
+/// so the offending codegen site is identifiable, not just the C symbol.
+fn box_diag_check(ptr: *mut u8, who: &str) {
+    let known = live_boxes().lock().map(|s| s.contains(&(ptr as usize))).unwrap_or(true);
+    if !known {
+        crate::diag_report(&format!("{who} on NON-BOX pointer {ptr:p} (never returned by kryos_calloc)"));
+    }
+}
+
 /// Add an owner to a `kryos_calloc` box. Pairs with `kryos_free`, which
 /// consumes one extra owner before actually releasing the box.
 ///
@@ -412,6 +497,9 @@ mod pool_tests {
 pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
     if ptr.is_null() {
         return ptr;
+    }
+    if box_diag() {
+        box_diag_check(ptr, "kryos_struct_retain");
     }
     unsafe {
         let block = ptr.sub(HEADER);
@@ -436,6 +524,9 @@ pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
 pub extern "C" fn kryos_struct_release_shared(ptr: *mut u8) -> i64 {
     if ptr.is_null() {
         return 1;
+    }
+    if box_diag() {
+        box_diag_check(ptr, "kryos_struct_release_shared");
     }
     unsafe {
         let block = ptr.sub(HEADER);
