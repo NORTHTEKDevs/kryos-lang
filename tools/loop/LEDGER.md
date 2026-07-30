@@ -51,44 +51,44 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. A Token box is DOUBLE-DROPPED, breaking the self-host parser  `BLOCKS CI`
+### 1. Tuple-destructured struct aliasing: leak vs double-free  `BLOCKS CI`
 
-Acceptance condition 4: `stage1_mini_parser.kry` must print
-`stage 1 mini-parser: ok`. Today it dies at demo 2 on a garbage token kind.
+**Where it stands:** `selfhost-stage1` is GREEN for the first time and the full
+`stage1_mini_parser.kry` prints `stage 1 mini-parser: ok` with 0 double-frees.
+`tests/acceptance.sh` PASSES all four conditions. **But Linux CI now fails the
+memory-plateau gate** -- "churn workload exceeded 250MB; a memory leak was
+reintroduced". 8 of 9 CI jobs green (Windows, macOS, docs, fuzz, quickstart,
+registry, wasm, selfhost-stage1).
 
-**The narrow repro is FIXED** (`known_failure_nested_binop.kry` now prints 31
-tokens) by poisoning a box's class word on free, so a stale
-`kryos_struct_release_shared` can no longer write into recycled memory. The
-memory CORRUPTION is gone; the double-drop that caused it is not.
+**The trade currently in the tree (82a4f72):** a struct destructured out of a
+tuple (`let (p3, thn) = f()`) is marked BORROWED, so it is not dropped. That
+removes the double-free but leaks the box. Corruption traded for a leak --
+better by the ranking at the top of this file, but the leak is too large to
+ship.
 
-**Provenance, from `KRYOS_BOX_DIAG=1` (the loop's instrumentation):**
+**Why the double-free happens:** `let (p3, thn) = f()` lowers to a Field read of
+the tuple into a NAMED local, so `p3` aliases the tuple's storage. Then
+`parse_stmt` does `let mut pp = p3` -- a SECOND alias, also named and also live.
+Both get scope-end Drops, so one box is freed twice.
 
-```
-kryos_struct_release_shared on ALREADY-FREED box (use-after-free)
-  allocated at:        lex_emit -> lex_scan_token -> tokenize     (a Token)
-  previously freed at: parse_fn
-  released again at:   parse_fn
-```
+**Ruled out** (each implemented, built, run, reverted):
+- marking the destructured element borrowed -- fixes corruption, LEAKS past the
+  250MB ceiling (this is what is committed; it is a stopgap, not the answer)
+- marking the SOURCE moved on `let pp = p3` (mirroring what the reassignment
+  path already does) -- mini-parser returns to garbage token kinds, so the
+  source is still read afterwards on some path
+- eight hand-built models of the suspected shapes: all CLEAN while the real
+  program failed. Stop modelling this one; reduce the real file instead, which
+  is what actually worked.
 
-A Token struct allocated by the LEXER is freed and then released a second
-time, both inside `parse_fn`. So a Token element that the tokens array still
-holds is being dropped as if the reader owned it.
+**Next step:** exactly ONE owner among {tuple temp, destructured element, and
+any later alias}. The tuple temp is unnamed and never dropped today, so the
+cleanest shape is probably: element OWNS, and any subsequent
+`let mut pp = <struct local>` aliases must not double-drop -- i.e. fix the
+alias-of-an-alias case rather than the destructure itself.
 
-**Ruled out** (each written and run, all CLEAN -- do not retry):
-- `cur_text`'s exact shape, early return included: element read bound to a
-  named local, field read of it returned
-- `lex_emit`'s shape: field read to a mut local, push a struct, rebuild the
-  struct around it
-- a recursive precedence climber threading a struct and pushing to its array
-  fields, at 3 and at 7 array fields
-- the `if`-branch struct alias (`let mut pp = p3` then branch reassignment)
-- `kryos_array_dup` retaining struct elements without a matching release --
-  adding the release changed nothing measurable and was reverted
-
-**Next step:** find who frees a Token box inside `parse_fn`. `KRYOS_BOX_DIAG=1`
-gives allocation and free stacks per box, so this is now an observation
-problem, not a guessing one -- get the FIRST free's stack for a box whose
-allocation stack is `lex_emit`.
+**Do not** revert 82a4f72 to make mem-plateau green: that restores a
+use-after-free, which ranks worse than a leak. Fix the ownership properly.
 
 ### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
