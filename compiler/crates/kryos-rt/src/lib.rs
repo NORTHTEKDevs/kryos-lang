@@ -155,6 +155,12 @@ pub fn diag_report(msg: &str) {
     if n < cap {
         let site = LAST_FREE_SITE.with(|c| c.get());
         eprintln!("KRYOS-FREE-DIAG[{n}]: {msg} site={site}");
+        // The Kryos-level shadow stack names the FUNCTION that over-freed,
+        // which the module-relative RVAs below cannot without a PDB.
+        let ks = crate::trace::format_stack_trace();
+        if !ks.is_empty() {
+            eprintln!("{}", ks.trim_end());
+        }
         diag_stack();
     } else if n == cap {
         eprintln!("KRYOS-FREE-DIAG: (further reports suppressed)");
