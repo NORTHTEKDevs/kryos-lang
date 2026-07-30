@@ -465,9 +465,35 @@ fn live_boxes() -> &'static std::sync::Mutex<std::collections::HashSet<usize>> {
     LIVE_BOXES.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
 }
 
+/// Boxes released by `kryos_free`, with the Kryos stack that released them.
+/// A pointer that is in here but not in LIVE_BOXES is a use-after-free, which
+/// is a completely different bug from one that never came out of
+/// `kryos_calloc` at all -- and the two are indistinguishable without this.
+static DEAD_BOXES: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, String>>> =
+    std::sync::OnceLock::new();
+
+fn dead_boxes() -> &'static std::sync::Mutex<std::collections::HashMap<usize, String>> {
+    DEAD_BOXES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Where each live box was allocated, so a report can name the box rather
+/// than just its address.
+static BORN_AT: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<usize, String>>> =
+    std::sync::OnceLock::new();
+
+fn born_at() -> &'static std::sync::Mutex<std::collections::HashMap<usize, String>> {
+    BORN_AT.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 fn box_diag_note_alloc(ptr: *mut u8) {
     if let Ok(mut s) = live_boxes().lock() {
         s.insert(ptr as usize);
+    }
+    if let Ok(mut m) = dead_boxes().lock() {
+        m.remove(&(ptr as usize));
+    }
+    if let Ok(mut m) = born_at().lock() {
+        m.insert(ptr as usize, crate::trace::format_stack_trace());
     }
 }
 
@@ -475,14 +501,66 @@ fn box_diag_note_free(ptr: *mut u8) {
     if let Ok(mut s) = live_boxes().lock() {
         s.remove(&(ptr as usize));
     }
+    if let Ok(mut m) = dead_boxes().lock() {
+        // The Kryos frame alone cannot distinguish a drop emitted straight into
+        // generated code from one reached through a runtime array/struct
+        // teardown, and that is exactly the difference that matters here.
+        m.insert(
+            ptr as usize,
+            format!(
+                "{}  native path:\n{}",
+                crate::trace::format_stack_trace(),
+                native_free_path()
+            ),
+        );
+    }
 }
 
-/// Report when `ptr` never came out of `kryos_calloc`. Names the Kryos frame
-/// so the offending codegen site is identifiable, not just the C symbol.
+/// The runtime functions on the stack at this free, in call order. Filters the
+/// noise so the report shows the teardown route, not 40 frames of libstd.
+fn native_free_path() -> String {
+    let bt = std::backtrace::Backtrace::force_capture().to_string();
+    let mut out = String::new();
+    for line in bt.lines() {
+        let l = line.trim();
+        if let Some(rest) = l.split_once("at ").map(|x| x.1) {
+            let _ = rest;
+        }
+        if l.contains("kryos_rt::") || l.contains("kryos_array") || l.contains("kryos_struct")
+            || l.contains("kryos_string") || l.contains("kryos_map")
+        {
+            out.push_str("    ");
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("    <no runtime frames: freed directly from generated code>\n");
+    }
+    out
+}
+
+/// Report when `ptr` is not a currently-live `kryos_calloc` box, and say
+/// WHICH of the two failures it is.
 fn box_diag_check(ptr: *mut u8, who: &str) {
     let known = live_boxes().lock().map(|s| s.contains(&(ptr as usize))).unwrap_or(true);
-    if !known {
-        crate::diag_report(&format!("{who} on NON-BOX pointer {ptr:p} (never returned by kryos_calloc)"));
+    if known {
+        return;
+    }
+    let dead = dead_boxes().lock().ok().and_then(|m| m.get(&(ptr as usize)).cloned());
+    match dead {
+        Some(first) => {
+            crate::diag_report(&format!(
+                "{who} on ALREADY-FREED box {ptr:p} (use-after-free)"
+            ));
+            if let Some(born) = born_at().lock().ok().and_then(|m| m.get(&(ptr as usize)).cloned()) {
+                eprintln!("  ^ allocated at:\n{}", born.trim_end());
+            }
+            eprintln!("  ^ previously freed at:\n{}", first.trim_end());
+        }
+        None => crate::diag_report(&format!(
+            "{who} on NON-BOX pointer {ptr:p} (never returned by kryos_calloc)"
+        )),
     }
 }
 
