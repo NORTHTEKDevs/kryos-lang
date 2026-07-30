@@ -611,6 +611,26 @@ pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind:
                 1 => crate::string::kryos_string_free(handle as *mut crate::string::KryosString),
                 2 => kryos_array_free(handle as *mut KryosArray),
                 3 => crate::map::kryos_map_free(handle),
+                // STRUCT elements. kryos_array_dup RETAINS every struct element
+                // so a duped array and its source can share element boxes, but
+                // this side had no matching case -- owner counts only ever rose
+                // and the elements were never reclaimed.
+                //
+                // That is the memory-plateau leak: a struct literal DUPLICATES
+                // an array field (verified by comparing arr_to_ptr before and
+                // after), so every `advance(p)`-style rebuild dups the token
+                // array and retains all N elements, and nothing ever released
+                // them.
+                //
+                // Decrement-only, never a free: this function does not know the
+                // element's generated __kryos_drop_<T> and so cannot release the
+                // struct's own heap fields. When release_shared reports 0 (no
+                // extra owners) the element is left exactly as before, so this
+                // can only undo over-counting -- it can never free something
+                // still referenced.
+                4 => {
+                    crate::alloc::kryos_struct_release_shared(handle as *mut u8);
+                }
                 _ => {}
             }
         }
