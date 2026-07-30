@@ -505,6 +505,60 @@ fn born_at() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Strin
     BORN_AT.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Full ownership event log per box (alloc / retain / release / free) with the
+/// owner count at each step. A missing retain and an extra drop produce the
+/// same end state -- an already-freed box -- and are indistinguishable from the
+/// first-free stack alone. The ledger's "who frees a Token inside parse_fn"
+/// question is really "does the retain/release ledger for this box balance",
+/// which only the whole sequence answers.
+static EVENTS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<usize, Vec<String>>>,
+> = std::sync::OnceLock::new();
+
+fn events() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Vec<String>>> {
+    EVENTS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Extra owners currently recorded in the box header (0 == one owner).
+fn owner_count(ptr: *mut u8) -> u64 {
+    unsafe {
+        let block = ptr.sub(HEADER);
+        (*(block.add(8) as *const std::sync::atomic::AtomicU64))
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+fn box_diag_note_event(ptr: *mut u8, what: &str, rc: u64) {
+    if let Ok(mut m) = events().lock() {
+        let e = m.entry(ptr as usize).or_default();
+        e.push(format!(
+            "  [{}] {what} (extra owners now {rc})\n{}\n    native path:\n{}",
+            e.len(),
+            indent_block(&crate::trace::format_stack_trace()),
+            native_free_path()
+        ));
+    }
+}
+
+fn indent_block(s: &str) -> String {
+    s.trim_end()
+        .lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn box_diag_dump_events(ptr: *mut u8) {
+    if let Ok(m) = events().lock() {
+        if let Some(e) = m.get(&(ptr as usize)) {
+            eprintln!("  ^ ownership history ({} events):", e.len());
+            for line in e {
+                eprintln!("{line}");
+            }
+        }
+    }
+}
+
 fn box_diag_note_alloc(ptr: *mut u8) {
     if let Ok(mut s) = live_boxes().lock() {
         s.insert(ptr as usize);
@@ -515,6 +569,10 @@ fn box_diag_note_alloc(ptr: *mut u8) {
     if let Ok(mut m) = born_at().lock() {
         m.insert(ptr as usize, crate::trace::format_stack_trace());
     }
+    if let Ok(mut m) = events().lock() {
+        m.remove(&(ptr as usize));
+    }
+    box_diag_note_event(ptr, "ALLOC", 0);
 }
 
 fn box_diag_note_free(ptr: *mut u8) {
@@ -577,6 +635,7 @@ fn box_diag_check(ptr: *mut u8, who: &str) {
                 eprintln!("  ^ allocated at:\n{}", born.trim_end());
             }
             eprintln!("  ^ previously freed at:\n{}", first.trim_end());
+            box_diag_dump_events(ptr);
         }
         None => crate::diag_report(&format!(
             "{who} on NON-BOX pointer {ptr:p} (never returned by kryos_calloc)"
@@ -603,6 +662,9 @@ pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
         let block = ptr.sub(HEADER);
         let rc = &*(block.add(8) as *const std::sync::atomic::AtomicU64);
         rc.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    }
+    if box_diag() {
+        box_diag_note_event(ptr, "RETAIN", owner_count(ptr));
     }
     ptr
 }

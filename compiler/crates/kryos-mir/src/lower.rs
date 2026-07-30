@@ -3731,6 +3731,28 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 field: idx.to_string(),
                             },
                         });
+                        // A struct/enum element extracted from a tuple ALIASES
+                        // the tuple's storage -- this is a field read, not a
+                        // fresh box. Giving it a scope-end Drop meant the same
+                        // box was freed twice: verified via KRYOS_BOX_DIAG on
+                        // the self-host parser, where a Token box was freed and
+                        // then released again inside parse_fn.
+                        //
+                        // Writing the same code with `.0`/`.1` instead of
+                        // destructuring is correct today and emits one fewer
+                        // drop per extraction, which is what pinned this down --
+                        // two spellings of one operation must not differ in
+                        // ownership.
+                        //
+                        // Marking it borrowed leaks the box rather than freeing
+                        // it twice. That is the right side of the trade: the
+                        // double free was silent heap corruption.
+                        if matches!(
+                            ctx.locals.iter().find(|l| l.id == elem_local).map(|l| l.ty.clone()),
+                            Some(MirType::Struct(_)) | Some(MirType::Enum(_))
+                        ) {
+                            ctx.borrowed_locals.insert(elem_local.0);
+                        }
                     }
                 }
                 return;
