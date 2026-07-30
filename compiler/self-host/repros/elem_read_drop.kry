@@ -1,0 +1,92 @@
+// Repro attempt 2: the real shape -- the array of structs is a FIELD of a
+// struct that is threaded BY VALUE through helper calls, and the element is
+// read out of that field into a named local inside the helper.
+
+struct T {
+    kind: i32,
+    text: str,
+    start: i32,
+    end: i32
+}
+
+struct P {
+    toks: [T],
+    pos: i64,
+    kinds: [i64],
+    str_args: [str],
+    i_args: [i64]
+}
+
+fn cur_kind(p: P) -> i64 {
+    if p.pos >= len(p.toks) { return -1 }
+    let t = p.toks[p.pos]
+    return t.kind
+}
+
+fn cur_text(p: P) -> str {
+    if p.pos >= len(p.toks) { return "" }
+    let t = p.toks[p.pos]
+    return t.text
+}
+
+fn advance(p: P) -> P {
+    let mut np = p
+    np.pos = np.pos + 1
+    return np
+}
+
+fn alloc_node(p: P, k: i64, s: str) -> (P, i64) {
+    let mut np = p
+    let id = len(np.kinds)
+    push(np.kinds, k)
+    push(np.str_args, s)
+    push(np.i_args, 0)
+    return (np, id)
+}
+
+fn walk(p: P, depth: i64) -> (P, i64) {
+    let mut pp = p
+    let mut n = 0
+    while cur_kind(pp) >= 0 {
+        let k = cur_kind(pp)
+        let s = cur_text(pp)
+        let (pp2, id) = alloc_node(pp, k, s)
+        pp = pp2
+        n = n + id
+        pp = advance(pp)
+        if depth > 0 {
+            let (pp3, m) = walk(pp, depth - 1)
+            pp = pp3
+            n = n + m
+        }
+    }
+    return (pp, n)
+}
+
+fn main() {
+    let mut toks: [T] = []
+    let mut i = 0
+    while i < 32 {
+        push(toks, T { kind: i, text: "tok", start: 0, end: 1 })
+        i = i + 1
+    }
+
+    let p = P { toks: toks, pos: 0, kinds: [], str_args: [], i_args: [] }
+    let (p2, n) = walk(p, 3)
+
+    // Every token kind must still read back as its original value.
+    let mut bad = 0
+    let mut j = 0
+    while j < 32 {
+        let probe = P { toks: p2.toks, pos: j, kinds: [], str_args: [], i_args: [] }
+        let k = cur_kind(probe)
+        if k != j { bad = bad + 1 }
+        j = j + 1
+    }
+
+    if bad == 0 {
+        println("elem_read_drop: ok (n={n})")
+    } else {
+        println("elem_read_drop: CORRUPT ({bad} bad reads)")
+    }
+}
