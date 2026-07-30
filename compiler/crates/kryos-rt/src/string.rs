@@ -355,8 +355,14 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
                     String::from_utf8_lossy(std::slice::from_raw_parts((*s).data, len)).into_owned()
                 };
                 crate::diag_report(&format!("str DOUBLE-FREE hdr={s:p} rc={rc} len={} content={content:?}", (*s).len));
+                if let Some(first) = crate::diag_zeroed_by(s as usize) {
+                    eprintln!("  ^ first (rc->0) freed at:\n{}", first.trim_end());
+                }
             }
             return;
+        }
+        if rc == 1 {
+            crate::diag_note_zeroed(s as usize);
         }
         rc_atomic(s).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         return;

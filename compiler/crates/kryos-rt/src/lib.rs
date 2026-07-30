@@ -138,6 +138,29 @@ thread_local! {
     static LAST_FREE_SITE: std::cell::Cell<i64> = const { std::cell::Cell::new(-1) };
 }
 
+thread_local! {
+    /// free_diag only: header address -> Kryos stack of the free that drove
+    /// its refcount to ZERO. A double-free report on its own names the second
+    /// freer; the first is the one that actually has to be wrong, and without
+    /// this you cannot see it. Only populated under KRYOS_FREE_DIAG.
+    static ZEROED_BY: RefCell<std::collections::HashMap<usize, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Record that `hdr`'s refcount just reached zero here. free_diag only.
+pub fn diag_note_zeroed(hdr: usize) {
+    let ks = crate::trace::format_stack_trace();
+    ZEROED_BY.with(|m| {
+        m.borrow_mut()
+            .insert(hdr, if ks.is_empty() { String::from("  <no kryos frames>\n") } else { ks });
+    });
+}
+
+/// The stack that zeroed `hdr`, if recorded. free_diag only.
+pub fn diag_zeroed_by(hdr: usize) -> Option<String> {
+    ZEROED_BY.with(|m| m.borrow().get(&hdr).cloned())
+}
+
 /// Bounded reporter for free_diag: prints the first 60 reports, then counts.
 pub fn diag_report(msg: &str) {
     use std::sync::atomic::AtomicU32;
