@@ -57,12 +57,30 @@ prints the four distinct values. **Silent wrong answer.** Independently
 reproduced. Likely the per-iteration box is hoisted out of the loop in the
 capture-boxing path.
 
-### 1b. Bootstrap: `parser.kry` and `lower.kry` fail rc=127  `PRE-EXISTING`
-14/16, the SAME two modules on three consecutive runs -- so NOT the rotating-
-module contention flake documented below (that trap requires the failing module
-to ROTATE; a stable pair is real). **Not caused by the field-read fix:** stashing
-that change and rebuilding reproduces 14/16 exactly. Introduced somewhere in
-`82a4f72`..`570f61d`; bisect those two commits next.
+### 1b. Bootstrap on WINDOWS ONLY: `parser.kry` / `lower.kry` die with exit -1
+`PRE-EXISTING`  `NOT CI`
+
+14/16 locally. **Linux CI is GREEN** (`build-and-test` passes at `3545078`, all
+9 jobs), so this is Windows-local and does not block a release.
+
+Characterized, not guessed:
+- **Nondeterministic in isolation** -- parser alone gives 127/0/127, lower 0/127,
+  so it IS the flake class, but at a ~50% rate rather than the documented rare
+  contention. It fails with nothing else running.
+- **Not heap corruption.** 0 double-frees under `KRYOS_FREE_DIAG`, and it still
+  fails under diag (which never deallocates).
+- **Exit code is `0xFFFFFFFF` (-1)**, NOT a structured exception -- no
+  `0xC0000005` access violation, no `0xC00000FD` stack overflow. So the process
+  is not faulting; something terminates it.
+- **No `-1` exit exists in either the runtime or the self-host source.** The
+  runtime's deliberate exits are 101/98/78/77 and the user `exit(code)` builtin;
+  `grep` finds no `exit(-1)` in `self-host/*.kry`.
+- Dies silently right after printing `File: self-host/parser.kry`, with no
+  panic message and no diagnostic -- 68 bytes of output versus 244 on success.
+
+Next: the two failing modules are the most deeply recursive (recursive-descent
+parser, recursive lowering), so thread/stack limits are worth probing, as is
+an external terminator (Defender has a documented history on this binary).
 
 ### 3. Struct-argument leak — ~86MB per 1M calls
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
