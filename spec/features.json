@@ -1,15 +1,59 @@
 {
   "project": "kryos-lang",
-  "goal": "WASM round 3: the FULL 48-probe corpus (tests/harden-probes/) green on wasm. Gate: bash spec/wasm-corpus-acceptance.sh. Currently 20/48. The gate prints per-probe FAIL lines with the blocking construct.",
-  "ordering": "CORRECTNESS FIRST: the 5 FAIL(run) probes are MISCOMPILES in the new slot encoding (wrong output, worse than a gate) -- fix before adding features. Then top-to-bottom. JIT output is the oracle. NEVER weaken a probe, .expect, the cargo suite, or spec/.",
   "features": [
-    { "id": "runfails", "status": "pending", "acceptance_test": "probes 22,31,35,43,47 agree with JIT",
-      "contract": "Fix the 5 semantic divergences: probe_22_nested_struct_methods, probe_31_f64_struct_fields, probe_35_while_let_option_custom, probe_43_nested_pos_size_rect, probe_47_span_struct_overlap. Likely slot-encoding bugs: f64 bit-reinterpretation in struct slots, nested struct layout/aliasing, method self passing, enum-in-loop binding. Diff wasm output vs `kryos run` per probe, minimize, fix in kryos-codegen-wasm." },
-    { "id": "closures-hof", "status": "pending", "acceptance_test": "probes 15,20,21 + others build+agree",
-      "contract": "Closures capturing structs, currying, higher-order fns (filter/fold) on wasm. The native uniform i64 closure ABI maps naturally onto wasm i64 slots + indirect calls (call_indirect with a function table)." },
-    { "id": "maps", "status": "pending", "acceptance_test": "probes 4,17 + map probes build+agree",
-      "contract": "map<K,V> on wasm via host-backed handles mirroring the array helpers (map_new/get/set/len/iter). Cover aggregate values + iteration + mutation." },
-    { "id": "tuples-qmark-misc", "status": "pending", "acceptance_test": "probes 11,19,23 + remaining corpus",
-      "contract": "Tuple construction/matching, the ? operator (desugars over Result -- may be nearly free once enums are solid), string ops probe (std string fns), aggregate array-element mutation (probe 14), recursion with aggregate accumulators (probe 5), fold over struct arrays (probe 9). Work through whatever the gate still prints." }
+    {
+      "id": "nested_binop_corruption",
+      "title": "Parsing a nested binary expression must not corrupt a later tokenize",
+      "acceptance_test": "cd compiler/self-host && ../target/release/kryos.exe run known_failure_nested_binop.kry | tail -1 | grep -q 'after parse: 31 tokens'",
+      "status": "failing",
+      "priority": "high",
+      "blocked": false,
+      "blocked_reason": ""
+    },
+    {
+      "id": "selfhost_mini_parser",
+      "title": "stage1_mini_parser.kry runs to completion with 0 double-frees",
+      "acceptance_test": "cd compiler/self-host && ../target/release/kryos.exe run stage1_mini_parser.kry | tail -1 | grep -q 'stage 1 mini-parser: ok'",
+      "status": "failing",
+      "priority": "high",
+      "blocked": false,
+      "blocked_reason": ""
+    },
+    {
+      "id": "spawn_loop_capture",
+      "title": "Cranelift must not share one box for a loop-local aggregate captured by spawn",
+      "acceptance_test": "compiler/target/release/kryos.exe run tests/known_failures/spawn_loop_capture.kry -- expect four distinct values, not 30 30 30 30",
+      "status": "failing",
+      "priority": "medium",
+      "blocked": false,
+      "blocked_reason": ""
+    },
+    {
+      "id": "struct_arg_leak",
+      "title": "Passing a struct with heap fields across a call boundary must not leak (~86MB/1M)",
+      "acceptance_test": "tests/mem/struct_arg_leak.kry -- heap_field_method peak RSS must not scale with iteration count (compare 250k vs 1M, repeat each 3x)",
+      "status": "failing",
+      "priority": "medium",
+      "blocked": false,
+      "blocked_reason": ""
+    },
+    {
+      "id": "comptime_docs",
+      "title": "comptime{} runs at runtime while docs sell compile-time -- correct the docs",
+      "acceptance_test": "docs no longer claim compile-time evaluation guarantees for comptime{}",
+      "status": "failing",
+      "priority": "low",
+      "blocked": false,
+      "blocked_reason": ""
+    },
+    {
+      "id": "dyn_array_e0110",
+      "title": "[dyn Handler] should report E0110, not a confusing E0100",
+      "acceptance_test": "a program with `let hs: [dyn Handler] = [A{}, B{}]` reports E0110",
+      "status": "failing",
+      "priority": "low",
+      "blocked": false,
+      "blocked_reason": ""
+    }
   ]
 }

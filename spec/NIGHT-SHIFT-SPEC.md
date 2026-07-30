@@ -1,43 +1,77 @@
-# Night-shift spec: WASM backend expansion
+# Night-Shift Spec -- kryos-lang
 
 ## Goal
-Close the gap between the wasm backend's explicit subset and everyday Kryos:
-operator string concat, array literal/index/push sugar, match lowering, the
-f64 host-import bug, and (stretch) struct aggregates -- so the same programs
-people write natively compile to wasm or fail for a REASON, not a gap.
-docs/wasm-contract.md describes the verified current subset; update it as
-features land.
 
-## Acceptance check (the only truth)
-`bash spec/wasm-corpus-acceptance.sh` -- exit 0 = done (48/48 corpus + probes + suite).
-It requires: cargo build + FULL cargo suite green (native backends must not
-regress!), and every probe in tests/wasm-probes/ compiling with
-`--backend wasm` and matching its .expect byte-for-byte via
-`node tools/wasm-host/run.mjs`.
+Harden kryos-lang until it can be handed to the public with confidence. "Done"
+means no known silent-wrong-answer or memory-corruption bugs, the capability
+model actually attenuates, and the self-host compiler runs clean. The immediate
+blocker is the last known corruption: parsing a nested binary expression
+corrupts a LATER tokenize on the Cranelift backend.
 
-## Feature order (easiest first -- bank wins each iteration)
-See spec/features.json. Roughly: f64 println fix -> `+` concat operator ->
-array sugar (`[..]`, `arr[i]`, `push`) -> string interpolation -> match
-lowering -> structs in linear memory (stretch).
+## Acceptance Check
 
-## Where the code is
-- Backend: compiler/crates/kryos-codegen-wasm/src/lib.rs (single file; the
-  unsupported-feature gate fn is near line 73; strings are packed
-  (offset,len) i64 handles; arrays are linear-memory via host helpers).
-- Host: tools/wasm-host/run.mjs (host imports live here; the f64 bug is an
-  import typed i64 receiving f64 -- fix BOTH sides coherently).
-- MIR input is the same as the native backends -- the wasm backend maps MIR,
-  it does not re-lower AST. Reuse the native backends' lowering decisions.
+```bash
+bash tests/acceptance.sh
+```
 
-## Hard rules
-- NEVER weaken the cargo suite, native tests, or a probe/.expect to pass.
-- NEVER touch spec/, .github/, demo/, ecosystem/ (docs/wasm-contract.md is OK).
-- Build with `cargo build --release -j 4` only. Kill kryostokens.exe strays
-  each iteration (taskkill //F //IM kryostokens.exe).
-- Local commits only; NEVER push. No live network calls.
-- Read repo CLAUDE.md before writing any .kry (no semicolons; elif; string
-  interpolation braces).
-- Partial progress is fine: commit whatever compiles + moves a probe from
-  FAIL to PASS. End every session with <promise>NEXT</promise>,
-  <promise>DONE</promise> (only if the gate exits 0), or
-  <promise>BLOCKED</promise>:<reason>.
+Runs in ~230s. Three conditions, all required: the tier-1 gate ladder, the
+security gate (capability attenuation), and the self-host nested-binop repro
+printing `after parse: 31 tokens`. Manually verified to exit 1 today, failing
+on exactly the third condition while the first two pass.
+
+## Feature List
+
+See `spec/features.json`. Ranked by seriousness for the intended use case
+(capability-attenuated agent infrastructure), NOT by which gate is red:
+trust-model hole > silent wrong answer > blocks CI > leak > papercut.
+
+## Working method -- follow this, it is what has worked
+
+Read `tools/loop/LEDGER.md` FIRST. It carries the ranked queue, what has
+already been RULED OUT for each bug, and the measurement traps. Do not
+re-derive a disproven theory; several are recorded specifically to stop that.
+
+1. **Reproduce before theorising.** `tools/loop/kryos-loop.sh repro <file>`.
+   Three attributions were wrong in one session from reading code instead of
+   measuring it.
+2. **Bisect mechanically** -- commit-level (`git cherry-pick` into a worktree)
+   or program reduction. Never hand-edit a hypothesis in and treat the result
+   as evidence; one such edit silently removed more than intended and produced
+   a confident wrong answer.
+3. **Prove both directions.** A test that cannot fail is not a test. Verify it
+   fails without the fix.
+4. **Run `tools/loop/kryos-loop.sh gates 2` before committing.** The acceptance
+   check only runs tier 1 for speed; tier 2 must be green too.
+5. **Update the LEDGER in the same commit**, including anything newly ruled out.
+
+## Known measurement traps (each cost real time)
+
+- `cargo build -p kryos-cli` does NOT regenerate the staticlib archives an
+  AOT program links. Runtime edits are invisible until a full
+  `cargo build --release`. Run `kryos-loop.sh preflight` first, every time.
+- Bootstrap fails spuriously with rc=127 on rotating modules under load. Only a
+  failure reproduced on a SOLO run is real. It is excluded from the acceptance
+  check for this reason.
+- A single peak-RSS reading is noise. Repeat it three times before believing a
+  leak number -- an "82% reduction" this session was a sampling artifact.
+- `KRYOS_FREE_DIAG=1` completing while the program normally crashes means the
+  crash IS memory corruption, not the reported error.
+- `kryos_string_clone` is a refcount bump returning the SAME pointer, not a
+  deep copy.
+
+## Safety rules
+
+- NEVER delete or weaken a test to make the check pass. Making a gate unable to
+  fail is the worst possible outcome here.
+- NEVER modify `tests/acceptance.sh`, this spec, or `spec/features.json`
+  except the `status` field.
+- NEVER revert the security gate or the raw-memory capability gating.
+- NEVER force-push. Commit and push to `master` normally.
+- If a change does not fix its target, REVERT it rather than leaving it in.
+- Prefer a truthful BLOCKED over a green achieved by lowering the bar.
+
+## Test command
+
+```bash
+bash tests/acceptance.sh
+```
