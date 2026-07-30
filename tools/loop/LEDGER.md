@@ -51,44 +51,44 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. Tuple-destructured struct aliasing: leak vs double-free  `BLOCKS CI`
+### 1. Churn workload leaks 614MB against a 250MB ceiling  `BLOCKS CI`  `REPRODUCIBLE LOCALLY`
 
-**Where it stands:** `selfhost-stage1` is GREEN for the first time and the full
-`stage1_mini_parser.kry` prints `stage 1 mini-parser: ok` with 0 double-frees.
-`tests/acceptance.sh` PASSES all four conditions. **But Linux CI now fails the
-memory-plateau gate** -- "churn workload exceeded 250MB; a memory leak was
-reintroduced". 8 of 9 CI jobs green (Windows, macOS, docs, fuzz, quickstart,
-registry, wasm, selfhost-stage1).
+The only red CI job is Linux `build-and-test`, failing its memory-plateau gate:
+`peak RSS 614MB (ceiling 250MB)`.
 
-**The trade currently in the tree (82a4f72):** a struct destructured out of a
-tuple (`let (p3, thn) = f()`) is marked BORROWED, so it is not dropped. That
-removes the double-free but leaks the box. Corruption traded for a leak --
-better by the ranking at the top of this file, but the leak is too large to
-ship.
+**PRE-EXISTING, not introduced by recent work.** Verified against CI history:
+the identical `614MB` appears at `bc70433`, and `build-and-test` was already
+failing at `7391353` and `c029b95` -- all before the tuple-destructuring fix. An
+earlier note in this file blamed that fix for "reintroducing" the leak; that was
+wrong and is corrected here.
 
-**Why the double-free happens:** `let (p3, thn) = f()` lowers to a Field read of
-the tuple into a NAMED local, so `p3` aliases the tuple's storage. Then
-`parse_stmt` does `let mut pp = p3` -- a SECOND alias, also named and also live.
-Both get scope-end Drops, so one box is freed twice.
+**It reproduces on Windows, which the gate itself cannot.** The gate is
+Linux-only (max RSS via `time -v`), but extracting its churn workload and
+measuring peak working set gives 617.6MB against CI's 614MB -- close enough to
+iterate locally instead of round-tripping through CI. Extract with:
 
-**Ruled out** (each implemented, built, run, reverted):
-- marking the destructured element borrowed -- fixes corruption, LEAKS past the
-  250MB ceiling (this is what is committed; it is a stopgap, not the answer)
-- marking the SOURCE moved on `let pp = p3` (mirroring what the reassignment
-  path already does) -- mini-parser returns to garbage token kinds, so the
-  source is still read afterwards on some path
-- eight hand-built models of the suspected shapes: all CLEAN while the real
-  program failed. Stop modelling this one; reduce the real file instead, which
-  is what actually worked.
+```
+python - <<'P'
+import pathlib
+s = pathlib.Path("tests/mem_plateau_check.sh").read_text()
+prog = s.split("<<'KRY'",1)[1].split("KRY
+",1)[0]
+pathlib.Path("/tmp/memplat.kry").write_text(prog)
+P
+```
 
-**Next step:** exactly ONE owner among {tuple temp, destructured element, and
-any later alias}. The tuple temp is unnamed and never dropped today, so the
-cleanest shape is probably: element OWNS, and any subsequent
-`let mut pp = <struct local>` aliases must not double-drop -- i.e. fix the
-alias-of-an-alias case rather than the destructure itself.
+then build `--release` and sample `PeakWorkingSet64`.
 
-**Do not** revert 82a4f72 to make mem-plateau green: that restores a
-use-after-free, which ranks worse than a leak. Fix the ownership properly.
+**Ruled out:** releasing struct elements in `kryos_array_free_typed` to match
+the retain in `kryos_array_dup` (an asymmetry that IS real -- a struct literal
+DUPLICATES an array field, verified via `arr_to_ptr`, so every `advance(p)`-style
+rebuild retained all N elements and nothing released them). It is committed
+because it is correct, but it moved the number by <1MB. The 614MB is elsewhere.
+
+**Next step:** the workload is 71 lines with named helpers (`mk_str`, `mk_arr`,
+`mk_expr`, `reads_arg`, ...). Cut it down until the peak drops -- program
+reduction is what cracked the last three bugs here, and it is now a local
+edit-measure loop measured in seconds.
 
 ### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
