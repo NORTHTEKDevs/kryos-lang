@@ -109,6 +109,15 @@ const CLASSES: [usize; 8] = [16, 32, 64, 128, 256, 512, 768, 1024];
 const HEADER: usize = 16;
 const SLAB: usize = 64 * 1024;
 const CLASS_SYSTEM: u64 = u64::MAX;
+/// Written into a box's class word the moment it is genuinely freed, so a
+/// SECOND free or release on the same pointer is detectable without the
+/// debug-only box_diag bookkeeping.
+///
+/// A double-drop used to be silent memory corruption: `kryos_struct_release_shared`
+/// writes the owner count at `ptr - 8`, and once the allocator has recycled that
+/// block into an array header the write lands on `elem_size`, which then reads
+/// back as a pointer. Poisoning turns that into a no-op plus a diagnostic.
+const CLASS_POISON: u64 = u64::MAX - 1;
 
 // 0 = undecided, 1 = plain (system calloc/free), 2 = pooled.
 static MODE: AtomicU8 = AtomicU8::new(0);
@@ -328,11 +337,19 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
         box_diag_note_free(ptr);
     }
     if plain_alloc() {
+        unsafe { *(block as *mut u64) = CLASS_POISON };
         unsafe { free(block) };
         return;
     }
     let class = unsafe { *(block as *const u64) };
+    if class == CLASS_POISON {
+        crate::diag_report(&format!(
+            "kryos_free: double free of {ptr:p} (already-freed box); ignored"
+        ));
+        return;
+    }
     if class == CLASS_SYSTEM {
+        unsafe { *(block as *mut u64) = CLASS_POISON };
         unsafe { free(block) };
         return;
     }
@@ -345,6 +362,9 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
         ));
         return;
     }
+    // Poison BEFORE publishing on the freelist: from this moment the block may
+    // be handed out again, so a stale pointer to it must be detectable.
+    unsafe { *(block as *mut u64) = CLASS_POISON };
     POOL.with(|p| p.borrow_mut().freelists[class as usize].push(block));
 }
 
