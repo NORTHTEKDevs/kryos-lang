@@ -51,50 +51,18 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. Churn workload leaks 614MB against a 250MB ceiling  `BLOCKS CI`  `REPRODUCIBLE LOCALLY`
-
-The only red CI job is Linux `build-and-test`, failing its memory-plateau gate:
-`peak RSS 614MB (ceiling 250MB)`.
-
-**PRE-EXISTING, not introduced by recent work.** Verified against CI history:
-the identical `614MB` appears at `bc70433`, and `build-and-test` was already
-failing at `7391353` and `c029b95` -- all before the tuple-destructuring fix. An
-earlier note in this file blamed that fix for "reintroducing" the leak; that was
-wrong and is corrected here.
-
-**It reproduces on Windows, which the gate itself cannot.** The gate is
-Linux-only (max RSS via `time -v`), but extracting its churn workload and
-measuring peak working set gives 617.6MB against CI's 614MB -- close enough to
-iterate locally instead of round-tripping through CI. Extract with:
-
-```
-python - <<'P'
-import pathlib
-s = pathlib.Path("tests/mem_plateau_check.sh").read_text()
-prog = s.split("<<'KRY'",1)[1].split("KRY
-",1)[0]
-pathlib.Path("/tmp/memplat.kry").write_text(prog)
-P
-```
-
-then build `--release` and sample `PeakWorkingSet64`.
-
-**Ruled out:** releasing struct elements in `kryos_array_free_typed` to match
-the retain in `kryos_array_dup` (an asymmetry that IS real -- a struct literal
-DUPLICATES an array field, verified via `arr_to_ptr`, so every `advance(p)`-style
-rebuild retained all N elements and nothing released them). It is committed
-because it is correct, but it moved the number by <1MB. The 614MB is elsewhere.
-
-**Next step:** the workload is 71 lines with named helpers (`mk_str`, `mk_arr`,
-`mk_expr`, `reads_arg`, ...). Cut it down until the peak drops -- program
-reduction is what cracked the last three bugs here, and it is now a local
-edit-measure loop measured in seconds.
-
-### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
-`tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
+### 1. Cranelift shares one box for a loop-local aggregate captured by `spawn`
+`tests/known_failures/spawn_loop_capture.kry` -- JIT prints `30 30 30 30`, AOT
 prints the four distinct values. **Silent wrong answer.** Independently
 reproduced. Likely the per-iteration box is hoisted out of the loop in the
 capture-boxing path.
+
+### 1b. Bootstrap: `parser.kry` and `lower.kry` fail rc=127  `PRE-EXISTING`
+14/16, the SAME two modules on three consecutive runs -- so NOT the rotating-
+module contention flake documented below (that trap requires the failing module
+to ROTATE; a stable pair is real). **Not caused by the field-read fix:** stashing
+that change and rebuilding reproduces 14/16 exactly. Introduced somewhere in
+`82a4f72`..`570f61d`; bisect those two commits next.
 
 ### 3. Struct-argument leak — ~86MB per 1M calls
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
@@ -131,6 +99,7 @@ Generate from real test output.
 | computed string -> user fn leaked | 35.4MB/400k -> 4.0MB; needed the `@copy` str-field copy as prerequisite |
 | `-g` emitted an undefined string global | `kryos build -g` was broken on every platform |
 | spawn wrapper `byval` ABI | System V only; closed both concurrency blockers |
+| **struct `str` field read leaked, 614MB in CI** | `r.name = mk_str(i)` + `len(r.name)` in a loop: 157.7MB/2M before, 3.9MB after; the full CI workload 617.6MB -> 4.5MB. A `str` field read RETAINS and nothing balanced it. Array/map/struct field reads stay borrows -- `push` grows the shared buffer in place, so dropping those temps is the `alloc_node` double-free |
 | **raw-memory capability escape** | a zero-capability program read `TOPSECRET-APIKEY` via `str_to_ptr`+`ptr_byte_at` and dereferenced +4096 without faulting. Closed with a trusted-computing-base split: raw memory requires `ffi` at DIRECT USE in user code and the requirement does not propagate, so the stdlib (which is built on these — `alloc` in 14 modules) stays usable. Guarded by `tests/security_gate.sh`, which asserts BOTH directions plus no-cascade |
 
 ---
@@ -172,5 +141,12 @@ contexts. Worth unifying.
 - **`KRYOS_FREE_DIAG=1` completing while the program normally crashes means the
   crash IS corruption.** Master's `parse_int: invalid numeric input: '}'` was
   memory corruption, not a parse bug.
+- **A leak needs a workload that ALLOCATES A FRESH VALUE each iteration.**
+  Re-reading the SAME string 2M times looks perfectly flat even with a fully
+  unbalanced retain -- the refcount climbs, nothing allocates. That false
+  reading is what retired the field-read drop and cost 614MB in CI for two
+  days. Vary the value, and measure the read and the overwrite TOGETHER: read
+  alone 4.3MB, store alone 4.4MB, store+read 157.7MB. Either half alone
+  says "no leak".
 - **`kryos_string_clone` is not a deep copy.** It is a refcount bump returning
   the same pointer, identical to `kryos_string_retain`.

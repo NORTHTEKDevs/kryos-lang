@@ -3463,21 +3463,46 @@ fn drop_unescaped_str_temps(
             // is not a droppable borrow: the escaping aggregate keeps the
             // struct alive past this window, so the retain this drop was
             // meant to balance is still needed.
-            // A struct FIELD READ is a BORROW and is NOT dropped here.
+            // A field read of a MUTABLE-CONTAINER field (array/map/struct) is
+            // a BORROW and is NOT dropped. A `str` field read IS dropped: it
+            // retains, and nothing else balances it.
             //
-            // This used to drop unconditionally, on the stated assumption that
-            // both backends retain a field read so the drop is balanced. That
-            // assumption is false: measured on a 2M-iteration loop of throwaway
-            // field reads, peak RSS is 4.4MB with the drop and 4.4MB without --
-            // identical. There was no retain to balance, so the drop was pure
-            // OVER-RELEASE.
+            // The split matters because the two cases fail in opposite
+            // directions, and treating them alike broke one or the other every
+            // time:
             //
-            // What it cost: on compiler/self-host/stage1_mini_parser.kry it
-            // accounted for 5 of 7 double-frees and a SEGFAULT, and even after
-            // a liveness guard ("only drop when the source is dead") it still
-            // blanked token text -- the parser printed `Ident(  )` where the
-            // source said `x`. Silent wrong answers rank above leaks, and here
-            // there is not even a leak to trade.
+            //   * ARRAY/MAP/STRUCT -- must NOT drop. `push` grows the shared
+            //     buffer IN PLACE, so `_11 = _6.str_args; push(_11, x);
+            //     drop(_11)` releases a buffer `_6` still points at. This is
+            //     `alloc_node`'s shape and it accounted for 5 of the 7
+            //     double-frees and a SEGFAULT in stage1_mini_parser.kry.
+            //     Same for a field packed into a returned aggregate
+            //     (`return (np, len(np.out))`) -- the escaping struct keeps
+            //     pointing at what the drop would free.
+            //
+            //   * STR -- must drop. A `str` is immutable, so no in-place
+            //     mutation can alias it, and both backends give the reader its
+            //     own reference (Cranelift clones, LLVM retains). With no
+            //     drop, every `r.name` read leaks one buffer.
+            //
+            // The earlier "there is no retain to balance, peak is 4.4MB with
+            // the drop and without" measurement was WRONG, and the way it was
+            // wrong is worth keeping: it read the SAME string every iteration,
+            // so the unbalanced retain inflated a refcount without ever
+            // allocating. A leak only appears when the field is also
+            // OVERWRITTEN with a fresh value. Measured with distinct values at
+            // 2M iterations: read alone 4.3MB, store alone 4.4MB, store+read
+            // 157.7MB -- the leak lives in the combination, which is why
+            // testing either half alone missed it. This is the CI
+            // memory-plateau gate's 614MB.
+            let is_str_field = ctx
+                .locals
+                .iter()
+                .find(|l| l.id == id)
+                .is_some_and(|l| l.ty == MirType::Str);
+            if is_str_field {
+                to_drop.push(id);
+            }
             //
             // The `src` binding below is still used to undo a spurious
             // partial-move mark.

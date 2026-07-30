@@ -104,6 +104,20 @@ if command -v /usr/bin/time >/dev/null 2>&1 && /usr/bin/time -v true >/dev/null 
 elif /usr/bin/time -l true >/dev/null 2>&1; then
   b=$(/usr/bin/time -l "$bin" 2>&1 >/dev/null | grep -i "maximum resident" | grep -oE '[0-9]+' | head -1)
   peak_kb=$(( b / 1024 ))
+elif command -v powershell >/dev/null 2>&1; then
+  # Windows: no `time -v`, so poll PeakWorkingSet64 while the process runs.
+  # This path is not a nicety -- it is why this gate exists on the platform
+  # most of this compiler is developed on. Without it the check SKIPped
+  # locally and only spoke through CI, and a 614MB leak sat undiagnosed
+  # because every local reading had to be hand-rolled. Windows peak working
+  # set tracks Linux max RSS closely enough here to use the same ceiling
+  # (measured 617.6MB against CI's 614MB on the leaking build, and 4.5MB
+  # against CI's steady state after the fix).
+  b=$(powershell -NoProfile -Command \
+    "\$p=Start-Process -FilePath '$(cygpath -w "$bin" 2>/dev/null || echo "$bin")' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\\mp_out.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 40}; \$m" 2>/dev/null | tr -d '\r')
+  case "$b" in ''|*[!0-9]*) b="" ;; esac
+  [ -n "$b" ] && peak_kb=$(( b / 1024 ))
+  [ -n "$peak_kb" ] || { echo "mem-plateau: SKIP (powershell RSS probe returned nothing)"; rm -f "$bin" "$prog"; exit 0; }
 else
   echo "mem-plateau: SKIP (no GNU/BSD time -v/-l for RSS measurement)"
   rm -f "$bin" "$prog"; exit 0
