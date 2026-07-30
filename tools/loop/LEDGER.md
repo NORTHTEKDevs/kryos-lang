@@ -51,81 +51,44 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. A nested binary expression corrupts a LATER tokenize  `BLOCKS CI`
+### 1. A Token box is DOUBLE-DROPPED, breaking the self-host parser  `BLOCKS CI`
 
-Runnable repro: `compiler/self-host/known_failure_nested_binop.kry`
-(write-up: `tests/known_failures/parse_nested_binop_corrupts_next.kry`).
+Acceptance condition 4: `stage1_mini_parser.kry` must print
+`stage 1 mini-parser: ok`. Today it dies at demo 2 on a garbage token kind.
 
-Parse `fn f() { return x + y * 2 }`, then tokenize an UNRELATED string: 1 token
-instead of 31. Under `KRYOS_FREE_DIAG=1` it instead dies in the lexer with
-`kryos_array_push: corrupt array header (len=0, cap=4, elem_size=<a POINTER>,
-ref_count=2)`. **It reproduces with nothing being freed, so it is NOT a
-use-after-free** -- a header is being read at the wrong offset or written over.
+**The narrow repro is FIXED** (`known_failure_nested_binop.kry` now prints 31
+tokens) by poisoning a box's class word on free, so a stale
+`kryos_struct_release_shared` can no longer write into recycled memory. The
+memory CORRUPTION is gone; the double-drop that caused it is not.
 
-**Bisected, each step run:**
+**Provenance, from `KRYOS_BOX_DIAG=1` (the loop's instrumentation):**
 
-| case | result |
-| --- | --- |
-| two tokenizes back to back | ok |
-| tokenize + parser_new | ok |
-| + expect / cur_text / advance / alloc_node, each alone | ok |
-| + parse_expr / parse_stmt / parse_block, each alone | ok |
-| `parse_fn` on `fn f() {}` / `{ return 1 }` | ok |
-| + params, `fn f(x: i64) { return 1 }` | ok |
-| + one binop, `fn f() { return x + y }` | ok |
-| + return type, `fn f() -> i64 { return x + y }` | ok |
-| **`fn f() { return x + y * 2 }`** | **BREAKS** |
+```
+kryos_struct_release_shared on ALREADY-FREED box (use-after-free)
+  allocated at:        lex_emit -> lex_scan_token -> tokenize     (a Token)
+  previously freed at: parse_fn
+  released again at:   parse_fn
+```
 
-Trigger is `parse_expr` RECURSING through precedence climbing
-(`parse_expr(pp, prec + 1)` inside its own loop) -- not params, not the return
-type, not a single operator.
+A Token struct allocated by the LEXER is freed and then released a second
+time, both inside `parse_fn`. So a Token element that the tokens array still
+holds is being dropped as if the reader owned it.
 
-**CRANELIFT-ONLY.** The same repro on `build --release` (LLVM) prints the
-correct 31 tokens. That collapses the search space to one backend.
+**Ruled out** (each written and run, all CLEAN -- do not retry):
+- `cur_text`'s exact shape, early return included: element read bound to a
+  named local, field read of it returned
+- `lex_emit`'s shape: field read to a mut local, push a struct, rebuild the
+  struct around it
+- a recursive precedence climber threading a struct and pushing to its array
+  fields, at 3 and at 7 array fields
+- the `if`-branch struct alias (`let mut pp = p3` then branch reassignment)
+- `kryos_array_dup` retaining struct elements without a matching release --
+  adding the release changed nothing measurable and was reverted
 
-**CAUSED BY `335551e`** (struct/enum boxes carry the allocation header).
-Reverting just that commit makes the repro print 31. Do not simply revert it --
-that was tried and it breaks Linux/macOS (`test_re_anchors_captures`,
-`test_tracked_generic`), because it fixes real heap corruption there.
-
-**Mechanism, narrowed:** `kryos_free` does `ptr.sub(HEADER)` then indexes
-`freelists[class]` read from that memory, and `kryos_struct_retain` writes the
-owner count at `ptr - 8`. Either on a box without the 16-byte header writes
-outside the allocation -- which is exactly how a neighbouring array header ends
-up with `elem_size = <a pointer>`.
-
-**Asymmetry found, but NOT the cause -- tested and reverted:** `kryos_array_dup` RETAINS every
-struct element (`elem_kind == 4` -> `kryos_struct_retain`, array.rs ~369), but
-`kryos_array_free_typed` has **no case for struct elements** (`_ => {}`,
-array.rs ~604 handles only kinds 1/2/3). Owner counts on struct elements
-therefore only ever go UP and are never released. Verified the retain is load-bearing (disabling it makes the repro SEGFAULT), so
-any fix must ADD the release rather than remove the retain. I added exactly
-that (`kryos_struct_release_shared` on elem_kind 4, decrement-only, never a
-free) and measured it:
-
-- the corruption is UNCHANGED (still 1 token)
-- the struct leak is UNCHANGED: 87-91MB/1M across three runs with and without
-- an array-of-struct dup loop, the shape it directly targets, is UNCHANGED:
-  14.2/15.3MB with vs 14.7/15.0MB without
-
-So it was reverted. **Correction to an earlier reading in this session:** a
-single measurement appeared to show 89.5MB -> 15.8MB, an "82% reduction". It
-did not reproduce -- three repeat runs of the same binary gave 90.1/86.7/90.8.
-That number was an artifact of the peak sampler missing the peak, and the
-claim was wrong. Treat any single RSS reading here as noise; always repeat.
-
-The imbalance is still real on paper (counts only ever rise), so it may matter
-for a shape not yet found -- but nothing measurable today justifies the change.
-
-**Also NOT reproduced standalone.** Two hand-built models of that exact shape --
-a recursive precedence climber threading a struct and pushing into its array
-fields, once with 3 array fields and once matching the real Parser's 7 -- are
-both CLEAN. Something else in the real program is load-bearing. Find it before
-theorising; that is the same discipline that eventually cracked the last three.
-
-**Acceptance:** the repro prints `after parse: 31 tokens`, then
-`stage1_mini_parser.kry` reaches rc=0 with 0 double-frees, then
-`selfhost-stage1` goes green.
+**Next step:** find who frees a Token box inside `parse_fn`. `KRYOS_BOX_DIAG=1`
+gives allocation and free stacks per box, so this is now an observation
+problem, not a guessing one -- get the FIRST free's stack for a box whose
+allocation stack is `lex_emit`.
 
 ### 2. Cranelift shares one box for a loop-local aggregate captured by `spawn`
 `tests/known_failures/spawn_loop_capture.kry` — JIT prints `30 30 30 30`, AOT
