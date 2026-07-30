@@ -5,7 +5,7 @@
       "id": "nested_binop_corruption",
       "title": "Parsing a nested binary expression must not corrupt a later tokenize",
       "acceptance_test": "cd compiler/self-host && ../target/release/kryos.exe run known_failure_nested_binop.kry | tail -1 | grep -q 'after parse: 31 tokens'",
-      "status": "failing",
+      "status": "passing",
       "priority": "high",
       "blocked": false,
       "blocked_reason": ""
