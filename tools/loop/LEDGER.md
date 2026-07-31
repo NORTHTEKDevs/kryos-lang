@@ -75,13 +75,198 @@ below works around it by only ever pushing into `LEX_TOKENS`, never
 reassigning it after its own top-level initializer. Worth a real fix; until
 then avoid "reset a global from a helper function" as a pattern.
 
-### 3. Struct-argument leak — ~86MB per 1M calls
+### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific — a free function leaks
-identically (that correction is measured; the older "method receiver" framing
-was wrong). Flat for contrast: scalar-only struct through a method, and the
-same struct's fields read directly. Needs the receiver/box representation work;
-7 incremental attempts have failed, so treat it as a design change.
+identically. Flat for contrast: scalar-only struct through a method, and the
+same struct's fields read directly.
+
+**Re-measured fresh this session** (`kryos-loop.sh soak`, 250k -> 1M,
+Windows --release, HEAD 721a9cf, no code changed):
+```
+heap_field_method    10.5 MB -> 87.8 MB   LEAKS (confirms prior 25.7->95.5 shape)
+scalar_method          0 MB ->  3.9 MB    FLAT
+free_fn_scalar_ret   10.9 MB -> 91.7 MB   LEAKS (confirms "not method-specific")
+```
+
+**8th attempt was a design pass, not a patch — this session, per instruction, wrote
+the design and DID NOT implement.** Reasoning below.
+
+#### The mechanism a 7-attempt investigation had not yet named: two struct-drop code paths that disagree about ownership
+
+Read (not guessed) directly from both backends this session. There are TWO
+independent codegen paths that free a struct's heap fields, and only ONE of
+them ever consults a struct's shared-owner count:
+
+1. **The boxed-element path** — `__kryos_drop_<Name>` (LLVM:
+   `kryos-codegen-llvm/src/codegen.rs:2118-2239`; Cranelift's equivalent named
+   helper referenced at `kryos-codegen-cranelift/src/codegen.rs:7570-7588` for
+   array/enum-payload struct elements). This helper calls
+   `kryos_struct_release_shared` FIRST (LLVM `codegen.rs:2194-2205`) and bails
+   out without freeing fields if another owner remains. This is the ONLY path
+   `kryos_struct_retain`'s owner-count word (`kryos-rt/src/alloc.rs:646-670`,
+   the second word of the `kryos_calloc` header) is ever checked against.
+2. **The local/param/return path** — `Instruction::Drop` for a struct-typed
+   local, inlined directly (LLVM `codegen.rs:3779-3797`, Cranelift
+   `codegen.rs:3186-3206` -> `emit_drop_for_value` `codegen.rs:7495-7562`).
+   This path calls `emit_struct_drop`/`emit_drop_for_value` **directly, with
+   no call to `kryos_struct_release_shared` at all** — confirmed by reading
+   both call sites end to end, not inferred. It always frees every heap field
+   it finds, regardless of how many other owners exist.
+
+A function PARAMETER, an ordinary struct `let`, and a struct RETURN value are
+represented as SSA aggregates / byval copies (LLVM) or aliased raw pointers
+(Cranelift) — never as a value that passes through path 1. So **any fix that
+adds an owner-count retain (at a call site, at a spawn-capture site, anywhere)
+is invisible to path 2**, which is exactly why attempt #7 ("give the spawned
+thread its own owner count … the retain calls ARE emitted") still failed:
+the retain bumped a counter that path 2's drop never reads. This generalizes
+the earlier finding from "verified it still fails" to "structurally cannot
+work while these two paths stay separate" — an owner-count model only
+protects a struct if EVERY place that can drop that struct's fields agrees to
+consult the same counter, and today most of them don't.
+
+One correction to the "7 attempts" writeup: `conf_spinlock_mutex`'s own
+structs (`SpinLock -> AtomicInt -> Mutex`) are, field-by-field,
+`ptr`/`i64`/`bool` all the way down (`compiler/stdlib/sync.kry:23-27,119-122`)
+— no `Str`/`Array`/`Map`/`Function`/`Shared` field anywhere in that chain, and
+none of the three structs is `@copy`. Both backends' field-drop loops have an
+explicit `_ => {}` fallback for scalar field types (LLVM
+`codegen.rs:10542`), so dropping any of these three structs through EITHER
+path is a no-op by itself — the crash was not reproduced or re-diagnosed this
+session (deliberately: doing so means writing the one-line patch, which is
+exactly the 8th incremental attempt this task says not to force). Flagging
+this as the concrete first step for whoever attempts the real fix: run the
+one-line allowlist change with `KRYOS_FREE_DIAG=1` and a debug build against
+`conf_spinlock_mutex` BEFORE re-theorizing — the failure is almost certainly
+in a DIFFERENT struct in the same file (`WaitGroup`/`Once`, both also
+scalar-through-`AtomicInt` per `sync.kry:247-250,312-313`, so still probably
+not those either) or in an interaction with the spawn deep-copy path below,
+not in `SpinLock` itself. Don't re-guess this — measure it.
+
+#### Spawn already has a THIRD, bespoke ownership model — any fix must not regress it
+
+`Instruction::Spawn`'s struct-capture arm (LLVM `codegen.rs:3980-4002`) does
+NOT use the retain/owner-count model at all. It heap-copies (`kryos_calloc`)
+a fresh box and deep-clones the struct's OWN top-level `Str`/`Array`/`Map`
+fields into it (`deep_copy_struct_index_clone`), while deliberately leaving
+NESTED STRUCT sub-fields shared (raw pointer, not cloned) — "so an AtomicInt
+inside keeps its shared cell" per the comment at `codegen.rs:3987-3996`. This
+is why a spawned thread and its parent can both still see the SAME mutex/
+atomic cell (required for `conf_spinlock_mutex` to mean anything) while the
+thread also gets its own independent copy of any `str`/array data the struct
+carries. This is a THIRD ownership policy, distinct from both drop paths
+above, and it currently works (gates are green today). Any unification design
+has to either (a) leave this path alone and make ordinary calls agree with
+it, or (b) fold it into the new model — folding it in is strictly higher risk
+because it is the one part of this file already proven correct under
+concurrency.
+
+#### Design A — uniform boxing of struct values
+
+Every struct-typed local, param, and return becomes a pointer to a
+`kryos_calloc` box carrying the shared-owner header (same layout the boxed
+element path already uses), on BOTH backends. `consume_call_args` adds
+`MirType::Struct` to the borrow allowlist; EVERY struct drop site (params
+included — params currently never drop at all) calls `kryos_struct_retain`/
+`kryos_struct_release_shared` through the SAME helper boxed elements already
+use. This closes the leak and the two-path disagreement in one move, because
+there is only one path left.
+
+Cost, stated honestly:
+- **ABI break on LLVM AOT.** Struct params/returns move off `byval`/`sret`
+  onto a bare `ptr`, touching every call site, every `emit_aggregate_struct`
+  literal, every method receiver, every generic `impl<T>` instantiation, and
+  field-access GEP codegen (which currently addresses an INLINE aggregate,
+  not a boxed pointer, for nested struct fields — `emit_struct_drop`'s own
+  comment history at `codegen.rs:10495-10510` documents a real
+  invalid-free bug from getting this distinction wrong once already).
+- **A `kryos_calloc` per struct construction that currently costs zero
+  allocations.** `Plain { a: 1, b: 2 }` (the flat `scalar_method` case above)
+  would start allocating. The gotcha's documented hot path — `self-host
+  parser.kry` threading `Parser { tokens: [Token], .. }` through every `p_*`
+  call, explicitly exempted from an EARLIER, much smaller entry-copy fix
+  because it OOMs stage-1 (`CLAUDE.md` gotcha #23, "Heap-bearing `@copy`
+  structs as params") — is the textbook case this would make worse, not
+  better, unless boxing is made conditional in a way that reintroduces the
+  representation split this design exists to remove.
+- **Self-host bootstrap risk.** Bootstrap already runs at the edge of what's
+  survivable memory-wise (see the CLOSED "Lexer 13-16GB" entry above, and
+  item #7, the still-open Parser analogue at 286MB). A per-struct allocation
+  on every call in a compiler whose own IR is a struct-heavy tree is the kind
+  of change that needs its own dedicated measurement pass, not a
+  side-effect of a different fix.
+
+#### Design B — unify the two drop paths without changing the ABI
+
+Keep params/returns as SSA aggregates / aliased pointers (no ABI change).
+Instead:
+1. Add `MirType::Struct` to `consume_call_args`'s borrow allowlist for
+   ordinary (non-spawn) calls only — the caller keeps its own scope-end drop.
+2. Give callee PARAMS a real scope-end drop for struct types (today
+   `param_locals` never drop — this is the other half of the leak, not just
+   the caller side).
+3. At the CALL SITE, before the call, emit a **recursive field-level retain**
+   that walks the struct the same way `emit_struct_drop`/`emit_drop_for_value`
+   already walk it for freeing (`Str`->`kryos_string_retain` equivalent,
+   `Array`->array retain, nested `Struct`->recurse, scalar fields skipped) —
+   this is the missing "retain" side of a traversal whose "release" side
+   already exists and is exercised in production. This makes the callee's
+   byval/aliased copy a genuine independent reference rather than an
+   unbalanced alias, so step 2's param-drop is now correct instead of a
+   double-free.
+4. Leave `Instruction::Spawn`'s bespoke deep-copy path untouched — it already
+   does the equivalent of steps 1-3 by hand for its one call site (the
+   comment at `codegen.rs:3987-3996` is literally describing "retain top-level
+   fields, share nested struct fields" already). Do not route spawn through
+   the new generic retain helper; it has different (correct, tested) rules
+   about what stays shared.
+
+Cost, stated honestly:
+- No ABI change, no new allocation for scalar-only or copy-avoidant structs —
+  `scalar_method` and `heap_field_direct` in the repro file stay exactly as
+  fast as today.
+- New cost is proportional to the STRUCT'S HEAP FIELD COUNT per call, not a
+  flat allocation — cheaper than Design A for the common case, more expensive
+  than Design A for a struct passed through a long call chain (each hop pays
+  a retain instead of one allocation shared across the chain).
+- Still a real, cross-cutting change: the retain-walk codegen has to exist on
+  BOTH backends and stay in lockstep with the existing drop-walk (two
+  recursive traversals of the same struct shape that must never diverge — a
+  divergence here is exactly the class of bug the CLOSED "computed string ->
+  user fn leaked" and "spawn shared one box" entries above already show this
+  codebase is prone to when a retain and a release are added in different
+  places by different patches).
+- Does NOT by itself explain or fix whatever broke `conf_spinlock_mutex` under
+  the naive one-line version of step 1 — per the correction above, that
+  failure is still unexplained and needs a direct repro (not a re-guess)
+  before either design is implemented, because if it turns out to be a
+  spawn/ordinary-call interaction, step 4's boundary is exactly where it
+  would resurface.
+
+#### Recommendation
+
+Design B is the better shape: no ABI break, no bootstrap-memory risk, smaller
+blast radius, and it turns the missing half of the leak (`consume_call_args`)
+and the missing half of the fix (param drops) into ONE symmetric
+retain/release traversal pair instead of leaving them independently patched.
+Design A is the more "correct-looking" unification (one ownership model
+everywhere) but its cost is concretely worse for the code this compiler
+spends the most time running (self-host bootstrap, struct-heavy hot loops)
+and was already ruled out in spirit by the earlier, much narrower
+heap-bearing-`@copy`-param exemption in gotcha #23.
+
+**Not implemented this session.** Rationale: 7 prior incremental attempts
+already failed against this exact leak, each for a reason that looked fixed
+until measured; the honest next step is a fresh, isolated repro of the
+`conf_spinlock_mutex` failure mode under the one-line change (with
+`KRYOS_FREE_DIAG=1`, per the measurement traps section) BEFORE writing
+Design B's retain-walk, not concurrently with it. Attempting the retain-walk
+without first pinning down that failure risks producing exactly an 8th
+incremental, unexplained regression — the outcome this task explicitly ranks
+worse than a design note. Workaround for a hot loop remains: read fields
+directly (flat), keep heap data out of structs you pass, or reuse one
+instance instead of constructing per iteration.
 
 
 
