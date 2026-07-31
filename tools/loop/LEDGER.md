@@ -57,53 +57,29 @@ prints the four distinct values. **Silent wrong answer.** Independently
 reproduced. Likely the per-iteration box is hoisted out of the loop in the
 capture-boxing path.
 
-### 2. Bootstrap WINDOWS-ONLY: stage-1 exits -1 inside `tokenize` on big files
-`PRE-EXISTING`  `CI IS GREEN`  `NOT A BLOCKER`
-
-14/16 locally (`parser.kry`, `lower.kry`). **Linux CI passes all 9 jobs**, so
-this does not gate a release -- but a self-host compiler that dies ~50% of the
-time on its own source is not something to ship on Windows either.
-
-**Localized** to `tokenize(source)`: the last output is `File: <name>`, and the
-next statement in the `obj` path is `tokenize` (main.kry:569).
-
-**Dose-response on input size** (prefixes of parser.kry, 6 runs each) -- the
-failure probability scales with input, i.e. with allocation count:
-
-| 30KB | 60KB | 90KB | 109KB |
-| --- | --- | --- | --- |
-| 0/6 | 1/6 | 3/6 | 3/6 |
-
-The two failing modules are the two LARGEST self-host files (lower 128KB,
-parser 109KB); the third largest (types 86KB) passes.
-
-**RULED OUT, each by measurement -- do not re-litigate these:**
-- *Rotating-module contention* (the flake in MEASUREMENT TRAPS): it repeats on
-  the same pair, and fails with nothing else running.
-- *The field-read fix / any recent commit*: stashing it and rebuilding
-  reproduces 14/16 exactly.
-- *Heap corruption / double-free*: 0 double-frees under `KRYOS_FREE_DIAG`, and
-  it still fails under diag (which never deallocates).
-- *The size-class pool allocator*: `KRYOS_PLAIN_ALLOC=1` routes every box and
-  buffer to the system allocator and crashes at the SAME rate (4/8 vs 4/8).
-- *Windows Defender*: no detections in its threat log, and the repo and
-  `compiler/target` are both on the exclusion list.
-- *An unhandled exception*: the exit code is `0xFFFFFFFF` (-1), NOT a structured
-  exception -- no `0xC0000005` access violation, no `0xC00000FD` stack overflow
-  -- and **Windows logs no Application Error event at all**. The process is not
-  faulting; it is exiting deliberately.
-- *A known runtime exit path*: the runtime's deliberate exits are 101 / 98 / 78
-  (watchdog) / 77 and the user `exit(code)` builtin. `grep` finds no `exit(-1)`
-  in the runtime, the native stdlib, or `self-host/*.kry`.
-
-**So: who calls exit(-1)?** That is the open question, and it is the ONLY
-question -- everything above is closed. Next probes worth the tokens:
-(1) confirm the death point without trusting redirected stdout, which is
-block-buffered and may simply have lost the tail -- the 68-vs-244-byte reading
-is NOT reliable evidence on its own; (2) trace `ExitProcess`/`exit` (a WinDbg
-`bp kernel32!ExitProcess` on a loop until it fires names the caller
-immediately); (3) check whether stage-1 was built by a stage-0 carrying the
-same defect, since this binary is self-compiled.
+### 2b. NEW (found while closing #2): global-reassignment-then-cross-function-read corrupts an array
+`tests/known_failures/global_array_reassign_corrupt.kry` (repro below).
+Isolated minimal repro, nothing to do with self-host:
+```
+struct Item { v: i64 }
+let mut G: [Item] = []
+fn reset() { let empty: [Item] = []  G = empty }
+fn add_one(n: i64) { let it = Item{v:n}  G = push(G, it) }
+fn main() { reset()  add_one(1)  println(to_string(len(G))) }
+```
+`kryos build --release` then run: `kryos panic: kryos_array_push: corrupt
+array header ... (len=0, cap=0, elem_size=8, ref_count=1, data=0x0)`. A
+top-level `let mut [T]` global works fine when only ever WRITTEN via `push`
+from one call chain starting at its own initializer (proven: the same test
+minus `reset()`/the extra function hop is flat). It breaks specifically when
+one function REASSIGNS the global to a fresh value and a DIFFERENT function
+later reads/pushes it -- the reader sees an all-zero header, i.e. either the
+global's storage slot isn't actually being written by the cross-function
+store, or the reader is loading a stale/wrong slot. Not yet root-caused
+(stage-0 LLVM codegen for global stores, not self-host) -- lexer.kry's fix
+below works around it by only ever pushing into `LEX_TOKENS`, never
+reassigning it after its own top-level initializer. Worth a real fix; until
+then avoid "reset a global from a helper function" as a pattern.
 
 ### 3. Struct-argument leak — ~86MB per 1M calls
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
@@ -126,6 +102,22 @@ Array-literal element unification ignores the annotated `dyn` element type.
 `docs/BUGS.md` said "none currently tracked" while two tests deadlocked.
 Generate from real test output.
 
+### 7. `Parser` has the same array-in-a-rebuilt-struct pattern as the closed lexer bug, unfixed
+`self-host/parser.kry`'s `advance()`-style helpers rebuild `Parser { tokens:
+p.tokens, pos: p.pos + 1, errors: ..., no_struct_lit: ... }` on every token
+consumed (parser.kry:148, 176, 185) -- the same shape that made `Lexer`
+balloon to 16GB (closed item #2 below), just at TOKEN granularity (~20030
+reconstructions x up to ~20030 retained Token elements) instead of CHARACTER
+granularity (~110K reconstructions), so it costs ~O(n^2) but stays in the
+"slow, not lethal" range at current file sizes -- measured 286MB peak WS
+compiling parser.kry end-to-end post-fix (tokenize alone is <100MB; the
+remainder is almost certainly this). Not a crash today, but the same class
+of bug and will get worse as self-host files grow. Same fix shape applies:
+pull `tokens` out of `Parser` into a read-only pass-through (it's never
+mutated after `parser_new`, so this one doesn't even need a module global --
+a plain extra parameter threaded through, or confirm `errors`/`no_struct_lit`
+don't need the same treatment).
+
 ---
 
 ## CLOSED — with the evidence that closed it
@@ -142,6 +134,7 @@ Generate from real test output.
 | spawn wrapper `byval` ABI | System V only; closed both concurrency blockers |
 | **struct `str` field read leaked, 614MB in CI** | `r.name = mk_str(i)` + `len(r.name)` in a loop: 157.7MB/2M before, 3.9MB after; the full CI workload 617.6MB -> 4.5MB. A `str` field read RETAINS and nothing balanced it. Array/map/struct field reads stay borrows -- `push` grows the shared buffer in place, so dropping those temps is the `alloc_node` double-free |
 | **raw-memory capability escape** | a zero-capability program read `TOPSECRET-APIKEY` via `str_to_ptr`+`ptr_byte_at` and dereferenced +4096 without faulting. Closed with a trusted-computing-base split: raw memory requires `ffi` at DIRECT USE in user code and the requirement does not propagate, so the stdlib (which is built on these — `alloc` in 14 modules) stays usable. Guarded by `tests/security_gate.sh`, which asserts BOTH directions plus no-cascade |
+| **bootstrap WINDOWS-ONLY exit -1 in tokenize (ex-item #2)** | NOT a fault, not Defender, not the pool allocator, not heap corruption -- confirmed by an `atexit`-hook diagnostic (`KRYOS_EXIT_TRACE=1` in fault.rs) that never fires before the -1 death, proving no `process::exit`/normal `main` return is involved; the OS kills the process directly (memory-pressure dependent). Root cause found by MEASURING MEMORY, not tracing exceptions: `Get-Process` polling showed kryos-stage1.exe peaking at 13-16GB+ (and still climbing) to tokenize a 109KB file. Cause: `Lexer { src, pos, tokens }` was rebuilt via a fresh struct LITERAL on every `lex_advance`/`lex_match_char`/`lex_emit` call (i.e. per CHARACTER, ~110K times for parser.kry, not per token) and `emit_aggregate_struct` in kryos-codegen-llvm clones/dups ANY array-typed struct FIELD unconditionally at every literal construction (elem_kind=4 for a struct-of-Token element additionally RETAINS every element) -- so each of ~110K reconstructions retained up to ~20K already-emitted tokens: O(n^2), order 1e9 atomic retains, matching the CPU hot-path symbols found via `llvm-symbolizer` against a `-g` debug rebuild (`kryos_struct_retain`/`kryos_array_dup`/`kryos_array_new` dominated `KRYOS_WATCHDOG` RVA samples). The EARLIER "Lexer NOT @copy" fix (see struct comment history) assumed a non-@copy struct's array field is merely SHARED (refcount bump) on rebuild; it is not -- `emit_aggregate_struct`'s field-clone is unconditional, not @copy-gated, so that fix never actually delivered the intended O(n) it documented. FIX: pulled `tokens` out of `Lexer` entirely into a module-level `let mut LEX_TOKENS: [Token] = []`, mutated only via `push` (never reassigned after its own initializer -- see item #2b, a SEPARATE newly-found bug where cross-function global reassignment corrupts the array). Proof: peak working set 13-16GB+ -> 286MB (tokenize alone <100MB); dose-response gone -- 8/8 clean on parser.kry (109KB) AND 8/8 clean on lower.kry (128KB, the other historically-failing file) with the OLD binary confirmed still failing 3/6 on lower.kry in the same session (prove-both-ways); `test_bootstrap.sh` 16/16 across 7 consecutive runs (was the documented 14/16 baseline); full `kryos-loop.sh gates 2` GREEN. Item #7 below is the SAME bug class, unfixed, in `Parser` (lower severity: token-granularity not character-granularity, not yet lethal) |
 
 ---
 

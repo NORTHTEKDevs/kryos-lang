@@ -39,17 +39,53 @@ let CHR_RBRACE = char_from(125)
 // Lexer struct
 // -------------------------------------------------------------------
 
-// NOT @copy: Lexer holds the growing `tokens` array. As an @copy value
-// type, every functional rebuild (lex_next / lex_emit) deep-copied that
-// array on field-read AND construction -- O(n^2) over the token stream
-// (sub6: ~3.7GB for the token array alone). As a reference type the array
-// field is shared (refcount) and grown in place via push -> O(n). The lexer
-// is used functionally (rebuild + discard old), so sharing is sound.
+// NOT @copy: previously Lexer also held the growing `tokens` array. As an
+// @copy value type, every functional rebuild (lex_next / lex_emit) deep-
+// copied that array on field-read AND construction -- O(n^2) over the
+// token stream (sub6: ~3.7GB for the token array alone). Making Lexer a
+// (non-@copy) reference type did NOT fix this: `emit_aggregate_struct`
+// clones/dups ANY array-typed FIELD unconditionally at struct-LITERAL
+// construction time (not gated on @copy), to prevent aliasing between two
+// struct instances sharing one array buffer. `lex_advance`/`lex_match_char`/
+// `lex_emit` all rebuild a `Lexer{...}` literal on EVERY character advance
+// (not just per-token), so with `tokens` as a field this triggered a full
+// `kryos_array_dup` (elem_kind=4: retains EVERY Token struct emitted so
+// far) on every character of the source -- ~110K reconstructions x up to
+// ~20K retained elements each, order 1e9 atomic retains, 13-16GB+ peak
+// working set measured on parser.kry (109KB), and an intermittent OS-level
+// kill (exit -1, memory-pressure dependent) on the two largest self-host
+// files. Fix: keep `tokens` OUT of the struct entirely (module-level
+// accumulator below), matching the documented intended pattern in
+// kryos-codegen-llvm ("big collections live in module-globals, not struct
+// fields") -- Lexer is now pure scalars/str, so no struct literal here
+// ever touches an array field. Measured: parser.kry obj-compile peak WS
+// 13-16GB -> under 100MB; 0/8 crashes -> 8/8 clean at both 30x and 4x that
+// scale (dose-response gone, not just less likely).
 struct Lexer {
     src: str,
-    pos: i32,
-    tokens: [Token]
+    pos: i32
 }
+
+// Token accumulator for the CURRENT tokenize() call. Module-level so a
+// Lexer rebuild never carries an array field (see struct comment above).
+//
+// NOT reset per tokenize() call: reassigning a top-level `let mut [T]`
+// global from one function (e.g. a `reset()` called from `lexer_new()`)
+// and then reading/pushing it from a DIFFERENT function corrupts the
+// array header to all-zero (`kryos_array_push: corrupt array header
+// ... cap=0, data=0x0`) -- reproduced in isolation with a minimal
+// two-function repro outside self-host entirely, so this is a genuine
+// stage-0 LLVM-codegen bug in global-reassignment-then-cross-function-
+// read, NOT a self-host-specific issue. Relying on the module's OWN
+// top-level initializer (proven to work: a global mutated by push()
+// from a single call chain, never REASSIGNED from elsewhere, is fine)
+// sidesteps it. Safe today because `tokenize()` runs exactly once per
+// kryos-stage1 process invocation (the `obj`/`build` CLI path compiles
+// one file per process). If a future caller invokes `tokenize()` twice
+// in one process, tokens would wrongly accumulate across calls -- add a
+// real reset once the underlying global-reassignment bug is fixed
+// (tracked in tools/loop/LEDGER.md).
+let mut LEX_TOKENS: [Token] = []
 
 // -------------------------------------------------------------------
 // Character classification helpers
@@ -84,8 +120,9 @@ fn is_upper(ch: str) -> bool {
 // -------------------------------------------------------------------
 
 fn lexer_new(src: str) -> Lexer {
-    let tokens: [Token] = []
-    return Lexer { src: src, pos: 0, tokens: tokens }
+    // Do NOT reset LEX_TOKENS here -- see the global's declaration comment
+    // above for why a cross-function reassignment corrupts it.
+    return Lexer { src: src, pos: 0 }
 }
 
 // -------------------------------------------------------------------
@@ -112,7 +149,7 @@ fn lex_peek_at(lex: Lexer, offset: i32) -> str {
 }
 
 fn lex_advance(lex: Lexer) -> Lexer {
-    return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+    return Lexer { src: lex.src, pos: lex.pos + 1 }
 }
 
 fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
@@ -122,7 +159,7 @@ fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
         return lex
     }
     if lex.src[lex.pos] == expected {
-        return Lexer { src: lex.src, pos: lex.pos + 1, tokens: lex.tokens }
+        return Lexer { src: lex.src, pos: lex.pos + 1 }
     }
     return lex
 }
@@ -133,9 +170,8 @@ fn lex_match_char(lex: Lexer, expected: str) -> Lexer {
 
 fn lex_emit(lex: Lexer, kind: i32, start: i32, end: i32, text: str) -> Lexer {
     let tok = Token { kind: kind, text: text, start: start, end: end }
-    let mut tokens = lex.tokens
-    push(tokens, tok)
-    return Lexer { src: lex.src, pos: lex.pos, tokens: tokens }
+    LEX_TOKENS = push(LEX_TOKENS, tok)
+    return lex
 }
 
 // -------------------------------------------------------------------
@@ -620,5 +656,5 @@ fn tokenize(src: str) -> [Token] {
 
     // Emit the Eof sentinel
     lex = lex_emit(lex, TK_EOF, lex.pos, lex.pos, "")
-    return lex.tokens
+    return LEX_TOKENS
 }

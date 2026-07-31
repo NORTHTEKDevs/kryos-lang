@@ -160,6 +160,57 @@ mod imp {
     use std::sync::atomic::AtomicU8;
     static PROBED: AtomicU8 = AtomicU8::new(0);
 
+    // -----------------------------------------------------------------
+    // Exit-call tracer (gated by KRYOS_EXIT_TRACE=1).
+    //
+    // Registers a C `atexit` callback that fires for ANY normal process
+    // termination that goes through the CRT `exit()` path -- including
+    // `std::process::exit` (Rust routes through the platform `exit()` on
+    // Windows) -- but NOT for `ExitProcess`/`TerminateProcess` called
+    // directly, nor for `std::process::abort`/`__fastfail`. So: if this
+    // fires before a mystery exit, the death goes through a CRT `exit()`
+    // call somewhere in the call graph, and the printed RVAs pinpoint the
+    // caller (map through llvm-symbolizer against the matching .pdb). If
+    // it does NOT fire, the process was killed by something that bypasses
+    // the CRT entirely (an out-of-process kill, or a raw ExitProcess/
+    // TerminateProcess/fast-fail call).
+    // -----------------------------------------------------------------
+    extern "C" {
+        fn atexit(cb: extern "C" fn()) -> i32;
+    }
+    extern "system" {
+        fn RtlCaptureStackBackTrace(
+            frames_to_skip: u32,
+            frames_to_capture: u32,
+            back_trace: *mut *mut core::ffi::c_void,
+            back_trace_hash: *mut u32,
+        ) -> u16;
+    }
+
+    extern "C" fn atexit_trace_cb() {
+        unsafe {
+            let base = GetModuleHandleW(std::ptr::null()) as usize;
+            let mut frames: [*mut core::ffi::c_void; 32] = [std::ptr::null_mut(); 32];
+            let n = RtlCaptureStackBackTrace(0, 32, frames.as_mut_ptr(), std::ptr::null_mut());
+            eprint!("[EXIT-TRACE] atexit fired; base={:#x} frames(rva)=", base);
+            for f in frames.iter().take(n as usize) {
+                let a = *f as usize;
+                if a >= base {
+                    eprint!(" {:#x}", a - base);
+                } else {
+                    eprint!(" sys:{:#x}", a);
+                }
+            }
+            eprintln!();
+        }
+    }
+
+    fn install_exit_trace() {
+        unsafe {
+            atexit(atexit_trace_cb);
+        }
+    }
+
     pub fn install() {
         // Reserve guard stack for exception handlers ON THIS THREAD. A
         // stack-overflow exception is delivered on the exhausted stack; with
@@ -183,6 +234,9 @@ mod imp {
         }
         if std::env::var_os("KRYOS_WATCHDOG").is_some() {
             start_watchdog();
+        }
+        if std::env::var_os("KRYOS_EXIT_TRACE").is_some() {
+            install_exit_trace();
         }
         if std::env::var_os("KRYOS_FAULT_TRACE").is_none() {
             // Even without the full trace handler, a stack overflow must not

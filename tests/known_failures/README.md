@@ -16,3 +16,4 @@ the file here.
 | File | Bug |
 |---|---|
 | `spawn_loop_capture.kry` | Cranelift reuses one box for a loop-local aggregate captured by `spawn`, so every thread observes the last iteration's value. LLVM AOT is correct. Expected `0 10 20 30` in some order; Cranelift prints `30 30 30 30`. |
+| `global_array_reassign_corrupt.kry` | A top-level `let mut [T]` global reassigned (to a fresh value) by one function and then read/pushed by a DIFFERENT function reads back an all-zero array header (`corrupt array header ... cap=0, data=0x0`) on LLVM AOT. Works fine when only ever mutated via `push` from a single call chain rooted at the global's own initializer. Expected `len=3`; panics instead. Found while root-causing ledger item 2 (bootstrap tokenize -1 crash). |
