@@ -57,30 +57,53 @@ prints the four distinct values. **Silent wrong answer.** Independently
 reproduced. Likely the per-iteration box is hoisted out of the loop in the
 capture-boxing path.
 
-### 1b. Bootstrap on WINDOWS ONLY: `parser.kry` / `lower.kry` die with exit -1
-`PRE-EXISTING`  `NOT CI`
+### 2. Bootstrap WINDOWS-ONLY: stage-1 exits -1 inside `tokenize` on big files
+`PRE-EXISTING`  `CI IS GREEN`  `NOT A BLOCKER`
 
-14/16 locally. **Linux CI is GREEN** (`build-and-test` passes at `3545078`, all
-9 jobs), so this is Windows-local and does not block a release.
+14/16 locally (`parser.kry`, `lower.kry`). **Linux CI passes all 9 jobs**, so
+this does not gate a release -- but a self-host compiler that dies ~50% of the
+time on its own source is not something to ship on Windows either.
 
-Characterized, not guessed:
-- **Nondeterministic in isolation** -- parser alone gives 127/0/127, lower 0/127,
-  so it IS the flake class, but at a ~50% rate rather than the documented rare
-  contention. It fails with nothing else running.
-- **Not heap corruption.** 0 double-frees under `KRYOS_FREE_DIAG`, and it still
-  fails under diag (which never deallocates).
-- **Exit code is `0xFFFFFFFF` (-1)**, NOT a structured exception -- no
-  `0xC0000005` access violation, no `0xC00000FD` stack overflow. So the process
-  is not faulting; something terminates it.
-- **No `-1` exit exists in either the runtime or the self-host source.** The
-  runtime's deliberate exits are 101/98/78/77 and the user `exit(code)` builtin;
-  `grep` finds no `exit(-1)` in `self-host/*.kry`.
-- Dies silently right after printing `File: self-host/parser.kry`, with no
-  panic message and no diagnostic -- 68 bytes of output versus 244 on success.
+**Localized** to `tokenize(source)`: the last output is `File: <name>`, and the
+next statement in the `obj` path is `tokenize` (main.kry:569).
 
-Next: the two failing modules are the most deeply recursive (recursive-descent
-parser, recursive lowering), so thread/stack limits are worth probing, as is
-an external terminator (Defender has a documented history on this binary).
+**Dose-response on input size** (prefixes of parser.kry, 6 runs each) -- the
+failure probability scales with input, i.e. with allocation count:
+
+| 30KB | 60KB | 90KB | 109KB |
+| --- | --- | --- | --- |
+| 0/6 | 1/6 | 3/6 | 3/6 |
+
+The two failing modules are the two LARGEST self-host files (lower 128KB,
+parser 109KB); the third largest (types 86KB) passes.
+
+**RULED OUT, each by measurement -- do not re-litigate these:**
+- *Rotating-module contention* (the flake in MEASUREMENT TRAPS): it repeats on
+  the same pair, and fails with nothing else running.
+- *The field-read fix / any recent commit*: stashing it and rebuilding
+  reproduces 14/16 exactly.
+- *Heap corruption / double-free*: 0 double-frees under `KRYOS_FREE_DIAG`, and
+  it still fails under diag (which never deallocates).
+- *The size-class pool allocator*: `KRYOS_PLAIN_ALLOC=1` routes every box and
+  buffer to the system allocator and crashes at the SAME rate (4/8 vs 4/8).
+- *Windows Defender*: no detections in its threat log, and the repo and
+  `compiler/target` are both on the exclusion list.
+- *An unhandled exception*: the exit code is `0xFFFFFFFF` (-1), NOT a structured
+  exception -- no `0xC0000005` access violation, no `0xC00000FD` stack overflow
+  -- and **Windows logs no Application Error event at all**. The process is not
+  faulting; it is exiting deliberately.
+- *A known runtime exit path*: the runtime's deliberate exits are 101 / 98 / 78
+  (watchdog) / 77 and the user `exit(code)` builtin. `grep` finds no `exit(-1)`
+  in the runtime, the native stdlib, or `self-host/*.kry`.
+
+**So: who calls exit(-1)?** That is the open question, and it is the ONLY
+question -- everything above is closed. Next probes worth the tokens:
+(1) confirm the death point without trusting redirected stdout, which is
+block-buffered and may simply have lost the tail -- the 68-vs-244-byte reading
+is NOT reliable evidence on its own; (2) trace `ExitProcess`/`exit` (a WinDbg
+`bp kernel32!ExitProcess` on a loop until it fires names the caller
+immediately); (3) check whether stage-1 was built by a stage-0 carrying the
+same defect, since this binary is self-compiled.
 
 ### 3. Struct-argument leak — ~86MB per 1M calls
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
@@ -92,7 +115,7 @@ same struct's fields read directly. Needs the receiver/box representation work;
 
 
 
-### 5. `comptime { }` runs at RUNTIME while the docs sell compile-time
+### 4. `comptime { }` runs at RUNTIME while the docs sell compile-time
 Fix the docs (hours). Real compile-time evaluation is months and should not
 gate 1.0.
 
