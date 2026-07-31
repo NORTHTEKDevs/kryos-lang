@@ -77,3 +77,6 @@ scratchpad/
 
 # Working scratch files (probes/repros), not part of the compiler
 scratchpad/
+
+# overstory build artifacts (never commit these)
+.overstory/
