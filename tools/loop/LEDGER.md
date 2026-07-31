@@ -51,6 +51,153 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 1. NEW — capability escape via closure/fn-value laundering: a "zero-capability" function can exercise ANY authority handed to it as a callback. NOT FIXED (design note only — see rationale below)
+`tests/security/cap_escape_closure_launder.kry` + fixture
+`tests/security/secret_for_closure_launder.txt` (repro below). **VERIFIED — the
+single most serious open item, worse than the closed raw-memory escape**: it
+needs no special builtin, no raw memory, no FFI — just ordinary closures,
+which are one of the language's most idiomatic features (every `std::iter`
+HOF and callback-style API uses them, per CLAUDE.md gotcha #19-20). It defeats
+BOTH `--capabilities-mode=inferred` (the default) AND `--strict-capabilities`
+("maximum scrutiny... every function auditable in isolation" per
+`docs/10-capabilities.md`), and it defeats `kryos audit` too.
+
+```
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Zero capabilities declared. Its body only ever calls a PARAMETER of
+// function type -- never a NAMED builtin or NAMED function -- so it is
+// invisible to fn_capabilities (keyed by NAME) in every mode.
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    println("recovered via zero_cap_tool: " + zero_cap_tool(reader))
+}
+```
+
+**Proof, both ways, both modes** (`compiler/target/release/kryos.exe`, HEAD
+677ecc3):
+```
+$ kryos check tests/security/cap_escape_closure_launder.kry              # inferred (default)
+exit=0   (no diagnostics — zero_cap_tool's INFERRED set is computed empty)
+
+$ kryos check --strict-capabilities tests/security/cap_escape_closure_launder.kry
+exit=0   (no diagnostics — zero_cap_tool's DECLARED set is empty, and stays empty)
+
+$ kryos run tests/security/cap_escape_closure_launder.kry
+recovered via zero_cap_tool: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+exit=0
+
+$ kryos audit tests/security/cap_escape_closure_launder.kry
+== Capability inventory ==
+  fs:read: 2 functions
+    - make_secret_reader
+    - main
+                                    # zero_cap_tool is absent from the audit
+                                    # entirely -- the dedicated auditing tool
+                                    # also misses its true fs:read authority.
+```
+**Negative control (proves the checker isn't just broadly broken — it
+specifically misses fn-value indirection):** the identical program with
+`zero_cap_tool` calling `file_read(path)` DIRECTLY instead of through the
+closure parameter is correctly REJECTED under `--strict-capabilities`:
+```
+error[E0505]: builtin `file_read` requires `fs:read` capability
+ --> ...:2:12
+  2 |     return file_read(path)
+   |            ^^^^^^^^^^^^^^^ requires `fs:read`
+exit=1
+```
+
+**Root cause (read, not guessed):** `kryos-capabilities/src/checker.rs`
+tracks authority ONLY by NAME — `fn_capabilities: HashMap<String,
+CapabilitySet>` is populated from `Decl::Function`/`Decl::Actor` names, and
+every enforcement site (`enforce_callee_name`, `check_builtin_value_ref`)
+looks a callee up BY NAME. Calling a value bound to a local/parameter of
+function type (`reader()` where `reader: fn() -> str`) resolves to a
+single-segment identifier that is never a registered builtin, extern, or
+user-function NAME, so `enforce_callee_name` finds nothing and no diagnostic
+fires — REGARDLESS of what the actual closure value does at runtime. The
+same gap exists in `compute_inferred_capabilities`/`collect_caps_expr`:
+calling a parameter contributes nothing to the caller's inferred set, so the
+under-approximation is silent, not just an enforcement miss — `kryos audit`
+reads the same map and inherits the blind spot. A closure LITERAL's body
+(`|| file_read(path)`) is only checked ONCE, statically, against its
+LEXICAL DEFINING scope (`make_secret_reader`, which legitimately has
+`fs:read`) — there is no mechanism connecting that check to the scope(s) the
+resulting fn-VALUE is later invoked from once it escapes as a return value,
+argument, struct field, or array element. (`Expr::FieldAccess` in
+`check_expr` also never checks the field name as a value-ref, so a closure
+stored in a struct field and read out — `registry.reader()` — is the same
+hole by a different route; not written up as a separate repro since it is
+the identical root cause, not a new mechanism.)
+
+**Why this is a DESIGN NOTE, not a patch (a fix was scoped and deliberately
+NOT attempted this session):**
+
+The only actually-sound fix is giving function TYPES a capability bound —
+i.e. `fn() -> str` would need to carry (or infer) "this callable requires
+`fs:read` to invoke," and every call through a value of that type would be
+checked against the CALLING scope like any other gated operation. That is a
+real type-system feature (capability-polymorphic / effect-polymorphic
+function types), not a table entry — closer in scope to adding a new kind of
+generic bound than to any of the CLOSED items above.
+
+**The obvious cheap alternative was considered and ruled out as unsafe:**
+treating a call through ANY non-directly-named fn-typed value as requiring
+the caller to hold `Capability::All` (the maximally conservative, always-
+sound stance: "if the checker can't prove what a callback does, assume it
+can do everything"). This was NOT implemented because it cascades exactly
+like the raw-memory case the TCB-split fix explicitly avoided: closures
+passed to higher-order functions are pervasive and idiomatic in Kryos
+(`std::iter::{map,filter,fold,reduce,scan,...}`, every callback-shaped
+stdlib API, CLAUDE.md gotchas #19-20 document this at length) — blanket-
+gating "calls a fn parameter" behind `all` would force nearly every HOF call
+site in the stdlib and self-host compiler to declare `all`, which defeats
+least-privilege as completely as the escape itself and was measured to be
+the same failure mode ("closes the hole by making the language unusable")
+documented for the raw-memory table-entry approach.
+
+**A real fix is tractable but non-trivial, sketched for whoever picks this
+up:** Kryos already does whole-program compilation and already computes a
+fixed-point "inferred capability set" per function name
+(`compute_inferred_capabilities`). The sound version needs the SAME
+fixed-point computation extended to be **call-site-sensitive for fn-typed
+arguments**: when a call `f(closure_expr)` passes a LAMBDA LITERAL or a
+NAMED-FUNCTION reference as an argument bound to a `fn(...)`-typed
+parameter, and `f`'s body calls that parameter, the capability that
+particular CALL SITE of `f` requires is the union of `f`'s own direct
+requirements and the PASSED closure's intrinsic requirement — not a single
+global summary for `f` (which is what would be needed to keep `f` itself
+capability-polymorphic, since `f` may legitimately be called elsewhere with
+an innocuous closure). This is an interprocedural argument-flow analysis,
+not a lookup table; it needs its own design pass (and a decision on what
+happens when the flow can't be statically resolved — e.g. a closure read
+out of a collection, or selected at runtime by a match/if — where the sound
+answer is still "requires everything the checker can't rule out", scoped
+down as narrowly as points-to precision allows).
+
+**Ruled out as NOT the fix:** adding `reader`/generic fn-typed PARAMETER
+names to `fn_capabilities` by convention, or requiring `@capabilities` on
+any function with a `fn(...)`-typed parameter — neither actually computes
+the real requirement per call site; both are either no-ops (an annotation
+requirement with no enforced correctness) or force the same `all`-everywhere
+cascade as the ruled-out blanket fix above.
+
+**Not added to `tests/security_gate.sh`** — that gate encodes a boundary
+that HOLDS; this repro is left as a standing, documented, NOT-gated artifact
+(same status as `tests/mem/struct_arg_leak.kry` for the struct-leak design
+note) so it is not silently "fixed" by an unrelated future change without
+being re-verified, but does not turn CI permanently red for an open design
+question.
+
 ### 2b. NEW (found while closing #2): global-reassignment-then-cross-function-read corrupts an array
 `tests/known_failures/global_array_reassign_corrupt.kry` (repro below).
 Isolated minimal repro, nothing to do with self-host:

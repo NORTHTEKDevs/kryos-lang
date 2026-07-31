@@ -1,0 +1,45 @@
+// SECURITY -- CAPABILITY ESCAPE via closure/fn-value laundering.
+//
+// `zero_cap_tool` declares NO capabilities. Under `--strict-capabilities` it
+// is checked "as if annotated with exactly its declaration" (docs/10-capabilities.md:
+// "every function is auditable in isolation"). Under the default `inferred`
+// mode its capability set is computed as the fixpoint union of what its body
+// calls. In BOTH modes the checker reports `zero_cap_tool` as requiring
+// NOTHING -- yet at runtime it reads an arbitrary file, because its body
+// only ever calls a PARAMETER of function type (`reader()`), never a NAMED
+// builtin or NAMED function. `fn_capabilities` (kryos-capabilities/src/
+// checker.rs) is keyed by NAME; a value flowing through a local/parameter
+// binding is invisible to it, so a closure built by privileged code and
+// handed down as a callback silently carries its authority straight through
+// a callee the checker believes holds none.
+//
+// This is the closure/fn-value analogue of the raw-memory escape (str_to_ptr
+// + ptr_byte_at) that was already closed -- but it does not touch raw
+// memory or FFI at all, so that fix does not cover it. It goes through the
+// language's own capability-typed function values.
+//
+// ACCEPTANCE: `zero_cap_tool` must be rejected (or its true authority must be
+// visible to `kryos audit` / the checker) when it invokes an fn-value
+// parameter that closes over a gated builtin. Today it compiles clean under
+// BOTH `--capabilities-mode=inferred` (default) and `--strict-capabilities`,
+// and returns the real file contents.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Zero capabilities declared. Calling `reader()` -- a PARAMETER, not a named
+// function/builtin -- is invisible to `fn_capabilities`, so this function's
+// declared (strict mode) AND inferred (default mode) capability set is the
+// EMPTY set, even though it performs a real `fs:read` at runtime.
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let leaked = zero_cap_tool(reader)
+    println("recovered via zero_cap_tool: " + leaked)
+}
