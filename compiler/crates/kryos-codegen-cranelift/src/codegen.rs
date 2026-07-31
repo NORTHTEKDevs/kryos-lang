@@ -3530,6 +3530,38 @@ fn translate_instruction<M: Module>(
                                 &mut visiting,
                             )?
                         }
+                        // An ENUM capture is ALWAYS a heap pointer on this
+                        // backend (kryos_calloc'd by RValue::EnumVariant), so
+                        // an unhandled Enum arm here fell through to `_ =>
+                        // val`: the raw shared pointer, no clone. MIR still
+                        // treats the arg as borrowed by `spawn` and runs its
+                        // normal scope-end `drop(_N)` right after -- which
+                        // freed the box while the spawned OS thread could
+                        // still be about to read it. Because the freed
+                        // allocation is immediately reused by the NEXT loop
+                        // iteration's same-size `kryos_calloc`, every closure
+                        // that lost the race read whichever iteration's value
+                        // last occupied that address (observed as all four
+                        // threads printing the FINAL iteration's value,
+                        // `30 30 30 30`, with a `10`/`20` occasionally
+                        // sneaking in if a thread ran before the reuse).
+                        // Deep-copy into a fresh box (mirrors the Struct arm
+                        // above and the LLVM backend's Enum handling) so the
+                        // THREAD owns an independent copy.
+                        Some(MirType::Enum(ename))
+                            if translator.enum_defs.contains_key(ename.as_str()) =>
+                        {
+                            let ename = ename.clone();
+                            let mut visiting = HashSet::new();
+                            emit_enum_deep_copy(
+                                &ename,
+                                val,
+                                builder,
+                                translator,
+                                module,
+                                &mut visiting,
+                            )?
+                        }
                         _ => val,
                     };
                     builder

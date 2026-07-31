@@ -104,14 +104,48 @@ fn main() {
     }
     expect(recv(ch6) == 42, "two aggregate captures plus a trailing channel")
 
-    // ---- 7. per-iteration capture in a loop: NOT covered here ---------
-    // Deliberately omitted, because it currently FAILS on Cranelift and is a
-    // different bug from the ABI shift this file pins. Repro and details:
-    //   tests/known_failures/spawn_loop_capture.kry
-    //   docs/BUGS.md -> "spawn capture of a loop-local aggregate"
-    // Cranelift reuses ONE box across iterations (all threads observe the last
-    // value); LLVM AOT is correct. Fold that case back into this file once the
-    // Cranelift side is fixed.
+    // ---- 7. per-iteration capture in a loop ----------------------------
+    // Regression for a Cranelift-only bug (a different mechanism from the
+    // ABI shift this file otherwise pins): the spawn arg-store path had no
+    // MirType::Enum arm, so a per-iteration boxed `Msg` capture was passed
+    // to `kryos_spawn` as a raw shared pointer, un-cloned. MIR still emits
+    // the normal `drop(_N)` right after `spawn` (spawn is documented to
+    // clone heap args), which freed the box while the spawned OS thread
+    // could still be about to read it -- and the freed allocation was
+    // immediately reused by the NEXT iteration's same-size `kryos_calloc`,
+    // so a thread that lost the race read whichever iteration's value last
+    // occupied that address. Symptom: all four threads printed the FINAL
+    // iteration's value (`30 30 30 30`) instead of four distinct values,
+    // with an occasional `10`/`20` sneaking in depending on scheduling.
+    // LLVM AOT was always correct (it boxes the enum fresh at the spawn
+    // boundary). A VALUE assertion is required here, not just a no-crash
+    // check -- an earlier @copy corruption once passed conformance,
+    // no_double_free, AND bootstrap while still returning wrong data.
+    // Repro: tests/known_failures/spawn_loop_capture.kry
+    let ch7 = chan()
+    let mut k = 0
+    while k < 4 {
+        let mk = Msg.Val(k * 10)
+        spawn {
+            match mk {
+                Msg.Val(v) => send(ch7, v),
+                Msg.Pair(a, b) => send(ch7, a + b),
+                Msg.Nothing => send(ch7, -1),
+            }
+        }
+        k = k + 1
+    }
+    let mut got: [i64] = []
+    let mut n = 0
+    while n < 4 {
+        got = push(got, recv(ch7))
+        n = n + 1
+    }
+    sort(got)
+    expect(
+        got[0] == 0 and got[1] == 10 and got[2] == 20 and got[3] == 30,
+        "per-iteration loop capture: four distinct values (got {got[0]} {got[1]} {got[2]} {got[3]}), not one shared box"
+    )
 
     println("conformance spawn aggregate-capture ABI: PASS")
 }
