@@ -94,6 +94,21 @@ pub struct TypeChecker {
     /// top-level two-pass model (signatures collected before any body is
     /// checked) for this one nested/let-bound case.
     pending_self_recursive_name: Option<String>,
+    /// Spans of array-literal expressions whose declared/parameter type is
+    /// SPECIFICALLY `[dyn Trait]` (an array of a `dyn` element), which
+    /// `reject_dyn_in_container` already rejects with E0110 before the
+    /// literal is ever inferred. Consulted by `Expr::ArrayLiteral` to skip
+    /// its normal pairwise element-unification: forcing `[A{}, B{}]`'s
+    /// elements to unify with each other produced a second, confusing
+    /// `E0100 type mismatch: expected A, found B` on top of the real E0110
+    /// -- noise, since the annotation was already rejected as unsupported
+    /// and the elements were never supposed to be the SAME concrete type.
+    /// Populated by `Stmt::Let` from the raw (pre-resolution) `TypeExpr`, so
+    /// this is narrowly scoped to the dyn-in-array shape specifically --
+    /// NOT to "any annotation that happened to resolve to Type::Error"
+    /// (e.g. a plain unknown-type-name annotation over a genuinely
+    /// mismatched array literal must keep BOTH diagnostics).
+    suppress_array_elem_unify: std::collections::HashSet<Span>,
 }
 
 impl Default for TypeChecker {
@@ -124,6 +139,7 @@ impl TypeChecker {
             actor_nonvoid_handlers: std::collections::HashMap::new(),
             pending_self_recursive_name: None,
             pattern_dup_seen: None,
+            suppress_array_elem_unify: std::collections::HashSet::new(),
         }
     }
 
@@ -2330,6 +2346,22 @@ impl TypeChecker {
                 // pre-bind `name` before checking its own body.
                 if pattern.is_none() && matches!(value, Some(Expr::Lambda { .. })) {
                     self.pending_self_recursive_name = Some(name.clone());
+                }
+                // See `suppress_array_elem_unify`: a `[dyn Trait]` annotation
+                // over an array literal is already rejected (E0110) by
+                // `resolve_type_expr` above -- don't let the array literal's
+                // own pairwise unify pile on a second, confusing diagnostic.
+                // Checked against the RAW annotation, not the resolved
+                // Type::Error it produced: Type::Error alone is ambiguous
+                // (an unrelated unknown-type-name annotation also resolves
+                // to it, and there a genuinely mismatched array literal
+                // must keep its own element diagnostic).
+                if let (Some(TypeExpr::Array { element, .. }), Some(Expr::ArrayLiteral { span: arr_span, .. })) =
+                    (ty.as_ref(), value.as_ref())
+                {
+                    if matches!(element.as_ref(), TypeExpr::DynTrait { .. }) {
+                        self.suppress_array_elem_unify.insert(*arr_span);
+                    }
                 }
                 let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
 
@@ -4803,10 +4835,21 @@ impl TypeChecker {
                     }
                 } else {
                     let first_ty = self.infer_expr(&elements[0]);
+                    // See `suppress_array_elem_unify`: when the enclosing
+                    // declared/parameter type for THIS literal already
+                    // resolved to Type::Error (e.g. `[dyn Handler]`,
+                    // rejected by `reject_dyn_in_container` with E0110),
+                    // forcing every element to unify with the first one is
+                    // redundant noise on top of the real diagnostic -- still
+                    // infer each element (so ITS OWN errors, if any, still
+                    // surface), just skip the cross-element unify.
+                    let skip_unify = self.suppress_array_elem_unify.contains(span);
                     for elem in &elements[1..] {
                         let elem_ty = self.infer_expr(elem);
-                        if let Err(diag) = self.engine.unify(&first_ty, &elem_ty, *span) {
-                            self.diagnostics.push(diag);
+                        if !skip_unify {
+                            if let Err(diag) = self.engine.unify(&first_ty, &elem_ty, *span) {
+                                self.diagnostics.push(diag);
+                            }
                         }
                     }
                     Type::Array {

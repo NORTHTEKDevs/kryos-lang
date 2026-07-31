@@ -84,13 +84,13 @@ fn fetch_and_save(url: str, path: str) {
 
 Under `--strict-capabilities` (the default for new `kryos new` projects), this is deny-by-default: a function with no capability annotation cannot perform I/O, network access, or use hardware accelerators, so supply-chain attacks that sneak network calls into utility functions become compile errors. Capability checking is not globally deny-by-default outside strict mode.
 
-### Compile-Time Evaluation
+### Compile-Time Evaluation (planned, not implemented yet)
 
-The `comptime` keyword evaluates expressions during compilation. Unlike Rust's limited const evaluation, Kryos supports arithmetic, conditionals, and function calls at compile time.
+The `comptime` keyword is reserved and parses today, and is *intended* to evaluate expressions during compilation the way Zig's `comptime` blocks do. **It does not yet.** The compiler currently lowers a `comptime { }` block as ordinary runtime code -- it runs in place, once per execution, with full access to outer-scope variables and I/O, exactly like a bare block. The examples below produce the right numbers because runtime evaluation gives the same answer as compile-time evaluation would for pure arithmetic -- not because any folding happens. See [docs/11-comptime.md](11-comptime.md) for the honest current-vs-planned breakdown.
 
 ```kryos
-let table_size = comptime { 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 }  // 256
-let magic = comptime { (100 + 200) * 3 - 50 }                   // 850
+let table_size = comptime { 2 * 2 * 2 * 2 * 2 * 2 * 2 * 2 }  // 256, computed at RUNTIME today
+let magic = comptime { (100 + 200) * 3 - 50 }                   // 850, computed at RUNTIME today
 ```
 
 ### Dynamic Dispatch When You Need It

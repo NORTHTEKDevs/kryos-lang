@@ -1,250 +1,198 @@
 # Compile-Time Evaluation
 
-> **Implementation Status:** The `comptime { }` block is fully parsed and lowered through MIR as `RValue::Comptime`. A compile-time constant evaluator is being implemented that folds arithmetic, comparisons, and boolean operations on literals at compile time. Comptime blocks containing only constant expressions will be replaced with their computed values. Comptime blocks that reference runtime variables fall back to runtime evaluation. Compile-time function execution and type-level comptime are planned for a future release.
+> **Implementation Status (accurate as of this commit): `comptime { }` does NOT
+> evaluate at compile time.** It is fully parsed (`Expr::ComptimeBlock`) and
+> lowered through MIR (`RValue::Comptime(inner)`), but both the Cranelift and
+> LLVM backends lower the inner expression **directly as ordinary runtime
+> code, in place, every time control reaches it** -- exactly like a bare
+> `{ }` block with no `comptime` keyword at all. There is no compile-time
+> constant evaluator, no AST-to-literal folding, no isolated interpreter, no
+> caching, and no restriction on what the block can do. Concretely, and
+> verified by running the compiler, NOT by reading its source:
+>
+> - A comptime block **reads outer-scope variables** normally.
+> - `println` (and any other I/O) **executes at runtime**, printing every time
+>   the block runs -- including once per call if it's inside a function called
+>   more than once.
+> - `file_read`, `http_get`, `env_get`, and every other capability-gated
+>   builtin work inside a comptime block exactly as they would outside one,
+>   subject to the *same* `@capabilities` rules as the enclosing function --
+>   there is no comptime-specific I/O restriction.
+> - Nothing is cached. Two calls to a function containing the same comptime
+>   block re-run the block's statements both times.
+>
+> If you are choosing Kryos in part because `comptime` promises isolation or
+> determinism, **do not rely on that today.** Everything below the "What Runs
+> Today" section describes the *planned* design, clearly marked as such, not
+> current behavior.
 
-`comptime` blocks are designed to run during compilation, not at runtime. The result will be baked into the program as a constant. Use them for lookup tables, precomputed values, configuration constants, and anything expensive that does not need to be recalculated every time the program starts.
+## Why `comptime { }` exists at all right now
 
-## Syntax
+The syntax and MIR plumbing were added ahead of the evaluator so that
+`comptime`-using programs parse, type-check, and produce correct *runtime*
+answers (a comptime block's value is whatever a plain block containing the
+same statements would produce) without breaking once real compile-time
+evaluation lands. That is also why the examples throughout this page compute
+the right numbers -- runtime evaluation gives the same answer as compile-time
+evaluation would, for anything with no I/O and no compile-time-only intent.
+The keyword is real, reserved, and forward-compatible; the compile-time
+*semantics* it is meant to convey are not implemented yet.
 
-Wrap any expression or group of statements in `comptime { }`:
+## What runs today
+
+```kryos
+fn main() {
+    let x: i64 = 7
+    let y = comptime {
+        println("this prints at RUNTIME, once per execution")
+        x + 1
+    }
+    println(to_string(y))
+}
+```
+
+Output:
 
 ```
+this prints at RUNTIME, once per execution
+8
+```
+
+`x` (an outer-scope runtime variable) is read normally inside the block, and
+the `println` inside it executes exactly once, at the point the block is
+reached -- there is no compile-time pass that would have run it earlier or
+suppressed it. A comptime block called from a function invoked N times runs
+N times:
+
+```kryos
+fn get_value() -> i64 {
+    return comptime {
+        println("evaluating")
+        42
+    }
+}
+
+fn main() {
+    println(to_string(get_value()))   // prints "evaluating" then "42"
+    println(to_string(get_value()))   // prints "evaluating" then "42" AGAIN
+}
+```
+
+Treat `comptime { EXPR }` as syntactic sugar for `{ EXPR }` today -- a plain
+block, evaluated where it appears, with full access to the enclosing scope
+and full I/O capability (gated the same way any other code in that function
+is gated). There is no isolation, no determinism guarantee, and no
+performance benefit: it costs exactly what the equivalent bare block would
+cost, every time it runs.
+
+## Syntax (this part is real)
+
+```kryos
 let pi = comptime {
     3.14159
 }
 ```
 
-After compilation, this is identical to `let pi = 3.14159`. The `comptime` block is evaluated once during compilation, and the result replaces the block entirely in the program.
+Wraps any expression or group of statements in `comptime { }`. Type-checks
+and runs like `let pi = { 3.14159 }` would.
 
-## How It Works (Target Design)
+## Should I use `comptime` today?
+
+There is no reason to reach for it over a plain block or a plain function
+call -- it has no effect the language doesn't already give you a normal
+block. If your program's *correctness* would depend on the block actually
+running at compile time (a lookup table you need embedded in the binary with
+no runtime cost, a deterministic-by-construction constant, I/O suppressed at
+build time), **that guarantee does not exist yet** -- don't write code that
+assumes it. If you just want a computed constant and don't care when it's
+computed, a plain `let` is equivalent and clearer:
+
+```kryos
+// Equivalent to a comptime block today -- no compile-time work happens
+// either way, so this is the honest way to write it:
+let table_size = 1024 * 16
+```
+
+## Planned design (ASPIRATIONAL -- not implemented)
+
+Everything in this section describes the intended future evaluator. None of
+it is true of the compiler today. It is documented here so contributors
+building the real evaluator have a target, and so readers can tell "planned"
+apart from "current" at a glance.
 
 The planned implementation will:
 
-1. Walk the AST before codegen and find `ComptimeBlock` nodes
-2. Create a fresh, isolated evaluator instance
-3. Execute the block's statements in that evaluator
-4. Convert the result back into an AST literal node (IntLiteral, StringLiteral, etc.)
-5. Replace the `ComptimeBlock` in the AST with that literal
+1. Walk the AST before codegen and find `ComptimeBlock` nodes.
+2. Create a fresh, isolated evaluator instance with no access to outer-scope
+   runtime state.
+3. Execute the block's statements in that evaluator, with I/O (`println`,
+   `file_read`, `http_get`, `env_get`, FFI, `spawn`/actors, GPU/quantum ops)
+   rejected as compile-time errors -- comptime evaluation is meant to be
+   **deterministic**: the same source must always produce the same compiled
+   program regardless of what's on disk or the network at build time.
+4. Convert the result back into an AST literal node (`IntLiteral`,
+   `StringLiteral`, etc.) for primitives and arrays of primitives.
+5. Replace the `ComptimeBlock` in the AST with that literal, so the runtime
+   program never re-executes the block -- and cache by AST node identity so a
+   comptime block reached from a hot path is evaluated once, not once per
+   call.
 
-Currently, `comptime` blocks are parsed as `Expr::ComptimeBlock` in the AST, lowered to `RValue::Comptime(inner)` in MIR, and both the Cranelift and LLVM codegens lower the inner expression directly. The compile-time evaluation step (folding to constants) is planned.
+If you need file contents baked into the binary *today*, the honest
+workaround is a build script that generates a `.kry` source file containing
+the content as a string literal, then compile that -- not `comptime`, which
+currently would just read the file at runtime, on every call, gated by
+ordinary capability rules (see "What runs today" above).
 
-## Use Cases
+### Planned use cases (once the evaluator exists)
 
-### Precomputed lookup tables
+Precomputed lookup tables, derived constants, and compile-time configuration
+values are the intended sweet spot -- moving computation from runtime to
+compile time so a 1-second compile-time cost replaces a per-call runtime
+cost. None of this happens today; the tradeoff described here (compile time
+up, runtime down, possible binary-size increase for embedded data) is a
+description of the goal, not a measured property of the current compiler.
 
-Build arrays of values at compile time so they are ready instantly at runtime:
+### Planned isolation model
 
-```
-let squares = comptime {
-    let mut arr = []
-    for i in range(5) {
-        push(arr, i * i)
-    }
-    arr
-}
+The intent is that a comptime block cannot read or write files, make network
+requests, access environment variables or arguments, call FFI, use `spawn` or
+actors, read variables defined outside the block, call `println` (comptime
+output would go nowhere -- a headless evaluator), or touch GPU/quantum ops.
+**None of these restrictions exist today** -- see "What runs today" above,
+where the exact opposite was demonstrated for outer-variable reads, I/O, and
+`println`.
 
-println(to_string(squares[4]))    // 16
-```
+### Planned result types
 
-The `squares` array `[0, 1, 4, 9, 16]` is built during compilation. At runtime, it is just a literal array -- no loop runs.
+The eventual evaluator is meant to fold to these AST literal kinds: `int`,
+`float`, `str`, `bool`, `none`, and `list` (element-wise), falling back to a
+string representation for structs/enums. This table describes the target
+folding surface, not a current capability -- today nothing folds; the block's
+runtime value is used directly, whatever type it is.
 
-### Computed constants
+## Comparison with other languages (target design, not current behavior)
 
-Derive constants from expressions:
-
-```
-let table_size = comptime {
-    let base = 1024
-    base * 16
-}
-// table_size is 16384 at runtime, no multiplication needed
-```
-
-### Configuration values
-
-Compute configuration at build time:
-
-```
-let max_retries = comptime {
-    let base = 3
-    let multiplier = 2
-    base * multiplier
-}
-```
-
-### Mathematical constants
-
-Precompute values that would otherwise require function calls:
-
-```
-let hypotenuse = comptime {
-    let a = 3
-    let b = 4
-    a * a + b * b
-}
-println(to_string(hypotenuse))    // 25
-```
-
-### String assembly
-
-Build strings at compile time:
-
-```
-let greeting = comptime {
-    let parts = ["hello", " ", "world"]
-    join("", parts)
-}
-println(greeting)    // hello world
-```
-
-### Multiple comptime blocks
-
-You can have as many comptime blocks as you need in a single module:
-
-```
-let a = comptime { 10 + 5 }
-let b = comptime { 20 * 2 }
-println(to_string(a + b))    // 55
-```
-
-### Comptime inside functions
-
-Comptime blocks work inside function bodies too. The table is built once at compile time, not on every function call:
-
-```
-fn get_table() {
-    return comptime {
-        let mut t = []
-        for i in range(10) {
-            push(t, i * 2)
-        }
-        t
-    }
-}
-
-let table = get_table()
-println(to_string(table[5]))    // 10
-```
-
-Every call to `get_table()` returns the same precomputed array. No loop runs at runtime.
-
-## What Can Run at Comptime
-
-Comptime blocks run in a fresh interpreter instance. They have access to:
-
-- All arithmetic and comparison operators
-- `let` and `let mut` bindings
-- `if`/`elif`/`else` conditionals
-- `for` and `while` loops
-- `range()`, `len()`, `push()`, `pop()`
-- String operations (`join`, concatenation)
-- Array construction and indexing
-- `to_string()`, `abs()`, `min()`, `max()`, `sqrt()` and other math builtins
-- Function definitions inside the block (local helper functions)
-- `return` statements (exits the comptime block with that value)
-
-## What Cannot Run at Comptime
-
-Comptime blocks are **isolated**. They cannot:
-
-- Read or write files (`file_read`, `file_write`)
-- Make network requests (`http_get`, `http_post`)
-- Access environment variables or command-line arguments
-- Call FFI functions
-- Use `spawn` or actors
-- Access variables defined outside the comptime block
-- Use `println` (output goes nowhere -- the comptime interpreter is headless)
-- Access GPU or quantum operations
-
-The isolation is by design. Comptime evaluation must be **deterministic** -- the same source code must always produce the same compiled program, regardless of what is on disk or on the network at build time.
-
-### Common mistake: I/O in comptime
-
-This is the most frequent comptime error. Trying to read a file or make a network call inside comptime fails:
-
-```
-// This does NOT work
-let config = comptime {
-    file_read("config.toml")    // Error: file_read is not available in comptime
-}
-```
-
-If you need file contents baked into the binary, use a build script that generates a `.kry` source file with the content as a string literal before compilation.
-
-## Supported Result Types
-
-The comptime evaluator can produce these types, which it converts back to AST literals:
-
-| Runtime type | AST node | LLVM IR constant |
-|-------------|----------|-----------------|
-| `int` | `IntLiteral` | `i64 42` |
-| `float` | `FloatLiteral` | `double 0x...` (hex) |
-| `str` | `StringLiteral` | `[N x i8] c"...\00"` |
-| `bool` | `BoolLiteral` | `i1 0` or `i1 1` |
-| `none` | `NoneLiteral` | `i64 0` |
-| `list` | `ArrayLiteral` | (element-wise) |
-
-For complex types (structs, enums), the evaluator falls back to a string representation. Keep comptime results to primitives and arrays of primitives for best results.
-
-## Caching
-
-The evaluator caches results by AST node identity. If the same comptime block appears in a hot code path (inside a function called in a loop), it is only evaluated once. Subsequent hits return the cached value.
-
-This is an implementation detail -- you should not rely on it for correctness. But it means you do not pay for accidental redundant evaluation.
-
-## Performance Benefits
-
-Comptime moves computation from runtime to compile time. The tradeoff:
-
-- **Compile time** increases by however long the comptime blocks take to evaluate
-- **Runtime** decreases because the values are already computed
-- **Binary size** may increase if you embed large arrays or strings
-
-For lookup tables, precomputed coefficients, or configuration constants, the tradeoff is almost always worth it. A 1-second compile cost that saves 100 microseconds on every runtime invocation pays for itself after 10,000 calls.
-
-## Comparison with Other Languages
-
-### Rust `const fn`
-
-Rust's `const fn` marks a function as callable at compile time. The function itself is written normally, and the compiler evaluates it when used in a `const` context.
-
-```rust
-// Rust
-const fn square(x: i32) -> i32 { x * x }
-const VALUE: i32 = square(5);
-```
-
-Kryos `comptime` is more flexible -- it accepts arbitrary blocks of statements, not just single-expression functions. But it is less integrated: Rust can use `const fn` in type-level computations, while Kryos comptime is purely for value computation.
-
-### Zig `comptime`
-
-Kryos comptime is directly inspired by Zig's `comptime` blocks. The semantics are similar: a block of code runs at compile time and the result replaces the block.
-
-```zig
-// Zig
-const squares = comptime blk: {
-    var arr: [5]i32 = undefined;
-    for (0..5) |i| { arr[i] = i * i; }
-    break :blk arr;
-};
-```
-
-Zig goes further -- `comptime` can influence type computation, generate functions, and unroll loops at compile time. Kryos comptime is simpler: it evaluates expressions and produces values. No type-level computation yet.
-
-### C/C++ `constexpr`
-
-C++ `constexpr` functions and variables are evaluated at compile time when possible. The compiler decides whether to evaluate at compile time or runtime based on context.
-
-Kryos `comptime` is explicit: if you write `comptime { }`, it **always** evaluates at compile time. There is no ambiguity about when evaluation happens.
+These comparisons describe what Kryos `comptime` is *meant* to become, modeled
+loosely on Zig's `comptime` blocks (a block of code that runs at compile time
+and whose result replaces the block) and contrasted with Rust's `const fn`
+and C++'s `constexpr`. Read this section as design intent -- as of today,
+Kryos `comptime` is closer to "a block with a reserved keyword in front of
+it" than to any of these.
 
 ## Summary
 
-| Feature | Detail |
-|---------|--------|
-| Syntax | `comptime { statements }` |
-| When it runs | Before interpretation or codegen |
-| What it produces | Literal values (int, float, str, bool, array) |
-| Isolation | Fresh interpreter, no I/O, no side effects |
-| Caching | Yes, by AST node identity |
-| Main use | Lookup tables, constants, precomputed data |
-| Main restriction | No filesystem, network, FFI, or external state |
+| Feature | Today | Planned |
+|---|---|---|
+| Syntax | `comptime { statements }` -- parses, type-checks | same |
+| When it runs | At runtime, in place, every time reached | Before interpretation/codegen |
+| Outer-scope variable access | Yes, reads normally | No -- isolated evaluator |
+| I/O (`println`, `file_read`, `http_get`, `env_get`, FFI, `spawn`) | Works normally, gated by ordinary `@capabilities` rules | Rejected as a compile-time error |
+| Caching / re-evaluation | None -- re-runs every time reached | Cached by AST node identity |
+| Determinism guarantee | None (it's runtime code) | Yes, by construction |
+| Runtime cost | Same as an equivalent plain block | None -- replaced by a literal |
+
+If you hit unexpected behavior with `comptime`, the most likely explanation
+is that you expected the planned column and got the "Today" column. This is
+tracked as a known gap, not something to work around per-program -- there is
+no current substitute that gives you the planned guarantees; genuine
+compile-time constant folding is not available yet.

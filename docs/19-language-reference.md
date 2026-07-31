@@ -435,10 +435,22 @@ Drop semantics for compound types:
 
 ### 7.4 Mutability
 
-`let x = 0` is **immutable** — reassigning is `E0302`. Use `let mut x = 0`
-for a mutable binding. Field mutability follows the binding: through a
-mutable binding all fields are mutable; through an immutable binding, no
-fields are.
+`let x = 0` is **immutable** — reassigning the BARE BINDING itself (`x = 1`)
+is rejected with `E0302`. Use `let mut x = 0` for a mutable binding when you
+need to reassign the variable itself.
+
+**This does NOT extend to field or index mutation.** `E0302` only fires on a
+bare-identifier reassignment target; mutating a field or element THROUGH an
+immutable binding is deliberately allowed and is an established,
+conformance-tested part of the language (regression: `conf_ownership
+mutate_pair`) — `let p = Point{x: 1, y: 2}` then `p.x = 9` compiles and runs,
+mutating `p` in place, with no `mut` on `p`. The same holds for a
+struct-typed function PARAMETER's `self.field = v` inside a method or free
+function — parameters are never `mut`-annotated in Kryos, and mutating their
+fields is the normal way methods mutate `self`. (An earlier draft of this
+page claimed the opposite; it was aspirational and contradicted the
+language's own tests. Do not extend `E0302` to compound targets — this is a
+documentation correction, not a request to change the checker.)
 
 ---
 

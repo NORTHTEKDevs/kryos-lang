@@ -1,8 +1,51 @@
 # Foreign Function Interface (FFI)
 
-> **Implementation Status:** `extern` blocks (with optional ABI string, defaulting to `"C"`) are fully implemented -- parsed, type-checked, and compiled through both Cranelift and LLVM backends. Functions declared in extern blocks are resolved at link time. The runtime library (`kryos-rt`) and stdlib native library (`kryos-stdlib-native`) provide 100+ FFI functions covering strings, arrays, maps, tensors, process management, file I/O, channels, and more. Custom link flags in `kryos.toml` and `kryos bindgen` are **not yet implemented**.
+> **Implementation Status (corrected -- verified against this commit, not
+> the earlier draft of this page):** `extern` blocks (with optional ABI
+> string, defaulting to `"C"`) parse, type-check, and compile through both
+> backends -- but **calling an ARBITRARY real C-library function through one
+> is not reliably supported today**, despite what earlier versions of this
+> page (and its own examples) claimed. What actually works:
+>
+> - The `kryos_*`-prefixed runtime symbols that back the documented stdlib
+>   builtins genuinely link and run -- but you reach them by calling the
+>   ordinary Kryos builtin/stdlib function, **not** by hand-declaring your
+>   own `extern` block against a `kryos_*` name (a hand-declared `kryos_*`
+>   extern with a `str`/heap-typed signature **crashes** -- it calls the raw
+>   symbol without the marshalling the real builtin path applies; see
+>   CLAUDE.md gotcha #22). This is why "the runtime provides 100+ FFI
+>   functions" is true of the *stdlib surface*, not of what you can safely
+>   `extern`-declare yourself.
+> - An extern name that happens to COLLIDE with a Kryos builtin (`sin`,
+>   `cos`, `pow`, `sqrt`, `abs`, ...) gets intercepted by the builtin
+>   fast-path regardless of your `extern` declaration -- it "works," but it
+>   is calling the KRYOS builtin, not your declared foreign function. Do not
+>   read a working `extern "C" { fn sqrt(x: f64) -> f64 }` example as proof
+>   that arbitrary C-library FFI links; it proves the opposite (name
+>   collision, not linking).
+> - A genuinely foreign, non-`kryos_*`, non-builtin-colliding C symbol is
+>   inconsistent: some fail the AOT build outright with "use of undefined
+>   value" (`getpid`, `strlen`, and even libc's own `sqlite3_libversion_number`
+>   analog all reproduce this on this platform), and at least one
+>   (`puts`) BUILDS AND RUNS but silently does not produce the call's
+>   effect at all -- `puts("hello from Kryos")` exits 0 and prints nothing,
+>   which is worse than a link failure because nothing signals the problem.
+>   **Do not rely on calling your own C functions via `extern` until real
+>   FFI emission lands** (documented in CLAUDE.md gotcha #22 as "the
+>   extern's param/symbol info isn't threaded to codegen").
+> - Custom link flags in `kryos.toml` (`[build] link = [...]`) are **not
+>   implemented** -- the "Linking" section below describing them is
+>   aspirational, not current behavior.
+> - `kryos bindgen <header.h>` **is implemented** and works (generates real
+>   `extern "C" { ... }` declarations from a header) -- an earlier draft of
+>   this page said the opposite; that was wrong in the other direction.
 
-Kryos can call into C libraries and system functions directly using `extern` blocks. This is how you leverage the existing native ecosystem -- call system libraries, use crypto routines, integrate with any C-ABI shared library.
+Kryos can DECLARE calls into C libraries and system functions using `extern`
+blocks, and the declarations type-check and pass through codegen -- but
+reliably calling into an arbitrary real C library is not there yet (see
+above). Treat the rest of this page's worked examples as illustrating the
+INTENDED shape of the feature, verified per-example below, not as a
+guarantee they produce correct output for a library of your choosing.
 
 FFI access is gated by the capability system. Declare `ffi` in your `kryos.toml` capabilities:
 
@@ -25,13 +68,17 @@ extern "C" {
 }
 
 fn main() {
-    puts("hello from Kryos")
-    let root = sqrt(144.0)    // 12.0
-    let positive = abs(-42)   // 42
+    puts("hello from Kryos")   // VERIFIED: builds, exits 0, prints NOTHING -- silently wrong, not a real puts call
+    let root = sqrt(144.0)     // VERIFIED: works, but only because `sqrt` collides with the Kryos builtin
+    let positive = abs(-42)    // VERIFIED: FAILS to build ("defined with type 'i64' but expected 'i32'")
 }
 ```
 
-Each function inside the extern block is a declaration only -- no body. The linker resolves the symbol at build time against system libraries or any libraries you link with.
+Each function inside the extern block is a declaration only -- no body. In
+principle the linker resolves the symbol at build time against system
+libraries or any libraries you link with; in practice, see the status note
+at the top of this page before assuming any specific symbol will link
+correctly, let alone marshal its arguments/return correctly.
 
 ## Type Marshalling
 
@@ -54,22 +101,22 @@ Kryos types map to C types across the FFI boundary:
 
 All values cross the boundary as their native representation. Strings are passed as null-terminated UTF-8 `char*` pointers.
 
-## Linking
+## Linking (ASPIRATIONAL -- `[build] link` is not implemented)
 
-When you build with `kryos build`, extern symbols are resolved at link time. By default, the linker searches the system C library (libc). To link against additional libraries, use `-l` flags in your `kryos.toml`:
+The intended design: extern symbols would be resolved at link time, with the
+linker searching the system C library (libc) by default and `-l` flags in
+`kryos.toml` pulling in additional libraries:
 
 ```toml
 [build]
-link = ["-lm", "-lsodium"]
+link = ["-lm", "-lsodium"]   # NOT IMPLEMENTED -- this key has no effect today
 ```
 
-Or pass them on the command line:
+Command-line `-- -lm -lsodium`-style passthrough is likewise not available
+today. There is currently no supported way to link an additional system or
+third-party C library from a `kryos build` invocation.
 
-```bash
-kryos build main.kry -- -lm -lsodium
-```
-
-## Practical Example: Math Library
+## Practical Example: Math Library (works, but NOT because of real FFI linking)
 
 ```
 extern "C" {
@@ -80,13 +127,21 @@ extern "C" {
 
 fn main() {
     let angle = 3.14159 / 4.0
-    println(to_string(sin(angle)))   // ~0.707
-    println(to_string(cos(angle)))   // ~0.707
-    println(to_string(pow(2.0, 10.0))) // 1024.0
+    println(to_string(sin(angle)))   // VERIFIED: prints ~0.707
+    println(to_string(cos(angle)))   // VERIFIED: prints ~0.707
+    println(to_string(pow(2.0, 10.0))) // VERIFIED: prints 1024
 }
 ```
 
-## Practical Example: System Calls
+This example genuinely builds and runs -- but read the status note at the
+top of this page first: `sin`/`cos`/`pow` are also Kryos ambient builtins,
+so this is calling the BUILTIN under a name that happens to match your
+`extern` declaration, not proof that `extern "C"` reliably reaches an
+arbitrary C library function. Renaming the extern block to a genuinely
+foreign symbol is not guaranteed to produce the same result -- see the next
+example.
+
+## Practical Example: System Calls (FAILS to link today)
 
 ```
 extern "C" {
@@ -95,10 +150,15 @@ extern "C" {
 }
 
 fn main() {
-    let pid = getpid()
+    let pid = getpid()          // VERIFIED: AOT build fails -- "use of undefined value '@getpid'"
     println("PID: " + to_string(pid))
 }
 ```
+
+This does not build today. It is left here, marked as broken, because it is
+exactly the shape of code a reasonable person would try first -- better to
+show it failing with the real error than to omit it and let someone hit the
+same wall with no warning.
 
 ## Safety Considerations
 
@@ -116,12 +176,13 @@ That is why FFI requires an explicit capability declaration. The capability syst
 
 2. **Validate inputs before crossing the boundary.** Check array lengths and string encoding before passing them to C.
 
-3. **Declare link dependencies in `kryos.toml`.** This documents what your project needs.
+3. ~~Declare link dependencies in `kryos.toml`.~~ **Not available today** --
+   `[build] link` is not implemented (see the status note at the top of this
+   page). Until it lands, there is no supported way to pull in an additional
+   C library from `kryos build`; genuine third-party FFI is not usable yet
+   regardless of how it's declared.
 
 ```toml
-[build]
-link = ["-lsodium"]
-
 [capabilities]
 allowed = ["compute", "ffi"]
 ```

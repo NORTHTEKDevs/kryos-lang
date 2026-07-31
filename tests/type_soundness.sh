@@ -33,6 +33,29 @@ want_pass() {
   fi
 }
 
+# want_reject_e0110_clean <name> <source> : must reject with E0110 (dyn-in-
+# container) and must NOT ALSO emit a confusing E0100 from the array
+# literal's own element-unification fighting the (already-rejected)
+# annotated element type. See the `[dyn Handler]` ledger item -- a
+# heterogeneous `[dyn Trait]`-annotated array literal used to additionally
+# report "type mismatch: expected A, found B", which reads as "make your
+# elements the same type" when the real fix is an enum, not same-typing.
+want_reject_e0110_clean() {
+  local name="$1" src="$2" f="$TMP/$1.kry"
+  printf '%s' "$src" > "$f"
+  local out
+  out="$(timeout 30 "$KRYOS" check "$f" 2>&1)"
+  if ! grep -q '\[E0110\]' <<<"$out"; then
+    echo "  HOLE  $name -- expected E0110 (dyn-in-container) not reported"
+    fail=$((fail+1))
+  fi
+  if grep -q '\[E0100\]' <<<"$out"; then
+    echo "  NOISE $name -- confusing E0100 (array-literal element mismatch) alongside E0110:"
+    sed 's/^/         /' <<<"$out"
+    fail=$((fail+1))
+  fi
+}
+
 # --- #13/#19: Result/Option annotated payloads must be checked -------------
 
 want_reject result_err_payload '
@@ -280,6 +303,28 @@ fn describe(s: dyn DShape5) -> i64 { return s.area() }
 fn main() {
     let boxed: dyn DShape5 = DSq5 { s: 4 }
     println(to_string(describe(boxed) + describe(DSq5 { s: 2 })))
+}
+'
+
+# --- `[dyn Handler]` diagnostic quality: E0110 alone, not E0100+E0110 ------
+# A heterogeneous `[dyn Trait]`-annotated array literal ignored its
+# annotated element type during element-unification and additionally
+# reported a confusing "expected A, found B" E0100 on top of the real
+# E0110. Two different CONCRETE types is exactly the normal, expected shape
+# for a `dyn Trait` array (that is the whole point of a trait object) -- the
+# E0100 told the user to make them the same type, which is backwards.
+
+want_reject_e0110_clean dyn_array_let_heterogeneous '
+trait Handler { fn handle(self) -> str }
+struct HA {}
+impl Handler for HA { fn handle(self: HA) -> str { return "a" } }
+struct HB {}
+impl Handler for HB { fn handle(self: HB) -> str { return "b" } }
+fn main() {
+    let handlers: [dyn Handler] = [HA{}, HB{}]
+    for h in handlers {
+        println(h.handle())
+    }
 }
 '
 

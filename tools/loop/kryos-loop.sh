@@ -169,6 +169,7 @@ cmd_gates() {
     run "match_exhaustiveness" bash tests/match_exhaustiveness.sh
     run "concurrency_smoke"   bash tests/concurrency_smoke.sh
     run "module_case_gate"    bash tests/module_case_gate.sh
+    run "docs_status_gate"    bash tests/docs_status_gate.sh
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
 
     echo "== tier 2: behaviour, not just compilation =="

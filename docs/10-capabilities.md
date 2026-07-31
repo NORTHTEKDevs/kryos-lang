@@ -1,6 +1,6 @@
 # Capabilities
 
-> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound across free-function calls, method/static dispatch, and gated builtins used as first-class values. Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient.
+> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound for DIRECT calls: free-function calls, method/static dispatch, and a gated BUILTIN passed and invoked as a first-class value. **It is NOT currently sound against closure/fn-value indirection — see "Known limitation" below before relying on this for a security boundary.** Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient.
 
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, process spawning, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
@@ -17,14 +17,18 @@ deny-by-default from day one.**
 |---|---|---|
 | `permissive` | Only functions carrying a `@capabilities(...)` annotation are checked. An unannotated function is unconstrained. Capabilities are advisory. | Opt-in for scratch/legacy code via `--capabilities-mode=permissive`. |
 | `inferred` | **Deny-by-default at the boundary, with interior inference.** `main` — and any annotated function — must actually hold every capability its code *transitively* uses. Interior helpers need no annotation: the compiler infers each one's capability set as the union of what it and its callees require. So an unannotated `main` that (directly or through helpers) writes a file is rejected: declare `@capabilities(fs:write)` on `main`. **Recommended, and the `kryos new` default.** | New projects; production code. |
-| `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every gated builtin call from an unannotated function is an error — every function is auditable in isolation. This is `--strict-capabilities`. | Maximum scrutiny; security-critical libraries. |
+| `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every DIRECT gated builtin call from an unannotated function is an error. This is `--strict-capabilities`. **Not sound against closure/fn-value indirection — see "Known limitation" below.** | Maximum scrutiny; security-critical libraries. |
 
-The key property of `inferred` mode: **reading `main`'s annotation tells you the
-program's entire authority.** You annotate the boundary once; the compiler
-proves nothing inside exceeds it. Authority reaches the boundary through every
-path — direct builtin calls, method/static dispatch (`obj.write()`), and gated
-builtins passed as first-class values (`apply(file_write, ...)`) — all are
-accounted for.
+The key property of `inferred` mode, **with one important gap (read "Known
+limitation" below first)**: reading `main`'s annotation is *meant* to tell you
+the program's entire authority. For direct paths — direct builtin calls,
+method/static dispatch (`obj.write()`), and a gated builtin passed BY NAME as
+a first-class value (`apply(file_write, ...)`) — this holds today: all are
+accounted for. It does **not** hold when authority is laundered through an
+ordinary closure (a function returning `|| file_read(path)` and calling it
+through an unnamed `fn`-typed parameter elsewhere) — the checker tracks
+authority by callee NAME, and a call through a local/parameter of function
+type is invisible to it regardless of mode. See "Known limitation" below.
 
 ```bash
 kryos check --capabilities-mode=inferred src/main.kry   # deny-by-default
@@ -38,6 +42,69 @@ In a project, set it once in `kryos.toml` (a fresh `kryos new` already does):
 [capabilities]
 mode = "inferred"
 ```
+
+## Known limitation: closure/fn-value indirection is NOT enforced (read this before trusting it with secrets)
+
+**If you are evaluating Kryos for a use case where capability enforcement is
+the thing standing between untrusted code and a secret (an embedded agent
+that must not exfiltrate a password, an API key, a token), read this section
+first. It applies in EVERY mode, including `--strict-capabilities`.**
+
+The checker (`kryos-capabilities/src/checker.rs`) tracks authority **by
+callee name** — a `HashMap<String, CapabilitySet>` keyed by function/actor
+names, checked at every direct call site. A call through a **value** of
+function type — a closure captured in a local, a parameter typed `fn(...) ->
+...`, a struct field, an array element, anything that isn't a literal named
+function or builtin — resolves to nothing in that map, so it is invisible to
+enforcement **regardless of what the closure actually does at runtime**:
+
+```
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Zero capabilities declared. Its body only ever calls a PARAMETER of
+// function type -- never a NAMED builtin or NAMED function -- so it is
+// invisible to the by-name checker in every mode.
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("secret.txt")
+    println(zero_cap_tool(reader))   // reads the file. zero_cap_tool declares NO capabilities.
+}
+```
+
+This compiles clean and runs under `--capabilities-mode=inferred` (the
+default) AND `--strict-capabilities` -- `zero_cap_tool` is not flagged in
+either mode, and `kryos audit` also misses it (it reads the same by-name
+map). The gap needs no raw memory, no FFI, no special builtin -- just
+ordinary closures, one of the language's most idiomatic features (every
+`std::iter` higher-order function and callback-shaped API uses them). A
+direct call to a gated builtin (`file_read(path)` written literally inside
+`zero_cap_tool`) IS correctly rejected — this is specifically an
+indirection gap, not a broadly broken checker.
+
+**There is no workaround that preserves least-privilege.** The conservative
+fix (treat any call through a non-directly-named fn-typed value as requiring
+`Capability::All`) was evaluated and rejected: closures passed to
+higher-order functions are pervasive and idiomatic in Kryos, so it would
+force nearly every callback-shaped call site in the language and its own
+self-host compiler to declare `all`, defeating least-privilege as
+completely as the escape itself.
+
+**Status: open, unfixed, tracked as the top item in
+[`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md).** The real fix is a
+call-site-sensitive interprocedural capability analysis for fn-typed
+arguments (closer in scope to adding a new kind of generic bound than to an
+incremental patch) — sketched in the ledger for whoever picks it up. Until
+it lands: **do not treat `@capabilities`/`--strict-capabilities` as a
+guarantee against a hostile or buggy piece of code that can construct or
+receive a closure.** It is sound today only against code that calls gated
+authority directly by name.
 
 Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:
 

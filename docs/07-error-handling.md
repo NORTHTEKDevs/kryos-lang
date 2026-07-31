@@ -142,56 +142,75 @@ Guard those with an explicit precondition (`if b != 0 { ... }`, a bounds check,
 `file_exists` before `file_read`) or a `Result`-returning wrapper. Only an
 explicit `throw` (or a library that throws) unwinds to a `catch`.
 
-## The self-healing runtime (roadmap)
+## The self-healing runtime (roadmap -- NONE OF THIS EXISTS YET)
 
-> **Not yet implemented.** The self-healing runtime is a planned feature. The design below describes the target behavior. Currently, division by zero and index out of bounds produce hard *panics* that abort the process -- they are **not** caught by `try`/`catch` (only an explicit `throw`, or a library that throws, unwinds to a catch; see "What `catch` catches" above).
+> **Not yet implemented, at all.** Everything in this section -- automatic
+> division/index/type-coercion recovery, `--heal-report`, and the
+> `@intent`/`@constraint`/`@fallback` attributes -- describes a **planned**
+> feature, not current behavior. It is written in present tense below only
+> because that is how the target design reads; treat every sentence in this
+> section as "the plan is for X to work this way," never as "X works this
+> way." Verified directly against this commit, not inferred: `@constraint`
+> is silently a no-op (`clamp_percent(150.0)` returns `150`, not the `100`
+> the example below claims), and `--heal-report` is not a recognized CLI
+> flag (`kryos run --heal-report f.kry` errors with "unexpected argument").
+> Division by zero and index-out-of-bounds are hard *panics* that abort the
+> process today -- they are **not** caught by `try`/`catch` (only an
+> explicit `throw`, or a library that throws, unwinds to a catch; see "What
+> `catch` catches" above) and nothing recovers or clamps them. If your
+> program needs to survive these, write the guard yourself (`if b != 0 {
+> ... }`, a bounds check) -- there is no runtime safety net to lean on.
 
-This is where Kryos will diverge from every other language. When self-healing is enabled, the runtime will automatically recover from certain classes of errors instead of crashing.
+This is where Kryos is intended to diverge from every other language. The
+plan: when self-healing is enabled, the runtime would automatically recover
+from certain classes of errors instead of crashing.
 
-### How it works
+### How it's intended to work
 
-The self-healing engine sits between your code and the runtime. When an operation fails, the engine checks whether it knows how to fix the problem. If it does, it applies the fix, logs what happened, and continues execution. Your program never sees the error.
+The self-healing engine would sit between your code and the runtime. When an
+operation fails, the engine would check whether it knows how to fix the
+problem, apply the fix, log what happened, and continue execution -- your
+program would never see the error. **None of this exists today; every
+operation below either panics (uncatchable) or, for `@intent`/`@constraint`/
+`@fallback`, silently does nothing at all** (the attribute parses and is
+ignored -- it neither errors nor has any runtime effect).
 
-### Recovery strategies
+### Planned recovery strategies
 
-The engine handles these categories of errors:
-
-**Division by zero** -- substitutes 0:
+**Division by zero** -- would substitute 0:
 
 ```
-let x = 10 / 0  // normally a crash
-// with self-healing: x = 0, logged as a heal action
+let x = 10 / 0  // TODAY: hard panic, process aborts. PLANNED: x = 0, logged as a heal action.
 ```
 
-**Index out of bounds** -- clamps to the nearest valid index:
+**Index out of bounds** -- would clamp to the nearest valid index:
 
 ```
 let data = [10, 20, 30]
-let val = data[99]  // normally a crash
-// with self-healing: val = 30 (clamped to last element)
+let val = data[99]  // TODAY: hard panic. PLANNED: val = 30 (clamped to last element).
 ```
 
-**Type mismatch in operations** -- coerces types:
+**Type mismatch in operations** -- would coerce types:
 
 ```
-let result = "5" + 10  // string + int
-// with self-healing: coerces 10 to "10", result = "510"
+let result = "5" + 10  // TODAY: this is actually a compile error (E0100) -- + requires matching types.
+// PLANNED: coerces 10 to "10", result = "510"
 ```
 
-**Missing key or attribute** -- returns none:
+**Missing key or attribute** -- would return none:
 
 ```
-// accessing a field that does not exist on a struct
-// with self-healing: returns none instead of crashing
+// PLANNED: accessing a field that does not exist on a struct would return
+// none instead of crashing. TODAY: an unknown field is a compile error
+// (E0107/similar); this scenario cannot even be constructed.
 ```
 
-Each recovery is deterministic -- the same problem always produces the same fix. The engine never guesses randomly.
+### Planned heal actions
 
-### Heal actions
+The design classifies each planned auto-recovery as one of these actions.
+None of these are emitted by the compiler or runtime today:
 
-Every auto-recovery is classified as one of these actions:
-
-| Action | What it does |
+| Action | What it would do |
 |--------|-------------|
 | `RETRY` | Retry the operation (after input coercion) |
 | `COERCE` | Convert types to match expectations |
@@ -201,15 +220,15 @@ Every auto-recovery is classified as one of these actions:
 | `SKIP` | Skip the failing operation safely |
 | `SUBSTITUTE` | Replace with an equivalent operation |
 
-### The heal report
+### The planned heal report
 
-Every self-healing action is logged. You can inspect what the engine did after execution:
+The design calls for every self-healing action to be logged and inspectable:
 
 ```bash
-kryos run --heal-report program.kry
+kryos run --heal-report program.kry   # NOT A REAL FLAG TODAY -- errors: "unexpected argument '--heal-report' found"
 ```
 
-The report shows each action taken, where it happened, what the original error was, and what fix was applied:
+Target report shape (illustrative of the design, not real output):
 
 ```
 Self-Healing Report (2 actions):
@@ -226,15 +245,18 @@ Self-Healing Report (2 actions):
     Result: 30
 ```
 
-This is crucial for debugging. The program did not crash, but you should review the report to decide whether the auto-fixes match your intent.
+## Planned intent-driven healing (attributes are no-ops today)
 
-## Intent-driven healing
+The design calls for `@intent`/`@constraint`/`@fallback` attributes so a
+function's declared intent can drive validation/auto-correction. **These
+attributes parse today but have zero runtime effect** -- they neither
+validate nor correct anything; a function annotated with them behaves
+identically to the same function without the annotation.
 
-For more sophisticated self-healing, you can declare what a function intends to do using attributes. The engine uses this information to validate and auto-correct results.
+### @intent (planned)
 
-### @intent
-
-Describes the purpose of a function:
+Would describe the purpose of a function for the (nonexistent) engine to
+reason about:
 
 ```
 @intent("compute the absolute distance between two points")
@@ -243,9 +265,10 @@ fn distance(a: f64, b: f64) -> f64 {
 }
 ```
 
-### @constraint
+### @constraint (planned -- currently a silent no-op)
 
-Declares invariants on the return value. The engine enforces them automatically:
+Design intent: declare invariants on the return value that the engine would
+enforce automatically. **Verified today: it does nothing.**
 
 ```
 @constraint(">= 0", "<= 100")
@@ -253,15 +276,17 @@ fn clamp_percent(value: f64) -> f64 {
     return value
 }
 
-println(clamp_percent(150.0))  // auto-clamped to 100
-println(clamp_percent(-10.0))  // auto-clamped to 0
+println(to_string(clamp_percent(150.0)))  // TODAY prints 150 (unclamped). PLANNED: auto-clamped to 100.
+println(to_string(clamp_percent(-10.0)))  // TODAY prints -10 (unclamped). PLANNED: auto-clamped to 0.
 ```
 
-Supported constraint syntax: `>= N`, `<= N`, `> N`, `not_empty`, `not_none` / `not_null`.
+Planned constraint syntax: `>= N`, `<= N`, `> N`, `not_empty`, `not_none` /
+`not_null` -- none of it is parsed for meaning or enforced today.
 
-### @fallback
+### @fallback (planned -- currently a silent no-op)
 
-Provides a backup function to call if the primary one fails:
+Design intent: a backup function the engine would call if the primary one
+throws.
 
 ```
 @fallback(safe_divide)
@@ -277,40 +302,27 @@ fn safe_divide(a: f64, b: f64) -> f64 {
 }
 ```
 
-If `risky_divide` throws, the engine tries `safe_divide` with the same arguments.
+If `risky_divide` throws today, this annotation does not intercept it --
+`@fallback` has no runtime effect; catch it with an ordinary `try`/`catch`
+around the call site instead.
 
-## try/catch vs self-healing: when to use each
+## try/catch today (self-healing does not exist to compare against)
 
-The two systems serve different purposes:
+Use `try`/`catch` for every error path you need handled -- it is the only
+mechanism that actually exists. The table below describes the eventual
+division of labor ONCE self-healing lands; until then, read every
+"Self-healing (default)" cell as "not available -- use `try`/`catch` plus
+your own explicit guard instead":
 
 | Situation | Use |
 |-----------|-----|
 | You expect a specific error and want custom handling | `try`/`catch` |
 | You want to transform the error into a different error | `try`/`catch` with re-throw |
-| You want arithmetic and indexing to never crash | Self-healing (default) |
-| You want to enforce output constraints on functions | `@constraint` |
-| You want a fallback computation | `@fallback` |
+| You want arithmetic and indexing to never crash | *(planned: self-healing)* -- today, guard explicitly (`if b != 0 { ... }`, a bounds check) before the operation |
+| You want to enforce output constraints on functions | *(planned: `@constraint`)* -- today, check the value yourself and `throw` if it's out of range |
+| You want a fallback computation | *(planned: `@fallback`)* -- today, wrap the call in `try`/`catch` and call the fallback in the `catch` block |
 | You need to recover from I/O failures | `try`/`catch` |
-| You are prototyping and want nothing to crash | Self-healing (default) |
-
-A practical rule: use `try`/`catch` when the error is part of your logic (user input validation, file not found, network timeout). Let self-healing handle the unexpected edge cases (off-by-one indexes, type coercion at boundaries).
-
-### Combining both
-
-They work together. Self-healing runs inside try blocks too:
-
-```
-try {
-    let data = [1, 2, 3]
-    let x = data[10]       // self-healing clamps to data[2] = 3
-    println(x)             // 3
-    throw "manual error"
-} catch e {
-    println(e)             // manual error
-}
-```
-
-Self-healing silently fixes the index error. The explicit throw is caught by the catch block. Both mechanisms operate independently.
+| You are prototyping and want nothing to crash | Guard every panic-capable operation explicitly -- there is no "nothing crashes" mode today |
 
 ## Error types in the system
 

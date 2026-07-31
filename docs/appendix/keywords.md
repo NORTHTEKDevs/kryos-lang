@@ -32,8 +32,8 @@ All reserved keywords in the Kryos language. These identifiers cannot be used as
 | `actor` | Declare an actor (concurrent entity) | `actor Counter { ... }` |
 | `spawn` | Spawn an actor or parallel task | `spawn my_actor()` |
 | `parallel` | Reserved keyword (parallel iteration planned for future release) | `parallel for i in range(100) { ... }` |
-| `quantum` | Enter a quantum computing block | `quantum { ... }` |
-| `comptime` | Execute a block at compile time | `comptime { let x = 2 ** 10 }` |
+| `quantum` | Parses and reserved for a future quantum-computing block; today the compiler passes it through as an ordinary runtime block with no quantum semantics (there is no `Qubit`/`Qureg` type implemented -- see below) | `quantum { ... }` |
+| `comptime` | Parses and runs today, but as ordinary RUNTIME code (compile-time evaluation is planned, not implemented -- see [docs/11-comptime.md](../11-comptime.md)) | `comptime { let x = 2 ** 10 }` |
 | `try` | Begin an error-handling block | `try { risky_operation() }` |
 | `catch` | Handle errors from a `try` block | `try { ... } catch e { println(e) }` |
 | `throw` | Raise an error | `throw "invalid input"` |
@@ -80,6 +80,6 @@ These are recognized as type identifiers by the lexer. They are not strictly res
 | `Option` | Optional value (`Some(T)` or `None`) |
 | `Result` | Result type (`Ok(T)` or `Err(E)`) |
 | `Tensor` | Multi-dimensional numeric array (GPU-accelerable) |
-| `Secret` | Capability-gated secret value |
-| `Qubit` | Single quantum bit |
-| `Qureg` | Quantum register (array of qubits) |
+| `Secret` | **Not implemented.** `let s: Secret = ...` fails with `E0101: unknown type` -- there is no capability-gated secret-value type in the compiler today (verified against this commit). If you need to keep a value out of logs/prints, there is no language-level mechanism for that yet; handle it at the application level. |
+| `Qubit` | **Not implemented.** `Qubit`/`Qureg` are not registered types -- `let q: Qubit = ...` fails with `E0101: unknown type` (verified against this commit). The `quantum { }` keyword parses but has no quantum semantics; see above. |
+| `Qureg` | See `Qubit` above -- not implemented. |

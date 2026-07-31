@@ -88,8 +88,22 @@ A release tag is cut when **all** of the following hold:
 
 Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
 use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
-a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 40/40
-on both backends. See [docs/BUGS.md](docs/BUGS.md).
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 47/47
+on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
+are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
+[docs/BUGS.md](docs/BUGS.md).
+
+- **Capability enforcement is sound for direct calls only -- NOT against
+  closure/fn-value indirection, in ANY mode including `--strict-capabilities`.**
+  A function that only ever calls a `fn(...)`-typed PARAMETER (never a named
+  builtin) is invisible to the capability checker regardless of what that
+  closure does at runtime, so a zero-capability function can exercise any
+  authority handed to it as a callback. This is a security-relevant gap, not
+  a papercut: see [docs/10-capabilities.md § Known
+  limitation](docs/10-capabilities.md#known-limitation-closurefn-value-indirection-is-not-enforced-read-this-before-trusting-it-with-secrets)
+  for the repro and [tools/loop/LEDGER.md](tools/loop/LEDGER.md) (top OPEN
+  item) for the fix design. Do not treat `@capabilities` as a hard boundary
+  against hostile or buggy code that can construct or receive closures.
 
 Honest, non-blocking residuals:
 

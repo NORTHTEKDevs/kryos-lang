@@ -40,12 +40,23 @@ once at the boundary (`main`, or a `pub` API function), and the compiler infers
 every interior helper's capability set from its call graph. A ~15k-line program
 needs one annotation on `main`, not one per function (the self-host compiler
 itself is inferred-clean with a single `@capabilities(fs:read, fs:write,
-process)` on `main`). Enforcement is sound across every path authority can take:
-direct builtin calls, method/static dispatch, and gated builtins passed as
-first-class values.
+process)` on `main`). Enforcement is sound for every DIRECT path authority can
+take: direct builtin calls, method/static dispatch, and a gated builtin passed
+BY NAME as a first-class value.
 
-The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny — every
-function auditable in isolation. 81/81 examples pass it in CI.
+**It is not sound against closure/fn-value indirection.** A call through a
+closure or an `fn(...)`-typed local/parameter/field is invisible to the
+checker (which tracks authority by callee name), in every mode including
+`strict` — see [docs/10-capabilities.md § Known
+limitation](10-capabilities.md#known-limitation-closurefn-value-indirection-is-not-enforced-read-this-before-trusting-it-with-secrets)
+for the repro and why the obvious blanket fix was rejected. Treat this
+document's "sound"/"deny-by-default" claims as applying to direct-call
+authority only until that gap closes.
+
+The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny of
+DIRECT calls — every function auditable in isolation for authority it invokes
+by name. 81/81 examples pass it in CI (none of them exercise the closure-
+indirection gap; passing strict mode is not evidence against it).
 
 ## The global default is now `inferred`
 
