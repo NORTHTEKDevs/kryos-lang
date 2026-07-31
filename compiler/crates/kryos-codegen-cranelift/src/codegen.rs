@@ -3062,9 +3062,19 @@ fn translate_instruction<M: Module>(
             // check right after this call (throwing call inside a try) —
             // that check routes to the catch block instead of returning.
             if !translator.next_is_mir_exc_check {
+                // `assert_eq` is only skipped when it matches the true
+                // builtin intrinsic's own arity (exactly 2 args, dispatched
+                // below as `kryos_builtin_assert_eq`, which aborts and never
+                // returns). Any other arg count -- e.g. `std::test`'s 3-arg
+                // `assert_eq(actual, expected, msg)` -- is a real function
+                // call that can throw and return normally, so it must still
+                // get the post-call check. See the matching comment on
+                // `is_unwind_source` in kryos-mir/src/lower.rs.
                 let should_check = match value {
-                    RValue::Call { func, .. } => {
+                    RValue::Call { func, args } => {
+                        let true_assert_eq_intrinsic = func == "assert_eq" && args.len() == 2;
                         !func.starts_with("kryos_")
+                            && !true_assert_eq_intrinsic
                             && !matches!(
                                 func.as_str(),
                                 "println"
@@ -3080,7 +3090,6 @@ fn translate_instruction<M: Module>(
                                     | "min"
                                     | "max"
                                     | "assert"
-                                    | "assert_eq"
                                     | "panic"
                                     | "len"
                                     | "range"

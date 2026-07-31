@@ -222,6 +222,65 @@ below works around it by only ever pushing into `LEX_TOKENS`, never
 reassigning it after its own top-level initializer. Worth a real fix; until
 then avoid "reset a global from a helper function" as a pattern.
 
+### 2c. NEW (found while building examples/showcase/secret_agent.kry): `std::test::assert`'s 2-arg form is permanently shadowed by the compiler's own builtin and is UNCATCHABLE -- NOT FIXED (design note)
+`tests/known_failures/assert_shadow_uncatchable.kry` (repro below). Kryos has
+a real, hardcoded 2-arg `assert(condition, msg)` INTRINSIC (dispatches to
+`kryos_builtin_assert`, which prints and calls `std::process::abort()` --
+never returns) alongside `std::test::assert(condition: bool, msg: str) ->
+void` (a normal 2-arg Kryos function that builds a message and `throw`s,
+meant to be catchable -- its own doc comment says "Throws with the message if
+false", and `std::test::assert_no_throw`/`assert_throws` are built assuming
+`assert`-family functions are ordinary throwing functions). These COLLIDE:
+`kryos-codegen-{cranelift,llvm}/src/codegen.rs` dispatch any call literally
+named `assert` with a nonzero arg count (`!args.is_empty()`) straight to the
+intrinsic, UNCONDITIONALLY, before the generic "does the user define a
+function with this exact name" shadow-check that every OTHER builtin
+(`index_of`, `abs`, `len`, ... per CLAUDE.md gotcha #18, "a user function
+shadowing a builtin now WINS") already goes through -- confirmed by reading
+the comment directly above the generic shadow-check in both backends' call
+lowering: "If the user has defined a function with this exact name, the user
+definition shadows any builtin of the same name" immediately AFTER the
+`assert`/`assert_eq`/`panic` special-case blocks, not before them. Since
+`std::test::assert`'s signature is exactly 2 args (condition, msg), EVERY
+call to it -- imported or not -- silently resolves to the intrinsic instead
+of the stdlib body, no diagnostic, no warning.
+
+```
+use std::test::{assert}
+
+fn main() {
+    println("before")
+    try {
+        assert(false, "boom")
+        println("unreachable")
+    } catch (e) {
+        println("caught: " + e)
+    }
+    println("after try/catch (should print -- assert should have been CAUGHT)")
+}
+```
+Actual: prints `before`, then `assertion failed: boom` to stderr with NO
+`kryos: uncaught exception:` prefix (proving it's `process::abort()`, not
+`throw`), and the process dies -- `catch (e)` never runs, "caught: ..." and
+"after try/catch" never print. `kryos_builtin_assert` is genuinely
+`std::process::abort()`-based (`kryos-rt/src/builtins.rs`), so this is not a
+crash from bad input -- it is the DOCUMENTED, INTENDED behavior of the real
+intrinsic firing instead of the stdlib wrapper every single time.
+
+**Why this is a design note, not a patch attempted this session:** the fix
+shape is clear (move the `assert`/`assert_eq`/`panic` special-case blocks in
+both codegen backends to run AFTER the generic user-shadow check, matching
+how every other builtin already works) but the blast radius is unverified --
+`assert`/`panic` are used pervasively across `compiler/self-host/`,
+`ecosystem/*/tests/`, and every showcase/example that calls the TRUE 1-2-arg
+intrinsic form (which must keep working identically, uncatchable-abort
+semantics included, once no user function of that name/arity exists). That
+needs its own full-gate pass, not a fix folded into an unrelated example
+session. Left as a standing repro. Workaround used in `secret_agent.kry`:
+avoid `std::test::assert`/`assert` entirely; use `assert_true`/`assert_ne`/
+`assert_eq` (fixed this session, item below) or a locally-named helper
+instead -- none of those names collide with a hardcoded intrinsic.
+
 ### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific — a free function leaks
@@ -462,6 +521,7 @@ don't need the same treatment).
 | **struct `str` field read leaked, 614MB in CI** | `r.name = mk_str(i)` + `len(r.name)` in a loop: 157.7MB/2M before, 3.9MB after; the full CI workload 617.6MB -> 4.5MB. A `str` field read RETAINS and nothing balanced it. Array/map/struct field reads stay borrows -- `push` grows the shared buffer in place, so dropping those temps is the `alloc_node` double-free |
 | **raw-memory capability escape** | a zero-capability program read `TOPSECRET-APIKEY` via `str_to_ptr`+`ptr_byte_at` and dereferenced +4096 without faulting. Closed with a trusted-computing-base split: raw memory requires `ffi` at DIRECT USE in user code and the requirement does not propagate, so the stdlib (which is built on these — `alloc` in 14 modules) stays usable. Guarded by `tests/security_gate.sh`, which asserts BOTH directions plus no-cascade |
 | **bootstrap WINDOWS-ONLY exit -1 in tokenize (ex-item #2)** | NOT a fault, not Defender, not the pool allocator, not heap corruption -- confirmed by an `atexit`-hook diagnostic (`KRYOS_EXIT_TRACE=1` in fault.rs) that never fires before the -1 death, proving no `process::exit`/normal `main` return is involved; the OS kills the process directly (memory-pressure dependent). Root cause found by MEASURING MEMORY, not tracing exceptions: `Get-Process` polling showed kryos-stage1.exe peaking at 13-16GB+ (and still climbing) to tokenize a 109KB file. Cause: `Lexer { src, pos, tokens }` was rebuilt via a fresh struct LITERAL on every `lex_advance`/`lex_match_char`/`lex_emit` call (i.e. per CHARACTER, ~110K times for parser.kry, not per token) and `emit_aggregate_struct` in kryos-codegen-llvm clones/dups ANY array-typed struct FIELD unconditionally at every literal construction (elem_kind=4 for a struct-of-Token element additionally RETAINS every element) -- so each of ~110K reconstructions retained up to ~20K already-emitted tokens: O(n^2), order 1e9 atomic retains, matching the CPU hot-path symbols found via `llvm-symbolizer` against a `-g` debug rebuild (`kryos_struct_retain`/`kryos_array_dup`/`kryos_array_new` dominated `KRYOS_WATCHDOG` RVA samples). The EARLIER "Lexer NOT @copy" fix (see struct comment history) assumed a non-@copy struct's array field is merely SHARED (refcount bump) on rebuild; it is not -- `emit_aggregate_struct`'s field-clone is unconditional, not @copy-gated, so that fix never actually delivered the intended O(n) it documented. FIX: pulled `tokens` out of `Lexer` entirely into a module-level `let mut LEX_TOKENS: [Token] = []`, mutated only via `push` (never reassigned after its own initializer -- see item #2b, a SEPARATE newly-found bug where cross-function global reassignment corrupts the array). Proof: peak working set 13-16GB+ -> 286MB (tokenize alone <100MB); dose-response gone -- 8/8 clean on parser.kry (109KB) AND 8/8 clean on lower.kry (128KB, the other historically-failing file) with the OLD binary confirmed still failing 3/6 on lower.kry in the same session (prove-both-ways); `test_bootstrap.sh` 16/16 across 7 consecutive runs (was the documented 14/16 baseline); full `kryos-loop.sh gates 2` GREEN. Item #7 below is the SAME bug class, unfixed, in `Parser` (lower severity: token-granularity not character-granularity, not yet lethal) |
+| **`assert_eq`-named user/stdlib calls skipped the post-call unwind check, so a caller kept running after its callee threw** | Found writing `examples/showcase/secret_agent.kry`'s value assertions with `std::test::assert_eq` (3-arg: `actual`, `expected`, `msg`). Repro: `fn main() { println("before")  assert_eq(x, y, "diff")  println("after (should NOT print)") }` with `x="AAAA"`, `y="BBBB"` -- printed BOTH `before` AND `after`, THEN the correct `kryos: uncaught exception: assertion failed: diff -- ...` to stderr, exit 101. Bisected mechanically (one variable at a time, not guessed): reproduces for ANY function literally named `assert_eq` regardless of param names/return-type annotation/import-vs-local, and does NOT reproduce under any other name -- pinned it to the name itself. Root cause (read, not guessed): `kryos-mir/src/lower.rs::is_unwind_source` and the equivalent post-call "check the thread-local exception state" filters in BOTH codegen backends (`kryos-codegen-cranelift/src/codegen.rs`'s inline `should_check` match, `kryos-codegen-llvm/src/codegen.rs::post_call_exception_check_applies`) hardcode `"assert_eq"` in their "this call can never throw, skip the check" list -- correct ONLY for the compiler's real 2-arg `assert_eq(left, right)` INTRINSIC (which lowers to `kryos_builtin_assert_eq`, a `process::abort()`-based call that never returns, so genuinely needs no check), but the exclusion didn't gate on arg count, so it ALSO wrongly excluded a 3-arg call resolving to `std::test::assert_eq` (or any user function of that name) -- a REAL function that `throw`s and returns normally. Without the check, the caller's next MIR instruction ran before anything noticed the pending exception; it only surfaced at a LATER checked boundary. Also broke `try`/`catch` routing the same way (a failing 3-arg `assert_eq` inside a `try` was not caught at all -- confirmed before/after). FIX: in all 3 sites, exclude `"assert_eq"` from the "never throws" set ONLY when `args.len() == 2` (matching the intrinsic's own dispatch condition, already present nearby in both backends), so any other arity gets the check. Proof, both ways: pre-fix the minimal repro printed `after` and pre-fix `try`/`catch` did not catch (both shown above); post-fix (`cargo build --release`, both backends) the repro prints only `before` then the exception (JIT AND AOT), the `try`/`catch` variant correctly catches and prints "caught: ...", and a genuinely-passing `assert_eq(4, 2+2, ..)` and the TRUE 2-arg intrinsic (`assert_eq(1, 2)`, no import) both still behave exactly as before (matching-value case doesn't throw; the true intrinsic still aborts immediately, only `before` prints). Gates: conformance 47/47, tier1+tier2 GREEN, bootstrap 16/16 |
 
 ---
 

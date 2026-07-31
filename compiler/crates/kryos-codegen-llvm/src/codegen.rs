@@ -11117,10 +11117,21 @@ fn split_aggregate_fields(agg: &str) -> Vec<String> {
 /// Mirror of the Cranelift backend's post-call exception-check filter:
 /// check after user-function and indirect/vtable calls; skip the runtime's
 /// own kryos_* helpers and pure builtins that can never throw.
+///
+/// `assert_eq` is only skipped when it matches the true builtin intrinsic's
+/// own arity (exactly 2 args -- see the `"assert_eq" if args.len() == 2`
+/// dispatch above, which lowers to `kryos_builtin_assert_eq` and aborts the
+/// process directly, never returning). Any other arg count -- e.g.
+/// `std::test`'s 3-arg `assert_eq(actual, expected, msg)`, or a user
+/// function reusing the name -- is a real function call that can throw and
+/// return normally, so it must not be excluded. See the matching comment on
+/// `is_unwind_source` in kryos-mir/src/lower.rs.
 fn post_call_exception_check_applies(value: &RValue) -> bool {
     match value {
-        RValue::Call { func, .. } => {
+        RValue::Call { func, args } => {
+            let true_assert_eq_intrinsic = func == "assert_eq" && args.len() == 2;
             !func.starts_with("kryos_")
+                && !true_assert_eq_intrinsic
                 && !matches!(
                     func.as_str(),
                     "println"
@@ -11136,7 +11147,6 @@ fn post_call_exception_check_applies(value: &RValue) -> bool {
                         | "min"
                         | "max"
                         | "assert"
-                        | "assert_eq"
                         | "panic"
                         | "len"
                         | "range"

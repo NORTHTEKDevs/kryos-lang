@@ -66,7 +66,13 @@ n=0; bad=0
 for f in "$REPO"/examples/showcase/*.kry; do
     base="$(basename "$f" .kry)"
     # `*_overreach.kry` are must-FAIL capability demos, asserted in Layer 5.
-    case "$base" in *_overreach) continue ;; esac
+    # `secret_agent_vault`/`secret_agent_agent` are sibling-file MODULES for
+    # secret_agent.kry (plain `use secret_agent_vault` / `use
+    # secret_agent_agent` -- no kryos.toml project needed, see
+    # kryos-driver/src/resolve.rs's sibling-file resolution order). Neither
+    # has a `main()`, so a standalone build correctly fails with "no main
+    # function found"; they are exercised as part of secret_agent.kry below.
+    case "$base" in *_overreach|secret_agent_vault|secret_agent_agent) continue ;; esac
     n=$((n+1))
     if ! "$KRYOS" build "$f" --release --backend llvm -o "$TMP/sc_$base" >/dev/null 2>&1; then
         echo "  AOT FAIL showcase/$base"

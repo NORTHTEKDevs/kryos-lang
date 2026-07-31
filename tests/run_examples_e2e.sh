@@ -66,6 +66,7 @@ echo "examples-e2e: layer 1 — differential stdout (both backends)"
 DIFFERENTIAL=(
     bytecode_vm parser markdown stats_pipeline
     budget_analyst kdoc dir_walker cli_tool kvdb ssg
+    secret_agent
 )
 l1_ok=0
 for name in "${DIFFERENTIAL[@]}"; do
@@ -83,6 +84,14 @@ for name in "${DIFFERENTIAL[@]}"; do
 
     if [[ "$jrc" != "$arc" ]]; then
         echo "  DIVERGE $name: exit status jit=$jrc aot=$arc"; fail=1
+    elif [[ "$jrc" != 0 ]]; then
+        # A diff-only check called a program that fails IDENTICALLY on both
+        # backends "PASS" (jrc==arc, both nonzero, stdout up to the failure
+        # matches) -- exactly the failure mode a program that self-asserts
+        # via `throw` (secret_agent.kry) needs caught, not waved through.
+        echo "  FAIL $name: both backends exited $jrc (expected 0)"
+        tail -3 "$jdir/out.txt" | sed 's/^/    /'
+        fail=1
     elif ! diff -q "$jdir/out.txt" "$adir/out.txt" >/dev/null 2>&1; then
         echo "  DIVERGE $name: stdout differs between backends"
         diff "$jdir/out.txt" "$adir/out.txt" | head -12 | sed 's/^/    /'

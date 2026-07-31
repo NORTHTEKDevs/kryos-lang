@@ -300,13 +300,29 @@ struct TryCatchTarget {
 /// `throw` (a user function, an indirect closure call, or a vtable call).
 /// Runtime builtins (`kryos_*`) and the pure global builtins never throw.
 /// Mirrors the post-call safety-net filter in both codegen backends.
+///
+/// `assert_eq` is excluded from the "never throws" list ONLY when called
+/// with exactly 2 args -- the true builtin intrinsic's own arity (see the
+/// `func == "assert_eq" && args.len() == 2` dispatch in both codegen
+/// backends), which lowers to `kryos_builtin_assert_eq` and aborts the
+/// process directly (never returns, so no post-call check is needed). A
+/// call named `assert_eq` with any OTHER arg count -- e.g. `std::test`'s
+/// 3-arg `assert_eq(actual, expected, msg)`, or any user function reusing
+/// the name -- is a REAL function call that can `throw` and return
+/// normally, so it must not be excluded. Before this fix, a 3-arg
+/// `assert_eq` call that failed would still (eventually) report the right
+/// exception, but the caller's statements between that call and the next
+/// checked call site kept running first -- proven with
+/// `tests/known_failures/assert_eq_shadow_unwind_skip.kry`.
 fn is_unwind_source(inst: &Instruction) -> bool {
     let Instruction::Assign { value, .. } = inst else {
         return false;
     };
     match value {
-        RValue::Call { func, .. } => {
+        RValue::Call { func, args } => {
+            let true_assert_eq_intrinsic = func == "assert_eq" && args.len() == 2;
             !func.starts_with("kryos_")
+                && !true_assert_eq_intrinsic
                 && !matches!(
                     func.as_str(),
                     "println"
@@ -322,7 +338,6 @@ fn is_unwind_source(inst: &Instruction) -> bool {
                         | "min"
                         | "max"
                         | "assert"
-                        | "assert_eq"
                         | "panic"
                         | "len"
                         | "range"
