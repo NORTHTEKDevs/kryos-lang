@@ -51,152 +51,74 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 1. NEW — capability escape via closure/fn-value laundering: a "zero-capability" function can exercise ANY authority handed to it as a callback. NOT FIXED (design note only — see rationale below)
-`tests/security/cap_escape_closure_launder.kry` + fixture
-`tests/security/secret_for_closure_launder.txt` (repro below). **VERIFIED — the
-single most serious open item, worse than the closed raw-memory escape**: it
-needs no special builtin, no raw memory, no FFI — just ordinary closures,
-which are one of the language's most idiomatic features (every `std::iter`
-HOF and callback-style API uses them, per CLAUDE.md gotcha #19-20). It defeats
-BOTH `--capabilities-mode=inferred` (the default) AND `--strict-capabilities`
-("maximum scrutiny... every function auditable in isolation" per
-`docs/10-capabilities.md`), and it defeats `kryos audit` too.
+### 1. capability escape via closure/fn-value laundering, stored in a CONTAINER (struct field / array element / map value) -- narrowed residual of a mostly-CLOSED item; see CLOSED table below for what shipped
+`tests/security/cap_escape_closure_launder_container.kry` (repro below).
+**The PARAMETER/local/return/passthrough-chain/actor-message/spawn/generic/
+dyn-Trait shapes of this escape are CLOSED this session** (full account in
+the CLOSED table). This item is what's LEFT: a closure/fn-value read back
+OUT OF A CONTAINER is not traced at all.
 
 ```
+struct Registry { reader: fn() -> str }
+
 @capabilities(fs:read)
 fn make_secret_reader(path: str) -> fn() -> str {
     return || file_read(path)
 }
 
-// Zero capabilities declared. Its body only ever calls a PARAMETER of
-// function type -- never a NAMED builtin or NAMED function -- so it is
-// invisible to fn_capabilities (keyed by NAME) in every mode.
-fn zero_cap_tool(reader: fn() -> str) -> str {
-    return reader()
+fn zero_cap_tool(reg: Registry) -> str {
+    return reg.reader()
 }
 
 @capabilities(fs:read)
 fn main() {
-    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
-    println("recovered via zero_cap_tool: " + zero_cap_tool(reader))
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let reg = Registry { reader: r }
+    deny!(fs:read) {
+        println("struct-field launder (NOT CLOSED): " + zero_cap_tool(reg))
+    }
 }
 ```
+`kryos check --strict-capabilities` on this: exit=0, no diagnostic. `kryos
+run`: prints the secret from INSIDE the `deny!(fs:read)` block. Identical
+shape reproduces for an array (`[fn() -> str]`) and a map
+(`map<str, fn() -> str>`) element -- verified live, not written up as
+separate repros since it is the same root cause, not a new mechanism (this
+matches the note the ORIGINAL finding already made: "a closure stored in a
+struct field and read out -- `registry.reader()` -- is the same hole by a
+different route").
 
-**Proof, both ways, both modes** (`compiler/target/release/kryos.exe`, HEAD
-677ecc3):
-```
-$ kryos check tests/security/cap_escape_closure_launder.kry              # inferred (default)
-exit=0   (no diagnostics — zero_cap_tool's INFERRED set is computed empty)
+**Root cause:** the fix's `hot_params` analysis (`kryos-capabilities/src/
+checker.rs`) marks a PARAMETER hot only when its OWN declared type is
+`fn(...) -> ...` (`is_fn_typed`). A parameter typed `Registry` (a struct
+with a function-typed FIELD), `[fn() -> str]`, or `map<str, fn() -> str>`
+never matches, so `zero_cap_tool`'s param `reg` is never marked hot, and
+`resolve_closure_caps` never gets a chance to trace `reg.reader`/`arr[i]`/
+`m[k]` back to the value that was written into it.
 
-$ kryos check --strict-capabilities tests/security/cap_escape_closure_launder.kry
-exit=0   (no diagnostics — zero_cap_tool's DECLARED set is empty, and stays empty)
+**Fix sketch for whoever picks this up:** extend `is_fn_typed` (or add a
+sibling predicate) to recognize a struct type with >=1 function-typed field,
+an array whose element type is a function, or a map whose value type is a
+function. Extend `hot_params`'s seed pass to also detect `obj.field()` /
+`arr[i]()` / `m[k]()` invocation shapes (today only a bare `p(...)` callee
+counts). Extend `resolve_closure_caps` to trace a struct-literal/array-
+literal/map-literal CONSTRUCTION site: union every value written into the
+relevant field/element (conservative -- an array or map has no per-index
+static tracking, so ANY write contributes), falling back to `Unknown` (the
+same sound `Capability::All` default already used for every other
+unresolvable shape) when the container is built from a non-literal source
+(e.g. `push`ed in a loop, populated from another function's return, read
+from yet another container). Comparable in size to the parameter-based
+mechanism that just shipped; not attempted this session to keep the change
+reviewable.
 
-$ kryos run tests/security/cap_escape_closure_launder.kry
-recovered via zero_cap_tool: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-exit=0
+**Not added to `tests/security_gate.sh`** as a reject case (it would fail
+today) -- it is a standing, documented, NOT-gated artifact (same status as
+`tests/mem/struct_arg_leak.kry`'s design note) so a future change doesn't
+silently "fix" it without re-verification, but does not turn CI permanently
+red for an open item. The CLOSED shapes ARE gated (`tests/security_gate.sh`
+checks #4-6).
 
-$ kryos audit tests/security/cap_escape_closure_launder.kry
-== Capability inventory ==
-  fs:read: 2 functions
-    - make_secret_reader
-    - main
-                                    # zero_cap_tool is absent from the audit
-                                    # entirely -- the dedicated auditing tool
-                                    # also misses its true fs:read authority.
-```
-**Negative control (proves the checker isn't just broadly broken — it
-specifically misses fn-value indirection):** the identical program with
-`zero_cap_tool` calling `file_read(path)` DIRECTLY instead of through the
-closure parameter is correctly REJECTED under `--strict-capabilities`:
-```
-error[E0505]: builtin `file_read` requires `fs:read` capability
- --> ...:2:12
-  2 |     return file_read(path)
-   |            ^^^^^^^^^^^^^^^ requires `fs:read`
-exit=1
-```
-
-**Root cause (read, not guessed):** `kryos-capabilities/src/checker.rs`
-tracks authority ONLY by NAME — `fn_capabilities: HashMap<String,
-CapabilitySet>` is populated from `Decl::Function`/`Decl::Actor` names, and
-every enforcement site (`enforce_callee_name`, `check_builtin_value_ref`)
-looks a callee up BY NAME. Calling a value bound to a local/parameter of
-function type (`reader()` where `reader: fn() -> str`) resolves to a
-single-segment identifier that is never a registered builtin, extern, or
-user-function NAME, so `enforce_callee_name` finds nothing and no diagnostic
-fires — REGARDLESS of what the actual closure value does at runtime. The
-same gap exists in `compute_inferred_capabilities`/`collect_caps_expr`:
-calling a parameter contributes nothing to the caller's inferred set, so the
-under-approximation is silent, not just an enforcement miss — `kryos audit`
-reads the same map and inherits the blind spot. A closure LITERAL's body
-(`|| file_read(path)`) is only checked ONCE, statically, against its
-LEXICAL DEFINING scope (`make_secret_reader`, which legitimately has
-`fs:read`) — there is no mechanism connecting that check to the scope(s) the
-resulting fn-VALUE is later invoked from once it escapes as a return value,
-argument, struct field, or array element. (`Expr::FieldAccess` in
-`check_expr` also never checks the field name as a value-ref, so a closure
-stored in a struct field and read out — `registry.reader()` — is the same
-hole by a different route; not written up as a separate repro since it is
-the identical root cause, not a new mechanism.)
-
-**Why this is a DESIGN NOTE, not a patch (a fix was scoped and deliberately
-NOT attempted this session):**
-
-The only actually-sound fix is giving function TYPES a capability bound —
-i.e. `fn() -> str` would need to carry (or infer) "this callable requires
-`fs:read` to invoke," and every call through a value of that type would be
-checked against the CALLING scope like any other gated operation. That is a
-real type-system feature (capability-polymorphic / effect-polymorphic
-function types), not a table entry — closer in scope to adding a new kind of
-generic bound than to any of the CLOSED items above.
-
-**The obvious cheap alternative was considered and ruled out as unsafe:**
-treating a call through ANY non-directly-named fn-typed value as requiring
-the caller to hold `Capability::All` (the maximally conservative, always-
-sound stance: "if the checker can't prove what a callback does, assume it
-can do everything"). This was NOT implemented because it cascades exactly
-like the raw-memory case the TCB-split fix explicitly avoided: closures
-passed to higher-order functions are pervasive and idiomatic in Kryos
-(`std::iter::{map,filter,fold,reduce,scan,...}`, every callback-shaped
-stdlib API, CLAUDE.md gotchas #19-20 document this at length) — blanket-
-gating "calls a fn parameter" behind `all` would force nearly every HOF call
-site in the stdlib and self-host compiler to declare `all`, which defeats
-least-privilege as completely as the escape itself and was measured to be
-the same failure mode ("closes the hole by making the language unusable")
-documented for the raw-memory table-entry approach.
-
-**A real fix is tractable but non-trivial, sketched for whoever picks this
-up:** Kryos already does whole-program compilation and already computes a
-fixed-point "inferred capability set" per function name
-(`compute_inferred_capabilities`). The sound version needs the SAME
-fixed-point computation extended to be **call-site-sensitive for fn-typed
-arguments**: when a call `f(closure_expr)` passes a LAMBDA LITERAL or a
-NAMED-FUNCTION reference as an argument bound to a `fn(...)`-typed
-parameter, and `f`'s body calls that parameter, the capability that
-particular CALL SITE of `f` requires is the union of `f`'s own direct
-requirements and the PASSED closure's intrinsic requirement — not a single
-global summary for `f` (which is what would be needed to keep `f` itself
-capability-polymorphic, since `f` may legitimately be called elsewhere with
-an innocuous closure). This is an interprocedural argument-flow analysis,
-not a lookup table; it needs its own design pass (and a decision on what
-happens when the flow can't be statically resolved — e.g. a closure read
-out of a collection, or selected at runtime by a match/if — where the sound
-answer is still "requires everything the checker can't rule out", scoped
-down as narrowly as points-to precision allows).
-
-**Ruled out as NOT the fix:** adding `reader`/generic fn-typed PARAMETER
-names to `fn_capabilities` by convention, or requiring `@capabilities` on
-any function with a `fn(...)`-typed parameter — neither actually computes
-the real requirement per call site; both are either no-ops (an annotation
-requirement with no enforced correctness) or force the same `all`-everywhere
-cascade as the ruled-out blanket fix above.
-
-**Not added to `tests/security_gate.sh`** — that gate encodes a boundary
-that HOLDS; this repro is left as a standing, documented, NOT-gated artifact
-(same status as `tests/mem/struct_arg_leak.kry` for the struct-leak design
-note) so it is not silently "fixed" by an unrelated future change without
-being re-verified, but does not turn CI permanently red for an open design
-question.
 
 ### 2b. NEW (found while closing #2): global-reassignment-then-cross-function-read corrupts an array
 `tests/known_failures/global_array_reassign_corrupt.kry` (repro below).
@@ -526,6 +448,7 @@ don't need the same treatment).
 
 | Item | Evidence |
 | --- | --- |
+| **capability escape via closure/fn-value laundering — parameter/local/return/passthrough-chain/actor-message/spawn/generic/dyn-Trait shapes (container storage remains OPEN, item 1 above)** | Root cause: `fn_capabilities` (`kryos-capabilities/src/checker.rs`) was keyed by NAME; calling a value bound to a parameter/local of function type resolved to nothing in that map, so a closure's authority never propagated to the calling scope regardless of what it did at runtime — verified live pre-fix: a `deny!(fs:read)` block did NOT stop a closure constructed before the denial from being invoked (through a zero-capability `zero_cap_tool`) INSIDE it, printing the secret, `check --strict-capabilities` exit=0, no diagnostic. FIX: (1) `hot_params` — a structural, capability-value-independent fixed point over the whole program identifying which fn-typed PARAMETER indices are invoked, directly or by being forwarded as a bare argument into another (transitively) hot position (covers passthrough chains of any depth); (2) `fn_return_closure_caps` — a fixed point resolving what authority a closure-RETURNING function's returned value carries (a lambda literal's own body capability, a named-function reference, or — recursively — another closure-returning function's return, including a simple passthrough that depends on ITS OWN parameter, resolved against the ACTUAL argument at that call); (3) at every call site with a hot argument position, `accumulate_hot_extra_caps` resolves the SPECIFIC argument passed (`resolve_closure_caps`: a lambda literal, a `let`-bound local traced via a per-function `build_local_closure_caps` map, a named function/builtin reference, a call into (2), or — when it is one of the CURRENT function's own fn-typed parameters — deferred via `ClosureCapsResult::DependsOnParam` to that function's OWN call sites, which is what keeps a `std::iter`-HOF-shaped forwarding function requiring nothing extra) and unions that authority into the call's requirement, checked against the CALLING scope exactly like any other gated operation — so a `deny!` block, an actor's declared ceiling, or any other boundary a closure is routed through now sees the real requirement. Unresolvable provenance (a closure whose origin can't be traced at all) requires `Capability::All`, the same conservative default already documented for the raw-memory escape. Verified BOTH directions, both modes (inferred + `--strict-capabilities`): pre-fix binary compiles+runs the `deny!` repro clean and prints the secret from inside the denied scope (5/5 reproduced); post-fix binary rejects it with E0507 citing the closure argument, in both modes, while `std::iter::map/filter/fold` with a PURE closure still needs no annotation (no cascade) and the SAME HOF with a PRIVILEGED closure correctly requires the capability. Blast-radius swept live (not just the parameter case): closures forwarded through 2+ passthrough call layers, actor fire-and-forget message sends (needed a second fix — actor handlers have NO implicit `self` in their own `params`, unlike a struct `impl` method, so the method-call self-offset translation was off-by-one and silently dropped index-0 coverage until corrected), `spawn`, a generic `fn<T>`, and `dyn Trait` method dispatch are ALL closed — each individually reproduced escaping pre-fix and rejected post-fix inside a `deny!(fs:read)` block. The REJECTED naive alternative ("any call through a non-directly-named fn-typed value requires `Capability::All`") was re-verified as unusable by MEASUREMENT, not just re-assumed: 22 genuine callback-taking `std::iter` HOF signatures, ~55 raw call sites to those names across the stdlib/self-host/examples/ecosystem (a few are `std::string::find` name collisions, not the iterator HOF; dozens remain genuine) — every one would need `@capabilities(all)` under the blanket policy, none do under the shipped call-site-sensitive one. NOT closed: a closure/fn-value read back OUT OF A CONTAINER (struct field, array element, map value) — `hot_params` only recognizes a parameter whose OWN type is `fn(...) -> ...`, so `Registry{reader: fn()->str}`/`[fn()->str]`/`map<str,fn()->str>` are invisible to it; reproduced live, NOT gated, sketched as item 1 in OPEN above. Also verified: `kryos audit` still never lists `zero_cap_tool` post-fix — determined this is CORRECT, not a residual defect (audit is a pure syntactic `@capabilities(...)` scan with no inference, so it never lists ANY unannotated function, including a legitimately call-site-polymorphic one like a HOF; it was never specifically "blind to closures", it is blind to every unannotated function equally). Gates: `tests/security_gate.sh` (extended, checks #4-6: reject/no-over-reject/no-cascade + positive privileged-HOF check), conformance 47/47, tier1+tier2 GREEN, bootstrap 16/16. Docs corrected: `docs/10-capabilities.md`, `README.md`, `STABILITY.md`, `docs/capability-roadmap.md` all previously claimed NO soundness for any closure indirection; now state the precise (much larger) sound surface and the precise (much narrower) remaining gap |
 | sret fn-value ABI | struct through a fn value returned garbage on `--release`; fixed by consulting `func_sig_aggs`. Guessing from the LLVM type string broke `Result.and_then` — enums are aggregate-shaped but returned directly |
 | `bool` -> builtin ABI | `json_bool(false)` built JSON `true`; `i1` against an `(i64)` declaration left the upper 63 bits undefined |
 | narrow-int args | same class for `char_from`/`char_at`; latent only because 32-bit x86-64 ops zero the upper half |

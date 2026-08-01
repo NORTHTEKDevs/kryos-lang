@@ -93,17 +93,21 @@ on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
 are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
 [docs/BUGS.md](docs/BUGS.md).
 
-- **Capability enforcement is sound for direct calls only -- NOT against
-  closure/fn-value indirection, in ANY mode including `--strict-capabilities`.**
-  A function that only ever calls a `fn(...)`-typed PARAMETER (never a named
-  builtin) is invisible to the capability checker regardless of what that
-  closure does at runtime, so a zero-capability function can exercise any
-  authority handed to it as a callback. This is a security-relevant gap, not
-  a papercut: see [docs/10-capabilities.md § Known
-  limitation](docs/10-capabilities.md#known-limitation-closurefn-value-indirection-is-not-enforced-read-this-before-trusting-it-with-secrets)
-  for the repro and [tools/loop/LEDGER.md](tools/loop/LEDGER.md) (top OPEN
-  item) for the fix design. Do not treat `@capabilities` as a hard boundary
-  against hostile or buggy code that can construct or receive closures.
+- **Capability enforcement is sound for direct calls AND for closure/fn-value
+  indirection through a parameter, local, return value, passthrough chain,
+  actor message, `spawn`, generic, or `dyn Trait` dispatch -- in EVERY mode
+  including `--strict-capabilities`. One indirection shape remains
+  unenforced: a closure read back out of a CONTAINER (a struct field, array
+  element, or map value).** A function whose parameter/field type is itself
+  a struct/array/map that happens to CONTAIN a closure is invisible to the
+  checker regardless of what that closure does at runtime, so a
+  zero-capability function can still exercise container-laundered authority.
+  This is a security-relevant gap, not a papercut: see
+  [docs/10-capabilities.md § Known
+  limitation](docs/10-capabilities.md#known-limitation-a-closure-read-out-of-a-container-is-not-traced-read-this-before-trusting-it-with-secrets)
+  for the repro and [tools/loop/LEDGER.md](tools/loop/LEDGER.md) for the fix
+  design. Do not treat `@capabilities` as a hard boundary against hostile or
+  buggy code that can receive a closure through a struct field, array, or map.
 
 Honest, non-blocking residuals:
 

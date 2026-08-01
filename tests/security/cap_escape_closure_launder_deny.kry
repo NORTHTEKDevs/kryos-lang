@@ -1,0 +1,43 @@
+// SECURITY -- decisive proof for the closure/fn-value capability-laundering
+// fix. `cap_escape_closure_launder.kry` (the original finding) shows
+// `zero_cap_tool` reading a secret with an EMPTY declared/inferred capability
+// set, but it does NOT by itself prove an authority escalation: `main` there
+// is `@capabilities(fs:read)` anyway (forced, since it directly constructs
+// the reader via an ANNOTATED `make_secret_reader`), so nothing in that
+// program ever runs with LESS authority than it legitimately holds.
+//
+// This file isolates the actual violation: a `deny!(fs:read)` block is
+// supposed to make it IMPOSSIBLE for code inside it to touch `fs:read`,
+// regardless of what the enclosing function holds. By constructing the
+// privileged closure OUTSIDE the deny block and invoking it INSIDE via
+// `zero_cap_tool` (whose own declared/inferred set is correctly empty, same
+// as any higher-order function), the deny narrowing was completely defeated
+// pre-fix: `kryos check` / `--strict-capabilities` reported no diagnostic,
+// and `kryos run` printed the secret from INSIDE the denied scope.
+//
+// ACCEPTANCE: this program must be REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Empty capability set, exactly like `std::iter::map`/`filter`/`fold` --
+// this is intentional and must stay compile-clean in isolation (a HOF that
+// merely invokes a caller-supplied callback needs no capability of its own).
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret -- `deny!`
+        // was silently defeated by routing the read through a closure
+        // constructed before the denial took effect.
+        let leaked = zero_cap_tool(reader)
+        println("recovered INSIDE deny!(fs:read): " + leaked)
+    }
+}

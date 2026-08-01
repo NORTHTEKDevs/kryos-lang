@@ -52,5 +52,66 @@ else
     echo "  FAIL: gating cascaded out of the stdlib:"; tail -3 "$TMP/nc" | sed 's/^/    /'; fail=1
 fi
 
+
+# 4. The closure/fn-value laundering escape must NOT compile under EITHER
+#    enforcement mode. See tests/security/cap_escape_closure_launder_deny.kry
+#    for why the DENY-BLOCK variant, not the original repro, is the decisive
+#    proof (the original's `main` legitimately holds `fs:read` regardless).
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/cap_escape_closure_launder_deny.kry \
+        >"$TMP/closure_$mode_flag" 2>&1; then
+        echo "  FAIL: closure-laundering deny!(fs:read) escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/closure_$mode_flag"; then
+        echo "  ok   closure-laundering deny!(fs:read) escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/closure_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 5. No cascade: std::iter HOFs (map/filter/fold -- every one calls its
+#    callback parameter directly, so each is "hot") must still compile with
+#    NO annotation when the closure argument is pure. This is the naive
+#    "Capability::All on any fn-typed param" fix's rejected failure mode --
+#    verify the real fix does not reintroduce it.
+cat > "$TMP/hof_nocascade.kry" <<'KRY'
+use std::iter::{map, filter, fold}
+fn main() {
+    let xs: [i64] = [1, 2, 3, 4, 5]
+    let doubled = map(xs, |x| x * 2)
+    let evens = filter(xs, |x| x % 2 == 0)
+    let total = fold(xs, 0, |acc, x| acc + x)
+    println(to_string(total) + to_string(len(doubled)) + to_string(len(evens)))
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/hof_nocascade.kry" >"$TMP/hof_nc" 2>&1; then
+    echo "  ok   std::iter HOFs with pure closures need no annotation (no cascade)"
+else
+    echo "  FAIL: the fix cascaded into ordinary HOF usage:"; tail -5 "$TMP/hof_nc" | sed 's/^/    /'; fail=1
+fi
+
+# 6. Soundness complement to #5: a PRIVILEGED closure passed through the SAME
+#    HOF must still correctly require the capability at the call site (proves
+#    #5 passes because the closure is genuinely pure, not because the whole
+#    mechanism is inert).
+cat > "$TMP/hof_privileged.kry" <<'KRY'
+use std::iter::{map}
+fn main() {
+    let paths: [str] = ["tests/security/secret_for_closure_launder.txt"]
+    let contents = map(paths, |p| file_read(p))
+    println(contents[0])
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/hof_privileged.kry" >"$TMP/hof_priv" 2>&1; then
+    echo "  FAIL: a privileged closure through map() compiled with no fs:read declared"
+    fail=1
+elif grep -q "fs:read" "$TMP/hof_priv"; then
+    echo "  ok   a privileged closure through map() correctly requires fs:read"
+else
+    echo "  FAIL: rejected, but not for fs:read:"; tail -3 "$TMP/hof_priv" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

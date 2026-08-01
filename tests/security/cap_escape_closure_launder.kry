@@ -1,28 +1,39 @@
-// SECURITY -- CAPABILITY ESCAPE via closure/fn-value laundering.
+// SECURITY -- CAPABILITY ESCAPE via closure/fn-value laundering (FIXED --
+// see `tools/loop/LEDGER.md`; the decisive proof is
+// `cap_escape_closure_launder_deny.kry`).
 //
-// `zero_cap_tool` declares NO capabilities. Under `--strict-capabilities` it
-// is checked "as if annotated with exactly its declaration" (docs/10-capabilities.md:
-// "every function is auditable in isolation"). Under the default `inferred`
-// mode its capability set is computed as the fixpoint union of what its body
-// calls. In BOTH modes the checker reports `zero_cap_tool` as requiring
-// NOTHING -- yet at runtime it reads an arbitrary file, because its body
-// only ever calls a PARAMETER of function type (`reader()`), never a NAMED
-// builtin or NAMED function. `fn_capabilities` (kryos-capabilities/src/
-// checker.rs) is keyed by NAME; a value flowing through a local/parameter
-// binding is invisible to it, so a closure built by privileged code and
-// handed down as a callback silently carries its authority straight through
-// a callee the checker believes holds none.
+// `zero_cap_tool` declares NO capabilities and legitimately should not have
+// to -- it merely invokes a caller-supplied callback, exactly like
+// `std::iter::map`/`filter`/`fold`. This file is the ORIGINAL finding that
+// named the root cause: `fn_capabilities` (kryos-capabilities/src/
+// checker.rs) was keyed purely by NAME, so calling a PARAMETER of function
+// type (`reader()`) was invisible to it in every enforcement mode -- a
+// closure built by privileged code and handed down as a callback silently
+// carried its authority straight through a callee the checker believed held
+// none.
+//
+// NOTE ON THIS SPECIFIC PROGRAM: `main` here is `@capabilities(fs:read)`
+// regardless (it directly calls the ANNOTATED `make_secret_reader`, which
+// already forces that declaration under the PRE-EXISTING, unrelated
+// call-site propagation rule) -- so this exact program was never a genuine
+// escalation past a boundary that lacked authority, and it still compiles
+// clean post-fix, CORRECTLY: `main` legitimately holds `fs:read` and
+// legitimately exercises it via the closure. The fix is proven by
+// `cap_escape_closure_launder_deny.kry`, which shows the SAME laundering
+// defeating a `deny!(fs:read)` narrowing -- a case where "the enclosing
+// function already needs the capability anyway" does not apply. This file
+// is kept as the documented origin of the finding and as a `kryos audit`
+// blind-spot illustration (see docs/10-capabilities.md's "Known limitation"
+// section): `kryos audit` is a pure syntactic scan of `@capabilities(...)`
+// annotations and will never list `zero_cap_tool`, exactly like it never
+// lists `map`/`filter` -- that is now understood to be CORRECT (a
+// call-site-polymorphic function has no fixed capability to list), not a
+// separate defect, once the enforcement fix below is in place.
 //
 // This is the closure/fn-value analogue of the raw-memory escape (str_to_ptr
-// + ptr_byte_at) that was already closed -- but it does not touch raw
-// memory or FFI at all, so that fix does not cover it. It goes through the
-// language's own capability-typed function values.
-//
-// ACCEPTANCE: `zero_cap_tool` must be rejected (or its true authority must be
-// visible to `kryos audit` / the checker) when it invokes an fn-value
-// parameter that closes over a gated builtin. Today it compiles clean under
-// BOTH `--capabilities-mode=inferred` (default) and `--strict-capabilities`,
-// and returns the real file contents.
+// + ptr_byte_at) that was already closed -- it does not touch raw memory or
+// FFI at all, so that fix did not cover it. It goes through the language's
+// own capability-typed function values.
 
 @capabilities(fs:read)
 fn make_secret_reader(path: str) -> fn() -> str {
