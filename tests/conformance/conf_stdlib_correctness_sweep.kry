@@ -1,0 +1,144 @@
+// Conformance: stdlib correctness sweep (66-module wave).
+//
+// Real bug found and fixed this session: std::fmt::format took `args: [any]`.
+// `any` is erased to a bare i64 with NO runtime type tag (CLAUDE.md gotcha
+// #22), so any str/f64 argument read back through `to_string(args[i])` as
+// its raw pointer/bit pattern -- format("Hello, \{0\}!", ["Alice"]) printed
+// "Hello, 140695261409472!" instead of "Hello, Alice!", 100% of the time,
+// for every caller. Fixed by changing the signature to `args: [str]`
+// (matching std::string::format, which never had this bug) -- callers
+// pre-stringify with to_string(x), same convention as every other HOF in
+// this stdlib that avoids [any]. The doc comment's own usage example was
+// ALSO wrong as written (a bare "{0}" in a double-quoted source literal is
+// consumed by Kryos's universal string interpolation before format() ever
+// runs) -- corrected to show the required escaped form.
+//
+// The rest of this file is new value-asserted edge-case coverage for
+// modules the existing conf_stdlib_wave*/conf_stdlib_untested suites don't
+// exercise at this depth: mathx::isqrt near i64::MAX, pathext::normalize
+// root/drive/UNC escape guards, hash::crc32 known test vectors,
+// datetime::from_timestamp across leap years/century-non-leap/negative
+// epoch, matrix::mul non-square, semver prerelease numeric-vs-lexicographic
+// precedence, iter generic correctness on `str` elements (group_by/unique/
+// dedup/scan/zip/unzip/windows/chunks), and collections List/Set/Dict
+// boundary mutations. All of it probed live during the sweep; nothing here
+// duplicates an existing wave file's assertions.
+
+use std::fmt::{format}
+use std::mathx::{isqrt}
+use std::pathext::{normalize}
+use std::hash::{crc32}
+use std::datetime::{format_timestamp}
+use std::matrix::{mul}
+use std::semver::{parse, compare}
+use std::iter::{group_by, unique, dedup, chunks, windows, zip, unzip, scan}
+use std::collections::{List, Set, Dict}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+@capabilities(all)
+fn main() {
+    // --- fmt::format: the actual bug fix (was [any], now [str]) ---
+    expect(format("Hello, \{0\}! You are \{1\}.", ["Alice", to_string(30)]) == "Hello, Alice! You are 30.",
+           "fmt::format substitutes real str values, not raw any-erased bit patterns")
+    expect(format("\{0\}-\{1\}-\{2\}", ["a", "b", "c"]) == "a-b-c", "fmt::format multiple placeholders")
+    expect(format("no placeholders here", []) == "no placeholders here", "fmt::format with empty args is a no-op")
+    expect(format("\{5\} out of range", ["only one"]) == "\{5\} out of range", "fmt::format leaves an out-of-range placeholder literal")
+
+    // --- mathx::isqrt: overflow-hazard boundary near i64::MAX ---
+    expect(isqrt(9223372036854775807) == 3037000499, "isqrt(i64::MAX)")
+    expect(isqrt(9223372030926249001) == 3037000499, "isqrt(exact large square)")
+    expect(isqrt(1000000000000000000) == 1000000000, "isqrt(1e18)")
+    expect(isqrt(0) == 0, "isqrt(0)")
+    expect(isqrt(1) == 1, "isqrt(1)")
+
+    // --- pathext::normalize: traversal-escape guards ---
+    expect(normalize("/../a") == "/a", "normalize: root cannot be escaped by ..")
+    expect(normalize("C:/a/../../x") == "C:/x", "normalize: drive letter cannot be escaped by ..")
+    expect(normalize("//server/share/../x") == "//server/share/x", "normalize: UNC root cannot be escaped by ..")
+    expect(normalize("a/./b/../c") == "a/c", "normalize: . and .. resolve in a relative path")
+    expect(normalize("a//b///c") == "a/b/c", "normalize: repeated slashes collapse")
+
+    // --- hash::crc32: known IEEE CRC-32 test vectors ---
+    expect(crc32("") == 0, "crc32 of empty string is 0")
+    expect(crc32("hello") == 907060870, "crc32(hello) matches the standard reference value")
+    expect(crc32("123456789") == 3421780262, "crc32 check value for the standard '123456789' vector")
+
+    // --- datetime::from_timestamp: leap years, century rule, negative epoch ---
+    expect(format_timestamp(0) == "1970-01-01T00:00:00Z", "epoch 0")
+    expect(format_timestamp(1709208000) == "2024-02-29T12:00:00Z", "leap day exists in 2024")
+    expect(format_timestamp(4102444800) == "2100-01-01T00:00:00Z", "2100 is NOT a leap year (div 100, not div 400)")
+    expect(format_timestamp(0 - 86400) == "1969-12-31T00:00:00Z", "one day before the epoch")
+
+    // --- matrix::mul: non-square dimensions ---
+    let a: [i64] = [1, 2, 3, 4, 5, 6]
+    let b: [i64] = [7, 8, 9, 10, 11, 12]
+    let c = mul(a, b, 2, 3, 2)
+    expect(c[0] == 58 and c[1] == 64 and c[2] == 139 and c[3] == 154, "matrix::mul 2x3 * 3x2 = 2x2 computed correctly")
+
+    // --- semver: prerelease precedence is NUMERIC per-identifier, not lexicographic ---
+    expect(compare(parse("1.0.0-beta.2"), parse("1.0.0-beta.11")) < 0,
+           "semver: beta.2 < beta.11 (numeric compare, not lexicographic '11' < '2')")
+    expect(compare(parse("1.0.0-rc.1"), parse("1.0.0")) < 0,
+           "semver: any prerelease sorts below the release of the same triple")
+    expect(parse("1.2.3.4").major == -1, "semver: an extra dotted segment is malformed, not silently truncated")
+
+    // --- iter: generic correctness on `str` elements (not just i64) ---
+    let words: [str] = ["apple", "banana", "avocado", "blueberry", "cherry"]
+    let groups = group_by(words, fn(w) { return w[0] })
+    expect(len(groups["a"]) == 2, "group_by: apple+avocado share key 'a'")
+    expect(len(groups["b"]) == 2, "group_by: banana+blueberry share key 'b'")
+
+    let uniq = unique(["a", "b", "a", "c", "b", "a"])
+    expect(len(uniq) == 3 and uniq[0] == "a" and uniq[1] == "b" and uniq[2] == "c",
+           "unique: str content-equality dedup, first-occurrence order preserved")
+
+    let dd = dedup(["x", "x", "y", "y", "y", "x"])
+    expect(len(dd) == 3, "dedup: only CONSECUTIVE duplicates collapse (3 runs, not 2 unique values)")
+
+    let nums: [i64] = [1, 2, 3, 4, 5, 6, 7]
+    let ch = chunks(nums, 3)
+    expect(len(ch) == 3 and len(ch[2]) == 1, "chunks: last chunk holds the remainder")
+    let wn = windows(nums, 3)
+    expect(len(wn) == 5 and wn[0][0] == 1 and wn[4][2] == 7, "windows: sliding window boundaries correct")
+
+    let zipped = zip([1, 2, 3, 4, 5], ["x", "y", "z"])
+    expect(len(zipped) == 3, "zip: stops at the SHORTER of two mismatched-length arrays")
+    let (za, zb) = unzip(zipped)
+    expect(za[2] == 3 and zb[2] == "z", "unzip: round-trips both element types")
+
+    let sc = scan([1, 2, 3, 4], 0, fn(acc, x) { return acc + x })
+    expect(len(sc) == 5 and sc[0] == 0 and sc[4] == 10, "scan: prefix sums include the seed value")
+
+    // --- collections: List/Set/Dict boundary mutations ---
+    let mut lst: List<i64> = List.new()
+    lst = lst.push(10)
+    lst = lst.push(20)
+    lst = lst.push(30)
+    let lst2 = lst.insert(1, 99)
+    expect(lst2.get(1) == 99 and lst2.get(2) == 20 and lst2.len() == 4, "List.insert shifts trailing elements right")
+    let lst3 = lst.remove(1)
+    expect(lst3.get(1) == 30 and lst3.len() == 2, "List.remove shifts trailing elements left")
+
+    let mut st: Set<i64> = Set.new()
+    st = st.add(5)
+    st = st.add(5)
+    st = st.add(7)
+    expect(st.len() == 2, "Set.add dedups an exact repeat")
+    expect(st.has(5) and st.has(7) and not st.has(9), "Set.has true/false boundary")
+
+    let mut d: Dict<str, i64> = Dict.new()
+    d = d.set("a", 1)
+    d = d.set("b", 2)
+    d = d.set("a", 100)
+    expect(d.len() == 2, "Dict.set on an existing key overwrites, does not grow length")
+    expect(d.get("a") == 100, "Dict.set overwrite value is visible")
+    expect(d.get_or("z", -1) == -1, "Dict.get_or returns the default for a missing key")
+
+    println("conformance stdlib correctness sweep: PASS")
+}

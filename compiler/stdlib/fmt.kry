@@ -10,17 +10,33 @@
 // --- Template formatting -----------------------------------------------------
 
 /// Format a template string with positional arguments.
-/// Replaces {0}, {1}, etc. with the corresponding arg converted to string.
+/// Replaces {0}, {1}, etc. with the corresponding arg. Args are `str`, not
+/// `any`: an `[any]` slot is erased to a bare i64 with no runtime type tag
+/// (CLAUDE.md gotcha #22), so a `str`/`f64` argument routed through it read
+/// back through `to_string` as its raw pointer/bit pattern -- garbage, not
+/// the value -- for every non-i64 caller. Pre-stringify each argument with
+/// `to_string(x)` before passing (matching `std::string::format`'s
+/// convention, which never had this bug because it was `[str]` all along).
 ///
-///   format("Hello, {0}! You are {1}.", ["Alice", "30"])
+/// SOURCE CAVEAT: because every Kryos string literal interpolates, a bare
+/// `{0}` in a DOUBLE-QUOTED SOURCE LITERAL is evaluated by the compiler
+/// itself (as the expression `0`) before this function ever runs -- the
+/// naive `format("Hello, {0}! You are {1}.", ["Alice", "30"])` silently
+/// becomes `format("Hello, 0! You are 1.", ["Alice", "30"])` at compile
+/// time and returns "Hello, 0! You are 1." unchanged (no error, no
+/// placeholder left to replace). Escape the braces in the template
+/// (`\{0\}` or `{{0}}`), or build the template at runtime, so the literal
+/// two-character placeholder reaches this function:
+///
+///   format("Hello, \{0\}! You are \{1\}.", ["Alice", "30"])
 ///   => "Hello, Alice! You are 30."
-fn format(template: str, args: [any]) -> str {
+fn format(template: str, args: [str]) -> str {
     let mut result = template
     let argc = len(args)
     let mut i = 0
     while i < argc {
         let placeholder = "\{" + to_string(i) + "\}"
-        result = _replace_all(result, placeholder, to_string(args[i]))
+        result = _replace_all(result, placeholder, args[i])
         i = i + 1
     }
     return result
