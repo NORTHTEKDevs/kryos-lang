@@ -568,6 +568,88 @@ standing, honestly-scoped OPEN item with the fix direction stated for
 whoever picks it up. Not gated (would fail today); `tests/known_failures/`
 convention followed. CLAUDE.md gotcha #11 updated with this finding inline.
 
+### 7b. NEW (found in the spawn/actors/channels/sync wave): a closure/fn-value captured by `spawn` does NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates -- NOT FIXED
+
+`tests/known_failures/spawn_closure_shared_env_race.kry` (repro below,
+verified 10/10 failures on JIT and 7/10 on AOT at 50 threads x 2000 calls
+each). Ranks with item 7 per this ledger's doctrine -- a silent wrong answer
+outranks a crash -- and is the SAME underlying mechanism (item 7 / CLAUDE.md
+gotcha #11's mutated-scalar-capture write-back) turning into a real,
+measured race the moment the closure is shared across threads instead of
+called from one.
+
+Every OTHER `spawn` capture kind is a documented, verified SNAPSHOT: str,
+array, map, struct, and (as of `721a9cf`, this session's predecessor) enum
+are all deep-copied at the `Instruction::Spawn` boundary so the spawned
+thread privately owns its capture (`docs/09-concurrency.md`: "every capture
+is a snapshot ... this holds uniformly for arrays, structs, maps, and
+strings"). Read directly in both backends' `Instruction::Spawn` arg-copy
+match (`kryos-codegen-cranelift/src/codegen.rs` and `kryos-codegen-llvm/src/
+codegen.rs`): the `MirType::Function` / `MirType::Shared` arm is the ONE
+exception -- it calls `kryos_arc_retain` on the closure's env box instead of
+cloning it. Every spawned thread that captures the SAME closure value shares
+the identical env allocation with the parent and every sibling thread.
+
+**Why sharing (not just "not snapshotting") is a real bug, not merely a
+documentation gap:** a closure with a single mutated scalar capture whose
+tail value IS that identifier (gotcha #11's "RESOLVED" persistence case,
+e.g. `let bump = || { count = count + 1  count }`) persists its state via a
+NON-ATOMIC read-call-then-write-back with no lock: the generated
+`{name}_env` thunk calls the closure body (which reads `env[slot]`,
+computes, returns) and THEN, as a SEPARATE instruction, stores the return
+value back into `env[slot]` (both backends, `if let Some(slot) =
+mutated_slot { ... store ... }`). Two threads calling the same shared
+closure concurrently can both read the same pre-increment `env[slot]`
+before either writes back, silently losing one thread's increment --
+measured directly:
+
+```
+use std::sync::{wait_group}
+fn main() {
+    let mut count: i64 = 0
+    let bump = || { count = count + 1  count }
+    let wg = wait_group()
+    wg.add(50)
+    let mut i = 0
+    while i < 50 {
+        spawn {
+            let mut j = 0
+            while j < 2000 { bump()  j = j + 1 }
+            wg.done()
+        }
+        i = i + 1
+    }
+    wg.wait()
+    let final_val = bump()   // read the CLOSURE's own state via its own return
+    println("final={final_val} expected=100001")
+}
+```
+JIT: 10/10 runs printed a value less than 100001 (observed range ~46758-
+72073). AOT: 7/10 runs printed a value less than 100001 (observed range
+~97745-99895 -- a narrower, still-real window, likely because LLVM's spawn
+thread startup has more fixed overhead, reducing the contention window, not
+because AOT is exempt). Confirmed this is unrelated to the ALREADY-
+documented "outer variable stays frozen" behavior (gotcha #11's by-move
+semantics: reading `count` directly after defining `bump` correctly stays
+`0` forever, single-threaded, both backends, no bug there) -- this finding
+is specifically about the CLOSURE's OWN persisted state (read via calling
+`bump()` again, not via the outer variable), which should climb
+monotonically and instead loses updates under concurrent access.
+
+**Not fixed this session (scope discipline, matches item 3/item 7's
+precedent):** two fix shapes exist, neither is a one-line patch:
+(a) make `Function`/`Shared` spawn captures snapshot like every other heap
+kind -- needs a per-closure-shape "deep copy this env" codegen helper
+generated per closure (mirroring how `__kryos_drop_<Struct>` is generated
+per struct), on both backends; or (b) make the call-plus-writeback atomic
+under a per-closure lock, which taxes the common uncontended single-thread
+case to fix a path most programs don't exercise. Filed with a verified,
+both-backends, both-directions-of-scale repro instead of a rushed patch.
+**Docs corrected the same session** (this was a real documentation gap, not
+just a code gap): `docs/09-concurrency.md`'s spawn section now states the
+closure/fn-value exception to the snapshot contract explicitly, and CLAUDE.md
+gotcha #22 gained a matching bullet.
+
 ### 8. curried (2-level) generic closure return fails to BUILD on AOT -- JIT/AOT divergence, NOT FIXED
 
 `tests/known_failures/closure_curried_generic_aot_crash.kry`. Found this
@@ -730,6 +812,61 @@ docs changes to what was directly asked for); a closure captured inside a
 `spawn` block via a struct field (`h.f(7)` inside `spawn { }`) returning the
 correct value on both backends, consistent with the extensive spawn-closure
 work already CLOSED in this ledger.
+
+### Ruled out this session (spawn / actors / channels / sync primitives wave) -- probed hard (many-run, value-asserted, both backends), no bug found beyond item 7b above
+
+Every repro below was run 5-10x per backend (concurrency bugs are
+probabilistic; a single green run proves nothing) with a value assertion,
+not just an exit code, per this session's own doctrine:
+
+- **Every non-closure `spawn` capture kind under real cross-thread load:**
+  `str`/`array`/`map` captured directly (not via a struct) into 200
+  per-iteration spawn blocks with a FRESH value each iteration, read back
+  through a channel -- no use-after-free, no box-reuse (the class of bug the
+  enum-capture fix `721a9cf` closed), correct values 5/5 JIT + 5/5 AOT.
+- **`fn` VALUE captures (a bare named-function reference, not a lambda):**
+  `let f = helper` then `spawn { f(21) }` x50 threads -- the zero-capture
+  `RValue::Closure` path still allocates a real ARC-boxed env (confirmed by
+  it working, not by reading codegen), so `kryos_arc_retain`'s magic-sentinel
+  defensive check (`kryos-rt/src/arc.rs::is_arc_ptr`) never has to fall back
+  to its "static function pointer, no-op" path here. 10/10 JIT + 10/10 AOT,
+  correct value every run.
+- **Actor mailbox under concurrent senders:** 30 spawned threads x 1000
+  messages each to ONE actor (`c.bump(1)`), read back via a reply channel
+  (actor handlers with a non-void return type are now a clean COMPILE ERROR
+  -- `E0110`, "actor sends are asynchronous fire-and-forget" -- a real,
+  useful diagnostic already in place, not a gap). Exact count every run,
+  6/6 JIT + 6/6 AOT, no lost/duplicated messages.
+- **MPMC channel under real multi-producer/multi-consumer load:** 20
+  producers x 500 sends, 10 consumers draining via `recv`, verified both
+  exact COUNT and exact SUM (catches a duplicate that a count-only check
+  would miss) -- exact 6/6 JIT.
+- **`Mutex`/`Semaphore` under contention:** `Mutex` captured directly (not
+  wrapped) into 10 spawned threads x 1000 lock/increment/unlock cycles --
+  correct despite the Kryos-level `locked`/`dropped` bookkeeping fields
+  being independently DEEP-COPIED per thread (struct capture rule), because
+  the real exclusion comes from the shared native OS mutex behind the
+  `handle: ptr` scalar field, not from the bookkeeping bools. `Semaphore(3)`
+  with 30 competing acquirers never exceeded 3 concurrent holders. 6/6 JIT +
+  6/6 AOT both primitives.
+- **`ChanWaitGroup` under 40 concurrent workers:** exact count every run,
+  8/8. **`ChanOnce` under 20-way contention:** fired 20/20 times (NOT once)
+  -- this is NOT a new finding, it is the EXACT documented behavior in
+  `chan.kry`'s own doc comment ("Not currently atomic across spawn-tasks;
+  use a semaphore or external mutex for cross-task once semantics"),
+  re-verified as accurate, not re-filed.
+- **Per-iteration closure with a HEAP capture, shared via `spawn`, parent
+  scope torn down immediately after spawning:** 2000 threads, no
+  premature-free / use-after-free / double-free -- the synchronous
+  `kryos_arc_retain` at the `Spawn` call site (before `kryos_spawn` starts
+  the OS thread) is correctly sequenced ahead of the parent's own scope-end
+  release, so refcounting holds even though the SAME box is also
+  DATA-RACED by item 7b above when the closure MUTATES a capture (holding a
+  reference alive under a race is a different property from serializing
+  writes to it -- this item confirms the former, item 7b disproves the
+  latter).
+- Existing green gates re-run for flakiness, not just once: `conf_spinlock_
+  mutex` and `conf_spawn_agg_capture_abi` 8/8 clean on JIT.
 
 ---
 
