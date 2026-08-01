@@ -1059,6 +1059,16 @@ recorded so it isn't re-investigated:
   `0xFF` -> `255`, `0b1010` -> `10`, `0xFFFFFFFFFFFFFFFF as u64 as i64` ->
   `-1` (the full 64-bit pattern, not rejected or truncated), a `u8`-typed
   hex literal masks correctly (`0x100 as u8` -> `0`). Both backends agree.
+- **`i128`/`u128` re-verified: still non-functional, but now fail CLEANLY
+  instead of crashing** (an improvement since CLAUDE.md gotcha #22 was last
+  written). `let a: i128 = 100` and arithmetic between two `i128` locals
+  both now give a clean `error[E0110]: \`i128\` is not yet supported by
+  the code generator` at compile time, exit 1, on BOTH backends — no
+  Cranelift verifier ICE, no raw LLVM type-mismatch build failure (the
+  previously-documented crash mode). CLAUDE.md corrected to reflect this;
+  the types still don't work, they just fail predictably now instead of
+  crashing. No silent miscompile either way — this was the specific thing
+  this wave was asked to re-check.
 - **Bitwise NOT on a narrow unsigned type masks to the type's own width**,
   not the full 64-bit register: `~(0u8)` -> `255`, `~(0u16)` -> `65535` on
   both backends (not `-1`/a full-width all-ones value misread as unsigned).
@@ -1085,6 +1095,48 @@ recorded so it isn't re-investigated:
   struct, or two-or-more consecutive narrow fields with nothing wider
   trailing) — a less common but far from rare shape (counters, flags,
   small config/newtype structs).
+- **The struct-field fix verified to hold for HEAP-escaping struct
+  instances too**, not just the stack-`alloca` local case the bug was
+  found in: a single-narrow-field struct stored as an array element
+  (`arr[0].v = arr[0].v + 250` with overflow) and one passed through a
+  function boundary and returned (`fn mutate(c: SU8) -> SU8 { let mut m =
+  c  m.v = m.v + 100  return m }`) both wrap correctly post-fix on AOT,
+  matching JIT. (These heap/escaping paths were never confirmed broken
+  pre-fix either — plausible that heap struct boxes reserve full 8-byte-
+  per-field slots regardless of declared width, unlike the tightly-packed
+  stack `alloca %StructName`, which would mean they were never exposed to
+  this bug in the first place; not root-caused further since the fix
+  covers both paths identically going forward.)
+- **Float `to_string`/`parse_float` round-trips exactly** for a spread of
+  values (`0.1`, `1.0/3.0`, `123456789.123456`, `1e300`, `1e-300`, `-0.0`,
+  `0.0`, `3.14159265358979`) — reparsing the printed string reproduces the
+  original value (diff `< 1e-7`) on both backends, no precision loss from
+  the formatter.
+- **NaN comparison semantics are correct and backend-consistent**: `nan ==
+  nan`, `nan != nan`, `nan < x`, `x < nan`, `nan <= nan` all give the IEEE-
+  correct answer (`==`/`<`/`<=` false, `!=` true) on both backends; `+-inf`
+  compare/order correctly against large finite values and each other.
+- **NEW (deterministic consequence of the ALREADY-DOCUMENTED NaN sign-bit
+  divergence, not a new root cause): `sort()` on an `[f64]` array
+  containing NaN gives a DIFFERENT ORDER per backend.** `sort([3.0, nan,
+  1.0, 2.0])` places the NaN FIRST on `kryos run`/JIT and LAST on `build
+  --release`/AOT. ROOT CAUSE (read, not guessed): `kryos_builtin_sort_f64`
+  (`kryos-rt/src/builtins.rs`) sorts via `f64::total_cmp` on the raw bit
+  pattern -- a real, deterministic IEEE-754 total order in which a
+  NEGATIVE-signed NaN sorts before every other value (including `-inf`)
+  and a POSITIVE-signed NaN sorts after every other value (including
+  `+inf`). Since an invalid-op NaN canonicalizes with the sign bit SET on
+  JIT and CLEAR on AOT (CLAUDE.md gotcha #18, already backlogged), the
+  SAME array sorts to opposite NaN placement on each backend by direct
+  consequence -- no new defect in `sort` itself, and no crash/hang either
+  way. **Doc correction (not a code fix): gotcha #18 previously claimed
+  the NaN sign-bit divergence "is NOT observable through normal float
+  use" -- that claim is FALSE, demonstrated by this repro, and has been
+  corrected in CLAUDE.md** to name `sort()` as a concrete case where it
+  surfaces. Not fixed (would require unifying NaN canonicalization across
+  backends first, the same backlogged architectural item as the sign-bit
+  and `parse_float("-0.0")` divergences); documented per this wave's
+  "fix what is provable, document what is inherent" mandate.
 
 ---
 
