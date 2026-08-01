@@ -1,0 +1,91 @@
+// Conformance: a generic struct/enum whose BASE NAME ends in `_` (a valid
+// identifier, e.g. `Box_<T>`) must still link and dispatch its "bare
+// passthrough" instance methods (`get(self) -> T`) correctly on both
+// backends.
+//
+// Found via tests/fuzz differential JIT/AOT fuzzing while building the
+// harness's own generic-struct template (originally named `Box_` to avoid
+// colliding with a suspected reserved `Box`). Root cause: `mono_base_name`'s
+// callers used to recover a monomorphized name's base struct via
+// `name.split("___").next()` -- correct only when the base itself does not
+// already end in `_`. `Box_<str>` mangles to `Box____str` (base `Box_` +
+// the `___` monomorphization separator + suffix `str` = 4 consecutive
+// underscores); a naive first-"___"-match split consumes one of the base's
+// own trailing underscores and recovers `Box` instead of `Box_`. Every
+// call-site fallback keyed off that wrong base then missed its
+// `method_owners`/`impl_method_generic_info` lookup and silently resolved
+// to the BARE (unmangled) method name -- MIR carried `RValue::Call { func:
+// "get", .. }" with no receiver-typed definition anywhere, so both backends
+// alike failed to LINK ("unresolved external symbol get" on JIT via the
+// Cranelift+link.exe path, "use of undefined value '@get'" on AOT/LLVM).
+// Backends agreeing (both fail identically) pointed at shared MIR lowering,
+// not a backend-specific bug -- confirmed by reading `--emit-llvm` output,
+// not guessed.
+//
+// Fix: `mono_base_name` (kryos-mir/src/lower.rs) recovers the base by
+// checking registered struct/enum names for a `base + "___"` PREFIX match
+// (longest wins) instead of blindly splitting on the first "___" run, and
+// checks prefix matches BEFORE any exact-name shortcut (a monomorphized
+// instance is ALSO registered under its own full mangled name, so an
+// exact-match-first order would return the mono name as its own base and
+// defeat the fix -- caught by re-testing after the first attempt, not
+// assumed correct).
+//
+// Proof this test is a real gate: reverting the fix (restore
+// `name.split("___").next().unwrap_or(name).to_string()` at each of the 6
+// call sites) makes this FAIL to even build ("unresolved external symbol
+// get") on both `kryos run` and `kryos build --release`; with the fix, both
+// print `ab` and this program prints PASS.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Box_<T> { val: T }
+impl<T> Box_<T> {
+    fn get(self: Box_<T>) -> T {
+        return self.val
+    }
+}
+
+// Two or more methods (one operating on `self`, one a bare passthrough) on
+// the SAME trailing-underscore base name, matching the shape the original
+// GmBox conformance case already covers for a non-underscore name.
+struct Cell_<T> { v: T }
+impl<T> Cell_<T> {
+    fn dbl(self: Cell_<T>) -> T { return self.v + self.v }
+    fn get(self: Cell_<T>) -> T { return self.v }
+}
+
+enum Opt_<T> {
+    Some_(T),
+    None_,
+}
+fn opt_unwrap_or(o: Opt_<i64>, default: i64) -> i64 {
+    match o {
+        Some_(v) => return v,
+        None_ => return default,
+    }
+}
+
+fn main() {
+    let bi: Box_<i64> = Box_ { val: 42 }
+    let bs: Box_<str> = Box_ { val: "ab" }
+    expect(bi.get() == 42, "Box_<i64>.get() bare passthrough (trailing-underscore base name)")
+    expect(bs.get() == "ab", "Box_<str>.get() bare passthrough, heap-typed T (was unresolved-symbol link failure)")
+
+    let ci: Cell_<i64> = Cell_ { v: 21 }
+    let cs: Cell_<str> = Cell_ { v: "ab" }
+    expect(ci.dbl() == 42, "Cell_<i64>.dbl() self-operating method alongside a passthrough getter")
+    expect(ci.get() == 21, "Cell_<i64>.get() bare passthrough coexisting with a monomorphized method")
+    expect(cs.dbl() == "abab", "Cell_<str>.dbl() str-concat self-operating method (trailing-underscore base)")
+    expect(cs.get() == "ab", "Cell_<str>.get() bare passthrough (trailing-underscore base)")
+
+    expect(opt_unwrap_or(Opt_.Some_(7), 0) == 7, "generic enum, trailing-underscore base name, Some arm")
+    expect(opt_unwrap_or(Opt_.None_, 9) == 9, "generic enum, trailing-underscore base name, None arm")
+
+    println("conformance generic_underscore_name: PASS")
+}

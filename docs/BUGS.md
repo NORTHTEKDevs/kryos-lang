@@ -39,7 +39,7 @@ investigation:
 - `kryos run` execs the compiled program as a CHILD, so plain valgrind sees
   nothing. Always `valgrind --trace-children=yes`.
 
-Conformance is 47/47 on both backends as of this writing (`tests/conformance/`
+Conformance is 48/48 on both backends as of this writing (`tests/conformance/`
 has grown since; re-run `bash tests/conformance/run_conformance.sh` for the
 authoritative current count -- don't trust a number typed into this file).
 

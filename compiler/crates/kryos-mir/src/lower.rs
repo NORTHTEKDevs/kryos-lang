@@ -9598,8 +9598,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 // Must run before the plain mangled-name lookup just below,
                 // which always resolves to the base struct's single (erased)
                 // lowered copy's placeholder return type.
-                let base_for_template =
-                    type_name.split("___").next().unwrap_or(type_name.as_str()).to_string();
+                let base_for_template = mono_base_name(ctx, &type_name);
                 let receiver_ty = MirType::Struct(type_name.clone());
                 if let Some(mir_ty) = infer_generic_impl_fn_ret(
                     ctx,
@@ -9619,7 +9618,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 // under the base struct name (`Cell__read`). Fall back to it so
                 // the call result is typed correctly (the LLVM backend is strict;
                 // a Void result mis-types the value).
-                let base = type_name.split("___").next().unwrap_or(type_name.as_str());
+                let base = mono_base_name(ctx, &type_name);
                 if base != type_name {
                     // If the method returns a bare/compound generic parameter,
                     // resolve it to the receiver's CONCRETE monomorphized arg by
@@ -10654,7 +10653,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 // `to_string(elem)`, so every distinct struct value collided on
                 // "<Type>" (dedup under-counted, membership false-positived).
                 if let MirType::Struct(n) | MirType::Enum(n) = &aty {
-                    let base = n.split("___").next().unwrap_or(n).to_string();
+                    let base = mono_base_name(ctx, n);
                     let mangled = ctx
                         .method_owners
                         .get(&(n.clone(), "to_string".to_string()))
@@ -11208,7 +11207,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // (see `instance_ret_needs_monomorphization`), so it falls
             // through unaffected to the existing single-lowered-copy path.
             if let Some(ref tn) = type_name {
-                let base = tn.split("___").next().unwrap_or(tn.as_str()).to_string();
+                let base = mono_base_name(ctx, tn);
                 if ctx
                     .generic_impl_fn_templates
                     .get(&(base.clone(), method.clone()))
@@ -11349,7 +11348,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // `emit_param_source_retain`/`retain_for_ty`, used for the
             // analogous param-source and match-bind cases.
             if let Some(ref tn) = type_name {
-                let base = tn.split("___").next().unwrap_or(tn.as_str()).to_string();
+                let base = mono_base_name(ctx, tn);
                 if let Some((gp_names, self_te, ret_te)) = ctx
                     .impl_method_generic_info
                     .get(&(base.clone(), method.clone()))
@@ -11427,10 +11426,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         // name (`Wrap__get`) with the uniform i64-slot `self`
                         // layout. Fall back to the base name so methods on
                         // generic structs link and dispatch correctly.
-                        let base = tn.split("___").next().unwrap_or(tn.as_str());
-                        if base != tn {
+                        let base = mono_base_name(ctx, &tn);
+                        if base.as_str() != tn.as_str() {
                             ctx.method_owners
-                                .get(&(base.to_string(), method.clone()))
+                                .get(&(base.clone(), method.clone()))
                                 .cloned()
                         } else {
                             None
@@ -14372,6 +14371,45 @@ fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
         })
         .collect();
     format!("{base}___{}", suffix.join("_"))
+}
+
+/// Recover the base struct/enum name a monomorphized name (built by
+/// `mono_mangled_name`, `Base___Suffix`) was specialized from.
+///
+/// NOT simply `name.split("___").next()`: when the base name itself ends in
+/// `_` (a perfectly valid identifier -- e.g. `struct Box_<T>`), the mono
+/// separator's own three leading underscores fuse with the base's trailing
+/// one into a run of 4+, and a naive first-"___"-match split consumes one of
+/// the base's own underscores: `Box____str` (base `Box_` + sep `___` +
+/// suffix `str`) parses as base `Box` instead of `Box_`. Every call site
+/// that falls back to this recovered base for a `method_owners` lookup then
+/// misses, and silently resolves to the bare (unmangled) method name -- which
+/// fails to link ("unresolved external symbol <method>") identically on both
+/// backends. Consult the actually-registered struct/enum names first
+/// (longest match wins, in case one registered name is itself a prefix of
+/// another); only fall back to the ambiguous naive split for a name that
+/// matches nothing registered (should not happen for a real monomorphized
+/// name, but keeps this total).
+fn mono_base_name(ctx: &LoweringContext, name: &str) -> String {
+    // Prefix+separator matches must be checked BEFORE any "name is itself a
+    // registered struct" exact-match shortcut: a monomorphized instance
+    // (`Box____str`) is ALSO inserted into `struct_defs` under its own full
+    // mangled name (see the monomorphization insertion sites), so an
+    // exact-match check tried first would immediately return the mono name
+    // AS ITS OWN base, defeating the whole point. Longest prefix match wins,
+    // in case one registered base is itself a prefix of another.
+    let mut best: Option<&str> = None;
+    for b in ctx.struct_defs.keys().chain(ctx.enum_defs.keys()) {
+        if let Some(rest) = name.strip_prefix(b.as_str()) {
+            if rest.starts_with("___") && best.map_or(true, |cur| b.len() > cur.len()) {
+                best = Some(b.as_str());
+            }
+        }
+    }
+    match best {
+        Some(b) => b.to_string(),
+        None => name.split("___").next().unwrap_or(name).to_string(),
+    }
 }
 
 /// Resolve a struct-literal's effective name: for generic templates, infer
