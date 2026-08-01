@@ -493,6 +493,60 @@ contexts. Worth unifying.
 
 ---
 
+## DIFFERENTIAL FUZZ HARNESS (2026-07-31)
+
+Built `tests/fuzz/` (`gen_fuzz.py` + `run_diff.py` + `shrink.py` +
+`fuzz_gate.sh`, wired into `.github/workflows/ci.yml`): a category-templated
+generator (13 categories -- int/float arithmetic+casts, string ops,
+arrays, maps, scalar structs, heap-field structs, enums+match, direct
+closures, `std::iter` HOF closures, generics, control flow, try/throw) that
+emits deterministic `(seed, blocks)`-replayable programs, each block
+printing a tagged line + folding into a checksum, diffed between `kryos run`
+(Cranelift) and `kryos build --release` (LLVM). A repo-wide `tools/diff-fuzz/`
+(`gen2.py`/`memsafety_fuzz.py`, already CI-wired) predates this and covers
+more of the general expression grammar; this harness's distinct value is
+**generics coverage (gen2.py has none) and an automatic ddmin shrinker
+(gen2.py has none)** -- both new, not a duplicate of the existing tool.
+
+**Result: 1000 generated cases (seeds 1-1000, default block counts
+12-30), 0 divergences, 0.0% divergence rate.** Runtime ~1.1s/case
+(build+link dominates). Shrinker self-validated against a known, still-open
+divergence (`parse_float("-0.0")`'s sign, CLAUDE.md gotcha #18): given a
+10-line program with that divergence buried in noise, reduced to the exact
+4-line minimal repro.
+
+**One real bug found and fixed while building the harness itself** (not by
+the sweep -- by using the harness's own generic struct template, named
+`Box_`): a generic struct/enum base name ending in `_` broke ALL its bare-
+passthrough instance methods with `unresolved external symbol <method>` on
+BOTH backends identically (shared-MIR bug, not a JIT/AOT divergence -- see
+the CLOSED table entry and `tests/conformance/conf_generic_underscore_name.kry`).
+Found and root-caused via the exact discipline this wave requires (minimal
+repro, `--emit-llvm`, read the IR, don't guess) even though it fell outside
+the harness's own stdout-diff detection (both backends fail identically, so
+a stdout/exit-code differ never fires -- worth noting as a harness
+limitation: it cannot see "both backends agree by being equally broken").
+
+**Known harness limitations, stated honestly:**
+- Blocks are independent (each is its own `fn` with no shared mutable
+  state) for reliable shrinking and easy per-block localization -- this
+  means the harness cannot find bugs that need CROSS-CATEGORY interaction
+  within one call chain (e.g. a generic struct holding a closure holding an
+  array holding a struct). `tools/diff-fuzz/gen2.py`'s single-program-tree
+  approach is more likely to hit that shape; this harness is not a
+  replacement for it.
+- No concurrency/`spawn` coverage (deliberate -- avoids introducing
+  non-determinism into a harness whose whole value is exact replay).
+- A 0.0% divergence rate over 1000 cases is a genuinely positive signal for
+  the categories covered, not proof of absence -- it means this generator's
+  specific grammar didn't hit a new divergence in this sample, not that the
+  categories are divergence-free in general (the still-open `parse_float
+  ("-0.0")` and NaN-sign-bit divergences are proof the surface isn't fully
+  clean; this generator was deliberately built to avoid re-hitting those
+  CATALOGED cases rather than re-confirm them).
+
+---
+
 ## MEASUREMENT TRAPS (each cost real time)
 
 - **`cargo build -p kryos-cli` leaves the staticlibs stale.** Runtime edits are

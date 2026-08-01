@@ -196,6 +196,14 @@ jobs:
         run: |
           python3 ../tools/diff-fuzz/memsafety_fuzz.py --count 40 --seed-base 888000             --kryos target/release/kryos
 
+      - name: Template differential fuzz gate (tests/fuzz, generics + try/throw coverage)
+        # Complements the gen2.py smoke above with a category-templated
+        # generator that additionally covers generics (a Box<T> instantiated
+        # at i64 and str) and caught try/throw, neither of which gen2.py
+        # exercises. Bounded, deterministic seed range; see tests/fuzz/README.md
+        # for local replay and a much larger sweep.
+        run: bash tests/fuzz/fuzz_gate.sh
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload
