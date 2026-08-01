@@ -287,6 +287,24 @@ pub struct LoweringContext {
     /// defaulted to `List___i64` while the chained `.push("a")` wanted
     /// `List___str`: JIT printed raw pointers, AOT failed the build.
     pending_let_expected: Option<MirType>,
+    /// Set by `Stmt::Return` immediately before lowering a directly-returned
+    /// Lambda literal, when the ENCLOSING function's return type
+    /// (`current_ret_ty`) is a concrete `Function` type of matching arity.
+    /// Lets a closure literal returned from a GENERIC function infer its own
+    /// un-annotated params/return from THIS monomorphized instantiation's
+    /// already-specialized signature. The type checker's `lambda_param_types`
+    /// table (see that field) is baked from a single check pass over the
+    /// UNSPECIALIZED generic template, where the impl/fn type parameter never
+    /// resolves to a concrete type -- so it cannot supply this for a generic
+    /// function. Without it, `fn make_appender<T>(suffix: T) -> fn(T) -> T {
+    /// return |x| x + suffix }` left the returned closure's `x` erased to i64
+    /// at EVERY instantiation: a T=f64 call site passed a real f64 bit
+    /// pattern into the closure's uniform i64 slot, and the erased-i64-typed
+    /// `x + suffix` then integer-added the bit patterns (CLAUDE.md gotcha
+    /// #22). Consumed (reset to `None`) at the top of the `Expr::Lambda`
+    /// codegen arm, matching `pending_self_recursive_name` /
+    /// `pending_box_scalar_captures`.
+    pending_lambda_ret_hint: Option<(Vec<MirType>, MirType)>,
 }
 
 /// Context passed to `throw` statements inside a `try` block.
@@ -467,6 +485,7 @@ impl LoweringContext {
             pending_box_scalar_captures: false,
             pending_self_recursive_name: None,
             pending_let_expected: None,
+            pending_lambda_ret_hint: None,
         }
     }
 
@@ -4820,6 +4839,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // Without this the caller received a raw struct through a
             // `dyn`-typed return slot and the later vtable_call segfaulted.
             let ret_ty = ctx.current_ret_ty.clone();
+            // Stage a per-instantiation param/return hint for a directly
+            // returned Lambda literal (see `pending_lambda_ret_hint`). Reset
+            // unconditionally first so a stale hint from a PRIOR return in
+            // this same function never leaks into an unrelated Lambda (e.g.
+            // one passed to a HOF call inside this function's body).
+            ctx.pending_lambda_ret_hint = None;
+            if let (Some(ast::Expr::Lambda { params: lp, .. }), MirType::Function { params: fp, ret: fr }) =
+                (value.as_ref(), &ret_ty)
+            {
+                if fp.len() == lp.len() {
+                    ctx.pending_lambda_ret_hint = Some((fp.clone(), (**fr).clone()));
+                }
+            }
             // Window marks for the unescaped-temp cleanup below. The
             // statement-end pass cannot help here: it runs AFTER the arm
             // emits `Terminator::Return`, so anything it emitted would be
@@ -12109,6 +12141,11 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Type-checker-resolved types for this lambda's un-annotated params
             // (so a `str`/struct/array closure param isn't defaulted to i64).
             let resolved_params = ctx.lambda_param_types.get(lambda_span).cloned();
+            // Per-instantiation fallback for a directly-returned lambda inside
+            // a GENERIC function (see `pending_lambda_ret_hint`). Consumed
+            // immediately so a NESTED lambda inside this one's body never
+            // inherits it.
+            let lambda_ret_hint = ctx.pending_lambda_ret_hint.take();
 
             // Analyze free variables in the lambda body (captures from enclosing scope).
             let captures = find_free_variables(ctx, body, params);
@@ -12200,6 +12237,24 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         all_params.push(ast::Param {
                             name: p.name.clone(),
                             ty: Some(te.clone()),
+                            default: p.default.clone(),
+                            span: p.span,
+                        });
+                        continue;
+                    }
+                    // The type checker's per-param resolution came up empty --
+                    // the common cause is a generic function's template being
+                    // checked once with its type parameter unresolved (see
+                    // `pending_lambda_ret_hint`). Fall back to the CURRENT
+                    // monomorphized instantiation's concrete signature.
+                    if let Some(te) = lambda_ret_hint
+                        .as_ref()
+                        .and_then(|(fp, _)| fp.get(i))
+                        .and_then(mir_type_to_type_expr)
+                    {
+                        all_params.push(ast::Param {
+                            name: p.name.clone(),
+                            ty: Some(te),
                             default: p.default.clone(),
                             span: p.span,
                         });
@@ -14637,27 +14692,47 @@ fn type_expr_mentions_param(ty: &ast::TypeExpr, param: &str) -> bool {
 /// self-host compiler's heavy use of this shape).
 ///
 /// Also deliberately false for `map<K, V>` (the builtin, not a user
-/// struct/enum template) and any other compound return that merely MENTIONS
-/// a generic param without being a constructed struct/enum (`[T]`, `(T,
-/// i64)`) -- those already keep the erased i64-slot shape by design (see the
-/// `ret_is_bare_param` comment block in `infer_expr_type`), and enums are
-/// UNAFFECTED by the bug this targets in the first place: every enum lowers
-/// to the SAME anonymous/unnamed LLVM literal struct `{ i64, i64, ... }`
-/// (`enum_llvm_type`) regardless of which enum or which monomorphization --
-/// there is no nominal-type mismatch possible for enums, only for named
-/// struct types. Restricting to `name != "map"` here is a conservative
-/// no-op filter; it costs nothing to also register a (harmless, unused)
-/// template for a generic-enum return, but there is no bug to fix there, so
-/// this stays scoped to what has an observed AOT failure: a constructed
-/// STRUCT differing from the erased single-lowered-copy shape.
+/// struct/enum template) -- enums are UNAFFECTED by the bug this targets in
+/// the first place: every enum lowers to the SAME anonymous/unnamed LLVM
+/// literal struct `{ i64, i64, ... }` (`enum_llvm_type`) regardless of which
+/// enum or which monomorphization -- there is no nominal-type mismatch
+/// possible for enums, only for named struct types. Restricting to `name !=
+/// "map"` here is a conservative no-op filter; it costs nothing to also
+/// register a (harmless, unused) template for a generic-enum return, but
+/// there is no bug to fix there.
+///
+/// TRUE for `[T]` / `(T, i64)`-shaped compound returns too (added after the
+/// struct-constructing case above shipped): a BARE self-field passthrough of
+/// such a field (`fn all(self: Holder<T>) -> [T] { return self.items }`) was
+/// wrongly treated as safe to leave on the single erased copy by
+/// `is_single_bare_self_passthrough`'s exemption, which was designed for a
+/// bare `-> T` scalar slot (a single 8-byte value that reinterprets safely
+/// anywhere via `ret_is_bare_param`) -- NOT for a compound container whose
+/// ELEMENTS must be individually typed. Reproduced live: `Holder<f64>.all()
+/// -> [f64]` printed `af[0]` as the raw i64 bit pattern of the float (JIT and
+/// AOT agree, confirming a shared-MIR bug) because `func_ret_types` had
+/// registered `Holder__all` as `[i64]` (erased) at single-compile time and
+/// nothing ever retyped the call result -- `ret_is_bare_param` only covers a
+/// bare `TypeExpr::Simple` return, not `TypeExpr::Array`/`TypeExpr::Tuple`.
+/// Monomorphizing per receiver instantiation (the same machinery a
+/// non-bare-passthrough body already gets via `body_operates_on_self`, e.g.
+/// `Wrap<T>.pair() -> (T, i64) { return (self.v, 1) }`, which was ALREADY
+/// correct because a tuple LITERAL isn't a bare passthrough) closes it: the
+/// specialized copy's own struct/array machinery builds a genuinely
+/// `[f64]`-typed array, and the call site resolves it via
+/// `infer_generic_impl_fn_ret`/`monomorphize_impl_fn` instead of the stale
+/// `func_ret_types` entry.
 fn instance_ret_needs_monomorphization(
     ret_ty: &Option<ast::TypeExpr>,
     impl_generics: &[String],
 ) -> bool {
+    let mentions = |a: &ast::TypeExpr| impl_generics.iter().any(|gp| type_expr_mentions_param(a, gp));
     match ret_ty {
-        Some(ast::TypeExpr::Generic { name, args, .. }) if name != "map" => args
-            .iter()
-            .any(|a| impl_generics.iter().any(|gp| type_expr_mentions_param(a, gp))),
+        Some(ast::TypeExpr::Generic { name, args, .. }) if name != "map" => {
+            args.iter().any(mentions)
+        }
+        Some(ast::TypeExpr::Array { element, .. }) => mentions(element),
+        Some(ast::TypeExpr::Tuple { elements, .. }) => elements.iter().any(mentions),
         _ => false,
     }
 }

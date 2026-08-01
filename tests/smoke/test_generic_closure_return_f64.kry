@@ -1,0 +1,42 @@
+// Regression: a GENERIC function returning a closure whose un-annotated
+// param mentions the function's own type parameter (CLAUDE.md gotcha #22).
+//
+// `fn make_appender<T>(suffix: T) -> fn(T) -> T { return |x| x + suffix }`
+// left the returned closure's `x` erased to i64 at EVERY instantiation: the
+// type checker's `resolved_lambda_params` table is baked from a SINGLE
+// check pass over the unspecialized generic template, where `T` never
+// resolves to a concrete type -- so it never supplies a concrete param type
+// for MIR to use. At T=f64 the call site passed a real f64 bit pattern into
+// the closure's uniform i64 slot, and the erased-i64-typed `x + suffix`
+// then INTEGER-added the bit patterns instead of adding the floats.
+// Verified pre-fix: printed a ~300-digit garbage number instead of ~2.5,
+// identically on both backends (shared-MIR bug, not a JIT/AOT divergence).
+//
+// Fixed via `pending_lambda_ret_hint` (kryos-mir/src/lower.rs): `Stmt::
+// Return`, when its value is directly a Lambda literal and the ENCLOSING
+// function's (already monomorphized) `current_ret_ty` is a concrete
+// `fn(A) -> B`, stages that concrete signature for the Lambda codegen arm
+// to fall back on when the type checker's own per-param resolution came up
+// empty.
+
+fn make_appender<T>(suffix: T) -> fn(T) -> T {
+    return |x| x + suffix
+}
+
+fn main() {
+    // i64 instantiation (was never broken -- parity guard).
+    let add10 = make_appender(10)
+    assert(add10(5) == 15, "i64 instantiation")
+
+    // f64 instantiation -- the actual regression.
+    let add_half = make_appender(0.5)
+    let r = add_half(2.0)
+    assert(r > 2.49 and r < 2.51, "f64 instantiation: expected ~2.5, got " + to_string(r))
+
+    // str instantiation (pointer-shaped, was already stable -- must not
+    // regress from the f64 fix).
+    let append_bang = make_appender("!")
+    assert(append_bang("hi") == "hi!", "str instantiation")
+
+    println("test_generic_closure_return_f64: PASS")
+}

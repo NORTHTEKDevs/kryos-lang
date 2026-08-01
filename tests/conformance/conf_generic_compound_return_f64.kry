@@ -1,0 +1,73 @@
+// Conformance (CLAUDE.md gotcha #17, `[T]` half): a generic method whose
+// return TYPE is a COMPOUND shape mentioning the impl's type parameter
+// (`-> [T]`, `-> (T, i64)`) must return REAL per-instantiation-typed
+// elements, not the erased i64-slot bit pattern, when it is a BARE
+// self-field passthrough.
+//
+// `fn all(self: Holder<T>) -> [T] { return self.items }` was wrongly
+// treated as safe to leave on the single erased-to-i64 compiled copy by
+// `is_single_bare_self_passthrough`'s exemption in kryos-mir/src/lower.rs
+// -- that exemption was designed for a bare `-> T` SCALAR slot (one 8-byte
+// value that reinterprets safely as any type at the call site via
+// `ret_is_bare_param`), not for a CONTAINER whose elements must each carry
+// a real type. Reproduced live pre-fix: `Holder<f64>.all()[0]` printed the
+// raw i64 bit pattern of 1.5 (`4609434218613702656`), identically on both
+// backends (shared-MIR bug, not a JIT/AOT divergence).
+//
+// Fix: `instance_ret_needs_monomorphization` now also returns true for
+// `TypeExpr::Array`/`TypeExpr::Tuple` returns that mention the impl's type
+// param, forcing the same per-receiver-instantiation monomorphization a
+// non-bare-passthrough body (e.g. `pair` below, which constructs a tuple
+// LITERAL) already got via `body_operates_on_self`.
+//
+// Proof this is a real gate: reverting the `Array`/`Tuple` arms in
+// `instance_ret_needs_monomorphization` (kryos-mir/src/lower.rs) makes
+// `hf.all()[0]` print the i64 bit pattern instead of `1.5` on BOTH
+// backends; with the fix, both print the real floats and this program
+// exits 0 with PASS.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Wrap<T> { v: T }
+impl<T> Wrap<T> {
+    fn pair(self: Wrap<T>) -> (T, i64) { return (self.v, 1) }
+}
+
+struct Holder<T> { items: [T] }
+impl<T> Holder<T> {
+    fn first(self: Holder<T>) -> T { return self.items[0] }
+    fn all(self: Holder<T>) -> [T] { return self.items }
+}
+
+fn main() {
+    // str compound: was already stable (pointer-shaped, not erased).
+    let ws = Wrap { v: "hi" }
+    let t = ws.pair()
+    expect(t.0 == "hi" and t.1 == 1, "str tuple compound return")
+
+    let h = Holder { items: ["a", "b"] }
+    let arr = h.all()
+    expect(h.first() == "a" and len(arr) == 2, "str array compound return")
+
+    // f64 tuple element -- was already correct (body is a tuple literal,
+    // not a bare passthrough); kept as a parity guard.
+    let wf = Wrap { v: 2.5 }
+    let tf = wf.pair()
+    expect(tf.0 > 2.49 and tf.0 < 2.51, "f64 tuple compound return (parity guard)")
+    expect(tf.1 == 1, "f64 tuple's stable i64 element")
+
+    // f64 array element -- THE fix. Pre-fix this read back the raw i64 bit
+    // pattern of the float instead of the value.
+    let hf = Holder { items: [1.5, 2.5, 3.5] }
+    let af = hf.all()
+    expect(af[0] > 1.49 and af[0] < 1.51, "f64 array compound return element 0")
+    expect(af[1] > 2.49 and af[1] < 2.51, "f64 array compound return element 1")
+    expect(af[2] > 3.49 and af[2] < 3.51, "f64 array compound return element 2")
+
+    println("conformance generic_compound_return_f64: PASS")
+}

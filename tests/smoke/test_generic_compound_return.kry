@@ -1,15 +1,26 @@
 // Generic methods whose return TYPE mentions the parameter in a COMPOUND
 // shape -- `(T, i64)`, `[T]`. These must BUILD and behave identically on
-// both backends. The scalar-f64 return fix (which resolves a bare `-> T`
-// to the concrete float) must NOT touch these: the compound value is built
-// with erased i64-slot layout, so typing the inner element as f64 would
-// make the AOT aggregate `{double, i64}` mismatch the constructed
-// `{i64, i64}` and clang would reject the module. Guard: str elements are
-// pointer-shaped and stable; the f64 tuple asserts only its stable i64
-// element, proving it still builds.
+// both backends.
+//
+// REGRESSION GUARD (CLAUDE.md gotcha #17, `[T]` half): a BARE self-field
+// passthrough returning a compound shape -- `fn all(self: Holder<T>) -> [T]
+// { return self.items }` -- was wrongly treated as safe to leave on the
+// single erased-to-i64 copy by `is_single_bare_self_passthrough`'s
+// exemption (designed for a bare `-> T` scalar slot, not a container whose
+// ELEMENTS need real types). Verified pre-fix: `Holder<f64>.all()[0]`
+// printed the raw i64 bit pattern of the float (`4609434218613702656` for
+// 1.5), identically on both backends. `instance_ret_needs_monomorphization`
+// now also covers `TypeExpr::Array`/`TypeExpr::Tuple` returns, forcing
+// per-instantiation monomorphization the same way a non-bare-passthrough
+// body (e.g. `pair` below, whose body constructs a tuple LITERAL) already
+// got. The tuple `(T, i64)` shape was ALREADY correct for f64 before this
+// fix (its body is not a bare passthrough), asserted directly below now
+// that it's proven stable rather than avoided.
 // expect-stdout: pair=hi,1
 // expect-stdout: first=a all-len=2
 // expect-stdout: f-second=7
+// expect-stdout: f-tuple=2.5
+// expect-stdout: f-arr=1.5,2.5,3.5
 
 struct Wrap<T> { v: T }
 impl<T> Wrap<T> {
@@ -36,4 +47,14 @@ fn main() {
     let tf = wf.pair()
     let n = 7
     println("f-second=" + to_string(tf.1 * n))
+
+    // f64 tuple element -- value assertion (was already correct; kept
+    // avoided before this fix landed, now proven and gated directly).
+    println("f-tuple=" + to_string(tf.0))
+
+    // f64 array element -- THE fix. Pre-fix this printed the element's raw
+    // i64 bit pattern instead of the float.
+    let hf = Holder { items: [1.5, 2.5, 3.5] }
+    let af = hf.all()
+    println("f-arr=" + to_string(af[0]) + "," + to_string(af[1]) + "," + to_string(af[2]))
 }
