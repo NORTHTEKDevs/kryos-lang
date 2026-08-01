@@ -4405,13 +4405,13 @@ impl LlvmCodegen {
                         ));
                         // Aggregate fields ({..}/%Name/[..]) are wider than 8 bytes,
                         // so store the full value with its real type. Scalar 8-byte
-                        // fields (i64/ptr/double/...) keep the opaque `store i64`
+                        // fields (i64/ptr/double) keep the opaque `store i64`
                         // (same 8 bytes; avoids re-typing proven scalar stores).
                         if fty.starts_with('{') || fty.starts_with('%') || fty.starts_with('[') {
                             let val_ty = self.operand_type(value, func);
                             let coerced = self.coerce_value(&val, &val_ty, fty);
                             self.emit_line(&format!("  store {fty} {coerced}, ptr {field_ptr}"));
-                        } else {
+                        } else if fty == "i64" || fty == "ptr" || fty == "double" {
                             // The slot is stored as i64 but the value's SSA type
                             // may be ptr (str constant), double, or i1 — coerce
                             // to the slot first (`store i64 <ptr>` is invalid IR).
@@ -4424,6 +4424,40 @@ impl LlvmCodegen {
                                 self.coerce_value(&val, &val_ty, "i64")
                             };
                             self.emit_line(&format!("  store i64 {val_i64}, ptr {field_ptr}"));
+                        } else {
+                            // NARROW scalar field (i8/i16/i32/i1 -- u8/i8/u16/i16/
+                            // u32/i32/bool at the source level). Unlike i64/ptr/
+                            // double, the LLVM struct type reserves exactly this
+                            // field's real width here, not a padded 8 bytes (a
+                            // single-narrow-field struct, or the LAST narrow field
+                            // with nothing wider after it to force alignment
+                            // padding, has NO trailing space at all). Blindly
+                            // doing `store i64` here writes past the end of the
+                            // alloca -- undefined behavior that LLVM's optimizer
+                            // at -O2/-O3 (implied by --release) is free to treat
+                            // as unreachable and eliminate, silently dropping the
+                            // mutation (verified: `struct Ctr { v: u8 }` then
+                            // `c.v = c.v + 10` left `c.v` at its ORIGINAL value on
+                            // AOT while JIT wrapped correctly) -- or, when a
+                            // narrower field follows without enough padding to
+                            // absorb it, overwrites that neighbor's bytes with
+                            // garbage (verified: `struct Three { x: u8, y: u8, z:
+                            // i64 }` then `t.y = 42` corrupted `z` from 999999 to
+                            // 999936). Truncate to the field's real width first so
+                            // the store touches only its own bytes.
+                            let val_ty = self
+                                .actual_type(&val)
+                                .unwrap_or_else(|| self.operand_type(value, func));
+                            let val_i64 = if val_ty == "i64" {
+                                val.clone()
+                            } else {
+                                self.coerce_value(&val, &val_ty, "i64")
+                            };
+                            let narrow = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {narrow} = trunc i64 {val_i64} to {fty}"
+                            ));
+                            self.emit_line(&format!("  store {fty} {narrow}, ptr {field_ptr}"));
                         }
                     }
                     _ => {

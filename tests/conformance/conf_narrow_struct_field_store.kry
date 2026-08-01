@@ -1,0 +1,88 @@
+// Conformance: mutating a struct field NARROWER than 64 bits (u8/i8/u16/i16/
+// u32/i32/bool) via `s.field = expr` must actually persist the write on BOTH
+// backends. On AOT (LLVM `build --release`), StoreField coerced every scalar
+// field to i64 and did an unconditional `store i64`, regardless of the
+// field's real declared width. The LLVM struct type reserves exactly the
+// field's own width (`%Ctr = type { i8 }`), not a padded 8 bytes, unless a
+// wider field afterward forces alignment padding -- so an 8-byte store here
+// either overflows the alloca entirely (a struct whose ONLY/LAST field is
+// narrow, with nothing after it needing 8-byte alignment) or spills into a
+// following field's bytes. The former is undefined behavior that LLVM's
+// -O2/-O3 optimizer (implied by --release) is free to treat as unreachable
+// and eliminate -- silently dropping the mutation, so the field read back
+// its OLD value forever, on every assignment form (literal, local, self-
+// referencing arithmetic) -- not just on overflow. The latter corrupts a
+// neighboring field's real data. `kryos run`/Cranelift was correct the
+// whole time (JIT/AOT DIVERGENCE, not a shared-MIR bug). Fixed: the LLVM
+// backend now truncates to the field's real LLVM width and stores with
+// that type instead of a blind `store i64`.
+
+struct SingleU8 { v: u8 }
+struct SingleI8 { v: i8 }
+struct SingleI16 { v: i16 }
+struct SingleI32 { v: i32 }
+struct SingleBool { v: bool }
+struct TwoU8 { x: u8, y: u8 }
+struct NarrowThenWide { x: u8, y: u8, z: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // A struct whose ONLY field is narrower than i64: plain assignment must
+    // persist (was: silently stayed at the original value on AOT).
+    let mut a = SingleU8 { v: 5 }
+    a.v = 15
+    expect(a.v == 15, "single-u8-field struct: plain literal assign persists")
+
+    let mut b = SingleI8 { v: 5 }
+    b.v = 15
+    expect(b.v == 15, "single-i8-field struct: plain literal assign persists")
+
+    let mut c = SingleI16 { v: 5 }
+    c.v = 15
+    expect(c.v == 15, "single-i16-field struct: plain literal assign persists")
+
+    let mut d = SingleI32 { v: 5 }
+    d.v = 15
+    expect(d.v == 15, "single-i32-field struct: plain literal assign persists")
+
+    let mut e = SingleBool { v: false }
+    e.v = true
+    expect(e.v == true, "single-bool-field struct: plain literal assign persists")
+
+    // Self-referencing arithmetic assignment (the shape that surfaces most
+    // often in real code -- a counter/accumulator field), with and without
+    // actual overflow.
+    let mut f = SingleU8 { v: 5 }
+    f.v = f.v + 10
+    expect(f.v == 15, "single-u8-field: self-ref assign, no overflow")
+
+    let mut g = SingleU8 { v: 250 }
+    g.v = g.v + 10
+    expect(g.v == 4, "single-u8-field: self-ref assign wraps on overflow (250+10 -> 4)")
+
+    // Two adjacent narrow fields with NO wider field to force alignment
+    // padding after either one -- both must be independently mutable.
+    let mut h = TwoU8 { x: 1, y: 2 }
+    h.x = 9
+    expect(h.x == 9 and h.y == 2, "two-narrow-field struct: mutate first field")
+    h.y = 8
+    expect(h.x == 9 and h.y == 8, "two-narrow-field struct: mutate second field, first unaffected")
+
+    // A narrow field followed by a WIDE field: mutating the narrow field
+    // must not corrupt the wide field's bytes (the corruption case: an
+    // 8-byte store at the narrow field's offset spills into the next
+    // field when there isn't enough alignment padding to fully absorb it).
+    let mut k = NarrowThenWide { x: 1, y: 2, z: 999999 }
+    k.y = 42
+    expect(k.x == 1, "narrow-then-wide: mutating middle field leaves first field intact")
+    expect(k.y == 42, "narrow-then-wide: middle field mutation persists")
+    expect(k.z == 999999, "narrow-then-wide: mutating the narrow middle field does not corrupt the trailing i64 field")
+
+    println("conformance narrow_struct_field_store: PASS")
+}
