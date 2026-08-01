@@ -490,6 +490,190 @@ through `[any]`/`format`) remains correct and is not a papercut users hit
 by accident (the element-typed `std::iter` HOFs are already generic and
 avoid `any` entirely, per the same gotcha).
 
+### 7. mutated-SCALAR-capture persistence never got the "N>=2" generalization the mutated-STRUCT-capture case already has -- SILENT WRONG VALUE, NOT FIXED
+
+`tests/known_failures/closure_mutated_capture_scalar_gaps.kry` (repro below,
+3 shapes). Ranks above items 2b/2c/3/4/5/6 per this ledger's own doctrine --
+a silent wrong answer outranks a crash. Found this session while hunting
+"mutated captures of several kinds at once" per the closures/fn-values/
+captures wave brief.
+
+CLAUDE.md gotcha #11 documents that TWO-OR-MORE mutated STRUCT captures in
+one closure now persist independently across calls (`mutated_capture_ptr_slots`,
+closed `5f2386e`). The equivalent case for a mutated SCALAR (i64/f64/bool)
+capture was never generalized past its ORIGINAL single-capture fix and
+silently loses persistence in three shapes, reproduced live, identical on
+both backends (shared MIR, not a divergence):
+
+```
+struct Ctr { base: i64 }
+
+fn main() {
+    // shape 1: two mutated scalars in one closure
+    let mut a: i64 = 0
+    let mut b: i64 = 0
+    let bump2 = || { a = a + 1  b = b + 10  return a * 1000 + b }
+    println(to_string(bump2()))  // 1010
+    println(to_string(bump2()))  // want 2020, GET 1010
+    println(to_string(bump2()))  // want 3030, GET 1010
+
+    // shape 2: one mutated scalar + one mutated struct field together
+    let mut scalar_cap: i64 = 0
+    let mut struct_cap = Ctr { base: 100 }
+    let bump_mixed = || {
+        scalar_cap = scalar_cap + 1
+        struct_cap.base = struct_cap.base + 1
+        return scalar_cap + struct_cap.base
+    }
+    println(to_string(bump_mixed()))  // 102
+    println(to_string(bump_mixed()))  // want 104, GET 103 (struct persisted, scalar froze)
+}
+```
+
+**Root cause (read, not guessed, `kryos-mir/src/lower.rs` lambda lowering):**
+a mutated capture only gets a persistent env-slot write-back when
+`mutated_captures.len() == 1 && tail_value_is_identifier(body,
+&mutated_captures[0])` -- the mechanism smuggles the new state back by
+writing the CALL'S RETURN VALUE into the env slot after the call, which only
+works when there is exactly one mutated capture and it IS (literally) the
+returned value. The struct fix instead passes the capture BY POINTER
+(`mutated_capture_ptr_slots`, gated on `matches!(cap_ty, Some(MirType::Struct(_)))`),
+which needs no such restriction because any field mutation on any path lands
+directly in the persistent block through the pointer -- but that mechanism
+was never extended to scalars, which are plain SSA values (no address to
+hand out) in the current representation. This also explains a THIRD shape
+(in the known_failures file, not reproduced above for space): a SOLITARY
+mutated scalar whose enclosing closure's tail value is NOT literally that
+identifier (e.g. `let make = |tag| { count = count + 1  let n = count
+return || n }` -- a common "stateful factory" idiom) never triggers the
+write-back at all, so `count`'s mutation is lost across separate calls to
+`make` even though only one capture is mutated.
+
+**Why not fixed this session:** the code's own comment at the point of
+restriction already states the risk explicitly ("Closures mutating more
+than one capture keep working exactly as before this fix (no worse), they
+just don't get the persistence fix -- a documented residual limitation
+rather than risking a wrong value written to the wrong slot"). Closing this
+properly needs the SAME representational change the struct fix used --
+giving a mutated scalar capture its own persistent, ADDRESSABLE heap slot
+and passing a pointer to it, instead of smuggling state through a return
+value -- across MIR lowering AND both codegen backends (LLVM's aggregate-vs-
+scalar param handling in `emit_function`'s prologue is structurally
+different for a `ptr`-typed param vs a plain `i64` SSA param; Cranelift has
+an equivalent split). This is a representation change, not a one-line
+patch, matching the caution already documented for item 3's struct-arg
+leak -- attempting it inside this wave without a full regression pass across
+conformance/self-host/bootstrap risked an unreviewable change. Left as a
+standing, honestly-scoped OPEN item with the fix direction stated for
+whoever picks it up. Not gated (would fail today); `tests/known_failures/`
+convention followed. CLAUDE.md gotcha #11 updated with this finding inline.
+
+### 8. curried (2-level) generic closure return fails to BUILD on AOT -- JIT/AOT divergence, NOT FIXED
+
+`tests/known_failures/closure_curried_generic_aot_crash.kry`. Found this
+session while hunting "closures returned through generics" per the wave
+brief.
+
+```
+fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T {
+    return |b: T| (|c: T| a + b + c)
+}
+fn main() {
+    let step1 = curry_add(1)
+    let step2 = step1(2)
+    println(to_string(step2(3)))
+}
+```
+`kryos run`: prints `6`, correct. `kryos build --release`: fails LLVM
+codegen outright -- `error: load operand must be a pointer to a first class
+type ... load %T, ptr %_1_arg` (clang rejects the emitted `.ll`; the generic
+type parameter `T` reaches LLVM IR emission UNRESOLVED for the INNER
+closure). The IDENTICAL shape with a concrete type (`i64` instead of `T`,
+no generics at all) builds and runs correctly on both backends -- isolates
+this to generics specifically, not to currying/nesting in general (a
+non-generic curry already works per `tests/conformance/conf_closures.kry`
+and CLAUDE.md gotcha #11).
+
+**Root cause:** `pending_lambda_ret_hint` (`kryos-mir/src/lower.rs`, the fix
+that closed the single-level "generic function RETURNING a closure at
+T=f64" item in this ledger's CLOSED table) stages a concrete
+per-instantiation signature only for a lambda DIRECTLY returned by the
+enclosing generic function's `Stmt::Return`. It does not recurse into a
+SECOND lambda returned BY that first lambda's own body, so the innermost
+closure's parameter type stays the erased/unresolved generic placeholder,
+which LLVM IR emission then tries to `load` as if it were a concrete type.
+
+**Not attempted as a fix this session:** the natural fix (make
+`pending_lambda_ret_hint` propagate recursively through a chain of nested
+lambda-returning-lambda bodies, not just one level) is more contained than
+item 7 above, but was deprioritized in favor of thoroughly characterizing
+all three findings from this wave rather than rushing a codegen change
+without a full gate pass. A reasonable next step for whoever picks this up:
+check whether `current_ret_ty`'s OWN nested `fn(A) -> B` structure can be
+walked one level deeper when the outer lambda's body is itself a bare
+lambda literal, staging a second hint for that inner lambda the same way
+the outer one already gets staged. Not gated (would fail to build today).
+CLAUDE.md's generic-closure-return entry updated with this finding inline.
+
+### 9. `\|\|`-continuation parse trap also swallows closure literals silently -- previously mis-cataloged as a "block-tail closure capture scoping" bug -- DOCS CORRECTED, not a new code defect to fix
+
+`tests/known_failures/closure_pipe_continuation_silent_wrong.kry`. Found
+this session while re-verifying the "closure as the TAIL VALUE of a block
+cannot capture that block's earlier let bindings" boundary named explicitly
+in the wave brief -- re-verification showed the EXISTING explanation for
+that boundary was wrong.
+
+The parser has no newline-awareness at all (verified by reading
+`kryos-lexer`/`kryos-parser`: tokens carry only byte-offset spans, and the
+Pratt expression loop keeps consuming any token with infix binding power
+regardless of a line break). CLAUDE.md's hard rule 1 already documents `-`,
+`(`, `[` as trap tokens that silently continue the previous statement when
+they open a new line; this session found `||` (the closure literal opener,
+which doubles as boolean-or) is a FOURTH instance, and it can produce a
+SILENT WRONG VALUE with zero diagnostic when both sides happen to be `bool`:
+
+```
+fn main() {
+    let a: bool = false
+    let b: bool = true
+    let c: bool = a
+    || b
+    println(to_string(c))   // prints "true", not "false" -- (a || b) merged
+}
+```
+
+More importantly: this is the TRUE root cause of what CLAUDE.md previously
+described as a distinct closure-capture-scoping limitation ("a closure that
+is the tail value of a block cannot capture that block's earlier let
+bindings", cited with the exact repro `let g = { let base = "x"  || base +
+"!" }` failing with `E0102`). Re-diagnosed this session: `E0102` there is
+`base` self-referencing itself inside its OWN merged initializer (`let base
+= ("x" || base + "!")`), nothing to do with block or closure scoping.
+**Proof:** inserting any statement that cannot be continued via `||`
+between the two removes the error and the closure captures cleanly --
+`{ let base: str = "x"  if true { }  || base + "!" }` returns `"x!"` on
+both backends (verified live, both directions). A closure literal can
+capture ANY function-level or block-level `let` binding declared earlier in
+the same scope; there is no scoping boundary.
+
+**Why not filed as a code bug to fix:** this is the SAME accepted-trap
+category as `-`/`(`/`[`, which CLAUDE.md's hard rule 1 already documents as
+a permanent, known ASI-class hazard programmers must avoid (not a defect
+awaiting a compiler fix -- fixing it generally would require adding
+line-tracking to the lexer and consulting it in the Pratt continuation loop
+for every binary-operator token, a cross-cutting grammar change with a wide
+blast radius against existing code that intentionally relies on trailing-
+operator line continuation, well outside a wave scoped to closures). The
+deliverable here is the DOCS CORRECTION: CLAUDE.md gotcha #1 now lists `||`/
+`|` explicitly and states the mechanism is general (not exhaustive to three
+tokens); gotcha #11's "block-tail closure" entry is rewritten with the
+correct root cause and the same (already-correct, now correctly explained)
+workaround. `tests/known_failures/closure_pipe_continuation_silent_wrong.kry`
+kept as a durable repro of the silent-value variant since it is more
+dangerous than the previously-known error-shape variants (`-`/`(`/`[` all
+type-cascade into visible errors in the CLAUDE.md examples; this one does
+not, when both sides are `bool`).
+
 ### Ruled out this session (type system / generics / monomorphization wave) -- probed, all correct on BOTH backends, no bug found
 
 Wrote and ran (JIT + AOT, both backends, value-asserted, not just
@@ -513,6 +697,39 @@ instantiations; multi-parameter generics (`Pair<A, B>`) including a
 `.swap()` returning `Pair<B, A>` and a heap-field-in-both-params instance
 (`Pair<str, [f64]>`). All printed the correct value, byte-identical
 between `kryos run` and `kryos build --release`.
+
+### Ruled out this session (closures / fn-values / captures wave) -- re-verified boundaries hold, both backends agree, no bug found
+
+Re-verified live (value-asserted, both `kryos run` and `kryos build
+--release`) every boundary named in the wave brief, all still correct and
+IDENTICAL on both backends: escaping closures snapshot heap captures at
+storage time (array `len` read through a stored closure sees the pre-push
+value); a captured MAP mutated by key writes through to the outer map; an
+array-of-structs mutated through a NESTED field mutates the shared element;
+a self-referential closure built via reassignment captures the OLD binding
+(`fact(5)` returns `5`, not `120`); a closure that is the TAIL VALUE of a
+block cannot capture that block's earlier `let` bindings under `E0102` --
+**this last one's EXPLANATION was wrong, see item 9 above; the observable
+symptom (E0102 on that exact input) is still accurate.**
+
+Also probed and found CORRECT, no bug: closures stored directly in a struct
+field literal (not via a factory function) seeing later scalar mutation;
+an array of closures each capturing a distinct per-iteration loop-local;
+a map of closures; closures forwarded through 2+ layers of currying with
+MIXED capture kinds (str + mutated scalar via a fresh named intermediate,
+not a bare tail merge) persisting correctly per-instantiation; a generic
+closure-return stored in a container array at two instantiations (i64) plus
+a `T=str` instantiation, read back correctly; recursion via a fn VALUE
+stored in a STRUCT FIELD (`rb.f = |n| if n<=1 {1} else {n*rb.f(n-1)}`) --
+unlike the documented bare-`let`-reassignment snapshot boundary, routing the
+self-reference through a struct field's mutable slot DOES see the live
+value and computes `fact(5) = 120` correctly on both backends (a real,
+useful workaround for the documented boundary, worth adding to CLAUDE.md if
+a future session wants to formalize it -- not done here to keep this wave's
+docs changes to what was directly asked for); a closure captured inside a
+`spawn` block via a struct field (`h.f(7)` inside `spawn { }`) returning the
+correct value on both backends, consistent with the extensive spawn-closure
+work already CLOSED in this ledger.
 
 ---
 

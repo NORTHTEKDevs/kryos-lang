@@ -1,0 +1,35 @@
+// KNOWN FAILURE: a CURRIED (2-level) generic closure return fails to build
+// on AOT/LLVM. `kryos run` (Cranelift/JIT) is unaffected -- this is a
+// backend divergence (AOT cannot even codegen it, JIT is correct).
+//
+// Expected: prints "6" on both backends.
+//
+// Actual on `kryos build --release`:
+//   error: load operand must be a pointer to a first class type
+//     %t14 = load %T, ptr %_1_arg
+//   (clang rejects the emitted .ll -- the generic type parameter `T` reaches
+//   LLVM IR emission UNRESOLVED for the INNER closure)
+//
+// Root cause: `pending_lambda_ret_hint` (kryos-mir/src/lower.rs) stages a
+// concrete per-instantiation signature only for a lambda DIRECTLY returned
+// by the enclosing generic function; it does not recurse into a SECOND
+// lambda returned BY that first lambda, so the innermost closure's param
+// type stays the erased/unresolved generic placeholder. The identical shape
+// with a CONCRETE type (i64 instead of T, no generics involved at all)
+// builds and runs correctly on both backends -- isolates this to generics
+// specifically, not currying/nesting in general (see
+// tests/conformance/conf_closures.kry and CLAUDE.md gotcha #11 for the
+// already-working non-generic curry case).
+//
+//     kryos run tests/known_failures/closure_curried_generic_aot_crash.kry           # prints 6
+//     kryos build --release tests/known_failures/closure_curried_generic_aot_crash.kry -o /tmp/x   # fails to build
+
+fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T {
+    return |b: T| (|c: T| a + b + c)
+}
+
+fn main() {
+    let step1 = curry_add(1)
+    let step2 = step1(2)
+    println(to_string(step2(3)))
+}
