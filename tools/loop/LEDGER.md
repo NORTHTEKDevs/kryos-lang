@@ -593,93 +593,17 @@ through `[any]`/`format`) remains correct and is not a papercut users hit
 by accident (the element-typed `std::iter` HOFs are already generic and
 avoid `any` entirely, per the same gotcha).
 
-### 7. mutated-SCALAR-capture persistence never got the "N>=2" generalization the mutated-STRUCT-capture case already has -- SILENT WRONG VALUE, NOT FIXED
-
-`tests/known_failures/closure_mutated_capture_scalar_gaps.kry` (repro below,
-3 shapes). Ranks above items 2b/2c/3/4/5/6 per this ledger's own doctrine --
-a silent wrong answer outranks a crash. Found this session while hunting
-"mutated captures of several kinds at once" per the closures/fn-values/
-captures wave brief.
-
-CLAUDE.md gotcha #11 documents that TWO-OR-MORE mutated STRUCT captures in
-one closure now persist independently across calls (`mutated_capture_ptr_slots`,
-closed `5f2386e`). The equivalent case for a mutated SCALAR (i64/f64/bool)
-capture was never generalized past its ORIGINAL single-capture fix and
-silently loses persistence in three shapes, reproduced live, identical on
-both backends (shared MIR, not a divergence):
-
-```
-struct Ctr { base: i64 }
-
-fn main() {
-    // shape 1: two mutated scalars in one closure
-    let mut a: i64 = 0
-    let mut b: i64 = 0
-    let bump2 = || { a = a + 1  b = b + 10  return a * 1000 + b }
-    println(to_string(bump2()))  // 1010
-    println(to_string(bump2()))  // want 2020, GET 1010
-    println(to_string(bump2()))  // want 3030, GET 1010
-
-    // shape 2: one mutated scalar + one mutated struct field together
-    let mut scalar_cap: i64 = 0
-    let mut struct_cap = Ctr { base: 100 }
-    let bump_mixed = || {
-        scalar_cap = scalar_cap + 1
-        struct_cap.base = struct_cap.base + 1
-        return scalar_cap + struct_cap.base
-    }
-    println(to_string(bump_mixed()))  // 102
-    println(to_string(bump_mixed()))  // want 104, GET 103 (struct persisted, scalar froze)
-}
-```
-
-**Root cause (read, not guessed, `kryos-mir/src/lower.rs` lambda lowering):**
-a mutated capture only gets a persistent env-slot write-back when
-`mutated_captures.len() == 1 && tail_value_is_identifier(body,
-&mutated_captures[0])` -- the mechanism smuggles the new state back by
-writing the CALL'S RETURN VALUE into the env slot after the call, which only
-works when there is exactly one mutated capture and it IS (literally) the
-returned value. The struct fix instead passes the capture BY POINTER
-(`mutated_capture_ptr_slots`, gated on `matches!(cap_ty, Some(MirType::Struct(_)))`),
-which needs no such restriction because any field mutation on any path lands
-directly in the persistent block through the pointer -- but that mechanism
-was never extended to scalars, which are plain SSA values (no address to
-hand out) in the current representation. This also explains a THIRD shape
-(in the known_failures file, not reproduced above for space): a SOLITARY
-mutated scalar whose enclosing closure's tail value is NOT literally that
-identifier (e.g. `let make = |tag| { count = count + 1  let n = count
-return || n }` -- a common "stateful factory" idiom) never triggers the
-write-back at all, so `count`'s mutation is lost across separate calls to
-`make` even though only one capture is mutated.
-
-**Why not fixed this session:** the code's own comment at the point of
-restriction already states the risk explicitly ("Closures mutating more
-than one capture keep working exactly as before this fix (no worse), they
-just don't get the persistence fix -- a documented residual limitation
-rather than risking a wrong value written to the wrong slot"). Closing this
-properly needs the SAME representational change the struct fix used --
-giving a mutated scalar capture its own persistent, ADDRESSABLE heap slot
-and passing a pointer to it, instead of smuggling state through a return
-value -- across MIR lowering AND both codegen backends (LLVM's aggregate-vs-
-scalar param handling in `emit_function`'s prologue is structurally
-different for a `ptr`-typed param vs a plain `i64` SSA param; Cranelift has
-an equivalent split). This is a representation change, not a one-line
-patch, matching the caution already documented for item 3's struct-arg
-leak -- attempting it inside this wave without a full regression pass across
-conformance/self-host/bootstrap risked an unreviewable change. Left as a
-standing, honestly-scoped OPEN item with the fix direction stated for
-whoever picks it up. Not gated (would fail today); `tests/known_failures/`
-convention followed. CLAUDE.md gotcha #11 updated with this finding inline.
-
-### 7b. NEW (found in the spawn/actors/channels/sync wave): a closure/fn-value captured by `spawn` does NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates -- NOT FIXED
+### 7b. a closure/fn-value captured by `spawn` does NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates -- STILL NOT FIXED (deep-copy attempted and RULED OUT this session, with evidence)
 
 `tests/known_failures/spawn_closure_shared_env_race.kry` (repro below,
-verified 10/10 failures on JIT and 7/10 on AOT at 50 threads x 2000 calls
-each). Ranks with item 7 per this ledger's doctrine -- a silent wrong answer
-outranks a crash -- and is the SAME underlying mechanism (item 7 / CLAUDE.md
-gotcha #11's mutated-scalar-capture write-back) turning into a real,
-measured race the moment the closure is shared across threads instead of
-called from one.
+re-verified fresh this session on the CURRENT HEAD -- AFTER item 7's fix
+above -- at 10/10 JIT and 9/20 AOT, 50 threads x 2000 calls each; the
+original session's 7/10 AOT figure was in the same range, both are real).
+Ranks with item 7 per this ledger's doctrine -- a silent wrong answer
+outranks a crash -- and is the SAME underlying mechanism (a mutated
+capture's persistent state, now item 7's addressable heap-cell box) turning
+into a real, measured race the moment the closure is shared across threads
+instead of called from one.
 
 Every OTHER `spawn` capture kind is a documented, verified SNAPSHOT: str,
 array, map, struct, and (as of `721a9cf`, this session's predecessor) enum
@@ -694,15 +618,19 @@ cloning it. Every spawned thread that captures the SAME closure value shares
 the identical env allocation with the parent and every sibling thread.
 
 **Why sharing (not just "not snapshotting") is a real bug, not merely a
-documentation gap:** a closure with a single mutated scalar capture whose
-tail value IS that identifier (gotcha #11's "RESOLVED" persistence case,
-e.g. `let bump = || { count = count + 1  count }`) persists its state via a
-NON-ATOMIC read-call-then-write-back with no lock: the generated
-`{name}_env` thunk calls the closure body (which reads `env[slot]`,
-computes, returns) and THEN, as a SEPARATE instruction, stores the return
-value back into `env[slot]` (both backends, `if let Some(slot) =
-mutated_slot { ... store ... }`). Two threads calling the same shared
-closure concurrently can both read the same pre-increment `env[slot]`
+documentation gap:** a closure with a mutated scalar capture (e.g.
+`let bump = || { count = count + 1  count }`) persists its state via a
+NON-ATOMIC load-mutate-store with no lock -- true both BEFORE and AFTER
+item 7's fix above, just via a different concrete mechanism. Before: the
+generated `{name}_env` thunk called the closure body (which read
+`env[slot]`, computed, returned) and THEN, as a SEPARATE instruction,
+stored the return value back into `env[slot]`. After item 7's fix: the
+mutated capture is now a POINTER to its own ARC-allocated cell (`Instruction
+::Deref` at function entry reads it into a local, ordinary body arithmetic
+mutates the local, `Instruction::StoreDeref` before every return writes it
+back through the SAME pointer) -- still a plain, unlocked load-then-later-
+store with a window between them. Either way, two threads calling the same
+SHARED closure concurrently can both read the same pre-increment value
 before either writes back, silently losing one thread's increment --
 measured directly:
 
@@ -739,19 +667,86 @@ is specifically about the CLOSURE's OWN persisted state (read via calling
 `bump()` again, not via the outer variable), which should climb
 monotonically and instead loses updates under concurrent access.
 
-**Not fixed this session (scope discipline, matches item 3/item 7's
-precedent):** two fix shapes exist, neither is a one-line patch:
-(a) make `Function`/`Shared` spawn captures snapshot like every other heap
-kind -- needs a per-closure-shape "deep copy this env" codegen helper
-generated per closure (mirroring how `__kryos_drop_<Struct>` is generated
-per struct), on both backends; or (b) make the call-plus-writeback atomic
-under a per-closure lock, which taxes the common uncontended single-thread
-case to fix a path most programs don't exercise. Filed with a verified,
-both-backends, both-directions-of-scale repro instead of a rushed patch.
-**Docs corrected the same session** (this was a real documentation gap, not
-just a code gap): `docs/09-concurrency.md`'s spawn section now states the
-closure/fn-value exception to the snapshot contract explicitly, and CLAUDE.md
-gotcha #22 gained a matching bullet.
+**This session: option (a) (deep-copy the closure env at spawn) was
+IMPLEMENTED, tested, and RULED OUT -- with hard evidence, not a guess.**
+Built a full, working per-closure-shape clone mechanism on BOTH backends:
+`Instruction::Spawn` gained a `closure_shapes: Vec<Option<String>>` hint
+(index-aligned with `args`), populated at MIR-lowering time from
+`closure_locals` (the same map the direct-call optimization consults) when
+a spawn-captured name's origin was statically a specific closure literal;
+codegen generated a per-lambda `{name}_clone_env(src) -> new_env` helper
+(mirroring how `__kryos_drop_<Struct>` is generated per struct) that
+allocates a fresh env box and, for a mutated-scalar capture's own heap cell
+(item 7's `Shared(scalar)` box), allocates a FRESH cell seeded with the old
+one's current value instead of sharing the pointer. It compiled clean on
+both backends (LLVM textual IR + Cranelift `FunctionBuilder`) and ran.
+
+**It did not close the race -- re-running the repro many times afterward
+still showed 10/10 JIT and 6-9/20 AOT failures, unchanged.** Two
+INDEPENDENT reasons, both found by reading code and by direct measurement,
+not assumed:
+
+1. **The hint mechanism cannot even fire for the closures that matter.**
+   `closure_locals` (`kryos-mir/src/lower.rs`, the `Stmt::Let` arm) is
+   POPULATED ONLY when `!ctx.mutating_closures.contains(func_name)` --
+   i.e. it deliberately EXCLUDES every mutating closure, by design, because
+   its ORIGINAL and ONLY other consumer (the direct-call optimization) is
+   documented as unsafe for exactly that case (`mutating_closures`' own doc
+   comment: re-reading the outer variable's current value would silently
+   reset persistent state). Since a closure with NO mutated capture has no
+   persistent state to race on in the first place, `closure_locals` is
+   populated for precisely the closures that CANNOT race and empty for
+   precisely the closures that CAN -- confirmed by dumping the generated
+   `--emit-llvm` IR for the repro above: no `bump_clone_env` symbol
+   anywhere, `kryos_arc_retain` unchanged from before the attempt.
+2. **Even if the hint could fire, deep-copy is the WRONG semantics for this
+   shape, not just an unimplemented one.** A closure shared via `spawn`
+   whose ONLY reason to be shared is a program that intentionally wants a
+   SINGLE counter mutated by every thread (this repro's entire point,
+   encoded in its own `expected=100001` oracle) is NOT "a closure that
+   forgot to snapshot" -- it is a program relying on cross-thread SHARING,
+   which snapshotting eliminates entirely rather than making safe. Traced
+   through by hand what a working clone would have produced here: each of
+   the 50 `spawn` calls would clone `bump`'s env fresh (seeded from the
+   ORIGINAL, always-0, never-written-back box), so all 50 threads' 2000
+   increments each would land in 50 throwaway private copies nobody ever
+   reads, and `main`'s own final `bump()` call (the ONLY call that ever
+   touches the original box) would return `1`, not `100001` -- turning a
+   SILENT WRONG ANSWER of "some lost updates" (still recognizably close to
+   the right shape) into a SILENT WRONG ANSWER of "all 100,000 increments
+   of cross-thread work vanish, deterministically, with no diagnostic" --
+   arguably worse, not better. This matches "every other capture kind
+   already snapshots" (`docs/09-concurrency.md`) for capture kinds that
+   DON'T carry persistent state across calls, but a MUTATING closure is
+   exactly the shape where the language has no other primitive doing this
+   job -- the actual supported answer for "shared mutable state across
+   `spawn`" is `std::sync::atomic_int()`/`Mutex`/an actor, not a captured
+   Kryos closure, and this session did not find a way to make a captured
+   closure behave like one of those without either (a) snapshotting
+   (wrong, per above) or (b) an atomic/lock-based read-modify-write, which
+   remains the only shape that could preserve this test's own semantics.
+
+**Reverted cleanly** (`git checkout` on the two files that were pure
+additions -- `kryos-mir/src/display.rs`, `kryos-mir/src/optimize/inline.rs`,
+`kryos-codegen-llvm/src/codegen.rs`, `kryos-codegen-cranelift/src/codegen.rs`
+-- plus manual reversion of the `Instruction::Spawn.closure_shapes`
+additions in `kryos-mir/src/ir.rs`/`lower.rs`, which also carried item 7's
+unrelated, kept fix); rebuilt and re-verified conformance 53/53, tier1+tier2
+GREEN, bootstrap 16/16, and `conf_spinlock_mutex` specifically (5/5 clean,
+both backends) after the revert, confirming a clean return to the pre-
+attempt state. **Remaining fix shape, not attempted:** (b) make the
+load-mutate-store atomic under a per-closure lock (or a CAS retry loop for
+the narrow case where the mutation is a pure recomputation of the captured
+value with no other side effects in the closure body) -- taxes the common
+uncontended single-thread case and, for a CAS-retry design, risks
+DUPLICATING any side effect in the closure body on a retry (a `println`
+inside a racing closure would print twice) unless retries are proven
+restricted to side-effect-free bodies, which is its own analysis. Genuinely
+harder than item 7 was, and not a one-line patch either way. **Docs
+corrected in the original session** (kept, still accurate): `docs/09-
+concurrency.md`'s spawn section states the closure/fn-value exception to
+the snapshot contract explicitly, and CLAUDE.md gotcha #22 has a matching
+bullet.
 
 ### 8. curried (2-level) generic closure return fails to BUILD on AOT -- JIT/AOT divergence, NOT FIXED
 
@@ -1052,6 +1047,7 @@ and unrelated.
 
 | Item | Evidence |
 | --- | --- |
+| **LEDGER item 7: mutated-SCALAR-capture persistence never got the "N>=2" generalization the mutated-STRUCT-capture case already had -- SILENT WRONG VALUE in 3 shapes** | Reproduced live before touching code, both backends, identical (shared MIR): `tests/known_failures/closure_mutated_capture_scalar_gaps.kry` -- shape 1 (two mutated scalars in one closure) printed `1010,1010,1010` instead of climbing `1010,2020,3030`; shape 2 (one mutated scalar + one mutated struct together) printed `102,103,104` instead of `102,104,106` (the struct persisted, the scalar froze at its first-call contribution); shape 3 (a solitary mutated scalar whose closure's tail is a DIFFERENT expression -- a "stateful factory" returning an inner closure) printed `1,1` instead of `1,2` across successive outer calls. ROOT CAUSE (read, not guessed, `kryos-mir/src/lower.rs` lambda lowering): the old mechanism smuggled the new value back by writing the closure CALL's RETURN VALUE into the env slot from the env-thunk, which only worked when `mutated_captures.len() == 1 && tail_value_is_identifier(body, &mutated_captures[0])` -- exactly one mutated capture whose body's tail IS that identifier. Any other shape silently reverted to reading the original captured value every call. FIX: generalized the struct case's OWN fix (`mutated_capture_ptr_slots`, pass-by-pointer) to scalars, which previously had no address to hand out (plain SSA values). Every mutated SCALAR capture is now boxed behind an ARC-allocated heap cell at closure-construction time -- reusing the EXACT SAME `RValue::ArcAlloc`/`RValue::Deref`/`MirType::Shared` machinery that already backed the READ-ONLY struct-literal-field capture case (`box_scalar_captures`) -- so the capture's env slot holds a POINTER instead of a raw value; the closure's own parameter for that capture becomes `Shared(scalar)`; the prologue dereferences it once into the original local (unchanged body code); and -- the genuinely new half -- an `Instruction::StoreDeref` writes the local's current value back through the SAME pointer before EVERY `Terminator::Return` in the function (a pattern with direct precedent in this same file: the `@budget` annotation's pop-to-depth instrumentation does an identical "for every block whose terminator is Return, append an instruction" pass). This has NO tail-shape or capture-count restriction, fully replacing (not augmenting) the old return-value-smuggling mechanism -- `MirAttributes::mutated_capture_slot` is no longer set by anything (kept as a field, documented as dead, to avoid ripping out the still-harmless codegen plumbing that reads it). Required zero codegen changes on either backend: `StoreDeref`/`Deref`/`Shared`-typed params were all pre-existing, proven machinery. Proof both ways: `git stash` the `kryos-mir` fix + full `cargo build --release` (required -- MIR/codegen crates, not `-p kryos-cli`-safe to skip) -- all 3 shapes reproduce the exact documented wrong values on BOTH `kryos run` and `kryos build --release`; `git stash pop` + rebuild -- all 3 shapes correct on both backends (`1010,2020,3030` / `102,104,106` / `1,2`). Regression suite additionally verified NOT to break under the fix (all re-run live, both backends, matching or exceeding prior known-good values): the ORIGINAL single-mutated-scalar "RESOLVED" idiom (`let bump = || { count = count+1  count }` -> `1,2,3`, outer var frozen at `0`), the same idiom at `f64` and `bool`, a closure mutating a struct capture AND an array capture together, and the existing `two_mutated_struct_captures` case (`111,122,133`, outer vars `0,100`) -- all unchanged. `conf_spinlock_mutex` re-run 5x clean on AOT (unaffected -- this fix touches only SCALAR capture representation, not the struct-capture-at-spawn path that test exercises). Regression: `tests/conformance/conf_functions.kry` (3 new checked functions: `two_mutated_scalar_captures`, `mixed_scalar_and_struct_mutated_captures`, `stateful_factory_mutated_scalar`; `tests/known_failures/closure_mutated_capture_scalar_gaps.kry` deleted per the known-failures-to-gate convention). Gates: conformance 53/53 (both backends), tier1+tier2 GREEN, bootstrap 16/16. CLAUDE.md gotcha #11 and `MirAttributes` doc comments (`kryos-mir/src/ir.rs`) updated to state the new mechanism and retire the old one. See item 7b below for the SAME race class re-surfacing under `spawn` -- NOT closed by this fix (orthogonal: this fix is about single-threaded generalization, not cross-thread atomicity). |
 | **Capability escape via closure/fn-value laundering stored in a CONTAINER (struct field / array element / map value / nested combination) -- the narrowed residual of the mostly-closed laundering fix, LEDGER item 1** | Reproduced live before touching any code: `tests/security/cap_escape_closure_launder_container.kry` (struct field, pre-existing repro) compiled clean under BOTH `--capabilities-mode=inferred` and `--strict-capabilities` and printed the secret from INSIDE a `deny!(fs:read)` block; wrote and reproduced 3 sibling repros the same way -- `..._array.kry` (array element), `..._map.kry` (map value), `..._nested.kry` (a struct field holding an ARRAY of closures). All 4 confirmed vulnerable pre-fix (exit=0, no diagnostic, secret printed). ROOT CAUSE (matches the fix sketch this ledger already carried): `hot_params`'s seed pass only ever marked a PARAMETER hot when its OWN declared type was `fn(...) -> ...` (`is_fn_typed`); a parameter typed `Registry` (struct with a fn-typed FIELD), `[fn() -> str]`, or `map<str, fn() -> str>` never matched, so the drilling function's own param was never marked hot and `resolve_closure_caps` never got a chance to trace `reg.reader`/`arr[i]`/`m[k]` back to the value written into it. FIX (`kryos-capabilities/src/checker.rs`): (1) `struct_field_types` -- new struct-name -> field-type map, collected in Pass 0; (2) `is_fn_bearing_type` -- recognizes a struct with >=1 function-typed field, an array whose element type is a function, and a `map<K,V>` whose VALUE type is a function, recursively (so a struct field holding an array of closures qualifies) with a depth cap against recursive struct definitions; (3) `PathStep`/`decompose_container_path`/`resolve_type_path` -- a field/index access-chain representation and a walker that reduces `obj.field(...)`/`arr[i](...)`/chains of these to `(root identifier, path)`, validated against the root's OWN declared type before counting, so an ordinary method call that happens to share a struct field's name is never misclassified as hot (verified: see no-cascade check below); (4) `hot_params`'s type changed from `HashMap<String, HashSet<usize>>` to `HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>>` -- a hot parameter now carries the SET OF PATHS through which it's invoked (empty path = the pre-existing direct-fn-typed-parameter case, unchanged), populated by a new container-invocation seed pass alongside the existing direct-call seed, and propagated through forwarding exactly like the direct case (broadened the propagation filter from `is_fn_typed` to `is_fn_bearing_type`); (5) `resolve_container_path_caps` -- walks a struct/array/map LITERAL (or a `let`-bound alias of one, tracked by the new `build_local_container_lits`/`current_local_container_lits`) down the recorded path: a struct field is traced PRECISELY by name (unwritten/defaulted field -> `Unknown`), an array/map is traced INDEX-INSENSITIVELY (unions every element/value written -- conservative, matching the ledger's own design note), falling back to `Unknown` -> `Capability::All` for a non-literal source (a `push`ed loop, a function return, a read from another container) -- the same sound fallback already used for every other unresolvable shape; (6) `accumulate_hot_extra_caps` now iterates every recorded path per hot index instead of resolving the whole argument once. Proof BOTH ways, all 4 shapes, both modes: `git stash` the `checker.rs` fix + full `cargo build --release` (required -- this crate is linked into the runtime toolchain, `-p kryos-cli` does not rebuild it) -- all 4 repros compile clean (exit 0) and print the secret from inside `deny!(fs:read)`, in both `inferred` and `--strict-capabilities`; `git stash pop` + rebuild -- all 4 rejected with `E0507` citing the closure/fn-value argument, in both modes. No-cascade verified two ways: (a) `tests/security_gate.sh`'s existing HOF checks (#5-6) still pass unchanged; (b) a NEW positive probe -- a struct/array/map "registry" of PURE closures (the actual plugin-registry/router-table/dispatch-map shape this residual mattered for) compiles clean with ZERO annotation under `--strict-capabilities` and runs correctly; (c) a struct with BOTH a privileged fn-typed field AND an unrelated real method compiles clean when only the real method is called (`resolve_type_path` correctly rejects the method name as a field path, so it is never misclassified as hot). Regression: extended `tests/security_gate.sh` with checks #7-10 (reject, both modes, all 4 shapes) and #11 (the pure-closure registry no-cascade probe). Gates: `security_gate.sh` PASS (11/11), full `cargo build --release` clean, `kryos-loop.sh gates 2` and `test_bootstrap.sh` re-verified (see below). Docs: `docs/10-capabilities.md`'s "Known limitation" section rewritten -- the container-storage residual is now CLOSED, not open; the implementation-status callout, the `strict` mode table row, and the "one residual gap" prose all updated to state the closure/fn-value laundering fix is now sound for every indirection shape it covers (parameter/local/return/passthrough/actor/spawn/generic/dyn AND container storage), with no remaining known gap for this class of escape. NOT attempted / genuinely out of scope (documented, not silently dropped): a container built from a NON-LITERAL source (populated via `push` in a loop, returned from another function, read out of ANOTHER container) still resolves to `Unknown` -> requires `Capability::All` at the call site -- this is the SAME conservative fallback the shipped parameter-based fix already uses for its own unresolvable shapes (a closure whose provenance can't be traced at all), not a new gap this fix introduces. |
 | **FINAL SWEEP (item 1b, trust-model break): `kryos pkg install`/`add` never verified a checksum against anything -- the documented "tarballs are pinned by hash" claim was FALSE** | Live repro (real `NORTHTEKDevs/kryos-registry`, real `git clone`, no mocking): `kryos pkg add http-router && kryos pkg install` then `echo MALICIOUS_INJECTED_CONTENT >> ~/.kryos/packages/http-router-0.1.0/src/lib.kry`, then a SECOND project depending on the same name+version ran `kryos pkg install` and silently reused the tampered cache (`installed 1 package`, exit 0, no warning). ROOT CAUSE (three compounding gaps, all closed): (1) `LockFile::checksum` was always written `None` -- `LockFile::from_resolved` never read anything into it; (2) `RegistryEntry.checksum` (a real published `sha256:<hex>`) was never compared against anything -- `pkg info`/`show` was its ONLY consumer, a human-readable display; (3) even if wired up naively, the two sides of the comparison didn't correspond -- `generate_index_entry` hashed a placeholder "tarball" (`pack()`'s `target/package/*.tar.gz`, actually just a text LISTING of file names, not their content) while `fetch_github_subdir` never produces or downloads a tarball at all -- it `git clone`s the registry repo and copies out `packages/<name>/<version>/` as a directory tree, so there were no tarball bytes on the install side to hash even in principle. FIX: introduced a single canonical content-hash function, `content_checksum` (`kryos-package/src/registry.rs`) -- `sha256:<hex>` over `kryos.toml` + every `.kry` file under `src/`/`stdlib/`, hashed in deterministic `/`-normalized sorted-path order (platform-independent). `pack()` now computes this over the exact files it publishes and stores it as `PublishPackage.content_checksum`; `generate_index_entry` emits it VERBATIM (no more tarball-byte hashing). On the install side, `AvailablePackage`/`ResolvedPackage` gained a `checksum: Option<String>` field threaded from the registry-index lookup through `resolve()`; `fetch::fetch_resolved` calls the new `verify_package_checksum(dest, expected, name, version)` on EVERY `Remote` package -- including a CACHE HIT, not just a fresh fetch -- recomputing `content_checksum` over the on-disk directory and comparing against the index-recorded value. A mismatch OR a missing/empty checksum is rejected (fails closed, per the "missing checksum is the same hole with extra steps" directive) and the poisoned cache entry is `remove_dir_all`'d so a later run cannot mistake it for a good install. `LockFile::from_resolved` now threads the VERIFIED checksum into `kryos.lock` instead of always writing `None`. While in the unpack path: `copy_dir_all` (the function that materializes a fetched `github_subdir:` package from the git clone) now rejects any symlink entry via `DirEntry::file_type()` (which does NOT follow symlinks, unlike the `Path::is_dir()` it used before) -- a malicious registry commit could otherwise plant a symlink pointing outside the package (e.g. at another cached package or up the filesystem) and have this function silently copy unrelated files into the local cache; a real tar-based zip-slip (`../`/absolute entry paths) does not apply today since there is no tar-format extraction anywhere in this path, only a directory walk whose entries come from `read_dir` (which cannot yield path-separator-bearing names). Also fixed while in the file: a failed fetch (including a now-rejected symlink) no longer leaves a partial `dest`/tmp-clone lying around to be mistaken for a successful cache entry on a later run; `collect_kry_files`'s prefix was hardcoded to `"src/"` regardless of caller, mislabeling `stdlib/` files in both the publish listing and the new checksum's path space -- now takes an explicit `prefix` argument. Proof both ways, unit level (`tests/checksum_verification.rs`, 5 new tests + `registry::tests::content_checksum_is_deterministic_and_content_sensitive` + `fetch::tests::copy_dir_all_refuses_a_symlink_entry_pointing_outside_the_package`): with `verify_package_checksum` temporarily short-circuited to `Ok(())` (simulating the pre-fix behavior) and with `copy_dir_all`'s symlink guard temporarily removed, 4 of 5 checksum tests and the symlink test all go RED (confirmed via a`build+test` cycle with the guard stripped, then restored); with the real fix, all pass, including a legitimate-content-still-installs case. Proof both ways, LIVE (real registry, real network, no mocking): pre-migration, a legit `kryos pkg add http-router && kryos pkg install` against the (at-the-time still old-scheme) index FAILED with a checksum mismatch -- correctly proving old published checksums were computed under the broken scheme and would need republishing, not that the new verification itself was wrong. Migrated all 13 real package-version JSON entries in `NORTHTEKDevs/kryos-registry` to the new `content_checksum` scheme (computed via `kryos pkg publish` run against each already-published `packages/<name>/<version>/` directory -- the package CONTENT is unchanged, only the recorded checksum is corrected to actually describe it; pushed as `NORTHTEKDevs/kryos-registry@9025d8a`). Post-migration: `kryos pkg add http-router && kryos pkg install` succeeds (exit 0, `kryos.lock` now records a real checksum instead of nothing), and repeating the EXACT ledger repro (tamper the cached `src/lib.kry`, then `kryos pkg install` from a second project depending on the same name+version) now fails closed with `error: checksum mismatch for \`http-router\` v0.1.0: expected sha256:ec03da92... got sha256:9a0086b7...` (exit 1) and the tampered cache directory is removed. Docs corrected to state the real (now true) guarantee instead of the false one: CLAUDE.md's package-registry paragraph, `docs/package-registry.md`'s status callout + `kryos pkg install` section, `README.md`'s Status prose + feature table (both previously named this as one of two most-severe open items; the closure/container capability-laundering gap named at the time is now also CLOSED (see the CLOSED table entry above)). NOT changed: the transport mechanism itself (still `git clone` of a directory tree, not a downloaded/verified tarball -- `docs/package-registry.md`'s BLAKE3/HTTPS-GET design spec remains aspirational, SHA-256/git-clone is what's actually implemented); `pkg add`'s wildcard-version-by-default behavior (`name = "*"`) is unchanged, so pinning a specific version still depends on committing `kryos.lock` -- but the CONTENT behind whatever version is locked is now cryptographically checked on every install. Gates: `kryos-package` unit+integration tests 62/62 (38 lib + 19 `tests/package.rs` + 5 new `tests/checksum_verification.rs`), full workspace `cargo build --release` clean, `kryos-loop.sh gates 2` and bootstrap re-verified GREEN (see below). |
 | **FINAL SWEEP (2026-08-02): a single stray token at block-statement level (a bare `,`, or a `)`/`]`/`}` with no enclosing call/array/struct-literal to absorb it) HUNG the parser forever, zero output -- reachable by a one-character typo** | Found fresh-eyes probing the CLI/wasm surface (started from `map<str, i64>{}`, a plausible mistyped empty-map literal -- correct syntax is bare `{}` per `examples/wasm_maps.kry` -- which bisected down to a minimal 6-token repro with no map/generics involved at all: `fn main() { let x = 5 , }`). Verified live with `timeout`: `kryos check` on that file ran the full 10s/15s timeout with **zero bytes of output** (not a fast crash -- earlier untimed runs looked like a prompt `exit=127` only because something else eventually killed the process; timed runs proved it hangs). ROOT CAUSE (read, not guessed): the diagnostic-cascade fix closed earlier this session (`parse_primary`'s unexpected-token fallback, `kryos-parser/src/parser.rs`) deliberately stopped consuming `RParen`/`RBracket`/`RBrace`/`Comma` on an unexpected token, on the assumption that an ENCLOSING call/array/struct-literal/match-arms loop would consume it during its own recovery -- correct for a token nested inside one of those constructs, but at the OUTERMOST block-statement level there is no such enclosing construct. An expression-statement built entirely from that fallback (e.g. a stray trailing `,`) returns `Some(Stmt::Expr{..})` with the cursor exactly where it started; `parse_block_stmts`'s loop only force-advances when `parse_statement()` returns `None`, so a `Some` that made literally zero progress spins the identical token through the loop forever. `parse_module` (the top-level declaration loop, one level up the grammar) already has the exact right guard for this bug CLASS -- a `self.pos == before` no-progress check with a comment citing a prior fuzzer-found 2-byte hang (`"}:"`) -- but it was never mirrored down to the block-statement loop. FIX: added the same before/after-position guard to `parse_block_stmts` (factored into a shared `recover_stray_block_token` helper used by both the `None` and now-guarded `Some` paths), so any statement parse that consumes zero tokens forces one diagnostic + one token of progress instead of looping. Proof both ways: `git stash` the fix + rebuild -- `fn main() { let x = 5 , }` times out (10s, 0 bytes) on `kryos check`; restore + rebuild -- 2 clean diagnostics (`E0003` + `E0009`), exit 1, `<1s`. Non-regression: the ORIGINAL cascade-fix repro (`let match: i64 = 5` + `to_string(match)`, reserved-keyword-as-value) re-verified still exactly 2 errors, no cascade reintroduced. Regression: `tests/diagnostics_gate.sh` check 6 (bounded with `timeout`, since a `conf_*.kry` conformance file can't assert "must not hang" -- same precedent as `docs_status_gate`/`utf8_invalid_string_gate`). Gates: conformance 53/53, tier1+tier2 GREEN, bootstrap 16/16, security_gate PASS, differential fuzz gate (seeds 1-40) 0 divergences. |

@@ -166,6 +166,60 @@ fn two_mutated_struct_captures() -> [i64] {
     return [a, b, d, c1.base, c2.base]
 }
 
+// LEDGER item 7 / gotcha #11: mutated-SCALAR-capture persistence never got
+// the same "N>=2" generalization the struct case above did. The single-
+// mutated-capture write-back used to be smuggled through the closure call's
+// RETURN VALUE, which only worked when there was exactly one mutated
+// capture and the body's tail expression was literally that identifier.
+// Two co-occurring mutated scalars used to freeze both at their first-call
+// value forever (want 1010,2020,3030, got 1010,1010,1010).
+fn two_mutated_scalar_captures() -> [i64] {
+    let mut a: i64 = 0
+    let mut b: i64 = 0
+    let bump = || { a = a + 1  b = b + 10  a * 1000 + b }
+    let r1 = bump()
+    let r2 = bump()
+    let r3 = bump()
+    return [r1, r2, r3, a, b]
+}
+
+// A mutated scalar alongside a mutated struct in the SAME closure: the
+// struct persisted correctly (its own pointer slot), but the scalar froze
+// at its first-call value (want 102,104,106; got 102,103,104).
+struct MSCtr { base: i64 }
+fn mixed_scalar_and_struct_mutated_captures() -> [i64] {
+    let mut scalar_cap: i64 = 0
+    let mut struct_cap = MSCtr { base: 100 }
+    let bump = || {
+        scalar_cap = scalar_cap + 1
+        struct_cap.base = struct_cap.base + 1
+        scalar_cap + struct_cap.base
+    }
+    let r1 = bump()
+    let r2 = bump()
+    let r3 = bump()
+    return [r1, r2, r3, scalar_cap, struct_cap.base]
+}
+
+// A SOLITARY mutated scalar whose enclosing closure's tail value is NOT
+// literally that identifier (a "stateful factory" idiom returning a fresh
+// closure each call) -- the old return-value-smuggling write-back required
+// the tail to BE the mutated capture, so this never triggered at all (want
+// 1,2 across successive `make()` calls; got 1,1 -- the mutation never
+// persisted across calls to `make`).
+fn stateful_factory_mutated_scalar() -> [i64] {
+    let mut count: i64 = 0
+    let make = |tag: str| {
+        count = count + 1
+        let n: i64 = count
+        let inner = || n
+        return inner
+    }
+    let c1 = make("a")
+    let c2 = make("b")
+    return [c1(), c2()]
+}
+
 // A `dyn Trait` param whose METHOD is called inside a GENERIC function must
 // still be passed as a trait object (fat pointer): the generic-call lowering
 // path bypassed the dyn-Trait coercion the normal call path does, so a concrete
@@ -305,6 +359,19 @@ fn main() {
     let tmc = two_mutated_struct_captures()
     expect(tmc[0] == 111 and tmc[1] == 122 and tmc[2] == 133, "closure mutating two struct captures persists each across calls")
     expect(tmc[3] == 0 and tmc[4] == 100, "two mutated struct captures leave both outer vars unaffected")
+
+    // LEDGER item 7: mutated-SCALAR-capture persistence generalized to N>=2
+    // and to non-tail-identifier shapes, matching the struct fix above.
+    let tsc = two_mutated_scalar_captures()
+    expect(tsc[0] == 1010 and tsc[1] == 2020 and tsc[2] == 3030, "closure mutating two scalar captures persists each across calls")
+    expect(tsc[3] == 0 and tsc[4] == 0, "two mutated scalar captures leave both outer vars unaffected")
+
+    let msm = mixed_scalar_and_struct_mutated_captures()
+    expect(msm[0] == 102 and msm[1] == 104 and msm[2] == 106, "mutated scalar capture persists alongside a mutated struct capture in the same closure")
+    expect(msm[3] == 0 and msm[4] == 100, "mixed mutated scalar+struct captures leave both outer vars unaffected")
+
+    let sfm = stateful_factory_mutated_scalar()
+    expect(sfm[0] == 1 and sfm[1] == 2, "solitary mutated scalar capture persists across calls even when the tail is not that identifier")
 
     // dyn-Trait method call inside a generic fn: struct arg must be wrapped as
     // a trait object, not passed raw (was a segfault on both backends).

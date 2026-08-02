@@ -221,18 +221,21 @@ pub struct MirAttributes {
     /// Function is declared `async fn` — eligible for state-machine
     /// lowering by `kryos_mir::async_lower`.
     pub is_async: bool,
-    /// Set on a synthesized lambda function that mutates EXACTLY ONE of its
-    /// captured (by-move) parameters and whose body's return value is that
-    /// same mutated local. The value is the 0-based index of that capture
-    /// among the lambda's captures (matching env slot `index + 1`, since
-    /// slot 0 holds the thunk function pointer). Both codegen backends use
-    /// this to make the closure's env-thunk write the call's return value
-    /// back into the persistent env slot, so a stateful counter/accumulator
-    /// closure's mutation survives across calls instead of resetting every
-    /// time. `None` for ordinary functions and for closures that don't fit
-    /// this single-mutated-capture-returned pattern (multiple mutated
-    /// captures, or a mutation whose new value isn't the return value, are
-    /// a known remaining limitation — see lower.rs `find_mutated_captures`).
+    /// NO LONGER SET by lower.rs (superseded, LEDGER item 7 / CLAUDE.md
+    /// gotcha #11): used to hold the 0-based capture index for a lambda that
+    /// mutated EXACTLY ONE captured scalar whose body's return value was
+    /// that same local, so the env-thunk could smuggle the new value back by
+    /// writing the call's return value into the env slot. That mechanism
+    /// silently lost persistence for every OTHER shape (two+ mutated
+    /// scalars, a mutated scalar alongside a mutated struct, or a solitary
+    /// mutated scalar whose tail expression wasn't literally that
+    /// identifier). Replaced by boxing every mutated scalar capture behind
+    /// an addressable heap cell and passing it BY POINTER, the same
+    /// treatment `mutated_capture_ptr_slots` already gives struct captures
+    /// (see the mutated-scalar-capture block in lower.rs's Lambda arm). Kept
+    /// as a field (always `None` now) and the matching codegen plumbing kept
+    /// as dead-but-harmless rather than ripped out, to keep this fix's blast
+    /// radius small.
     pub mutated_capture_slot: Option<u32>,
     /// Set on a synthesized lambda function that mutates EXACTLY ONE of its
     /// captured (by-move) parameters AND that capture is a Struct/Enum
@@ -254,8 +257,12 @@ pub struct MirAttributes {
     /// so a closure mutating two or more struct captures persists all of them
     /// -- with a single slot, a second co-occurring mutated capture reverted
     /// every struct capture to the byval copy-on-entry path and silently
-    /// dropped their per-call persistence on AOT. Empty for ordinary functions
-    /// and for scalar mutated captures (those use `mutated_capture_slot`).
+    /// dropped their per-call persistence on AOT. Empty for ordinary
+    /// functions. Scalar mutated captures no longer use a MirAttributes slot
+    /// at all -- they get the equivalent pointer-box treatment directly in
+    /// lower.rs (a per-capture `MirType::Shared` param + prologue Deref +
+    /// pre-Return `StoreDeref`), so this vec only ever holds Struct-typed
+    /// capture indices.
     pub mutated_capture_ptr_slots: Vec<u32>,
 }
 

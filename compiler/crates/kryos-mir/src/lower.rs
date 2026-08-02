@@ -12396,10 +12396,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // `let`-bound closure keeps the existing, already-correct
             // `closure_locals` path -- boxing it too would require that fast
             // path to ALSO pass a pointer, a wider change this fix avoids);
-            // only NON-mutated captures (a mutated capture keeps the
-            // existing move + `mutated_capture_slot` write-back machinery
-            // from commit 150ea0e untouched -- seperate bug, see
-            // `t05_closure_mutable_hof`); only scalar types (str/array/map/
+            // only NON-mutated captures (a MUTATED capture gets its own
+            // separate persistent pointer-box treatment below, with a
+            // write-back before every return -- see the mutated-scalar-
+            // capture block just after this one); only scalar types (str/array/map/
             // struct captures are not boxed here -- their existing capture
             // behavior is left exactly as before).
             let mut boxed_capture_names: HashSet<String> = HashSet::new();
@@ -12452,36 +12452,111 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
+            // MUTATED-SCALAR-capture persistence (LEDGER item 7 / CLAUDE.md
+            // gotcha #11's "NOT FIXED" note). The OLD mechanism smuggled the
+            // new value back through the closure CALL's return value written
+            // into env[slot] by the env-thunk -- which only worked when
+            // there was EXACTLY ONE mutated capture and the closure body's
+            // tail expression was literally that identifier. Three shapes
+            // silently lost persistence: two co-occurring mutated scalars; a
+            // mutated scalar alongside a mutated struct (the struct
+            // persisted, the scalar froze); and a solitary mutated scalar
+            // whose tail is a DIFFERENT expression (e.g. a stateful factory
+            // returning an inner closure). See
+            // `tests/conformance/conf_closure_mutated_scalar_captures.kry`
+            // (was `tests/known_failures/closure_mutated_capture_scalar_gaps.kry`).
+            //
+            // Generalized here to the SAME "persistent, addressable heap
+            // slot passed by pointer" treatment `mutated_capture_ptr_slots`
+            // already gives struct captures, with no tail-shape or
+            // capture-count restriction: box EVERY mutated scalar capture
+            // (ArcAlloc at construction time, in the capture_ops loop below),
+            // dereference it once at function entry (prologue -- reusing the
+            // exact mechanism the read-only `box_scalar_captures` case above
+            // already uses), and write the local's current value back
+            // through the SAME pointer before every return (epilogue, new)
+            // so any mutation on any path lands in the persistent box
+            // regardless of how many other captures are mutated or what the
+            // tail expression happens to be.
+            let mut mutated_scalar_boxed: HashSet<String> = HashSet::new();
+            for (idx, cap_name) in captures.iter().enumerate() {
+                if !mutated_captures.contains(cap_name) || boxed_capture_names.contains(cap_name) {
+                    continue;
+                }
+                let Some(param) = mir_func.params.get(idx) else {
+                    continue;
+                };
+                let orig_id = param.local;
+                let orig_ty = param.ty.clone();
+                if !is_boxable_scalar(&orig_ty) {
+                    continue; // struct captures use `mutated_capture_ptr_slots` below
+                }
+                let ptr_id = LocalId(
+                    mir_func
+                        .locals
+                        .iter()
+                        .map(|l| l.id.0)
+                        .max()
+                        .map(|m| m + 1)
+                        .unwrap_or(0),
+                );
+                mir_func.locals.push(MirLocal {
+                    id: ptr_id,
+                    name: None,
+                    ty: MirType::Shared(Box::new(orig_ty.clone())),
+                    mutable: false,
+                });
+                mir_func.params[idx] = MirParam {
+                    local: ptr_id,
+                    ty: MirType::Shared(Box::new(orig_ty.clone())),
+                };
+                // Prologue: dereference the box once at function entry into
+                // the ORIGINAL param local -- the body already reads/writes
+                // that local normally everywhere, so no substitution is
+                // needed anywhere else in the function.
+                mir_func.blocks[0].instructions.insert(
+                    0,
+                    Instruction::Assign {
+                        dest: orig_id,
+                        value: RValue::Deref {
+                            operand: Operand::Local(ptr_id),
+                        },
+                    },
+                );
+                // Epilogue: write the local's (possibly mutated) current
+                // value back through the same pointer before EVERY return
+                // path -- the missing "write back" half. Unlike the retired
+                // return-value-smuggling trick this does not care whether
+                // the tail expression is this identifier, or how many other
+                // captures are also mutated.
+                for block in mir_func.blocks.iter_mut() {
+                    if matches!(block.terminator, Terminator::Return(_)) {
+                        block.instructions.push(Instruction::StoreDeref {
+                            ptr: Operand::Local(ptr_id),
+                            value: Operand::Local(orig_id),
+                        });
+                    }
+                }
+                boxed_capture_names.insert(cap_name.clone());
+                mutated_scalar_boxed.insert(cap_name.clone());
+            }
+
             // Record mutation info for the codegen backends. ANY mutated
             // capture disables the direct-call optimization for this
             // lambda (see `mutating_closures` doc comment) since it is
-            // never safe once the closure owns mutable state by move. When
-            // there is EXACTLY ONE mutated capture, additionally mark its
-            // env-slot index so the env-thunk can write the call's return
-            // value back into persistent storage (the standard
-            // mutate-then-return-it counter/accumulator idiom). Closures
-            // mutating more than one capture keep working exactly as
-            // before this fix (no worse), they just don't get the
-            // persistence fix -- a documented residual limitation rather
-            // than risking a wrong value written to the wrong slot.
+            // never safe once the closure owns mutable state by move.
             if !mutated_captures.is_empty() {
                 ctx.mutating_closures.insert(lambda_name.clone());
-                if mutated_captures.len() == 1
-                    && tail_value_is_identifier(body, &mutated_captures[0])
-                {
-                    if let Some(idx) = captures.iter().position(|c| c == &mutated_captures[0]) {
-                        mir_func.attributes.mutated_capture_slot = Some(idx as u32);
-                    }
-                }
                 // Aggregate (struct) mutated-capture case: no tail-shape
-                // restriction needed here (unlike the scalar slot above) --
-                // see `mutated_capture_ptr_slots`' doc comment. Passing the
-                // capture BY POINTER makes any field mutation on ANY path
-                // through the body land directly in the persistent env block,
-                // so there is no "does the tail equal the mutated value"
-                // write-back-correctness concern. EACH mutated struct capture
-                // gets its own pointer slot independently, so a closure that
-                // mutates two or more struct captures persists all of them.
+                // restriction needed here (unlike the OLD scalar mechanism,
+                // superseded above) -- see `mutated_capture_ptr_slots`' doc
+                // comment. Passing the capture BY POINTER makes any field
+                // mutation on ANY path through the body land directly in the
+                // persistent env block, so there is no "does the tail equal
+                // the mutated value" write-back-correctness concern. EACH
+                // mutated struct capture gets its own pointer slot
+                // independently, so a closure that mutates two or more
+                // struct captures persists all of them.
                 for cap in &mutated_captures {
                     if let Some(idx) = captures.iter().position(|c| c == cap) {
                         let cap_ty = mir_func.params.get(idx).map(|p| p.ty.clone());
@@ -12507,13 +12582,10 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 let local = find_local_by_name(ctx, name)
                     .expect("internal: lambda capture local not found");
                 if boxed_capture_names.contains(name) {
-                    // Ref-captured scalar: allocate the box HERE (at
+                    // Boxed scalar capture: allocate the box HERE (at
                     // construction time, in the ENCLOSING function's own
                     // instruction stream -- `ctx` was already restored above)
-                    // seeded with the capture's CURRENT value, and remember it
-                    // so a later plain assignment to `name` in this same
-                    // function (see the `Stmt::Assign` arm) also writes
-                    // through it.
+                    // seeded with the capture's CURRENT value.
                     let local_ty = ctx
                         .locals
                         .iter()
@@ -12527,10 +12599,23 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             inner: Operand::Local(local),
                         },
                     });
-                    ctx.capture_boxes
-                        .entry(name.clone())
-                        .or_default()
-                        .push(box_id);
+                    // Only register for the OUTER-assignment sync (`capture_
+                    // boxes`, consulted by the `Stmt::Assign` arm) when this
+                    // is the READ-ONLY ref-capture case: a later plain
+                    // assignment to `name` in the enclosing scope should
+                    // keep being visible to the closure. A MUTATED capture
+                    // is captured BY MOVE (gotcha #11) -- the closure owns
+                    // an independent copy from this point on, so a later
+                    // outer reassignment of `name` must NOT also overwrite
+                    // the closure's own persisted state, and the closure's
+                    // own mutations must not leak back out to `name` either
+                    // (both already-documented, tested boundaries).
+                    if !mutated_scalar_boxed.contains(name) {
+                        ctx.capture_boxes
+                            .entry(name.clone())
+                            .or_default()
+                            .push(box_id);
+                    }
                     capture_ops.push(Operand::Local(box_id));
                 } else {
                     capture_ops.push(Operand::Local(local));
