@@ -1,0 +1,28 @@
+// SECURITY -- nested-container sibling of
+// `cap_escape_closure_launder_container.kry` (see that file for the full
+// writeup). Same root cause, a NESTED combination: a STRUCT FIELD holding an
+// ARRAY of closures, read back out via `reg.handlers[0]()`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+struct Registry { handlers: [fn() -> str] }
+
+fn zero_cap_tool(reg: Registry) -> str {
+    return reg.handlers[0]()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let reg = Registry { handlers: [r] }
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("nested struct-field-of-array launder (was NOT CLOSED): " + zero_cap_tool(reg))
+    }
+}

@@ -1,43 +1,45 @@
-// SECURITY -- residual gap in the closure/fn-value laundering fix, NOT
-// closed this session. Documented here as a standing, NOT-gated repro (same
-// status as `tests/mem/struct_arg_leak.kry`'s design-note pattern) so it is
-// not silently declared fixed by a future change without re-verification.
+// SECURITY -- CLOSED. This was the last narrowed residual of the closure/
+// fn-value laundering fix: a closure/fn-value flowing through a
+// parameter/local/return/passthrough-chain/actor-message/spawn/generic/dyn
+// shape was closed first (see CLOSED table in `tools/loop/LEDGER.md`); THIS
+// shape -- a closure stored in a CONTAINER (struct field / array element /
+// map value / nested combination) and read back out and invoked by code
+// that never held the capability it carries -- is closed by this session's
+// fix to `hot_params`/`accumulate_hot_extra_caps` in
+// `kryos-capabilities/src/checker.rs`.
 //
-// The fix closes: a closure/fn-value flowing DIRECTLY through a parameter,
-// a `let`-bound local, a return value, a passthrough chain of several call
-// layers, an actor message (fire-and-forget send), `spawn`, a generic
-// instantiation, and a `dyn Trait` method dispatch -- all verified live
-// against the fixed binary, each rejected inside a `deny!` block exactly
-// like this file.
+// Root cause (as found): `hot_params`'s seed pass only marked a PARAMETER
+// hot when its OWN declared type was `fn(...) -> ...`; a parameter typed
+// `Registry` (a struct with a function-typed FIELD), `[fn() -> str]`, or
+// `map<str, fn() -> str>` never matched, so `zero_cap_tool`'s param `reg`
+// was never marked hot, and `resolve_closure_caps` never got a chance to
+// trace `reg.reader`/`arr[i]`/`m[k]` back to the value written into it.
 //
-// NOT closed: a closure/fn-value read back OUT OF A CONTAINER -- a STRUCT
-// FIELD (this file), an ARRAY ELEMENT, or a MAP VALUE. `hot_params` only
-// tracks parameters/locals whose OWN declared type is `fn(...) -> ...`; a
-// parameter typed `Registry` (a struct with a function-typed FIELD), or
-// `[fn() -> str]` / `map<str, fn() -> str>`, is never marked hot at all, so
-// `resolve_closure_caps` never even attempts to trace the field/element
-// value back to its source. This is the SAME root-cause SHAPE the design
-// note in `tools/loop/LEDGER.md` flags going in ("a closure stored in a
-// struct field and read out -- `registry.reader()` -- is the same hole by a
-// different route").
+// Fix: `is_fn_bearing_type` recognizes a struct with >=1 function-typed
+// field, an array whose element type is a function, and a `map<K, V>` whose
+// VALUE type is a function (recursively, so a struct field holding an array
+// of closures also qualifies). `hot_params`'s seed pass now ALSO detects
+// `obj.field(...)` / `arr[i](...)` / `m[k](...)` invocation shapes (a
+// `PathStep` chain from the parameter to the invoked slot), validated
+// against the parameter's declared type (`resolve_type_path`) so an
+// ordinary method call sharing a field's name is never misclassified.
+// `resolve_container_path_caps` traces a struct/array/map LITERAL's
+// construction site down that same path (union every value written into an
+// array/map element -- index-insensitive, conservative; a struct field is
+// traced precisely by name), falling back to `Unknown` -> `Capability::All`
+// when the container is built from a non-literal source (a `push`ed loop, a
+// function return, a read from another container) -- the same sound
+// fallback already used for every other unresolvable shape.
 //
-// ACCEPTANCE (not yet met): this program should be REJECTED for the same
-// reason `cap_escape_closure_launder_deny.kry` now is. Today it compiles
-// clean under BOTH `--capabilities-mode=inferred` and `--strict-capabilities`
-// and prints the secret from INSIDE a `deny!(fs:read)` block.
+// See `cap_escape_closure_launder_array.kry`, `..._map.kry`, and
+// `..._nested.kry` for the array-element, map-value, and
+// struct-field-holding-an-array-of-closures siblings of this repro. All four
+// are gated in `tests/security_gate.sh` (checks #7-10).
 //
-// Real fix sketch: extend `is_fn_typed`'s notion of "carries a closure" to
-// cover a struct type with a function-typed field / an array or map whose
-// element type is a function -- mark the PARAMETER hot when the container's
-// element/field is invoked (`obj.field()`, `arr[i]()`, `m[k]()`), and extend
-// `resolve_closure_caps` to trace a struct/array/map LITERAL's construction
-// site (union every value written into the relevant field/element; treat a
-// non-literal or a runtime-selected element as `Unknown`, same conservative
-// fallback already used for every other unresolvable shape). Comparable in
-// size to the parameter-based mechanism just added, not attempted here to
-// keep this wave's change reviewable and because the parameter/local/return/
-// passthrough/actor/spawn/generic/dyn coverage above is the load-bearing
-// majority of idiomatic Kryos closure usage.
+// ACCEPTANCE (met): this program is REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+// Verified BOTH ways: reverting the fix and rebuilding makes this compile
+// clean and print the secret again (proving the test is not vacuous).
 
 struct Registry { reader: fn() -> str }
 
@@ -55,6 +57,7 @@ fn main() {
     let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
     let reg = Registry { reader: r }
     deny!(fs:read) {
-        println("struct-field launder (NOT CLOSED): " + zero_cap_tool(reg))
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("struct-field launder (was NOT CLOSED): " + zero_cap_tool(reg))
     }
 }

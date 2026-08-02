@@ -95,19 +95,19 @@ are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
 
 - **Capability enforcement is sound for direct calls AND for closure/fn-value
   indirection through a parameter, local, return value, passthrough chain,
-  actor message, `spawn`, generic, or `dyn Trait` dispatch -- in EVERY mode
-  including `--strict-capabilities`. One indirection shape remains
-  unenforced: a closure read back out of a CONTAINER (a struct field, array
-  element, or map value).** A function whose parameter/field type is itself
-  a struct/array/map that happens to CONTAIN a closure is invisible to the
-  checker regardless of what that closure does at runtime, so a
-  zero-capability function can still exercise container-laundered authority.
-  This is a security-relevant gap, not a papercut: see
-  [docs/10-capabilities.md § Known
-  limitation](docs/10-capabilities.md#known-limitation-a-closure-read-out-of-a-container-is-not-traced-read-this-before-trusting-it-with-secrets)
-  for the repro and [tools/loop/LEDGER.md](tools/loop/LEDGER.md) for the fix
-  design. Do not treat `@capabilities` as a hard boundary against hostile or
-  buggy code that can receive a closure through a struct field, array, or map.
+  actor message, `spawn`, generic, `dyn Trait` dispatch, OR a CONTAINER (a
+  struct field, array element, or map value that holds a closure, including
+  nested combinations) -- in EVERY mode including `--strict-capabilities`.**
+  A struct/array/map value that CONTAINS a closure is traced back to its
+  construction site (a struct field precisely, an array/map value
+  conservatively across all elements), so a zero-capability function that
+  drills into a container to invoke a privileged closure is caught at the
+  call site that supplied it. See [docs/10-capabilities.md § Closure
+  indirection, including
+  containers](docs/10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets)
+  for the full sound surface and the one documented residual (a container
+  populated from a non-literal source requires `all`, the same conservative
+  fallback used for every other unresolvable closure provenance).
 
 Honest, non-blocking residuals:
 

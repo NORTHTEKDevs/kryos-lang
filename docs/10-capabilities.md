@@ -1,6 +1,6 @@
 # Capabilities
 
-> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound for DIRECT calls (free-function calls, method/static dispatch, a gated BUILTIN passed and invoked as a first-class value) **and, as of this fix, for closure/fn-value indirection through a parameter, a `let`-bound local, a return value, a chain of passthrough calls, an actor message send, `spawn`, a generic instantiation, and `dyn Trait` dispatch** — a call site's required capability now includes whatever authority the ACTUAL closure argument carries, not just the callee's own declaration, so `deny!`/boundary narrowing can no longer be defeated by pre-constructing a privileged closure outside it and invoking it through an unannotated forwarding function. **One indirection shape remains unenforced: a closure/fn-value read back out of a CONTAINER — a struct field, an array element, or a map value — see "Known limitation" below.** Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient. `kryos audit` is a separate, purely SYNTACTIC scan of `@capabilities(...)` annotations — it never runs capability inference, so it never lists any unannotated function (a legitimately-polymorphic helper like a `std::iter` HOF just as much as anything else); do not read its output as a complete capability inventory.
+> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound for DIRECT calls (free-function calls, method/static dispatch, a gated BUILTIN passed and invoked as a first-class value) **and for closure/fn-value indirection through a parameter, a `let`-bound local, a return value, a chain of passthrough calls, an actor message send, `spawn`, a generic instantiation, `dyn Trait` dispatch, AND a closure/fn-value stored in and read back out of a CONTAINER (a struct field, an array element, or a map value, including nested combinations like a struct field holding an array of closures)** — a call site's required capability now includes whatever authority the ACTUAL closure argument carries (traced through the container's field/index structure when applicable), not just the callee's own declaration, so `deny!`/boundary narrowing can no longer be defeated by pre-constructing a privileged closure outside it and invoking it through an unannotated forwarding function or a container it was stashed in. Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient. `kryos audit` is a separate, purely SYNTACTIC scan of `@capabilities(...)` annotations — it never runs capability inference, so it never lists any unannotated function (a legitimately-polymorphic helper like a `std::iter` HOF just as much as anything else); do not read its output as a complete capability inventory.
 
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, process spawning, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
@@ -17,21 +17,21 @@ deny-by-default from day one.**
 |---|---|---|
 | `permissive` | Only functions carrying a `@capabilities(...)` annotation are checked. An unannotated function is unconstrained. Capabilities are advisory. | Opt-in for scratch/legacy code via `--capabilities-mode=permissive`. |
 | `inferred` | **Deny-by-default at the boundary, with interior inference.** `main` — and any annotated function — must actually hold every capability its code *transitively* uses. Interior helpers need no annotation: the compiler infers each one's capability set as the union of what it and its callees require. So an unannotated `main` that (directly or through helpers) writes a file is rejected: declare `@capabilities(fs:write)` on `main`. **Recommended, and the `kryos new` default.** | New projects; production code. |
-| `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every DIRECT gated builtin call from an unannotated function is an error, and (as of this fix) so is a call through an fn-typed argument that carries authority the caller doesn't hold. This is `--strict-capabilities`. **One residual gap for closures read out of a container — see "Known limitation" below.** | Maximum scrutiny; security-critical libraries. |
+| `strict` | Every function is checked as if annotated with exactly its declaration (empty unless declared). Every DIRECT gated builtin call from an unannotated function is an error, and so is a call through an fn-typed argument (including one read out of a struct field / array element / map value) that carries authority the caller doesn't hold. This is `--strict-capabilities`. | Maximum scrutiny; security-critical libraries. |
 
-The key property of `inferred` mode, **with one residual gap (read "Known
-limitation" below)**: reading `main`'s annotation is *meant* to tell you the
-program's entire authority. For direct paths — direct builtin calls,
-method/static dispatch (`obj.write()`), a gated builtin passed BY NAME as a
-first-class value (`apply(file_write, ...)`) — this holds today: all are
-accounted for. It also now holds when authority flows through an ordinary
-closure: a function returning `|| file_read(path)` and calling it through an
-unnamed `fn`-typed parameter elsewhere is tracked back to the SPECIFIC
-closure argument at each call site (not the callee's own, correctly-empty,
-declaration), so `main`'s declared/inferred set still has to cover it. The
-one case this does NOT yet cover is a closure stored in and read back out of
-a container (a struct field, array element, or map value) — see "Known
-limitation" below.
+The key property of `inferred` mode: reading `main`'s annotation is *meant*
+to tell you the program's entire authority. For direct paths — direct
+builtin calls, method/static dispatch (`obj.write()`), a gated builtin
+passed BY NAME as a first-class value (`apply(file_write, ...)`) — this
+holds: all are accounted for. It also holds when authority flows through an
+ordinary closure: a function returning `|| file_read(path)` and calling it
+through an unnamed `fn`-typed parameter elsewhere is tracked back to the
+SPECIFIC closure argument at each call site (not the callee's own,
+correctly-empty, declaration), so `main`'s declared/inferred set still has
+to cover it — and this now ALSO holds when that closure is stashed in and
+read back out of a container (a struct field, array element, or map value):
+see "Closure indirection, including containers" below for the full sound
+surface.
 
 ```bash
 kryos check --capabilities-mode=inferred src/main.kry   # deny-by-default
@@ -46,14 +46,14 @@ In a project, set it once in `kryos.toml` (a fresh `kryos new` already does):
 mode = "inferred"
 ```
 
-## Known limitation: a closure read out of a CONTAINER is not traced (read this before trusting it with secrets)
+## Closure indirection, including containers, is sound (read this if you are trusting it with secrets)
 
 **If you are evaluating Kryos for a use case where capability enforcement is
 the thing standing between untrusted code and a secret (an embedded agent
 that must not exfiltrate a password, an API key, a token), read this section
 first. It applies in EVERY mode, including `--strict-capabilities`.**
 
-The checker (`kryos-capabilities/src/checker.rs`) now resolves the authority
+The checker (`kryos-capabilities/src/checker.rs`) resolves the authority
 carried by a first-class function VALUE — not just a directly-named function
 or builtin — at every call site that invokes it, and attributes that
 authority to the CALL, not to the (correctly, permanently) empty declaration
@@ -63,7 +63,10 @@ and invoked directly; one traced through a `let`-bound local back to the
 function that constructed and returned it; one forwarded through several
 layers of passthrough functions; one sent as an actor message argument
 (fire-and-forget send) or handed to `spawn`; one flowing through a generic
-`fn<T>`; and one dispatched through a `dyn Trait` method.
+`fn<T>`; one dispatched through a `dyn Trait` method; AND one stored in and
+read back out of a CONTAINER — a struct field (`registry.reader()`), an
+array element (`readers[0]()`), a map value (`handlers["x"]()`), or a nested
+combination of these (a struct field holding an array of closures).
 
 ```
 @capabilities(fs:read)
@@ -88,20 +91,48 @@ fn main() {
 }
 ```
 
-**What is still NOT traced:** a closure/fn-value stored in and read back out
-of a CONTAINER — a struct field (`registry.reader()`), an array element
-(`readers[0]()`), or a map value (`handlers["x"]()`). The parameter/field
-type in these shapes isn't itself `fn(...) -> ...` (it's a struct, an array,
-or a map whose CONTENTS happen to include one), so the analysis never marks
-it as carrying closure authority in the first place, and a program using this
-shape can still defeat a `deny!` block or hide a capability from a boundary's
-effective ceiling exactly as the original finding described. See
-`tests/security/cap_escape_closure_launder_container.kry` for the live repro
-and a sketch of the extension needed (tracking hot struct fields / array and
-map element types the same way hot PARAMETERS are tracked today). **Do not
-rely on `@capabilities`/`--strict-capabilities` as a guarantee against code
-that receives a closure through a struct field, array, or map** — every
-other closure-carrying shape is now sound; this one specific shape is not.
+**The container shape is the same violation, closed the same way.** A
+plugin registry, a router table, a command dispatch map, or an event-handler
+list is typically written as a struct field, array, or map of closures — the
+shape a "local agent with tools" architecture actually uses — so this was
+the residual the product story depended on:
+
+```
+struct Registry { reader: fn() -> str }
+
+fn zero_cap_tool(reg: Registry) -> str {
+    return reg.reader()          // container-drilling invocation: TRACED
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("secret.txt")
+    let reg = Registry { reader: r }
+    deny!(fs:read) {
+        println(zero_cap_tool(reg))   // REJECTED (E0507): the closure carries
+                                       // fs:read, traced through the struct field.
+    }
+}
+```
+
+See `tests/security/cap_escape_closure_launder_container.kry`,
+`..._array.kry`, `..._map.kry`, and `..._nested.kry` for the live repros
+(struct field, array element, map value, and a struct field holding an array
+of closures respectively) — all four are REJECTED with E0507 and gated in
+`tests/security_gate.sh` (checks #7-10). A struct/array/map "registry" of
+PURE closures (no capability) still needs no annotation (`tests/
+security_gate.sh` check #11) — the fix does not cascade into the legitimate
+version of this exact pattern.
+
+**One residual, by design, unchanged from every other unresolvable shape:**
+a container built from a NON-LITERAL source — populated via `push` in a
+loop, returned from another function, or read out of ANOTHER container —
+cannot be statically traced, and the checker requires `Capability::All` from
+the caller in that case (the same conservative fallback already used for
+every other closure whose provenance can't be proven, e.g. one selected by a
+runtime condition). This is not a silent gap: it fails CLOSED (over-strict,
+never under-strict) and is the honest limit of static analysis, not an
+overlooked case.
 
 **The naive alternative was measured, not assumed, and confirmed unusable:**
 requiring `Capability::All` on any call through a non-directly-resolvable
@@ -109,18 +140,18 @@ fn-typed value (the blanket fix) forces essentially every `std::iter` HOF
 call site and every callback-shaped stdlib API to declare `all` — verified
 directly against `std::iter::map/filter/fold` and the self-host compiler,
 which use these pervasively (CLAUDE.md gotchas #19-20). The shipped fix
-instead resolves the SPECIFIC closure argument at each call site (falling
-back to `Capability::All` only when that argument's provenance genuinely
-cannot be traced, e.g. the container case above) — legitimate HOF usage with
-a pure closure needs no annotation change (`tests/security_gate.sh` checks
-#5-6 guard both directions: no cascade, and a privileged closure through the
-same HOF is still correctly gated).
+instead resolves the SPECIFIC closure argument (and, for a container, the
+SPECIFIC field/element path invoked) at each call site — legitimate HOF and
+registry usage with a pure closure needs no annotation change
+(`tests/security_gate.sh` checks #5-6 and #11 guard both directions: no
+cascade, and a privileged closure through the same HOF/registry is still
+correctly gated).
 
-**Status: the parameter/local/return/passthrough/actor/spawn/generic/dyn
-laundering paths are CLOSED and gated (`tests/security_gate.sh`). The
-container-storage path (struct field / array / map) remains open — see
-[`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md) for the residual and a
-sketch of the extension for whoever picks it up.**
+**Status: the parameter/local/return/passthrough/actor/spawn/generic/dyn AND
+container-storage (struct field / array / map / nested) laundering paths are
+ALL CLOSED and gated (`tests/security_gate.sh`).** See
+[`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md) for the full history of
+both fixes.
 
 Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:
 

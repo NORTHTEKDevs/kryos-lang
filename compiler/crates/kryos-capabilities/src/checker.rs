@@ -144,6 +144,23 @@ enum ClosureCapsResult {
     Unknown,
 }
 
+/// One step of a field/index access chain rooted at a parameter, used to
+/// close the CONTAINER residual of the closure-laundering fix (a closure
+/// stored in a struct field / array element / map value, read back out and
+/// invoked by code that never held the capability it carries — see LEDGER
+/// item 1). `Field(name)` is a precise, per-name struct field access
+/// (`reg.reader`); `Index` is an array-element or map-value access, which is
+/// deliberately name/index-INSENSITIVE (arrays and maps have no static
+/// per-slot tracking, so a path ending in `Index` matches ANY element/value
+/// written into that container — conservative, matching the same stance
+/// `ClosureCapsResult::Unknown` already documents for other unresolvable
+/// shapes).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum PathStep {
+    Field(String),
+    Index,
+}
+
 /// A capability scope entry on the stack.
 ///
 /// Tracks both the capability set and whether this scope was explicitly
@@ -210,16 +227,26 @@ struct CapabilityChecker {
     /// `MethodCall`-shaped, or a hot parameter at index 0 is never reached
     /// (an off-by-one that silently dropped actor-handler coverage).
     actor_handler_names: HashSet<String>,
-    /// For each function name, the set of PARAMETER INDICES that are of
-    /// function type AND are invoked — directly (`p(...)` in the body) or by
-    /// being forwarded as a bare argument into another (transitively) hot
-    /// parameter position — anywhere in the whole program. See
-    /// `compute_hot_params`. A call site passing an argument into one of
-    /// these positions must additionally require whatever authority that
-    /// SPECIFIC argument carries (see `accumulate_hot_extra_caps`); the
-    /// function declaring the hot parameter itself requires nothing extra,
-    /// which is what keeps `std::iter`'s HOFs annotation-free.
-    hot_params: HashMap<String, HashSet<usize>>,
+    /// Every struct's field list, keyed by struct NAME, as `(field_name,
+    /// declared_type)` pairs. Feeds `is_fn_bearing_type`/`resolve_type_path`
+    /// — the container-closure-laundering fix (LEDGER item 1) needs to know
+    /// whether a parameter typed as a struct actually carries a
+    /// function-typed field somewhere in its shape.
+    struct_field_types: HashMap<String, Vec<(String, TypeExpr)>>,
+    /// For each function name, for each PARAMETER INDEX that is invoked —
+    /// either DIRECTLY as a bare `p(...)` call, or by drilling into a
+    /// CONTAINER value (`p.field(...)`, `p[i](...)`, or a chain of these) —
+    /// the set of field/index PATHS (see `PathStep`) from the parameter's
+    /// own value down to the invoked slot. A bare direct call records the
+    /// EMPTY path (the parameter's own value IS the closure). Populated
+    /// structurally by `compute_hot_params`; a call site passing an argument
+    /// into one of these (index, path) pairs must additionally require
+    /// whatever authority that SPECIFIC path resolves to within the actual
+    /// argument (see `accumulate_hot_extra_caps` /
+    /// `resolve_container_path_caps`); the function declaring the hot
+    /// parameter itself requires nothing extra, which is what keeps
+    /// `std::iter`'s HOFs annotation-free.
+    hot_params: HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>>,
     /// For each function whose declared return type is `fn(...) -> ...`, the
     /// statically-resolved authority carried by the closure it returns (see
     /// `compute_fn_return_closure_caps`). Lets a call site resolve `let
@@ -238,6 +265,17 @@ struct CapabilityChecker {
     /// initializer is plausibly a function value (a lambda literal, a
     /// function reference, or a call to a closure-returning function).
     current_local_closure_caps: HashMap<String, ClosureCapsResult>,
+    /// A best-effort, flat (same precision level as
+    /// `current_local_closure_caps`) map from each `let`-bound local in the
+    /// function currently being checked to its initializer EXPRESSION, when
+    /// that initializer is a struct/array/map LITERAL (or a bare alias of
+    /// another already-tracked container local). Lets
+    /// `resolve_container_path_caps` trace `let reg = Registry { reader: r }`
+    /// / `zero_cap_tool(reg)` back to the literal `reg` was built from,
+    /// without re-deriving a `ClosureCapsResult` at bind time (a container's
+    /// authority depends on WHICH field/index path is later invoked, which
+    /// isn't known yet when the `let` is bound).
+    current_local_container_lits: HashMap<String, Expr>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -254,10 +292,12 @@ impl CapabilityChecker {
             fn_params: HashMap::new(),
             fn_ret_ty: HashMap::new(),
             actor_handler_names: HashSet::new(),
+            struct_field_types: HashMap::new(),
             hot_params: HashMap::new(),
             fn_return_closure_caps: HashMap::new(),
             current_fn_typed_params: HashSet::new(),
             current_local_closure_caps: HashMap::new(),
+            current_local_container_lits: HashMap::new(),
             mode,
         }
     }
@@ -323,6 +363,119 @@ impl CapabilityChecker {
     /// Whether a parameter's declared type is a function type (`fn(...) -> ...`).
     fn is_fn_typed(ty: &Option<TypeExpr>) -> bool {
         matches!(ty, Some(TypeExpr::Function { .. }))
+    }
+
+    /// Record every struct's field list (name -> [(field_name, field_type)]).
+    /// Feeds `is_fn_bearing_type` / `resolve_type_path` — the
+    /// container-closure-laundering fix needs to know whether a struct type
+    /// carries a function-typed field somewhere in its shape. Actor state
+    /// fields are deliberately NOT included: an actor is a message-passing
+    /// boundary, not a value ever passed around and drilled into like an
+    /// ordinary struct (see `check_actor`'s own, separate handling).
+    fn collect_struct_field_types(&mut self, decls: &[Decl]) {
+        for d in decls {
+            if let Decl::Struct { name, fields, .. } = d {
+                self.struct_field_types.insert(
+                    name.clone(),
+                    fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
+                );
+            }
+        }
+    }
+
+    /// Whether a type could carry a function VALUE somewhere within its
+    /// shape, reachable by field/index access — i.e. whether it is worth
+    /// treating a parameter of this type as a "container candidate" for the
+    /// `hot_params` container-invocation seed pass. `Function` itself
+    /// qualifies (the pre-existing direct case); so does an array whose
+    /// element type qualifies, a `map<K, V>` whose VALUE type qualifies, an
+    /// `Option<T>` whose inner type qualifies, and a struct with at least one
+    /// field whose type qualifies (recursively). `depth` bounds the
+    /// recursion so a self-referential or mutually-recursive struct
+    /// definition (`struct Node { next: Node }`) cannot loop forever; it is
+    /// NOT needed for the separate field/index PATH walk in
+    /// `resolve_type_path`, which is bounded by the actual (finite) access
+    /// chain written in the source, not by the type graph.
+    fn is_fn_bearing_type(&self, ty: &Option<TypeExpr>) -> bool {
+        match ty {
+            Some(t) => self.is_fn_bearing_type_inner(t, 0),
+            None => false,
+        }
+    }
+
+    fn is_fn_bearing_type_inner(&self, ty: &TypeExpr, depth: u32) -> bool {
+        if depth > 8 {
+            return false;
+        }
+        match ty {
+            TypeExpr::Function { .. } => true,
+            TypeExpr::Array { element, .. } => self.is_fn_bearing_type_inner(element, depth + 1),
+            TypeExpr::Optional { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
+            TypeExpr::Generic { name, args, .. } if (name == "map" || name == "Map") && args.len() == 2 => {
+                self.is_fn_bearing_type_inner(&args[1], depth + 1)
+            }
+            TypeExpr::Simple { name, .. } | TypeExpr::Generic { name, .. } => self
+                .struct_field_types
+                .get(name)
+                .is_some_and(|fields| {
+                    fields.iter().any(|(_, fty)| self.is_fn_bearing_type_inner(fty, depth + 1))
+                }),
+            _ => false,
+        }
+    }
+
+    /// Resolve the TYPE reached by walking `path` (a field/index access
+    /// chain) starting from `ty`. Returns `None` if the path doesn't
+    /// correspond to a real field/index chain on this type (an ordinary
+    /// method call that happens to share a field's name, an index into a
+    /// non-container, a drill through an opaque/unmodeled type, ...) — used
+    /// to distinguish a genuine container-closure invocation from an
+    /// ordinary method call before marking a parameter hot.
+    fn resolve_type_path(&self, ty: &TypeExpr, path: &[PathStep]) -> Option<TypeExpr> {
+        let Some((head, rest)) = path.split_first() else {
+            return Some(ty.clone());
+        };
+        match (head, ty) {
+            (_, TypeExpr::Optional { inner, .. }) => self.resolve_type_path(inner, path),
+            (PathStep::Field(fname), TypeExpr::Simple { name, .. })
+            | (PathStep::Field(fname), TypeExpr::Generic { name, .. }) => {
+                let fields = self.struct_field_types.get(name)?;
+                let fty = fields.iter().find(|(n, _)| n == fname).map(|(_, t)| t.clone())?;
+                self.resolve_type_path(&fty, rest)
+            }
+            (PathStep::Index, TypeExpr::Array { element, .. }) => {
+                self.resolve_type_path(element, rest)
+            }
+            (PathStep::Index, TypeExpr::Generic { name, args, .. })
+                if (name == "map" || name == "Map") && args.len() == 2 =>
+            {
+                self.resolve_type_path(&args[1], rest)
+            }
+            _ => None,
+        }
+    }
+
+    /// Decompose an expression into `(root identifier name, path of
+    /// field/index accesses from the root to `expr` itself)`, when `expr` is
+    /// a chain of `FieldAccess`/`IndexAccess` rooted at a bare `Identifier`.
+    /// `None` for any other shape (a call, a literal, a binary op, ...) —
+    /// those are not "a value read out of a container reachable from a bare
+    /// name", so the container-invocation heuristic does not apply.
+    fn decompose_container_path(expr: &Expr) -> Option<(&str, Vec<PathStep>)> {
+        match expr {
+            Expr::Identifier { name, .. } => Some((name.as_str(), Vec::new())),
+            Expr::FieldAccess { object, field, .. } => {
+                let (root, mut path) = Self::decompose_container_path(object)?;
+                path.push(PathStep::Field(field.clone()));
+                Some((root, path))
+            }
+            Expr::IndexAccess { object, .. } => {
+                let (root, mut path) = Self::decompose_container_path(object)?;
+                path.push(PathStep::Index);
+                Some((root, path))
+            }
+            _ => None,
+        }
     }
 
     /// Record every function/method's parameter list and declared return
@@ -554,6 +707,213 @@ impl CapabilityChecker {
         }
     }
 
+    /// Every CONTAINER-shaped invocation anywhere in `expr`, reduced to
+    /// `(root identifier the access chain is rooted at, the field/index PATH
+    /// from that root to the invoked slot)` — see `decompose_container_path`
+    /// / `PathStep`. Mirrors `walk_calls_expr`'s full traversal (so no call
+    /// site is missed) but reconstructs the WHOLE access chain instead of a
+    /// bare callee name, which is what lets `compute_hot_params` check,
+    /// against the root's own declared type (`resolve_type_path`), whether a
+    /// given path actually terminates in a function-typed slot before
+    /// marking it hot. A `MethodCall` is speculatively included (`method`
+    /// treated as a trailing `Field` step) because the parser cannot
+    /// distinguish `reg.reader()` (a struct field holding a closure) from an
+    /// ordinary `reg.some_method()` at parse time (see the parser's own
+    /// comment on this ambiguity) — `resolve_type_path` rejects the ones
+    /// that don't actually resolve to a function-typed slot, so an ordinary
+    /// method call never gets misclassified as hot.
+    fn walk_container_calls_expr<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, Vec<PathStep>)>) {
+        match expr {
+            Expr::FnCall { callee, args, .. } => {
+                if let Some((root, path)) = Self::decompose_container_path(callee) {
+                    if !path.is_empty() {
+                        out.push((root, path));
+                    }
+                }
+                Self::walk_container_calls_expr(callee, out);
+                for a in args {
+                    Self::walk_container_calls_expr(a, out);
+                }
+            }
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                ..
+            } => {
+                if let Some((root, mut path)) = Self::decompose_container_path(object) {
+                    path.push(PathStep::Field(method.clone()));
+                    out.push((root, path));
+                }
+                Self::walk_container_calls_expr(object, out);
+                for a in args {
+                    Self::walk_container_calls_expr(a, out);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for a in args {
+                    Self::walk_container_calls_expr(a, out);
+                }
+            }
+            Expr::FieldAccess { object, .. } => Self::walk_container_calls_expr(object, out),
+            Expr::IndexAccess { object, index, .. } => {
+                Self::walk_container_calls_expr(object, out);
+                Self::walk_container_calls_expr(index, out);
+            }
+            Expr::BinaryOp { left, right, .. } => {
+                Self::walk_container_calls_expr(left, out);
+                Self::walk_container_calls_expr(right, out);
+            }
+            Expr::UnaryOp { operand, .. } => Self::walk_container_calls_expr(operand, out),
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for e in elements {
+                    Self::walk_container_calls_expr(e, out);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    Self::walk_container_calls_expr(k, out);
+                    Self::walk_container_calls_expr(v, out);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, e) in fields {
+                    Self::walk_container_calls_expr(e, out);
+                }
+            }
+            Expr::Lambda { body, .. } => Self::walk_container_calls_expr(body, out),
+            Expr::IfExpr {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                Self::walk_container_calls_expr(condition, out);
+                Self::walk_container_calls_block(then_branch, out);
+                if let Some(b) = else_branch {
+                    Self::walk_container_calls_block(b, out);
+                }
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                Self::walk_container_calls_expr(subject, out);
+                for arm in arms {
+                    Self::walk_container_calls_expr(&arm.body, out);
+                    if let Some(g) = &arm.guard {
+                        Self::walk_container_calls_expr(g, out);
+                    }
+                }
+            }
+            Expr::PipeExpr { left, right, .. } => {
+                Self::walk_container_calls_expr(left, out);
+                Self::walk_container_calls_expr(right, out);
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => Self::walk_container_calls_expr(inner, out),
+            Expr::ComptimeBlock { body, .. }
+            | Expr::QuantumBlock { body, .. }
+            | Expr::UnsafeBlock { body, .. } => Self::walk_container_calls_block(body, out),
+            Expr::Cast { expr, .. } => Self::walk_container_calls_expr(expr, out),
+            Expr::Block { block, .. } => Self::walk_container_calls_block(block, out),
+            Expr::Await { value, .. } => Self::walk_container_calls_expr(value, out),
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(s) = start {
+                    Self::walk_container_calls_expr(s, out);
+                }
+                if let Some(e) = end {
+                    Self::walk_container_calls_expr(e, out);
+                }
+            }
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    if let kryos_ast::StringPart::Expr(e) = part {
+                        Self::walk_container_calls_expr(e, out);
+                    }
+                }
+            }
+            Expr::Identifier { .. }
+            | Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. } => {}
+        }
+    }
+
+    fn walk_container_calls_block<'a>(block: &'a kryos_ast::Block, out: &mut Vec<(&'a str, Vec<PathStep>)>) {
+        for stmt in &block.stmts {
+            Self::walk_container_calls_stmt(stmt, out);
+        }
+    }
+
+    fn walk_container_calls_stmt<'a>(stmt: &'a Stmt, out: &mut Vec<(&'a str, Vec<PathStep>)>) {
+        match stmt {
+            Stmt::Let { value, .. } => {
+                if let Some(e) = value {
+                    Self::walk_container_calls_expr(e, out);
+                }
+            }
+            Stmt::Assign { value, target, .. } => {
+                Self::walk_container_calls_expr(target, out);
+                Self::walk_container_calls_expr(value, out);
+            }
+            Stmt::Return { value, .. } => {
+                if let Some(e) = value {
+                    Self::walk_container_calls_expr(e, out);
+                }
+            }
+            Stmt::If {
+                condition,
+                then_block,
+                elif_clauses,
+                else_block,
+                ..
+            } => {
+                Self::walk_container_calls_expr(condition, out);
+                Self::walk_container_calls_block(then_block, out);
+                for (cond, block) in elif_clauses {
+                    Self::walk_container_calls_expr(cond, out);
+                    Self::walk_container_calls_block(block, out);
+                }
+                if let Some(block) = else_block {
+                    Self::walk_container_calls_block(block, out);
+                }
+            }
+            Stmt::For { iterable, body, .. } => {
+                Self::walk_container_calls_expr(iterable, out);
+                Self::walk_container_calls_block(body, out);
+            }
+            Stmt::While {
+                condition, body, ..
+            } => {
+                Self::walk_container_calls_expr(condition, out);
+                Self::walk_container_calls_block(body, out);
+            }
+            Stmt::Expr { expr, .. } => Self::walk_container_calls_expr(expr, out),
+            Stmt::Spawn { expr, .. } => Self::walk_container_calls_expr(expr, out),
+            Stmt::TryCatch {
+                try_block,
+                catch_block,
+                ..
+            } => {
+                Self::walk_container_calls_block(try_block, out);
+                Self::walk_container_calls_block(catch_block, out);
+            }
+            Stmt::Throw { expr, .. } => Self::walk_container_calls_expr(expr, out),
+            Stmt::Select { branches, .. } => {
+                for branch in branches {
+                    Self::walk_container_calls_expr(&branch.channel, out);
+                    Self::walk_container_calls_block(&branch.body, out);
+                }
+            }
+            Stmt::DenyBlock { body, .. } => Self::walk_container_calls_block(body, out),
+            Stmt::Break { .. } | Stmt::Continue { .. } => {}
+        }
+    }
+
     /// Append every actor message handler's `(name, false, body)` so the
     /// STRUCTURAL closure-flow passes (`compute_hot_params`,
     /// `compute_fn_return_closure_caps`) see handler bodies too — a handler
@@ -584,28 +944,38 @@ impl CapabilityChecker {
         }
     }
 
-    /// Compute, for every function name, the set of fn-typed PARAMETER
-    /// INDICES that are invoked anywhere in the whole program — either
-    /// DIRECTLY (`p(...)` in the declaring function's own body) or by being
-    /// FORWARDED as a bare argument into another (transitively) hot
-    /// parameter position of a different call. A monotone fixed point over a
-    /// finite lattice (function x parameter-index pairs), so it terminates.
+    /// Compute, for every function name, the set of PARAMETER INDICES that
+    /// are invoked anywhere in the whole program, each mapped to the set of
+    /// field/index PATHS (see `PathStep`) through which they are invoked —
+    /// either DIRECTLY (`p(...)`, empty path) or via a CONTAINER drill
+    /// (`p.field(...)`, `p[i](...)`, or a chain of these — non-empty path,
+    /// the residual this closes, LEDGER item 1) — or by being FORWARDED as a
+    /// bare argument into another (transitively) hot parameter position of a
+    /// different call. A monotone fixed point over a finite lattice
+    /// (function x parameter-index x path triples, drawn from the finite set
+    /// of field names and index steps that actually appear in the source),
+    /// so it terminates.
     ///
     /// This is the structural half of the closure-laundering fix: it never
     /// looks at what capability the forwarded value carries, only at WHICH
-    /// positions in the call graph a closure gets invoked. `std::iter::map`'s
-    /// callback parameter is hot (its body calls it directly); `map` itself
-    /// still requires nothing extra — only a CALL to `map` with a SPECIFIC
-    /// closure argument does (see `accumulate_hot_extra_caps`), which is what
-    /// keeps ordinary HOF usage annotation-free instead of cascading.
-    fn compute_hot_params(&self, decls: &[Decl]) -> HashMap<String, HashSet<usize>> {
+    /// positions (and, for containers, which paths) in the call graph a
+    /// closure gets invoked. `std::iter::map`'s callback parameter is hot
+    /// (its body calls it directly); `map` itself still requires nothing
+    /// extra — only a CALL to `map` with a SPECIFIC closure argument does
+    /// (see `accumulate_hot_extra_caps`), which is what keeps ordinary HOF
+    /// usage annotation-free instead of cascading.
+    fn compute_hot_params(
+        &self,
+        decls: &[Decl],
+    ) -> HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>> {
         let mut fns: Vec<(String, bool, &kryos_ast::Block)> = Vec::new();
         Self::collect_functions(decls, &mut fns);
         Self::collect_actor_handler_bodies(decls, &mut fns);
 
-        let mut hot: HashMap<String, HashSet<usize>> = HashMap::new();
+        let mut hot: HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>> = HashMap::new();
 
-        // Seed: a function's own fn-typed parameter invoked DIRECTLY.
+        // Seed A: a function's own fn-typed parameter invoked DIRECTLY —
+        // records the EMPTY path (the parameter's own value IS the closure).
         for (name, _annotated, body) in &fns {
             let Some(params) = self.fn_params.get(name) else {
                 continue;
@@ -620,13 +990,46 @@ impl CapabilityChecker {
                     .iter()
                     .any(|(cname, _args, is_method)| !is_method && *cname == p.name)
                 {
-                    hot.entry(name.clone()).or_default().insert(i);
+                    hot.entry(name.clone())
+                        .or_default()
+                        .entry(i)
+                        .or_default()
+                        .insert(Vec::new());
                 }
             }
         }
 
-        // Propagate: forwarding a fn-typed parameter as a bare argument into
-        // another (already-known-hot) parameter position.
+        // Seed B: a function's own CONTAINER-typed parameter (struct field /
+        // array element / map value / nested combination) whose contents are
+        // invoked via a field/index access chain — the residual this closes.
+        for (name, _annotated, body) in &fns {
+            let Some(params) = self.fn_params.get(name) else {
+                continue;
+            };
+            let mut occurrences: Vec<(&str, Vec<PathStep>)> = Vec::new();
+            Self::walk_container_calls_block(body, &mut occurrences);
+            for (i, p) in params.iter().enumerate() {
+                let Some(ty) = &p.ty else { continue };
+                for (root, path) in &occurrences {
+                    if *root != p.name {
+                        continue;
+                    }
+                    if matches!(self.resolve_type_path(ty, path), Some(TypeExpr::Function { .. })) {
+                        hot.entry(name.clone())
+                            .or_default()
+                            .entry(i)
+                            .or_default()
+                            .insert(path.clone());
+                    }
+                }
+            }
+        }
+
+        // Propagate: forwarding a fn-typed/container-typed parameter as a
+        // bare argument into another (already-known-hot) parameter
+        // position. The forwarded value is unchanged (a bare identifier
+        // forward, not a further field/index drill), so the callee's own
+        // recorded PATHS at that position carry over verbatim.
         loop {
             let mut changed = false;
             for (name, _annotated, body) in &fns {
@@ -636,13 +1039,9 @@ impl CapabilityChecker {
                 let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
                 Self::walk_calls_block(body, &mut calls);
                 for (i, p) in params.iter().enumerate() {
-                    if !Self::is_fn_typed(&p.ty) {
+                    if !self.is_fn_bearing_type(&p.ty) {
                         continue;
                     }
-                    if hot.get(name).is_some_and(|s| s.contains(&i)) {
-                        continue;
-                    }
-                    let mut should_mark = false;
                     for (cname, cargs, is_method) in &calls {
                         // An actor handler's `MethodCall`-shaped dispatch has
                         // NO receiver slot in its own `params` (unlike a
@@ -655,16 +1054,23 @@ impl CapabilityChecker {
                             if let Expr::Identifier { name: an, .. } = a {
                                 if an == &p.name {
                                     let idx = j + offset;
-                                    if hot.get(*cname).is_some_and(|s| s.contains(&idx)) {
-                                        should_mark = true;
+                                    let forwarded: Option<HashSet<Vec<PathStep>>> =
+                                        hot.get(*cname).and_then(|m| m.get(&idx)).cloned();
+                                    if let Some(paths) = forwarded {
+                                        let entry = hot
+                                            .entry(name.clone())
+                                            .or_default()
+                                            .entry(i)
+                                            .or_default();
+                                        let before = entry.len();
+                                        entry.extend(paths);
+                                        if entry.len() != before {
+                                            changed = true;
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                    if should_mark {
-                        hot.entry(name.clone()).or_default().insert(i);
-                        changed = true;
                     }
                 }
             }
@@ -769,11 +1175,23 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
     ) -> ClosureCapsResult {
         match expr {
+            // NOTE: passes an empty container-literal map for the lambda's
+            // OWN body, not the enclosing function's `local_container_lits`.
+            // A lambda literal's body is a single EXPRESSION (no `let`
+            // statements of its own — see `Expr::Lambda`), so there is
+            // nothing new to build here; the narrow gap this leaves (an
+            // inline lambda argument's body itself drilling into an
+            // ENCLOSING container local, e.g. `zero_cap_tool(|| reg.reader())`)
+            // is not one of the shapes this fix targets (LEDGER item 1 is
+            // about a container VALUE flowing through a parameter/local, not
+            // a fresh closure literal referencing one from its lexical
+            // scope) and falls back to the existing sound `Unknown` default.
             Expr::Lambda { body, .. } => ClosureCapsResult::Known(self.collect_caps_expr(
                 body,
                 working,
                 own_params,
                 local_caps,
+                &HashMap::new(),
             )),
             Expr::Identifier { name, .. } => {
                 if let Some(r) = local_caps.get(name) {
@@ -819,6 +1237,104 @@ impl CapabilityChecker {
             }
             _ => ClosureCapsResult::Unknown,
         }
+    }
+
+    /// Resolve the statically-known authority carried by the value reached
+    /// by walking `path` (a field/index access chain — see `PathStep`) into
+    /// `expr`. This is the CONTAINER counterpart of `resolve_closure_caps`
+    /// (which it delegates to once `path` is exhausted — at that point
+    /// `expr` denotes the closure value itself, the pre-existing case).
+    ///
+    /// - A `StructLiteral` + a leading `Field(name)` step descends into the
+    ///   named field's expression (or `Unknown` if the literal doesn't
+    ///   explicitly write that field — a defaulted field's value can't be
+    ///   read back statically).
+    /// - An `ArrayLiteral`/`MapLiteral` + a leading `Index` step is
+    ///   INDEX-INSENSITIVE by design (see `PathStep::Index`): it unions the
+    ///   result over EVERY element/value in the literal, so any write
+    ///   contributes and an empty literal resolves to `Known(empty)` (no
+    ///   element can ever be invoked at runtime — it would panic first).
+    /// - An `Identifier` resolves through `local_container_lits` (a `let
+    ///   reg = Registry { .. }` binding, see `build_local_container_lits`),
+    ///   or to `DependsOnParam` if it names one of the CURRENT function's own
+    ///   parameters (the container was itself received as a parameter and is
+    ///   being read/forwarded — deferred to this function's own call sites,
+    ///   mirroring the direct fn-typed-parameter case).
+    /// - Anything else (a function call returning a container, a
+    ///   conditionally-selected container, a container read out of ANOTHER
+    ///   container, ...) is `Unknown` — the same sound, documented fallback
+    ///   used for every other unresolvable shape; see LEDGER item 1 for why
+    ///   these particular shapes are out of scope (the container must be
+    ///   built from a LITERAL, directly or via a local alias, to be traced).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_container_path_caps(
+        &self,
+        expr: &Expr,
+        path: &[PathStep],
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> ClosureCapsResult {
+        let Some((head, rest)) = path.split_first() else {
+            return self.resolve_closure_caps(expr, working, fn_return_caps, local_caps, own_params);
+        };
+        match (head, expr) {
+            (PathStep::Field(fname), Expr::StructLiteral { fields, .. }) => {
+                match fields.iter().find(|(n, _)| n == fname) {
+                    Some((_, fexpr)) => self.resolve_container_path_caps(
+                        fexpr, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    ),
+                    None => ClosureCapsResult::Unknown,
+                }
+            }
+            (PathStep::Index, Expr::ArrayLiteral { elements, .. }) => {
+                Self::merge_all(elements.iter().map(|el| {
+                    self.resolve_container_path_caps(
+                        el, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    )
+                }))
+            }
+            (PathStep::Index, Expr::MapLiteral { entries, .. }) => {
+                Self::merge_all(entries.iter().map(|(_, vexpr)| {
+                    self.resolve_container_path_caps(
+                        vexpr, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    )
+                }))
+            }
+            (_, Expr::Identifier { name, .. }) => {
+                if let Some(lit) = local_container_lits.get(name) {
+                    // Clone to release the borrow of `local_container_lits`
+                    // before recursing back into it.
+                    let lit = lit.clone();
+                    return self.resolve_container_path_caps(
+                        &lit, path, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    );
+                }
+                if own_params.contains(name) {
+                    return ClosureCapsResult::DependsOnParam(name.clone());
+                }
+                ClosureCapsResult::Unknown
+            }
+            _ => ClosureCapsResult::Unknown,
+        }
+    }
+
+    /// Fold an iterator of per-element/per-value `ClosureCapsResult`s into
+    /// one combined result via `merge_closure_caps`, treating an EMPTY
+    /// iterator (an empty array/map literal) as `Known(empty)` — no element
+    /// exists to carry any authority, and none could ever be invoked at
+    /// runtime without panicking first.
+    fn merge_all(results: impl Iterator<Item = ClosureCapsResult>) -> ClosureCapsResult {
+        results
+            .fold(None, |acc, r| {
+                Some(match acc {
+                    None => r,
+                    Some(prev) => Self::merge_closure_caps(prev, r),
+                })
+            })
+            .unwrap_or_else(|| ClosureCapsResult::Known(CapabilitySet::empty()))
     }
 
     /// Best-effort, FLAT (not lexical-scope-precise: two `let`s of the same
@@ -886,6 +1402,69 @@ impl CapabilityChecker {
         }
     }
 
+    /// Best-effort, FLAT (same precision level as `build_local_closure_caps`)
+    /// collection of every `let name = expr` binding whose initializer is a
+    /// struct/array/map LITERAL (or a bare alias of another already-tracked
+    /// container local), within `block`, processed in textual order. Feeds
+    /// `resolve_container_path_caps`'s `Identifier` arm — lets `let reg =
+    /// Registry { reader: r }` / `zero_cap_tool(reg)` trace back to the
+    /// literal `reg` was built from. Purely syntactic (no capability
+    /// resolution here — that happens lazily, at USE time, in
+    /// `resolve_container_path_caps`, once the specific field/index path
+    /// being invoked is known), so unlike `build_local_closure_caps` this
+    /// needs no `working`/`fn_return_caps`/`own_params` context.
+    fn build_local_container_lits(block: &kryos_ast::Block) -> HashMap<String, Expr> {
+        let mut locals = HashMap::new();
+        Self::build_local_container_lits_block(block, &mut locals);
+        locals
+    }
+
+    fn build_local_container_lits_block(block: &kryos_ast::Block, locals: &mut HashMap<String, Expr>) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let {
+                    name, value: Some(v), ..
+                } => match v {
+                    Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                        locals.insert(name.clone(), v.clone());
+                    }
+                    Expr::Identifier { name: src, .. } => {
+                        if let Some(existing) = locals.get(src).cloned() {
+                            locals.insert(name.clone(), existing);
+                        }
+                    }
+                    _ => {}
+                },
+                Stmt::If {
+                    then_block,
+                    elif_clauses,
+                    else_block,
+                    ..
+                } => {
+                    Self::build_local_container_lits_block(then_block, locals);
+                    for (_, b) in elif_clauses {
+                        Self::build_local_container_lits_block(b, locals);
+                    }
+                    if let Some(b) = else_block {
+                        Self::build_local_container_lits_block(b, locals);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    Self::build_local_container_lits_block(body, locals)
+                }
+                Stmt::TryCatch {
+                    try_block,
+                    catch_block,
+                    ..
+                } => {
+                    Self::build_local_container_lits_block(try_block, locals);
+                    Self::build_local_container_lits_block(catch_block, locals);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Compute, for every function whose DECLARED return type is
     /// `fn(...) -> ...`, the statically-resolved authority of the closure it
     /// returns (see `ClosureCapsResult`). A monotone fixed point (mutual
@@ -947,12 +1526,16 @@ impl CapabilityChecker {
     }
 
     /// The EXTRA capability requirement a specific CALL SITE incurs because
-    /// the callee has hot (invoked) fn-typed parameters: for each hot
-    /// parameter index, resolve the ACTUAL argument expression passed at
-    /// this call and require whatever authority it carries. This is what
-    /// attributes `zero_cap_tool(reader)`'s real `fs:read` requirement to
-    /// the CALL, not to `zero_cap_tool`'s own (legitimately empty, like any
-    /// HOF) declaration.
+    /// the callee has hot (invoked) fn-typed or container-typed parameters:
+    /// for each hot parameter index and each of its recorded PATHS (see
+    /// `hot_params` / `PathStep`), resolve the ACTUAL argument expression
+    /// passed at this call, walk it down that path, and require whatever
+    /// authority the reached value carries. This is what attributes
+    /// `zero_cap_tool(reader)`'s real `fs:read` requirement (path: empty —
+    /// the direct fn-typed-parameter case) and `zero_cap_tool(reg)`'s (path:
+    /// `[Field("reader")]` — the container residual, LEDGER item 1) to the
+    /// CALL, not to `zero_cap_tool`'s own (legitimately empty, like any HOF)
+    /// declaration.
     #[allow(clippy::too_many_arguments)]
     fn accumulate_hot_extra_caps(
         &self,
@@ -962,6 +1545,7 @@ impl CapabilityChecker {
         extra: &mut CapabilitySet,
         working: &HashMap<String, CapabilitySet>,
         local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) {
         let Some(hot_idxs) = self.hot_params.get(callee_name) else {
@@ -971,7 +1555,7 @@ impl CapabilityChecker {
         // in its own `params`, even though the call syntax is method-shaped.
         let has_self_offset =
             is_method_or_static && !self.actor_handler_names.contains(callee_name);
-        for &i in hot_idxs {
+        for (&i, paths) in hot_idxs {
             let arg_idx = if has_self_offset {
                 match i.checked_sub(1) {
                     Some(v) => v,
@@ -983,24 +1567,30 @@ impl CapabilityChecker {
             let Some(arg) = args.get(arg_idx) else {
                 continue;
             };
-            match self.resolve_closure_caps(
-                arg,
-                working,
-                &self.fn_return_closure_caps,
-                local_caps,
-                own_params,
-            ) {
-                ClosureCapsResult::Known(c) => *extra = extra.union(&c),
-                // Deferred: this call forwards one of the CURRENT function's
-                // own fn-typed parameters, so `hot_params` has already (or
-                // will) mark it hot too — charging it here as well would
-                // double-count and, worse, would force a pure forwarding
-                // function (the `std::iter` HOF shape) to require `all`.
-                ClosureCapsResult::DependsOnParam(_) => {}
-                // Genuinely unresolvable provenance: the sound conservative
-                // stance (matching the raw-memory escape's documented
-                // policy) is to require the caller to hold everything.
-                ClosureCapsResult::Unknown => extra.insert(Capability::All),
+            for path in paths {
+                match self.resolve_container_path_caps(
+                    arg,
+                    path,
+                    working,
+                    &self.fn_return_closure_caps,
+                    local_caps,
+                    local_container_lits,
+                    own_params,
+                ) {
+                    ClosureCapsResult::Known(c) => *extra = extra.union(&c),
+                    // Deferred: this call forwards one of the CURRENT
+                    // function's own fn-typed/container-typed parameters, so
+                    // `hot_params` has already (or will) mark it hot too —
+                    // charging it here as well would double-count and,
+                    // worse, would force a pure forwarding function (the
+                    // `std::iter` HOF shape) to require `all`.
+                    ClosureCapsResult::DependsOnParam(_) => {}
+                    // Genuinely unresolvable provenance: the sound
+                    // conservative stance (matching the raw-memory escape's
+                    // documented policy) is to require the caller to hold
+                    // everything.
+                    ClosureCapsResult::Unknown => extra.insert(Capability::All),
+                }
             }
         }
     }
@@ -1167,7 +1757,7 @@ impl CapabilityChecker {
                     .get(name)
                     .map(|ps| {
                         ps.iter()
-                            .filter(|p| Self::is_fn_typed(&p.ty))
+                            .filter(|p| self.is_fn_bearing_type(&p.ty))
                             .map(|p| p.name.clone())
                             .collect()
                     })
@@ -1178,7 +1768,14 @@ impl CapabilityChecker {
                     &self.fn_return_closure_caps,
                     &own_params,
                 );
-                let collected = self.collect_caps_block(body, &working, &own_params, &local_caps);
+                let local_container_lits = Self::build_local_container_lits(body);
+                let collected = self.collect_caps_block(
+                    body,
+                    &working,
+                    &own_params,
+                    &local_caps,
+                    &local_container_lits,
+                );
                 let cur = working
                     .get(name)
                     .cloned()
@@ -1215,10 +1812,17 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         for stmt in &block.stmts {
-            acc = acc.union(&self.collect_caps_stmt(stmt, working, own_params, local_caps));
+            acc = acc.union(&self.collect_caps_stmt(
+                stmt,
+                working,
+                own_params,
+                local_caps,
+                local_container_lits,
+            ));
         }
         acc
     }
@@ -1229,13 +1833,26 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         let e = |ex: &Expr, a: &mut CapabilitySet| {
-            *a = a.union(&self.collect_caps_expr(ex, working, own_params, local_caps))
+            *a = a.union(&self.collect_caps_expr(
+                ex,
+                working,
+                own_params,
+                local_caps,
+                local_container_lits,
+            ))
         };
         let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
-            *a = a.union(&self.collect_caps_block(bl, working, own_params, local_caps))
+            *a = a.union(&self.collect_caps_block(
+                bl,
+                working,
+                own_params,
+                local_caps,
+                local_container_lits,
+            ))
         };
         match stmt {
             Stmt::Let { value, .. } => {
@@ -1308,13 +1925,26 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         let e = |ex: &Expr, a: &mut CapabilitySet| {
-            *a = a.union(&self.collect_caps_expr(ex, working, own_params, local_caps))
+            *a = a.union(&self.collect_caps_expr(
+                ex,
+                working,
+                own_params,
+                local_caps,
+                local_container_lits,
+            ))
         };
         let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
-            *a = a.union(&self.collect_caps_block(bl, working, own_params, local_caps))
+            *a = a.union(&self.collect_caps_block(
+                bl,
+                working,
+                own_params,
+                local_caps,
+                local_container_lits,
+            ))
         };
         match expr {
             Expr::FnCall { callee, args, span: _ } => {
@@ -1357,7 +1987,16 @@ impl CapabilityChecker {
                     // privileged closure into a hot call would silently
                     // under-report its own requirement. See
                     // `accumulate_hot_extra_caps`.
-                    self.accumulate_hot_extra_caps(&segments[0], args, false, &mut acc, working, local_caps, own_params);
+                    self.accumulate_hot_extra_caps(
+                        &segments[0],
+                        args,
+                        false,
+                        &mut acc,
+                        working,
+                        local_caps,
+                        local_container_lits,
+                        own_params,
+                    );
                 }
                 e(callee, &mut acc);
                 for arg in args {
@@ -1374,7 +2013,16 @@ impl CapabilityChecker {
                 if let Some(caps) = working.get(method) {
                     acc = acc.union(caps);
                 }
-                self.accumulate_hot_extra_caps(method, args, true, &mut acc, working, local_caps, own_params);
+                self.accumulate_hot_extra_caps(
+                    method,
+                    args,
+                    true,
+                    &mut acc,
+                    working,
+                    local_caps,
+                    local_container_lits,
+                    own_params,
+                );
                 e(object, &mut acc);
                 for arg in args {
                     e(arg, &mut acc);
@@ -1384,7 +2032,16 @@ impl CapabilityChecker {
                 if let Some(caps) = working.get(method) {
                     acc = acc.union(caps);
                 }
-                self.accumulate_hot_extra_caps(method, args, true, &mut acc, working, local_caps, own_params);
+                self.accumulate_hot_extra_caps(
+                    method,
+                    args,
+                    true,
+                    &mut acc,
+                    working,
+                    local_caps,
+                    local_container_lits,
+                    own_params,
+                );
                 for arg in args {
                     e(arg, &mut acc);
                 }
@@ -1501,6 +2158,7 @@ impl CapabilityChecker {
         self.collect_extern_fns(&module.declarations);
         self.collect_defined_fns(&module.declarations);
         self.collect_fn_signatures(&module.declarations);
+        self.collect_struct_field_types(&module.declarations);
 
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
@@ -1615,16 +2273,18 @@ impl CapabilityChecker {
                 let locals: std::collections::HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
                 self.current_locals = locals;
-                // Closure-laundering fix: track THIS function's own fn-typed
-                // parameter names (so a reference to one resolves to
-                // `DependsOnParam`, deferred to ITS OWN call sites) and its
-                // `let`-bound locals' resolved closure authority (so
-                // `let reader = make_secret_reader(path)` traces back to the
-                // returned closure's real requirement). See
-                // `accumulate_hot_extra_caps` / `resolve_closure_caps`.
+                // Closure-laundering fix: track THIS function's own
+                // fn-typed/container-typed parameter names (so a reference
+                // to one resolves to `DependsOnParam`, deferred to ITS OWN
+                // call sites) and its `let`-bound locals' resolved closure
+                // authority / container-literal bindings (so `let reader =
+                // make_secret_reader(path)` and `let reg = Registry {
+                // reader: r }` both trace back to their real requirement).
+                // See `accumulate_hot_extra_caps` / `resolve_closure_caps` /
+                // `resolve_container_path_caps`.
                 let own_params: std::collections::HashSet<String> = params
                     .iter()
-                    .filter(|p| Self::is_fn_typed(&p.ty))
+                    .filter(|p| self.is_fn_bearing_type(&p.ty))
                     .map(|p| p.name.clone())
                     .collect();
                 self.current_local_closure_caps = match body {
@@ -1636,11 +2296,16 @@ impl CapabilityChecker {
                     ),
                     None => HashMap::new(),
                 };
+                self.current_local_container_lits = match body {
+                    Some(b) => Self::build_local_container_lits(b),
+                    None => HashMap::new(),
+                };
                 self.current_fn_typed_params = own_params;
                 self.check_function(name, annotations, body.as_ref(), *span);
                 self.current_locals.clear();
                 self.current_fn_typed_params.clear();
                 self.current_local_closure_caps.clear();
+                self.current_local_container_lits.clear();
             }
             Decl::Actor {
                 name,
@@ -1827,7 +2492,7 @@ impl CapabilityChecker {
             let own_params: std::collections::HashSet<String> = handler
                 .params
                 .iter()
-                .filter(|p| Self::is_fn_typed(&p.ty))
+                .filter(|p| self.is_fn_bearing_type(&p.ty))
                 .map(|p| p.name.clone())
                 .collect();
             self.current_local_closure_caps = self.build_local_closure_caps(
@@ -1836,10 +2501,12 @@ impl CapabilityChecker {
                 &self.fn_return_closure_caps,
                 &own_params,
             );
+            self.current_local_container_lits = Self::build_local_container_lits(&handler.body);
             self.current_fn_typed_params = own_params;
             self.check_block(&handler.body);
             self.current_fn_typed_params.clear();
             self.current_local_closure_caps.clear();
+            self.current_local_container_lits.clear();
         }
         self.scope_stack.pop();
     }
@@ -2253,6 +2920,7 @@ impl CapabilityChecker {
             &mut extra,
             &self.fn_capabilities,
             &self.current_local_closure_caps,
+            &self.current_local_container_lits,
             &self.current_fn_typed_params,
         );
         extra

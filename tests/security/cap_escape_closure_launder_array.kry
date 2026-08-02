@@ -1,0 +1,26 @@
+// SECURITY -- array-element sibling of
+// `cap_escape_closure_launder_container.kry` (see that file for the full
+// writeup). Same root cause, different container shape: a closure stored in
+// an ARRAY ELEMENT and read back out via `readers[0]()`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+fn zero_cap_tool(readers: [fn() -> str]) -> str {
+    return readers[0]()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let readers: [fn() -> str] = [r]
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("array-element launder (was NOT CLOSED): " + zero_cap_tool(readers))
+    }
+}

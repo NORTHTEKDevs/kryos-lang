@@ -1,0 +1,26 @@
+// SECURITY -- map-value sibling of
+// `cap_escape_closure_launder_container.kry` (see that file for the full
+// writeup). Same root cause, different container shape: a closure stored in
+// a MAP VALUE and read back out via `handlers["x"]()`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+fn zero_cap_tool(handlers: map<str, fn() -> str>) -> str {
+    return handlers["x"]()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let handlers: map<str, fn() -> str> = {"x": r}
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("map-value launder (was NOT CLOSED): " + zero_cap_tool(handlers))
+    }
+}

@@ -42,31 +42,29 @@ needs one annotation on `main`, not one per function (the self-host compiler
 itself is inferred-clean with a single `@capabilities(fs:read, fs:write,
 process)` on `main`). Enforcement is sound for every DIRECT path authority can
 take (direct builtin calls, method/static dispatch, a gated builtin passed BY
-NAME as a first-class value) **and, as of this fix, for closure/fn-value
-indirection** through a parameter, a `let`-bound local, a return value, a
-chain of passthrough calls, an actor message send, `spawn`, a generic
-instantiation, and `dyn Trait` dispatch — the checker resolves the SPECIFIC
-closure argument at each call site and requires its authority there, so it is
-no longer invisible just because it flows through a value instead of a name.
-
-**One indirection shape remains unenforced: a closure read back out of a
-CONTAINER** — a struct field, an array element, or a map value. A
-parameter/field typed as a struct/array/map that happens to hold a closure
-isn't itself recognized as carrying closure authority, so this specific shape
-still escapes in every mode including `strict` — see [docs/10-capabilities.md
-§ Known
-limitation](10-capabilities.md#known-limitation-a-closure-read-out-of-a-container-is-not-traced-read-this-before-trusting-it-with-secrets)
-for the repro and the fix design. Treat this document's "sound" claims as
-covering everything except closures received through a struct field, array,
-or map until that gap closes.
+NAME as a first-class value) **and for closure/fn-value indirection**
+through a parameter, a `let`-bound local, a return value, a chain of
+passthrough calls, an actor message send, `spawn`, a generic instantiation,
+`dyn Trait` dispatch, OR a CONTAINER (a struct field, an array element, or a
+map value that holds a closure, including nested combinations like a struct
+field holding an array of closures) — the checker resolves the SPECIFIC
+closure argument at each call site (tracing through a container's
+field/index structure when applicable) and requires its authority there, so
+it is no longer invisible just because it flows through a value instead of a
+name. See [docs/10-capabilities.md § Closure indirection, including
+containers](10-capabilities.md#closure-indirection-including-containers-is-sound-read-this-if-you-are-trusting-it-with-secrets)
+for the full sound surface and the one documented residual (a container
+populated from a non-literal source requires `all`, the same conservative
+fallback used for every other unresolvable closure provenance).
 
 The `strict` mode (`--strict-capabilities`) remains for maximum scrutiny —
 every function auditable in isolation for authority it invokes by name OR by
-a resolvable fn-value argument. 91/91 examples pass it in CI (live count via
-`bash tests/strict_caps_examples.sh`), and
+a resolvable fn-value argument (direct or via a container). 91/91 examples
+pass it in CI (live count via `bash tests/strict_caps_examples.sh`), and
 `tests/security_gate.sh` gates the closure-laundering fix directly (reject /
 no-over-reject / no-cascade, plus a positive "still gated when privileged"
-check) rather than relying on the example corpus to exercise it.
+check, for both the direct and container shapes) rather than relying on the
+example corpus to exercise it.
 
 ## The global default is now `inferred`
 

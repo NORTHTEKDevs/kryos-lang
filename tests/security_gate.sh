@@ -113,5 +113,49 @@ else
     echo "  FAIL: rejected, but not for fs:read:"; tail -3 "$TMP/hof_priv" | sed 's/^/    /'; fail=1
 fi
 
+# 7-10. Container residual of the closure/fn-value laundering escape (LEDGER
+#       item 1): a closure stored in a struct field / array element / map
+#       value / nested combination, read back out and invoked, must NOT
+#       compile under EITHER enforcement mode -- same decisive-proof shape as
+#       check #4 (a deny!(fs:read) block the escape must not defeat).
+for shape in container array map nested; do
+    f="tests/security/cap_escape_closure_launder_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/container_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: container-closure-launder [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/container_${shape}_$mode_flag"; then
+            echo "  ok   container-closure-launder [$shape] escape rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/container_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 11. No cascade complement to #7-10: a container of PURE closures (the
+#     legitimate plugin-registry / router-table / dispatch-map shape this
+#     residual matters for) must still compile with NO annotation.
+cat > "$TMP/registry_nocascade.kry" <<'KRY'
+struct Registry { reader: fn() -> str }
+fn pure_reader() -> str { return "no secrets here" }
+fn zero_cap_tool(reg: Registry) -> str { return reg.reader() }
+fn zero_cap_array(readers: [fn() -> str]) -> str { return readers[0]() }
+fn zero_cap_map(handlers: map<str, fn() -> str>) -> str { return handlers["x"]() }
+fn main() {
+    let reg = Registry { reader: pure_reader }
+    let readers: [fn() -> str] = [pure_reader]
+    let handlers: map<str, fn() -> str> = {"x": pure_reader}
+    println(zero_cap_tool(reg) + zero_cap_array(readers) + zero_cap_map(handlers))
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/registry_nocascade.kry" >"$TMP/registry_nc" 2>&1; then
+    echo "  ok   struct/array/map registries of pure closures need no annotation (no cascade)"
+else
+    echo "  FAIL: the container fix cascaded into a pure-closure registry:"
+    tail -5 "$TMP/registry_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
