@@ -2629,9 +2629,19 @@ impl TypeChecker {
                     // `Range` struct. Both are special-cased in MIR lowering to a
                     // counter loop with an i64 element.
                     Type::Struct { name, .. } if name == "Range" => Type::I64,
-                    // Unresolved (still-generic) or already-errored iterables are
-                    // left permissive so we never reject legitimately-inferred code.
-                    Type::Var(_) | Type::Error => Type::I64,
+                    // Unresolved (still-generic) iterables are left permissive so
+                    // we never reject legitimately-inferred code -- default the
+                    // element to i64 so ordinary uses in the body still check.
+                    Type::Var(_) => Type::I64,
+                    // An already-errored iterable (e.g. `[dyn Trait]`, rejected by
+                    // `reject_dyn_in_container` with E0110) must propagate the
+                    // poison as the element type too, NOT default to i64: defaulting
+                    // to i64 here doesn't avoid a second diagnostic, it just delays
+                    // it to the first method/field use inside the loop body, which
+                    // then reports a confusing, unrelated "no method `foo` found for
+                    // type `i64`" alongside the real E0110 -- the original error
+                    // already told the user everything they need to know.
+                    Type::Error => Type::Error,
                     // Every other concrete type (str, map, set, scalars, tuples,
                     // non-Range structs/enums, ...) is NOT iterable by the array
                     // desugar: it read the value's bytes as an array header and

@@ -1361,6 +1361,7 @@ impl Parser {
                 let tok = self.advance().clone();
                 self.diagnostics.push(
                     Diagnostic::error("unexpected `;`".to_string())
+                        .with_code(kryos_errors::codes::E0009)
                         .with_label(tok.span, "here")
                         .with_note("Kryos does not use semicolons to terminate statements"),
                 );
@@ -2632,7 +2633,21 @@ impl Parser {
                         );
                     }
                 }
-                self.advance();
+                // Don't consume a natural closing/separator delimiter: doing so
+                // makes the recovery eat a token a surrounding construct still
+                // needs (a call's `)`, an array's `]`, a match's `{`/`}`, an
+                // arg-list's `,`), which then cascades into a long chain of
+                // unrelated "unexpected end of file" errors instead of one
+                // clean diagnostic here plus the enclosing context's own
+                // `expect(...)` catching the real problem exactly once. Every
+                // other unexpected token is still consumed so scanning loops
+                // (`while !at_end() { parse_expr() }`) keep making progress.
+                if !matches!(
+                    tok.kind,
+                    TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace | TokenKind::Comma
+                ) {
+                    self.advance();
+                }
                 Expr::Identifier {
                     name: "<error>".to_string(),
                     span,
@@ -2905,6 +2920,24 @@ impl Parser {
         let kw = self.expect(TokenKind::Match);
         let start = kw.span;
         let subject = self.parse_expr_no_struct_lit();
+        // The subject failed to parse at all (most commonly: bare `match` used
+        // where an expression can't start, e.g. `match` typed as a variable
+        // name and then referenced -- `to_string(match)`). There is no usable
+        // scrutinee to hang arms off of, and the current token is almost
+        // certainly a delimiter belonging to the ENCLOSING construct (the `)`
+        // of the call we're inside), not the `{` a real match would have.
+        // Bail out immediately instead of trying `expect(LBrace)` + an arms
+        // loop against tokens that don't belong to a match at all -- that
+        // previously cascaded into 6+ unrelated "unexpected end of file"
+        // errors by consuming real closing delimiters (parens/braces) that
+        // belonged to the surrounding call/block, not this match.
+        if matches!(&subject, Expr::Identifier { name, .. } if name == "<error>") {
+            return Expr::MatchExpr {
+                subject: Box::new(subject),
+                arms: Vec::new(),
+                span: start,
+            };
+        }
         self.expect(TokenKind::LBrace);
 
         let mut arms = Vec::new();

@@ -29,6 +29,14 @@ pub const E0110: &str = "E0110"; // type error (general / uncategorized)
 pub const E0111: &str = "E0111"; // integer literal out of range for declared type
 pub const E0112: &str = "E0112"; // non-exhaustive match
 
+// Resolution errors (E02xx)
+pub const E0200: &str = "E0200"; // module path / import could not be resolved
+pub const E0201: &str = "E0201"; // qualified call (`Mod::fn`) refers to a name imported from a different module
+pub const E0202: &str = "E0202"; // qualified call (`Mod::fn`) names a symbol never imported
+pub const E0203: &str = "E0203"; // import of a private/internal module member
+pub const E0204: &str = "E0204"; // module has no export by that name
+pub const E0205: &str = "E0205"; // duplicate name imported from multiple modules
+
 // Ownership errors (E03xx)
 pub const E0300: &str = "E0300"; // use of moved value
 pub const E0301: &str = "E0301"; // use of uninitialized value

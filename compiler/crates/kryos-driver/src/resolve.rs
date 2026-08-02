@@ -464,6 +464,7 @@ pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
                     Diagnostic::error(format!(
                         "`{recv}::{method}` refers to `{method}` imported from `{origin}`, not `{recv}`"
                     ))
+                    .with_code(kryos_errors::codes::E0201)
                     .with_label(span, "qualified call here")
                     .with_note(format!(
                         "`{method}` in scope came from `{origin}`; import `{method}` from `{recv}` instead (and drop the conflicting import) -- Kryos has no import aliasing"
@@ -475,6 +476,7 @@ pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
                     Diagnostic::error(format!(
                         "`{recv}::{method}` is not imported: add `{method}` to the `use` list for `{recv}`"
                     ))
+                    .with_code(kryos_errors::codes::E0202)
                     .with_label(span, "qualified call here"),
                 );
             }
@@ -702,14 +704,15 @@ fn resolve_imports_inner(
                         "errors in imported module `{module_name}` ({})",
                         module_path.display()
                     ))
+                    .with_code(kryos_errors::codes::E0200)
                     .with_label(span, "imported here"),
                 );
                 return Err(diags);
             }
             Err(e) => {
-                return Err(vec![
-                    Diagnostic::error(e.to_string()).with_label(span, "imported here")
-                ]);
+                return Err(vec![Diagnostic::error(e.to_string())
+                    .with_code(kryos_errors::codes::E0200)
+                    .with_label(span, "imported here")]);
             }
         };
 
@@ -785,6 +788,7 @@ fn resolve_imports_inner(
                         Diagnostic::error(format!(
                             "`{name}` is a private/internal member of module `{module_name}` and cannot be imported"
                         ))
+                        .with_code(kryos_errors::codes::E0203)
                         .with_label(span, "imported here")
                         .with_note(
                             "only public (non-underscore) functions, types, constants, and enum variants are importable",
@@ -805,6 +809,7 @@ fn resolve_imports_inner(
                     let mut d = Diagnostic::error(format!(
                         "module `{module_name}` has no export `{name}`"
                     ))
+                    .with_code(kryos_errors::codes::E0204)
                     .with_label(span, "imported here");
                     if let Some(sug) = suggestion {
                         d = d.with_note(format!("did you mean `{sug}`?"));
@@ -984,7 +989,8 @@ fn resolve_imports_inner(
                     Diagnostic::error(format!(
                         "duplicate {kind} `{name}` imported from multiple modules"
                     ))
-                                        .with_note(format!(
+                    .with_code(kryos_errors::codes::E0205)
+                    .with_note(format!(
                         "a {kind} named `{name}` was already imported; \
                          Kryos has no import aliasing -- import disjoint names selectively so only one is in scope"
                     )),

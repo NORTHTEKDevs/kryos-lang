@@ -23,6 +23,12 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0004" => Some(E0004),
         "E0009" => Some(E0009),
         "E0010" => Some(E0010),
+        "E0200" => Some(E0200),
+        "E0201" => Some(E0201),
+        "E0202" => Some(E0202),
+        "E0203" => Some(E0203),
+        "E0204" => Some(E0204),
+        "E0205" => Some(E0205),
         "E0110" => Some(E0110),
         "E0111" => Some(E0111),
         "E0112" => Some(E0112),
@@ -67,6 +73,12 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0004", "expected type"),
         ("E0009", "syntax error"),
         ("E0010", "program nesting too deep"),
+        ("E0200", "module path could not be resolved"),
+        ("E0201", "qualified call resolves to a different module than named"),
+        ("E0202", "qualified call names a symbol that was never imported"),
+        ("E0203", "import of a private/internal module member"),
+        ("E0204", "module has no export by that name"),
+        ("E0205", "duplicate name imported from multiple modules"),
         ("E0110", "type error"),
         ("E0111", "integer literal out of range for declared type"),
         ("E0112", "non-exhaustive match"),
@@ -234,6 +246,132 @@ How to fix:
   - Flatten deeply nested conditionals into early returns or `match`.
   - Build long string/array content with a loop instead of one giant
     expression.
+"#;
+
+// ----- E0200 ----------------------------------------------------------------
+
+const E0200: &str = r#"E0200: module path could not be resolved
+
+A `use std::<module>::{...}` (or a project-local module import) named a
+module that either doesn't exist on disk, or whose file itself failed to
+parse.
+
+Erroneous code example:
+
+    use std::strnig::{trim}   // typo: "strnig"
+
+Fixed:
+
+    use std::string::{trim}
+
+Check the module name against `docs/19-language-reference.md`'s stdlib
+list, or the project's own directory layout for a local module. If the
+module DOES exist, the underlying diagnostic (bundled with this one) points
+at the actual parse failure inside that module's file.
+"#;
+
+// ----- E0201 ----------------------------------------------------------------
+
+const E0201: &str = r#"E0201: qualified call resolves to a different module than named
+
+Kryos has one flat function namespace and no import aliasing. Writing
+`Mod::name(...)` is sugar for the flat name `name` -- it is only valid when
+`name` was actually imported FROM `Mod`. If two modules export a
+same-named function and you imported the OTHER one, the qualifier is
+misleading: the call still runs the imported function, just not the one
+the qualifier suggests.
+
+Erroneous code example:
+
+    use std::csv::{parse}
+    // ... later ...
+    let v = json::parse(text)   // `parse` in scope came from std::csv, not std::json
+
+Fixed:
+
+    use std::json::{parse}
+    let v = json::parse(text)
+
+Import the name from the module you intend to call, and drop the
+conflicting import -- only one module's version of a shared name can be in
+scope at a time.
+"#;
+
+// ----- E0202 ----------------------------------------------------------------
+
+const E0202: &str = r#"E0202: qualified call names a symbol that was never imported
+
+`Mod::name(...)` requires `name` to already be in scope via a `use`
+statement -- the `Mod::` qualifier is sugar for the flat name, not an
+alternate way to reach an un-imported symbol.
+
+Erroneous code example:
+
+    use std::json::{stringify}
+    // ... later ...
+    let v = json::parse(text)   // `parse` was never imported
+
+Fixed:
+
+    use std::json::{parse, stringify}
+    let v = json::parse(text)
+
+Add the name to the module's `use` list.
+"#;
+
+// ----- E0203 ----------------------------------------------------------------
+
+const E0203: &str = r#"E0203: import of a private/internal module member
+
+Only public (non-underscore-prefixed) functions, types, constants, and enum
+variants can be imported. A name starting with `_`, or an internal `extern`
+primitive a stdlib module wraps, is not public API.
+
+Erroneous code example:
+
+    use std::os::{_env_or_empty}
+
+Fixed: call the module's public wrapper instead (check the module's
+documented exports), or use the underlying global builtin directly if one
+exists (e.g. `env_get(...)`).
+"#;
+
+// ----- E0204 ----------------------------------------------------------------
+
+const E0204: &str = r#"E0204: module has no export by that name
+
+A `use std::<module>::{name}` named a symbol the module doesn't define at
+all -- not a visibility problem (see E0203), the name simply doesn't exist
+in that module.
+
+Erroneous code example:
+
+    use std::string::{capitalize_words}   // not a real std::string function
+
+Fixed: check the exact name against the module's real exports (`kryos doc`
+on the stdlib, or `docs/19-language-reference.md`), or write a small
+wrapper yourself around the documented builtins -- don't guess a plausible
+stdlib name and assume it exists.
+"#;
+
+// ----- E0205 ----------------------------------------------------------------
+
+const E0205: &str = r#"E0205: duplicate name imported from multiple modules
+
+Kryos imports share one flat namespace with no aliasing (`use m::{parse as
+p}` is a parse error), so two `use` statements that both bring in a symbol
+with the same name collide -- the compiler can't tell which one a later
+bare call means.
+
+Erroneous code example:
+
+    use std::csv::{parse}
+    use std::json::{parse}
+
+Fixed: import only the module you actually need `parse` from, and reach
+the other one through a qualified call (`csv::parse(...)`) if you genuinely
+need both -- or better, import disjoint names selectively so only one
+`parse` is ever in scope.
 "#;
 
 // ----- E0100 ----------------------------------------------------------------

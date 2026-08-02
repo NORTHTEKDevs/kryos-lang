@@ -200,6 +200,7 @@ impl<'src> Lexer<'src> {
                 if depth > 0 {
                     let span = Span::new(self.file_id, block_start as u32, (block_start + 2) as u32);
                     let diag = Diagnostic::error("unterminated block comment")
+                        .with_code(kryos_errors::codes::E0009)
                         .with_label(span, "this block comment is never closed")
                         .with_note("block comments must end with `*/`");
                     self.emit_diag(diag);
@@ -521,6 +522,7 @@ impl<'src> Lexer<'src> {
             // "unexpected end of file" from the parser further down.
             let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
             let mut diag = Diagnostic::error("unterminated string literal")
+                .with_code(kryos_errors::codes::E0009)
                 .with_label(span, "this string is never closed")
                 .with_note("add a matching `\"` before end of file");
             if has_interpolation {

@@ -1141,6 +1141,168 @@ recorded so it isn't re-investigated:
 
 ---
 
+## ERROR HANDLING, PANICS, DIAGNOSTICS WAVE (2026-08-01)
+
+### Correctness verification (all confirmed TRUE and CONSISTENT both backends, live-tested not inferred)
+
+- Runtime panics (`10/0`, array OOB, `file_read` on a missing file) are
+  uncatchable by `try`/`catch`, exit **98**, identical message on `kryos
+  run` and `build --release`.
+- Uncaught `throw` unwinds to stderr `kryos: uncaught exception: <msg>`,
+  exit **101**, both backends. A caught `throw` runs the catch block and
+  continues normally, both backends.
+- `?` propagates correctly through 3+ levels of nested `Result`-returning
+  calls and through a generic `fn try_get<T>(...)  fn sum_two<T>(...)`
+  chain, both backends.
+- `spawn { throw .. }` is isolated (`kryos: uncaught exception in spawned
+  thread: ..`, parent survives) but `spawn { 10/0 }` kills the **whole
+  process** exit 98 before the parent's post-spawn code runs -- matches
+  `docs/09-concurrency.md`'s existing claim, re-verified live.
+- Actor handlers: a `throw` inside a handler is isolated (`[actor error]
+  Name.method: uncaught exception: ..`, process continues) but a panic
+  inside a handler kills the whole process exit 98 -- same asymmetry as
+  `spawn`, not previously verified for actors specifically.
+- A panic inside a directly-called closure is uncatchable exit 98, same as
+  a named function.
+- A panic occurring while heap-holding locals (a struct with array/str
+  fields, a live `string_builder`) are still in scope produces a clean
+  single panic message and exit 98 -- no double-free/corruption artifacts,
+  no hang. (Kryos has no user-facing `Drop`/destructor trait to test
+  directly -- panics abort via `kryos_panic`/`exit()` rather than
+  unwinding, so compiler-generated scope-end drops never run on the panic
+  path at all; this is the closest direct test of "does a panic mid-
+  cleanup corrupt state".)
+
+### Fixed: two diagnostic-cascade defects (an already-reported error must not spawn a wall of unrelated noise)
+
+1. **`[dyn Trait]` array rejection (E0110) poisoned the wrong thing.**
+   `let handlers: [dyn Handler] = [A{}, B{}]` correctly emits one E0110 (per
+   the CLOSED-table fix for this shape), but a SUBSEQUENT use
+   (`for h in handlers { h.handle() }`) triggered a second, unrelated
+   `E0107: no method \`handle\` found for type \`i64\`` -- worse than the
+   OPEN item #4 call-argument residual (different mechanism: the `for`
+   loop's `Stmt::For` handling in `kryos-types/src/check.rs` defaulted an
+   already-errored (`Type::Error`) iterable's element type to `i64` instead
+   of propagating the poison, so every downstream use of the loop variable
+   re-triggered fresh, nonsensical type errors against `i64`). FIX: split
+   the `Type::Var(_) | Type::Error => Type::I64` arm so `Type::Error`
+   propagates as `Type::Error` (which the method-call checker already
+   short-circuits with no new diagnostic, per the existing `Type::Error =>
+   return Type::Error` guard a few hundred lines away -- this fix just
+   makes the for-loop consistent with a pattern the codebase already uses
+   elsewhere). `Type::Var` (genuinely unresolved generic, not yet an error)
+   keeps defaulting to i64 as before -- unaffected. Proof both ways: stash
+   the one-line check.rs change + rebuild -> 2 errors (E0110 + bogus
+   E0107); restore + rebuild -> 1 error (E0110 only). Does NOT touch OPEN
+   item #4 (the call-argument shape, a different code path producing E0100
+   not E0107) -- verified unchanged, not re-litigated.
+2. **Reserved keyword used as a value (`let match: i64 = 5` then
+   `to_string(match)`) cascaded into 8 unrelated "unexpected end of file"
+   errors.** Root cause, read via `--emit`-free direct tracing of parser
+   state: (a) the shared primary-expression-parse failure path
+   unconditionally `advance()`d past ANY unexpected token, including a
+   natural closing delimiter (`)`/`]`/`}`/`,`) that belongs to the
+   ENCLOSING construct, not the failed expression; (b) `parse_match_expr`
+   then tried to `expect(LBrace)` and parse match arms against tokens that
+   never belonged to a match at all, eventually consuming the REAL `}` that
+   was meant to close `main`, cascading into "expected ',' / ')' / '}' at
+   end of file" 6 more times. FIX, two parts: (1) the primary-expr fallback
+   no longer consumes `RParen`/`RBracket`/`RBrace`/`Comma` when reporting
+   "expected expression" -- these are left for the enclosing
+   call/array/block/list parser to detect correctly instead of being eaten
+   as if they were the bad token; (2) `parse_match_expr` detects when its
+   own subject failed to parse at all (the `<error>` sentinel identifier)
+   and bails out immediately with an empty match rather than attempting
+   `expect(LBrace)`/an arms loop against tokens it doesn't own. Together:
+   8 errors -> 2 (the real root cause, "reserved keyword 'match' cannot be
+   used as a name", plus one legitimate follow-on, "unexpected ')',
+   expected expression" at the bare-`match`-in-value-position use -- both
+   accurate, neither noise). Proof both ways: stash both parser.rs hunks +
+   rebuild -> 8 cascading errors (verified once with only fix (1) applied
+   in isolation -- made it WORSE, 12 errors, because `expect()` elsewhere
+   still consumed the same delimiters via a different code path; fix (2)
+   was required to actually collapse the cascade); restore both + rebuild
+   -> 2 errors. Non-regression: ordinary multi-arm/or-pattern/enum-payload
+   match expressions verified unaffected (`tests/diagnostics_gate.sh`
+   check 5).
+
+### Fixed: missing error codes (an entire category, E02xx "Resolution errors", was reserved in `kryos-errors/src/codes.rs`'s own doc comment but had ZERO codes defined)
+
+Found while checking whether `kryos explain <code>` helps for each corpus
+mistake -- a "missing import" mistake (`use std::string::{capitalize_words}`,
+a name that doesn't exist) and a "name collision" mistake (`use
+std::csv::{parse}` + `use std::json::{parse}`) both produced clear MESSAGES
+but zero error code, so `kryos explain` had nothing to look up. Grepping
+`kryos-driver/src/resolve.rs` found the WHOLE file (module-not-found,
+qualified-call-wrong-origin, qualified-call-not-imported, private-member-
+import, unknown-export, duplicate-import) had never had a single
+`.with_code(..)` call. Added `E0200`-`E0205` (codes.rs + full explain.rs
+articles + `list()`/`explain()` registration) and wired all 6 resolve.rs
+sites plus 3 pre-existing code-less lexer/parser diagnostics (unterminated
+string, unterminated block comment, unexpected `;`) to `E0009`. Proof both
+ways: `tests/diagnostics_gate.sh` (new) checks 3-6 fail on the pre-fix
+binary (verified via `git stash` of all 6 files + rebuild -> 6 FAILs) and
+pass post-fix.
+
+### Docs fixed (honest-docs goal, not code changes)
+
+- **`docs/07-error-handling.md` directly contradicted itself.** The "What
+  `catch` catches" section correctly states `file_read` panics
+  (uncatchable); the later "Common mistakes" section then showed wrapping
+  `file_read` in `try`/`catch` as "Safe" -- verified live that this is
+  false (the catch never runs, exit 98). Rewritten to show the actually-
+  catchable alternative (`std::fs::read_file`, which `throw`s on failure --
+  verified live) and to state the raw-builtin panic explicitly.
+- **CLAUDE.md gotcha #16's claim "bare unqualified `None`/`Red` in an
+  expression is rejected (E0102)" is FALSE as of this compiler.** Verified
+  live with the doc's own example (`use std::option::{None}; let x = None`)
+  and with a genuinely ambiguous two-enum case (`Color{Red,..}` +
+  `Fruit{Red,..}`, both in scope, `let c = Red`) -- neither is rejected;
+  bare resolution silently picks the FIRST-DECLARED enum with that variant
+  name, no ambiguity diagnostic at all. Not a silent wrong VALUE in
+  practice (a genuine type mismatch against a differently-typed context
+  still surfaces as ordinary E0100 -- verified: `let x: Fruit = Red`
+  reports "expected Fruit, found Color"), but the doc's specific mechanism
+  claim (an E0102 ambiguity check) does not exist. Corrected in place.
+
+### Not fixed / out of scope, left for another wave
+
+- **LEDGER item #2c (`std::test::assert`'s 2-arg form permanently shadowed
+  by the compiler's own uncatchable intrinsic) was NOT re-attempted.**
+  Already fully root-caused and scoped in this file as a design note
+  needing its own full-gate pass across `compiler/self-host/` and
+  `ecosystem/*/tests/`; re-verified the repro still reproduces exactly as
+  documented (uncaught `process::abort()`, catch never runs) but did not
+  re-litigate the decision to defer it.
+- **Hard rule #6 ("Type annotations on top-level `let` ... are required")
+  is not actually enforced** -- `let count = 5` at top level (no
+  annotation, no function call) compiles and runs correctly (infers `i64`,
+  value correct). This is a language-semantics doc-accuracy question
+  (either the rule was relaxed and the doc never updated, or this is a
+  real gap), not an error-handling/diagnostics-wave item -- flagged here
+  with a minimal repro rather than fixed, since it's outside this wave's
+  assigned area. `tests/known_failures/` was not used since nothing here
+  crashes or gives a wrong answer, it just contradicts a doc claim.
+- **`E0110`'s catch-all "type error" explain text** is intentionally
+  generic (mirrors `E0009`'s "syntax error" catch-all pattern already in
+  the codebase) -- read as acceptable, not a defect, since each E0110
+  MESSAGE is already specific (wrong arg count, duplicate fn, tuple OOB,
+  ..); did not attempt to split E0110 into narrower codes, that's a much
+  larger taxonomy change outside this wave's scope.
+- **`03_builtin_shadow_var` corpus case** (`let len: i64 = 5` then
+  `len(arr)`) gives `E0110: type i64 is not callable` -- accurate and
+  points at the right span, but doesn't name the shadowing variable
+  explicitly. Read as a minor polish opportunity, not a defect; not
+  changed.
+
+Regression gate: `tests/diagnostics_gate.sh` (new), wired into
+`kryos-loop.sh gates` tier 1. Gates: conformance 53/53, tier1+tier2 GREEN
+(examples_e2e flaked 10/12 and 8/12 under tier-3 contention across two
+separate runs, both times clean 12/12 re-run alone -- the documented
+bootstrap-class contention flake, not a regression), bootstrap 16/16.
+
+---
+
 ## MEASUREMENT TRAPS (each cost real time)
 
 - **`cargo build -p kryos-cli` leaves the staticlibs stale.** Runtime edits are
