@@ -60,3 +60,43 @@ fn codepoint_count(s: str) -> i64 {
 fn is_valid(s: str) -> bool {
     return codepoint_count(s) >= 0
 }
+
+/// Byte width of the UTF-8 sequence starting at byte offset `bytepos` in `s`,
+/// CLAMPED so `bytepos + step` never exceeds `len(s)`.
+///
+/// This is the safety fix for a real crash class: `std::string`'s codepoint
+/// walkers (`chars`, `char_at`, `reverse`, `split(s, "")`) used to detect a
+/// lead byte (>= 0xC0) and unconditionally step 2-4 bytes, INCLUDING at the
+/// very last byte of the string. A `substr()` call that splits a multibyte
+/// codepoint down the middle (the documented sharp edge of the byte-indexed
+/// substr / character-indexed byte_at split) leaves exactly that shape: a
+/// truncated lead byte with no continuation bytes after it. The unclamped
+/// step then computed a slice end past `len(s)` and `kryos_string_slice`
+/// panicked ("string slice out of bounds") -- a crash reachable from ordinary
+/// byte-index arithmetic on a ordinary valid multibyte string, not a
+/// theoretical adversarial input. Clamping here means a truncated tail is
+/// returned as its own (still invalid-UTF-8) fragment instead of triggering
+/// an out-of-bounds panic in the caller -- consistent with `char_code`'s own
+/// existing fallback (raw byte value for an unreadable sequence), not a new
+/// silent-wrong-answer path: the byte is preserved, not dropped or guessed.
+///
+/// Precondition: `0 <= bytepos < len(s)` (same contract as `substr`/`byte_at`
+/// indexing elsewhere) -- call it only from inside a `while bytepos < len(s)`
+/// walk, not at or past the string's own end.
+fn step_at(s: str, bytepos: i64) -> i64 {
+    let slen = len(s)
+    let b = char_code(substr(s, bytepos, bytepos + 1))
+    let mut step = 1
+    if b >= 240 {
+        step = 4
+    } elif b >= 224 {
+        step = 3
+    } elif b >= 192 {
+        step = 2
+    }
+    let remaining = slen - bytepos
+    if step > remaining {
+        step = remaining
+    }
+    return step
+}

@@ -7,6 +7,8 @@
 // Usage: std.string.trim(s), std.string.split(s, ","), etc.
 // ============================================================
 
+use std::utf8::{step_at}
+
 // --- Query -------------------------------------------------------------------
 
 // NOTE: String length is provided by the builtin len() function.
@@ -204,17 +206,12 @@ fn split(s: str, delimiter: str) -> [str] {
         // Split into individual characters (whole UTF-8 codepoints). Byte-wise
         // `s[i]` split multibyte characters into invalid single-byte fragments,
         // so replace(s, "", x) / split(s, "") corrupted any non-ASCII input.
+        // step_at() clamps at a truncated/invalid tail (e.g. a string built by
+        // a substr() that split a multibyte codepoint) instead of computing a
+        // slice end past len(s), which used to panic here.
         let mut i = 0
         while i < slen {
-            let b = char_code(substr(s, i, i + 1))
-            let mut step = 1
-            if b >= 240 {
-                step = 4
-            } elif b >= 224 {
-                step = 3
-            } elif b >= 192 {
-                step = 2
-            }
+            let step = step_at(s, i)
             result = push(result, substr(s, i, i + step))
             i = i + step
         }
@@ -329,19 +326,7 @@ fn reverse(s: str) -> str {
     let mut cps: [str] = []
     let mut i = 0
     while i < slen {
-        let b = char_code(substr(s, i, i + 1))
-        let mut step = 1
-        if b >= 240 {
-            step = 4
-        } elif b >= 224 {
-            step = 3
-        } elif b >= 192 {
-            step = 2
-        } elif b >= 128 {
-            // Stray continuation byte -> not valid UTF-8; treat as one byte
-            // so we never slice mid-sequence into an invalid substring.
-            step = 1
-        }
+        let step = step_at(s, i)
         cps = push(cps, substr(s, i, i + step))
         i = i + step
     }
@@ -362,17 +347,11 @@ fn chars(s: str) -> [str] {
     let slen = len(s)
     let mut i = 0
     while i < slen {
-        let b = char_code(substr(s, i, i + 1))
-        let mut step = 1
-        if b >= 240 {
-            step = 4
-        } elif b >= 224 {
-            step = 3
-        } elif b >= 192 {
-            step = 2
-        }
         // Byte-wise `s[i]` split multibyte characters into invalid single-byte
-        // fragments (café -> 5 elements, é broken in half). Push whole codepoints.
+        // fragments (café -> 5 elements, é broken in half). Push whole
+        // codepoints; step_at() clamps a truncated trailing lead byte instead
+        // of overrunning len(s) (see step_at's own doc comment).
+        let step = step_at(s, i)
         result = push(result, substr(s, i, i + step))
         i = i + step
     }
@@ -390,15 +369,7 @@ fn char_at(s: str, i: i64) -> str {
     let mut bytepos = 0
     let mut cp = 0
     while bytepos < slen {
-        let b = char_code(substr(s, bytepos, bytepos + 1))
-        let mut step = 1
-        if b >= 240 {
-            step = 4
-        } elif b >= 224 {
-            step = 3
-        } elif b >= 192 {
-            step = 2
-        }
+        let step = step_at(s, bytepos)
         if cp == i {
             return substr(s, bytepos, bytepos + step)
         }

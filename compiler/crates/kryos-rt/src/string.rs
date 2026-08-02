@@ -53,10 +53,29 @@ impl KryosString {
     }
 }
 
-/// Safely convert raw bytes to a &str. Returns empty string on invalid UTF-8.
+/// Convert raw bytes to a &str for a TEXT-SEMANTIC operation (contains, trim,
+/// case conversion, replace, ...). Panics loudly on invalid UTF-8 rather than
+/// silently substituting "" -- the old `unwrap_or("")` made `trim`/`to_upper`/
+/// `to_lower`/`replace`/`contains` on ANY string with one invalid byte
+/// silently discard the ENTIRE original content (return "" / false) with no
+/// diagnostic. A Kryos `str` produced by legitimate paths (literals, `+`
+/// concat, the latin-1 `chr()`/`base64_decode()` byte-buffer model) is always
+/// valid UTF-8 by construction -- codepoints 0-255 always encode to valid
+/// UTF-8 bytes -- so invalid content here is ALWAYS evidence of a boundary
+/// bug upstream (most commonly `substr()`/`byte_at()` splitting a multibyte
+/// codepoint down the middle), never a legitimate byte-buffer payload.
+/// Matches the "fail loudly like the other checked builtins" precedent
+/// (`file_read`'s missing-file panic, `kryos_string_slice`'s OOB panic)
+/// instead of adding a new, silent failure mode.
 unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
     let slice = std::slice::from_raw_parts(ptr, len);
-    std::str::from_utf8(slice).unwrap_or("")
+    match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => {
+            let msg = b"string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first";
+            crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+        }
+    }
 }
 
 /// Create a new KryosString by copying `len` bytes from `ptr`.

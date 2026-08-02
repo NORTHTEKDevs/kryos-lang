@@ -1,0 +1,109 @@
+// Conformance: multibyte UTF-8 and the latin-1 byte-buffer model, hardened
+// this session against two real bug classes found by direct reproduction.
+//
+// BUG 1 (crash): std::string's codepoint walkers (chars, char_at, reverse,
+// split(s, "")) detected a UTF-8 lead byte and unconditionally stepped 2-4
+// bytes forward, including at the very last byte of the string. A substr()
+// call that splits a multibyte codepoint down the middle (substr is
+// byte-indexed; nothing stops a caller from landing mid-codepoint) leaves
+// exactly that shape -- a truncated lead byte with no continuation bytes
+// after it -- and the unclamped step computed a slice end past len(s):
+// `kryos_string_slice` panicked ("string slice out of bounds"), exit 98,
+// from ordinary byte-index arithmetic on an ordinary valid multibyte string.
+// FIX: std::utf8::step_at() clamps the step to the string's remaining
+// length. This file proves the crash is gone and the returned fragment is
+// well-formed (no bytes duplicated or dropped).
+//
+// BUG 2 (silent wrong answer): std::bytes (find_byte/find_seq/compare/
+// is_ascii) walked raw UTF-8 byte offsets 0..len(s) one byte at a time. A
+// "byte buffer" string per the latin-1 model (chr()/base64_decode(), one
+// logical byte 0-255 per codepoint) needs TWO UTF-8 bytes to encode any
+// logical byte >= 0x80 (UTF-8's 1-byte range is only 0-0x7F), so `len(s)`
+// overcounts such a buffer and the byte-offset walk reads only the LEAD
+// byte of each 2-byte value -- find_byte(buf, 200) returned -1 (NOT FOUND)
+// for a buffer that genuinely contained 200. FIX: every std::bytes function
+// is now CODEPOINT-indexed (matching byte_at's own documented contract),
+// walking with step_at instead of raw byte offsets.
+//
+// Regression coverage also re-proves the HAPPY path (valid multibyte input)
+// is unaffected by either fix.
+
+use std::string::{chars, char_at, reverse, split, to_upper, to_lower, trim}
+use std::utf8::{is_valid, codepoint_count, step_at}
+use std::bytes::{find_byte, find_seq, compare, is_ascii}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // --- Bug 1: crash on a substr-truncated multibyte tail ------------------
+    let s = "café"                     // c,a,f = 1 byte each; é = 2 bytes (0xC3 0xA9); 5 bytes total, 4 codepoints
+    expect(len(s) == 5, "café is 5 UTF-8 bytes")
+    let bad = substr(s, 0, 4)          // "caf" + lone lead byte 0xC3 -- INVALID UTF-8, truncated mid-codepoint
+    expect(len(bad) == 4, "truncated substr keeps its raw byte length")
+    expect(is_valid(bad) == false, "a substr that splits a codepoint IS invalid UTF-8 -- this is the documented risk, not a new bug")
+
+    // None of these may crash (exit 98) on the truncated tail. Each treats
+    // the orphaned lead byte as its own one-byte fragment (step_at clamps).
+    let cs = chars(bad)
+    expect(len(cs) == 4, "chars() on a truncated tail: 3 ASCII + 1 orphan byte, no crash")
+    let last_frag = char_at(bad, 3)
+    expect(len(last_frag) == 1, "char_at() of the orphan lead byte returns a 1-byte fragment, no crash")
+    let parts = split(bad, "")
+    expect(len(parts) == 4, "split(s, \"\") on a truncated tail: no crash, 4 fragments")
+    let rev = reverse(bad)
+    expect(len(rev) == 4, "reverse() on a truncated tail: no crash, same total byte length")
+
+    // step_at itself: clamps at the string's own end.
+    expect(step_at(bad, 3) == 1, "step_at clamps a lead byte with zero continuation bytes remaining to step=1")
+    expect(step_at(s, 3) == 2, "step_at on the VALID string still returns the real 2-byte width for the same lead byte")
+
+    // --- Bug 1, happy path: valid multibyte input is unaffected --------------
+    expect(len(chars(s)) == 4, "chars() on valid café: 4 codepoints")
+    expect(char_at(s, 3) == "é", "char_at() on valid café: 4th char is é")
+    expect(len(split(s, "")) == 4, "split(s, \"\") on valid café: 4 codepoints")
+    expect(reverse(s) == "éfac", "reverse() on valid café is éfac")
+    expect(codepoint_count(s) == 4, "codepoint_count(café) == 4")
+
+    // --- Bug 2: std::bytes silently misreading a logical byte >= 0x80 --------
+    let buf = chr(10) + chr(200) + chr(30)   // logical bytes: 10, 200, 30 (200 needs 2 UTF-8 bytes)
+    expect(len(buf) == 4, "the byte-buffer's UTF-8 byte length (4) OVERCOUNTS its 3 logical bytes -- do not use len() as a logical-byte count on such a buffer")
+    expect(find_byte(buf, 200) == 1, "find_byte finds the real logical byte 200 at codepoint index 1 (was -1: NOT FOUND, pre-fix)")
+    expect(find_byte(buf, 30) == 2, "find_byte finds byte 30 at codepoint index 2 (was 3: WRONG INDEX, pre-fix)")
+    expect(find_byte(buf, 99) == -1, "find_byte correctly reports absence for a byte that truly isn't present")
+    expect(is_ascii(buf) == false, "is_ascii is false: buffer contains a logical byte (200) >= 128")
+    expect(is_ascii(chr(1) + chr(2) + chr(127)) == true, "is_ascii is true for an all-ASCII-range byte buffer")
+
+    let buf2 = chr(10) + chr(200) + chr(30)
+    expect(compare(buf, buf2) == 0, "compare of two identical high-byte buffers is 0 (equal)")
+    let buf3 = chr(10) + chr(201) + chr(30)
+    expect(compare(buf, buf3) < 0, "compare orders by real logical byte VALUE (200 < 201), not raw UTF-8 byte")
+    expect(compare(buf3, buf) > 0, "compare is antisymmetric")
+    let buf_prefix = chr(10) + chr(200)
+    expect(compare(buf_prefix, buf) < 0, "a proper logical-byte prefix compares less than the longer buffer")
+
+    let needle = chr(200) + chr(30)
+    expect(find_seq(buf, needle) == 1, "find_seq locates a 2-logical-byte needle spanning a high byte, by codepoint index")
+    expect(find_seq(buf, chr(99) + chr(98)) == -1, "find_seq correctly reports absence")
+    expect(find_seq(buf, "") == 0, "find_seq with an empty needle is 0")
+
+    // --- Regression: std::bytes still correct on plain ASCII (no behavior change intended there) ---
+    expect(find_byte("hello", 108) == 2, "find_byte ascii: 'l' at index 2")
+    expect(find_byte("hello", 122) == -1, "find_byte ascii missing is -1")
+    expect(find_seq("hello world", "world") == 6, "find_seq ascii")
+    expect(compare("abc", "abd") < 0, "compare ascii lexicographic")
+    expect(compare("abc", "abc") == 0, "compare ascii equal")
+    expect(compare("ab", "abc") < 0, "compare ascii prefix is less")
+
+    // --- Regression: to_upper/to_lower/trim on VALID multibyte content -------
+    expect(to_upper("café") == "CAFÉ", "to_upper handles a valid multibyte string correctly")
+    expect(to_lower("CAFÉ") == "café", "to_lower handles a valid multibyte string correctly")
+    expect(trim("  café  ") == "café", "trim handles a valid multibyte string correctly")
+    expect(contains("café menu", "café"), "contains handles a valid multibyte string correctly")
+
+    println("PASS")
+}

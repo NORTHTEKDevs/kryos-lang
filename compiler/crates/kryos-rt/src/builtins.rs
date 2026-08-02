@@ -34,10 +34,24 @@
 
 use crate::string::kryos_string_new;
 
-/// Safely convert raw bytes to a &str. Returns empty string on invalid UTF-8.
+/// Convert raw bytes to a &str for a TEXT-SEMANTIC operation (split, join,
+/// trim_start/trim_end, ...). Panics loudly on invalid UTF-8 instead of
+/// silently substituting "" -- see the matching helper + rationale in
+/// `string.rs` (the old `unwrap_or("")` here made `split`/`join` on a string
+/// with one invalid byte silently discard the whole thing). A validly
+/// constructed Kryos `str` (literals, concat, the latin-1 `chr()`/
+/// `base64_decode()` byte-buffer model) is always valid UTF-8; invalid
+/// content here is always a boundary bug upstream (typically `substr()`
+/// splitting a multibyte codepoint), never a legitimate payload.
 unsafe fn bytes_to_str<'a>(ptr: *const u8, len: usize) -> &'a str {
     let slice = std::slice::from_raw_parts(ptr, len);
-    std::str::from_utf8(slice).unwrap_or("")
+    match std::str::from_utf8(slice) {
+        Ok(s) => s,
+        Err(_) => {
+            let msg = b"string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first";
+            crate::panic::kryos_panic(msg.as_ptr(), msg.len());
+        }
+    }
 }
 
 /// Generic `len()` for any Kryos collection.

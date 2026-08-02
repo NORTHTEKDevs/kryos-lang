@@ -1,64 +1,136 @@
 // ============================================================
 // std.bytes -- Byte operations over strings (treating chars as bytes).
 //
+// A "byte buffer" string here means the latin-1 model documented in
+// CLAUDE.md and used by base64_decode()/chr()/byte_at(): one LOGICAL byte
+// (0-255) per Unicode codepoint. A logical byte >= 0x80 needs TWO UTF-8
+// bytes to encode (UTF-8's 1-byte range is only 0x00-0x7F), so `len(s)`
+// (the UTF-8 BYTE count) overcounts a buffer that contains any such value --
+// it is NOT the number of logical bytes. Every function in this module is
+// therefore CODEPOINT-indexed (matching byte_at's documented contract:
+// "CODEPOINT of the i-th CHARACTER"), walking with std::utf8::step_at
+// rather than iterating raw UTF-8 byte offsets 0..len(s). The previous
+// implementation walked `0..len(s)` one UTF-8 byte at a time and read
+// `char_code(substr(s, i, i + 1))` -- for any value >= 0x80 that reads only
+// the LEAD byte of its 2-byte encoding, an invalid 1-byte UTF-8 fragment,
+// so char_code fell back to the raw lead-byte value instead of the real
+// logical byte: `find_byte(buf, 200)` returned -1 (NOT FOUND) for a buffer
+// that genuinely contained 200, and every subsequent index was off by one
+// per high byte seen -- silently wrong, not merely imprecise, for exactly
+// the binary payloads (JWT signatures, WebSocket frames) this module exists
+// to inspect.
+//
 // For raw byte buffers in [i64] form (one byte per element),
 // these are also useful.
 // ============================================================
 
-/// Index of first occurrence of `needle_byte` in string, or -1.
+use std::utf8::{step_at}
+
+/// Index (codepoint / logical-byte position, matching byte_at) of the first
+/// occurrence of `needle_byte` in string, or -1.
 fn find_byte(s: str, needle_byte: i64) -> i64 {
-    let n = len(s)
-    let mut i: i64 = 0
-    while i < n {
-        if char_code(substr(s, i, i + 1)) == needle_byte {
-            return i
+    let slen = len(s)
+    let mut bytepos = 0
+    let mut idx = 0
+    while bytepos < slen {
+        let step = step_at(s, bytepos)
+        let cp = char_code(substr(s, bytepos, bytepos + step))
+        if cp == needle_byte {
+            return idx
         }
-        i = i + 1
+        idx = idx + 1
+        bytepos = bytepos + step
     }
     return -1
 }
 
-/// Index of first occurrence of byte sequence `needle` in `haystack`, or -1.
+/// Index (codepoint / logical-byte position) of the first occurrence of byte
+/// sequence `needle` in `haystack`, or -1. Compares by logical byte VALUE
+/// (not raw UTF-8 bytes), so it is correct regardless of each matched byte's
+/// UTF-8 encoding width.
 fn find_seq(haystack: str, needle: str) -> i64 {
-    let hn = len(haystack)
-    let nn = len(needle)
-    if nn == 0 { return 0 }
-    if nn > hn { return -1 }
-    let mut i: i64 = 0
-    while i + nn <= hn {
-        if substr(haystack, i, i + nn) == needle {
-            return i
+    if len(needle) == 0 {
+        return 0
+    }
+    let mut needle_cps: [i64] = []
+    let mut nj = 0
+    let nlen = len(needle)
+    while nj < nlen {
+        let step = step_at(needle, nj)
+        needle_cps = push(needle_cps, char_code(substr(needle, nj, nj + step)))
+        nj = nj + step
+    }
+    let mut h_cps: [i64] = []
+    let mut hi = 0
+    let hlen = len(haystack)
+    while hi < hlen {
+        let step = step_at(haystack, hi)
+        h_cps = push(h_cps, char_code(substr(haystack, hi, hi + step)))
+        hi = hi + step
+    }
+    let ncount = len(needle_cps)
+    let hcount = len(h_cps)
+    if ncount > hcount {
+        return -1
+    }
+    let mut start = 0
+    while start + ncount <= hcount {
+        let mut matched = true
+        let mut k = 0
+        while k < ncount {
+            if h_cps[start + k] != needle_cps[k] {
+                matched = false
+                k = ncount
+            }
+            k = k + 1
         }
-        i = i + 1
+        if matched {
+            return start
+        }
+        start = start + 1
     }
     return -1
 }
 
-/// Lex compare: -1 if a < b, 0 if equal, 1 if a > b.
+/// Lex compare by logical byte value: -1 if a < b, 0 if equal, 1 if a > b.
 fn compare(a: str, b: str) -> i64 {
-    let an = len(a)
-    let bn = len(b)
-    let m = if an < bn { an } else { bn }
-    let mut i: i64 = 0
-    while i < m {
-        let ca = char_code(substr(a, i, i + 1))
-        let cb = char_code(substr(b, i, i + 1))
-        if ca < cb { return -1 }
-        if ca > cb { return 1 }
-        i = i + 1
+    let alen = len(a)
+    let blen = len(b)
+    let mut apos = 0
+    let mut bpos = 0
+    while apos < alen && bpos < blen {
+        let astep = step_at(a, apos)
+        let bstep = step_at(b, bpos)
+        let ca = char_code(substr(a, apos, apos + astep))
+        let cb = char_code(substr(b, bpos, bpos + bstep))
+        if ca < cb {
+            return -1
+        }
+        if ca > cb {
+            return 1
+        }
+        apos = apos + astep
+        bpos = bpos + bstep
     }
-    if an < bn { return -1 }
-    if an > bn { return 1 }
+    if apos < alen {
+        return 1
+    }
+    if bpos < blen {
+        return -1
+    }
     return 0
 }
 
-/// True if every byte in s has code < 128.
+/// True if every logical byte in s has code < 128.
 fn is_ascii(s: str) -> bool {
-    let n = len(s)
-    let mut i: i64 = 0
-    while i < n {
-        if char_code(substr(s, i, i + 1)) >= 128 { return false }
-        i = i + 1
+    let slen = len(s)
+    let mut bytepos = 0
+    while bytepos < slen {
+        let step = step_at(s, bytepos)
+        if char_code(substr(s, bytepos, bytepos + step)) >= 128 {
+            return false
+        }
+        bytepos = bytepos + step
     }
     return true
 }

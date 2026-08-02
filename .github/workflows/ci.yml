@@ -158,6 +158,17 @@ jobs:
         # does not cascade ffi onto ordinary callers.
         run: bash tests/security_gate.sh
 
+      - name: UTF-8 invalid-string gate (text ops fail loudly, not silently)
+        # A substr() call that splits a multibyte codepoint (byte-indexed,
+        # nothing stops landing mid-codepoint) produced a KryosString holding
+        # invalid UTF-8. trim/to_upper/to_lower/replace/contains converted
+        # that to &str via `unwrap_or("")`, so ANY invalid byte silently
+        # discarded the ENTIRE string (trim/to_upper/to_lower/replace) or
+        # returned a wrong `false` (contains) -- no panic, no diagnostic.
+        # Asserts the fix (loud panic naming the cause) both ways: invalid
+        # input fails loudly, valid multibyte input is unaffected.
+        run: bash tests/utf8_invalid_string_gate.sh
+
       - name: IR signature gate (calls must match their declarations)
         # Guards the bug CLASS behind the json_bool miscompile: a narrow value
         # passed where a wider one is declared leaves the upper bits of the
