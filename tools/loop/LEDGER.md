@@ -384,15 +384,187 @@ spends the most time running (self-host bootstrap, struct-heavy hot loops)
 and was already ruled out in spirit by the earlier, much narrower
 heap-bearing-`@copy`-param exemption in gotcha #23.
 
-**Not implemented this session.** Rationale: 7 prior incremental attempts
-already failed against this exact leak, each for a reason that looked fixed
-until measured; the honest next step is a fresh, isolated repro of the
-`conf_spinlock_mutex` failure mode under the one-line change (with
-`KRYOS_FREE_DIAG=1`, per the measurement traps section) BEFORE writing
-Design B's retain-walk, not concurrently with it. Attempting the retain-walk
-without first pinning down that failure risks producing exactly an 8th
-incremental, unexplained regression — the outcome this task explicitly ranks
-worse than a design note. Workaround for a hot loop remains: read fields
+**Not implemented as of the 8th-attempt design note above.** Workaround for a
+hot loop remains: read fields directly (flat), keep heap data out of structs
+you pass, or reuse one instance instead of constructing per iteration.
+
+#### 9th investigation (this session): did the fresh repro the 8th note asked
+for — the `conf_spinlock_mutex` attribution was WRONG, not just unverified.
+Corrected mechanism, DESIGN B REVISED. Still not implemented; here is exactly
+why, with hard evidence.
+
+Per the 8th note's own instruction, this session's first move was the fresh,
+isolated repro **before** touching any code. It falsified the prior
+attribution:
+
+```kryos
+use std::sync::{spin_lock}
+fn main() {
+    let lock = spin_lock()
+    let mut i = 0
+    while i < 5 {
+        let l = lock.lock()
+        l.unlock()
+        i = i + 1
+    }
+    println("seq spinlock ok")
+}
+```
+
+Applying ONLY the one-line change (`MirType::Struct` added to
+`consume_call_args`'s borrow allowlist, `kryos-mir/src/lower.rs:9120`), full
+`cargo build --release`, this crashes **5/5 runs, deterministically, with
+ZERO spawn/threads**:
+
+```
+$ kryos run repro.kry     (x5)
+kryos: uncaught exception: sync error: lock on dropped mutex   (all 5 runs)
+$ kryos build --release repro.kry && ./repro
+seq spinlock ok    (clean, every time)
+```
+
+So: **not spawn-specific, not concurrency-specific, not even
+`conf_spinlock_mutex`-specific** — the prior write-up's attribution ("makes
+the caller free a handle `spawn` still shares") was never re-verified after
+being written, and was wrong. It reproduces in a single thread with a plain
+sequential lock/unlock loop, and it is backend-DIVERGENT (JIT-only, AOT
+clean) — which by non-negotiable #6 means read the emitted IR, not the
+source, so that's what this session did instead of continuing to guess.
+
+**Root cause, read directly from both backends' own type-lowering, not
+inferred:**
+
+1. **LLVM/AOT never boxes a plain struct value at all.** `--emit-llvm` on the
+   repro shows `%SpinLock = type { %AtomicInt }`, `%AtomicInt = type { i64,
+   %Mutex }`, `%Mutex = type { ptr, i1, i1 }` — nested struct FIELDS are
+   INLINE aggregates, not pointers — and every call/return of a `SpinLock`
+   goes through `ptr byval(%SpinLock)` / `ptr sret(%SpinLock)`:
+   `define internal void @SpinLock__lock(ptr sret(%SpinLock) %_sret, ptr
+   byval(%SpinLock) %_0_arg)`. `byval`/`sret` are LLVM-level COPY semantics —
+   the callee gets its own stack copy, there is no shared heap box for the
+   struct itself, so there is nothing to double-free at the struct level.
+   This is why the one-line change is a no-op on AOT for this repro: nobody
+   was freeing a box that never existed.
+2. **Cranelift boxes literally every struct value, at every level, uniformly
+   — confirmed in `mir_type_to_cl` (`kryos-codegen-cranelift/src/codegen.rs:44`):
+   `MirType::Struct(_) => Ok(Some(types::I64))`, no distinction between a
+   top-level local and a FIELD of another struct.** `compute_struct_layout`
+   (same file, line 251) uses this uniformly for field offsets too, and the
+   struct-field-drop walk (`emit_drop_for_value`, ~line 7549) `load`s a
+   nested `MirType::Struct` field as an `i64` **pointer** and recurses
+   `emit_drop_for_value` on it — proving nested struct fields are SEPARATE
+   `kryos_calloc` boxes on this backend, chained (SpinLock → box → AtomicInt
+   → box → Mutex → box), not embedded. Cranelift is therefore, for structs,
+   already exactly what Design A below calls "uniform boxing" — it never had
+   an ABI to break; LLVM is the only backend with the byval/sret
+   representation Design A's "ABI break" cost is actually about.
+3. **`SpinLock.lock()`/`Mutex.lock()`/`.unlock()` return `self` (or a value
+   built from `self`'s own fields) directly** — `return self`,
+   `return Mutex { handle: self.handle, locked: true, dropped: false }`.
+   On Cranelift this means the CALLEE hands back the SAME box pointer (or a
+   pointer built by copying a field straight through) that the CALLER still
+   holds. The one-line change makes the caller keep its own scope-end drop
+   (correct, that half of Design B is fine) but adds **no retain anywhere**
+   — so after `let l = lock.lock()`, `lock` and `l` are two independent
+   Kryos-level locals that alias ONE Cranelift box, each believing itself the
+   sole owner. First one's scope-end drop wins the race and frees it (in the
+   minimal repro, silently and deterministically, since there's no
+   concurrency to race); the second finds a box whose header bytes have
+   since been reused, reads a stale/garbage `dropped` field as truthy, and
+   throws. Confirmed independently with the runtime's own (always-on,
+   non-`KRYOS_FREE_DIAG`-gated) double-free guard: a 1-lock/1-unlock version
+   of the same repro reports 3 caught-and-ignored
+   `kryos_free: double free of 0x... (already-freed box)` events even though
+   it happens to still exit 0 — i.e. it is ALREADY over-freeing on the very
+   first call, the 5-iteration version just eventually loses the race against
+   reused memory. This also explains why the FULL concurrent
+   `conf_spinlock_mutex` (8+64 threads) was a worse repro to debug from: under
+   the one-line change it is **nondeterministic** (3/3 sample runs: one clean
+   exit 0, one "ignored" double-free + exit 0, one clean) — thread scheduling
+   sometimes hides the corruption inside the guard's tolerance window. The
+   sequential 6-line repro above is deterministic and should be preferred for
+   any future attempt.
+4. **`heap_field_method`/`free_fn_scalar_ret`/`method_chain` in
+   `struct_arg_leak.kry` do NOT crash under the same one-line change** (spot
+   checked to 2000 iters with `KRYOS_FREE_DIAG=1`, zero double-free reports).
+   Mechanism: `size_fn(b)`/`b.size()` return an `i64`, not a value derived
+   from `self`, so there is exactly one Kryos-level owner of `b`'s box for
+   its whole lifetime (the caller) and the one-line change alone — caller
+   keeps its own drop, callee still never drops its param (`param_locals` is
+   unchanged) — is enough for that shape. `method_chain`'s `.add()` always
+   returns a FRESH struct literal, not an alias of `self`, so it's likewise
+   safe. **The crash is narrowly scoped to the "method returns `self` or a
+   value built from `self`'s own fields" idiom** — which happens to be
+   exactly the shape `std::sync`'s entire lock/atomic/once API is written in,
+   which is why `conf_spinlock_mutex` is what caught it, not because spawn or
+   concurrency has anything to do with the mechanism.
+
+**Design B, revised — what actually has to be true for this to be safe.**
+The 8th note's Design B step 3 ("retain-walk", `Str`→retain, `Array`→retain,
+nested `Struct`→recurse, scalars skipped) is necessary but **provably
+insufficient on Cranelift**: it only bumps refcounts on leaf `str`/`array`/
+`map` content, and `SpinLock`/`AtomicInt`/`Mutex` have NONE anywhere in the
+chain (`ptr`/`i64`/`bool` fields only, confirmed in `compiler/stdlib/sync.kry`)
+— the retain-walk is a complete no-op for them, so a "correct" implementation
+of Design B exactly as written would still reproduce the crash above. What
+Cranelift additionally needs, on top of Design B's field-content retain-walk
+(still required, unchanged, for the `heap_field_*` leak on both backends):
+- Route Cranelift's struct local/param/return drop path (`emit_drop_for_value`'s
+  `MirType::Struct` arm, ~codegen.rs:7504) through `kryos_struct_release_shared`
+  BEFORE freeing fields/box — i.e. give path 2 the SAME owner-count guard
+  path 1 (`__kryos_drop_<T>`, used for boxed array/enum-payload elements)
+  already has. `kryos_struct_retain`/`kryos_struct_release_shared` already
+  exist and are correct (`kryos-rt/src/alloc.rs:654-700`) but `kryos_struct_retain`
+  has no LLVM `declare` or Cranelift `func_ids` entry today — only
+  `_release_shared` is wired for codegen use; `_retain` is currently called
+  only from Rust (`array.rs`, for boxed struct array elements). This needs
+  wiring as a callable codegen intrinsic on Cranelift.
+- Emit `kryos_struct_retain(ptr)` on the struct argument's box at each
+  ordinary user-fn call site (Cranelift-only codegen addition — LLVM has no
+  box to retain, byval already copies).
+- **A `return`-passthrough exemption is required, not optional.** If a
+  function's scope-end drop of a struct PARAM is unconditionally routed
+  through the checked release, a function that returns that exact param
+  (`return self`) under-counts: the checked-release "stops" (correctly, sees
+  the caller's retain), but the RETURN then hands the same pointer to a NEW
+  destination local with no corresponding retain for that new binding, so
+  the box ends up with 2 live owners and an owner-count word that only
+  accounted for 1. This needs the same "tail-identifier-move guard" pattern
+  already used elsewhere in this codebase for return-of-a-moved-value (see
+  the F1 CLOSED fix in this ledger) generalized to struct params: skip the
+  param's own drop when it is exactly the `return`ed operand, unchanged.
+  Fixing this trap is deceptively easy to describe and easy to get subtly
+  wrong to implement (per-shape: `return self` bare vs. `return
+  T{field:self.field,...}` partially-rebuilt vs. `return self.inner_field`
+  need different treatment) — this is precisely the class of "retain and
+  release added in different places by different patches" divergence this
+  ledger's own mechanism section already warns about.
+- The nested-struct-as-separate-box finding (point 2 above) means this
+  bookkeeping is not just top-level: `SpinLock → AtomicInt → Mutex` is THREE
+  independently kryos_calloc'd boxes chained by pointer on Cranelift, each
+  needing its own correct owner-count lifecycle, and `spawn`'s existing
+  bespoke capture arm already depends on nested-struct sub-boxes staying
+  SHARED (not cloned, not retained) across threads — any change to how path 2
+  frees a nested struct field must be re-verified against `spawn` sharing a
+  live nested box across threads, which this session did NOT attempt (the
+  sequential repro above deliberately has zero spawn involvement, by design,
+  to isolate the mechanism — the concurrent interaction is a real, separate
+  next question, not yet answered).
+
+**Not implemented this session either.** Real effort was spent (isolated the
+true mechanism with hard IR/runtime evidence, corrected a wrong attribution
+in this very ledger, found the precise boundary of what does/doesn't crash,
+and identified that `kryos_struct_retain` isn't even wired into codegen yet)
+but implementing the revised design safely needs: wiring a new codegen
+intrinsic, a return-passthrough exemption whose per-shape correctness is
+exactly the kind of thing this codebase's history shows gets subtly wrong on
+the first pass, and a full re-verification of the `spawn` nested-box-sharing
+interaction — that is real, multi-step, cross-cutting work, not a single
+edit to verify inline, and rushing it risks a 9th unexplained regression,
+which this task ranks explicitly below an honest, evidence-backed stop.
+Every experimental edit made while investigating this was reverted before
+finishing (`git diff` on `kryos-mir/src/lower.rs` is empty at HEAD); nothing
+in this commit changes compiler behavior. Workaround unchanged: read fields
 directly (flat), keep heap data out of structs you pass, or reuse one
 instance instead of constructing per iteration.
 
