@@ -363,21 +363,33 @@ Rust's approach is more type-safe -- errors are encoded in the type system and y
 
 **Not catching errors from I/O operations**
 
-File reads, network calls, and JSON parsing can all fail. Always wrap them in `try`/`catch`:
+File reads, network calls, and JSON parsing can all fail -- but which
+mechanism reports the failure depends on which function you call. The
+global builtin `file_read` **panics** (uncatchable, exit 98) if the file is
+missing or unreadable; wrapping it in `try`/`catch` does **not** help, the
+catch block never runs (see "What `catch` catches" above). For a
+recoverable failure you can actually handle, call the throwing stdlib
+wrapper `std::fs::read_file` instead:
 
 ```
-// Dangerous -- will crash if file does not exist
+// Dangerous -- PANICS if the file does not exist; try/catch cannot catch this
 let content = file_read("config.txt")
 
-// Safe
+// Safe -- std::fs::read_file throws on failure, so try/catch works
+use std::fs::{read_file}
+
 try {
-    let content = file_read("config.txt")
+    let content = read_file("config.txt")
     // use content
 } catch e {
     println("Could not read config: " + e)
     // use defaults
 }
 ```
+
+If you must use the raw `file_read` builtin, guard it explicitly first
+(`if file_exists(path) { ... }`) -- there is no way to recover from it
+failing after the call.
 
 **Relying on self-healing for logic errors**
 
