@@ -4321,6 +4321,52 @@ impl TypeChecker {
                                     self.diagnostics.push(diag);
                                 }
                                 self.check_int_literal_range(param_ty, arg, arg.span());
+                                // A polymorphic builtin's opaque `Type::Error`
+                                // param is DESIGNED to unify with any real
+                                // value type (`unify`'s "Error unifies with
+                                // anything" error-recovery escape hatch,
+                                // kryos-types/src/infer.rs) -- but that escape
+                                // hatch was never taught to exclude `Void`,
+                                // which is not a real value at all. Passing a
+                                // void-returning call's "result" as an
+                                // argument to any such builtin (`to_string`,
+                                // `abs`, `min`, `max`, `sort`, `reverse`, ...)
+                                // silently type-checked and read whatever the
+                                // erased void slot held at runtime -- verified
+                                // live: `to_string(side_effect())` printed
+                                // `"0"`, `abs(side_effect())` printed `0`, on
+                                // both backends, zero diagnostic either way.
+                                // Same shape as the `len`-specific struct/enum
+                                // guard immediately below, generalized to
+                                // every opaque-Error-param builtin since Void
+                                // is never legitimate for any of them. A user
+                                // function shadowing one of these names has
+                                // typed params and never hits this arm.
+                                // EXCEPTION: `coop_spawn(taskExpr)` deliberately
+                                // shares the same opaque Type::Error param
+                                // shape but its argument is a TASK EXPRESSION
+                                // handled specially at MIR lowering (mirrors
+                                // `spawn { .. }`), not a value read at the
+                                // call site -- a void-returning task function
+                                // is the normal, correct case there (found via
+                                // `examples/async_io.kry` regressing when this
+                                // check was first added; see the signature's
+                                // own comment a few hundred lines below).
+                                if matches!(param_ty, Type::Error)
+                                    && matches!(self.engine.resolve(&arg_ty), Type::Void)
+                                    && !matches!(&callee_name_str, Some(n) if n == "coop_spawn")
+                                {
+                                    let fn_name = callee_name_str
+                                        .as_deref()
+                                        .map(|n| format!("`{n}`"))
+                                        .unwrap_or_else(|| "this function".to_string());
+                                    self.error(
+                                        format!(
+                                            "cannot use the result of a void-returning call as an argument to {fn_name} -- the callee has no return value"
+                                        ),
+                                        arg.span(),
+                                    );
+                                }
                                 // The builtin `len` signature accepts any type
                                 // (its param is Type::Error) because it is
                                 // polymorphic over str/array/map. That let a

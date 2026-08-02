@@ -1087,6 +1087,45 @@ fn main() {
     println(to_string(i.depth))
 }'
 
+# A polymorphic builtin (`to_string`/`abs`/`min`/`max`/`len`/...) declares its
+# param as the opaque `Type::Error` sentinel so it accepts any real value
+# type. `unify`'s "Error unifies with anything" error-recovery escape hatch
+# was never taught to exclude `Void` (a call with no return value is not a
+# real value at all) -- `to_string(side_effect())` and `abs(side_effect())`
+# used to type-check clean and silently print "0" at runtime on BOTH
+# backends (the erased void slot read back as zero), with zero diagnostic,
+# while the concretely-typed sibling case (`take_i64(side_effect())`)
+# already correctly rejected the same shape. Found probing the CLI/REPL
+# surface (the REPL's auto-print `to_string(<expr>)` wrapper hit this on
+# every bare `println(..)` line, printing a spurious extra "0").
+want_reject void_arg_to_string '
+fn side_effect() { println("ran") }
+fn main() { println(to_string(side_effect())) }'
+
+want_reject void_arg_abs '
+fn side_effect() { println("ran") }
+fn main() { println(to_string(abs(side_effect()))) }'
+
+want_pass polymorphic_builtins_still_work '
+fn main() {
+    println(to_string(42))
+    println(to_string(abs(-5)))
+    println(to_string(len("hello")))
+    println(to_string(len([1, 2, 3])))
+}'
+
+# `coop_spawn(taskExpr)` shares to_string/abs/len's opaque Type::Error param
+# shape but is NOT a value-argument position -- the argument is a deferred
+# task expression handled specially at MIR lowering, so a void-returning
+# task function is the normal, correct case (regressed `examples/async_io.kry`
+# the first time the void-arg check above was added; must stay excluded).
+want_pass coop_spawn_void_task_ok '
+fn task() { println("ran") }
+fn main() {
+    coop_spawn(task())
+    coop_run()
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
