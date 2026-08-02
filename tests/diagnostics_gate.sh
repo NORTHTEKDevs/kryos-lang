@@ -157,6 +157,42 @@ else
     echo "  FAIL: match sanity check regressed:"; echo "$out" | sed 's/^/    /'; fail=1
 fi
 
+# 6. A stray token at block-statement level that `parse_primary`'s
+#    unexpected-token fallback deliberately does not consume (a bare `,`,
+#    or a misplaced `)`/`]`/`}` with no enclosing call/array/struct-literal
+#    to eat it) must be REJECTED with a diagnostic, not hang the parser
+#    forever. `parse_module` already has a no-progress guard for the exact
+#    same class at the top-level-declaration loop (comment there cites a
+#    fuzzer-found 2-byte input, "}:"); `parse_block_stmts` lacked the
+#    equivalent guard one level down the grammar -- any complete statement
+#    followed by a stray `,` (e.g. `map<str, i64>` mistyped as a value
+#    expression, or a plain trailing comma) hung `kryos check`/`run`/`build`
+#    indefinitely with ZERO output, unkillable except by the OS. Bounded
+#    with `timeout` since a `conf_*.kry` conformance test can't express
+#    "must not hang" (matches the `docs_status_gate`/`utf8_invalid_string_gate`
+#    precedent for assertions a normal exit-0 conformance file can't make).
+cat > "$TMP/stray_comma.kry" <<'KRY'
+fn main() {
+    let x = 5
+    ,
+    println(to_string(x))
+}
+KRY
+if command -v timeout >/dev/null 2>&1; then
+    out="$(timeout 10 "$K" check "$TMP/stray_comma.kry" 2>&1)"
+    rc=$?
+    if [ "$rc" -eq 124 ]; then
+        echo "  FAIL: stray trailing comma HANGS kryos check (timed out after 10s)"; fail=1
+    elif grep -q "unexpected token ','" <<<"$out"; then
+        echo "  ok   stray trailing comma is rejected promptly (rc=$rc), no hang"
+    else
+        echo "  FAIL: stray comma didn't hang but also didn't get the expected diagnostic:"
+        echo "$out" | sed 's/^/    /'; fail=1
+    fi
+else
+    echo "  skip stray-comma-hang check (no 'timeout' command available)"
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else

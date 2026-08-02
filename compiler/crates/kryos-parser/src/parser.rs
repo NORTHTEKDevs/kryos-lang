@@ -1203,24 +1203,49 @@ impl Parser {
                 stmts.push(self.parse_let_else_desugar());
                 break; // the rest of the block was consumed into the success arm
             }
+            let before = self.pos;
             match self.parse_statement() {
-                Some(stmt) => stmts.push(stmt),
-                None => {
-                    if !self.check(TokenKind::RBrace) && !self.at_end() {
-                        let tok = self.peek().clone();
-                        let span = tok.span;
-                        let token_text = if tok.text.is_empty() {
-                            format!("{}", tok.kind)
-                        } else {
-                            format!("'{}'", tok.text)
-                        };
-                        self.error(format!("unexpected token {} in block", token_text), span);
-                        self.advance();
+                Some(stmt) => {
+                    stmts.push(stmt);
+                    // Guard against a statement parse that "succeeded" while
+                    // consuming zero tokens. `parse_primary`'s unexpected-token
+                    // fallback deliberately does NOT eat a stray `,`/`)`/`]`/`}`
+                    // -- it assumes an ENCLOSING call/array/struct-literal will
+                    // consume it during that construct's own recovery. At
+                    // block-statement level there is no such enclosing
+                    // construct, so an expression-statement built from that
+                    // fallback (e.g. a misplaced trailing `,`) leaves the
+                    // cursor exactly where it started; the loop condition
+                    // above never changes and this spun forever with zero
+                    // diagnostics before this guard. Mirrors the identical
+                    // no-progress guard `parse_module` already has for the
+                    // top-level declaration loop (same bug class, one level
+                    // up the grammar).
+                    if self.pos == before {
+                        self.recover_stray_block_token();
                     }
                 }
+                None => self.recover_stray_block_token(),
             }
         }
         stmts
+    }
+
+    /// Report and consume one token that could not start (or finish) a
+    /// block statement, so the enclosing `parse_block_stmts` loop always
+    /// makes forward progress. No-op at the block's closing `}` or EOF.
+    fn recover_stray_block_token(&mut self) {
+        if !self.check(TokenKind::RBrace) && !self.at_end() {
+            let tok = self.peek().clone();
+            let span = tok.span;
+            let token_text = if tok.text.is_empty() {
+                format!("{}", tok.kind)
+            } else {
+                format!("'{}'", tok.text)
+            };
+            self.error(format!("unexpected token {} in block", token_text), span);
+            self.advance();
+        }
     }
 
     /// True if the upcoming tokens are `let [mut] TypeIdent (. | ::) ...`, i.e. a
