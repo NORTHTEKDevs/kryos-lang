@@ -275,7 +275,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The two most severe open items, both trust-model gaps rather than crashes (per that file's own severity ranking, a silent/undetected gap in the capability or supply-chain boundary outranks a crash): (1) a closure/fn-value read back OUT OF A CONTAINER (a struct field, array element, or map value) is not traced by capability checking, so authority can be laundered through one undetected even under `--strict-capabilities` (`docs/10-capabilities.md`); (2) `kryos pkg install`/`add` never verifies the registry's own recorded checksum against anything it fetches — a `git clone` of the registry repo's current HEAD, not a hash-verified tarball — so an already-published package version could be silently mutated with no detection. Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; these two are the reasons this is "beta" rather than a hard security boundary. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
+Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The most severe remaining open item is a trust-model gap rather than a crash (per that file's own severity ranking, a silent/undetected gap in the capability or supply-chain boundary outranks a crash): a closure/fn-value read back OUT OF A CONTAINER (a struct field, array element, or map value) is not traced by capability checking, so authority can be laundered through one undetected even under `--strict-capabilities` (`docs/10-capabilities.md`). The package-registry supply-chain gap that used to sit alongside it is now CLOSED: `kryos pkg install`/`add` verifies a real `sha256:<hex>` content hash of the fetched package (`kryos.toml` + `src/**.kry`) against the registry index before trusting it, rejects a mismatch or a missing checksum, and re-verifies even a cache hit, so a package mutated on disk (or a compromised/force-pushed registry) can no longer install undetected. Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; the remaining container-capability gap is the reason this is "beta" rather than a hard security boundary. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver
@@ -305,9 +305,9 @@ Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixe
 | Module system + package manager | Complete |
 | LSP, REPL, formatter, doc generator | Complete |
 | Editor extensions (VS Code, Zed) | Complete |
-| Package registry (spec + reference server) | Functional, but checksums are recorded and never verified* |
+| Package registry (spec + reference server) | Functional; install-time content-hash verification implemented |
 
-\* See the two blockers named above the table.
+\* See the remaining blocker named above the table (capability laundering via a container).
 
 **Quality bar (every release):**
 

@@ -186,6 +186,9 @@ pub fn update() -> Result<(), String> {
                     version,
                     source: path.clone(),
                     dependencies: std::collections::HashMap::new(),
+                    // Local filesystem dep -- no remote content to pin by
+                    // hash, trust is already implied by having the path.
+                    checksum: None,
                 });
             }
         }
@@ -250,6 +253,9 @@ pub fn install() -> Result<(), String> {
                         version,
                         source: path.clone(),
                         dependencies: std::collections::HashMap::new(),
+                        // Local filesystem dep -- no remote content to pin
+                        // by hash, trust is already implied by the path.
+                        checksum: None,
                     });
                 }
             }
@@ -284,6 +290,15 @@ pub fn install() -> Result<(), String> {
                                 version: entry.version.clone(),
                                 source,
                                 dependencies: transitive,
+                                // Threaded through to `fetch::fetch_resolved`,
+                                // which verifies the fetched content against
+                                // this exact hash before trusting it (or
+                                // refuses to install if it's empty/missing).
+                                checksum: if entry.checksum.trim().is_empty() {
+                                    None
+                                } else {
+                                    Some(entry.checksum.clone())
+                                },
                             });
                         }
                     }

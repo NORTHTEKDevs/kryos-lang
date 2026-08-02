@@ -55,6 +55,12 @@ pub struct PublishPackage {
     pub manifest: Manifest,
     /// Capability badge read from `target/caps.json` at pack time (project 05).
     pub caps_badge: Option<CapsBadge>,
+    /// `sha256:<hex>` canonical content hash (see [`content_checksum`]) of
+    /// this package's `kryos.toml` + `src/` + `stdlib/` files. This is the
+    /// value written into the registry index's `checksum` field, and the
+    /// value `kryos pkg install` recomputes over a fetched package and
+    /// compares against before trusting it (LEDGER item 1b).
+    pub content_checksum: String,
 }
 
 /// Create a publishable tarball from a project directory.
@@ -95,12 +101,12 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
     files.push((manifest_path.clone(), "kryos.toml".to_string()));
 
     // Include all .kry files from src/.
-    collect_kry_files(&src_dir, &src_dir, &mut files)?;
+    collect_kry_files(&src_dir, &src_dir, "src", &mut files)?;
 
     // Include stdlib/ if it exists in the project.
     let stdlib_dir = project_dir.join("stdlib");
     if stdlib_dir.exists() {
-        collect_kry_files(&stdlib_dir, &stdlib_dir, &mut files)?;
+        collect_kry_files(&stdlib_dir, &stdlib_dir, "stdlib", &mut files)?;
     }
 
     // Write a simple text manifest (one file per line) instead of actual tar.gz
@@ -123,13 +129,76 @@ pub fn pack(project_dir: &Path) -> Result<PublishPackage, String> {
     // target/caps.json before packing. Absent badge -> None (backward compatible).
     let caps_badge = read_caps_badge(project_dir);
 
+    // Canonical content hash of exactly what was just packed -- this is
+    // the value published to the registry index and the value `kryos pkg
+    // install` will recompute over the fetched copy and verify against.
+    let content_checksum = content_checksum(project_dir)?;
+
     Ok(PublishPackage {
         name,
         version,
         tarball_path,
         manifest,
         caps_badge,
+        content_checksum,
     })
+}
+
+/// Canonical content-hash checksum of a package directory: `kryos.toml`
+/// plus every `.kry` file under `src/` and `stdlib/` (if present), hashed
+/// in a deterministic order (sorted by `/`-normalized relative path, so
+/// the result does not depend on platform path separators or filesystem
+/// iteration order).
+///
+/// This is the single source of truth for a package's content hash on
+/// BOTH sides of the registry: `pack()` computes it at publish time (it
+/// becomes the index entry's `checksum` field) and `fetch::fetch_resolved`
+/// recomputes it over a fetched/cached package directory before trusting
+/// it. Previously the published checksum hashed a placeholder "tarball"
+/// (really just a text listing of file names, not their content) that
+/// nothing on the install side ever re-derived or compared against --
+/// see `tools/loop/LEDGER.md` item 1b for the full history.
+pub fn content_checksum(project_dir: &Path) -> Result<String, String> {
+    let mut files: Vec<(PathBuf, String)> = Vec::new();
+
+    let manifest_path = project_dir.join("kryos.toml");
+    if manifest_path.exists() {
+        files.push((manifest_path, "kryos.toml".to_string()));
+    }
+
+    let src_dir = project_dir.join("src");
+    if src_dir.exists() {
+        collect_kry_files(&src_dir, &src_dir, "src", &mut files)?;
+    }
+
+    let stdlib_dir = project_dir.join("stdlib");
+    if stdlib_dir.exists() {
+        collect_kry_files(&stdlib_dir, &stdlib_dir, "stdlib", &mut files)?;
+    }
+
+    if files.is_empty() {
+        return Err(format!(
+            "no kryos.toml or .kry source files found under {} -- nothing to checksum",
+            project_dir.display()
+        ));
+    }
+
+    // Deterministic order regardless of `read_dir` iteration order.
+    files.sort_by(|a, b| a.1.cmp(&b.1));
+
+    let mut buf = Vec::new();
+    for (abs, rel) in &files {
+        let bytes =
+            std::fs::read(abs).map_err(|e| format!("failed to read {}: {e}", abs.display()))?;
+        // Length-prefix both the path and the content so no ambiguity is
+        // introduced by concatenating variable-length fields back to back.
+        buf.extend_from_slice(&(rel.len() as u32).to_le_bytes());
+        buf.extend_from_slice(rel.as_bytes());
+        buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&bytes);
+    }
+
+    Ok(format!("sha256:{}", crate::sha256::sha256_hex(&buf)))
 }
 
 /// Read a capability badge from `<project_dir>/target/caps.json` if present.
@@ -142,14 +211,13 @@ pub fn read_caps_badge(project_dir: &Path) -> Option<CapsBadge> {
 
 /// Generate a registry index entry JSON for a package.
 ///
-/// The checksum is `sha256:<64-hex>` of the tarball bytes at
-/// `pkg.tarball_path`. This matches the canonical kryos-registry
-/// schema (one NDJSON line per published version, immutable). If the
-/// tarball file cannot be read, the checksum field is emitted as
-/// `sha256:unavailable` so the call still produces a syntactically
-/// valid JSON line; downstream tools that need a real hash will
-/// observe the literal and fail loudly rather than silently accept a
-/// fake digest.
+/// The checksum is `pkg.content_checksum` -- the canonical `sha256:<hex>`
+/// hash of the package's actual `kryos.toml` + `src/` + `stdlib/` content
+/// (see [`content_checksum`]), computed by `pack()` at publish time. This
+/// is the checksum `kryos pkg install` verifies a fetched package against
+/// before trusting it (LEDGER item 1b) -- it previously hashed the
+/// placeholder "tarball" file instead (a text listing of file names, not
+/// their content), a value nothing on the install side ever re-derived.
 pub fn generate_index_entry(pkg: &PublishPackage) -> String {
     let deps: Vec<String> = pkg
         .manifest
@@ -164,10 +232,7 @@ pub fn generate_index_entry(pkg: &PublishPackage) -> String {
         format!("{{\n{}\n  }}", deps.join(",\n"))
     };
 
-    let checksum = match std::fs::read(&pkg.tarball_path) {
-        Ok(bytes) => format!("sha256:{}", crate::sha256::sha256_hex(&bytes)),
-        Err(_) => "sha256:unavailable".to_string(),
-    };
+    let checksum = pkg.content_checksum.clone();
 
     // Embed the capability badge (project 05) as a `"capabilities"` object when
     // present. Omitted entirely when absent, so old tooling and pre-badging
@@ -429,6 +494,7 @@ fn extract_deps_object(json: &str, key: &str) -> HashMap<String, String> {
 fn collect_kry_files(
     dir: &Path,
     base: &Path,
+    prefix: &str,
     files: &mut Vec<(PathBuf, String)>,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir)
@@ -439,12 +505,17 @@ fn collect_kry_files(
         let path = entry.path();
 
         if path.is_dir() {
-            collect_kry_files(&path, base, files)?;
+            collect_kry_files(&path, base, prefix, files)?;
         } else if path.extension().map(|e| e == "kry").unwrap_or(false) {
             let rel = path
                 .strip_prefix(base)
                 .map_err(|e| format!("path prefix error: {e}"))?;
-            files.push((path.clone(), format!("src/{}", rel.display())));
+            // Normalize to `/` regardless of host OS so the recorded
+            // (and later hashed) relative path is platform-independent --
+            // a `\`-joined path here would make `content_checksum` diverge
+            // between Windows and Unix for the identical file tree.
+            let rel_norm = rel.to_string_lossy().replace('\\', "/");
+            files.push((path.clone(), format!("{prefix}/{rel_norm}")));
         }
     }
     Ok(())
@@ -507,20 +578,13 @@ mod tests {
     }
 
     #[test]
-    fn generate_index_entry_emits_sha256_of_tarball() {
-        // Round-trip: write a known byte payload to a temp tarball path, run the
-        // generator, and verify the checksum field matches the SHA-256 of those
-        // bytes — *not* a stable hash of metadata.
+    fn generate_index_entry_emits_pkg_content_checksum_verbatim() {
+        // generate_index_entry must publish exactly `pkg.content_checksum`
+        // and must NOT re-derive anything from `tarball_path` -- the
+        // tarball is a placeholder text listing of file NAMES, not their
+        // content, so hashing it (the old behavior) never actually pinned
+        // the package's real bytes. See LEDGER item 1b.
         use crate::manifest::PackageInfo;
-        use std::io::Write;
-        let dir = std::env::temp_dir().join("kryos-registry-test");
-        std::fs::create_dir_all(&dir).unwrap();
-        let tarball_path = dir.join("demo-0.1.0.tar.gz");
-        let body: &[u8] = b"hello kryos registry test";
-        {
-            let mut f = std::fs::File::create(&tarball_path).unwrap();
-            f.write_all(body).unwrap();
-        }
         let manifest = Manifest {
             package: PackageInfo {
                 name: "demo".into(),
@@ -535,15 +599,19 @@ mod tests {
             build: Default::default(),
             capabilities: Default::default(),
         };
+        let expected =
+            "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef".to_string();
         let pkg = PublishPackage {
             name: "demo".into(),
             version: "0.1.0".parse().unwrap(),
-            tarball_path: tarball_path.clone(),
+            // Deliberately points at a file that does not exist -- proves
+            // generate_index_entry never reads tarball_path for the checksum.
+            tarball_path: std::env::temp_dir().join("does-not-exist-demo.tar.gz"),
             manifest,
             caps_badge: None,
+            content_checksum: expected.clone(),
         };
         let entry = generate_index_entry(&pkg);
-        let expected = format!("sha256:{}", crate::sha256::sha256_hex(body));
         assert!(
             entry.contains(&expected),
             "expected checksum {expected} in entry:\n{entry}"
@@ -553,7 +621,44 @@ mod tests {
         assert!(entry.contains("\"name\": \"demo\""));
         assert!(entry.contains("\"version\": \"0.1.0\""));
         assert!(entry.contains("\"dependencies\": {}"));
-        let _ = std::fs::remove_file(&tarball_path);
+    }
+
+    #[test]
+    fn content_checksum_is_deterministic_and_content_sensitive() {
+        // Build a tiny on-disk package (kryos.toml + src/main.kry) --
+        // exactly the shape content_checksum (and pack()) walk.
+        let dir = std::env::temp_dir()
+            .join(format!("kryos-content-checksum-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src_dir = dir.join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            dir.join("kryos.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        std::fs::write(src_dir.join("main.kry"), "fn main() {}\n").unwrap();
+
+        let original = content_checksum(&dir).unwrap();
+        // Recomputing over identical, untouched content must be stable --
+        // a non-deterministic checksum would make every install a false
+        // mismatch.
+        assert_eq!(content_checksum(&dir).unwrap(), original);
+
+        // Tamper with the source content -- the exact class of tamper
+        // `kryos pkg install` must reject (LEDGER item 1b's live repro).
+        std::fs::write(
+            src_dir.join("main.kry"),
+            "fn main() { println(\"MALICIOUS_INJECTED_CONTENT\") }\n",
+        )
+        .unwrap();
+        let tampered = content_checksum(&dir).unwrap();
+        assert_ne!(
+            original, tampered,
+            "tampering with a source file must change the content checksum"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -581,6 +686,7 @@ mod tests {
             tarball_path: std::env::temp_dir().join("does-not-exist-native-plugin.tar.gz"),
             manifest,
             caps_badge: Some(badge.clone()),
+            content_checksum: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
         };
         let entry = generate_index_entry(&pkg);
         assert!(entry.contains("\"capabilities\""), "entry must embed badge:\n{entry}");

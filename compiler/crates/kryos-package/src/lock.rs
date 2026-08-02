@@ -37,7 +37,12 @@ impl LockFile {
                     PackageSource::Remote(s) => s.clone(),
                     PackageSource::Path(p) => format!("path:{p}"),
                 },
-                checksum: None,
+                // Threaded from the registry-index checksum that
+                // `fetch::fetch_resolved` already verified this package's
+                // content against before install() ever gets here -- the
+                // lock file now records the SAME checksum it was pinned to,
+                // instead of always writing `None` (LEDGER item 1b).
+                checksum: pkg.checksum.clone(),
                 dependencies: pkg.dependencies.clone(),
             })
             .collect();
@@ -134,12 +139,14 @@ mod tests {
                     version: Version::new(1, 2, 0),
                     source: PackageSource::Remote("github:kryos-lang/serde".into()),
                     dependencies: vec![],
+                    checksum: Some("sha256:aaaa".into()),
                 },
                 ResolvedPackage {
                     name: "http".into(),
                     version: Version::new(0, 3, 5),
                     source: PackageSource::Remote("github:kryos-lang/http".into()),
                     dependencies: vec!["serde".into()],
+                    checksum: None,
                 },
             ],
         };
@@ -149,6 +156,10 @@ mod tests {
         // Should be sorted by name
         assert_eq!(lock.packages[0].name, "http");
         assert_eq!(lock.packages[1].name, "serde");
+        // The resolved package's verified checksum must survive into the
+        // lock file (was unconditionally `None` before -- LEDGER item 1b).
+        assert_eq!(lock.packages[0].checksum, None);
+        assert_eq!(lock.packages[1].checksum.as_deref(), Some("sha256:aaaa"));
     }
 
     #[test]

@@ -13,6 +13,12 @@ pub struct ResolvedPackage {
     pub version: Version,
     pub source: PackageSource,
     pub dependencies: Vec<String>,
+    /// The `sha256:<hex>` checksum recorded for this exact version in the
+    /// registry index, if any. `None` for path dependencies (local
+    /// filesystem trust) and for a remote package the registry has no
+    /// recorded checksum for -- `fetch::fetch_resolved` treats `None` the
+    /// same as a mismatch and refuses to install (see LEDGER item 1b).
+    pub checksum: Option<String>,
 }
 
 /// Where a package comes from.
@@ -31,6 +37,11 @@ pub struct AvailablePackage {
     pub version: Version,
     pub source: String,
     pub dependencies: HashMap<String, VersionReq>,
+    /// The `sha256:<hex>` checksum this exact version is recorded with in
+    /// the registry index, if the caller has one. `None` for a source
+    /// resolved from a manifest with no registry backing (e.g. a bare path
+    /// dependency's transitive deps).
+    pub checksum: Option<String>,
 }
 
 /// A registry of available packages for resolution.
@@ -170,6 +181,7 @@ pub fn resolve(
                         version,
                         source: PackageSource::Path(path.clone()),
                         dependencies: dep_names,
+                        checksum: None,
                     },
                 );
 
@@ -186,6 +198,7 @@ pub fn resolve(
                                         version: v,
                                         source: PackageSource::Path(dep_path.clone()),
                                         dependencies: Vec::new(),
+                                        checksum: None,
                                     },
                                 );
                             }
@@ -317,6 +330,7 @@ fn resolve_recursive(
     let pkg_version = pkg.version.clone();
     let pkg_source = pkg.source.clone();
     let pkg_deps = pkg.dependencies.clone();
+    let pkg_checksum = pkg.checksum.clone();
 
     // Mark as visiting for cycle detection.
     visiting.insert(name.to_string());
@@ -351,6 +365,7 @@ fn resolve_recursive(
             version: pkg_version,
             source: PackageSource::Remote(pkg_source),
             dependencies: dep_names,
+            checksum: pkg_checksum,
         },
     );
 
@@ -369,12 +384,14 @@ mod tests {
             version: "1.0.0".parse().unwrap(),
             source: "github:kryos-lang/serde".into(),
             dependencies: HashMap::new(),
+            checksum: None,
         });
         reg.add(AvailablePackage {
             name: "serde".into(),
             version: "1.2.0".parse().unwrap(),
             source: "github:kryos-lang/serde".into(),
             dependencies: HashMap::new(),
+            checksum: None,
         });
         reg.add(AvailablePackage {
             name: "http".into(),
@@ -384,6 +401,7 @@ mod tests {
                 "serde".into(),
                 VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
             )]),
+            checksum: None,
         });
         reg
     }
@@ -451,6 +469,7 @@ mod tests {
                 "b".into(),
                 VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
             )]),
+            checksum: None,
         });
         reg.add(AvailablePackage {
             name: "b".into(),
@@ -460,6 +479,7 @@ mod tests {
                 "a".into(),
                 VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
             )]),
+            checksum: None,
         });
 
         let mut deps = HashMap::new();
@@ -490,12 +510,14 @@ mod tests {
             version: "1.0.0".parse().unwrap(),
             source: "github:kryos-lang/serde".into(),
             dependencies: HashMap::new(),
+            checksum: None,
         });
         reg.add(AvailablePackage {
             name: "serde".into(),
             version: "2.0.0".parse().unwrap(),
             source: "github:kryos-lang/serde".into(),
             dependencies: HashMap::new(),
+            checksum: None,
         });
         // lib-a requires serde ^1.0.0
         reg.add(AvailablePackage {
@@ -506,6 +528,7 @@ mod tests {
                 "serde".into(),
                 VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
             )]),
+            checksum: None,
         });
         // lib-b requires serde ^2.0.0
         reg.add(AvailablePackage {
@@ -516,6 +539,7 @@ mod tests {
                 "serde".into(),
                 VersionReq::new(Op::Caret, "2.0.0".parse().unwrap()),
             )]),
+            checksum: None,
         });
 
         let mut deps = HashMap::new();

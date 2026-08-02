@@ -303,18 +303,21 @@ fn make_test_registry() -> PackageRegistry {
         version: "1.0.0".parse().unwrap(),
         source: "github:kryos-lang/serde".into(),
         dependencies: HashMap::new(),
+        checksum: None,
     });
     reg.add(AvailablePackage {
         name: "serde".into(),
         version: "1.2.0".parse().unwrap(),
         source: "github:kryos-lang/serde".into(),
         dependencies: HashMap::new(),
+        checksum: None,
     });
     reg.add(AvailablePackage {
         name: "serde".into(),
         version: "2.0.0".parse().unwrap(),
         source: "github:kryos-lang/serde".into(),
         dependencies: HashMap::new(),
+        checksum: None,
     });
     reg.add(AvailablePackage {
         name: "http".into(),
@@ -324,6 +327,7 @@ fn make_test_registry() -> PackageRegistry {
             "serde".into(),
             VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
         )]),
+        checksum: None,
     });
     reg
 }
@@ -339,6 +343,7 @@ fn circular_dependency_detection() {
             "cycle-b".into(),
             VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
         )]),
+        checksum: None,
     });
     reg.add(AvailablePackage {
         name: "cycle-b".into(),
@@ -348,6 +353,7 @@ fn circular_dependency_detection() {
             "cycle-a".into(),
             VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
         )]),
+        checksum: None,
     });
 
     let mut deps = HashMap::new();
@@ -383,6 +389,7 @@ fn version_conflict_detection() {
             "serde".into(),
             VersionReq::new(Op::Caret, "1.0.0".parse().unwrap()),
         )]),
+        checksum: None,
     });
     // lib-y requires serde ^2.0.0
     reg.add(AvailablePackage {
@@ -393,6 +400,7 @@ fn version_conflict_detection() {
             "serde".into(),
             VersionReq::new(Op::Caret, "2.0.0".parse().unwrap()),
         )]),
+        checksum: None,
     });
 
     let mut deps = HashMap::new();

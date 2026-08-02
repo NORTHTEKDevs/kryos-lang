@@ -5,20 +5,32 @@ and **operational model** of the Kryos package registry. The current client
 implementation lives in [`compiler/crates/kryos-package`](../compiler/crates/kryos-package).
 A reference server implementation lives in [`tools/registry`](../tools/registry).
 
-> **Status: this is the design spec, not a description of current client
-> behavior — verified live, the two diverge in ways that matter for the
-> "zero-trust bootstrap" design goal below.** The index IS a real Git
-> repository, IS resolved (`kryos pkg sync`/`search`/`info` all work
-> live against `NORTHTEKDevs/kryos-registry`), and DOES carry a real
-> `sha256:<hex>` checksum per version. But the client does not fetch a
-> tarball or verify a hash at all: `kryos pkg install` (`kryos-package/src/
-> fetch.rs`) `git clone --depth 1`s the registry repo's current HEAD and
-> copies out `packages/<name>/<version>/` directly, and `kryos.lock` never
-> records a checksum despite having the field for one. The checksum this
-> doc describes as verified on every download (`§ Client protocol` below)
-> is today shown only by `kryos pkg info`/`show`, never compared against
-> anything. See `tools/loop/LEDGER.md` item 1b for the
-> live repro and root cause; not fixed as of this writing.
+> **Status: this is still the design spec, not a byte-for-byte description
+> of current client behavior — the client now DOES verify a checksum
+> before trusting a package (LEDGER item 1b is CLOSED), but the mechanism
+> differs from what's described below in two ways.** First, the hash
+> algorithm is SHA-256, not BLAKE3 -- the pure-Rust `kryos-package/src/
+> sha256.rs` implementation, chosen to avoid a new external dependency.
+> Second, `kryos pkg install` never fetches or verifies a "tarball": it
+> still `git clone --depth 1`s the registry repo's current HEAD and copies
+> out `packages/<name>/<version>/` directly (`kryos-package/src/
+> fetch.rs::fetch_github_subdir`). What IS real now: the index's
+> `checksum` field is a canonical `sha256:<hex>` hash of the package's
+> actual `kryos.toml` + `src/**.kry` (+ `stdlib/**.kry` if present) content
+> in deterministic sorted-path order (`kryos-package/src/
+> registry.rs::content_checksum`) -- the SAME function computes it at
+> publish time (`pack()`) and recomputes it over the fetched/cached
+> directory at install time, and `fetch::fetch_resolved` rejects a
+> mismatch OR a missing checksum before the package is used, including on
+> a cache hit (so a package tampered with on disk after a previous install
+> is caught, not silently reused). `kryos.lock` now records the verified
+> checksum instead of always leaving the field empty. `copy_dir_all` also
+> refuses any symlink entry encountered while copying a fetched package,
+> so a malicious commit cannot use a symlink to pull unrelated files from
+> outside the package into the local cache. See `tools/loop/LEDGER.md`
+> item 1b (CLOSED table) for the live repro, the fix, and what's still
+> aspirational in this doc (BLAKE3, true tarball transport, IPFS/S3
+> hosting) versus implemented today.
 
 ## Design goals
 
@@ -128,6 +140,13 @@ published versions, deps, and checksums.
 
 ### `kryos pkg install`
 
+The design intent (below) vs. current implementation, since they differ:
+there is no `.tar.gz`/`download_url` fetch or BLAKE3 hash today -- the
+client `git clone`s the registry repo and copies out
+`packages/<name>/<version>/`, then verifies a SHA-256 content hash over
+that directory. See the status callout at the top of this document for
+the exact current mechanism.
+
 1. Reads the project's `kryos.toml`.
 2. Resolves dependencies against the local index (`crate::resolve`).
 3. For each pinned `(name, version)`:
@@ -135,6 +154,9 @@ published versions, deps, and checksums.
      its BLAKE3 hash matches `checksum`, skip.
    - Otherwise, HTTPS GET the `download_url`, verify the BLAKE3 hash,
      cache locally.
+   - Either way, reject the package (and remove it from the cache) if
+     the checksum is missing or does not match -- an unverifiable or
+     tampered package must never install silently.
 4. Writes `kryos.lock` with concrete versions and checksums.
 
 ### `kryos pkg publish`
