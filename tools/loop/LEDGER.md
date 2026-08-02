@@ -119,6 +119,84 @@ silently "fix" it without re-verification, but does not turn CI permanently
 red for an open item. The CLOSED shapes ARE gated (`tests/security_gate.sh`
 checks #4-6).
 
+### 1b. NEW (final sweep, package registry path): `kryos pkg install`/`add` never verifies a checksum against anything -- the documented "tarballs are pinned by hash" supply-chain claim is FALSE, comparable severity to item 1 (trust-model break, not just a leak/papercut)
+
+Found probing the package registry path (assigned area for the final wave).
+CLAUDE.md states plainly: "Index entries carry `sha256:<hex>` checksums;
+tarballs are pinned by hash." **Verified live this is not what happens.**
+
+**Live repro (no network mocking needed -- reproduced against the real
+`NORTHTEKDevs/kryos-registry`):**
+```
+cd projtest && kryos pkg add http-router && kryos pkg install
+cat kryos.lock
+#   name = "http-router"
+#   version = "0.1.0"
+#   source = "github_subdir:NORTHTEKDevs/kryos-registry/packages/http-router/0.1.0"
+#   -- NO checksum field at all, despite LockFile::Package having one
+echo "MALICIOUS_INJECTED_CONTENT" >> ~/.kryos/packages/http-router-0.1.0/src/lib.kry
+cd ../projtest2 && kryos pkg install   # depends on the SAME package+version
+# "installed 1 package ... wrote kryos.lock" -- exit 0, silently reuses the
+# tampered cache, no warning, no checksum field written even now
+```
+
+**Root cause (read the actual fetch/publish code, not the docs' claim):**
+1. `kryos-package/src/fetch.rs::fetch_github_subdir` clones the registry
+   repo with `git clone --depth 1` (current default-branch HEAD) and copies
+   `packages/<name>/<version>/` out of the clone -- it never downloads or
+   references a "tarball" at all, and never touches a checksum. Reproducibility
+   for a given version rests ENTIRELY on the convention that
+   `packages/<name>/<version>/` is never mutated in place after publish, with
+   NOTHING mechanically enforcing that convention.
+2. `kryos-package/src/lock.rs::LockFile` DOES have a `checksum: Option<String>`
+   field and a `set_checksum` setter -- but `set_checksum` is called ONLY from
+   `lock.rs`'s own unit tests; the real CLI install path
+   (`kryos-cli/src/commands/pkg.rs::install`, `LockFile::from_resolved`) never
+   calls it, confirmed by grep (zero call sites outside tests) and confirmed
+   live above (the real `kryos.lock` has no checksum line).
+3. `kryos-package/src/registry.rs` DOES compute and publish a real
+   `sha256:<hex>` per index entry (`generate_index_entry`, hashes
+   `pkg.tarball_path`'s bytes) -- but the ONLY consumer of that field anywhere
+   in the CLI is `pkg info`/`pkg show`'s display output (`eprintln!("  checksum:
+   {}", ...)`, `kryos-cli/src/commands/pkg.rs:444`). It is shown to a human,
+   never compared against anything.
+4. The two halves don't even correspond: `generate_index_entry` hashes a
+   TARBALL's bytes (a publish-time artifact that `pkg publish`'s own doc
+   comment references via `pkg.tarball_path`), while `fetch_github_subdir`
+   never produces or downloads a tarball -- it `git clone`s and copies a
+   directory tree. Even if verification were wired up naively, the two sides
+   would not agree on what bytes to hash without a canonical, deterministic
+   tarball format shared between publish and fetch (line endings, file
+   ordering, `.git` exclusion, etc. all need to match) -- a real design
+   problem, not a one-line "call set_checksum here" patch.
+
+**Practical impact:** for the intended "capability-safe language for
+secret-handling agent tooling" use case, this means: (a) a compromised or
+force-pushed `kryos-registry` repo can silently change what an EXISTING
+published version resolves to, with zero detection, because nothing hashes
+the fetched content against anything recorded anywhere; (b) `kryos pkg add`
+writes a WILDCARD version constraint (`http-router = "*"`) into `kryos.toml`
+by default (not `"^0.1.0"` or similar), so integrity for a project depends
+entirely on the lock file being committed and never regenerated against a
+mutated upstream -- there is no cryptographic backstop if it is. `kryos.lock`
+pinning the exact version-path (not just a loose version range) does provide
+SOME protection against version-confusion attacks, but none against
+in-place mutation of an already-published version's directory.
+
+**Not attempted as a fix this session:** wiring real verification needs (1)
+a canonical, deterministic tarball/hash format used identically by `pkg
+publish` and by whatever the install path fetches (today: a `git clone`, not
+a tarball download at all -- these would need to converge first), (2)
+`set_checksum` actually wired into `install`/`update`, and (3) a real
+verification step comparing the fetched content's hash against the lock
+file's recorded checksum on every install, not just the first one. This is
+cross-cutting, security-relevant, multi-file work needing its own dedicated
+design pass and re-verification against the real registry -- not a change to
+rush inside a final sweep. Docs corrected instead (CLAUDE.md's package
+registry line, README limitations) to state the true, current guarantee
+(git-clone-of-a-version-path, checksums recorded but never verified)
+rather than the false "pinned by hash" claim. Not gated (no code changed);
+the live repro above is the reproduction for whoever picks this up.
 
 ### 2b. NEW (found while closing #2): global-reassignment-then-cross-function-read corrupts an array
 `tests/known_failures/global_array_reassign_corrupt.kry` (repro below).

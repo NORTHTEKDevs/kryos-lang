@@ -295,7 +295,7 @@ http-router = "1.0"
 
 Source lives in `src/`. Entry point is `src/main.kry`. Run with `kryos run` (from the project root) or `kryos build --release`.
 
-Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `sha256:<hex>` checksums; tarballs are pinned by hash.
+Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. **Known limitation, verified live (not just theorized): the registry index records a `sha256:<hex>` checksum per version, but `kryos pkg install`/`add` never verifies it against anything.** `kryos pkg install` fetches a dependency by `git clone --depth 1` of the registry's current default-branch HEAD and copies out `packages/<name>/<version>/` -- it never downloads a tarball or compares a hash, `kryos.lock` never records a checksum (its `checksum` field is always `None` in practice), and `pkg add` writes a wildcard version constraint (`name = "*"`) into `kryos.toml` by default. Integrity for a given version rests entirely on the convention that a published version's directory is never mutated after the fact, with nothing mechanically enforcing it -- a compromised or force-pushed registry repo can silently change what an already-published version resolves to, undetected. The checksum IS shown by `kryos pkg info`/`show` (a human-readable display only). See `tools/loop/LEDGER.md` item 1b for the live repro and full mechanism.
 
 ## Tooling
 
@@ -315,6 +315,20 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. Index entries carry `
 | `kryos dap`                   | Start the source-level debugger (Debug Adapter Protocol, stdio). |
 | `kryos audit [path]`          | Audit capability usage, extern surface, and secret patterns.   |
 | `kryos bindgen <header.h>`    | Generate Kryos `extern` declarations from a C header.          |
+
+> **Stack trace line precision (known limitation, self-documented in
+> `kryos-rt/src/trace.rs`, verified live -- both backends agree, not a
+> divergence):** every frame in a panic stack trace (`kryos run` and
+> `kryos build -g`) reports its function's DECLARATION line, not the actual
+> call-site or panicking line inside it. A function declared at line 1 whose
+> `return arr[10]` panics on line 3 still prints `:1`; a caller whose call
+> site is line 6 still prints its own declaration line, not line 6. The
+> function NAMES in the trace are correct and useful; the line numbers are
+> not. Root cause: each frame's line is set once at function entry and never
+> advances (fixing it needs a `kryos_trace_line(line)` hook at every call/
+> panic site on both backends, gated today behind the `kryos dap` debug path
+> only for performance reasons). `kryos dap`'s breakpoint/step line info is
+> unaffected -- this limitation is specific to the plain panic stack trace.
 
 ## Common error codes
 

@@ -275,7 +275,7 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v0.9.0** — feature-complete but pre-1.0; see [docs/BUGS.md](docs/BUGS.md) for the two release blockers. Feature-complete language and toolchain + self-hosting compiler (bootstrap fixed point: stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism).
+Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The two most severe open items, both trust-model gaps rather than crashes (per that file's own severity ranking, a silent/undetected gap in the capability or supply-chain boundary outranks a crash): (1) a closure/fn-value read back OUT OF A CONTAINER (a struct field, array element, or map value) is not traced by capability checking, so authority can be laundered through one undetected even under `--strict-capabilities` (`docs/10-capabilities.md`); (2) `kryos pkg install`/`add` never verifies the registry's own recorded checksum against anything it fetches — a `git clone` of the registry repo's current HEAD, not a hash-verified tarball — so an already-published package version could be silently mutated with no detection. Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; these two are the reasons this is "beta" rather than a hard security boundary. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver
@@ -297,15 +297,17 @@ Kryos is **v0.9.0** — feature-complete but pre-1.0; see [docs/BUGS.md](docs/BU
 | Channels + `spawn` + `select` | Complete |
 | Actors (message-passing) | Complete (JIT + AOT) |
 | Async / await | Complete — non-blocking I/O (blocking ops yield the scheduler; async tasks overlap I/O) + cooperative CPU interleaving; both backends |
-| Capability enforcement (`@pure`, `@capabilities`) | Complete |
+| Capability enforcement (`@pure`, `@capabilities`) | Complete except one known gap* |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |
 | Cranelift backend | Complete |
 | LLVM backend (native + DWARF) | Complete |
-| WebAssembly backend | Complete |
+| WebAssembly backend | Complete (v0.1 — assumes i64 array indices) |
 | Module system + package manager | Complete |
 | LSP, REPL, formatter, doc generator | Complete |
 | Editor extensions (VS Code, Zed) | Complete |
-| Package registry (spec + reference server) | Complete |
+| Package registry (spec + reference server) | Functional, but checksums are recorded and never verified* |
+
+\* See the two blockers named above the table.
 
 **Quality bar (every release):**
 
