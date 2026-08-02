@@ -1,0 +1,36 @@
+// KNOWN FAILURE (found during the modules/imports/namespace-resolution
+// hardening wave, not fixed there -- this is a parser/grammar bug, not a
+// module-resolution bug). See tools/loop/LEDGER.md, "modules/imports/
+// namespace resolution" wave.
+//
+// A struct whose name starts with a LOWERCASE letter cannot be constructed
+// via struct-literal syntax (`Name { field: value }`) at all -- the parser
+// appears to only recognize the struct-literal form when the identifier is
+// capitalized (likely a disambiguation heuristic against `if cond { }` /
+// `while cond { }` blocks), so a lowercase name in that position is parsed
+// as a bare identifier reference followed by an unrelated block.
+//
+// Expected: prints "5".
+// Actual: `error[E0102]: undefined variable \`counter\`` (did you mean
+// `cos`?) AND `error[E0102]: undefined variable \`val\`` (did you mean
+// `v`?) -- both diagnostics point at the WRONG tokens (the struct name and
+// field name are misdiagnosed as undefined variables, not "struct literal
+// requires a capitalized type name" or similar).
+//
+// Workaround: capitalize the struct name (`struct Counter { .. }`) --
+// matches every example in the codebase already, but this constraint is
+// not documented anywhere as a hard rule.
+
+struct counter {
+    val: i64,
+}
+
+fn make(v: i64) -> counter {
+    let c = counter { val: v }
+    return c
+}
+
+fn main() {
+    let o = make(5)
+    println(to_string(o.val))
+}

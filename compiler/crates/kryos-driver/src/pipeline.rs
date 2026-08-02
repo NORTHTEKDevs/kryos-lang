@@ -448,7 +448,7 @@ fn compile_file_impl(
     // Validate module-qualified calls against import origins BEFORE the
     // merge erases module boundaries: `json::parse(..)` is flat-name sugar
     // and silently bound to whatever `parse` was in scope (wrong module).
-    let qc = resolve::validate_qualified_calls(&module);
+    let qc = resolve::validate_qualified_calls(&module, &imported_decls);
     if !qc.is_empty() {
         diagnostics.extend(qc);
         return CompileResult {
@@ -1226,7 +1226,7 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
         diagnostics.extend(import_diags);
         return (diagnostics, source_map);
     }
-    let qc = resolve::validate_qualified_calls(&module);
+    let qc = resolve::validate_qualified_calls(&module, &imported_decls);
     if !qc.is_empty() {
         diagnostics.extend(qc);
         return (diagnostics, source_map);
@@ -1325,7 +1325,7 @@ pub fn check_file_with_options_full(
         diagnostics.extend(import_diags);
         return (diagnostics, source_map);
     }
-    let qc = resolve::validate_qualified_calls(&module);
+    let qc = resolve::validate_qualified_calls(&module, &imported_decls);
     if !qc.is_empty() {
         diagnostics.extend(qc);
         return (diagnostics, source_map);

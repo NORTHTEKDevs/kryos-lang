@@ -256,9 +256,9 @@ fn main() {
 
 > Note: `abs`, `min`, and `max` are polymorphic builtins (i64 or f64) available without any import. `use std::math::{abs, min, max}` imports **f64-only** versions that shadow the builtins, so `abs(-42)` would then fail to type-check — don't import them unless you specifically want the f64 form. `sqrt`, `pow`, `sin`, `cos` are likewise builtins.
 
-### Known limitation in the module resolver
+### RESOLVED: transitive FFI references through a selectively-imported function
 
-The resolver does not currently follow transitive references from a `use`-imported function into the FFI primitives that function calls. **Symptom:** `use std::os::{temp_dir}` fails because `temp_dir` calls `_env_or_empty` which calls the `kryos_env_get` extern. **Workaround:** call the underlying builtin directly (`env_get("TMPDIR")`) — those are always in scope.
+This section previously claimed the resolver does not follow transitive references from a `use`-imported function into the FFI primitives (`extern` blocks) that function calls, with `use std::os::{temp_dir}` given as a failing example. **Re-verified live and this is FALSE as of this compiler:** `use std::os::{temp_dir}` (with `@capabilities(process, fs:read)` on the caller) compiles and runs correctly on both backends, returning the real temp directory — `temp_dir`'s private helper `_env_or_empty` (which calls the `kryos_env_get` extern) is pulled in by the selective-import transitive closure, and `extern { }` blocks are always included regardless of the selection list. The resolver rewrite that added program-wide selection unions and the identifier-closure walk (`resolve_imports_inner` in `kryos-driver/src/resolve.rs`) closed this gap; the doc was never updated. No workaround needed — import the function you want directly.
 
 ## Cross-platform path handling
 

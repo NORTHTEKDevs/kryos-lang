@@ -413,13 +413,37 @@ fn record_origin(fn_name: &str, module_last: &str) {
     });
 }
 
+/// Collect the names of every STRUCT/ENUM/TRAIT/ACTOR/type-alias declared in
+/// a decl list. These are legitimate `Name::method(..)` static-call
+/// receivers regardless of case -- Kryos does not require CamelCase type
+/// names, so a lowercase type (`struct os { .. }`, `struct set { .. }`)
+/// sharing a name with a real stdlib module is a valid, ordinary program.
+fn collect_local_type_names(decls: &[Decl], out: &mut HashSet<String>) {
+    for decl in decls {
+        match decl {
+            Decl::Struct { name, .. }
+            | Decl::Enum { name, .. }
+            | Decl::Trait { name, .. }
+            | Decl::Actor { name, .. }
+            | Decl::TypeAlias { name, .. } => {
+                out.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Validate every module-qualified call (`mod::fn(..)`) in the ROOT module
 /// against the recorded import origins. Returns diagnostics for calls whose
 /// qualifier names an imported module but whose function either was not
 /// imported from it or came from a DIFFERENT module (the silent-misbinding
 /// case). Method calls on values are unaffected: the check only fires when
 /// the receiver identifier exactly matches an imported module's last segment.
-pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
+/// `imported_decls` is the already-resolved import closure (structs/enums/
+/// traits/actors from imported modules) so a qualifier naming an IMPORTED
+/// type is also recognized as a static-call receiver, not just a root-module
+/// one.
+pub fn validate_qualified_calls(module: &Module, imported_decls: &[Decl]) -> Vec<Diagnostic> {
     let mut diags = Vec::new();
     let (origins, mut modules): (std::collections::HashMap<String, String>, std::collections::HashSet<String>) =
         IMPORT_ORIGINS.with(|o| {
@@ -431,9 +455,7 @@ pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
     // imported from it, so `csv::parse` (csv is a real module the caller did not
     // import) is validated against `parse`'s actual origin instead of silently
     // binding to whatever `parse` is in scope. Without this, only qualifiers
-    // naming an already-imported-from module were checked. (Type static-method
-    // receivers like `Point::new` are CamelCase and never match a lowercase
-    // stdlib module name, so they are still skipped.)
+    // naming an already-imported-from module were checked.
     if let Some(dir) = resolve_stdlib_dir_for_diagnostics() {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
@@ -449,11 +471,26 @@ pub fn validate_qualified_calls(module: &Module) -> Vec<Diagnostic> {
     if modules.is_empty() {
         return diags;
     }
+    // A qualifier matching a locally-declared or imported TYPE name always
+    // wins over a same-named stdlib module: `struct os { .. }` then
+    // `os::make(..)` is an ordinary static method call, not a broken import
+    // of `std::os`. Without this, ANY program defining a lowercase type
+    // whose name happens to match one of the 66 stdlib module file stems
+    // (`os`, `set`, `stack`, `string`, `net`, `test`, `json`, `path`, ...)
+    // had its static constructor calls rejected with a false
+    // "not imported" / wrong-origin error -- confirmed live, this is not
+    // a CamelCase-only convention the language enforces.
+    let mut local_type_names: HashSet<String> = HashSet::new();
+    collect_local_type_names(&module.declarations, &mut local_type_names);
+    collect_local_type_names(imported_decls, &mut local_type_names);
     let mut calls: Vec<(String, String, kryos_errors::Span)> = Vec::new();
     for decl in &module.declarations {
         collect_qualified_calls_in_decl(decl, &mut calls);
     }
     for (recv, method, span) in calls {
+        if local_type_names.contains(&recv) {
+            continue; // a real type's static method call, not a module qualifier
+        }
         if !modules.contains(&recv) {
             continue; // not a module qualifier (a value/static-type receiver)
         }

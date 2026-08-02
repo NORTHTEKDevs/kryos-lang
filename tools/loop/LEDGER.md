@@ -756,6 +756,28 @@ dangerous than the previously-known error-shape variants (`-`/`(`/`[` all
 type-cascade into visible errors in the CLAUDE.md examples; this one does
 not, when both sides are `bool`).
 
+### 10. NEW (found during the modules/imports/namespace-resolution wave): a lowercase-named struct cannot be constructed via struct-literal syntax at all -- PARSER/GRAMMAR bug, outside that wave's scope, NOT FIXED
+
+`tests/known_failures/lowercase_struct_literal_parse_fail.kry`. `struct
+counter { val: i64 }` then `counter { val: v }` (in a `let` initializer or a
+`return` tail, anywhere a struct literal is legal) fails with `error[E0102]:
+undefined variable \`counter\`` plus a second `undefined variable \`val\``
+-- the parser appears to only recognize `Name { field: value }` as a
+struct-literal when `Name` is capitalized (likely a disambiguation
+heuristic against `if cond { }`/`while cond { }` blocks: without it, `if
+c { }` would need to guess whether `c` starts a struct literal or a
+condition). `struct Counter { .. }` with the byte-identical body works.
+Papercut-ranked (loud failure, clear-ish if misleading diagnostic, trivial
+workaround already followed by every example in the codebase), but NOT
+documented as a hard rule anywhere -- CLAUDE.md's hard rules list required
+capitalization nowhere. Whoever picks this up: check whether the
+struct-literal disambiguation in `kryos-parser` is genuinely
+case-conditioned (grep the primary-expression parse arm for an uppercase
+check before assuming) or something else entirely; if it's real, either
+relax it (parse a struct literal whenever `Name` resolves to a known type
+in scope, not by case) or give it an honest diagnostic instead of two
+misattributed `E0102`s.
+
 ### Ruled out this session (type system / generics / monomorphization wave) -- probed, all correct on BOTH backends, no bug found
 
 Wrote and ran (JIT + AOT, both backends, value-asserted, not just
@@ -1300,6 +1322,111 @@ Regression gate: `tests/diagnostics_gate.sh` (new), wired into
 (examples_e2e flaked 10/12 and 8/12 under tier-3 contention across two
 separate runs, both times clean 12/12 re-run alone -- the documented
 bootstrap-class contention flake, not a regression), bootstrap 16/16.
+
+---
+
+### Wave: modules/imports/namespace resolution (2026, HEAD 0d9b932 at start)
+
+Probed every documented module-resolver limit plus deep chains, diamonds,
+circular/self imports, glob+selective mixes, qualified-call-origin
+validation, and case-sensitivity. Live-reproduced against
+`kryos-driver/src/resolve.rs` before touching anything, per the loop's
+REPRODUCE-first rule.
+
+**RE-VERIFIED STILL ACCURATE (no action, matches CLAUDE.md as written):**
+- No import aliasing (`use m::{f as g}` is `E0009` parse error).
+- Two modules exporting the same name cannot both be imported (`E0205`).
+- The resolver pulls every STRUCT/enum/trait/actor of an imported module
+  regardless of the selective list -- two disjoint-function-only imports
+  from two user modules that both define `struct Item` still collide
+  (`E0205`), confirmed live with a fresh 2-module repro (stdlib itself no
+  longer has any same-named structs, so this had to be re-demonstrated with
+  synthetic modules, not stdlib). Type-reachability import stays backlogged.
+- Importing a name that shadows a global builtin (`use std::trie::{contains}`
+  alongside `use std::os::{name}`) breaks `std::os`'s internal `contains(..)`
+  calls with a mislocated `E0100` (byte-offset spans pointing past the end of
+  the user's own file, into the shadowed module's source). Confirmed live,
+  still exactly as documented.
+- Module-path case-sensitivity gate (`tests/module_case_gate.sh`) still
+  correctly rejects a case-mismatched import.
+- Module-qualified-call-vs-origin validation (`E0201` wrong origin, `E0202`
+  not imported) fires correctly for genuine misbindings.
+
+**PROBED FURTHER, NO BUG FOUND (all live-verified, values checked not just
+exit codes):** 5-level-deep import chains; diamond imports (two siblings
+both importing a common ancestor module, including one via GLOB and the
+other SELECTIVE simultaneously); mutual/circular imports between two user
+modules calling each other's functions (correct mutual-recursion result,
+no infinite loop); a module importing ITSELF (silently a no-op -- the
+driver pre-seeds `visited` with the root's own canonical path before
+`resolve_imports`, so the self-import is skipped, not a duplicate-decl
+error); glob-import collision between two modules exporting the same name
+(`E0205`, same as selective).
+
+**FIXED: false `E0201`/`E0202` when a local type's name collides with a
+stdlib module file stem.** `kryos-driver/src/resolve.rs`'s qualified-call
+validator treats ANY receiver identifier matching one of the 66 stdlib
+module file stems as a module qualifier (by design, so `csv::parse` is
+checked even when the caller never imported `std::csv`). It had no way to
+tell a same-named LOCAL type apart -- Kryos does not require PascalCase type
+names (confirmed live: `struct os { .. }` / `enum set { .. }` are legal
+declarations). Repro: `enum set { Full(i64), Empty }` with `impl set { fn
+make(v: i64) -> set { return set::Full(v) } }` then `set::make(5)` --
+BEFORE: `error[E0202]: \`set::Full\` is not imported` and `\`set::make\` is
+not imported`, exit 1, even though the program never imports `std::set`.
+AFTER: prints `5`. Proof both ways: `git stash` the 2-file fix + rebuild ->
+both E0202s fire; restore + rebuild -> clean run, correct value. Fix:
+`collect_local_type_names` scans struct/enum/trait/actor/type-alias names in
+the root module AND the resolved import closure; a qualifier matching one of
+those now wins over a same-named stdlib module, checked before the
+`modules.contains(&recv)` test. Genuine wrong-origin (`E0201`) and
+not-imported (`E0202`) cases re-verified still fire (not swallowed by the
+carve-out). Regression: `tests/module_case_gate.sh` checks 4-5 (also proven
+RED on the pre-fix binary via `git stash`).
+
+**DOC CORRECTED (was a false negative claim, not a code bug): the
+"transitive FFI through a selectively-imported function" limitation is
+STALE.** CLAUDE.md claimed `use std::os::{temp_dir}` fails because the
+resolver doesn't follow `temp_dir` -> `_env_or_empty` -> the
+`kryos_env_get` extern. Live-reproduced on BOTH backends (`kryos run` and
+`kryos build --release`) with `@capabilities(process, fs:read)` on the
+caller: it compiles and runs correctly, printing the real temp directory.
+Root cause of the doc going stale: `resolve_imports_inner` already (a)
+recursively resolves an imported module's OWN imports unconditionally
+before filtering by the selection list, and (b) always includes `extern { }`
+blocks regardless of selection -- so `_env_or_empty` (pulled in via the
+identifier-transitive-closure walk over `temp_dir`'s body) and its
+`kryos_env_get` extern declaration are both present. This was almost
+certainly fixed by the resolver rewrite in `c616af1` (program-wide selection
+unions + transitive closure) and the doc was never re-verified after. This
+was the wave's flagship assigned item ("most user-hostile") -- ruled out as
+already fixed rather than needing a redesign. Corrected in `CLAUDE.md` in
+place; no code change needed.
+
+**FILED, OUT OF SCOPE (parser/grammar, not module resolution) -- a
+lowercase-named struct cannot be constructed via struct-literal syntax AT
+ALL, unrelated to imports.** Found while building the local-type-collision
+repro above: `struct counter { val: i64 }` then `counter { val: v }`
+ANYWHERE (a `let` initializer or a `return` tail) fails with `error[E0102]:
+undefined variable \`counter\`` + a second `undefined variable \`val\`` --
+the parser appears to only recognize `Name { field: value }` as a struct
+literal when `Name` starts with an uppercase letter (likely a
+disambiguation heuristic against `if cond { }`/`while cond { }` blocks),
+otherwise parsing `counter` as a bare identifier and `{ val: v }` as an
+unrelated block. `struct Counter { .. }` (PascalCase) with the identical
+body works. Not documented anywhere as a hard requirement (CLAUDE.md's
+struct examples are all PascalCase by convention, not stated as a rule).
+This sidesteps struct literals entirely by using an enum (tuple-variant
+construction, no `{ }`) for the local-type-collision fix's regression test.
+Minimal repro left in this session's scratch, not added to `tests/` since
+it's outside this wave's assigned surface (module/import resolution) --
+whoever picks up parser/grammar hardening should check whether the
+uppercase-only struct-literal gate is intentional and, if not, either relax
+it or give it a real diagnostic instead of two misleading `E0102`s pointing
+at the wrong tokens.
+
+Gates: `kryos-loop.sh gates 2` GREEN (conformance 53/53, all tier1+tier2
+checks pass), bootstrap 16/16 solo.
 
 ---
 

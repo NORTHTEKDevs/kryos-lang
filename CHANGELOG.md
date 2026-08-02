@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed — module resolver: false positive on a local type colliding with a stdlib module name
+
+- **A locally-declared struct/enum/trait/actor whose name matched one of the
+  66 stdlib module file stems (`os`, `set`, `stack`, `string`, `net`,
+  `test`, `json`, `path`, ...) had its OWN static-method calls
+  (`Name::method(..)`) rejected with a false `E0201`/`E0202`
+  "not imported" / "wrong origin" error, even though the program never
+  imported the colliding stdlib module.** `kryos-driver/src/resolve.rs`'s
+  qualified-call-origin validator treats any receiver identifier matching a
+  real stdlib module file stem as a module qualifier; it had no way to tell
+  a same-named local TYPE apart, since Kryos does not require PascalCase
+  type names. Fixed: the validator now collects every struct/enum/trait/
+  actor/type-alias name declared in the root module and in the resolved
+  import closure, and a qualifier matching one of those wins over a
+  same-named stdlib module every time. New gate: checks 4-5 in
+  `tests/module_case_gate.sh`.
+- **Docs correction:** `CLAUDE.md`'s "Known limitation in the module
+  resolver" section (transitive FFI references from a selectively-imported
+  function into `extern` primitives, `std::os::temp_dir` cited as failing)
+  was re-verified live and is FALSE as of this compiler — it already works
+  correctly on both backends. The resolver rewrite that added program-wide
+  selection unions closed this gap previously; the doc was never updated.
+  Corrected in place.
+
 ### Fixed — both concurrency release blockers, one root cause (Pass 47)
 
 - **Spawn wrappers passed aggregate captures with the wrong ABI.**
