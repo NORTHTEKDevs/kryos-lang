@@ -4263,8 +4263,126 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 .iter()
                                 .any(|l| l.name.as_deref() == Some(name.as_str()));
                             if !is_local && ctx.mutable_globals.contains_key(name.as_str()) {
-                                let val = lower_expr_to_operand(ctx, value);
-                                emit_global_store(ctx, name, val);
+                                // ARC bookkeeping for a heap-owning global being
+                                // overwritten wholesale (ledger item 2b).
+                                // kryos_global_set is a raw i64-slot store with no
+                                // ARC awareness, so without this: (a) the OLD
+                                // global value was never released (a leak), and
+                                // (b) if the RHS was a bare reference to a
+                                // surviving named local, the global and that
+                                // local ended up aliasing the SAME heap block
+                                // with no extra retain -- the local's ordinary
+                                // end-of-scope Drop then freed memory the global
+                                // still pointed to, so the NEXT read through the
+                                // global observed freed memory
+                                // (`kryos_array_push: corrupt array header ...
+                                // len=0 cap=0 data=0x0`). Mirrors the identical
+                                // fix for actor-state-field assignment just
+                                // above. The push-chain form (`G = push(G, x)`)
+                                // never hit this: its RHS is a fresh call result
+                                // with no other owner.
+                                let global_ty = ctx
+                                    .mutable_globals
+                                    .get(name.as_str())
+                                    .map(|(t, _)| t.clone())
+                                    .unwrap_or(MirType::I64);
+                                let release_fn = release_if_ne_fn(&global_ty);
+                                let old_snapshot = release_fn
+                                    .map(|_| emit_global_load(ctx, name, global_ty.clone()));
+                                // Detect the self-referential push-chain shape
+                                // `G = push(G, x)` at the AST level, before lowering
+                                // erases the identifier. Its first argument is a bare
+                                // re-read of THIS SAME global, not a second,
+                                // independently-owned value, so it must not receive
+                                // `consume_call_args`'s normal "different owner"
+                                // retain (that retain is for `nd = push(other.data,
+                                // v)`-shaped calls, where a truly distinct binding
+                                // becomes a new owner of `other.data`'s current
+                                // value). This mirrors the `local_id == dest`
+                                // self-skip `consume_call_args` already does for the
+                                // plain-local case `a = push(a, v)`; that identity
+                                // trick cannot fire here because every textual read
+                                // of a global lowers to a FRESH temp via
+                                // `emit_global_load`, so `dest`/`val` below and the
+                                // arg-0 temp are never the same MIR local even though
+                                // they represent the same value. Without this
+                                // exclusion, every `G = push(G, x)` call would leak
+                                // one array-header retain (never released, since the
+                                // arg-0 temp is anonymous and never scope-drops).
+                                let self_push_first_arg = matches!(
+                                    value,
+                                    ast::Expr::FnCall { callee, args, .. }
+                                        if matches!(callee.as_ref(), ast::Expr::Identifier { name: cn, .. } if cn == "push")
+                                            && matches!(args.first(), Some(ast::Expr::Identifier { name: an, .. }) if an == name)
+                                );
+                                let rvalue = lower_expr_to_rvalue(ctx, value);
+                                let mut retain_src: Option<&'static str> = None;
+                                if let RValue::Use(Operand::Local(src)) = &rvalue {
+                                    let src_ty = ctx
+                                        .locals
+                                        .iter()
+                                        .find(|l| l.id == *src)
+                                        .map(|l| l.ty.clone())
+                                        .unwrap_or(MirType::I64);
+                                    if let Some(rf) = retain_for_ty(&src_ty) {
+                                        retain_src = Some(rf);
+                                    } else if !is_copy_type(ctx, &src_ty) {
+                                        ctx.dropped_locals.insert(src.0);
+                                    }
+                                }
+                                // Mark non-copy call args (e.g. a struct pushed by a
+                                // bare named local) consumed exactly as the
+                                // plain-local reassignment path does just below --
+                                // without this, `fn add_one(n) { let it = Item{v:n}
+                                // G = push(G, it) }` dropped `it` at add_one's own
+                                // scope end right after pushing it, freeing the box
+                                // the array now referenced; the freed slot was
+                                // immediately reused by the NEXT call's `it`
+                                // allocation, so every element of `G` silently
+                                // aliased the LAST value pushed (found writing this
+                                // fix's own regression test).
+                                let val = ctx.alloc_temp(global_ty.clone());
+                                match &rvalue {
+                                    RValue::Call { func, args } => {
+                                        if self_push_first_arg && !args.is_empty() {
+                                            consume_call_args(ctx, val, func, &args[1..]);
+                                        } else {
+                                            consume_call_args(ctx, val, func, args);
+                                        }
+                                    }
+                                    RValue::CallIndirect { args, .. } => {
+                                        consume_call_args(ctx, val, "", args);
+                                    }
+                                    _ => {}
+                                }
+                                ctx.emit(Instruction::Assign {
+                                    dest: val,
+                                    value: rvalue,
+                                });
+                                emit_global_store(ctx, name, Operand::Local(val));
+                                if let Some(rf) = retain_src {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rf.to_string(),
+                                            args: vec![Operand::Local(val)],
+                                        },
+                                    });
+                                }
+                                if let (Some(rel), Some(old)) = (release_fn, old_snapshot) {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rel.to_string(),
+                                            args: vec![
+                                                Operand::Local(old),
+                                                Operand::Local(val),
+                                            ],
+                                        },
+                                    });
+                                }
                                 return;
                             }
                             let dest = find_local_by_name(ctx, name)

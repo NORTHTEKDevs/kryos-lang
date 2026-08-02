@@ -1,0 +1,88 @@
+// Conformance: cross-function global reassignment corruption (ledger item 2b).
+//
+// A mutable module-level `let mut NAME: T` global is stored via a raw i64
+// slot in the runtime globals registry (kryos-rt/src/globals.rs) with NO ARC
+// awareness -- kryos_global_set just overwrites a HashMap entry; it does not
+// retain the incoming heap handle or release the outgoing one. When a
+// function reassigned a heap-owning global from a BARE LOCAL REFERENCE
+// (`G = local_value`), the local's own end-of-scope Drop freed the very
+// buffer the global's slot now pointed to -- the NEXT read of the global
+// from ANY OTHER function then observed freed memory:
+//   kryos panic: kryos_array_push: corrupt array header @ ...
+//   (len=0, cap=0, elem_size=8, ref_count=1, data=0x0)
+//
+// Fixed in kryos-mir/src/lower.rs by mirroring the actor-state-field
+// ARC-bookkeeping fix immediately above it in the same match: retain the RHS
+// when it reduces to a bare container-local reference (the global becomes a
+// second owner), and release the OLD global value on overwrite (a latent
+// leak the same raw-slot-store pattern also caused). Exercises array, str,
+// and map globals -- all three heap-owning container types route through
+// the identical `retain_for_ty`/`release_if_ne_fn` lowering path.
+
+struct Item {
+    v: i64
+}
+
+let mut G_ARR: [Item] = []
+let mut G_STR: str = ""
+let mut G_MAP: map<str, i64> = {}
+
+fn expect(cond: bool, msg: str) {
+    if not cond {
+        println("CONF FAIL: " + msg)
+        exit(1)
+    }
+}
+
+fn reset_arr() {
+    let empty: [Item] = []
+    G_ARR = empty
+}
+
+fn add_one(n: i64) {
+    let it = Item { v: n }
+    G_ARR = push(G_ARR, it)
+}
+
+fn reset_str() {
+    let empty: str = ""
+    G_STR = empty
+}
+
+fn append_str(s: str) {
+    G_STR = G_STR + s
+}
+
+fn reset_map() {
+    let empty: map<str, i64> = {}
+    G_MAP = empty
+}
+
+fn add_map(k: str, v: i64) {
+    G_MAP[k] = v
+}
+
+fn main() {
+    reset_arr()
+    add_one(1)
+    add_one(2)
+    add_one(3)
+    expect(len(G_ARR) == 3, "array global length survives reassign-then-cross-fn-read")
+    expect(G_ARR[0].v == 1, "array element 0 correct")
+    expect(G_ARR[1].v == 2, "array element 1 correct")
+    expect(G_ARR[2].v == 3, "array element 2 correct")
+
+    reset_str()
+    append_str("a")
+    append_str("b")
+    append_str("c")
+    expect(G_STR == "abc", "str global survives reassign-then-cross-fn-read")
+
+    reset_map()
+    add_map("x", 10)
+    add_map("y", 20)
+    expect(G_MAP["x"] == 10, "map global key x survives reassign-then-cross-fn-read")
+    expect(G_MAP["y"] == 20, "map global key y survives reassign-then-cross-fn-read")
+
+    println("conformance global reassign cross-fn: PASS")
+}

@@ -28,13 +28,38 @@ use ast
 // Parser struct
 // -------------------------------------------------------------------
 
+// `tokens` is NOT a field here -- see 680be5b (lexer.kry's identical fix)
+// for the exact mechanism. `emit_aggregate_struct` clones/dups any
+// array-typed struct FIELD unconditionally at struct-literal construction
+// time, regardless of @copy. `p_advance`/`p_expect`/`p_error` all rebuild
+// a `Parser{...}` literal on every token (p_advance: once per token
+// across the WHOLE file, not just once per char like the lexer, but
+// `tokens` here is the fixed FULL token stream, len N, not a growing
+// accumulator) -- so with `tokens` as a field this was O(N) dups of an
+// N-element array, once per token, i.e. O(N^2) struct-element retains
+// over a parse (measured: lower.kry, 18657 tokens, ~435MB peak WS/396ms
+// with the field present -- see LEDGER item 5 for post-fix numbers).
+// `errors` stays a field: it is 0-length for the overwhelmingly common
+// clean-parse case (this file, tokenized here, produces none), so
+// duplicating it costs nothing in the hot path, and unlike `tokens` it is
+// a real external API surface read by main.kry (`p.errors`) after parsing
+// completes -- moving it to a module global would require threading a
+// getter through every caller for no measurable benefit.
 @copy
 struct Parser {
-    tokens: [Token],
     pos: i32,
     errors: [str],
     no_struct_lit: bool
 }
+
+// Token accumulator for the CURRENT parse. Module-level so a Parser
+// rebuild never carries an array field (see struct comment above). Reset
+// (reassigned, not pushed) exactly once per `parser_new` call; safe
+// because ledger item 2b (cross-function global-reassignment corruption)
+// is fixed, and because a single self-host process runs at most one
+// Parser to completion before starting another (recursive-descent, no
+// interleaving of two live Parser instances).
+let mut PARSER_TOKENS: [Token] = []
 
 // -------------------------------------------------------------------
 // Result wrappers -- pairs of (Parser, parsed_node)
@@ -95,7 +120,8 @@ let POSTFIX_BP = 28
 
 fn parser_new(tokens: [Token]) -> Parser {
     let errors: [str] = []
-    return Parser { tokens: tokens, pos: 0, errors: errors, no_struct_lit: false }
+    PARSER_TOKENS = tokens
+    return Parser { pos: 0, errors: errors, no_struct_lit: false }
 }
 
 // -------------------------------------------------------------------
@@ -104,10 +130,10 @@ fn parser_new(tokens: [Token]) -> Parser {
 
 fn p_peek(p: Parser) -> Token {
     let mut idx = p.pos
-    if idx >= len(p.tokens) {
-        idx = len(p.tokens) - 1
+    if idx >= len(PARSER_TOKENS) {
+        idx = len(PARSER_TOKENS) - 1
     }
-    return p.tokens[idx]
+    return PARSER_TOKENS[idx]
 }
 
 fn p_peek_kind(p: Parser) -> i32 {
@@ -131,10 +157,10 @@ fn p_peek_text(p: Parser) -> str {
 
 fn p_peek_nth(p: Parser, n: i32) -> i32 {
     let mut idx = p.pos + n
-    if idx >= len(p.tokens) {
-        idx = len(p.tokens) - 1
+    if idx >= len(PARSER_TOKENS) {
+        idx = len(PARSER_TOKENS) - 1
     }
-    return p.tokens[idx].kind
+    return PARSER_TOKENS[idx].kind
 }
 
 fn p_at_end(p: Parser) -> bool {
@@ -145,7 +171,7 @@ fn p_advance(p: Parser) -> Parser {
     if p_at_end(p) {
         return p
     }
-    return Parser { tokens: p.tokens, pos: p.pos + 1, errors: p.errors, no_struct_lit: p.no_struct_lit }
+    return Parser { pos: p.pos + 1, errors: p.errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_check(p: Parser, kind: i32) -> bool {
@@ -173,7 +199,7 @@ fn p_expect(p: Parser, kind: i32) -> Parser {
     let msg = "expected " + token_kind_name(kind) + ", found " + token_kind_name(tok.kind) + " at " + to_string(tok.start)
     let mut errors = p.errors
     push(errors, msg)
-    return Parser { tokens: p.tokens, pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
+    return Parser { pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_error(p: Parser, msg: str) -> Parser {
@@ -182,7 +208,7 @@ fn p_error(p: Parser, msg: str) -> Parser {
     // " at <off>" (e.g. p_expect) push directly and bypass this helper.
     let mut errors = p.errors
     push(errors, msg + " at " + to_string(p_peek_start(p)))
-    return Parser { tokens: p.tokens, pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
+    return Parser { pos: p.pos, errors: errors, no_struct_lit: p.no_struct_lit }
 }
 
 fn p_expect_name(p: Parser) -> ParseNameResult {
