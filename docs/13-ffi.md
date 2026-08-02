@@ -1,51 +1,60 @@
 # Foreign Function Interface (FFI)
 
-> **Implementation Status (corrected -- verified against this commit, not
-> the earlier draft of this page):** `extern` blocks (with optional ABI
-> string, defaulting to `"C"`) parse, type-check, and compile through both
-> backends -- but **calling an ARBITRARY real C-library function through one
-> is not reliably supported today**, despite what earlier versions of this
-> page (and its own examples) claimed. What actually works:
+> **Implementation Status (corrected again -- this page previously said
+> unsupported externs "parse, type-check, and compile through both
+> backends," which was true but was itself the bug: they compiled clean and
+> then failed unpredictably at link time, at codegen time, or -- worst case
+> -- silently produced no effect at runtime. As of this compiler, the
+> unsupported shapes below are REJECTED AT CHECK TIME (`error[E0508]`,
+> `kryos explain E0508`) instead of being allowed to compile.** What this
+> means concretely:
 >
+> - **Arbitrary C-library FFI (any extern name that does not start with
+>   `kryos_`) is rejected at `kryos check`/`run`/`build`.** It was never
+>   reliably supported -- the extern's param/symbol info was never threaded
+>   to codegen, so `extern "C" { fn getpid() -> i32 }` failed AOT codegen
+>   with "use of undefined value '@getpid'", `extern "C" { fn abs(x: i32)
+>   -> i32 }` failed AOT with a confusing type mismatch (and only "worked"
+>   on `kryos run` via an unrelated builtin-name collision), and `extern "C"
+>   { fn puts(s: str) -> i32 }` built, ran, and printed NOTHING -- a silent
+>   wrong answer with no diagnostic at all. All three are now a clear
+>   compile-time error instead of a downstream surprise: `error[E0508]:
+>   extern function \`getpid\` is not a \`kryos_*\` runtime symbol --
+>   arbitrary C-library FFI is not implemented by this compiler`.
 > - The `kryos_*`-prefixed runtime symbols that back the documented stdlib
 >   builtins genuinely link and run -- but you reach them by calling the
 >   ordinary Kryos builtin/stdlib function, **not** by hand-declaring your
->   own `extern` block against a `kryos_*` name (a hand-declared `kryos_*`
->   extern with a `str`/heap-typed signature **crashes** -- it calls the raw
->   symbol without the marshalling the real builtin path applies; see
->   CLAUDE.md gotcha #22). This is why "the runtime provides 100+ FFI
->   functions" is true of the *stdlib surface*, not of what you can safely
->   `extern`-declare yourself.
-> - An extern name that happens to COLLIDE with a Kryos builtin (`sin`,
->   `cos`, `pow`, `sqrt`, `abs`, ...) gets intercepted by the builtin
->   fast-path regardless of your `extern` declaration -- it "works," but it
->   is calling the KRYOS builtin, not your declared foreign function. Do not
->   read a working `extern "C" { fn sqrt(x: f64) -> f64 }` example as proof
->   that arbitrary C-library FFI links; it proves the opposite (name
->   collision, not linking).
-> - A genuinely foreign, non-`kryos_*`, non-builtin-colliding C symbol is
->   inconsistent: some fail the AOT build outright with "use of undefined
->   value" (`getpid`, `strlen`, and even libc's own `sqlite3_libversion_number`
->   analog all reproduce this on this platform), and at least one
->   (`puts`) BUILDS AND RUNS but silently does not produce the call's
->   effect at all -- `puts("hello from Kryos")` exits 0 and prints nothing,
->   which is worse than a link failure because nothing signals the problem.
->   **Do not rely on calling your own C functions via `extern` until real
->   FFI emission lands** (documented in CLAUDE.md gotcha #22 as "the
->   extern's param/symbol info isn't threaded to codegen").
+>   own `extern` block against a `kryos_*` name. **A hand-declared `kryos_*`
+>   extern with a `str`/array/map-typed signature is now ALSO rejected at
+>   check time** (same E0508), because it used to compile clean and
+>   SEGFAULT both backends at runtime: the real native symbol expects raw
+>   pointer/length pairs (e.g. `kryos_env_get(key_ptr: i64, key_len: i64,
+>   val_buf: i64, val_buf_len: i64) -> i64`, per `std::os`), not a Kryos
+>   `str` handle, and the hand-declared version called the raw symbol
+>   without that marshalling. Use the documented builtin (`env_get(...)`)
+>   instead. A small allowlist of names the compiler is verified to marshal
+>   correctly (`kryos_builtin_to_upper`/`to_lower`,
+>   `kryos_ffi_dlopen`/`dlsym`/`cstr`/`strlen`/`string_from_ptr`) is exempt,
+>   since the stdlib itself hand-declares exactly those with `str` types.
+>   An i64/i32/f64/ptr-only `kryos_*` extern (matching the real symbol's raw
+>   ABI, as `compiler/stdlib/os.kry` demonstrates) is unaffected and still
+>   works.
 > - Custom link flags in `kryos.toml` (`[build] link = [...]`) are **not
 >   implemented** -- the "Linking" section below describing them is
 >   aspirational, not current behavior.
 > - `kryos bindgen <header.h>` **is implemented** and works (generates real
->   `extern "C" { ... }` declarations from a header) -- an earlier draft of
->   this page said the opposite; that was wrong in the other direction.
+>   `extern "C" { ... }` declarations from a header) -- those declarations
+>   are still subject to the same E0508 rejection above once you try to
+>   compile against them, since bindgen only generates the declaration, not
+>   real linking support.
 
 Kryos can DECLARE calls into C libraries and system functions using `extern`
-blocks, and the declarations type-check and pass through codegen -- but
-reliably calling into an arbitrary real C library is not there yet (see
-above). Treat the rest of this page's worked examples as illustrating the
-INTENDED shape of the feature, verified per-example below, not as a
-guarantee they produce correct output for a library of your choosing.
+blocks -- but **the compiler now rejects, at check time, both of the
+unsupported shapes documented above** rather than letting them compile and
+fail (or silently misbehave) later. Treat the rest of this page's worked
+examples as illustrating the shape of the feature and its FAILURE MODE
+(each is now a compile-time E0508, not a runtime surprise) -- not as
+working code to copy.
 
 FFI access is gated by the capability system. Declare `ffi` in your `kryos.toml` capabilities:
 
@@ -58,7 +67,7 @@ Without this, extern declarations will be rejected.
 
 ## Extern Blocks
 
-Declare foreign functions inside an `extern "C"` block. This tells the compiler that these functions follow the C calling convention and will be provided at link time:
+Declare foreign functions inside an `extern "C"` block. This tells the compiler that these functions follow the C calling convention and will be provided at link time -- **but any name that does not start with `kryos_` is rejected at check time (E0508), before it ever reaches the linker:**
 
 ```
 extern "C" {
@@ -68,21 +77,35 @@ extern "C" {
 }
 
 fn main() {
-    puts("hello from Kryos")   // VERIFIED: builds, exits 0, prints NOTHING -- silently wrong, not a real puts call
-    let root = sqrt(144.0)     // VERIFIED: works, but only because `sqrt` collides with the Kryos builtin
-    let positive = abs(-42)    // VERIFIED: FAILS to build ("defined with type 'i64' but expected 'i32'")
+    puts("hello from Kryos")
+    let root = sqrt(144.0)
+    let positive = abs(-42)
 }
 ```
 
+VERIFIED: `kryos check`/`run`/`build` all reject this with three `E0508`
+errors, one per declared name -- `error[E0508]: extern function \`puts\` is
+not a \`kryos_*\` runtime symbol -- arbitrary C-library FFI is not
+implemented by this compiler` (and identically for `sqrt`/`abs`). This
+replaces the previous behavior, where the block compiled clean and each
+call misbehaved differently at runtime: `puts` printed nothing at all,
+`sqrt` silently called the Kryos builtin instead of libm, and `abs` failed
+AOT codegen with a confusing type mismatch. None of that ambiguity is
+reachable anymore -- the extern block itself is rejected.
+
 Each function inside the extern block is a declaration only -- no body. In
 principle the linker resolves the symbol at build time against system
-libraries or any libraries you link with; in practice, see the status note
-at the top of this page before assuming any specific symbol will link
-correctly, let alone marshal its arguments/return correctly.
+libraries or any libraries you link with; in practice, no non-`kryos_*`
+extern reaches the linker at all today (see the status note at the top of
+this page).
 
 ## Type Marshalling
 
-Kryos types map to C types across the FFI boundary:
+An `extern` signature is restricted to the types below (E0508 rejects
+anything else -- `str`, arrays, maps, structs/enums/tuples, `fn` -- outside
+the small compiler-verified allowlist noted in the status note above,
+because Kryos's own representation for those types is a heap handle, not
+the C bit pattern the row implies):
 
 | Kryos type | C type | Size |
 |-----------|--------|------|
@@ -97,9 +120,16 @@ Kryos types map to C types across the FFI boundary:
 | `f32` | `float` | 4 bytes |
 | `f64` | `double` | 8 bytes |
 | `bool` | `_Bool` | 1 byte |
-| `str` | `char*` | pointer |
+| `ptr` / `*T` | `void*` / `T*` | pointer |
 
-All values cross the boundary as their native representation. Strings are passed as null-terminated UTF-8 `char*` pointers.
+`str` is NOT in this table on purpose: a Kryos `str` is a heap handle
+(pointer to a length-prefixed, refcounted `KryosString`), not a bare
+`char*`. To pass string data across a raw extern boundary, convert
+explicitly with the `str_to_ptr(s) -> i64` / `len(s) -> i64` builtins on the
+way in and `buf_to_str(ptr, len) -> str` on the way out (see
+`compiler/stdlib/os.kry`'s `_env_or_empty` for the canonical pattern) --
+declaring the extern parameter itself as `str` is rejected (E0508) because
+it skips that conversion and reads/writes through the wrong pointer shape.
 
 ## Linking (ASPIRATIONAL -- `[build] link` is not implemented)
 
@@ -116,7 +146,7 @@ Command-line `-- -lm -lsodium`-style passthrough is likewise not available
 today. There is currently no supported way to link an additional system or
 third-party C library from a `kryos build` invocation.
 
-## Practical Example: Math Library (works, but NOT because of real FFI linking)
+## Practical Example: Math Library (rejected -- use the builtins directly)
 
 ```
 extern "C" {
@@ -127,21 +157,21 @@ extern "C" {
 
 fn main() {
     let angle = 3.14159 / 4.0
-    println(to_string(sin(angle)))   // VERIFIED: prints ~0.707
-    println(to_string(cos(angle)))   // VERIFIED: prints ~0.707
-    println(to_string(pow(2.0, 10.0))) // VERIFIED: prints 1024
+    println(to_string(sin(angle)))
+    println(to_string(cos(angle)))
+    println(to_string(pow(2.0, 10.0)))
 }
 ```
 
-This example genuinely builds and runs -- but read the status note at the
-top of this page first: `sin`/`cos`/`pow` are also Kryos ambient builtins,
-so this is calling the BUILTIN under a name that happens to match your
-`extern` declaration, not proof that `extern "C"` reliably reaches an
-arbitrary C library function. Renaming the extern block to a genuinely
-foreign symbol is not guaranteed to produce the same result -- see the next
-example.
+VERIFIED: rejected with `E0508` on all three declarations. This used to
+"work" -- but only because `sin`/`cos`/`pow` are also Kryos ambient
+builtins, so it was silently calling the BUILTIN under a name that
+happened to match the `extern` declaration, not real FFI. Since `sin`,
+`cos`, `pow`, and `sqrt` are already ambient Kryos builtins (see "Builtins
+available everywhere" in CLAUDE.md), there is no need for an `extern`
+block at all -- call them directly: `sin(angle)`, no import, no capability.
 
-## Practical Example: System Calls (FAILS to link today)
+## Practical Example: System Calls (rejected, not a link failure anymore)
 
 ```
 extern "C" {
@@ -150,19 +180,27 @@ extern "C" {
 }
 
 fn main() {
-    let pid = getpid()          // VERIFIED: AOT build fails -- "use of undefined value '@getpid'"
+    let pid = getpid()
     println("PID: " + to_string(pid))
 }
 ```
 
-This does not build today. It is left here, marked as broken, because it is
-exactly the shape of code a reasonable person would try first -- better to
-show it failing with the real error than to omit it and let someone hit the
-same wall with no warning.
+VERIFIED: rejected with `error[E0508]: extern function \`getpid\` is not a
+\`kryos_*\` runtime symbol...` at `kryos check`, before any codegen or
+linking is attempted. This used to compile clean and fail deep in the AOT
+backend with a cryptic `use of undefined value '@getpid'` -- kept here,
+still marked as broken, because it is exactly the shape of code a
+reasonable person would try first; the point now is that the failure is
+immediate and names the real limitation instead of surfacing as a linker
+error three stages later.
 
 ## Safety Considerations
 
-FFI is inherently unsafe. You are calling into code that Kryos cannot verify, type-check, or memory-manage. A few things to keep in mind:
+The points below describe FFI risk in the general/abstract sense (useful if
+real C-library linking lands later); in THIS compiler today, most of them
+are moot in practice because the unsupported shapes that would trigger them
+are rejected at check time (E0508) before you can ever run them. FFI is
+inherently unsafe. You are calling into code that Kryos cannot verify, type-check, or memory-manage. A few things to keep in mind:
 
 - **Wrong types crash the process.** If you declare `fn sqrt(x: i32) -> i32` but the actual C function expects `double`, you get undefined behavior -- a segfault, garbage values, or worse.
 - **String lifetime matters.** Kryos strings passed to C are valid for the duration of the call. Do not store the `char*` pointer on the C side beyond the call.

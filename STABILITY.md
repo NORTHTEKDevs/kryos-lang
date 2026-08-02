@@ -74,7 +74,7 @@ A release tag is cut when **all** of the following hold:
 - Capability soundness: `inferred_soundness.sh` green; `strict_caps_examples.sh`
   **90 / 90**; `ecosystem_check.sh` **253 / 253** (deny-by-default across all
   packages, incl. the extern-call gate).
-- Examples gate: root **44 / 44**, fixtures **16 / 16**, showcase **23 / 23**,
+- Examples gate: root **45 / 45**, fixtures **16 / 16**, showcase **24 / 24**,
   capability-rejection **1 / 1**, multi-file project OK.
 - Self-host: `kryos check` **18 / 18** self-host sources + stage-1 mini-parser.
 - Docs snippets: **55 / 55** type-check.

@@ -1,0 +1,14 @@
+// expect-error: bypasses the runtime's internal marshalling
+// Hand-declaring a `kryos_*` runtime symbol with a `str`-typed signature
+// (E0508) used to compile clean and SEGFAULT both backends at runtime --
+// the real native symbol expects raw pointer/length pairs (see
+// `compiler/stdlib/os.kry`'s `kryos_env_get(key_ptr: i64, key_len: i64, ..)`),
+// not a Kryos `str` handle. Now rejected at check time.
+extern {
+    fn kryos_env_get(key: str) -> str
+}
+
+@capabilities(process)
+fn main() {
+    println(kryos_env_get("PATH"))
+}

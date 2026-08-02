@@ -1,15 +1,29 @@
 // Bare-metal FFI smoke test.
 //
-// Declares puts() and _getpid() from the C runtime and calls them via the
-// Cranelift JIT. On Windows the CRT exports _getpid; on Linux/macOS the
-// linker resolves it through the getpid compatibility alias.
+// This used to `extern "C" { fn puts(s: i64) -> i64  fn _getpid() -> i64 }`
+// and call `_getpid()` directly -- that shape is now REJECTED at check time
+// (E0508): arbitrary C-library FFI is not implemented (the extern's param/
+// symbol info is never threaded to codegen), so a direct extern to a real
+// C symbol either fails to link or fails unpredictably at runtime. The
+// supported way to reach a real C library function is `kryos_ffi_dlopen` /
+// `dlsym` / `dlcall*` (dynamic loading through the runtime's own FFI
+// helpers, which the compiler DOES marshal correctly) -- see
+// examples/ffi_dlopen.kry for the canonical, more complete version of this
+// pattern.
 extern "C" {
-    fn puts(s: i64) -> i64
-    fn _getpid() -> i64
+    fn kryos_ffi_dlopen(name: str) -> i64
+    fn kryos_ffi_dlsym(handle: i64, name: str) -> i64
+    fn kryos_ffi_dlcall0(fp: i64) -> i64
 }
 
 @capabilities(ffi)
 fn main() {
-    let pid = _getpid()
+    let lib = kryos_ffi_dlopen("libc.so.6")
+    if lib == 0 {
+        println("could not load libc.so.6 (expected on non-Linux hosts)")
+        return
+    }
+    let getpid_fn = kryos_ffi_dlsym(lib, "getpid")
+    let pid = kryos_ffi_dlcall0(getpid_fn)
     println("pid: " + to_string(pid))
 }

@@ -1708,10 +1708,136 @@ impl TypeChecker {
             Decl::Import { .. } => {}
             Decl::Extern { items, .. } => {
                 // Register extern function declarations so they're callable.
+                // Validate the shape FIRST (E0508) -- declaring an unsupported
+                // extern is rejected at check time rather than left to fail
+                // later at link time or crash at runtime; see
+                // `check_extern_item_shape`.
                 for item in items {
+                    self.check_extern_item_shape(item);
                     self.register_decl(item);
                 }
             }
+        }
+    }
+
+    /// `kryos_*` runtime symbols this compiler is verified to marshal
+    /// correctly when hand-declared with a `str`-typed parameter or return.
+    /// Every OTHER `kryos_*` name must stick to raw i64/i32/f64/ptr types --
+    /// the real native ABI for a symbol lives in kryos-rt/kryos-stdlib-native
+    /// and is not otherwise visible from this crate, so this is kept as an
+    /// explicit, small, reviewable allowlist rather than inferred. Sourced
+    /// from a repo-wide grep of every `kryos_*` extern signature that
+    /// actually uses `str` (`compiler/stdlib/{ffi,strext,string}.kry` +
+    /// the `examples/*.kry` files that redeclare the same `kryos_ffi_*`
+    /// helpers locally) -- see LEDGER.md's FFI wave for how this was built.
+    const EXTERN_STR_SAFE_KRYOS_NAMES: &[&str] = &[
+        "kryos_builtin_to_upper",
+        "kryos_builtin_to_lower",
+        "kryos_ffi_dlopen",
+        "kryos_ffi_dlsym",
+        "kryos_ffi_cstr",
+        "kryos_ffi_strlen",
+        "kryos_ffi_string_from_ptr",
+    ];
+
+    /// A type an `extern` signature may use to describe a raw C-ABI-
+    /// compatible value: plain scalars, the opaque `ptr` type, and `*T` raw
+    /// pointers. Every other Kryos type (`str`, array, map, struct/enum,
+    /// tuple, `fn`, `dyn Trait`, `Optional`/`Shared`/`Weak`) is heap/handle-
+    /// managed and is NOT the bit pattern a real C ABI (or this compiler's
+    /// own raw-pointer runtime symbols) expects.
+    fn is_ffi_scalar_type(ty: &TypeExpr) -> bool {
+        match ty {
+            TypeExpr::Simple { name, .. } => matches!(
+                name.as_str(),
+                "i8" | "i16"
+                    | "i32"
+                    | "i64"
+                    | "u8"
+                    | "u16"
+                    | "u32"
+                    | "u64"
+                    | "f32"
+                    | "f64"
+                    | "bool"
+                    | "ptr"
+                    | "never"
+                    | "void"
+            ),
+            TypeExpr::Pointer { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Reject an `extern` function declaration whose signature this compiler
+    /// cannot safely emit a call for (E0508 -- `kryos explain E0508` has the
+    /// full rationale). Two shapes are rejected:
+    ///
+    /// 1. A non-`kryos_*` name: arbitrary C-library FFI is not implemented
+    ///    (the extern's param/symbol info is not threaded to codegen), so
+    ///    such a declaration either fails to link, fails with a confusing
+    ///    type mismatch, or "succeeds" only via an unrelated builtin-name
+    ///    collision -- verified live: `extern "C" { fn getpid() -> i32 }`
+    ///    fails AOT codegen with "use of undefined value '@getpid'";
+    ///    `extern "C" { fn abs(x: i32) -> i32 }` fails AOT with a type
+    ///    mismatch and only "works" on `kryos run` because `abs` collides
+    ///    with the ambient builtin; `extern "C" { fn puts(s: str) -> i32 }`
+    ///    builds and runs but silently prints nothing at all.
+    /// 2. A `kryos_*`-prefixed name with a str/array/map/struct/tuple/enum/fn
+    ///    -typed parameter or return, outside `EXTERN_STR_SAFE_KRYOS_NAMES`:
+    ///    the real native symbols behind these names expect raw pointer/
+    ///    length pairs (e.g. `kryos_env_get(key_ptr: i64, key_len: i64,
+    ///    val_buf: i64, val_buf_len: i64) -> i64`, per `std::os`), not a
+    ///    Kryos `str` handle -- hand-declaring `kryos_env_get(key: str) ->
+    ///    str` compiles clean and SEGFAULTS both backends at runtime
+    ///    (verified live).
+    ///
+    /// This fires on the DECLARATION itself, not the call site: the defect
+    /// is in the signature's shape, independent of whether or how it's ever
+    /// called (mirrors the capability model's "declaring is free, but here
+    /// the shape itself -- not authority -- is the problem").
+    fn check_extern_item_shape(&mut self, item: &Decl) {
+        let Decl::Function {
+            name,
+            params,
+            ret_ty,
+            span,
+            ..
+        } = item
+        else {
+            return;
+        };
+
+        if !name.starts_with("kryos_") {
+            self.error_with_code(
+                format!(
+                    "extern function `{name}` is not a `kryos_*` runtime symbol -- arbitrary C-library FFI is not implemented by this compiler (declaring it is accepted, but calling it will not reliably link, marshal, or execute correctly; see docs/13-ffi.md, `kryos explain E0508`)"
+                ),
+                *span,
+                kryos_errors::codes::E0508,
+            );
+            return;
+        }
+
+        if Self::EXTERN_STR_SAFE_KRYOS_NAMES.contains(&name.as_str()) {
+            return;
+        }
+
+        let has_unsafe_param = params
+            .iter()
+            .any(|p| p.ty.as_ref().is_some_and(|t| !Self::is_ffi_scalar_type(t)));
+        let has_unsafe_ret = ret_ty
+            .as_ref()
+            .is_some_and(|t| !Self::is_ffi_scalar_type(t));
+
+        if has_unsafe_param || has_unsafe_ret {
+            self.error_with_code(
+                format!(
+                    "extern function `{name}` hand-declares a runtime symbol with a str/array/map/struct-typed parameter or return -- this bypasses the runtime's internal marshalling and segfaults at runtime (call the safe builtin/stdlib wrapper instead; see `kryos explain E0508`)"
+                ),
+                *span,
+                kryos_errors::codes::E0508,
+            );
         }
     }
 

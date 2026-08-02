@@ -61,3 +61,4 @@ pub const E0504: &str = "E0504"; // capability escalation
 pub const E0505: &str = "E0505"; // builtin capability violation
 pub const E0506: &str = "E0506"; // FFI capability violation
 pub const E0507: &str = "E0507"; // capability propagation violation
+pub const E0508: &str = "E0508"; // unsupported extern declaration shape

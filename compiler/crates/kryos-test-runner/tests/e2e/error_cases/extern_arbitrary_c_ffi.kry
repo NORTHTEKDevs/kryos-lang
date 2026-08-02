@@ -1,0 +1,14 @@
+// expect-error: is not a `kryos_*` runtime symbol
+// Arbitrary C-library FFI is not implemented (E0508): declaring an extern
+// for a real C symbol used to compile clean and either fail to link, fail
+// with a confusing type mismatch, or (worst case) silently succeed via an
+// unrelated builtin-name collision. Now rejected at check time.
+extern "C" {
+    fn getpid() -> i32
+}
+
+@capabilities(ffi)
+fn main() {
+    let pid = getpid()
+    println("PID: " + to_string(pid))
+}

@@ -1,9 +1,19 @@
-// Test: extern FFI declaration (type-checks + compiles on both backends)
-extern "C" {
-    fn puts(s: str) -> i32
+// Test: extern FFI declaration (type-checks + compiles on both backends).
+//
+// This used to declare `extern "C" { fn puts(s: str) -> i32 }` -- that
+// shape is now rejected at check time (E0508): a genuinely foreign C symbol
+// declared with a `str`-typed param is exactly the pattern that used to
+// build+run and silently print NOTHING (see docs/13-ffi.md, LEDGER.md's FFI
+// wave). The supported extern shape is a `kryos_*` runtime symbol with a
+// raw scalar signature, matching `compiler/stdlib/process.kry`'s own
+// declaration of the same native function.
+extern {
+    fn kryos_process_argc() -> i64
 }
 
-@capabilities(ffi)
 fn main() {
-    puts("hello from ffi")
+    let count = kryos_process_argc()
+    if count >= 1 {
+        println("ok")
+    }
 }

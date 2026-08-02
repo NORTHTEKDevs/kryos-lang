@@ -57,6 +57,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0505" => Some(E0505),
         "E0506" => Some(E0506),
         "E0507" => Some(E0507),
+        "E0508" => Some(E0508),
         "W0400" => Some(W0400),
         "W0500" => Some(W0500),
         _ => None,
@@ -107,6 +108,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0505", "builtin capability violation"),
         ("E0506", "FFI capability violation"),
         ("E0507", "capability propagation violation"),
+        ("E0508", "unsupported extern declaration shape"),
         ("W0400", "tracked value discarded"),
         ("W0500", "unrecognized capability name in deny!()"),
     ]
@@ -1009,6 +1011,39 @@ not silently swallowed.
 
 Fix: declare the capability on the intermediate function so it propagates to
 its callers.
+"#;
+
+const E0508: &str = r#"E0508: unsupported extern declaration shape
+
+An `extern` block declared a function this compiler cannot safely emit a
+real call for. Two distinct shapes are rejected:
+
+1. A non-`kryos_*` name (a genuine C-library / system-call symbol, e.g.
+   `getpid`, `abs`, `puts`). Arbitrary C FFI emission is not implemented:
+   the extern's parameter/symbol info is not threaded to codegen, so such a
+   declaration either fails to link, fails with a confusing type-mismatch,
+   or -- worst case -- silently "succeeds" only because the name happens to
+   collide with an unrelated Kryos builtin (`sqrt`, `abs`, `cos`, ...),
+   which is calling the BUILTIN, not your declared foreign function. See
+   docs/13-ffi.md for the verified current state.
+
+2. A `kryos_*`-prefixed name with a `str`/array/map/struct/tuple/enum/fn
+   -typed parameter or return, hand-declared outside the compiler's small
+   set of verified-safe wrappers. The real runtime symbols behind these
+   names expect RAW pointer/length pairs (as `std::os`'s `_env_or_empty`
+   demonstrates: `kryos_env_get(key_ptr: i64, key_len: i64, ...)`), not a
+   Kryos `str` handle -- hand-declaring the same name with a `str`-typed
+   signature bypasses that marshalling and reads/writes through the wrong
+   pointer shape, which segfaults at runtime.
+
+Fix: for (1), call the documented builtin/`std::` wrapper instead of
+hand-declaring a foreign symbol -- there is currently no supported way to
+link an arbitrary C function. For (2), call the safe builtin/stdlib
+function (e.g. `env_get`, `to_upper`) instead of hand-declaring the raw
+`kryos_*` symbol yourself; if you are implementing a NEW raw-pointer
+wrapper, declare it with the raw i64/i32/f64/ptr signature the native
+symbol actually uses (see `compiler/stdlib/os.kry` for the pattern), not
+with `str`/array/map types directly.
 "#;
 
 
