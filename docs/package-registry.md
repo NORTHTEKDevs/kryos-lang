@@ -5,6 +5,21 @@ and **operational model** of the Kryos package registry. The current client
 implementation lives in [`compiler/crates/kryos-package`](../compiler/crates/kryos-package).
 A reference server implementation lives in [`tools/registry`](../tools/registry).
 
+> **Status: this is the design spec, not a description of current client
+> behavior — verified live, the two diverge in ways that matter for the
+> "zero-trust bootstrap" design goal below.** The index IS a real Git
+> repository, IS resolved (`kryos pkg sync`/`search`/`info` all work
+> live against `NORTHTEKDevs/kryos-registry`), and DOES carry a real
+> `sha256:<hex>` checksum per version. But the client does not fetch a
+> tarball or verify a hash at all: `kryos pkg install` (`kryos-package/src/
+> fetch.rs`) `git clone --depth 1`s the registry repo's current HEAD and
+> copies out `packages/<name>/<version>/` directly, and `kryos.lock` never
+> records a checksum despite having the field for one. The checksum this
+> doc describes as verified on every download (`§ Client protocol` below)
+> is today shown only by `kryos pkg info`/`show`, never compared against
+> anything. See `tools/loop/LEDGER.md` item 1b for the
+> live repro and root cause; not fixed as of this writing.
+
 ## Design goals
 
 1. **Zero-trust bootstrap** — every download is content-addressed
