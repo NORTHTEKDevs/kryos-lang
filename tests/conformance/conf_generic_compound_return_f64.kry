@@ -69,5 +69,19 @@ fn main() {
     expect(af[1] > 2.49 and af[1] < 2.51, "f64 array compound return element 1")
     expect(af[2] > 3.49 and af[2] < 3.51, "f64 array compound return element 2")
 
+    // THE ASSERTIONS THAT ACTUALLY GATE THE FIX. The numeric comparisons above
+    // do NOT: the slot holds correct f64 BITS either way, so a range check reads
+    // the right value even with the erasure present. It is the RENDER path that
+    // breaks -- `to_string` dispatches on the STATIC type, which is what the
+    // erasure destroys, so pre-fix this prints the raw i64 bit pattern
+    // (`4609434218613702656`) instead of `1.5`.
+    //
+    // Verified both ways: with the Array/Tuple arms of
+    // `instance_ret_needs_monomorphization` reverted, the range checks above
+    // still pass and ONLY these fail.
+    expect(to_string(af[0]) == "1.5", "f64 array element RENDERS as 1.5, not its bit pattern")
+    expect(to_string(af[2]) == "3.5", "f64 array element 2 renders correctly")
+    expect(to_string(tf.0) == "2.5", "f64 tuple element renders correctly")
+
     println("conformance generic_compound_return_f64: PASS")
 }
