@@ -4635,11 +4635,24 @@ fn translate_rvalue<M: Module>(
                 return Ok(Some(handle));
             }
 
+            // LEDGER item 2c: a user-defined (or stdlib-imported, e.g. `use
+            // std::test::{assert}`) function named `assert`/`assert_eq`/
+            // `panic` must shadow the hardcoded intrinsic below, matching
+            // every other builtin's shadow rule (`user_shadows_early` is
+            // already computed above for sin/cos/abs/...). These three
+            // special-case blocks used to dispatch UNCONDITIONALLY, straight
+            // past `user_shadows_builtin` (computed further below, AFTER
+            // these blocks already returned), so `std::test::assert` (a real
+            // 2-arg fn meant to `throw`, catchable) was PERMANENTLY
+            // UNREACHABLE: every call silently ran `kryos_builtin_assert`
+            // (process::abort(), never returns) instead.
+            let user_shadows_assert_family = translator.user_func_names.contains(func.as_str());
+
             // Handle assert() with optional message and bool condition support.
             // The runtime function expects (i64, i64) where the second arg is a
             // string message. Support single-arg calls with a default message,
             // and extend bool (i8) conditions to i64.
-            if func == "assert" && !args.is_empty() {
+            if func == "assert" && !args.is_empty() && !user_shadows_assert_family {
                 let mut condition = translate_operand(&args[0], builder, translator, module)?;
 
                 // Coerce the condition to i64 for the runtime assert function.
@@ -4679,7 +4692,7 @@ fn translate_rvalue<M: Module>(
             // type-aware to_string lowering used for `{x}` interpolation,
             // then forward the two KryosString handles to the runtime.
             // The runtime compares the strings and prints a diff on failure.
-            if func == "assert_eq" && args.len() == 2 {
+            if func == "assert_eq" && args.len() == 2 && !user_shadows_assert_family {
                 let mut handles: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(2);
                 for arg in args.iter() {
                     if is_string_operand(arg, &translator.mir_func.locals) {
@@ -4746,7 +4759,7 @@ fn translate_rvalue<M: Module>(
             // panic(msg: str) — abort the process with a user message.
             // Lowering: forward the single string argument to
             // kryos_builtin_panic, which never returns at runtime.
-            if func == "panic" && !args.is_empty() {
+            if func == "panic" && !args.is_empty() && !user_shadows_assert_family {
                 let message = translate_operand(&args[0], builder, translator, module)?;
                 let panic_ref = ensure_func_ref_with_args(
                     "kryos_builtin_panic",

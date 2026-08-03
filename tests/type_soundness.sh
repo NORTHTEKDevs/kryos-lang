@@ -56,6 +56,22 @@ want_reject_e0110_clean() {
   fi
 }
 
+# want_reject_e0100 <name> <source> : must reject with a real E0100 (element
+# type mismatch) -- the inverse check of want_reject_e0110_clean, used as a
+# negative control to prove the E0110-noise suppression above is scoped to
+# the exact rejected param, not a blanket "array literal argument" bypass.
+want_reject_e0100() {
+  local name="$1" src="$2" f="$TMP/$1.kry"
+  printf '%s' "$src" > "$f"
+  local out
+  out="$(timeout 30 "$KRYOS" check "$f" 2>&1)"
+  if ! grep -q '\[E0100\]' <<<"$out"; then
+    echo "  HOLE  $name -- expected E0100 (array-literal element mismatch) to still be reported, got:"
+    sed 's/^/         /' <<<"$out"
+    fail=$((fail+1))
+  fi
+}
+
 # --- #13/#19: Result/Option annotated payloads must be checked -------------
 
 want_reject result_err_payload '
@@ -325,6 +341,41 @@ fn main() {
     for h in handlers {
         println(h.handle())
     }
+}
+'
+
+# Same symptom, but the heterogeneous array literal is passed directly as a
+# CALL ARGUMENT instead of through a `let` -- the `let` fix keys off the raw
+# pre-resolution TypeExpr at that ONE site and cannot see a call argument at
+# all. LEDGER item 4.
+want_reject_e0110_clean dyn_array_callsite_heterogeneous '
+trait Handler { fn handle(self) -> str }
+struct HA {}
+impl Handler for HA { fn handle(self: HA) -> str { return "a" } }
+struct HB {}
+impl Handler for HB { fn handle(self: HB) -> str { return "b" } }
+fn use_handlers(hs: [dyn Handler]) {
+    for h in hs {
+        println(h.handle())
+    }
+}
+fn main() {
+    use_handlers([HA{}, HB{}])
+}
+'
+
+# Negative control: the call-site suppression must be scoped to the EXACT
+# (function, param-index) pair rejected as dyn-in-container -- an unrelated,
+# genuinely mismatched array literal passed to an ordinary (non-dyn) param
+# must keep its real E0100, not have it silently swallowed.
+want_reject_e0100 unrelated_array_mismatch_not_suppressed '
+struct HA {}
+struct HB {}
+fn take_array(xs: [HA]) {
+    println(to_string(len(xs)))
+}
+fn main() {
+    take_array([HA{}, HB{}])
 }
 '
 

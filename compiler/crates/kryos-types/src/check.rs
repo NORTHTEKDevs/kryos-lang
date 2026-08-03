@@ -109,6 +109,25 @@ pub struct TypeChecker {
     /// (e.g. a plain unknown-type-name annotation over a genuinely
     /// mismatched array literal must keep BOTH diagnostics).
     suppress_array_elem_unify: std::collections::HashSet<Span>,
+    /// `(function_name, param_index)` pairs whose DECLARED param type was
+    /// rejected by `reject_dyn_in_container` (a `[dyn Trait]`/`(dyn Trait,
+    /// ..)` container annotation, already reported as E0110 at the
+    /// function's own declaration) and therefore resolved to `Type::Error`
+    /// in `FunctionSig.params`. `FunctionSig` only stores the final
+    /// resolved `Type`, with no way to tell "this Error came from a
+    /// rejected dyn container" apart from "this Error came from an
+    /// unrelated unknown-type-name annotation" at a later call site -- so
+    /// this side table is populated once, at the point the raw `TypeExpr`
+    /// is still available (signature registration), and consulted by the
+    /// call-argument checker to decide whether an array-literal ARGUMENT
+    /// passed for that exact parameter should skip its own pairwise
+    /// element-unify (mirrors `suppress_array_elem_unify`'s already-fixed
+    /// `let x: [dyn Trait] = [A{}, B{}]` case, extended to a call site:
+    /// `use_handlers([A{}, B{}])`). Narrowly scoped to this one param
+    /// identity, not to "any Type::Error param", so an unrelated genuinely
+    /// mismatched array literal passed to a DIFFERENT opaque-typed param
+    /// keeps both diagnostics.
+    dyn_container_reject_params: std::collections::HashSet<(String, usize)>,
 }
 
 impl Default for TypeChecker {
@@ -140,6 +159,7 @@ impl TypeChecker {
             pending_self_recursive_name: None,
             pattern_dup_seen: None,
             suppress_array_elem_unify: std::collections::HashSet::new(),
+            dyn_container_reject_params: std::collections::HashSet::new(),
         }
     }
 
@@ -1022,11 +1042,28 @@ impl TypeChecker {
 
                 let param_types: Vec<(String, Type)> = params
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(i, p)| {
                         let ty =
                             p.ty.as_ref()
                                 .map(|t| self.resolve_type_expr(t))
                                 .unwrap_or_else(|| self.engine.fresh_var());
+                        // Record which params were rejected specifically as a
+                        // dyn-in-container annotation (see
+                        // `dyn_container_reject_params`) so a call-site array
+                        // literal passed for this exact param can skip its
+                        // own pairwise element-unify without touching the
+                        // general Type::Error unify-anything path.
+                        if ty == Type::Error
+                            && matches!(
+                                p.ty.as_ref(),
+                                Some(TypeExpr::Array { element, .. })
+                                    if matches!(element.as_ref(), TypeExpr::DynTrait { .. })
+                            )
+                        {
+                            self.dyn_container_reject_params
+                                .insert((name.clone(), i));
+                        }
                         (p.name.clone(), ty)
                     })
                     .collect();
@@ -4290,7 +4327,9 @@ impl TypeChecker {
                                 *span,
                             );
                         } else {
-                            for (arg, param_ty) in args.iter().zip(params.iter()) {
+                            for (i, (arg, param_ty)) in
+                                args.iter().zip(params.iter()).enumerate()
+                            {
                                 // Bidirectional inference: if arg is an un-annotated
                                 // Lambda and param_ty resolves to a Function type with
                                 // matching arity, push the expected param/return types
@@ -4313,6 +4352,28 @@ impl TypeChecker {
                                                 (eps.clone(), (**er).clone()),
                                             );
                                         }
+                                    }
+                                }
+                                // See `dyn_container_reject_params`: a
+                                // heterogeneous array literal passed DIRECTLY
+                                // as a call argument for a param already
+                                // rejected as `[dyn Trait]` (E0110 at the
+                                // callee's own declaration) must not ALSO
+                                // raise the array literal's own pairwise
+                                // element-unify E0100 -- same fix as the
+                                // `let x: [dyn Trait] = [A{}, B{}]` case,
+                                // extended to the call-site shape the `let`
+                                // fix could not reach (`FunctionSig` only
+                                // keeps the resolved `Type::Error`, not the
+                                // raw annotation this table stands in for).
+                                if let (Some(ref cname), Expr::ArrayLiteral { span: arr_span, .. }) =
+                                    (&callee_name_str, arg)
+                                {
+                                    if self
+                                        .dyn_container_reject_params
+                                        .contains(&(cname.clone(), i))
+                                    {
+                                        self.suppress_array_elem_unify.insert(*arr_span);
                                     }
                                 }
                                 let arg_ty = self.infer_expr(arg);

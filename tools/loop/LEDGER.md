@@ -51,65 +51,6 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 2c. NEW (found while building examples/showcase/secret_agent.kry): `std::test::assert`'s 2-arg form is permanently shadowed by the compiler's own builtin and is UNCATCHABLE -- NOT FIXED (design note)
-`tests/known_failures/assert_shadow_uncatchable.kry` (repro below). Kryos has
-a real, hardcoded 2-arg `assert(condition, msg)` INTRINSIC (dispatches to
-`kryos_builtin_assert`, which prints and calls `std::process::abort()` --
-never returns) alongside `std::test::assert(condition: bool, msg: str) ->
-void` (a normal 2-arg Kryos function that builds a message and `throw`s,
-meant to be catchable -- its own doc comment says "Throws with the message if
-false", and `std::test::assert_no_throw`/`assert_throws` are built assuming
-`assert`-family functions are ordinary throwing functions). These COLLIDE:
-`kryos-codegen-{cranelift,llvm}/src/codegen.rs` dispatch any call literally
-named `assert` with a nonzero arg count (`!args.is_empty()`) straight to the
-intrinsic, UNCONDITIONALLY, before the generic "does the user define a
-function with this exact name" shadow-check that every OTHER builtin
-(`index_of`, `abs`, `len`, ... per CLAUDE.md gotcha #18, "a user function
-shadowing a builtin now WINS") already goes through -- confirmed by reading
-the comment directly above the generic shadow-check in both backends' call
-lowering: "If the user has defined a function with this exact name, the user
-definition shadows any builtin of the same name" immediately AFTER the
-`assert`/`assert_eq`/`panic` special-case blocks, not before them. Since
-`std::test::assert`'s signature is exactly 2 args (condition, msg), EVERY
-call to it -- imported or not -- silently resolves to the intrinsic instead
-of the stdlib body, no diagnostic, no warning.
-
-```
-use std::test::{assert}
-
-fn main() {
-    println("before")
-    try {
-        assert(false, "boom")
-        println("unreachable")
-    } catch (e) {
-        println("caught: " + e)
-    }
-    println("after try/catch (should print -- assert should have been CAUGHT)")
-}
-```
-Actual: prints `before`, then `assertion failed: boom` to stderr with NO
-`kryos: uncaught exception:` prefix (proving it's `process::abort()`, not
-`throw`), and the process dies -- `catch (e)` never runs, "caught: ..." and
-"after try/catch" never print. `kryos_builtin_assert` is genuinely
-`std::process::abort()`-based (`kryos-rt/src/builtins.rs`), so this is not a
-crash from bad input -- it is the DOCUMENTED, INTENDED behavior of the real
-intrinsic firing instead of the stdlib wrapper every single time.
-
-**Why this is a design note, not a patch attempted this session:** the fix
-shape is clear (move the `assert`/`assert_eq`/`panic` special-case blocks in
-both codegen backends to run AFTER the generic user-shadow check, matching
-how every other builtin already works) but the blast radius is unverified --
-`assert`/`panic` are used pervasively across `compiler/self-host/`,
-`ecosystem/*/tests/`, and every showcase/example that calls the TRUE 1-2-arg
-intrinsic form (which must keep working identically, uncatchable-abort
-semantics included, once no user function of that name/arity exists). That
-needs its own full-gate pass, not a fix folded into an unrelated example
-session. Left as a standing repro. Workaround used in `secret_agent.kry`:
-avoid `std::test::assert`/`assert` entirely; use `assert_true`/`assert_ne`/
-`assert_eq` (fixed this session, item below) or a locally-named helper
-instead -- none of those names collide with a hardcoded intrinsic.
-
 ### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific — a free function leaks
@@ -476,35 +417,6 @@ directly (flat), keep heap data out of structs you pass, or reuse one
 instance instead of constructing per iteration.
 
 
-
-### 4. `[dyn Handler]` call-site (not `let`) still gets a confusing `E0100` alongside `E0110` -- narrow, honestly-scoped residual
-The `let x: [dyn Trait] = [A{}, B{}]` shape is fixed (item closed below,
-see CLOSED table). The SAME symptom still reproduces when the heterogeneous
-array literal is passed directly as a CALL ARGUMENT instead of through a
-`let`:
-```
-fn use_handlers(hs: [dyn Handler]) { for h in hs { println(h.handle()) } }
-fn main() { use_handlers([A{}, B{}]) }
-```
-still emits both `E0110` (correct) and a confusing `E0100: expected A, found
-B` (noise) on the call-site line. NOT fixed here, deliberately: the `Let`
-fix keys off the RAW (pre-resolution) `TypeExpr::Array{element: DynTrait}`
-annotation, which is exactly what makes it precise -- `FunctionSig.params:
-Vec<(String, Type)>` only stores the ALREADY-RESOLVED `Type` (dyn-in-array
-already collapsed to the generic `Type::Error`), so there is no way to
-distinguish "this Error came from a rejected dyn array" from "this Error
-came from an unrelated unknown-type-name annotation" at the call-arg check
-site without adding a reason tag to `Type::Error` or threading raw
-`TypeExpr`s through `FunctionSig`. A broader fix (suppress the pairwise
-unify whenever param_ty resolves to ANY `Type::Error`) was implemented,
-tested, and REJECTED after measurement: it silently dropped a genuinely
-useful diagnostic for the unrelated case (`let x: NotAType = [1, "two"]`
-lost its "expected i64, found str" E0100, keeping only the unknown-type
-error) -- proven via a stash/rebuild A-B comparison, not guessed. Ruled out
-as not worth the collateral loss for a papercut-tier item. Real fix needs
-either a `Type::Error` reason enum or plumbing `FunctionSig` to retain the
-param's raw `TypeExpr` for this one diagnostic-quality check.
-
 ### 6. `any` is type-erased to a bare i64 with NO runtime type tag -- `to_string`/`format` mis-render non-i64 values -- DESIGN NOTE, NOT FIXABLE WITHOUT AN ABI CHANGE
 
 CLAUDE.md gotcha #22. `push(args, "x")` into an `[any]`, or a `str`/`f64`
@@ -707,53 +619,6 @@ corrected in the original session** (kept, still accurate): `docs/09-
 concurrency.md`'s spawn section states the closure/fn-value exception to
 the snapshot contract explicitly, and CLAUDE.md gotcha #22 has a matching
 bullet.
-
-### 8. curried (2-level) generic closure return fails to BUILD on AOT -- JIT/AOT divergence, NOT FIXED
-
-`tests/known_failures/closure_curried_generic_aot_crash.kry`. Found this
-session while hunting "closures returned through generics" per the wave
-brief.
-
-```
-fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T {
-    return |b: T| (|c: T| a + b + c)
-}
-fn main() {
-    let step1 = curry_add(1)
-    let step2 = step1(2)
-    println(to_string(step2(3)))
-}
-```
-`kryos run`: prints `6`, correct. `kryos build --release`: fails LLVM
-codegen outright -- `error: load operand must be a pointer to a first class
-type ... load %T, ptr %_1_arg` (clang rejects the emitted `.ll`; the generic
-type parameter `T` reaches LLVM IR emission UNRESOLVED for the INNER
-closure). The IDENTICAL shape with a concrete type (`i64` instead of `T`,
-no generics at all) builds and runs correctly on both backends -- isolates
-this to generics specifically, not to currying/nesting in general (a
-non-generic curry already works per `tests/conformance/conf_closures.kry`
-and CLAUDE.md gotcha #11).
-
-**Root cause:** `pending_lambda_ret_hint` (`kryos-mir/src/lower.rs`, the fix
-that closed the single-level "generic function RETURNING a closure at
-T=f64" item in this ledger's CLOSED table) stages a concrete
-per-instantiation signature only for a lambda DIRECTLY returned by the
-enclosing generic function's `Stmt::Return`. It does not recurse into a
-SECOND lambda returned BY that first lambda's own body, so the innermost
-closure's parameter type stays the erased/unresolved generic placeholder,
-which LLVM IR emission then tries to `load` as if it were a concrete type.
-
-**Not attempted as a fix this session:** the natural fix (make
-`pending_lambda_ret_hint` propagate recursively through a chain of nested
-lambda-returning-lambda bodies, not just one level) is more contained than
-item 7 above, but was deprioritized in favor of thoroughly characterizing
-all three findings from this wave rather than rushing a codegen change
-without a full gate pass. A reasonable next step for whoever picks this up:
-check whether `current_ret_ty`'s OWN nested `fn(A) -> B` structure can be
-walked one level deeper when the outer lambda's body is itself a bare
-lambda literal, staging a second hint for that inner lambda the same way
-the outer one already gets staged. Not gated (would fail to build today).
-CLAUDE.md's generic-closure-return entry updated with this finding inline.
 
 ### 9. `\|\|`-continuation parse trap also swallows closure literals silently -- previously mis-cataloged as a "block-tail closure capture scoping" bug -- DOCS CORRECTED, not a new code defect to fix
 
@@ -1018,6 +883,9 @@ and unrelated.
 
 | Item | Evidence |
 | --- | --- |
+| **Item 8: a curried (2-level) generic closure return failed to BUILD on AOT while JIT accepted it -- JIT/AOT divergence** | Reproduced live before touching code: `tests/known_failures/closure_curried_generic_aot_crash.kry` printed `6` on `kryos run` but `kryos build --release` failed LLVM codegen (`error: load operand must be a pointer to a first class type ... load %T, ptr %_1_arg`). `--emit-llvm` showed the raw generic name `%T` unresolved on BOTH `__lambda_0` (outer, `\|b: T\|`) AND `__lambda_1` (inner, `\|c: T\|`) as `ptr byval(%T)` params -- broader than the prior write-up's "only the innermost closure" attribution. ROOT CAUSE (read, not guessed, `kryos-mir/src/lower.rs` Lambda-lowering param loop): `pending_lambda_ret_hint`'s fallback only fires for a closure param with NO explicit type annotation (`p.ty.is_none()`); `\|b: T\|`/`\|c: T\|` both name the generic type EXPLICITLY, so neither ever went through it or ANY substitution -- the raw `TypeExpr::Simple("T")` reached LLVM IR emission unresolved regardless of nesting depth. Cranelift's uniform i64 closure-arg ABI papers over the same erasure (no byval/sret distinction to violate), which is why JIT was always correct. FIX: an explicitly-annotated lambda param is now substituted through the current monomorphization's `active_generic_bindings` (the same `T -> concrete MirType` map already used for the enclosing generic function's OWN param/return types) when building the lambda's param list. `active_generic_bindings` is a plain `ctx` field, not reset by `save_function_state`/`restore_function_state`, so it stays live across a nested lambda-inside-a-lambda lowering -- fixing the outer AND the curried inner closure in ONE change, no recursion needed (the ledger's prior "make the hint propagate recursively" fix shape was therefore not the minimal one). Proof both ways: `git stash` the `kryos-mir` fix + `cargo build --release -p kryos-cli` (compiler-internals-only change, no kryos-rt/kryos-stdlib-native touched) -- `kryos build --release` on the repro fails with the exact original clang error; `git stash pop` + rebuild -- builds clean, runs, prints `6` on both `kryos run` and the AOT binary. Regression: `tests/conformance/conf_curried_generic_closure.kry` (i64 instantiation + a SECOND independent instantiation to rule out cross-instantiation aliasing; was `tests/known_failures/closure_curried_generic_aot_crash.kry`, deleted). CLAUDE.md gotcha #22's curried-generic-closure entry updated from "residual, NOT fixed" to RESOLVED. Also cleaned up in this pass: `tests/known_failures/lowercase_struct_literal_parse_fail.kry` was already fixed (per the CLOSED entry above, commit e58d8dc) but the known_failures file + its README row were never deleted -- removed both (re-verified fixed on both backends before deleting). Gates: conformance (incl. the new test) PASS both backends, `kryos-loop.sh gates 2` GREEN, bootstrap 16/16. |
+| **Item 4: `[dyn Handler]` at a CALL SITE (not a `let`) emitted a confusing `E0100` alongside the correct `E0110`** | Reproduced live before touching code: `fn use_handlers(hs: [dyn Handler]) { .. }` then `use_handlers([A{}, B{}])` emitted BOTH `error[E0110]: \`dyn Handler\` cannot be stored in an array yet` (correct) AND `error[E0100]: type mismatch: expected \`A\`, found \`B\`` (noise) at `kryos check`. The already-fixed `let x: [dyn Trait] = [A{}, B{}]` case (`suppress_array_elem_unify`) could not reach this shape because it keys off the RAW pre-resolution `TypeExpr` at the `Stmt::Let` site specifically; `FunctionSig.params` only stores the ALREADY-RESOLVED `Type::Error` a rejected dyn-in-array collapses to, with no way to tell "this Error came from a rejected dyn array" apart from "this Error came from an unrelated unknown-type-name annotation" at the call-arg check site -- the exact blocker a prior session's investigation named and left unfixed rather than widen the general `Type::Error` unify-anything escape hatch (tried and REJECTED that session: it silently dropped a genuinely useful diagnostic for an unrelated case, proven via A/B rebuild). FIX (`kryos-types/src/check.rs`): sidesteps the blocker instead of solving it -- a new side table, `dyn_container_reject_params: HashSet<(function_name, param_index)>`, is populated once at function-SIGNATURE registration (where the raw `TypeExpr` is still available, before it collapses to `Type::Error`), keyed by the exact param identity rather than by the type itself. The call-argument checker consults this table (not `FunctionSig`) when zipping args against params: if the callee/param-index pair was flagged AND the argument is an array literal, its span is added to the pre-existing `suppress_array_elem_unify` set before inferring it, skipping only that literal's own pairwise element-unify. Narrowly scoped by construction -- a DIFFERENT param that happens to also resolve to `Type::Error` for an unrelated reason is never in the table, so an unrelated genuinely-mismatched array literal keeps both diagnostics (verified by a negative-control probe). Proof both ways: `git stash` the `check.rs` fix + `cargo build --release -p kryos-cli` -- `kryos check` on the repro reports 2 errors (E0110 + E0100); restore + rebuild -- reports exactly 1 (E0110 only). Regression: `tests/type_soundness.sh` gained `dyn_array_callsite_heterogeneous` (via the existing `want_reject_e0110_clean` helper) + a new `want_reject_e0100` helper backing `unrelated_array_mismatch_not_suppressed` (negative control: an ordinary `[HA]` param, no dyn involved, passed a genuinely mismatched `[HA{}, HB{}]` literal, must still report E0100 -- proves the suppression didn't overreach). Gates: `type_soundness.sh` PASS (all probes correct, unsound rejected, correct accepted), `kryos-loop.sh gates 2` GREEN. |
+| **Item 2c: `std::test::assert`'s 2-arg form was permanently shadowed by the compiler's own builtin and UNCATCHABLE -- a user function was supposed to WIN over a same-named builtin (CLAUDE.md gotcha #18), this was the one undocumented exception** | Reproduced live before touching code, both backends identical: `use std::test::{assert}` then `try { assert(false, "boom") } catch (e) { .. }` printed `assertion failed: boom` to stderr with NO `kryos: uncaught exception:` prefix and the process ABORTED (exit 127) -- `catch (e)` never ran. ROOT CAUSE (read, not guessed): both codegen backends dispatch any call literally named `assert`/`assert_eq`/`panic` with a matching arg count straight to the hardcoded `kryos_builtin_*` intrinsic UNCONDITIONALLY, in three standalone `if`/match-arm blocks that run BEFORE the generic "does the user define a function with this exact name" shadow-check every OTHER builtin (`len`, `abs`, `contains`, `sin`, ...) already goes through -- confirmed these three blocks were the ONLY ones without the guard sibling math builtins (`sqrt`/`floor`/`ceil`/`round`/`abs`/`sin`/`cos`/...) already had a few lines above them in the same function. Since `std::test::assert`'s real signature is exactly 2 args (matching the intrinsic's own arity), every call -- imported or not -- silently resolved to the intrinsic, permanently, with no diagnostic. FIX: added the SAME shadow-check guard to the `assert`/`assert_eq`/`panic` special-case blocks in BOTH `kryos-codegen-llvm` (`!self.func_param_types.contains_key(name)`, matching the `abs`/`len` precedent in that file) and `kryos-codegen-cranelift` (`!translator.user_func_names.contains(func)`, matching the sibling math-builtin guard in that file) -- when a user-defined (or stdlib-imported) function shadows the name, execution now falls through to the pre-existing generic user-shadow dispatch path instead, exactly like every other builtin. Proof both ways: `git stash` both codegen files + `cargo build --release -p kryos-cli` -- the repro aborts (exit 127, catch never runs) on both backends; restore + rebuild -- `caught: assertion failed: boom` prints and `catch`/the statement after the try/catch both run, on both backends. Non-regression, explicitly verified: a program that does NOT import `std::test::assert` keeps the TRUE intrinsic's exact uncatchable-abort semantics for BOTH the 1-arg and 2-arg forms (`assert(true)`, `assert(cond, msg)`) and for `assert_eq`/`panic` unshadowed, on both backends -- the fix only changes behavior when a same-named function is actually in scope. Regression: `tests/conformance/conf_assert_shadow_catchable.kry` (was `tests/known_failures/assert_shadow_uncatchable.kry`, deleted) + a new standalone `tests/assert_shadow_gate.sh` (wired into `kryos-loop.sh gates` tier 1 as `assert_shadow`) asserting BOTH directions' exit codes, since "the true intrinsic still aborts uncatchably when unshadowed" needs a nonzero-exit assertion the conformance harness can't make (same reason `utf8_invalid_string_gate.sh` is a standalone script). **Loose end resolved (not a new bug, a documentation slip):** a prior commit (`e7b1599`, "fix assert_eq unwind-skip bug") left a source comment on `is_unwind_source` (`kryos-mir/src/lower.rs`) citing `tests/known_failures/assert_eq_shadow_unwind_skip.kry` as proof of a DIFFERENT, already-fixed bug (a 3-arg `assert_eq` call nested inside an `if`/`for`/`while` inside a `try` could execute statements past the failing call before its exception was noticed, because `is_unwind_source` excluded any `assert_eq`-named call from post-call exception checks regardless of arity) -- that file was never actually committed (confirmed via `git log -S` across full history: zero hits for the filename, one hit for the fix diff itself, which IS present and unchanged at this HEAD). The underlying fix (`true_assert_eq_intrinsic = func == "assert_eq" && args.len() == 2`, gating the exclusion to the true 2-arg intrinsic's own arity, present in `kryos-mir` and both codegen backends) was real and already shipped -- only its regression repro was a slip. Recovered as `tests/conformance/conf_assert_eq_unwind_immediate.kry`, proved both ways THIS session (temporarily reverted the arity guard to an unconditional `func == "assert_eq"` in all 3 sites, rebuilt -- a 3-arg `assert_eq` call nested one level inside a `try`'s `if` let two subsequent statements execute, `ran=11` instead of `0`; restored + rebuilt -- `ran=0`, both backends); the source comment now points at the real test instead of the missing one. Gates: conformance (both new tests) PASS both backends, `assert_shadow_gate.sh` PASS, `kryos-loop.sh gates 2` GREEN. |
 | **Parser/grammar wave: a lowercase-named struct could not be constructed via struct-literal (or matched via struct-pattern) syntax at all -- arbitrary, undocumented, case-based parser restriction** | Reproduced live before touching code: `struct counter { val: i64 }` then `counter { val: v }` failed with two misattributed `error[E0102]: undefined variable` diagnostics (naming `counter` and `val`, not the real "struct-literal requires capitalized name" restriction). ROOT CAUSE (read, not guessed): `kryos-parser/src/parser.rs`'s primary-expression struct-literal check and its sibling struct-PATTERN check both gated on `looks_like_type_name(&name)` (`name.chars().next().is_uppercase()`), unconditionally, everywhere -- not just in the genuinely ambiguous positions. The real ambiguity (`if cond { }` / `while cond { }` / `for x in xs { }` / `match subj { }`, where a bare identifier condition/subject/iterable sits directly before the construct's OWN block/arm-list `{`) is ALREADY fully handled, independent of case, by the pre-existing `no_struct_literal` flag that every one of those parses sets around its condition/subject/iterable (`parse_expr_no_struct_lit`, 13 call sites, unchanged). Outside those positions (`let`-initializers, `return` values, call arguments, array elements, binop operands, match-pattern position) there is no second grammar production competing for `Name { ... }` -- a bind pattern followed by `{` has no valid parse besides a struct pattern, and an ordinary expression position has no valid parse besides a struct literal (or a syntax error) either. FIX: removed the case check from BOTH sites (struct-literal in `parse_primary`, struct-pattern in `parse_pattern`), relying solely on `no_struct_literal` for the ambiguous positions; deleted the now-dead `looks_like_type_name` function. Proof both ways: `git stash` the parser fix -- `tests/known_failures/lowercase_struct_literal_parse_fail.kry` reproduces the exact two `E0102`s on both backends; restore + rebuild -- prints `5` (the documented expected output) on both `kryos run` and `kryos build --release`. Ambiguity guard re-verified live post-fix: an `if`/`while`/`for` condition/iterable immediately followed by its own block still parses as a condition, never a struct literal, even with a lowercase struct of the same name in scope; a lowercase struct PATTERN (`counter { val: n } => ...`) matches correctly in a `match` arm. Regression: `tests/conformance/conf_lowercase_struct_literal.kry` (literal construction, direct literal, struct pattern, and all three ambiguity-guard shapes, value-asserted via internal `panic()` on mismatch). Docs: `docs/19-language-reference.md` §5.2 now states struct names are not required to be capitalized. Gates: conformance 55/55 both backends, tier1+tier2 GREEN, bootstrap 16/16, `selfhost_regressions` PASS. |
 | **Parser/grammar wave (the more serious of the two, ranked "silent wrong parse"): `tests/known_failures/parse_nested_binop_corrupts_next.kry` -- a self-hosted `tokenize()` call, called a SECOND time in one process, silently accumulated the first call's tokens onto the second's result (13+31=44, not 31) and then double-freed at process exit -- misdiagnosed at the time as "nested binop recursion corrupts a later parse"** | REPRODUCED before theorizing (`cd compiler/self-host && kryos.exe run known_failure_nested_binop.kry`): both backends agreed (JIT and AOT both printed "44 tokens (want 31)"), so per non-negotiable #6 the defect was in shared logic, not backend-specific codegen -- ruled OUT the parse_expr-recursion attribution the file's own bisection trail pointed at (a red herring: the bisection tracked "does it crash", not "is the count exactly right", so several "ok" steps were already silently wrong). Root-caused instead by tracing `len(tf)` with print statements at every statement boundary (not by re-reading the recursive precedence-climbing code): `lexer.kry`'s `LEX_TOKENS` module-level mutable global accumulator (kept out of the `Lexer` struct to avoid an O(n^2) array-dup, per that struct's own comment) was DELIBERATELY never reset between `tokenize()` calls, because resetting it via a cross-function reassignment used to corrupt the array header -- exactly LEDGER item 2b (closed the SAME day, `fd07331`, by the previous session). With item 2b now fixed, resetting `LEX_TOKENS` in `lexer_new()` is safe and closes the wrong-COUNT half of the bug. Fixing that surfaced a SECOND, general (non-self-host) bug via `KRYOS_MIR_DROP_TAGS`+`KRYOS_FREE_DIAG` site-tagging (added a `site: i64` field to the free-diag "first (rc->0) freed at" report, `kryos-rt/src/lib.rs`, to name the exact drop site instead of only a coarse, line-imprecise Kryos stack trace): `return LEX_TOKENS` (a bare mutable-global identifier returned directly) never retained the returned handle -- `emit_global_load` is a raw read, not a retain -- so the caller's return value ALIASED the global's own copy with no extra reference. Harmless as long as the global was never reassigned again, but the moment fix #1 reset the global on the SECOND call, the reset's own guarded release freed the SAME box the FIRST call's return value (`tf` in the repro) still held (confirmed via the site tags: the double-free was `fn-exit:tf`, the first zeroing was `fn-exit:t2` -- i.e. `t2` and `tf` had silently become the same box). FIX 2 (general, `kryos-mir/src/lower.rs`, `Stmt::Return` lowering): retain a bare mutable-global-identifier return the same way a bare PARAM return already was (`emit_param_source_retain`'s existing "borrow-to-own at the return boundary" pattern, extended to globals). PROVED BOTH WAYS, independently, for each half: (1) lexer.kry reset alone (mir fix reverted) -- "44 tokens" bug gone (31 correct) but `KRYOS-FREE-DIAG` reports `array DOUBLE-FREE rc=0 len=13 cap=16`, both backends; (2) mir fix alone (lexer.kry reset reverted) -- the general `tests/no_double_free.sh` `global_return_alias` case (`git stash` the mir fix, rebuild) reports `DOUBLE-FREE`; restored, clean; (3) both fixes together -- the full repro prints `31 tokens (want 31)` with NO double-free on either backend, `tf` independently re-verified still `len=13` after the second `tokenize()` call (proves independence, not just count luck). Regression: `tests/no_double_free.sh` (`global_return_alias`, general MIR case) + `compiler/self-host/regression_lexer_reentrant_tokenize.kry` (renamed from the known_failures file, hard `panic()`-asserted, wired into new `compiler/self-host/test_regressions.sh`, added to `kryos-loop.sh gates` tier 1 as `selfhost_regressions`). `tests/known_failures/parse_nested_binop_corrupts_next.kry` deleted (folded into the two regressions above). Gates: conformance 55/55 both backends, tier1+tier2 GREEN (incl. `no_double_free` and `selfhost_regressions`), bootstrap 16/16 (ran alone, per non-negotiable #5/#6). The diagnostic instrumentation change (`kryos-rt/src/lib.rs`/`array.rs`/`string.rs`: `diag_zeroed_by`'s return type gained the site id) is a permanent tooling improvement, not investigation-only scaffolding -- kept, since it directly answers the "which site froze this to rc=0" question `KRYOS_FREE_DIAG`'s own doc comment already says is otherwise invisible. |
 | **LEDGER item 5: `Parser` carried the same array-in-a-rebuilt-struct pattern as the closed Lexer bug (O(n^2) struct-element retains on every `advance`)** | Read 680be5b (the Lexer fix) for the mechanism and applied the analogous change: `emit_aggregate_struct` clones/dups any array-typed struct FIELD unconditionally at struct-literal construction time (not gated on `@copy`), and `p_advance`/`p_expect`/`p_error` in `self-host/parser.kry` all rebuilt a `Parser{tokens: p.tokens, ...}` literal on every token -- one O(N) array-dup per token across a fixed N-token stream, O(N^2) total. Fix: moved `tokens` out of `Parser` into a module-level `PARSER_TOKENS: [Token]` global (mirroring `LEX_TOKENS` exactly), set once per `parser_new` call, read via `PARSER_TOKENS[idx]` everywhere `p.tokens[idx]` was read before. Kept `errors: [str]` as a struct field (deliberately NOT moved, unlike the ledger note's original "extra parameter" suggestion): it is 0-length for the overwhelmingly common clean-parse case, so its per-literal duplication cost is negligible, and it is a real external API surface (`main.kry` reads `p.errors` after parsing) that a module-global would have required threading a getter through for no measurable benefit -- this fix is now safe to make as a plain reassignment specifically because ledger item 2b (below) closed the cross-function global-reassignment corruption bug first. MEASURED before/after compiling `self-host/lower.kry` (128KB, 18657 tokens) via stage-1's own `obj` path (`KRYOS_SKIP_TYPES=1`, Windows `Start-Process`/`PeakWorkingSet64` polling, stage-0 kryos.exe unchanged both runs): peak working set 435.5 MB -> 101.7 MB (4.3x reduction), wall time 396ms -> 402ms (flat -- at this file's token count the retain/dup work is cheap in wall-clock terms even though it is genuinely O(n^2); the memory churn is what scales visibly, matching the mechanism). `bash compiler/self-host/test_bootstrap.sh` 16/16, stable across 2 consecutive runs post-fix. No new automated perf-threshold gate was added: this machine has no portable peak-memory tool (no `/usr/bin/time -v` in Git Bash; the existing `kryos-loop.sh soak` peak-WS measurement is Windows-PowerShell-only) and `test_bootstrap.sh` itself is not part of the actual `ubuntu-latest` CI workflow (`.github/workflows/ci.yml` only runs `tests/conformance/run_conformance.sh`) -- matching 680be5b's own precedent (measured + bootstrap-green, no synthetic dose-response gate), rather than adding a fragile platform-specific threshold. |

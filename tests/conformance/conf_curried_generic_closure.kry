@@ -1,0 +1,58 @@
+// Conformance (LEDGER item 8): a CURRIED (2-level) generic closure return
+// used to fail to BUILD on AOT while the JIT accepted it -- a backend
+// divergence that blocks a build, not just a wrong value.
+//
+// `fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T { return |b: T| (|c: T| a + b + c) }`
+// ran correctly on `kryos run` (Cranelift/JIT, prints 6) but `kryos build
+// --release` (LLVM/AOT) failed codegen outright:
+//   error: load operand must be a pointer to a first class type
+//     %t14 = load %T, ptr %_1_arg
+// -- the generic type parameter `T` reached LLVM IR emission UNRESOLVED, for
+// BOTH the outer closure's own `b: T` param and the inner closure's `c: T`
+// param (`--emit-llvm` showed `ptr byval(%T)` on both `__lambda_0` and
+// `__lambda_1` before the fix -- not just the innermost one).
+//
+// Root cause: an EXPLICITLY-annotated closure param naming the enclosing
+// generic function's own type parameter (`|b: T|`) was never substituted
+// through the current monomorphization's `active_generic_bindings` when
+// building the lambda's param list in kryos-mir/src/lower.rs -- only an
+// UN-ANNOTATED param went through the (separate) `pending_lambda_ret_hint`
+// fallback. Since `active_generic_bindings` stays live across a nested
+// lambda-inside-a-lambda lowering (it is a plain ctx field, not reset by
+// save/restore_function_state), substituting at every lambda's param-build
+// step fixes both the outer and the curried inner closure in one change.
+//
+// Proof this is a real gate: reverting the substitution added at the
+// `else if !ctx.active_generic_bindings.is_empty()` branch in the lambda
+// param loop makes `kryos build --release` on this file fail with the exact
+// clang error above; `kryos run` stays green either way (JIT is unaffected --
+// Cranelift's uniform i64 closure-arg ABI papers over the erased type). With
+// the fix, both backends build/run and print the same value.
+//
+// (Was tests/known_failures/closure_curried_generic_aot_crash.kry.)
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T {
+    return |b: T| (|c: T| a + b + c)
+}
+
+fn main() {
+    // i64 instantiation: the shape that failed to build on AOT.
+    let step1 = curry_add(1)
+    let step2 = step1(2)
+    expect(step2(3) == 6, "curried generic closure (i64): expected 6, got " + to_string(step2(3)))
+
+    // A second, independent instantiation must not corrupt/alias the first.
+    let f_step1 = curry_add(10)
+    let f_step2 = f_step1(20)
+    expect(f_step2(30) == 60, "second i64 instantiation: expected 60, got " + to_string(f_step2(30)))
+    expect(step2(3) == 6, "first instantiation unaffected by the second: still 6")
+
+    println("conformance curried_generic_closure: PASS")
+}

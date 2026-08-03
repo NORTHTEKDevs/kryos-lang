@@ -1,0 +1,73 @@
+// Conformance: recovers a regression test for a real, already-fixed bug
+// whose repro file was referenced by a source comment but never actually
+// committed -- found while auditing LEDGER item 2c (commit e7b1599,
+// "showcase: secret_agent password manager + fix assert_eq unwind-skip
+// bug", cites `tests/known_failures/assert_eq_shadow_unwind_skip.kry` in a
+// doc comment on `is_unwind_source` in kryos-mir/src/lower.rs, but that
+// file does not exist in the tree and was never added in that commit or
+// any other -- a slip, not an unfiled bug: the FIX itself (the
+// `true_assert_eq_intrinsic` arity guard, present in both codegen backends
+// and kryos-mir at this HEAD) was real and already shipped).
+//
+// The bug: `is_unwind_source`/the matching codegen post-call safety net
+// excluded ANY call literally named `assert_eq` from the "may throw, check
+// for a pending exception right after this call" treatment, regardless of
+// arg count. That is correct for the TRUE 2-arg `assert_eq` intrinsic
+// (which lowers to `kryos_builtin_assert_eq` and aborts the process
+// directly -- it never returns, so no post-call check is needed or
+// possible). It is WRONG for `std::test`'s 3-arg
+// `assert_eq(actual, expected, msg)` (or any user function reusing the
+// name), which is an ordinary function that can `throw` and return
+// normally: the caller kept executing the statement(s) immediately after a
+// failing 3-arg assert_eq -- even past the point a `try` should have
+// unwound to its `catch` -- until some LATER, correctly-checked call site
+// happened to notice the still-pending exception.
+//
+// Fix (already present, re-verified this session): the exclusion is now
+// gated on `func == "assert_eq" && args.len() == 2` -- the true intrinsic's
+// own arity -- in kryos-mir/src/lower.rs::is_unwind_source and the mirrored
+// post-call check in both kryos-codegen-llvm and kryos-codegen-cranelift.
+//
+// Proof this is a real gate: reverting the `!args.is_empty()`/arg-count
+// guard back to an unconditional `func == "assert_eq"` exclusion in all
+// three sites makes `ran` below end up `11` (both statements after the
+// failing assert_eq execute before the throw is noticed) instead of `0`;
+// with the fix, `ran` stays `0` -- the exception unwinds at the assert_eq
+// call site itself, on both backends.
+
+use std::test::{assert_eq}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // The failing call is nested one level INSIDE the try body (an `if`),
+    // not at the try body's own top level: `lower_try_catch` already emits
+    // an unconditional per-STATEMENT check for the try body's top level
+    // (a separate, older mechanism), which would mask this bug for a
+    // top-level call. `is_unwind_source`'s arity guard is what extends
+    // exception detection to a call nested inside if/for/while/match
+    // bodies within a try (see the doc comment on `emit()` in
+    // kryos-mir/src/lower.rs) -- so the repro must be nested to actually
+    // exercise the fixed code path.
+    let mut ran: i64 = 0
+    try {
+        if true {
+            assert_eq(2, 3, "deliberate mismatch")
+            ran = ran + 1
+            ran = ran + 10
+        }
+    } catch (e) {
+        // Deliberately does NOT touch `ran` -- so a value other than 0
+        // proves a statement after the failing call executed, not just
+        // that the catch eventually ran.
+        expect(contains(e, "deliberate mismatch"), "caught message should name the mismatch, got: " + e)
+    }
+    expect(ran == 0, "a failing 3-arg assert_eq must unwind IMMEDIATELY at its own call site, not defer to a later checked call; ran=" + to_string(ran))
+
+    println("conformance assert_eq_unwind_immediate: PASS")
+}

@@ -9,6 +9,48 @@
 
 ## Resolved
 
+### `std::test::assert`'s 2-arg form was permanently shadowed by the compiler's own builtin and UNCATCHABLE (2026-08-02)
+
+**Status**: Fixed. Regression: `tests/conformance/conf_assert_shadow_catchable.kry`
++ `tests/assert_shadow_gate.sh` (both directions' exit codes).
+
+Both codegen backends dispatched any call literally named `assert`/
+`assert_eq`/`panic` straight to the hardcoded `kryos_builtin_*` intrinsic
+UNCONDITIONALLY, before the generic user-function-shadow check every other
+builtin already goes through. `use std::test::{assert}` then
+`assert(false, "boom")` inside a `try` printed `assertion failed: boom` and
+aborted the process (exit 127) instead of throwing a catchable exception --
+`catch` never ran. Fixed by adding the same shadow-check guard these three
+arms were missing. Full detail + evidence: `tools/loop/LEDGER.md` item 2c
+(CLOSED table).
+
+### `[dyn Handler]` at a call site emitted a confusing `E0100` alongside the correct `E0110` (2026-08-02)
+
+**Status**: Fixed. Regression: `tests/type_soundness.sh`
+(`dyn_array_callsite_heterogeneous`).
+
+`use_handlers([A{}, B{}])` (a heterogeneous dyn-trait array literal passed
+directly as a call argument) reported both the correct `E0110` (dyn-in-
+container is unsupported) and a confusing, unrelated `E0100` "expected A,
+found B" from the array literal's own element-unification. The equivalent
+`let x: [dyn Trait] = [A{}, B{}]` shape was already fixed; the call-site
+shape needed a separate mechanism since `FunctionSig` only stores the
+already-resolved `Type::Error`, not the raw annotation the `let` fix keys
+off. Full detail: `tools/loop/LEDGER.md` item 4 (CLOSED table).
+
+### A curried (2-level) generic closure return failed to build on AOT while JIT accepted it (2026-08-02)
+
+**Status**: Fixed. Regression: `tests/conformance/conf_curried_generic_closure.kry`.
+
+`fn curry_add<T>(a: T) -> fn(T) -> fn(T) -> T { return |b: T| (|c: T| a + b + c) }`
+ran correctly on `kryos run` but failed LLVM codegen outright on
+`kryos build --release` (`load %T, ptr %_1_arg` -- an unresolved generic
+type parameter reaching IR emission, on BOTH the outer and inner closure,
+not just the innermost one as first suspected). An explicitly-annotated
+closure param naming the enclosing generic function's own type parameter
+was never substituted to the concrete instantiation type. Full detail:
+`tools/loop/LEDGER.md` item 8 (CLOSED table).
+
 ### Concurrency + struct receivers: two conformance tests deadlocked on `build --release` (2026-07-28)
 
 **Status**: Fixed. Regression: `tests/conformance/conf_spinlock_mutex.kry` and

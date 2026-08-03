@@ -1,0 +1,79 @@
+// Conformance (LEDGER item 2c): `std::test::assert`'s 2-arg form used to be
+// PERMANENTLY SHADOWED by the compiler's own hardcoded 2-arg `assert`
+// intrinsic (dispatches to `kryos_builtin_assert`, which prints and calls
+// `std::process::abort()` -- never returns), even after `use
+// std::test::{assert}`. Both codegen backends dispatched any call literally
+// named `assert` with a nonzero arg count straight to the intrinsic
+// UNCONDITIONALLY, before the generic "does the user define a function with
+// this exact name" shadow-check every OTHER builtin (`len`, `abs`,
+// `contains`, ...) already goes through -- so the stdlib body (a real
+// `throw`, meant to be catchable, per its own doc comment "Throws with the
+// message if false") never ran, and a `try`/`catch` around it never got a
+// chance to unwind.
+//
+// Fix: the `assert`/`assert_eq`/`panic` special-case blocks in both
+// kryos-codegen-llvm and kryos-codegen-cranelift now check the SAME
+// user-function-shadow condition every other builtin arm already checks
+// (`func_param_types.contains_key` / `user_func_names.contains`) before
+// dispatching to the intrinsic.
+//
+// Proof this is a real gate: reverting the shadow-guard added to the three
+// `assert`/`assert_eq`/`panic` arms in both codegen backends makes this file
+// print "before" / "assertion failed: boom" to stderr and ABORT (exit 127,
+// no "kryos: uncaught exception:" prefix, catch never runs) on BOTH
+// backends; with the fix, the throw is caught and every expected line
+// prints.
+//
+// (Was tests/known_failures/assert_shadow_uncatchable.kry.)
+
+use std::test::{assert, assert_eq}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // The exact shape that used to abort instead of throw.
+    let mut caught: bool = false
+    let mut caught_msg: str = ""
+    try {
+        assert(false, "boom")
+        expect(false, "unreachable statement after a failed assert ran")
+    } catch (e) {
+        caught = true
+        caught_msg = e
+    }
+    expect(caught, "std::test::assert(false, ..) must be CATCHABLE, not process::abort()")
+    expect(
+        contains(caught_msg, "assertion failed: boom"),
+        "caught message should be the stdlib's thrown text, got: " + caught_msg
+    )
+
+    // A PASSING assert must not throw and must not disturb control flow.
+    assert(1 + 1 == 2, "math still works")
+
+    // assert_eq (3-arg stdlib form -- distinct arity from the 2-arg builtin
+    // intrinsic, so it was never blocked by this bug, but the fix touches
+    // this arm too; guard it stays green).
+    assert_eq(2 + 2, 4, "assert_eq still works")
+    let mut eq_caught: bool = false
+    try {
+        assert_eq(2 + 2, 5, "deliberate mismatch")
+    } catch (e) {
+        eq_caught = true
+    }
+    expect(eq_caught, "std::test::assert_eq must also be catchable")
+
+    // The TRUE compiler intrinsic (1-arg and 2-arg forms) must still work,
+    // uncatchable-abort semantics included, in a program that does NOT
+    // import std::test::assert -- checked by tests/assert_shadow_gate.sh
+    // (a standalone script, since that half needs a nonzero-exit assertion
+    // this conformance harness can't make) rather than here, since
+    // importing std::test::assert in THIS file already shadows the name
+    // everywhere.
+
+    println("conformance assert_shadow_catchable: PASS")
+}

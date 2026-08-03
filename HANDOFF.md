@@ -127,9 +127,11 @@ path had no such guard, which is exactly why it miscompiled silently.
 7. `comptime {}` runs at runtime while the docs sell it as compile-time. Fix the
    docs (hours); implementing real compile-time eval is months and should not
    gate 1.0.
-8. `let hs: [dyn Handler] = [Health {}, Miss {}]` reports a confusing
+8. ~~`let hs: [dyn Handler] = [Health {}, Miss {}]` reports a confusing
    `E0100 "expected Health, found Miss"` instead of the intended `E0110` —
-   array-literal element unification ignores the annotated `dyn` element type.
+   array-literal element unification ignores the annotated `dyn` element type.~~
+   **done** — both the `let` shape and the same symptom at a CALL SITE
+   (`use_handlers([A{}, B{}])`) now report E0110 alone; see LEDGER item 4.
 
 **Explicitly deferred past 1.0:** catchable runtime panics (needs an unwinding
 strategy decision, 1–2 weeks and a design commitment) and `i128`/`u128`

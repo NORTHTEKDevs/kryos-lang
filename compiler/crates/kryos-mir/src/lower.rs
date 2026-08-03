@@ -331,7 +331,11 @@ struct TryCatchTarget {
 /// `assert_eq` call that failed would still (eventually) report the right
 /// exception, but the caller's statements between that call and the next
 /// checked call site kept running first -- proven with
-/// `tests/known_failures/assert_eq_shadow_unwind_skip.kry`.
+/// `tests/conformance/conf_assert_eq_unwind_immediate.kry` (this comment
+/// previously cited `tests/known_failures/assert_eq_shadow_unwind_skip.kry`,
+/// which was never actually committed -- the fix below shipped in e7b1599
+/// but its own regression repro was a slip; recovered as a real gate in
+/// LEDGER item 2c's audit).
 fn is_unwind_source(inst: &Instruction) -> bool {
     let Instruction::Assign { value, .. } = inst else {
         return false;
@@ -12412,6 +12416,35 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         });
                         continue;
                     }
+                } else if !ctx.active_generic_bindings.is_empty() {
+                    // An EXPLICITLY-annotated closure param can still name the
+                    // enclosing generic function's own type parameter directly
+                    // (`fn curry_add<T>(a: T) -> .. { return |b: T| (|c: T| ..) }`).
+                    // `active_generic_bindings` (T -> concrete MirType) is set
+                    // for the whole body of a monomorphized instantiation and,
+                    // unlike `save_function_state`/`restore_function_state`,
+                    // is NOT reset when a nested lambda is lowered as its own
+                    // standalone function -- so this substitution is reached
+                    // for a lambda at ANY nesting depth (fixing the curried,
+                    // 2-level case, not just a directly-returned one-level
+                    // lambda). Without it the raw generic name ("T") reaches
+                    // LLVM IR emission unresolved: Cranelift's uniform i64
+                    // closure-arg ABI papers over the erased type (JIT prints
+                    // the right answer), but LLVM emits a real `byval(%T)`
+                    // param for a type that is never declared, and AOT build
+                    // fails outright (`load %T, ptr %_1_arg`). Regression:
+                    // tests/conformance/conf_curried_generic_closure.kry.
+                    let substituted = substitute_type_expr(
+                        p.ty.as_ref().expect("p.ty checked Some in this branch"),
+                        &ctx.active_generic_bindings,
+                    );
+                    all_params.push(ast::Param {
+                        name: p.name.clone(),
+                        ty: Some(substituted),
+                        default: p.default.clone(),
+                        span: p.span,
+                    });
+                    continue;
                 }
                 all_params.push(p.clone());
             }

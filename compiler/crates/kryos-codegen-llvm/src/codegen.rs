@@ -5989,7 +5989,19 @@ impl LlvmCodegen {
                                 ));
                             }
                         }
-                        "assert_eq" if args.len() == 2 => {
+                        // LEDGER item 2c: a user-defined (or stdlib-imported,
+                        // e.g. `use std::test::{assert}`) function named
+                        // `assert`/`assert_eq`/`panic` must shadow the
+                        // hardcoded intrinsic, matching every other builtin's
+                        // shadow rule (`len`/`abs`/`contains`/...) -- these
+                        // three arms were dispatching UNCONDITIONALLY,
+                        // straight past the generic user-shadow check the
+                        // `_` arm below already does for everything else, so
+                        // `std::test::assert` (a real 2-arg fn meant to
+                        // `throw`, catchable) was PERMANENTLY UNREACHABLE:
+                        // every call silently ran `kryos_builtin_assert`
+                        // (process::abort(), never returns) instead.
+                        "assert_eq" if args.len() == 2 && !self.func_param_types.contains_key("assert_eq") => {
                             // assert_eq(left, right) -> void
                             // Runtime: kryos_builtin_assert_eq(i64 left_handle, i64 right_handle)
                             // Mirrors the Cranelift path: stringify both args using the
@@ -6047,7 +6059,7 @@ impl LlvmCodegen {
                                 handles[0], handles[1]
                             ));
                         }
-                        "assert" => {
+                        "assert" if !self.func_param_types.contains_key("assert") => {
                             // assert(condition: bool, message: str) -> void
                             // Runtime: kryos_builtin_assert(i64, i64) -> i64
                             // Coerce condition (i1) -> i64 via zext, message (ptr) -> i64 via ptrtoint.
@@ -6082,7 +6094,7 @@ impl LlvmCodegen {
                                 "  call i64 @kryos_builtin_assert(i64 {cond_val}, i64 {msg_val})"
                             ));
                         }
-                        "panic" => {
+                        "panic" if !self.func_param_types.contains_key("panic") => {
                             // panic(msg: str) -> void
                             // Runtime: kryos_builtin_panic(i64) -> i64 (never returns)
                             let msg_val = if !args.is_empty() {
