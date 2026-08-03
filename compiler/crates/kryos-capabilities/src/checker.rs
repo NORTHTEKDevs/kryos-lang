@@ -233,6 +233,30 @@ struct CapabilityChecker {
     /// whether a parameter typed as a struct actually carries a
     /// function-typed field somewhere in its shape.
     struct_field_types: HashMap<String, Vec<(String, TypeExpr)>>,
+    /// Every struct's generic parameter names, in declaration order
+    /// (`struct List<T> { .. }` -> `["T"]`). Feeds `struct_fields_for`'s
+    /// generic-argument substitution.
+    struct_generic_params: HashMap<String, Vec<String>>,
+    /// For every user-defined method whose receiver is literally named
+    /// `self` and whose every return path decomposes to the SAME
+    /// self-rooted field/index chain, the method NAME -> that self-relative
+    /// `PathStep` chain. Feeds `resolve_type_path`'s transparent-accessor
+    /// fallback (see `collect_transparent_accessor_paths`) -- what lets
+    /// `list.get(i)` on a `std::collections::List<fn() -> str>` be
+    /// recognized as reaching the same slot `list.data[i]` would, instead of
+    /// being invisible because `decompose_container_path` only understands
+    /// direct field/index syntax, not a call through a helper method.
+    /// Keyed by `(struct name, method name)`, NOT bare method name — unlike
+    /// `fn_params`/`fn_capabilities`'s pre-existing bare-name-collision
+    /// tolerance, a name collision here would be actively WRONG rather than
+    /// just imprecise: `std::collections::List.get` and `Dict.get` both
+    /// exist in the SAME stdlib module and return DIFFERENT self-relative
+    /// paths (`[data, Index]` vs `[store, Index]`), so a bare-name map would
+    /// let one clobber the other and silently stop recognizing the loser's
+    /// accessor — verified live during development (this exact collision
+    /// initially broke `List<fn() -> str>.get()` detection because `Dict`'s
+    /// `get` is declared later in the file and won the collision).
+    transparent_accessor_paths: HashMap<(String, String), Vec<PathStep>>,
     /// For each function name, for each PARAMETER INDEX that is invoked —
     /// either DIRECTLY as a bare `p(...)` call, or by drilling into a
     /// CONTAINER value (`p.field(...)`, `p[i](...)`, or a chain of these) —
@@ -293,6 +317,8 @@ impl CapabilityChecker {
             fn_ret_ty: HashMap::new(),
             actor_handler_names: HashSet::new(),
             struct_field_types: HashMap::new(),
+            struct_generic_params: HashMap::new(),
+            transparent_accessor_paths: HashMap::new(),
             hot_params: HashMap::new(),
             fn_return_closure_caps: HashMap::new(),
             current_fn_typed_params: HashSet::new(),
@@ -365,21 +391,115 @@ impl CapabilityChecker {
         matches!(ty, Some(TypeExpr::Function { .. }))
     }
 
-    /// Record every struct's field list (name -> [(field_name, field_type)]).
-    /// Feeds `is_fn_bearing_type` / `resolve_type_path` — the
+    /// Record every struct's field list (name -> [(field_name, field_type)])
+    /// AND its generic parameter names in declaration order (name ->
+    /// ["T", ...]). Feeds `is_fn_bearing_type` / `resolve_type_path` — the
     /// container-closure-laundering fix needs to know whether a struct type
-    /// carries a function-typed field somewhere in its shape. Actor state
+    /// carries a function-typed field somewhere in its shape, INCLUDING when
+    /// that field's declared type is a generic parameter (`List<T>`'s
+    /// `data: [T]`) that a specific reference instantiates with a function
+    /// type (`List<fn() -> str>`) — see `struct_fields_for`. Actor state
     /// fields are deliberately NOT included: an actor is a message-passing
     /// boundary, not a value ever passed around and drilled into like an
     /// ordinary struct (see `check_actor`'s own, separate handling).
     fn collect_struct_field_types(&mut self, decls: &[Decl]) {
         for d in decls {
-            if let Decl::Struct { name, fields, .. } = d {
+            if let Decl::Struct { name, fields, generics, .. } = d {
                 self.struct_field_types.insert(
                     name.clone(),
                     fields.iter().map(|f| (f.name.clone(), f.ty.clone())).collect(),
                 );
+                self.struct_generic_params
+                    .insert(name.clone(), generics.iter().map(|g| g.name.clone()).collect());
             }
+        }
+    }
+
+    /// `struct_name`'s field list with its OWN generic parameters
+    /// substituted for `type_args` (positional, by declaration order), so a
+    /// reference to `List<fn() -> str>`'s `data` field resolves to
+    /// `[fn() -> str]`, not the raw declared `[T]`. Falls back to the
+    /// UNSUBSTITUTED field list when the struct has no generic parameters,
+    /// `type_args` is empty (a bare non-generic reference), or the arity
+    /// doesn't line up (a partially-applied/malformed reference — `zip`
+    /// simply stops at the shorter side, so this degrades gracefully rather
+    /// than panicking).
+    fn struct_fields_for(&self, struct_name: &str, type_args: &[TypeExpr]) -> Option<Vec<(String, TypeExpr)>> {
+        let fields = self.struct_field_types.get(struct_name)?;
+        if type_args.is_empty() {
+            return Some(fields.clone());
+        }
+        let Some(generic_names) = self.struct_generic_params.get(struct_name) else {
+            return Some(fields.clone());
+        };
+        if generic_names.is_empty() {
+            return Some(fields.clone());
+        }
+        let subst: HashMap<&str, &TypeExpr> = generic_names
+            .iter()
+            .map(String::as_str)
+            .zip(type_args.iter())
+            .collect();
+        Some(
+            fields
+                .iter()
+                .map(|(n, t)| (n.clone(), Self::substitute_generic_type(t, &subst)))
+                .collect(),
+        )
+    }
+
+    /// Recursively replace every `TypeExpr::Simple { name, .. }` that names a
+    /// key in `subst` with its substituted type. Used to instantiate a
+    /// generic struct's declared field types (`T`, `[T]`, `map<K, T>`, ...)
+    /// against the concrete type arguments at a specific reference.
+    fn substitute_generic_type(ty: &TypeExpr, subst: &HashMap<&str, &TypeExpr>) -> TypeExpr {
+        match ty {
+            TypeExpr::Simple { name, .. } => match subst.get(name.as_str()) {
+                Some(replacement) => (*replacement).clone(),
+                None => ty.clone(),
+            },
+            TypeExpr::Generic { name, args, span } => TypeExpr::Generic {
+                name: name.clone(),
+                args: args.iter().map(|a| Self::substitute_generic_type(a, subst)).collect(),
+                span: *span,
+            },
+            TypeExpr::Array { element, size, span } => TypeExpr::Array {
+                element: Box::new(Self::substitute_generic_type(element, subst)),
+                size: *size,
+                span: *span,
+            },
+            TypeExpr::Tuple { elements, span } => TypeExpr::Tuple {
+                elements: elements.iter().map(|e| Self::substitute_generic_type(e, subst)).collect(),
+                span: *span,
+            },
+            TypeExpr::Function { params, ret, span } => TypeExpr::Function {
+                params: params.iter().map(|p| Self::substitute_generic_type(p, subst)).collect(),
+                ret: Box::new(Self::substitute_generic_type(ret, subst)),
+                span: *span,
+            },
+            TypeExpr::Optional { inner, span } => TypeExpr::Optional {
+                inner: Box::new(Self::substitute_generic_type(inner, subst)),
+                span: *span,
+            },
+            TypeExpr::Reference { inner, mutable, span } => TypeExpr::Reference {
+                inner: Box::new(Self::substitute_generic_type(inner, subst)),
+                mutable: *mutable,
+                span: *span,
+            },
+            TypeExpr::Shared { inner, span } => TypeExpr::Shared {
+                inner: Box::new(Self::substitute_generic_type(inner, subst)),
+                span: *span,
+            },
+            TypeExpr::Weak { inner, span } => TypeExpr::Weak {
+                inner: Box::new(Self::substitute_generic_type(inner, subst)),
+                span: *span,
+            },
+            TypeExpr::Pointer { inner, mutable, span } => TypeExpr::Pointer {
+                inner: Box::new(Self::substitute_generic_type(inner, subst)),
+                mutable: *mutable,
+                span: *span,
+            },
+            TypeExpr::DynTrait { .. } | TypeExpr::Inferred { .. } => ty.clone(),
         }
     }
 
@@ -414,9 +534,13 @@ impl CapabilityChecker {
             TypeExpr::Generic { name, args, .. } if (name == "map" || name == "Map") && args.len() == 2 => {
                 self.is_fn_bearing_type_inner(&args[1], depth + 1)
             }
-            TypeExpr::Simple { name, .. } | TypeExpr::Generic { name, .. } => self
-                .struct_field_types
-                .get(name)
+            TypeExpr::Simple { name, .. } => self
+                .struct_fields_for(name, &[])
+                .is_some_and(|fields| {
+                    fields.iter().any(|(_, fty)| self.is_fn_bearing_type_inner(fty, depth + 1))
+                }),
+            TypeExpr::Generic { name, args, .. } => self
+                .struct_fields_for(name, args)
                 .is_some_and(|fields| {
                     fields.iter().any(|(_, fty)| self.is_fn_bearing_type_inner(fty, depth + 1))
                 }),
@@ -431,27 +555,152 @@ impl CapabilityChecker {
     /// non-container, a drill through an opaque/unmodeled type, ...) — used
     /// to distinguish a genuine container-closure invocation from an
     /// ordinary method call before marking a parameter hot.
+    ///
+    /// A `Field(fname)` step that does NOT name a genuine struct field falls
+    /// back to checking whether `fname` is a TRANSPARENT ACCESSOR METHOD
+    /// (`transparent_accessor_paths` — `List.get`, `Stack.peek`,
+    /// `Queue.front`, `Deque`'s accessors, and any user method shaped the
+    /// same way): if so, that method's own self-relative path is spliced in
+    /// and resolution continues against the SAME `ty` with the combined
+    /// path. This is what makes `list.get(i)()` on a
+    /// `std::collections::List<fn() -> str>` resolve exactly like
+    /// `list.data[i]()` would, instead of "get" failing to match any real
+    /// field on `List` and silently being treated as an ordinary,
+    /// non-hot method call.
     fn resolve_type_path(&self, ty: &TypeExpr, path: &[PathStep]) -> Option<TypeExpr> {
+        self.resolve_type_path_inner(ty, path, 0)
+    }
+
+    fn resolve_type_path_inner(&self, ty: &TypeExpr, path: &[PathStep], depth: u32) -> Option<TypeExpr> {
+        if depth > 16 {
+            return None;
+        }
         let Some((head, rest)) = path.split_first() else {
             return Some(ty.clone());
         };
         match (head, ty) {
-            (_, TypeExpr::Optional { inner, .. }) => self.resolve_type_path(inner, path),
-            (PathStep::Field(fname), TypeExpr::Simple { name, .. })
-            | (PathStep::Field(fname), TypeExpr::Generic { name, .. }) => {
-                let fields = self.struct_field_types.get(name)?;
-                let fty = fields.iter().find(|(n, _)| n == fname).map(|(_, t)| t.clone())?;
-                self.resolve_type_path(&fty, rest)
+            (_, TypeExpr::Optional { inner, .. }) => self.resolve_type_path_inner(inner, path, depth + 1),
+            (PathStep::Field(fname), TypeExpr::Simple { name, .. }) => {
+                if let Some(fields) = self.struct_fields_for(name, &[]) {
+                    if let Some((_, fty)) = fields.iter().find(|(n, _)| n == fname) {
+                        return self.resolve_type_path_inner(&fty.clone(), rest, depth + 1);
+                    }
+                }
+                let accessor_path = self
+                    .transparent_accessor_paths
+                    .get(&(name.clone(), fname.clone()))?;
+                let mut combined = accessor_path.clone();
+                combined.extend(rest.iter().cloned());
+                self.resolve_type_path_inner(ty, &combined, depth + 1)
+            }
+            (PathStep::Field(fname), TypeExpr::Generic { name, args, .. }) => {
+                if let Some(fields) = self.struct_fields_for(name, args) {
+                    if let Some((_, fty)) = fields.iter().find(|(n, _)| n == fname) {
+                        return self.resolve_type_path_inner(&fty.clone(), rest, depth + 1);
+                    }
+                }
+                let accessor_path = self
+                    .transparent_accessor_paths
+                    .get(&(name.clone(), fname.clone()))?;
+                let mut combined = accessor_path.clone();
+                combined.extend(rest.iter().cloned());
+                self.resolve_type_path_inner(ty, &combined, depth + 1)
             }
             (PathStep::Index, TypeExpr::Array { element, .. }) => {
-                self.resolve_type_path(element, rest)
+                self.resolve_type_path_inner(element, rest, depth + 1)
             }
             (PathStep::Index, TypeExpr::Generic { name, args, .. })
                 if (name == "map" || name == "Map") && args.len() == 2 =>
             {
-                self.resolve_type_path(&args[1], rest)
+                self.resolve_type_path_inner(&args[1], rest, depth + 1)
             }
             _ => None,
+        }
+    }
+
+    /// Compute, for every user-defined method whose receiver parameter is
+    /// literally named `self` and whose every RETURN-position expression
+    /// (see `collect_return_exprs`) decomposes to the SAME self-rooted
+    /// field/index chain, `(the method's OWN struct name, method name) ->`
+    /// that self-relative `PathStep` chain (an accompanying branch that
+    /// never returns — a bounds-check `throw` — is fine; every path that
+    /// DOES return must agree). This is what lets a call through a
+    /// `std::collections`-style accessor method (`list.get(i)`,
+    /// `stack.peek()`, `queue.front()`, `deque.back()` — all of which are,
+    /// in their entirety modulo a bounds guard, a bare
+    /// `return self.<field>[...]` / `return self.<field>`) be recognized by
+    /// `resolve_type_path` as reaching the same slot the field access it
+    /// wraps would reach.
+    ///
+    /// Deliberately walks `Decl::Impl` directly (each method paired with its
+    /// OWN `target` struct name) instead of reusing `fn_params`/
+    /// `collect_functions` (both keyed by bare method name — the
+    /// pre-existing modeling simplification `hot_params`/`fn_capabilities`
+    /// already accept). A bare-name key here would be actively WRONG, not
+    /// just imprecise: `List.get` and `Dict.get` both live in the SAME
+    /// stdlib module and return DIFFERENT self-relative paths (`[data,
+    /// Index]` vs `[store, Index]`) — verified live during development that
+    /// a bare-name map lets `Dict.get` (declared later in the file) clobber
+    /// `List.get`, silently breaking detection for `List<fn() -> str>`
+    /// specifically, the flagship shape this fix targets.
+    fn collect_transparent_accessor_paths(decls: &[Decl]) -> HashMap<(String, String), Vec<PathStep>> {
+        let mut result = HashMap::new();
+        Self::collect_transparent_accessor_paths_walk(decls, &mut result);
+        result
+    }
+
+    fn collect_transparent_accessor_paths_walk(
+        decls: &[Decl],
+        result: &mut HashMap<(String, String), Vec<PathStep>>,
+    ) {
+        for d in decls {
+            let Decl::Impl { target, methods, .. } = d else {
+                continue;
+            };
+            for m in methods {
+                let Decl::Function {
+                    name: method_name,
+                    params,
+                    body: Some(body),
+                    ..
+                } = m
+                else {
+                    continue;
+                };
+                if params.first().map(|p| p.name.as_str()) != Some("self") {
+                    continue;
+                }
+                let mut returns: Vec<&Expr> = Vec::new();
+                Self::collect_return_exprs(body, &mut returns);
+                if returns.is_empty() {
+                    continue;
+                }
+                let mut agreed: Option<Vec<PathStep>> = None;
+                let mut ok = true;
+                for r in &returns {
+                    let Some((root, path)) = Self::decompose_container_path(r) else {
+                        ok = false;
+                        break;
+                    };
+                    if root != "self" {
+                        ok = false;
+                        break;
+                    }
+                    match &agreed {
+                        None => agreed = Some(path),
+                        Some(existing) if *existing == path => {}
+                        Some(_) => {
+                            ok = false;
+                            break;
+                        }
+                    }
+                }
+                if ok {
+                    if let Some(path) = agreed {
+                        result.insert((target.clone(), method_name.clone()), path);
+                    }
+                }
+            }
         }
     }
 
@@ -1201,6 +1450,32 @@ impl CapabilityChecker {
                     return ClosureCapsResult::DependsOnParam(name.clone());
                 }
                 if self.defined_fns.contains(name) {
+                    // If `name` ITSELF has a hot parameter (it forwards a
+                    // caller-supplied fn-value into a call, directly or
+                    // through a container path -- e.g. `fn invoke(f: fn() ->
+                    // str) -> str { return f() }`), a bare reference to
+                    // `name` as an unapplied VALUE carries authority that
+                    // depends on whatever it is EVENTUALLY called with --
+                    // which isn't known here (this is `name` being handed
+                    // onward, e.g. `map(tools, invoke)`, not `name` being
+                    // called with a concrete argument). Attributing it
+                    // `working[name]`'s OWN declared/inferred set (which
+                    // only reflects gated BUILTINS `name` calls directly,
+                    // never what its hot parameter might carry) silently
+                    // drops that dependency -- verified live: passing a
+                    // privileged closure through `tools` into `map(tools,
+                    // invoke)` leaked the secret with NO capability required
+                    // before this check existed. Fall back to the sound
+                    // `Unknown` -> `Capability::All` default instead of
+                    // asserting a value we cannot actually vouch for. A
+                    // named function with NO hot parameters of its own (the
+                    // overwhelming majority -- any plain predicate/mapper
+                    // passed to `std::iter`) is unaffected: this only
+                    // engages for a function that is ITSELF a caller-supplied-
+                    // closure invoker being forwarded as a first-class value.
+                    if self.hot_params.get(name).is_some_and(|m| !m.is_empty()) {
+                        return ClosureCapsResult::Unknown;
+                    }
                     return ClosureCapsResult::Known(
                         working.get(name).cloned().unwrap_or_else(CapabilitySet::empty),
                     );
@@ -1413,10 +1688,270 @@ impl CapabilityChecker {
     /// `resolve_container_path_caps`, once the specific field/index path
     /// being invoked is known), so unlike `build_local_closure_caps` this
     /// needs no `working`/`fn_return_caps`/`own_params` context.
+    ///
+    /// **MUTATION TRACKING (closes the live bypass a prior session's fix
+    /// left open — see LEDGER, "closure into a container via push / map
+    /// insert"):** the ORIGINAL version of this function only ever looked at
+    /// `Stmt::Let`, so a container built by `let mut tools = []` then
+    /// POPULATED afterward (`tools = push(tools, reader)`, `m["k"] = reader`,
+    /// `arr[i] = reader`, `r.field = reader`) kept the STALE initial snapshot
+    /// forever. That snapshot was usually an EMPTY literal (`[]`/`{}`), and
+    /// `resolve_container_path_caps`'s index-insensitive union over zero
+    /// elements resolves to `Known(empty)` — not `Unknown`. So a mutated
+    /// container didn't just fall through the documented conservative
+    /// `Unknown` -> `Capability::All` fallback (which the report's "requires
+    /// `Capability::All`" claim assumed); it actively asserted "this
+    /// container carries no authority", which is FALSE and worse than doing
+    /// nothing. Every subsequent-mutation call site walked a lie instead of
+    /// admitting ignorance.
+    ///
+    /// Fix: `Stmt::Assign` is now walked too. Three shapes are resolved
+    /// PRECISELY (the tracked literal is rebuilt with the write applied, so
+    /// a later read sees the real authority):
+    /// - `X = push(X, v)` (the canonical growable-container idiom, see
+    ///   CLAUDE.md's push-aliasing gotcha) appends `v` into the tracked
+    ///   array literal for `X`.
+    /// - `X = Y` where `Y` is itself a tracked container local re-aliases
+    ///   `X` to it (same rule the `Let` arm already applies).
+    /// - `X = <fresh struct/array/map literal>` overwrites the tracked
+    ///   snapshot (same rule as `Let`).
+    /// - A field/index write reaching into an ALREADY-tracked container
+    ///   through a field/index PATH (`r.field = v`, `arr[i] = v`,
+    ///   `m[k] = v`, and nested combinations like `hs[i].handler = v`) is
+    ///   rebuilt via `rebuild_container_write`, splicing `v` in at the
+    ///   reached point (index writes are index-INSENSITIVE — appended to
+    ///   the union — matching the read side's existing design).
+    ///
+    /// Every OTHER assignment shape reaching a tracked name — an
+    /// unrecognized reassignment (`X = some_function()`, `X = other_arr`
+    /// where `other_arr` isn't itself tracked), a compound assignment
+    /// (`+=` and friends), or a field/index write whose path can't be
+    /// resolved against the literal's actual current shape — INVALIDATES
+    /// (removes) that name's tracked entry instead of leaving it stale, so a
+    /// later read correctly falls through to `Unknown` -> `Capability::All`
+    /// (fail CLOSED) rather than silently keeping a snapshot that is now
+    /// known to be wrong. This is the concrete fix for "an unanalyzable
+    /// fn-value must FAIL CLOSED, not open."
     fn build_local_container_lits(block: &kryos_ast::Block) -> HashMap<String, Expr> {
         let mut locals = HashMap::new();
         Self::build_local_container_lits_block(block, &mut locals);
         locals
+    }
+
+    /// Apply a single `Stmt::Assign` to the in-progress container-literal
+    /// snapshot map. See `build_local_container_lits`'s doc comment for the
+    /// recognized shapes and the fail-closed invalidation rule.
+    fn apply_container_assign(locals: &mut HashMap<String, Expr>, target: &Expr, op: kryos_ast::AssignOp, value: &Expr) {
+        // Compound assignment (`+=`, ...) never applies to a fn-bearing
+        // container in any of the shapes this tracks; if it targets a
+        // tracked root, the snapshot is no longer trustworthy.
+        if !matches!(op, kryos_ast::AssignOp::Assign) {
+            if let Some((root, _)) = Self::decompose_container_path(target) {
+                locals.remove(root);
+            }
+            return;
+        }
+        match target {
+            Expr::Identifier { name, .. } => {
+                // `X = push(X, v)` — in-place append (see CLAUDE.md's push
+                // aliasing gotcha: `push` grows the shared buffer and
+                // returns the handle, so `X = push(X, v)` is the canonical,
+                // and by far the most common, idiom for this).
+                if let Expr::FnCall { callee, args, .. } = value {
+                    if let (Expr::Identifier { name: callee_name, .. }, [src, pushed]) =
+                        (callee.as_ref(), args.as_slice())
+                    {
+                        if callee_name == "push" {
+                            if let Expr::Identifier { name: src_name, .. } = src {
+                                if src_name == name {
+                                    if let Some(Expr::ArrayLiteral { elements, span }) =
+                                        locals.get(name).cloned()
+                                    {
+                                        let mut new_elements = elements;
+                                        new_elements.push(pushed.clone());
+                                        locals.insert(
+                                            name.clone(),
+                                            Expr::ArrayLiteral { elements: new_elements, span },
+                                        );
+                                    } else {
+                                        // Not currently tracked as an array
+                                        // literal (unknown prior content, or
+                                        // never tracked at all) — appending
+                                        // one MORE element on top of an
+                                        // unknown base would UNDER-report
+                                        // whatever authority the unknown
+                                        // part carries. Stay untracked.
+                                        locals.remove(name);
+                                    }
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                // `X = Y` — alias to another tracked container local (same
+                // rule as the `Let` arm below).
+                if let Expr::Identifier { name: src, .. } = value {
+                    match locals.get(src).cloned() {
+                        Some(existing) => {
+                            locals.insert(name.clone(), existing);
+                        }
+                        None => {
+                            locals.remove(name);
+                        }
+                    }
+                    return;
+                }
+                // `X = <fresh literal>` — overwrite with the new snapshot.
+                match value {
+                    Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                        locals.insert(name.clone(), value.clone());
+                    }
+                    _ => {
+                        // Anything else we can't characterize (a function
+                        // call result, an arithmetic/ternary expression, a
+                        // read out of another container, ...) — invalidate
+                        // rather than keep a now-stale snapshot.
+                        locals.remove(name);
+                    }
+                }
+            }
+            Expr::FieldAccess { object, field, .. } => {
+                Self::apply_container_path_write(
+                    locals,
+                    object,
+                    &PathStep::Field(field.clone()),
+                    None,
+                    value,
+                );
+            }
+            Expr::IndexAccess { object, index, .. } => {
+                Self::apply_container_path_write(locals, object, &PathStep::Index, Some(index), value);
+            }
+            _ => {}
+        }
+    }
+
+    /// Shared plumbing for `r.field = v` / `arr[i] = v` / `m[k] = v`: resolve
+    /// `object`'s root identifier and access path, and if that root is
+    /// CURRENTLY tracked, rebuild its literal with the write spliced in at
+    /// `path + [leaf_step]`. If the root isn't tracked, there is nothing to
+    /// invalidate (it already resolves to `Unknown`). If it IS tracked but
+    /// the write can't be resolved against its actual shape, the root is
+    /// invalidated (fail closed) rather than left stale.
+    fn apply_container_path_write(
+        locals: &mut HashMap<String, Expr>,
+        object: &Expr,
+        leaf_step: &PathStep,
+        leaf_key: Option<&Expr>,
+        value: &Expr,
+    ) {
+        let Some((root, path)) = Self::decompose_container_path(object) else {
+            return;
+        };
+        let root = root.to_string();
+        let Some(current) = locals.get(&root).cloned() else {
+            return;
+        };
+        match Self::rebuild_container_write(&current, &path, leaf_step, leaf_key, value) {
+            Some(updated) => {
+                locals.insert(root, updated);
+            }
+            None => {
+                locals.remove(&root);
+            }
+        }
+    }
+
+    /// Walk `path` into literal `lit`, then splice `value` in at the point
+    /// reached via `leaf_step` (a `Field` write overwrites/inserts the named
+    /// field; an `Index` write is index-INSENSITIVE and appends — matching
+    /// `resolve_container_path_caps`'s read-side union semantics). Returns
+    /// `None` when the path can't be resolved against `lit`'s actual shape
+    /// (a container-of-unknown-provenance element, a struct field write
+    /// through a type that isn't tracked, ...) — the caller treats `None` as
+    /// "invalidate the whole root", never as "leave the old snapshot".
+    fn rebuild_container_write(
+        lit: &Expr,
+        path: &[PathStep],
+        leaf_step: &PathStep,
+        leaf_key: Option<&Expr>,
+        value: &Expr,
+    ) -> Option<Expr> {
+        let Some((head, rest)) = path.split_first() else {
+            // `lit` IS the container the leaf write lands directly on.
+            return match (leaf_step, lit) {
+                (PathStep::Field(fname), Expr::StructLiteral { name, fields, span }) => {
+                    let mut new_fields = fields.clone();
+                    match new_fields.iter_mut().find(|(n, _)| n == fname) {
+                        Some(slot) => slot.1 = value.clone(),
+                        None => new_fields.push((fname.clone(), value.clone())),
+                    }
+                    Some(Expr::StructLiteral { name: name.clone(), fields: new_fields, span: *span })
+                }
+                (PathStep::Index, Expr::ArrayLiteral { elements, span }) => {
+                    let mut new_elements = elements.clone();
+                    new_elements.push(value.clone());
+                    Some(Expr::ArrayLiteral { elements: new_elements, span: *span })
+                }
+                (PathStep::Index, Expr::MapLiteral { entries, span }) => {
+                    let mut new_entries = entries.clone();
+                    let key = leaf_key.cloned().unwrap_or_else(|| value.clone());
+                    new_entries.push((key, value.clone()));
+                    Some(Expr::MapLiteral { entries: new_entries, span: *span })
+                }
+                _ => None,
+            };
+        };
+        match (head, lit) {
+            (PathStep::Field(fname), Expr::StructLiteral { name, fields, span }) => {
+                let (_, fexpr) = fields.iter().find(|(n, _)| n == fname)?;
+                let updated = Self::rebuild_container_write(fexpr, rest, leaf_step, leaf_key, value)?;
+                let mut new_fields = fields.clone();
+                if let Some(slot) = new_fields.iter_mut().find(|(n, _)| n == fname) {
+                    slot.1 = updated;
+                }
+                Some(Expr::StructLiteral { name: name.clone(), fields: new_fields, span: *span })
+            }
+            (PathStep::Index, Expr::ArrayLiteral { elements, span }) => {
+                // Index-insensitive: the write might land on ANY element, so
+                // apply it to every element that can accept it and keep the
+                // rest as-is (mirrors the read-side union).
+                let mut new_elements = Vec::with_capacity(elements.len());
+                let mut any = false;
+                for el in elements {
+                    match Self::rebuild_container_write(el, rest, leaf_step, leaf_key, value) {
+                        Some(updated) => {
+                            any = true;
+                            new_elements.push(updated);
+                        }
+                        None => new_elements.push(el.clone()),
+                    }
+                }
+                if !any {
+                    return None;
+                }
+                Some(Expr::ArrayLiteral { elements: new_elements, span: *span })
+            }
+            (PathStep::Index, Expr::MapLiteral { entries, span }) => {
+                let mut new_entries = Vec::with_capacity(entries.len());
+                let mut any = false;
+                for (k, v) in entries {
+                    match Self::rebuild_container_write(v, rest, leaf_step, leaf_key, value) {
+                        Some(updated) => {
+                            any = true;
+                            new_entries.push((k.clone(), updated));
+                        }
+                        None => new_entries.push((k.clone(), v.clone())),
+                    }
+                }
+                if !any {
+                    return None;
+                }
+                Some(Expr::MapLiteral { entries: new_entries, span: *span })
+            }
+            _ => None,
+        }
     }
 
     fn build_local_container_lits_block(block: &kryos_ast::Block, locals: &mut HashMap<String, Expr>) {
@@ -1435,6 +1970,9 @@ impl CapabilityChecker {
                     }
                     _ => {}
                 },
+                Stmt::Assign { target, op, value, .. } => {
+                    Self::apply_container_assign(locals, target, *op, value);
+                }
                 Stmt::If {
                     then_block,
                     elif_clauses,
@@ -2159,6 +2697,7 @@ impl CapabilityChecker {
         self.collect_defined_fns(&module.declarations);
         self.collect_fn_signatures(&module.declarations);
         self.collect_struct_field_types(&module.declarations);
+        self.transparent_accessor_paths = Self::collect_transparent_accessor_paths(&module.declarations);
 
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).

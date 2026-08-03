@@ -1,0 +1,36 @@
+// SECURITY -- CLOSED. Sibling of `cap_escape_closure_launder_push.kry`: a
+// struct built with a placeholder (unprivileged) field value, then
+// overwritten via a plain field-assign (`reg.reader = reader`) AFTER
+// construction -- the struct-field-mutation counterpart of the push/
+// map-insert/index-assign mutation-tracking gap. Prior wave's report claimed
+// this shape was "correctly rejected" as a compile error; re-measured live
+// this session and that claim does NOT hold at this HEAD -- with a `mut`
+// struct binding, `reg.reader = reader` compiled clean and leaked exactly
+// like the other mutation shapes (the earlier claim likely came from an
+// immutable-binding compile error, an ORTHOGONAL check unrelated to
+// capabilities, not a capability rejection). See
+// `cap_escape_closure_launder_push.kry`'s header for the fix.
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways.
+struct Registry { reader: fn() -> str }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn zero_cap_tool(reg: Registry) -> str {
+    return reg.reader()
+}
+fn dummy() -> str {
+    return "no secret"
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut reg = Registry { reader: dummy }
+    reg.reader = reader
+    deny!(fs:read) {
+        println("FIELD-MUTATE LEAK: " + zero_cap_tool(reg))
+    }
+}

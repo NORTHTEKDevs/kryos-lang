@@ -1,0 +1,46 @@
+// SECURITY -- CLOSED. LIVE bypass found against a prior wave's container-
+// literal fix (see `cap_escape_closure_launder_container.kry` and siblings):
+// that fix tracked a container's LITERAL construction, but a container
+// mutated AFTER declaration -- the canonical growable-container idiom
+// `tools = push(tools, v)` -- was invisible to the tracker. Worse than the
+// documented `Unknown` -> `Capability::All` fallback: the tracker still
+// found the STALE (usually empty) initial literal and confidently reported
+// "this container carries no authority", so the call required NOTHING.
+//
+// Root cause: `build_local_container_lits`/`build_local_container_lits_block`
+// (`kryos-capabilities/src/checker.rs`) only ever looked at `Stmt::Let`, so a
+// container built by `let mut tools = []` then populated via `Stmt::Assign`
+// kept its initial (empty) snapshot forever.
+//
+// Fix: `Stmt::Assign` is now walked too (`apply_container_assign`), which
+// recognizes `X = push(X, v)` and rebuilds the tracked literal with `v`
+// appended; any OTHER reassignment shape reaching a tracked container that
+// can't be precisely characterized INVALIDATES the tracked entry instead of
+// keeping a stale snapshot, so it correctly falls through to the sound
+// `Unknown` -> `Capability::All` fallback (fail CLOSED, not silently open).
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways:
+// reverting the `Stmt::Assign` handling and rebuilding makes this compile
+// clean and print the secret again.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn call_nth(tools: [fn() -> str], i: i64) -> str {
+    return tools[i]()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut tools: [fn() -> str] = []
+    let mut i = 0
+    while i < 3 {
+        tools = push(tools, reader)
+        i = i + 1
+    }
+    deny!(fs:read) {
+        let leaked = call_nth(tools, 1)
+        println("PUSHED-CONTAINER LEAK: " + leaked)
+    }
+}

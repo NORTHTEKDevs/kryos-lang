@@ -157,5 +157,62 @@ else
     tail -5 "$TMP/registry_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 12-19. LIVE bypass of the container-literal fix (checks #7-10): a
+#        container built empty/placeholder then MUTATED afterward (push,
+#        map/array index-assign, struct field-assign, and nested
+#        combinations of these, plus a std::collections wrapper and a HOF
+#        forwarding through a named adapter function) was invisible to the
+#        literal tracker -- worse than the documented `Unknown` fallback,
+#        because the STALE (usually empty) initial snapshot survived and
+#        confidently asserted "no authority here". Same decisive-proof shape
+#        as #4/#7-10 (a deny!(fs:read) block the escape must not defeat).
+for shape in push map_insert index_assign field_mutate nested_push map_of_arrays stdlib_collection hof_forward; do
+    f="tests/security/cap_escape_closure_launder_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/mut_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: container-mutation-launder [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/mut_${shape}_$mode_flag"; then
+            echo "  ok   container-mutation-launder [$shape] escape rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/mut_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 20. No cascade complement to #12-19: a registry of PURE closures built via
+#     the SAME mutation shapes (push / map-insert / field-assign /
+#     index-assign) -- not just literal construction -- must still compile
+#     with NO annotation. Guards against the mutation-tracking fix
+#     over-invalidating (falling back to `Unknown` -> requiring `all`) for
+#     ordinary, non-privileged mutation-built containers.
+cat > "$TMP/mut_nocascade.kry" <<'KRY'
+struct Registry { handler: fn() -> str }
+fn pure_a() -> str { return "a" }
+fn pure_b() -> str { return "b" }
+fn call_nth(tools: [fn() -> str], i: i64) -> str { return tools[i]() }
+fn call_key(m: map<str, fn() -> str>, k: str) -> str { return m[k]() }
+fn call_field(r: Registry) -> str { return r.handler() }
+fn main() {
+    let mut tools: [fn() -> str] = []
+    tools = push(tools, pure_a)
+    let mut m: map<str, fn() -> str> = {}
+    m["k"] = pure_b
+    let mut r = Registry { handler: pure_a }
+    r.handler = pure_b
+    let mut idxed: [fn() -> str] = [pure_a, pure_a]
+    idxed[0] = pure_b
+    println(call_nth(tools, 0) + call_key(m, "k") + call_field(r) + call_nth(idxed, 0))
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/mut_nocascade.kry" >"$TMP/mut_nc" 2>&1; then
+    echo "  ok   mutation-built registries of pure closures need no annotation (no cascade)"
+else
+    echo "  FAIL: the mutation-tracking fix cascaded into a pure-closure registry:"
+    tail -5 "$TMP/mut_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

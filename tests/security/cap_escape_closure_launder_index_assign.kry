@@ -1,0 +1,28 @@
+// SECURITY -- CLOSED. Sibling of `cap_escape_closure_launder_push.kry`: an
+// array built with placeholder (unprivileged) elements, then overwritten via
+// a plain index-assign (`tools[0] = reader`), is the same mutation-tracking
+// gap as `push` -- the array-index-assign counterpart. See that file's
+// header for the full root cause and fix.
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn dummy() -> str {
+    return "no secret"
+}
+fn call_nth(tools: [fn() -> str], i: i64) -> str {
+    return tools[i]()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut tools: [fn() -> str] = [dummy, dummy, dummy]
+    tools[0] = reader
+    deny!(fs:read) {
+        let leaked = call_nth(tools, 0)
+        println("INDEX-ASSIGN LEAK: " + leaked)
+    }
+}

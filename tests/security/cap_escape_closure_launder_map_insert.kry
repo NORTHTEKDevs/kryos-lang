@@ -1,0 +1,26 @@
+// SECURITY -- CLOSED. Sibling of `cap_escape_closure_launder_push.kry`: a
+// map built empty (`let mut m = {}`) and populated via a plain index-assign
+// (`m["k"] = reader`) is the map-value equivalent of the push mutation gap
+// -- see that file's header for the full root cause and fix
+// (`apply_container_assign`/`rebuild_container_write` in
+// `kryos-capabilities/src/checker.rs`).
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn call_key(m: map<str, fn() -> str>, k: str) -> str {
+    return m[k]()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, fn() -> str> = {}
+    m["k"] = reader
+    deny!(fs:read) {
+        let leaked = call_key(m, "k")
+        println("MAP-INSERT LEAK: " + leaked)
+    }
+}

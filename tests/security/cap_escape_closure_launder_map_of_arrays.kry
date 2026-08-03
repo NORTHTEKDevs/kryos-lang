@@ -1,0 +1,28 @@
+// SECURITY -- CLOSED. Nested combination of the mutation-tracking gap: a MAP
+// OF ARRAYS of closures, built by pushing into a local array (`arr = push
+// (arr, reader)`) and then index-assigning that array into a map
+// (`m["k"] = arr`). Both mutation shapes have to compose correctly: the
+// array's tracked literal must reflect the push BEFORE the map's tracked
+// literal captures a reference to it. See
+// `cap_escape_closure_launder_push.kry`'s header for the fix.
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn call_key_nth(m: map<str, [fn() -> str]>, k: str, i: i64) -> str {
+    return m[k][i]()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, [fn() -> str]> = {}
+    let mut arr: [fn() -> str] = []
+    arr = push(arr, reader)
+    m["k"] = arr
+    deny!(fs:read) {
+        println("MAP-OF-ARRAYS LEAK: " + call_key_nth(m, "k", 0))
+    }
+}

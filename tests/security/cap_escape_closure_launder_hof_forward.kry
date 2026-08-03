@@ -1,0 +1,64 @@
+// SECURITY -- CLOSED. A DIFFERENT gap from the container-mutation family
+// above: a closure reaching a container's authority through a HOF, when the
+// HOF's OWN callback argument is a NAMED FUNCTION that itself forwards a
+// caller-supplied fn-value (`fn invoke(f: fn() -> str) -> str { return f() }`)
+// -- `map(tools, invoke)` -- rather than an inline lambda.
+//
+// Root cause: `resolve_closure_caps`'s `Identifier` arm, for a bare
+// reference to a named function, returned that function's OWN declared/
+// inferred capability set (`working[name]`) unconditionally. That set only
+// reflects gated BUILTINS the function calls directly -- it says nothing
+// about what authority flows through a HOT parameter `name` itself forwards
+// (`invoke`'s own `f` is hot, called directly). So handing `invoke` to
+// `map` as a bare VALUE (not calling it with a concrete argument yet) was
+// attributed `Known(empty)`, silently dropping the fact that `invoke` will
+// eventually be called once per element of `tools` -- which is exactly
+// where the real secret closure lives.
+//
+// Fix (`kryos-capabilities/src/checker.rs`, `resolve_closure_caps`): before
+// returning a named function's declared capability set, check whether the
+// function ITSELF has any hot parameter (`hot_params.get(name)` non-empty).
+// If so, an unapplied reference to it cannot be vouched for here (we don't
+// yet know what it will be called with) -- fall back to `Unknown` ->
+// `Capability::All`, the same conservative default already used for every
+// other unresolvable fn-value provenance.
+//
+// CASCADE, measured (not assumed): grepped `compiler/stdlib`,
+// `compiler/self-host`, and `examples` for a bare-identifier (non-lambda)
+// argument to any `std::iter` HOF -- zero real occurrences; every actual
+// callback argument in this codebase is an inline lambda. Also confirmed
+// live that the FUNCTIONALLY EQUIVALENT lambda-wrapped form
+// (`map(tools, |f| invoke(f))`) was ALREADY rejected before this fix (a
+// pre-existing, unrelated conservatism: a lambda's own bound parameter used
+// to invoke a hot-forwarding function inline resolves to `Unknown` via the
+// original closure-fix's enforcement, regardless of this change) -- so this
+// fix closes an INCONSISTENCY (naming the same adapter function explicitly
+// was silently MORE permissive than the equivalent lambda form) rather than
+// introducing a new restriction on previously-working code. Full gate suite
+// (conformance 58/58, tier1+tier2 GREEN including `strict_caps`/`examples`/
+// `examples_e2e`, bootstrap 16/16) re-verified GREEN after this change.
+//
+// ACCEPTANCE (met): REJECTED (E0507, requiring `all`) under BOTH
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+// Verified BOTH ways: reverting the `hot_params` check in
+// `resolve_closure_caps`'s `Identifier` arm and rebuilding makes this
+// compile clean and print the secret again.
+use std::iter::{map}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn invoke(f: fn() -> str) -> str {
+    return f()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut tools: [fn() -> str] = []
+    tools = push(tools, reader)
+    deny!(fs:read) {
+        let results = map(tools, invoke)
+        println("HOF-FORWARD LEAK: " + results[0])
+    }
+}

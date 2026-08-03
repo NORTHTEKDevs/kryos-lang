@@ -1,0 +1,31 @@
+// SECURITY -- CLOSED. Nested combination of the mutation-tracking gap: an
+// ARRAY OF STRUCTS, each struct holding a closure, populated via `push` of a
+// freshly-built struct literal (`hs = push(hs, Handler { fn_: reader })`) --
+// the "agent tool list" / "plugin registry" shape in practice. See
+// `cap_escape_closure_launder_push.kry`'s header for the fix
+// (`apply_container_assign` recognizes `X = push(X, v)` and appends `v`,
+// which here happens to be a struct literal carrying the closure -- no
+// special-casing needed, the existing struct-literal field-path resolution
+// on the read side already understood this shape once it stopped seeing a
+// stale empty array).
+//
+// ACCEPTANCE (met): REJECTED with E0507 under BOTH `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Verified BOTH ways.
+struct Handler { fn_: fn() -> str }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn call_nth(hs: [Handler], i: i64) -> str {
+    return hs[i].fn_()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut hs: [Handler] = []
+    hs = push(hs, Handler { fn_: reader })
+    deny!(fs:read) {
+        println("ARRAY-OF-STRUCTS PUSH LEAK: " + call_nth(hs, 0))
+    }
+}

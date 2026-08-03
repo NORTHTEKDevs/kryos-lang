@@ -1,0 +1,62 @@
+// SECURITY -- CLOSED. `std::collections::List<T>` (and by the same
+// mechanism Stack/Queue/Deque) wraps its backing array in a struct and
+// exposes it through METHOD calls (`.push`, `.get`) rather than direct
+// field/index syntax. This was a SEPARATE, deeper gap from the mutation-
+// tracking one: `decompose_container_path` only understands direct
+// field/index access chains, so `list.get(i)` was invisible to the
+// hot-parameter seed pass no matter what the mutation-tracking fix did --
+// `resolve_type_path(List<fn() -> str>, [Field("get")])` failed because
+// "get" doesn't name a real FIELD on `List` (its fields are `data`,
+// `length`), so the parameter carrying the list was never marked hot at all
+// and the call required NOTHING.
+//
+// Fix: `transparent_accessor_paths` (`kryos-capabilities/src/checker.rs`)
+// records, for every method whose receiver is literally `self` and whose
+// every return path decomposes to the SAME self-rooted field/index chain
+// (`List.get`'s `return self.data[index]`, modulo a bounds-check branch that
+// never returns), that method's OWN self-relative path, KEYED BY (struct
+// name, method name) -- NOT bare method name, because `List.get` and
+// `Dict.get` live in the same stdlib module and return DIFFERENT paths
+// (`[data, Index]` vs `[store, Index]`); a bare-name key would let one
+// clobber the other. `resolve_type_path` now falls back to this map when a
+// `Field` step doesn't name a real field, splicing the accessor's path in.
+// Generic instantiation is also threaded through (`struct_fields_for`/
+// `substitute_generic_type`): `List<T>`'s declared `data: [T]` is
+// substituted with the ACTUAL type argument (`fn() -> str`) at each
+// reference, which is what lets `List<fn() -> str>` be recognized as
+// fn-bearing at all (a generic struct field's raw, unsubstituted type was
+// previously never fn-bearing for any instantiation).
+//
+// Even with the parameter now correctly marked hot, `List.new()`+`.push()`
+// build the list via METHOD CALLS whose return values are struct literals
+// constructed INSIDE the method body -- invisible to the caller-side
+// literal tracker (`local_container_lits`) by design (a much larger feature
+// would be needed to trace literal content through arbitrary method calls).
+// So this shape resolves to the documented `Unknown` -> `Capability::All`
+// fallback rather than a precise `fs:read` -- CONSERVATIVE, not a silent
+// bypass, and the correct outcome per "an unanalyzable fn-value must FAIL
+// CLOSED, not open."
+//
+// ACCEPTANCE (met): REJECTED (E0507, requiring `all`) under BOTH
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+// Verified BOTH ways: reverting either the transparent-accessor fix or the
+// generic-substitution fix (either alone is insufficient) and rebuilding
+// makes this compile clean and print the secret again.
+use std::collections::{List}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn call_nth(l: List<fn() -> str>, i: i64) -> str {
+    return l.get(i)()
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut l: List<fn() -> str> = List.new()
+    l = l.push(reader)
+    deny!(fs:read) {
+        println("STDLIB-LIST-PUSH LEAK: " + call_nth(l, 0))
+    }
+}
