@@ -294,6 +294,13 @@ impl Point {
 }
 ```
 
+Struct names are **not required to be capitalized** -- `struct point { .. }`
+declares and constructs (`point { x: 1, y: 2 }`) exactly like `Point` does.
+The capitalized convention used throughout this reference and the stdlib is
+a style choice, not a grammar rule. (Prior to this compiler version, a
+lowercase struct name could not be constructed with struct-literal syntax at
+all; this was an unintentional parser restriction, since fixed.)
+
 ### 5.3 Enums
 
 ```kryos

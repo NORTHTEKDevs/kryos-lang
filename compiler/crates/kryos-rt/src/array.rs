@@ -499,8 +499,8 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
         if rc <= 0 {
             crate::diag_report(&format!(
                 "array DOUBLE-FREE rc={rc} len={} cap={}", (*arr).len, (*arr).cap));
-            if let Some(first) = crate::diag_zeroed_by(arr as usize) {
-                eprintln!("  ^ first (rc->0) freed at:\n{}", first.trim_end());
+            if let Some((first, site)) = crate::diag_zeroed_by(arr as usize) {
+                eprintln!("  ^ first (rc->0) freed at: site={site}\n{}", first.trim_end());
             }
             return;
         }

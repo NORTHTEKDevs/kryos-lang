@@ -169,6 +169,30 @@ fn main() {
     println(s + r.name)
 }'
 
+# --- a bare MUTABLE GLOBAL identifier returned directly (`return G`) aliased
+# the global's own copy with no extra reference. Harmless as long as the
+# global is never reassigned again, but the moment a LATER call resets it
+# (`G = []`), the reassignment's guarded release frees the SAME box the
+# earlier caller's return value still holds -- a real double-free (this is
+# the root cause the self-host lexer's LEX_TOKENS worked around for years:
+# tools/loop/LEDGER.md, "parse_nested_binop_corrupts_next"). ---
+no_df global_return_alias \
+'let mut G: [i64] = []
+fn reset_and_build(seed: i64) -> [i64] {
+    G = []
+    let mut i = 0
+    while i < seed {
+        G = push(G, i)
+        i = i + 1
+    }
+    return G
+}
+fn main() {
+    let a = reset_and_build(3)
+    let b = reset_and_build(5)
+    println(to_string(len(a)) + "," + to_string(len(b)))
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else

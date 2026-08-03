@@ -1,0 +1,73 @@
+// Regression for tools/loop/LEDGER.md item 10: a struct whose name starts
+// with a lowercase letter used to be UNCONSTRUCTIBLE via struct-literal
+// syntax -- `counter { val: v }` failed with two misattributed
+// `error[E0102]: undefined variable` diagnostics (naming `counter` and
+// `val` as undefined, instead of describing the real restriction). Nothing
+// in the language requires struct names to be capitalized, so this was an
+// arbitrary, undocumented parser restriction, not a real grammar ambiguity:
+// the parser's `Name { ... }` vs. `if cond { }`-style block-opener ambiguity
+// is already resolved by `no_struct_literal` suppression around every
+// if/while/for/match condition, subject, and iterable, independent of case.
+// Fixed by removing the case-based (`looks_like_type_name`) gate on struct
+// LITERAL and struct PATTERN recognition in kryos-parser/src/parser.rs.
+
+struct counter {
+    val: i64,
+}
+
+impl counter {
+    fn get(self: counter) -> i64 {
+        return self.val
+    }
+}
+
+fn make(v: i64) -> counter {
+    let c = counter { val: v }
+    return c
+}
+
+fn main() {
+    // Construction via struct-literal syntax for a lowercase-named struct.
+    let o = make(5)
+    if o.val != 5 {
+        panic("lowercase struct literal: got {o.val} want 5")
+    }
+
+    // Direct literal in a `let` initializer and in a `return` tail.
+    let direct = counter { val: 7 }
+    if direct.get() != 7 {
+        panic("lowercase struct literal direct: got {direct.get()} want 7")
+    }
+
+    // Struct PATTERN matching for a lowercase-named struct.
+    let matched = match direct {
+        counter { val: n } => n * 2,
+    }
+    if matched != 14 {
+        panic("lowercase struct pattern: got {matched} want 14")
+    }
+
+    // Ambiguity guard: an identifier condition immediately followed by its
+    // own if/while block must still be a CONDITION, never a struct literal,
+    // even with a lowercase struct value of the SAME name in scope.
+    let cond = true
+    if cond {
+        println("if-condition ambiguity guard ok")
+    } else {
+        panic("if-condition wrongly parsed as struct literal")
+    }
+
+    let mut i = 0
+    while i < 1 {
+        i = i + 1
+    }
+    if i != 1 {
+        panic("while-condition wrongly parsed as struct literal")
+    }
+
+    for x in [1, 2, 3] {
+        if x == 0 { panic("for-iterable wrongly parsed as struct literal") }
+    }
+
+    println("conf_lowercase_struct_literal: PASS")
+}

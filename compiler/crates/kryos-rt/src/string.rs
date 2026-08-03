@@ -374,8 +374,8 @@ pub unsafe extern "C" fn kryos_string_free(s: *mut KryosString) {
                     String::from_utf8_lossy(std::slice::from_raw_parts((*s).data, len)).into_owned()
                 };
                 crate::diag_report(&format!("str DOUBLE-FREE hdr={s:p} rc={rc} len={} content={content:?}", (*s).len));
-                if let Some(first) = crate::diag_zeroed_by(s as usize) {
-                    eprintln!("  ^ first (rc->0) freed at:\n{}", first.trim_end());
+                if let Some((first, site)) = crate::diag_zeroed_by(s as usize) {
+                    eprintln!("  ^ first (rc->0) freed at: site={site}\n{}", first.trim_end());
                 }
             }
             return;

@@ -69,22 +69,20 @@ struct Lexer {
 // Token accumulator for the CURRENT tokenize() call. Module-level so a
 // Lexer rebuild never carries an array field (see struct comment above).
 //
-// NOT reset per tokenize() call: reassigning a top-level `let mut [T]`
-// global from one function (e.g. a `reset()` called from `lexer_new()`)
-// and then reading/pushing it from a DIFFERENT function corrupts the
-// array header to all-zero (`kryos_array_push: corrupt array header
-// ... cap=0, data=0x0`) -- reproduced in isolation with a minimal
-// two-function repro outside self-host entirely, so this is a genuine
-// stage-0 LLVM-codegen bug in global-reassignment-then-cross-function-
-// read, NOT a self-host-specific issue. Relying on the module's OWN
-// top-level initializer (proven to work: a global mutated by push()
-// from a single call chain, never REASSIGNED from elsewhere, is fine)
-// sidesteps it. Safe today because `tokenize()` runs exactly once per
-// kryos-stage1 process invocation (the `obj`/`build` CLI path compiles
-// one file per process). If a future caller invokes `tokenize()` twice
-// in one process, tokens would wrongly accumulate across calls -- add a
-// real reset once the underlying global-reassignment bug is fixed
-// (tracked in tools/loop/LEDGER.md).
+// RESET per tokenize() call in `lexer_new()` (see below). This used to be
+// unsafe: reassigning a top-level `let mut [T]` global from one function
+// (e.g. this `reset` from `lexer_new()`) and then reading/pushing it from a
+// DIFFERENT function (`lex_emit`) corrupted the array header to all-zero --
+// a genuine stage-0 codegen bug in global-reassignment-then-cross-function-
+// read (LEDGER item 2b), not a self-host-specific issue. Fixed in
+// kryos-mir/src/lower.rs (fd07331): global assignment now gets the same ARC
+// bookkeeping actor-state-field assignment already had. Before this fix,
+// `tokenize()` could only run once per process, so a SECOND call in the
+// same process silently accumulated the first call's tokens onto the
+// second's result (see LEDGER item "parse_nested_binop_corrupts_next" --
+// misdiagnosed at the time as parser recursion corruption; the real
+// mechanism was this un-reset global, unmasked by a second `tokenize()`
+// call in one process).
 let mut LEX_TOKENS: [Token] = []
 
 // -------------------------------------------------------------------
@@ -120,8 +118,11 @@ fn is_upper(ch: str) -> bool {
 // -------------------------------------------------------------------
 
 fn lexer_new(src: str) -> Lexer {
-    // Do NOT reset LEX_TOKENS here -- see the global's declaration comment
-    // above for why a cross-function reassignment corrupts it.
+    // Reset the per-call token accumulator -- see the global's declaration
+    // comment above. Safe now that LEDGER item 2b (global-reassign
+    // corruption) is fixed; without this, a second `tokenize()` call in the
+    // same process silently accumulated onto the first call's tokens.
+    LEX_TOKENS = []
     return Lexer { src: src, pos: 0 }
 }
 

@@ -4989,6 +4989,40 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             if let Some(Operand::Local(src)) = &operand {
                 emit_param_source_retain(ctx, *src, *src);
             }
+            // Returning a bare MUTABLE GLOBAL identifier directly (`return
+            // LEX_TOKENS`) hands the caller a handle that ALIASES the
+            // global's own copy with no extra reference -- `emit_global_load`
+            // is a raw read, not a retain. This was invisible as long as the
+            // global was never reassigned (the self-host lexer's LEX_TOKENS
+            // was deliberately never reset for exactly this reason, see its
+            // own comment), but the moment the global IS reset/reassigned
+            // (now safe after LEDGER item 2b), the reassignment's guarded
+            // release frees the SAME box the caller still holds -- a real
+            // double-free (verified live; regression: `tests/no_double_free.sh`
+            // `global_return_alias`). Retain here too, for the same
+            // borrow-to-own reason as the param case above.
+            if let (Some(ast::Expr::Identifier { name, .. }), Some(Operand::Local(src))) =
+                (value.as_ref(), &operand)
+            {
+                if ctx.mutable_globals.contains_key(name.as_str()) {
+                    let src_ty = ctx
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *src)
+                        .map(|l| l.ty.clone())
+                        .unwrap_or(MirType::I64);
+                    if let Some(rf) = retain_for_ty(&src_ty) {
+                        let sink = ctx.alloc_temp(MirType::I64);
+                        ctx.emit(Instruction::Assign {
+                            dest: sink,
+                            value: RValue::Call {
+                                func: rf.to_string(),
+                                args: vec![Operand::Local(*src)],
+                            },
+                        });
+                    }
+                }
+            }
             // Returning a Struct/Enum VALUE READ OUT of a container the
             // callee does not own outright -- an array-element read
             // (`return rows[0]`) or a struct-field read (`return s.field`),

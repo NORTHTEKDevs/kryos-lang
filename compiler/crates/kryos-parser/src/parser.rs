@@ -2526,12 +2526,21 @@ impl Parser {
                 let name = tok.text.clone();
                 let start = tok.span;
 
-                // Check for struct literal: `Name { field: value, ... }`
-                // But only if this looks like TypeIdent or capitalized name
-                if self.check(TokenKind::LBrace)
-                    && looks_like_type_name(&name)
-                    && !self.no_struct_literal
-                {
+                // Check for struct literal: `Name { field: value, ... }`.
+                // Nothing in the language requires struct names to be
+                // capitalized, so this is NOT gated on the identifier's
+                // case (that used to reject a lowercase struct's literal
+                // syntax with a confusing "undefined variable" error --
+                // see tests/conformance/conf_lowercase_struct_literal.kry).
+                // The genuine ambiguity this collides with -- `if cond { }`
+                // / `while cond { }` / `for x in xs { }` / `match subj { }`,
+                // where a bare identifier `cond`/`xs`/`subj` sits directly
+                // before the construct's OWN block/arm-list `{` -- is
+                // already handled by `no_struct_literal`, which every one
+                // of those condition/subject/iterable parses sets
+                // regardless of case. Outside those positions there is no
+                // second grammar production competing for `Name { ... }`.
+                if self.check(TokenKind::LBrace) && !self.no_struct_literal {
                     return self.parse_struct_literal(name, start);
                 }
 
@@ -3396,8 +3405,12 @@ impl Parser {
                     };
                 }
 
-                // Struct pattern: `Name { field1, field2 }`
-                if self.check(TokenKind::LBrace) && looks_like_type_name(&name) {
+                // Struct pattern: `Name { field1, field2 }`. Not gated on
+                // case (see the matching struct-LITERAL comment above) --
+                // a bind pattern never has anything valid following it
+                // besides `=>`, so `name {` unambiguously starts a struct
+                // pattern regardless of whether `name` is capitalized.
+                if self.check(TokenKind::LBrace) {
                     self.advance();
                     let mut fields = Vec::new();
                     while !self.check(TokenKind::RBrace) && !self.at_end() {
@@ -3847,12 +3860,4 @@ fn parse_int_literal_checked(text: &str) -> Result<i64, &'static str> {
             }),
         },
     }
-}
-
-
-fn looks_like_type_name(name: &str) -> bool {
-    name.chars()
-        .next()
-        .map(|c| c.is_uppercase())
-        .unwrap_or(false)
 }

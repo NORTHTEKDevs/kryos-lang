@@ -1,43 +1,55 @@
-// KNOWN FAILURE: parsing a NESTED binary expression corrupts a LATER tokenize.
+// REGRESSION (was tests/known_failures/parse_nested_binop_corrupts_next.kry):
+// calling tokenize() a SECOND time in one process used to corrupt/mis-count
+// tokens. Originally misdiagnosed as "a nested binary expression corrupts a
+// later tokenize" -- the bisection trail below focused on parse_expr's
+// recursion because that was the first thing that happened to reproduce it,
+// but the recursion was never the actual mechanism.
 //
-// Expected: "after parse: 31 tokens"
-// Actual:   "after parse: 1 tokens"
+// FIXED. Root cause, found by tracing len(tf) at each statement (not by
+// theorizing from the recursion shape): lexer.kry's `LEX_TOKENS` is a
+// module-level mutable global accumulator (kept out of the `Lexer` struct
+// to avoid an O(n^2) array-dup on every character -- see that struct's own
+// comment) that was DELIBERATELY never reset between tokenize() calls,
+// because resetting it via a cross-function reassignment used to corrupt
+// the array header (LEDGER item 2b, a genuine kryos-mir bug, fixed in
+// fd07331 the same day this regression was root-caused). With the global
+// never reset, a SECOND tokenize() call in one process appended its tokens
+// onto the FIRST call's leftover 13-element array instead of starting from
+// an empty one -- 13 + 31 = the 44 tokens this test used to report instead
+// of 31. Two fixes were required together:
+//   1. lexer.kry: `lexer_new()` now resets `LEX_TOKENS = []` (safe now that
+//      item 2b is fixed) -- closes the wrong TOKEN COUNT.
+//   2. kryos-mir/src/lower.rs: `return <bare mutable-global identifier>`
+//      (e.g. `return LEX_TOKENS`) did not retain the returned handle, so it
+//      aliased the global's own copy with no extra reference. That was
+//      invisible as long as the global was never reassigned again, but once
+//      fix #1 reset the global on the SECOND call, the reset's guarded
+//      release freed the SAME array the FIRST call's return value (`tf` in
+//      main() below) still held -- a real double-free, only visible under
+//      `KRYOS_FREE_DIAG=1` (site-tagged with `KRYOS_MIR_DROP_TAGS` to find
+//      it: the double free was `fn-exit:tf`, the first zeroing was
+//      `fn-exit:t2` -- i.e. `t2` and `tf` had become the same box). Fixed by
+//      retaining a bare mutable-global return the same way a bare PARAM
+//      return already was. General regression (not self-host-specific):
+//      tests/no_double_free.sh `global_return_alias`.
+// Both proven both ways (reverted each fix independently, rebuilt, confirmed
+// this file's output regressed to "44 tokens" / a DOUBLE-FREE report;
+// reapplied, confirmed clean on both backends).
 //
-// Parsing `fn f() { return x + y * 2 }` and then tokenizing an UNRELATED
-// string returns 1 token instead of 31. With deallocation disabled
-// (KRYOS_FREE_DIAG=1) it instead dies inside the lexer with
+// Original (now-superseded) bisection trail, kept so nobody re-walks it:
 //
-//   kryos_array_push: corrupt array header (len=0, cap=4,
-//                     elem_size=2478245608176, ref_count=2)
+//   two tokenizes back to back                     ok   <- (mis-observed:
+//   tokenize + parser_new                          ok       the token COUNT
+//   + expect / cur_text / advance / alloc_node     ok        was already
+//   + parse_expr / parse_stmt / parse_block        ok        wrong here too,
+//   parse_fn on `fn f() {}`                        ok        just not
+//   parse_fn on `fn f() { return 1 }`              ok        checked against
+//   parse_fn on `fn f(x: i64) { return 1 }`        ok        an exact
+//   parse_fn on `fn f() { return x + y }`          ok        expected value)
+//   parse_fn on `fn f() -> i64 { return x + y }`   ok
+//   parse_fn on `fn f() { return x + y * 2 }`      BREAKS (mis-attributed)
 //
-// `elem_size` holding a POINTER means the header is being read at the wrong
-// offset or written over -- and because it reproduces with nothing being
-// freed, this is NOT a use-after-free.
-//
-// BISECTED (each step run; this is the whole trail so nobody repeats it):
-//
-//   two tokenizes back to back                     ok
-//   tokenize + parser_new                          ok
-//   + expect / cur_text / advance / alloc_node     ok  (each alone)
-//   + parse_expr / parse_stmt / parse_block        ok  (each alone)
-//   parse_fn on `fn f() {}`                        ok
-//   parse_fn on `fn f() { return 1 }`              ok
-//   parse_fn on `fn f(x: i64) { return 1 }`        ok  (params alone)
-//   parse_fn on `fn f() { return x + y }`          ok  (one binop)
-//   parse_fn on `fn f() -> i64 { return x + y }`   ok  (return type)
-//   parse_fn on `fn f() { return x + y * 2 }`      BREAKS   <- nested binop
-//
-// So the trigger is parse_expr RECURSING through precedence climbing
-// (`parse_expr(pp, prec + 1)` inside its own loop), not params, not the
-// return type, not a single operator.
-//
-// NOT YET REPRODUCED standalone. Two hand-built models of that exact shape --
-// a recursive precedence climber threading a struct and pushing into its
-// array fields, once with 3 fields and once matching the real Parser's 7
-// array fields -- are both CLEAN. So something else about the real program is
-// load-bearing; find it before theorising about the cause.
-//
-// This is the last known corruption in stage1_mini_parser.kry and the only
+// This was the last known corruption in stage1_mini_parser.kry and the only
 // thing keeping selfhost-stage1 red.
 
 // stage1_mini_parser.kry -- Stage 1 start: a tiny parser written in
@@ -523,9 +535,20 @@ fn main() {
     let (a, id) = parse_fn(pf)
     println("parsed fn id=" + to_string(id))
 
-    // An UNRELATED string tokenized afterwards.
+    // An UNRELATED string tokenized afterwards -- this is the reentrant
+    // tokenize() call that used to inherit `tf`'s leftover 13 tokens.
     let s2 = "fn pick(x: i64) -> i64 " + lb + " if x > 0 " + lb
         + " return f(x) " + rb + " else " + lb + " return g(x) " + rb + " " + rb
     let t2 = tokenize(s2)
     println("after parse: " + to_string(len(t2)) + " tokens (want 31)")
+    if len(t2) != 31 {
+        panic("REGRESSION: tokenize() reentrant call count wrong, got {len(t2)} want 31 -- LEX_TOKENS accumulated across calls again")
+    }
+    // `tf` must still read back its ORIGINAL 13 tokens: proves the two
+    // tokenize() results are independent, not aliased (the double-free half
+    // of this bug).
+    if len(tf) != 13 {
+        panic("REGRESSION: tf mutated by a later tokenize() call, got len(tf)={len(tf)} want 13 -- tf/t2 are aliased")
+    }
+    println("REGRESSION GATE PASS: tokenize() is reentrant, tf/t2 independent")
 }
