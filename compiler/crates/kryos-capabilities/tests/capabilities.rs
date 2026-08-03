@@ -239,22 +239,34 @@ fn attenuation_child_subset_of_parent_no_error() {
 #[test]
 fn spawn_with_capability_subset_is_valid() {
     // A function with net+io spawns an expression — the spawn itself is fine
-    // as long as the spawned code doesn't exceed the enclosing scope.
-    let module = module_with(vec![fn_decl(
-        "spawner",
-        vec![ann("capabilities", vec!["net", "io"])],
-        vec![Stmt::Spawn {
-            expr: Expr::FnCall {
-                callee: Box::new(Expr::Identifier {
-                    name: "worker".into(),
+    // as long as the spawned code doesn't exceed the enclosing scope. `worker`
+    // is declared (not just referenced) so this matches what a real, fully
+    // type-checked module looks like -- the capability checker only ever runs
+    // AFTER name resolution/type-checking in the real pipeline, where a call
+    // to a truly undeclared function is already rejected before capabilities
+    // run at all. A bare reference to a name with no declaration ANYWHERE in
+    // the module is indistinguishable from an unresolvable fn-value from the
+    // capability checker's own (correctly conservative, post-fail-closed-fix)
+    // point of view, so an isolated capabilities-only test must declare every
+    // callee it exercises, same as it already declares `spawner` itself.
+    let module = module_with(vec![
+        fn_decl(
+            "spawner",
+            vec![ann("capabilities", vec!["net", "io"])],
+            vec![Stmt::Spawn {
+                expr: Expr::FnCall {
+                    callee: Box::new(Expr::Identifier {
+                        name: "worker".into(),
+                        span: span(),
+                    }),
+                    args: vec![],
                     span: span(),
-                }),
-                args: vec![],
+                },
                 span: span(),
-            },
-            span: span(),
-        }],
-    )]);
+            }],
+        ),
+        fn_decl("worker", vec![], vec![]),
+    ]);
 
     let diags = check_capabilities(&module, false);
     let errs = errors_only(&diags);

@@ -1,0 +1,30 @@
+// SECURITY -- CONFIRMED LIVE bypass (bug a in the fail-closed hardening
+// task): an INLINE lambda passed to a HOF that invokes ITS OWN bound
+// parameter (`map(tools, |f| f())`). The prior "HOF-forward" fix
+// (`cap_escape_closure_launder_hof_forward.kry`) only handled a bare NAMED
+// function used as the callback (`map(tools, invoke)`); an inline lambda
+// literal invoking its own parameter was a completely different code path
+// (`resolve_closure_caps`'s `Lambda` arm never threaded the lambda's OWN
+// bound params into `own_params`, and nothing evaluated its callee at all),
+// so it fell through to silently requiring nothing.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+use std::iter::{map}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let tools: [fn() -> str] = [r]
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        let outs = map(tools, |f| f())
+        println("hof-inline-lambda (was NOT CLOSED): " + outs[0])
+    }
+}

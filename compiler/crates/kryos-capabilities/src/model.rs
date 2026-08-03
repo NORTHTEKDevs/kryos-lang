@@ -337,6 +337,82 @@ pub fn raw_memory_gated() -> bool {
     GATE_RAW_MEMORY.with(|g| g.get())
 }
 
+/// Every runtime-intrinsic builtin name the compiler recognizes — the union
+/// of every capability-GATED name (`required_capability_for_builtin`'s
+/// `Some(..)` arms), every AMBIENT (no-capability) name, and the raw-memory
+/// primitives, mirrored from the type checker's own builtin registry
+/// (`kryos-types/src/check.rs`'s `define_function` calls, which must be
+/// exhaustive for the language to type-check at all — this list tracks that
+/// existing source of truth rather than inventing a new one).
+///
+/// Used by the capability checker's fail-closed default (see
+/// `resolve_direct_invoke_caps` in `checker.rs`) to distinguish "this callee
+/// is a genuine compiler builtin, ambient or gated" from "this callee is an
+/// unrecognized first-class fn-value (a local/parameter/container element)
+/// whose authority cannot be assumed empty". Getting a name WRONG here is
+/// one-sided: omitting an ambient builtin causes over-rejection (safe,
+/// measurable), never a soundness hole — a gated name omitted here would
+/// still be caught by `required_capability_for_builtin` at the same call
+/// site regardless of this list's completeness.
+const KNOWN_BUILTIN_NAMES: &[&str] = &[
+    // Ambient, no capability (see `required_capability_for_builtin`'s
+    // explicit `None` arms and its final wildcard).
+    "println", "print", "eprintln", "len", "range", "Range", "to_string", "abs", "abs_f",
+    "type_of", "parse_int", "parse_float", "str", "int", "float", "sqrt", "sin", "cos", "tan",
+    "log", "log2", "log10", "pow", "floor", "ceil", "round", "min", "min_f", "max", "max_f",
+    "assert", "assert_eq", "panic", "push", "pop", "sort", "reverse", "substr", "contains",
+    "char_code", "byte_at", "char_from", "chr", "index_of", "starts_with", "ends_with", "trim",
+    "to_upper", "to_lower", "replace", "split", "join", "keys", "exit", "abort", "time_now",
+    "time_now_secs", "time_now_millis", "time_millis", "sleep", "sleep_ms", "file_exists",
+    "args", "read_line", "__get_process_args", "__int_to_float", "__builtin_len",
+    "__builtin_pop", "__builtin_push", "__builtin_range",
+    // JSON constructors/accessors (own module, but callable as bare native
+    // handles too — see the `json_stringify` vs `std::json::stringify` gotcha).
+    "json_object", "json_array", "json_string", "json_number", "json_bool", "json_null",
+    "json_get", "json_get_index", "json_set", "json_length", "json_type", "json_is_null",
+    "json_to_int", "json_to_float", "json_to_str", "json_parse", "json_stringify",
+    "map_has", "map_delete", "map_keys", "__builtin_map_has", "__builtin_map_has_str",
+    "__builtin_map_delete", "__builtin_map_delete_str", "__builtin_map_keys",
+    "__builtin_map_keys_str",
+    // Buffer / base64 / regex / channel / coop / mutex / misc runtime plumbing
+    // (all ambient — pure data transforms or in-process concurrency, not I/O).
+    "buf_new", "buf_free", "buf_len", "buf_get_byte", "buf_set_byte", "buf_write_byte",
+    "buf_write_bytes", "buf_write_str", "buf_write_zeros", "buf_write_i16_le",
+    "buf_write_i32_le", "buf_write_i64_le", "buf_patch_i32_le", "buf_patch_i64_le", "buf_str",
+    "buf_to_str", "base64_encode", "base64_decode", "base64url_to_hex", "hex_to_base64url",
+    "regex_new", "regex_drop", "regex_match", "regex_find", "regex_find_end", "regex_find_pos",
+    "regex_replace_all", "chan", "close_chan", "send", "recv", "chan_try_recv",
+    "chan_is_closed", "chan_last_recv", "coop_spawn", "coop_yield", "coop_run", "coop_reset",
+    "coop_order", "coop_record", "mutex_new", "mutex_lock", "mutex_unlock", "mutex_drop",
+    "handle_to_str", "mem_copy", "mem_read_byte", "mem_write_byte", "mem_read_i64",
+    "mem_write_i64", "str_data_ptr", "str_byte_len", "str_from_bytes",
+    "wrapping_add", "wrapping_sub", "wrapping_mul", "checked_add", "checked_sub",
+    "checked_mul", "saturating_add", "saturating_sub", "saturating_mul",
+    "syscall1", "syscall2", "syscall3", "syscall6",
+    "dom_get_value", "dom_set_text", "alert", "canvas_clear", "canvas_fill_rect",
+    // Gated builtins (`required_capability_for_builtin`'s `Some(..)` arms) —
+    // included here too so ONE membership test covers both.
+    "file_read", "read_file", "path_exists", "is_file", "is_dir", "file_size", "list_dir",
+    "walk_dir", "file_write", "write_file", "append_file", "buf_write_to_file", "create_dir",
+    "remove_file", "remove_dir", "copy_file", "rename_file", "env_get", "env_set", "exec",
+    "spawn_process", "http_get", "http_post", "http_request", "https_get", "fetch_text",
+    "http2_get", "http2_post", "http2_request", "tcp_connect", "tcp_listen", "tcp_accept",
+    "tcp_send", "tcp_recv", "tcp_close", "tcp_bind", "tcp_set_nonblocking", "tcp_try_accept",
+    "tcp_try_recv", "tls_server_config", "tls_accept", "tls_send", "tls_recv", "tls_close",
+    "uds_connect", "uds_bind", "uds_accept", "uds_send", "uds_recv", "uds_close", "pg_connect",
+    "pg_exec", "pg_query", "pg_close", "ws_accept_key", "ws_encode_text", "ws_encode_binary",
+    "ws_encode_close", "ws_encode_ping", "ws_encode_pong", "ws_unmask", "ws_read_frame",
+    "term_clear", "term_raw_mode", "term_size", "sha256", "sha512", "sha1_hex", "sha1_base64",
+    "hmac_sha256", "pbkdf2_sha256", "random_bytes", "ed25519_generate", "ed25519_public",
+    "ed25519_sign", "ed25519_verify",
+];
+
+/// Whether `name` is ANY compiler-intrinsic builtin (ambient or gated) —
+/// see `KNOWN_BUILTIN_NAMES`. Includes the raw-memory primitives too.
+pub fn is_known_builtin_name(name: &str) -> bool {
+    KNOWN_BUILTIN_NAMES.contains(&name) || RAW_MEMORY_BUILTINS.contains(&name)
+}
+
 /// Map a bare builtin function name to its required capability.
 ///
 /// This catches calls like `file_write("out.txt", data)` where the caller

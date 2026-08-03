@@ -1,0 +1,23 @@
+// SECURITY -- a full field/index chain (`m["k"][0]()`) invoked directly,
+// with no named-function boundary and no intermediate local. Sibling of
+// `cap_escape_container_intermediate_local.kry` (same root cause: DIRECT
+// invocation of a first-class fn-value was never checked at all unless it
+// crossed a named-function parameter boundary).
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let m: map<str, [fn() -> str]> = {"k": [r]}
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("chained-direct-call (was NOT CLOSED): " + m["k"][0]())
+    }
+}

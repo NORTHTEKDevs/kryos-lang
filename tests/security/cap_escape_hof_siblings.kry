@@ -1,0 +1,52 @@
+// SECURITY -- the same closure-forwarding requirement that map() already
+// enforced (see security_gate.sh's "a privileged closure through map()
+// correctly requires fs:read") must ALSO hold for every OTHER std::iter
+// elementwise HOF: filter, fold, reduce, find. A privileged closure
+// (constructed from a capability-annotated function, so it carries
+// `fs:read`) passed DIRECTLY as the callback must be REJECTED when the
+// caller has denied `fs:read`, for each HOF, both directions guarded by the
+// no-cascade companion below.
+//
+// ACCEPTANCE: every `deny!(fs:read) { <hof>(...) }` call below is REJECTED
+// (E0507) under both `--capabilities-mode=inferred` and
+// `--strict-capabilities`.
+
+use std::iter::{filter, fold, reduce, find}
+use std::option::{Option, Some, None}
+
+@capabilities(fs:read)
+fn make_secret_pred(path: str) -> fn(i64) -> bool {
+    return |x| len(file_read(path)) > 0 and x > 0
+}
+
+@capabilities(fs:read)
+fn make_secret_folder(path: str) -> fn(i64, i64) -> i64 {
+    return |acc, x| acc + len(file_read(path))
+}
+
+@capabilities(fs:read)
+fn main() {
+    let pred = make_secret_pred("tests/security/secret_for_closure_launder.txt")
+    let folder = make_secret_folder("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        // Pre-fix (for the direct-callback shape): already correctly
+        // gated via hot_params, this is a REGRESSION guard, not a new
+        // repro.
+        let a = filter([1, 2, 3], pred)
+        println("filter (was NOT CLOSED): " + to_string(len(a)))
+    }
+    deny!(fs:read) {
+        let b = fold([1, 2, 3], 0, folder)
+        println("fold (was NOT CLOSED): " + to_string(b))
+    }
+    deny!(fs:read) {
+        let c = reduce([1, 2, 3], 0, folder)
+        println("reduce (was NOT CLOSED): " + to_string(c))
+    }
+    deny!(fs:read) {
+        match find([1, 2, 3], pred) {
+            Some(v) => println("find (was NOT CLOSED): " + to_string(v)),
+            None() => println("find: none"),
+        }
+    }
+}

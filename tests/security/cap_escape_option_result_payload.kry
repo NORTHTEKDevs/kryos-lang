@@ -1,0 +1,32 @@
+// SECURITY -- a closure carried as an Option/Result PAYLOAD, matched out
+// and invoked directly with no named-function boundary crossed.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let opt: Option<fn() -> str> = Some(r)
+    let res: Result<fn() -> str, str> = Ok(r)
+    deny!(fs:read) {
+        match opt {
+            Some(f) => println("option-payload (was NOT CLOSED): " + f()),
+            None() => println("option: none"),
+        }
+    }
+    deny!(fs:read) {
+        match res {
+            Ok(f) => println("result-payload (was NOT CLOSED): " + f()),
+            Err(e) => println("result: " + e),
+        }
+    }
+}

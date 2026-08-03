@@ -1,0 +1,28 @@
+// SECURITY -- std::collections::Deque<T>/Dict<K,V> wrapping a closure,
+// invoked via the collection's own accessor method (`.front()`/`.get(k)`),
+// with NO named-function boundary crossed (direct in `main`, same shape as
+// `cap_escape_struct_field_direct_call.kry` but through the stdlib
+// wrapper's METHOD rather than a raw struct field).
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+use std::collections::{Deque, Dict}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let dq: Deque<fn() -> str> = Deque.new().push_back(r)
+    let dict: Dict<str, fn() -> str> = Dict.new().set("k", r)
+    deny!(fs:read) {
+        println("deque-front (was NOT CLOSED): " + dq.front()())
+    }
+    deny!(fs:read) {
+        println("dict-get (was NOT CLOSED): " + dict.get("k")())
+    }
+}

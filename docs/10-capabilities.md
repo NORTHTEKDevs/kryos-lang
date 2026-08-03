@@ -1,6 +1,65 @@
 # Capabilities
 
-> **Implementation Status:** The `@capabilities(...)` annotation is parsed and the compile-time capability checker (`kryos-capabilities` crate) is fully implemented. It enforces: functions must declare capabilities matching the stdlib modules and builtins they use, child scopes cannot exceed parent capabilities (attenuation), and extern blocks require the `ffi` capability. The actual capability variants are: `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases), `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`, `db`, `time`, `all`. Three enforcement modes are implemented — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in `kryos.toml`; `kryos new` defaults new projects to `inferred`. Enforcement is sound for DIRECT calls (free-function calls, method/static dispatch, a gated BUILTIN passed and invoked as a first-class value) **and for closure/fn-value indirection through a parameter, a `let`-bound local, a return value, a chain of passthrough calls, an actor message send, `spawn`, a generic instantiation, `dyn Trait` dispatch, a closure/fn-value stored in and read back out of a CONTAINER (a struct field, an array element, or a map value, including nested combinations like a struct field holding an array of closures) via LITERAL construction OR via MUTATION after construction (`push`, an index-assign, a field-assign, including through a `std::collections` wrapper's accessor methods), AND a HOF whose callback is a named function that itself forwards a caller-supplied fn-value** — a call site's required capability now includes whatever authority the ACTUAL closure argument carries (traced through the container's field/index structure and its mutation history when applicable), not just the callee's own declaration, so `deny!`/boundary narrowing can no longer be defeated by pre-constructing a privileged closure outside it and invoking it through an unannotated forwarding function, a container it was stashed in, or a container populated after the fact. The one remaining gap — a container built from a genuinely non-literal source (a function return, a container mutated inside a callee, one read out of another container) — fails CLOSED (requires `Capability::All`), not open. Runtime enforcement, audit logging, and sandboxing APIs described in some earlier drafts are **not yet implemented** (enforcement is entirely compile-time). Note: `env_get`/`env_set` require the `process` capability (reading the environment can exfiltrate secrets), not ambient. `kryos audit` is a separate, purely SYNTACTIC scan of `@capabilities(...)` annotations — it never runs capability inference, so it never lists any unannotated function (a legitimately-polymorphic helper like a `std::iter` HOF just as much as anything else); do not read its output as a complete capability inventory.
+> **Implementation Status (revised after fail-closed hardening — read this
+> before trusting the model with a secret):** The `@capabilities(...)`
+> annotation is parsed and the compile-time capability checker
+> (`kryos-capabilities` crate) is implemented. It enforces: functions must
+> declare capabilities matching the stdlib modules and builtins they use,
+> child scopes cannot exceed parent capabilities (attenuation), and extern
+> blocks require the `ffi` capability. The actual capability variants are:
+> `net` (coarse), `net:http`, `net:tcp`, `io`/`fs` (coarse, aliases),
+> `fs:read`, `fs:write`, `ffi`, `compute`, `crypto`, `process`, `env`, `term`,
+> `db`, `time`, `all`. Three enforcement modes are implemented —
+> `permissive`, `inferred` (deny-by-default with interior inference), and
+> `strict` — selectable via `--capabilities-mode` or `[capabilities] mode` in
+> `kryos.toml`; `kryos new` defaults new projects to `inferred`.
+>
+> **Three successive hardening rounds each closed the shapes reported and
+> each time new bypasses were found** (parameter/local/return/passthrough/
+> actor/spawn/generic/dyn in round 1; literal-constructed containers in
+> round 2; push/map-insert mutation and HOF-forwarded named functions in
+> round 3) — because the underlying design enumerated known-dangerous
+> SHAPES and treated anything it didn't recognize as requiring nothing. Two
+> more bypasses were found immediately after round 3 (an inline lambda
+> invoking its own parameter through a HOF, and a closure read out of a
+> container into an intermediate local before being called), plus several
+> more during the fix below (the single most basic case — a closure built
+> and called directly in one function, with **zero** indirection — was
+> uncatchable by any of the three rounds, because none of them evaluated the
+> callee of a call at all unless it was a call BY NAME to a function already
+> known to be "hot").
+>
+> **This is now fixed by inverting the default, not by enumerating another
+> shape.** A call through a first-class fn-value whose capability set
+> cannot be STATICALLY PROVEN to be a subset of the caller's grant is now
+> REJECTED (requires `Capability::All`) rather than silently treated as
+> requiring nothing — "unknown" means "deny", not "allow". This closes every
+> shape above, plus every shape nobody has found yet, because soundness no
+> longer depends on the enumeration being complete. The relief for
+> legitimate code that this default would otherwise over-reject: a fn-value
+> whose capability set IS resolvable (a pure closure, a closure built from
+> an annotated function whose requirement is known, a closure read out of a
+> literal-constructed container) still requires exactly that set, not
+> `all`; and an inline lambda that merely forwards its own bound parameter
+> into a HOF (`map(tools, |f| f())`) is resolved TRANSPARENTLY against
+> whichever other argument at the same call site structurally supplies its
+> elements, so `map`/`filter`/`fold`/`reduce`/`find` and user-defined HOFs
+> over arrays of PURE closures still need no annotation. See
+> [`docs/capability-roadmap.md`](capability-roadmap.md) for the full
+> analysis of why the enumeration approach could not converge, and the
+> sound long-term design (capability-typed fn values) that closes the
+> residual precision gaps this fix still leaves as documented, fail-CLOSED
+> over-rejection rather than silent holes.
+>
+> Runtime enforcement, audit logging, and sandboxing APIs described in some
+> earlier drafts are **not yet implemented** (enforcement is entirely
+> compile-time). Note: `env_get`/`env_set` require the `process` capability
+> (reading the environment can exfiltrate secrets), not ambient. `kryos
+> audit` is a separate, purely SYNTACTIC scan of `@capabilities(...)`
+> annotations — it never runs capability inference, so it never lists any
+> unannotated function (a legitimately-polymorphic helper like a
+> `std::iter` HOF just as much as anything else); do not read its output as
+> a complete capability inventory.
 
 Capabilities are Kryos's security model. Every function declares exactly what system resources it needs -- filesystem access, network connections, process spawning, FFI calls. If a function tries to use something it did not declare, the program fails at compile time. Not at runtime, not with a warning -- it does not compile.
 
@@ -230,16 +289,24 @@ registry usage with a pure closure needs no annotation change
 cascade, and a privileged closure through the same HOF/registry is still
 correctly gated).
 
-**Status: the parameter/local/return/passthrough/actor/spawn/generic/dyn,
-container-storage (struct field / array / map / nested LITERAL
-construction), container-MUTATION (push / index-assign / field-assign after
-construction, including nested combinations and `std::collections`
-wrapper types), and HOF-forwarded-named-function laundering paths are ALL
-CLOSED and gated (`tests/security_gate.sh`, 33 checks).** The one remaining
-gap is a container from a genuinely non-literal source (a function return, a
-mutated parameter, a container read out of another container) — this fails
-CLOSED (`Capability::All` required), not open, so it is a precision limit,
-not a soundness hole. See [`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md)
+**Status, superseded by the fail-closed hardening below: this section
+described the state after three enumeration rounds, each of which closed
+the shapes reported and each time new bypasses were found in a shape the
+enumeration had not covered — including, immediately after this section was
+last "complete", an inline lambda invoking its own parameter through a HOF
+and a closure read out of a container into an intermediate local (see
+`docs/capability-roadmap.md` for why enumerating shapes here does not
+converge). The checker was changed to invert the default instead: ANY call
+through a first-class fn-value whose capability set is not STATICALLY
+PROVEN to be a subset of the caller's grant is now REJECTED
+(`Capability::All` required), regardless of the syntactic shape — closing
+every enumerated shape above, the two residuals found after it, and every
+shape nobody has attacked yet, in one structural change rather than a
+fourth round of patches. A container from a genuinely non-literal source
+(a function return, a mutated parameter, a container read out of another
+container) was already documented as failing CLOSED under the old design
+and still does under the new one, for the same reason. See
+[`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md)
 for the full history of all fixes.
 
 Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:

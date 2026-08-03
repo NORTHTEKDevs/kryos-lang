@@ -1,0 +1,38 @@
+// SECURITY -- a USER-DEFINED (non-stdlib) higher-order function, and a
+// closure nested THREE containers deep (a map, holding an array, holding a
+// struct field). Neither shape is std::iter-specific: `apply_all` is a
+// user-written HOF with no annotation, and the closure travels through a
+// map<str, [Registry]> before reaching `main`'s direct call.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+struct Registry { reader: fn() -> str }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// A user-written HOF: forwards its own hot parameter, exactly like a
+// std::iter HOF, but is not part of the stdlib at all.
+fn apply_all(fs: [fn() -> str]) -> str {
+    return fs[0]()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    // Three levels of nesting: map -> array -> struct field.
+    let deep: map<str, [Registry]> = {"k": [Registry { reader: r }]}
+    deny!(fs:read) {
+        // Pre-fix: user-defined HOF path -- verify it is gated the same as
+        // any std::iter HOF (this exact shape was already closed via
+        // hot_params for named functions; regression guard).
+        println("user-hof (was NOT CLOSED): " + apply_all([r]))
+    }
+    deny!(fs:read) {
+        // Direct three-level chained invocation, no named-function boundary.
+        println("three-level-nesting (was NOT CLOSED): " + deep["k"][0].reader())
+    }
+}

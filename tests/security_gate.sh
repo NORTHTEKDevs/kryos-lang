@@ -214,5 +214,77 @@ else
     tail -5 "$TMP/mut_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 21-31. FAIL-CLOSED HARDENING (three failed enumeration rounds -- see
+#        docs/capability-roadmap.md and tools/loop/LEDGER.md): the checker's
+#        entire enforcement mechanism up to this fix was keyed on a CALL TO
+#        A NAMED FUNCTION (so `hot_params` could look it up by name). A
+#        first-class fn-value invoked DIRECTLY -- a bare local (no
+#        parameter, no container, not even an intermediate function call)
+#        -- was never checked AT ALL, no matter what it carried. This is
+#        structurally different from #1-20 above (all of which route
+#        through a named-function parameter boundary); the fix inverts the
+#        default so ANY unresolvable direct invocation requires `all`,
+#        closing every shape below without enumerating shapes.
+for shape in direct_local_call struct_field_direct_call container_chained_direct container_intermediate_local hof_inline_lambda collections_deque_dict option_result_payload user_hof_three_level; do
+    f="tests/security/cap_escape_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/fc_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: fail-closed-hardening [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/fc_${shape}_$mode_flag"; then
+            echo "  ok   fail-closed-hardening [$shape] escape rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/fc_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 32. Every std::iter elementwise HOF sibling (filter/fold/reduce/find), not
+#     just map -- a privileged closure passed directly as the callback must
+#     be rejected for each of them under BOTH directions.
+if "$K" check tests/security/cap_escape_hof_siblings.kry >"$TMP/sib1" 2>&1; then
+    echo "  FAIL: hof-siblings escape COMPILED"
+    fail=1
+elif [ "$(grep -c 'E0507' "$TMP/sib1")" -ge 4 ]; then
+    echo "  ok   hof-siblings (filter/fold/reduce/find) all rejected (E0507) []"
+else
+    echo "  FAIL: hof-siblings did not reject all 4 (got $(grep -c 'E0507' "$TMP/sib1")):"
+    tail -5 "$TMP/sib1" | sed 's/^/    /'; fail=1
+fi
+if "$K" check --strict-capabilities tests/security/cap_escape_hof_siblings.kry >"$TMP/sib2" 2>&1; then
+    echo "  FAIL: hof-siblings escape COMPILED [--strict-capabilities]"
+    fail=1
+elif [ "$(grep -c 'E0507' "$TMP/sib2")" -ge 4 ]; then
+    echo "  ok   hof-siblings (filter/fold/reduce/find) all rejected (E0507) [--strict-capabilities]"
+else
+    echo "  FAIL: hof-siblings did not reject all 4 [--strict-capabilities]:"
+    tail -5 "$TMP/sib2" | sed 's/^/    /'; fail=1
+fi
+
+# 33. Fail-closed hardening also holds under --capabilities-mode=permissive
+#     (an annotated `main` is still an enforcing boundary there).
+if "$K" check --capabilities-mode=permissive tests/security/cap_escape_permissive_mode.kry >"$TMP/perm" 2>&1; then
+    echo "  FAIL: fail-closed-hardening [permissive_mode] escape COMPILED"
+    fail=1
+elif grep -q "E0507" "$TMP/perm"; then
+    echo "  ok   fail-closed-hardening [permissive_mode] escape rejected (E0507)"
+else
+    echo "  FAIL: escape rejected, but NOT for the capability reason [permissive_mode]:"
+    tail -3 "$TMP/perm" | sed 's/^/    /'; fail=1
+fi
+
+# 34. No-cascade complement to #25 (hof_inline_lambda): the SAME
+#     `map(tools, |f| f())` shape with PURE closures (the tested,
+#     legitimate "map over an array of functions" conformance pattern) must
+#     still compile with ZERO annotation.
+if "$K" check --strict-capabilities tests/security/cap_escape_hof_inline_lambda_nocascade.kry >"$TMP/hil_nc" 2>&1; then
+    echo "  ok   inline-lambda-forwarding HOF with pure closures needs no annotation (no cascade)"
+else
+    echo "  FAIL: the transparent-forwarding-lambda fix cascaded into a pure closure array:"
+    tail -5 "$TMP/hil_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

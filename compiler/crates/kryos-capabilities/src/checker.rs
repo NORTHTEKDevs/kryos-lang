@@ -12,8 +12,9 @@ use kryos_errors::{Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
 
 use crate::model::{
-    is_escalation_action, required_capability_for_builtin, required_capability_for_native_symbol,
-    required_capability_for_path, Budget, Capability, CapabilitySet, Sandbox,
+    is_escalation_action, is_known_builtin_name, required_capability_for_builtin,
+    required_capability_for_native_symbol, required_capability_for_path, Budget, Capability,
+    CapabilitySet, Sandbox,
 };
 
 /// How strictly capabilities are enforced. The three modes form a hierarchy
@@ -207,6 +208,26 @@ struct CapabilityChecker {
     /// builtin's capability -- the checker otherwise gated by name alone and
     /// spuriously required, e.g., `net:http` for a pure user `http_get`.
     defined_fns: std::collections::HashSet<String>,
+    /// Every ACTOR type name declared in the module. Actors are constructed
+    /// with `Name()` call syntax (see CLAUDE.md) -- a `Expr::FnCall` whose
+    /// callee is the actor's bare name, NOT a reference to a first-class
+    /// fn-value. Without tracking this separately, the fail-closed default
+    /// (`resolve_direct_invoke_caps`) cannot tell `Account()` (a constructor)
+    /// from `r()` (invoking an unresolved closure named `r`), since actors
+    /// are not recorded in `defined_fns` (they are a distinct `Decl`
+    /// variant, not a function).
+    actor_names: std::collections::HashSet<String>,
+    /// Every ENUM VARIANT name declared in the module (`Some`, `None`, `Ok`,
+    /// `Err`, and any user-declared enum's variants). A tuple-variant
+    /// construction (`Some(x)`, `None()`) is `Expr::FnCall`/`StaticMethodCall`
+    /// syntax with the variant's bare name as the callee, NOT a reference to
+    /// a first-class fn-value -- same reasoning as `actor_names`, and the
+    /// same reason the fail-closed default (`resolve_direct_invoke_caps`)
+    /// needs this list: `Option`/`Result` (from `std::option`/`std::result`)
+    /// are used constantly, so without this EVERY `Some(..)`/`Ok(..)`/
+    /// `Err(..)`/`None()` construction anywhere in the program would be
+    /// misread as an unresolvable closure invocation.
+    enum_variant_names: std::collections::HashSet<String>,
     /// Every function/method's parameter LIST, keyed by bare name (same
     /// keying convention as `fn_capabilities` — a name shared by two impls'
     /// methods collides, a pre-existing modeling simplification this reuses
@@ -313,6 +334,8 @@ impl CapabilityChecker {
             extern_fns: std::collections::HashSet::new(),
             current_locals: std::collections::HashSet::new(),
             defined_fns: std::collections::HashSet::new(),
+            actor_names: std::collections::HashSet::new(),
+            enum_variant_names: std::collections::HashSet::new(),
             fn_params: HashMap::new(),
             fn_ret_ty: HashMap::new(),
             actor_handler_names: HashSet::new(),
@@ -380,6 +403,14 @@ impl CapabilityChecker {
                 }
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     self.collect_defined_fns(methods);
+                }
+                Decl::Actor { name, .. } => {
+                    self.actor_names.insert(name.clone());
+                }
+                Decl::Enum { variants, .. } => {
+                    for v in variants {
+                        self.enum_variant_names.insert(v.name.clone());
+                    }
                 }
                 _ => {}
             }
@@ -1182,12 +1213,12 @@ impl CapabilityChecker {
     /// special-case annotation at all.
     fn collect_actor_handler_bodies<'a>(
         decls: &'a [Decl],
-        out: &mut Vec<(String, bool, &'a kryos_ast::Block)>,
+        out: &mut Vec<(String, bool, &'a kryos_ast::Block, &'a [Param])>,
     ) {
         for d in decls {
             if let Decl::Actor { handlers, .. } = d {
                 for h in handlers {
-                    out.push((h.name.clone(), false, &h.body));
+                    out.push((h.name.clone(), false, &h.body, h.params.as_slice()));
                 }
             }
         }
@@ -1217,7 +1248,7 @@ impl CapabilityChecker {
         &self,
         decls: &[Decl],
     ) -> HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>> {
-        let mut fns: Vec<(String, bool, &kryos_ast::Block)> = Vec::new();
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
         Self::collect_functions(decls, &mut fns);
         Self::collect_actor_handler_bodies(decls, &mut fns);
 
@@ -1225,10 +1256,7 @@ impl CapabilityChecker {
 
         // Seed A: a function's own fn-typed parameter invoked DIRECTLY —
         // records the EMPTY path (the parameter's own value IS the closure).
-        for (name, _annotated, body) in &fns {
-            let Some(params) = self.fn_params.get(name) else {
-                continue;
-            };
+        for (name, _annotated, body, params) in &fns {
             let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
             Self::walk_calls_block(body, &mut calls);
             for (i, p) in params.iter().enumerate() {
@@ -1251,10 +1279,7 @@ impl CapabilityChecker {
         // Seed B: a function's own CONTAINER-typed parameter (struct field /
         // array element / map value / nested combination) whose contents are
         // invoked via a field/index access chain — the residual this closes.
-        for (name, _annotated, body) in &fns {
-            let Some(params) = self.fn_params.get(name) else {
-                continue;
-            };
+        for (name, _annotated, body, params) in &fns {
             let mut occurrences: Vec<(&str, Vec<PathStep>)> = Vec::new();
             Self::walk_container_calls_block(body, &mut occurrences);
             for (i, p) in params.iter().enumerate() {
@@ -1281,10 +1306,7 @@ impl CapabilityChecker {
         // recorded PATHS at that position carry over verbatim.
         loop {
             let mut changed = false;
-            for (name, _annotated, body) in &fns {
-                let Some(params) = self.fn_params.get(name) else {
-                    continue;
-                };
+            for (name, _annotated, body, params) in &fns {
                 let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
                 Self::walk_calls_block(body, &mut calls);
                 for (i, p) in params.iter().enumerate() {
@@ -1435,13 +1457,69 @@ impl CapabilityChecker {
             // about a container VALUE flowing through a parameter/local, not
             // a fresh closure literal referencing one from its lexical
             // scope) and falls back to the existing sound `Unknown` default.
-            Expr::Lambda { body, .. } => ClosureCapsResult::Known(self.collect_caps_expr(
-                body,
-                working,
-                own_params,
-                local_caps,
-                &HashMap::new(),
-            )),
+            //
+            // TRANSPARENT-FORWARDING LAMBDA: an inline callback whose ONLY
+            // capability-relevant behavior is invoking its OWN bound
+            // parameter (`|f| f()`, `|f| f(10)`) -- the shape `map`/`filter`/
+            // any elementwise HOF needs when the array being mapped holds
+            // CLOSURES rather than plain data (a plugin/tool registry). Such
+            // a lambda carries no authority OF ITS OWN; its authority is
+            // whatever gets bound to its own parameter at each invocation,
+            // which is determined by the ENCLOSING CALL, not by this lambda.
+            // Detected the same way Seed A detects a NAMED function's own
+            // hot parameter (a bare call to the param's own name); resolved
+            // to `DependsOnParam(<the LAMBDA's own param name>)`, which the
+            // call-site resolver (`accumulate_hot_extra_caps`) distinguishes
+            // from the ENCLOSING function's own hot parameter (already
+            // `own_params`-gated there) by checking whether the name is even
+            // IN `own_params` -- if not, it must belong to this argument
+            // lambda's own scope, and gets resolved against a COMPANION
+            // container argument at the SAME call site instead of being
+            // silently dropped (see `find_companion_container_arg`).
+            Expr::Lambda { params, body, .. } => {
+                // NOTE: an inline lambda's fn-typed parameter is almost
+                // always UNANNOTATED (`|f| f(10)`, not `|f: fn(i64)->i64|
+                // f(10)`) -- its real type is inferred from context (the
+                // HOF's own signature). So, unlike a NAMED function's own
+                // parameters (where `is_fn_typed` on the DECLARED type is
+                // exact), candidacy here is "any of this lambda's own bound
+                // parameter names", filtered down to the ones actually
+                // invoked directly in the body below -- not gated on a type
+                // annotation that is normally absent.
+                let lambda_own_params: HashSet<String> =
+                    params.iter().map(|p| p.name.clone()).collect();
+                if !lambda_own_params.is_empty() {
+                    let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
+                    Self::walk_calls_expr(body, &mut calls);
+                    let hot_own_param = lambda_own_params.iter().find(|pname| {
+                        calls
+                            .iter()
+                            .any(|(cname, _args, is_method)| !is_method && *cname == pname.as_str())
+                    });
+                    if let Some(hot_p) = hot_own_param {
+                        let mut ext_own_params = own_params.clone();
+                        ext_own_params.extend(lambda_own_params.iter().cloned());
+                        let body_caps = self.collect_caps_expr(
+                            body,
+                            working,
+                            &ext_own_params,
+                            local_caps,
+                            &HashMap::new(),
+                        );
+                        if body_caps.is_empty() {
+                            return ClosureCapsResult::DependsOnParam(hot_p.clone());
+                        }
+                        return ClosureCapsResult::Known(body_caps);
+                    }
+                }
+                ClosureCapsResult::Known(self.collect_caps_expr(
+                    body,
+                    working,
+                    own_params,
+                    local_caps,
+                    &HashMap::new(),
+                ))
+            }
             Expr::Identifier { name, .. } => {
                 if let Some(r) = local_caps.get(name) {
                     return r.clone();
@@ -1488,24 +1566,52 @@ impl CapabilityChecker {
                 ClosureCapsResult::Unknown
             }
             Expr::FnCall { callee, args, .. } => {
-                let Expr::Identifier { name, .. } = callee.as_ref() else {
-                    return ClosureCapsResult::Unknown;
-                };
-                match fn_return_caps.get(name) {
-                    Some(ClosureCapsResult::Known(c)) => ClosureCapsResult::Known(c.clone()),
-                    Some(ClosureCapsResult::DependsOnParam(pname)) => {
-                        let Some(params) = self.fn_params.get(name) else {
-                            return ClosureCapsResult::Unknown;
-                        };
-                        let Some(idx) = params.iter().position(|p| &p.name == pname) else {
-                            return ClosureCapsResult::Unknown;
-                        };
-                        match args.get(idx) {
-                            Some(arg) => {
-                                self.resolve_closure_caps(arg, working, fn_return_caps, local_caps, own_params)
-                            }
-                            None => ClosureCapsResult::Unknown,
+                match callee.as_ref() {
+                    Expr::Identifier { name, .. } => {
+                        // The callee may be a LOCAL bound to a fn-returning
+                        // expression rather than a named function -- a
+                        // curried intermediate step (`let step2 =
+                        // step1(2)`). `local_caps` already holds the fully
+                        // resolved authority for such a local (computed when
+                        // its own `let` was processed); check it BEFORE
+                        // `fn_return_caps` (which is keyed by function name
+                        // and knows nothing about locals), matching the
+                        // local-shadows-function convention used elsewhere
+                        // in this file.
+                        if let Some(r) = local_caps.get(name) {
+                            return r.clone();
                         }
+                        match fn_return_caps.get(name) {
+                            Some(ClosureCapsResult::Known(c)) => ClosureCapsResult::Known(c.clone()),
+                            Some(ClosureCapsResult::DependsOnParam(pname)) => {
+                                let Some(params) = self.fn_params.get(name) else {
+                                    return ClosureCapsResult::Unknown;
+                                };
+                                let Some(idx) = params.iter().position(|p| &p.name == pname) else {
+                                    return ClosureCapsResult::Unknown;
+                                };
+                                match args.get(idx) {
+                                    Some(arg) => self.resolve_closure_caps(
+                                        arg, working, fn_return_caps, local_caps, own_params,
+                                    ),
+                                    None => ClosureCapsResult::Unknown,
+                                }
+                            }
+                            _ => ClosureCapsResult::Unknown,
+                        }
+                    }
+                    // A CURRIED/chained call (`f(a)(b)`): the callee of THIS
+                    // call is itself another call. Peel one layer at a time
+                    // by recursing -- sound because `fn_return_closure_caps`
+                    // (via `collect_caps_expr`'s `Lambda` arm, which already
+                    // unions a lambda's FULL nested body into one flat
+                    // requirement regardless of how many closures it is
+                    // nested inside) already over-approximates a curried
+                    // function's return authority at the FIRST resolution
+                    // step, so each further application can safely reuse the
+                    // same resolved value rather than needing its own.
+                    Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
+                        self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, own_params)
                     }
                     _ => ClosureCapsResult::Unknown,
                 }
@@ -1625,9 +1731,10 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
     ) -> HashMap<String, ClosureCapsResult> {
         let mut locals = HashMap::new();
-        self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, &mut locals);
+        self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, &mut locals);
         locals
     }
 
@@ -1637,6 +1744,7 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
         locals: &mut HashMap<String, ClosureCapsResult>,
     ) {
         for stmt in &block.stmts {
@@ -1644,7 +1752,78 @@ impl CapabilityChecker {
                 Stmt::Let {
                     name, value: Some(v), ..
                 } => {
-                    let r = self.resolve_closure_caps(v, working, fn_return_caps, &*locals, own_params);
+                    // A nested NAMED function (`fn adder(y) { .. }` declared
+                    // inside another function's body) desugars to exactly
+                    // this shape -- `let adder = fn(y) { .. }` -- in the
+                    // parser (`parse_inner_fn`). Its own body may itself
+                    // contain further `let`s (including further nested
+                    // functions), which need to be in THIS SAME flat map
+                    // BEFORE resolving `v`'s own capability below, so that a
+                    // direct call to one of them from within the lambda's
+                    // own body (`return adder(10)`) resolves when THIS
+                    // lambda's (`make_adder`'s) own requirement is computed,
+                    // instead of falling through to the fail-closed `Unknown`
+                    // default. Flattening nested scopes into one map is
+                    // consistent with this function's existing "best-effort,
+                    // not scope-precise" design; the recursion handles
+                    // arbitrary nesting depth.
+                    if let Expr::Lambda { body, .. } = v {
+                        // A self-recursive nested named function (`fn nfact(n)
+                        // { return n * nfact(n - 1) }`, desugared to `let
+                        // nfact = fn(n) { .. }`) calls ITS OWN name from
+                        // inside its own body. Pre-register an optimistic
+                        // `Known(empty)` placeholder for `name` BEFORE
+                        // recursing into the body, so the self-reference
+                        // resolves to something instead of `Unknown` (which
+                        // would otherwise require `all` for the extremely
+                        // common named-recursion idiom). This is a narrow,
+                        // sound-enough approximation consistent with this
+                        // function's existing "best-effort, not scope-precise"
+                        // design: it can under-count ONLY the capability
+                        // carried by the recursive call itself (a purely
+                        // internal self-reference, never external caller-
+                        // supplied authority), while any OTHER gated builtin
+                        // the function calls directly is still counted
+                        // normally via the real `r` computed below, which
+                        // OVERWRITES this placeholder once known.
+                        locals.insert(name.clone(), ClosureCapsResult::Known(CapabilitySet::empty()));
+                        if let Expr::Block { block, .. } = body.as_ref() {
+                            self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, locals);
+                        }
+                    }
+                    // A closure/fn-value read OUT of a container via a
+                    // field/index chain and bound to a local (`let f =
+                    // m["k"]`), as opposed to invoked immediately
+                    // (`m["k"]()`, already resolved precisely at the CALL
+                    // site by `resolve_direct_invoke_caps`/
+                    // `resolve_method_field_invoke_caps`) -- resolve it the
+                    // SAME way at BIND time, via `resolve_container_path_caps`,
+                    // so a later direct call through the local (`f()`) finds
+                    // its real (possibly EMPTY) authority instead of falling
+                    // through to the fail-closed `Unknown` default just
+                    // because of the extra level of local-variable
+                    // indirection. Only engages for a genuine field/index
+                    // chain (non-empty path); a bare identifier alias still
+                    // goes through the existing `resolve_closure_caps` path
+                    // below, unchanged.
+                    let r = match Self::decompose_container_path(v) {
+                        Some((root, path)) if !path.is_empty() => {
+                            let root_expr = Expr::Identifier {
+                                name: root.to_string(),
+                                span: Span::DUMMY,
+                            };
+                            self.resolve_container_path_caps(
+                                &root_expr,
+                                &path,
+                                working,
+                                fn_return_caps,
+                                &*locals,
+                                local_container_lits,
+                                own_params,
+                            )
+                        }
+                        _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, own_params),
+                    };
                     locals.insert(name.clone(), r);
                 }
                 Stmt::If {
@@ -1653,24 +1832,24 @@ impl CapabilityChecker {
                     else_block,
                     ..
                 } => {
-                    self.build_local_closure_caps_block(then_block, working, fn_return_caps, own_params, locals);
+                    self.build_local_closure_caps_block(then_block, working, fn_return_caps, own_params, local_container_lits, locals);
                     for (_, b) in elif_clauses {
-                        self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, locals);
+                        self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                     if let Some(b) = else_block {
-                        self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, locals);
+                        self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                 }
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                    self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, locals)
+                    self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals)
                 }
                 Stmt::TryCatch {
                     try_block,
                     catch_block,
                     ..
                 } => {
-                    self.build_local_closure_caps_block(try_block, working, fn_return_caps, own_params, locals);
-                    self.build_local_closure_caps_block(catch_block, working, fn_return_caps, own_params, locals);
+                    self.build_local_closure_caps_block(try_block, working, fn_return_caps, own_params, local_container_lits, locals);
+                    self.build_local_closure_caps_block(catch_block, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 _ => {}
             }
@@ -2013,28 +2192,24 @@ impl CapabilityChecker {
         decls: &[Decl],
         working: &HashMap<String, CapabilitySet>,
     ) -> HashMap<String, ClosureCapsResult> {
-        let mut fns: Vec<(String, bool, &kryos_ast::Block)> = Vec::new();
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
         Self::collect_functions(decls, &mut fns);
         Self::collect_actor_handler_bodies(decls, &mut fns);
         let mut result: HashMap<String, ClosureCapsResult> = HashMap::new();
 
         loop {
             let mut changed = false;
-            for (name, _annotated, body) in &fns {
+            for (name, _annotated, body, params) in &fns {
                 if !matches!(self.fn_ret_ty.get(name), Some(TypeExpr::Function { .. })) {
                     continue;
                 }
-                let own_params: HashSet<String> = self
-                    .fn_params
-                    .get(name)
-                    .map(|ps| {
-                        ps.iter()
-                            .filter(|p| Self::is_fn_typed(&p.ty))
-                            .map(|p| p.name.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let local_caps = self.build_local_closure_caps(body, working, &result, &own_params);
+                let own_params: HashSet<String> = params
+                    .iter()
+                    .filter(|p| Self::is_fn_typed(&p.ty))
+                    .map(|p| p.name.clone())
+                    .collect();
+                let local_container_lits = Self::build_local_container_lits(body);
+                let local_caps = self.build_local_closure_caps(body, working, &result, &own_params, &local_container_lits);
                 let mut return_exprs: Vec<&Expr> = Vec::new();
                 Self::collect_return_exprs(body, &mut return_exprs);
                 if return_exprs.is_empty() {
@@ -2116,19 +2291,320 @@ impl CapabilityChecker {
                     own_params,
                 ) {
                     ClosureCapsResult::Known(c) => *extra = extra.union(&c),
-                    // Deferred: this call forwards one of the CURRENT
-                    // function's own fn-typed/container-typed parameters, so
-                    // `hot_params` has already (or will) mark it hot too —
-                    // charging it here as well would double-count and,
-                    // worse, would force a pure forwarding function (the
-                    // `std::iter` HOF shape) to require `all`.
-                    ClosureCapsResult::DependsOnParam(_) => {}
+                    // `pname` names a parameter, but WHOSE parameter -- the
+                    // CURRENT (enclosing) function's own, or the specific
+                    // fn-value ARGUMENT's own (a transparent-forwarding
+                    // inline lambda, `|f| f()`, see `resolve_closure_caps`'s
+                    // `Lambda` arm)? `own_params` is the enclosing function's
+                    // own fn-typed parameter set, so a name found there IS
+                    // that deferred case: this call forwards one of the
+                    // CURRENT function's own parameters, so `hot_params` has
+                    // already (or will) mark IT hot too -- charging it here
+                    // as well would double-count and, worse, would force a
+                    // pure forwarding function (the `std::iter` HOF shape) to
+                    // require `all`.
+                    ClosureCapsResult::DependsOnParam(pname) if own_params.contains(&pname) => {}
+                    // Otherwise `pname` belongs to the ARGUMENT LAMBDA's own
+                    // scope -- it is not supplied by any future caller, it is
+                    // supplied RIGHT HERE, by whichever OTHER argument in
+                    // THIS SAME call is the container the callback iterates
+                    // (structurally located, not by callee name -- see
+                    // `find_companion_container_arg`). Resolve against ITS
+                    // elements; if no companion container can be identified,
+                    // fall through to the same sound `all` fallback as a
+                    // genuinely unresolvable value.
+                    ClosureCapsResult::DependsOnParam(_) => {
+                        let companion = self
+                            .find_companion_container_arg(callee_name, i)
+                            .and_then(|k| {
+                                let comp_idx = if has_self_offset { k.checked_sub(1)? } else { k };
+                                args.get(comp_idx)
+                            });
+                        match companion {
+                            Some(comp_arg) => match self.resolve_container_path_caps(
+                                comp_arg,
+                                &[PathStep::Index],
+                                working,
+                                &self.fn_return_closure_caps,
+                                local_caps,
+                                local_container_lits,
+                                own_params,
+                            ) {
+                                ClosureCapsResult::Known(c) => *extra = extra.union(&c),
+                                ClosureCapsResult::DependsOnParam(_) => {}
+                                ClosureCapsResult::Unknown => extra.insert(Capability::All),
+                            },
+                            None => extra.insert(Capability::All),
+                        }
+                    }
                     // Genuinely unresolvable provenance: the sound
                     // conservative stance (matching the raw-memory escape's
                     // documented policy) is to require the caller to hold
                     // everything.
                     ClosureCapsResult::Unknown => extra.insert(Capability::All),
                 }
+            }
+        }
+    }
+
+    /// Structurally locate the OTHER parameter of `callee_name` that supplies
+    /// elements to the callback at `callback_idx` -- e.g. `map`'s `arr: [T]`
+    /// for its `f: fn(T) -> U` -- WITHOUT special-casing any function by
+    /// name: matches purely on shape (a `fn(E, ..) -> ..` callback parameter
+    /// paired with an `[E]` array or `map<K, E>` value-typed parameter
+    /// elsewhere in the SAME declaration, `E` compared by generic-name
+    /// identity). Works for any elementwise HOF fitting this shape
+    /// (`map`/`filter`/`find`/`reduce`/`for_each`/a user-written one),
+    /// covering the general case the task calls for instead of enumerating
+    /// `std::iter` function names.
+    fn find_companion_container_arg(&self, callee_name: &str, callback_idx: usize) -> Option<usize> {
+        let params = self.fn_params.get(callee_name)?;
+        let callback_ty = params.get(callback_idx)?.ty.as_ref()?;
+        let TypeExpr::Function { params: cb_params, .. } = callback_ty else {
+            return None;
+        };
+        let elem_ty = cb_params.first()?;
+        for (k, p) in params.iter().enumerate() {
+            if k == callback_idx {
+                continue;
+            }
+            let Some(ty) = &p.ty else { continue };
+            let is_match = match ty {
+                TypeExpr::Array { element, .. } => Self::type_names_match(element, elem_ty),
+                TypeExpr::Generic { name, args: gargs, .. } if name == "map" && gargs.len() == 2 => {
+                    Self::type_names_match(&gargs[1], elem_ty)
+                }
+                _ => false,
+            };
+            if is_match {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    /// Whether two type expressions name the SAME generic type parameter
+    /// (`T` vs `T`), ignoring `Span` (which `TypeExpr`'s derived `PartialEq`
+    /// does NOT ignore, so a plain `==` between two independently-parsed `T`
+    /// occurrences is always `false`). Deliberately narrow: only a bare
+    /// `Simple` name match counts, so two unrelated concrete types never
+    /// accidentally compare equal.
+    fn type_names_match(a: &TypeExpr, b: &TypeExpr) -> bool {
+        matches!(
+            (a, b),
+            (TypeExpr::Simple { name: n1, .. }, TypeExpr::Simple { name: n2, .. }) if n1 == n2
+        )
+    }
+
+    /// **FAIL-CLOSED default for a DIRECT INVOCATION of a first-class
+    /// fn-value.** Every enforcement path up to this fix (`hot_params` /
+    /// `accumulate_hot_extra_caps`) only ever attributed authority to a CALL
+    /// SITE that names a known FUNCTION/METHOD (so its callee could be looked
+    /// up in `hot_params` by name) — a call whose callee is a bare local
+    /// variable, an unnamed parameter, or a field/index chain into one (`r()`,
+    /// `arr[0]()`, `m["k"][0]()`) was never resolved AT ALL: `hot_params.get`
+    /// on a non-function name is always `None`, so the whole mechanism
+    /// silently contributed nothing, no matter what the invoked value
+    /// actually carried. This was true even with NO indirection whatsoever —
+    /// verified live: a closure built and called in the SAME function, with
+    /// no parameter/argument passing step in between, was uncatchable by any
+    /// of the three prior enumeration rounds because none of them checked the
+    /// callee itself, only arguments flowing INTO an already-known-hot
+    /// function.
+    ///
+    /// This closes that gap structurally rather than by naming another shape:
+    /// resolve what `callee` denotes via the SAME closure/container resolvers
+    /// already used for argument attribution, and require it exactly like a
+    /// named function's own declaration would be. The three outcomes:
+    /// - `Known(c)`: the value's exact capability set — require it.
+    /// - `DependsOnParam(_)`: `callee` is (or resolves to) one of the CURRENT
+    ///   function's own fn-typed parameters — its real value is supplied by
+    ///   THIS function's caller, so `hot_params`/Seed A/B already defer the
+    ///   charge to that caller; nothing to require here (charging it here too
+    ///   would double-count AND would force every ordinary user-written HOF —
+    ///   `fn apply(f: fn()->str) -> str { f() }` — to require `all`).
+    /// - `Unknown`: genuinely unresolvable provenance — the same conservative
+    ///   stance used everywhere else in this file: require `Capability::All`.
+    ///   Unknown must mean deny, not "this call needs nothing" — see
+    ///   `docs/capability-roadmap.md` for why enumerating shapes here instead
+    ///   (three rounds of it) does not converge.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_direct_invoke_caps(
+        &self,
+        callee: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> CapabilitySet {
+        let Some((root, path)) = Self::decompose_container_path(callee) else {
+            // A call/method-call/other compound expression used directly as
+            // ITS OWN callee (`mk()()`, `pick_reader(cond)()`, ...) — resolve
+            // through the general closure-value resolver, which already
+            // understands a call to a known `fn_return_closure_caps` entry
+            // and falls back to `Unknown` for anything else it cannot prove.
+            return match self.resolve_closure_caps(
+                callee,
+                working,
+                &self.fn_return_closure_caps,
+                local_caps,
+                own_params,
+            ) {
+                ClosureCapsResult::Known(c) => c,
+                ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+                ClosureCapsResult::Unknown => {
+                    let mut c = CapabilitySet::empty();
+                    c.insert(Capability::All);
+                    c
+                }
+            };
+        };
+        let result = if path.is_empty() {
+            self.resolve_closure_caps(callee, working, &self.fn_return_closure_caps, local_caps, own_params)
+        } else {
+            let root_expr = Expr::Identifier {
+                name: root.to_string(),
+                span: Span::DUMMY,
+            };
+            self.resolve_container_path_caps(
+                &root_expr,
+                &path,
+                working,
+                &self.fn_return_closure_caps,
+                local_caps,
+                local_container_lits,
+                own_params,
+            )
+        };
+        match result {
+            ClosureCapsResult::Known(c) => c,
+            ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+            ClosureCapsResult::Unknown => {
+                let mut c = CapabilitySet::empty();
+                c.insert(Capability::All);
+                c
+            }
+        }
+    }
+
+    /// The sibling of `resolve_direct_invoke_caps` for the `obj.method(...)`
+    /// SYNTACTIC shape when `method` is actually a function-typed STRUCT
+    /// FIELD being read and invoked (`reg.reader()`), not a genuine
+    /// method/trait dispatch. Only engages when `method` is POSITIVELY
+    /// confirmed to name a field explicitly written in a locally-tracked
+    /// struct literal reachable from `object` — never a blanket guess, so an
+    /// ordinary method call (`p.distance(other)`) is never misclassified as
+    /// an unresolvable field read (which would otherwise force every method
+    /// call in the language to require `all`).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_method_field_invoke_caps(
+        &self,
+        object: &Expr,
+        method: &str,
+        working: &HashMap<String, CapabilitySet>,
+        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> CapabilitySet {
+        let Some((root, path)) = Self::decompose_container_path(object) else {
+            return CapabilitySet::empty();
+        };
+        let Some(lit) = local_container_lits.get(root) else {
+            return CapabilitySet::empty();
+        };
+        if !Self::literal_field_exists(lit, &path, method) {
+            return CapabilitySet::empty();
+        }
+        let mut full_path = path;
+        full_path.push(PathStep::Field(method.to_string()));
+        let root_expr = Expr::Identifier {
+            name: root.to_string(),
+            span: Span::DUMMY,
+        };
+        let result = self.resolve_container_path_caps(
+            &root_expr,
+            &full_path,
+            working,
+            &self.fn_return_closure_caps,
+            local_caps,
+            local_container_lits,
+            own_params,
+        );
+        match result {
+            ClosureCapsResult::Known(c) => c,
+            ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+            ClosureCapsResult::Unknown => {
+                let mut c = CapabilitySet::empty();
+                c.insert(Capability::All);
+                c
+            }
+        }
+    }
+
+    /// Whether `lit` (a container literal reachable via `local_container_lits`)
+    /// explicitly writes a field named `field` at the position `path` walks
+    /// to. Used ONLY to confirm the `obj.method(...)` shape is really a field
+    /// read before treating it as one — a `false` result means "not a field
+    /// access we can positively identify", so the caller falls back to
+    /// ordinary method-call handling rather than a false-positive `Unknown`.
+    fn literal_field_exists(expr: &Expr, path: &[PathStep], field: &str) -> bool {
+        match path.split_first() {
+            None => matches!(
+                expr,
+                Expr::StructLiteral { fields, .. } if fields.iter().any(|(n, _)| n == field)
+            ),
+            Some((PathStep::Field(fname), rest)) => match expr {
+                Expr::StructLiteral { fields, .. } => fields
+                    .iter()
+                    .any(|(n, e)| n == fname && Self::literal_field_exists(e, rest, field)),
+                _ => false,
+            },
+            Some((PathStep::Index, rest)) => match expr {
+                Expr::ArrayLiteral { elements, .. } => elements
+                    .iter()
+                    .any(|e| Self::literal_field_exists(e, rest, field)),
+                Expr::MapLiteral { entries, .. } => entries
+                    .iter()
+                    .any(|(_, v)| Self::literal_field_exists(v, rest, field)),
+                _ => false,
+            },
+        }
+    }
+
+    /// Require `caps` against the CURRENT scope, exactly like
+    /// `enforce_callee_name`'s propagation check, for a capability that was
+    /// resolved from a DIRECT fn-value invocation rather than a named
+    /// function's own declaration. Pushed as its own diagnostic (not folded
+    /// into `enforce_callee_name`) because there is no callee NAME to name in
+    /// the message — the note instead explains that this is a closure/fn-value
+    /// call, not a function declaration mismatch.
+    fn require_direct_invoke_caps(&mut self, required: &CapabilitySet, call_span: Span) {
+        if required.is_empty() {
+            return;
+        }
+        if let Some(caller_caps) = self.current_caps() {
+            if !required.is_subset_of(caller_caps) {
+                let excess = required.excess_over(caller_caps);
+                let excess_names: Vec<String> = excess.iter().map(|c| c.to_string()).collect();
+                self.diagnostics.push(
+                    Diagnostic::error(format!(
+                        "call through a function value requires capabilities [{}] not granted to caller",
+                        excess_names.join(", ")
+                    ))
+                    .with_label(
+                        call_span,
+                        "invokes a closure/fn-value directly whose authority could not be \
+                         proven a subset of this scope",
+                    )
+                    .with_note(
+                        "this call invokes a first-class function value (a local, a parameter, \
+                         or a container element) directly; its provenance could not be resolved \
+                         to a proven-safe capability set, so the caller must hold everything it \
+                         could possibly carry -- see docs/capability-roadmap.md for the sound \
+                         long-term fix (capability-typed fn values)",
+                    )
+                    .with_code(kryos_errors::codes::E0507),
+                );
             }
         }
     }
@@ -2231,10 +2707,25 @@ impl CapabilityChecker {
     }
 
     /// Gather every function (top-level and impl/trait method) that has a body,
-    /// as `(name, body)` pairs, for interior capability inference.
+    /// as `(name, annotated, body, params)` tuples, for interior capability
+    /// inference. Carries THIS DECLARATION's own param list directly (rather
+    /// than making the caller look it up later via `self.fn_params.get(name)`)
+    /// because `fn_params` is keyed by BARE NAME and several stdlib modules
+    /// declare same-named functions (`std::iter::find`, `std::re::find`,
+    /// `std::string::find` all collide on "find") — looking a name back up
+    /// after the fact can silently return a DIFFERENT declaration's params
+    /// than the one actually being processed, which (since this file's
+    /// fail-closed default now requires `all` for any parameter it fails to
+    /// recognize as the current function's own) turns a pre-existing,
+    /// previously-harmless bare-name collision into a false-positive
+    /// rejection. Returning the params inline sidesteps the collision for
+    /// every OWN-PARAMS computation; a genuine cross-function name lookup
+    /// (resolving a DIFFERENT, forwarded-to function by name) still goes
+    /// through `fn_params` and keeps the same pre-existing collision
+    /// tolerance documented on that field.
     fn collect_functions<'a>(
         decls: &'a [Decl],
-        out: &mut Vec<(String, bool, &'a kryos_ast::Block)>,
+        out: &mut Vec<(String, bool, &'a kryos_ast::Block, &'a [Param])>,
     ) {
         for d in decls {
             match d {
@@ -2242,8 +2733,14 @@ impl CapabilityChecker {
                     name,
                     annotations,
                     body: Some(b),
+                    params,
                     ..
-                } => out.push((name.clone(), Self::has_capabilities_annotation(annotations), b)),
+                } => out.push((
+                    name.clone(),
+                    Self::has_capabilities_annotation(annotations),
+                    b,
+                    params.as_slice(),
+                )),
                 Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
                     Self::collect_functions(methods, out)
                 }
@@ -2270,7 +2767,7 @@ impl CapabilityChecker {
         &self,
         declarations: &[Decl],
     ) -> HashMap<String, CapabilitySet> {
-        let mut fns: Vec<(String, bool, &kryos_ast::Block)> = Vec::new();
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
         Self::collect_functions(declarations, &mut fns);
 
         // Seed the working map with annotated functions' declared ceilings.
@@ -2278,7 +2775,7 @@ impl CapabilityChecker {
 
         loop {
             let mut changed = false;
-            for (name, is_annotated, body) in &fns {
+            for (name, is_annotated, body, params) in &fns {
                 // Skip only THIS function if it is annotated (its declaration is
                 // the ceiling, never widened by its own body). Do NOT skip an
                 // UNANNOTATED method just because a DIFFERENT method sharing its
@@ -2290,23 +2787,19 @@ impl CapabilityChecker {
                 if *is_annotated {
                     continue;
                 }
-                let own_params: HashSet<String> = self
-                    .fn_params
-                    .get(name)
-                    .map(|ps| {
-                        ps.iter()
-                            .filter(|p| self.is_fn_bearing_type(&p.ty))
-                            .map(|p| p.name.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let own_params: HashSet<String> = params
+                    .iter()
+                    .filter(|p| self.is_fn_bearing_type(&p.ty))
+                    .map(|p| p.name.clone())
+                    .collect();
+                let local_container_lits = Self::build_local_container_lits(body);
                 let local_caps = self.build_local_closure_caps(
                     body,
                     &working,
                     &self.fn_return_closure_caps,
                     &own_params,
+                    &local_container_lits,
                 );
-                let local_container_lits = Self::build_local_container_lits(body);
                 let collected = self.collect_caps_block(
                     body,
                     &working,
@@ -2536,6 +3029,37 @@ impl CapabilityChecker {
                         own_params,
                     );
                 }
+                // FAIL-CLOSED DEFAULT: everything above only attributes
+                // authority when the callee is a KNOWN function/builtin/
+                // extern NAME. A callee that is instead a first-class
+                // fn-value with no such name (a bare local, a container
+                // element, a field/index chain into one -- INCLUDING a
+                // callee shape `resolve_path` cannot even see, like
+                // `arr[0]()`, since it only understands Identifier/
+                // FieldAccess) was never resolved AT ALL by the
+                // `hot_params`/name-keyed machinery above. See
+                // `resolve_direct_invoke_caps`. Gated on `segments.len() <=
+                // 1`: a MULTI-segment path (`segments.len() > 1`) only ever
+                // arises from a qualified stdlib call (`std.net.connect()`),
+                // already fully handled by the qualified-path check above --
+                // an ordinary `obj.field(...)` chain is parsed as
+                // `MethodCall`, not a multi-segment `FieldAccess` callee (see
+                // `resolve_method_field_invoke_caps` for that shape).
+                let callee_is_named = segments.len() == 1
+                    && (self.defined_fns.contains(&segments[0])
+                        || self.actor_names.contains(&segments[0])
+                        || self.enum_variant_names.contains(&segments[0])
+                        || is_known_builtin_name(&segments[0])
+                        || self.extern_fns.contains(&segments[0]));
+                if !callee_is_named && segments.len() <= 1 {
+                    acc = acc.union(&self.resolve_direct_invoke_caps(
+                        callee,
+                        working,
+                        local_caps,
+                        local_container_lits,
+                        own_params,
+                    ));
+                }
                 e(callee, &mut acc);
                 for arg in args {
                     e(arg, &mut acc);
@@ -2561,6 +3085,17 @@ impl CapabilityChecker {
                     local_container_lits,
                     own_params,
                 );
+                // FAIL-CLOSED: `obj.method(...)` may really be a
+                // function-typed struct FIELD being invoked -- see
+                // `resolve_method_field_invoke_caps`.
+                acc = acc.union(&self.resolve_method_field_invoke_caps(
+                    object,
+                    method,
+                    working,
+                    local_caps,
+                    local_container_lits,
+                    own_params,
+                ));
                 e(object, &mut acc);
                 for arg in args {
                     e(arg, &mut acc);
@@ -2826,17 +3361,18 @@ impl CapabilityChecker {
                     .filter(|p| self.is_fn_bearing_type(&p.ty))
                     .map(|p| p.name.clone())
                     .collect();
+                self.current_local_container_lits = match body {
+                    Some(b) => Self::build_local_container_lits(b),
+                    None => HashMap::new(),
+                };
                 self.current_local_closure_caps = match body {
                     Some(b) => self.build_local_closure_caps(
                         b,
                         &self.fn_capabilities,
                         &self.fn_return_closure_caps,
                         &own_params,
+                        &self.current_local_container_lits,
                     ),
-                    None => HashMap::new(),
-                };
-                self.current_local_container_lits = match body {
-                    Some(b) => Self::build_local_container_lits(b),
                     None => HashMap::new(),
                 };
                 self.current_fn_typed_params = own_params;
@@ -3034,13 +3570,14 @@ impl CapabilityChecker {
                 .filter(|p| self.is_fn_bearing_type(&p.ty))
                 .map(|p| p.name.clone())
                 .collect();
+            self.current_local_container_lits = Self::build_local_container_lits(&handler.body);
             self.current_local_closure_caps = self.build_local_closure_caps(
                 &handler.body,
                 &self.fn_capabilities,
                 &self.fn_return_closure_caps,
                 &own_params,
+                &self.current_local_container_lits,
             );
-            self.current_local_container_lits = Self::build_local_container_lits(&handler.body);
             self.current_fn_typed_params = own_params;
             self.check_block(&handler.body);
             self.current_fn_typed_params.clear();
@@ -3261,7 +3798,20 @@ impl CapabilityChecker {
 
                 // Propagate the method's capability requirement to the caller
                 // (the previously-missing call-site check for method dispatch).
-                let extra = self.compute_hot_extra_caps(method, args, true);
+                let mut extra = self.compute_hot_extra_caps(method, args, true);
+                // FAIL-CLOSED: `obj.method(...)` is sometimes really a
+                // function-typed struct FIELD read and invoked (`reg.reader()`),
+                // not a genuine method dispatch -- see
+                // `resolve_method_field_invoke_caps`. Only engages when
+                // `method` is positively confirmed to be such a field.
+                extra = extra.union(&self.resolve_method_field_invoke_caps(
+                    object,
+                    method,
+                    &self.fn_capabilities,
+                    &self.current_local_closure_caps,
+                    &self.current_local_container_lits,
+                    &self.current_fn_typed_params,
+                ));
                 self.enforce_callee_name(method, *span, false, &extra);
 
                 self.check_expr(object);
@@ -3317,9 +3867,27 @@ impl CapabilityChecker {
                     self.check_expr(expr);
                 }
             }
-            Expr::Lambda { body, .. } => {
+            Expr::Lambda { params, body, .. } => {
                 // Lambdas inherit the enclosing scope's capabilities.
+                //
+                // Fold this lambda's OWN parameter names into the
+                // fn-typed-parameter set for the duration of checking its
+                // body, mirroring a NAMED function's own params
+                // (`current_fn_typed_params`). Without this, a
+                // TRANSPARENT-FORWARDING inline lambda (`|f| f()`) invoking
+                // its own bound parameter is flagged as a bad direct
+                // invocation by the fail-closed default even though the
+                // ENCLOSING call site (`map(tools, |f| f())`) already
+                // resolves and enforces its real authority correctly via
+                // `accumulate_hot_extra_caps`/`find_companion_container_arg`
+                // (see `resolve_closure_caps`'s `Lambda` arm) -- this would
+                // otherwise be a spurious SECOND, wrong diagnostic for
+                // exactly the call the outer machinery already accounts for.
+                let saved = self.current_fn_typed_params.clone();
+                self.current_fn_typed_params
+                    .extend(params.iter().map(|p| p.name.clone()));
                 self.check_expr(body);
+                self.current_fn_typed_params = saved;
             }
             Expr::IfExpr {
                 condition,
@@ -3431,6 +3999,7 @@ impl CapabilityChecker {
         // 2+3. Bare builtin requirement + cross-function propagation, keyed on
         //      the single-segment callee name. Shared with method / static
         //      dispatch (see `enforce_callee_name`).
+        let mut callee_is_named = false;
         if segments.len() == 1 {
             // CLOSURE-LAUNDERING FIX: attribute the authority of whatever
             // closure/fn-value is ACTUALLY passed at this call site into any
@@ -3438,6 +4007,35 @@ impl CapabilityChecker {
             // `compute_hot_extra_caps`.
             let extra = self.compute_hot_extra_caps(&segments[0], args, false);
             self.enforce_callee_name(&segments[0], call_span, true, &extra);
+            callee_is_named = self.defined_fns.contains(&segments[0])
+                || self.actor_names.contains(&segments[0])
+                || self.enum_variant_names.contains(&segments[0])
+                || is_known_builtin_name(&segments[0])
+                || self.extern_fns.contains(&segments[0]);
+        }
+
+        // FAIL-CLOSED DEFAULT: everything above only enforces a call whose
+        // callee resolves to a KNOWN function/builtin/extern NAME (so it can
+        // be looked up in `hot_params`/`fn_capabilities` by name). A callee
+        // that is instead a first-class fn-value with no such name -- a bare
+        // local (`r()`), a container element (`arr[0]()`, `m["k"][0]()`), or
+        // any field/index chain into one -- was never checked at all,
+        // regardless of what it carries. Resolve it directly and require
+        // whatever it actually needs; an unresolvable provenance requires
+        // `all` rather than silently requiring nothing. See
+        // `resolve_direct_invoke_caps`. Gated on `segments.len() <= 1` for
+        // the same reason as the inference-side twin in `collect_caps_expr`:
+        // a multi-segment path is always a qualified stdlib call, already
+        // fully handled above.
+        if !callee_is_named && segments.len() <= 1 && (self.strict_mode() || self.has_annotated_scope()) {
+            let extra = self.resolve_direct_invoke_caps(
+                callee,
+                &self.fn_capabilities,
+                &self.current_local_closure_caps,
+                &self.current_local_container_lits,
+                &self.current_fn_typed_params,
+            );
+            self.require_direct_invoke_caps(&extra, call_span);
         }
     }
 

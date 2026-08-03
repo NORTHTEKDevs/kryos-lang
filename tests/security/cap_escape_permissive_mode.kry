@@ -1,0 +1,21 @@
+// SECURITY -- the direct-local-call bypass, re-verified under
+// `--capabilities-mode=permissive`. Permissive mode only checks ANNOTATED
+// functions/scopes -- `main` here IS annotated, so it is still an
+// enforcing boundary, and `deny!` still narrows it. The fail-closed default
+// must hold under every mode, not just inferred/strict.
+//
+// ACCEPTANCE: REJECTED (E0507) under `--capabilities-mode=permissive`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("permissive-mode direct-call (was NOT CLOSED): " + r())
+    }
+}

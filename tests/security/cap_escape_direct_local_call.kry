@@ -1,0 +1,25 @@
+// SECURITY -- the most minimal possible bypass, found while auditing the
+// fail-closed default: a closure built AND invoked in the SAME function,
+// with NO indirection whatsoever (no parameter, no container, no other
+// function called in between). Every prior enforcement mechanism was keyed
+// on a CALL TO A NAMED FUNCTION (so `hot_params` could find it by name);
+// `r` here is a plain local variable, never a function name, so
+// `hot_params.get("r")` was always `None` and the call was never checked at
+// all, regardless of what `r` actually carried.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("direct-local-call (was NOT CLOSED): " + r())
+    }
+}

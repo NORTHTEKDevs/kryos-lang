@@ -1,0 +1,17 @@
+// SECURITY (no-cascade complement to cap_escape_hof_inline_lambda.kry): the
+// SAME `map(tools, |f| f())` shape, but every closure in `tools` is PURE
+// (no capability). Must compile with ZERO annotation on `main` -- guards
+// against the transparent-forwarding-lambda fix over-rejecting the
+// legitimate "map over an array of functions" pattern (a real, tested
+// conformance shape: conf_generics.kry's `map(fns, |f| f(10))`).
+
+use std::iter::{map}
+
+fn inc(x: i64) -> i64 { return x + 1 }
+fn dbl(x: i64) -> i64 { return x * 2 }
+
+fn main() {
+    let fns: [fn(i64) -> i64] = [inc, dbl]
+    let applied = map(fns, |f| f(10))
+    println(to_string(applied[0]) + "," + to_string(applied[1]))
+}

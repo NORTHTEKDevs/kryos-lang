@@ -1,0 +1,31 @@
+// SECURITY -- CONFIRMED LIVE bypass (bug b in the fail-closed hardening
+// task): reading a closure out of a container into an INTERMEDIATE local
+// before invoking it. Chaining directly (`m["k"][0]()`) was already
+// rejected via container-literal tracing, but `let arr = m["k"]` followed
+// by `arr[0]()` broke the trace: `arr`'s initializer is a container-path
+// READ, not a literal, so `build_local_container_lits` never tracked it,
+// and the direct-invocation enforcement (added by this fix) had no other
+// mechanism to attribute it -- so it fell through to a silent, un-enforced
+// call rather than the documented `Unknown` -> `Capability::All` fallback.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`. Precision note: this specific
+// shape resolves to `Capability::All` (fail-closed, not precisely traced --
+// tracing an alias through an intermediate local is not attempted), unlike
+// the chained-direct sibling which traces precisely to `fs:read`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let m: map<str, [fn() -> str]> = {"k": [r]}
+    deny!(fs:read) {
+        let arr = m["k"]
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("intermediate-local-call (was NOT CLOSED): " + arr[0]())
+    }
+}

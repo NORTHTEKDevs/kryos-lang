@@ -1,0 +1,28 @@
+// SECURITY -- a struct-field closure invoked DIRECTLY inside the SAME
+// function that built the struct, no other named function involved. The
+// existing (closed) struct-field-launder test routes `reg.reader()` through
+// a SEPARATE `zero_cap_tool(reg)` function, whose call site is what carries
+// the enforcement (via `hot_params`); calling `reg.reader()` directly, with
+// no such intermediary, was never checked because `enforce_callee_name`'s
+// method-call path is keyed on the METHOD NAME ("reader"), which is never a
+// tracked function.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+struct Registry { reader: fn() -> str }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let reg = Registry { reader: r }
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("struct-field-direct-call (was NOT CLOSED): " + reg.reader())
+    }
+}
