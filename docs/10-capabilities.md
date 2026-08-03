@@ -29,27 +29,91 @@
 > callee of a call at all unless it was a call BY NAME to a function already
 > known to be "hot").
 >
-> **This is now fixed by inverting the default, not by enumerating another
-> shape.** A call through a first-class fn-value whose capability set
-> cannot be STATICALLY PROVEN to be a subset of the caller's grant is now
-> REJECTED (requires `Capability::All`) rather than silently treated as
+> **The default was inverted (round 4) to close every enumerated shape at
+> once, but the relief mechanism that inversion shipped WITH was itself
+> unsound, and a follow-on audit (round 5) found a second, unrelated
+> soundness hole in the "defer to my own caller" mechanism every round back
+> to round 1 has relied on. Read both before trusting this with a secret.**
+>
+> **Round 4** made the default itself sound: a call through a first-class
+> fn-value whose capability set cannot be STATICALLY PROVEN to be a subset
+> of the caller's grant now REQUIRES `Capability::All` rather than silently
 > requiring nothing — "unknown" means "deny", not "allow". This closes every
-> shape above, plus every shape nobody has found yet, because soundness no
-> longer depends on the enumeration being complete. The relief for
-> legitimate code that this default would otherwise over-reject: a fn-value
-> whose capability set IS resolvable (a pure closure, a closure built from
-> an annotated function whose requirement is known, a closure read out of a
-> literal-constructed container) still requires exactly that set, not
-> `all`; and an inline lambda that merely forwards its own bound parameter
-> into a HOF (`map(tools, |f| f())`) is resolved TRANSPARENTLY against
-> whichever other argument at the same call site structurally supplies its
-> elements, so `map`/`filter`/`fold`/`reduce`/`find` and user-defined HOFs
-> over arrays of PURE closures still need no annotation. See
-> [`docs/capability-roadmap.md`](capability-roadmap.md) for the full
-> analysis of why the enumeration approach could not converge, and the
-> sound long-term design (capability-typed fn values) that closes the
-> residual precision gaps this fix still leaves as documented, fail-CLOSED
-> over-rejection rather than silent holes.
+> enumerated shape, plus every shape nobody had found yet, because soundness
+> no longer depends on the enumeration being complete. But round 4 shipped
+> ONE relief mechanism to keep ordinary `std::iter`/HOF usage
+> annotation-free: an inline lambda that merely forwards its own bound
+> parameter into a HOF (`map(tools, |f| f())`) was resolved against
+> "whichever other argument at the same call site STRUCTURALLY supplies its
+> elements" — matched by comparing the callback parameter's DECLARED element
+> type against another parameter's DECLARED container type, first match
+> wins. **This was the SAME class of bug as rounds 1-3, just relocated**: an
+> attacker passes the REAL container carrying a privileged closure as one
+> argument and an EMPTY DECOY container of the identical DECLARED SHAPE as
+> another — the decoy wins the shape match and contributes nothing, and the
+> real container is never charged. Confirmed live, `--strict-capabilities`,
+> inside a `deny!(fs:read)` block where a direct `file_read` is correctly
+> rejected: a generic `apply_to_second<T>(decoy: [T], real: [T], f: fn(T) ->
+> str) -> str { return f(real[0]) }` leaked the secret with the required
+> capability computed as empty.
+>
+> **Round 5's fix has two parts, both in `kryos-capabilities/src/checker.rs`:**
+>
+> 1. **Deleted the shape-based relief** (`find_companion_container_arg`) and
+>    every doc claim describing it, with no shape-based replacement — shape
+>    inference has now failed on this exact axis (declared-type matching)
+>    twice. The ONLY relief implemented instead is `hot_param_companions`:
+>    genuine per-DECLARATION data-flow tracing. For a hot callback parameter
+>    invoked directly inside a function's own body (`map`'s `f(arr[i])`),
+>    the checker records which of that SAME function's OTHER parameters the
+>    call's actual argument expression decomposes to (`arr`, via
+>    `decompose_container_path` — the same syntactic decomposition already
+>    trusted everywhere else in this file). This is a property of the
+>    callee's OWN, FIXED source and cannot be influenced by which argument a
+>    CALLER supplies at any position, so a decoy at the call site cannot
+>    change the answer — unlike the removed heuristic, which matched on the
+>    CALL SITE's declared argument types, not on what the callee's body
+>    actually does with them. If no single companion can be proven (multiple
+>    internal call sites disagreeing, or an argument that doesn't decompose
+>    to another own-parameter), the position falls back to requiring
+>    `Capability::All` — no approximation, no guess.
+> 2. **A second, independent, unrelated hole found while auditing every
+>    other place authority gets deferred rather than charged:** the
+>    long-standing rule "a hot argument that resolves to one of the CURRENT
+>    function's own parameters defers the charge to THAT function's own call
+>    sites" (present since round 1, needed so an ordinary passthrough HOF
+>    never needs `all`) is only sound when the call site that eventually
+>    supplies the parameter's real value is checked against the SAME scope
+>    this invocation is running under. It is NOT sound when the CURRENT
+>    function has narrowed its OWN scope with a `deny!` block between
+>    receiving the parameter and invoking it: the outer call site is checked
+>    against this function's wider ENTRY scope, not the narrower one
+>    actually in effect at the point of invocation. Confirmed live, no
+>    decoy, no generic, no container — a plain, direct forward: `fn
+>    outer(reader: fn()->str) -> str { deny!(fs:read) { return
+>    zero_cap_tool(reader) } }`, called from an `@capabilities(fs:read)`
+>    caller, compiled clean and printed the secret from inside the denied
+>    scope, identically whether `outer` is a free function, an `impl`
+>    method, or an actor message handler receiving the closure as a message
+>    argument. Fixed via `current_fn_entry_scope_depth`: the checker now
+>    tracks the scope-stack depth at the moment it entered the function/actor
+>    boundary currently being checked, and any deferred-charge decision
+>    checks whether a `deny!` has pushed the live scope DEEPER than that
+>    depth since — if so, the deferral is unsound and `Capability::All` is
+>    required instead of empty. (A companion field,
+>    `transparent_lambda_params`/`structural_lambda_eval_depth`, keeps this
+>    scope check from firing on the UNRELATED, purely structural
+>    self-classification `resolve_closure_caps` performs on a fresh lambda
+>    literal's own body — that classification must stay scope-independent,
+>    or ordinary `map`/`filter` usage over provably pure closures would
+>    spuriously require `all` merely for running inside any `deny!` block at
+>    all, for a totally different, unrelated capability.)
+>
+> See [`docs/capability-roadmap.md`](capability-roadmap.md) for the full
+> analysis of why shape-based enumeration cannot converge, and the sound
+> long-term design (capability-typed fn values) that would close the
+> residual precision gaps (a container from a genuinely non-literal source
+> still requires `all`) without any of this heuristic machinery.
 >
 > Runtime enforcement, audit logging, and sandboxing APIs described in some
 > earlier drafts are **not yet implemented** (enforcement is entirely

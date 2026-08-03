@@ -1,0 +1,38 @@
+// SECURITY -- decoy-companion variant #1: the companion carrying the
+// callback's real elements is a MAP, not an array.
+//
+// A prior version of the checker's relief for a transparent-forwarding
+// lambda (`|f| f(...)`) passed as a HOF's callback resolved which OTHER
+// argument at the call site supplied the callback's elements by matching
+// DECLARED TYPE SHAPE (a `fn(T,...)->U` callback paired with an `[T]`/
+// `map<K,T>` parameter elsewhere in the same declaration, first match wins).
+// An empty DECOY of that same declared shape always won the match ahead of
+// the REAL container, silently attributing it zero capabilities. This file
+// is the same attack with the real container as a `map<str, fn()->str>`
+// instead of an array, to confirm the fix (real data-flow tracing of the
+// callee's own body) is not array-specific.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes. Verified BOTH
+// ways: reverting the fix (restoring the shape-matching heuristic) makes
+// this compile clean and the secret would print at runtime.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_from_map<T>(decoy: map<str, T>, real: map<str, T>, f: fn(T) -> str) -> str {
+    return f(real["k"])
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: map<str, fn() -> str> = {}
+    real["k"] = reader
+    let decoy: map<str, fn() -> str> = {}
+    deny!(fs:read) {
+        let out = apply_from_map(decoy, real, |c| c())
+        println("DECOY-MAP LEAK: " + out)
+    }
+}

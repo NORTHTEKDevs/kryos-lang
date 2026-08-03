@@ -139,19 +139,16 @@ specific, principled, general fix rather than a name-based carve-out:
    references to first-class functions; both are now tracked and excluded
    from the fail-closed treatment (they were never enumerated as "callable
    things" before because nothing needed to know).
-4. **Transparent-forwarding lambdas, resolved structurally, not by name.**
-   An inline lambda whose ONLY capability-relevant behavior is invoking its
-   own bound parameter (`|f| f()`) carries no authority of its own — its
-   authority is whatever gets bound to that parameter, which is supplied
-   by whichever OTHER argument at the SAME call site the HOF iterates. This
-   is resolved by a general, non-name-based match: does the callback
-   parameter's declared type `fn(T, ..) -> U` share its first parameter
-   type `T` with an ARRAY (`[T]`) or MAP VALUE (`map<K, T>`) type at
-   another parameter position of the SAME declaration? If so, the
-   lambda's authority resolves against THAT argument's elements at each
-   call site, instead of requiring `all`. This covers `map`/`filter`/
-   `fold`/`reduce`/`find` and any user-written HOF fitting the same SHAPE,
-   without naming `std::iter` anywhere in the implementation.
+4. **Transparent-forwarding lambdas — ROUND 4's shape-based version, now
+   REMOVED, see "Round 5" below.** Round 4 originally resolved an inline
+   lambda whose ONLY capability-relevant behavior is invoking its own bound
+   parameter (`|f| f()`) against "whichever OTHER argument at the SAME call
+   site the HOF iterates", identified by matching the callback's declared
+   element type against another parameter's declared container type at the
+   SAME declaration, first match wins. **This was unsound** — the exact
+   same class of bug as rounds 1-3 (inferring authority from a SHAPE rather
+   than proven data flow), just relocated to a new shape — and was deleted,
+   not patched, once found. See "Round 5" below for what replaced it.
 
 With these four in place, the example corpus is back to 91/91 (matching
 the pre-fix baseline exactly), the full conformance suite (58/58),
@@ -175,6 +172,72 @@ always was, the documented conservative fallback: it fails CLOSED
 (over-strict, safe), not open. It is a precision limit of a checker with no
 real type-flow analysis, not a soundness hole — closing it precisely is
 exactly what Part 2 below (capability-typed fn values) is for.
+
+### Round 5 — the shape heuristic failed too, plus an unrelated scope hole
+
+Round 4's "honest residual" section above turned out not to be the only
+gap. Two more were found and fixed in round 5, both in
+`kryos-capabilities/src/checker.rs`; see `tools/loop/LEDGER.md` for the full
+write-up and the live repros.
+
+**5a. The transparent-forwarding-lambda relief (item 4 above) was itself
+shape-based, and shape-based inference has now failed on this exact axis
+TWICE.** `find_companion_container_arg` matched a callback's declared
+element type against another parameter's declared container type,
+first-match-wins — an attacker passing a REAL privileged container as one
+argument and an EMPTY DECOY of the identical declared shape as another made
+the decoy win the match and the real container go uncharged. Deleted
+outright, with no shape-based successor. The replacement,
+`hot_param_companions`, is grounded in DATA FLOW instead of shape: for a
+function's own directly-invoked hot callback parameter, it records — from
+that function's OWN fixed source, not from anything a caller supplies —
+which other parameter's element the function's body actually passes into
+the callback at its internal call site (`map`'s `f(arr[i])` proves the
+callback runs on `arr`'s elements, regardless of what type any OTHER
+parameter happens to declare). A decoy argument at a call site cannot
+change a fact about the callee's own, already-compiled body. Where no
+single companion can be proven (disagreeing internal call sites, or an
+argument that isn't traceable to another own-parameter), the position falls
+back to `Capability::All` — the same policy as every other unresolvable
+case in this checker, no exceptions carved out for convenience.
+
+**5b. The "defer to my own caller" rule — present since round 1 — was
+unsound whenever the deferring function narrows its OWN scope with `deny!`
+between receiving the value and invoking it.** `fn outer(reader:
+fn()->str) -> str { deny!(fs:read) { return zero_cap_tool(reader) } }`,
+called from an `@capabilities(fs:read)` caller, leaked the secret with no
+decoy, no generic, and no container involved — the plainest possible
+forward. The deferral assumes the eventual outer call site is checked
+against a scope at least as narrow as the one the deferred value is
+actually used under; a `deny!` inside the SAME function breaks that
+assumption, because the outer call is checked against the function's
+wider ENTRY scope. Reproduced identically through a free function, an
+`impl` method, and an actor message handler receiving the closure as a
+message argument — this is not method- or actor-specific. Fixed with
+`current_fn_entry_scope_depth`: every deferred-charge decision now checks
+whether the live scope stack is DEEPER than it was when the checker
+entered the current function/actor boundary; if so, a `deny!` (or any
+future scope-narrowing construct) is active between entry and this call,
+the deferral cannot be trusted, and `Capability::All` is required instead.
+This scope check deliberately does NOT apply to the unrelated, purely
+STRUCTURAL self-classification `resolve_closure_caps` runs on a fresh
+lambda literal's own body (to decide whether it needs anything beyond
+transparently forwarding its own parameter) — that classification is a
+property of the literal alone and must stay scope-independent, or every
+`map`/`filter` call over providably pure closures would spuriously require
+`all` merely for running inside ANY `deny!` block, even one narrowing a
+totally unrelated capability. `transparent_lambda_params` and
+`structural_lambda_eval_depth` carve out exactly that sub-computation.
+
+Both fixes were verified BOTH ways (revert, rebuild, confirm the exact
+leak reappears; restore, rebuild, confirm it's gone again), and against a
+battery of variants beyond the two minimal repros above: the decoy as a
+MAP companion, a decoy read out of another container rather than a fresh
+literal, three-or-more containers at once, the same decoy shape against
+`any`/`all`/`partition`/`flat_map`-style siblings, a method receiver with
+more than two array parameters, and the "defer" hole reached through an
+actor message handler, a `spawn` capture, and a `dyn Trait` method — all
+now REJECTED, gated in `tests/security_gate.sh`.
 
 ## Part 1b — The sound long-term model: capability-typed fn values
 
@@ -270,7 +333,7 @@ instead of a best-effort trace.
   correctly reflects that the resulting array's later use (if it also
   stores closures) carries the same requirement forward, closing the
   "transparent forwarding" case structurally instead of via the
-  companion-argument heuristic Part 1 added as a stopgap.
+  `hot_param_companions` data-flow-tracing stopgap Part 1 uses today.
 - **`dyn Trait`.** A trait method's signature carries its `@{...}` set as
   part of the vtable slot's type; a `dyn Trait` object built from a
   concrete impl requiring MORE than the trait's declared ceiling is
@@ -313,9 +376,9 @@ instead of a best-effort trace.
    `kryos-capabilities/src/checker.rs`'s closure-tracing machinery
    (`resolve_closure_caps`, `resolve_container_path_caps`,
    `build_local_closure_caps`, `build_local_container_lits`, `hot_params`,
-   `accumulate_hot_extra_caps`, and this session's
-   `resolve_direct_invoke_caps`/`find_companion_container_arg`) becomes
-   REDUNDANT — replaced by an ordinary subtyping check against the
+   `hot_param_companions`, `accumulate_hot_extra_caps`, and
+   `resolve_direct_invoke_caps`) becomes REDUNDANT — replaced by an ordinary
+   subtyping check against the
    already-resolved type at each call site. This is a large NET DELETION
    of checker complexity, not just an addition.
 5. Ship BOTH systems side by side during migration: the type-driven check

@@ -1,0 +1,52 @@
+// SECURITY -- decoy-companion variant #4: the SAME decoy-vs-real shape,
+// against user-defined wrappers mirroring every `std::iter` elementwise-HOF
+// invocation pattern (any/all/partition/flat_map), not just `map`. The
+// checker's data-flow companion tracing must resolve `real`, not `decoy`,
+// for each of these shapes too -- provenance is proven from the CALLEE's own
+// body, independent of the wrapper's name or declared return type.
+//
+// ACCEPTANCE: all four calls REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Mirrors std::iter::any's shape: predicate applied to a real element.
+fn any_over_second<T>(decoy: [T], real: [T], pred: fn(T) -> str) -> str {
+    return pred(real[0])
+}
+
+// Mirrors std::iter::all's shape.
+fn all_over_second<T>(decoy: [T], real: [T], pred: fn(T) -> str) -> str {
+    return pred(real[0])
+}
+
+// Mirrors std::iter::partition's shape (splits into two output arrays; the
+// predicate is still invoked directly on a real element).
+fn partition_over_second<T>(decoy: [T], real: [T], pred: fn(T) -> str) -> str {
+    return pred(real[0])
+}
+
+// Mirrors std::iter::flat_map's shape (mapper applied to a real element).
+fn flat_map_over_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str {
+    return f(real[0])
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: [fn() -> str] = []
+    real = push(real, reader)
+    let decoy: [fn() -> str] = []
+    deny!(fs:read) {
+        let a = any_over_second(decoy, real, |c| c())
+        println("DECOY-ANY LEAK: " + a)
+        let b = all_over_second(decoy, real, |c| c())
+        println("DECOY-ALL LEAK: " + b)
+        let p = partition_over_second(decoy, real, |c| c())
+        println("DECOY-PARTITION LEAK: " + p)
+        let f = flat_map_over_second(decoy, real, |c| c())
+        println("DECOY-FLAT-MAP LEAK: " + f)
+    }
+}

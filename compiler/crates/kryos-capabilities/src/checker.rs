@@ -179,6 +179,79 @@ struct CapabilityChecker {
     /// Stack of capability scopes. Each entry is the capability set for
     /// the current enclosing scope (function, actor, etc.).
     scope_stack: Vec<CapabilityScope>,
+    /// `scope_stack.len()` immediately after the CURRENT function/actor's own
+    /// boundary scope was pushed (`check_function` / `check_actor`) —
+    /// i.e., the depth BEFORE any `deny!` block nested inside its body has
+    /// pushed a further, NARROWER scope. Only meaningful during the
+    /// enforcement walk (`check_decl`'s traversal); the inference passes
+    /// (`compute_inferred_capabilities` and friends) run before any scope is
+    /// ever pushed, so `scope_stack` stays at its initial length there and
+    /// this field's default is correspondingly inert.
+    ///
+    /// Used by `accumulate_hot_extra_caps`'s `DependsOnParam` handling: a
+    /// caller-supplied fn-typed parameter that a function invokes (directly
+    /// or through a HOF) INSIDE a `deny!` block nested in that SAME
+    /// function's own body cannot be soundly deferred to the function's own
+    /// call sites the way an un-narrowed forward can. The call site that
+    /// supplies the parameter's real value is checked against THIS
+    /// function's own (wider) ENTRY scope, not against the narrower scope
+    /// actually in effect at the point of invocation — confirmed live: `fn
+    /// outer(reader: fn()->str) -> str { deny!(fs:read) { return
+    /// zero_cap_tool(reader) } }`, called from an `@capabilities(fs:read)`
+    /// caller, compiled clean and printed the secret from inside the denied
+    /// scope pre-fix, with NO decoy or generic involved at all — a plain,
+    /// direct forward. `scope_stack.len() > current_fn_entry_scope_depth` at
+    /// the point of the invocation detects exactly this: a deny! (or any
+    /// future scope-narrowing construct) is active between this function's
+    /// entry and the current call, so the deferral is unsound and the full
+    /// capability set must be required instead.
+    current_fn_entry_scope_depth: usize,
+    /// The subset of `current_fn_typed_params` that were added by
+    /// `check_expr`'s `Expr::Lambda` arm (a lambda's OWN bound parameter
+    /// names, folded in ONLY for the duration of checking that lambda's own
+    /// body) rather than being one of the ENCLOSING function/handler's real
+    /// declared parameters. A reference to one of these names resolving to
+    /// `DependsOnParam` is a KNOWN, already-fully-handled duplicate of the
+    /// check `accumulate_hot_extra_caps` performs at the ENCLOSING call site
+    /// (see that field's `Lambda` arm doc) -- re-flagging it here, inside
+    /// the lambda's own body, would be a spurious second diagnostic for a
+    /// call the outer machinery already resolves precisely. This is
+    /// distinguished from a REAL enclosing function's own parameter
+    /// (`current_fn_entry_scope_depth`'s scope-narrowing check DOES apply to
+    /// those, per the live `fn outer(r: fn()->str) { deny!(fs:read) { r() }
+    /// }` finding) so a lambda's transparent self-forwarding is never
+    /// over-rejected merely because it happens to run inside a `deny!`
+    /// block the OUTER analysis has already correctly accounted for.
+    transparent_lambda_params: HashSet<String>,
+    /// Nesting depth of an in-progress STRUCTURAL sub-evaluation of a fresh
+    /// lambda literal's own body, done by `resolve_closure_caps`'s `Lambda`
+    /// arm purely to CLASSIFY that literal (does it require anything beyond
+    /// transparently forwarding its own bound parameter?) -- entirely
+    /// independent of, and NOT gated by, the real ambient enforcement scope
+    /// at whatever call site happens to be resolving the lambda's authority.
+    /// `Cell`, not a plain field, because `resolve_closure_caps` takes
+    /// `&self` (it is shared, read-only resolution logic reused by both the
+    /// enforcement and inference passes).
+    ///
+    /// Needed because that sub-evaluation reuses the SAME `collect_caps_expr`
+    /// / `resolve_direct_invoke_caps` / `deferred_own_param_caps` machinery
+    /// as a REAL enforcement-time direct invocation, and `deferred_own_param_caps`
+    /// otherwise cannot tell the two apart: a bare `|c| c()` lambda's own
+    /// classification pass calls `c()` INSIDE that sub-evaluation, "c" is
+    /// (correctly) `own_params`-classified there too, and the AMBIENT
+    /// `scope_stack`/`current_fn_entry_scope_depth` at that moment reflects
+    /// wherever the REAL call site happens to be (e.g. inside a `deny!`
+    /// block) -- with no distinguishing signal, that ambient narrowing
+    /// wrongly made every transparent-forwarding lambda passed into a
+    /// `deny!`'d call resolve to `Known(all)` instead of the correct
+    /// `DependsOnParam`, breaking the `hot_param_companions` relief for the
+    /// most common case (`map`/`filter`/... invoked inside ANY `deny!`
+    /// block, even over provably pure closures). While this counter is
+    /// nonzero, `deferred_own_param_caps` always defers (empty), matching
+    /// its ORIGINAL, scope-independent behavior -- correct for a structural
+    /// classification, which must not depend on the ambient call site at
+    /// all.
+    structural_lambda_eval_depth: std::cell::Cell<u32>,
     /// Accumulated diagnostics.
     diagnostics: Vec<Diagnostic>,
     /// Map from function name to the capability set used for cross-function
@@ -292,6 +365,38 @@ struct CapabilityChecker {
     /// parameter itself requires nothing extra, which is what keeps
     /// `std::iter`'s HOFs annotation-free.
     hot_params: HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>>,
+    /// For each function name, for each of ITS OWN parameter indices that is
+    /// directly invoked (a hot callback slot, `hot_params`'s empty-path
+    /// case), the DATA-FLOW-PROVEN companion: for every argument POSITION
+    /// passed at the SAME function's OWN internal call site(s) that invoke
+    /// that callback parameter, which of the function's OTHER OWN
+    /// parameters (by index) and PATH the argument expression actually
+    /// decomposes to -- e.g. `map`'s body, `f(arr[i])`, proves the callback
+    /// (param 1) is invoked at argument position 0 with `arr[i]`, so
+    /// position 0 maps to `(param 0, [Index])`.
+    ///
+    /// This is the SOLE relief mechanism for a caller-supplied lambda that
+    /// only forwards its own bound parameter (`|f| f(10)` passed as the
+    /// callback to `map`/`filter`/`reduce`/... or a user-written HOF fitting
+    /// the same shape) — see `accumulate_hot_extra_caps`'s `DependsOnParam`
+    /// handling. It is deliberately NOT a repeat of the shape-based
+    /// `find_companion_container_arg` heuristic four rounds of this file's
+    /// history proved unsound (matching a callback parameter's DECLARED
+    /// element type against another parameter's DECLARED container type,
+    /// first match wins — defeated by an empty decoy of the same declared
+    /// shape, confirmed live). This instead traces the CALLEE'S OWN, FIXED
+    /// function body: the companion is whatever parameter its actual source
+    /// code passes into the callback invocation, a property of the
+    /// declaration itself that no caller-supplied argument can influence, so
+    /// a decoy argument at the call site cannot change which parameter is
+    /// found here. A position with disagreeing or unresolvable call sites
+    /// (multiple internal invocations of the same callback that decompose
+    /// differently, or don't decompose to another own-parameter at all)
+    /// records `None` at that slot — resolved the same as an unresolvable
+    /// value elsewhere in this file: `Capability::All`, never a guess.
+    /// Populated once by `compute_hot_param_companions`, alongside
+    /// `hot_params`.
+    hot_param_companions: HashMap<String, HashMap<usize, Vec<Option<(usize, Vec<PathStep>)>>>>,
     /// For each function whose declared return type is `fn(...) -> ...`, the
     /// statically-resolved authority carried by the closure it returns (see
     /// `compute_fn_return_closure_caps`). Lets a call site resolve `let
@@ -329,6 +434,9 @@ impl CapabilityChecker {
     fn new(mode: CapabilityMode) -> Self {
         Self {
             scope_stack: Vec::new(),
+            current_fn_entry_scope_depth: 0,
+            transparent_lambda_params: HashSet::new(),
+            structural_lambda_eval_depth: std::cell::Cell::new(0),
             diagnostics: Vec::new(),
             fn_capabilities: HashMap::new(),
             extern_fns: std::collections::HashSet::new(),
@@ -343,6 +451,7 @@ impl CapabilityChecker {
             struct_generic_params: HashMap::new(),
             transparent_accessor_paths: HashMap::new(),
             hot_params: HashMap::new(),
+            hot_param_companions: HashMap::new(),
             fn_return_closure_caps: HashMap::new(),
             current_fn_typed_params: HashSet::new(),
             current_local_closure_caps: HashMap::new(),
@@ -1353,6 +1462,87 @@ impl CapabilityChecker {
         hot
     }
 
+    /// Compute `hot_param_companions` (see its field doc for the full
+    /// rationale): for every function's own DIRECTLY-invoked (Seed-A-style)
+    /// fn-typed parameter, and for every argument POSITION passed at each of
+    /// that function's OWN internal call sites which invoke it, the OTHER
+    /// own parameter (by index) and path the argument expression actually
+    /// decomposes to via `decompose_container_path` -- real, per-declaration
+    /// data flow, never a guess from declared type shape. `None` at a
+    /// position means no single companion could be proven (multiple
+    /// disagreeing internal call sites, or an argument expression that
+    /// doesn't decompose to another of the SAME function's own parameters at
+    /// all) -- callers of this map must treat `None` as unresolvable, not as
+    /// "no capability needed".
+    fn compute_hot_param_companions(
+        &self,
+        decls: &[Decl],
+    ) -> HashMap<String, HashMap<usize, Vec<Option<(usize, Vec<PathStep>)>>>> {
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
+        Self::collect_functions(decls, &mut fns);
+        Self::collect_actor_handler_bodies(decls, &mut fns);
+
+        let mut result: HashMap<String, HashMap<usize, Vec<Option<(usize, Vec<PathStep>)>>>> =
+            HashMap::new();
+
+        for (name, _annotated, body, params) in &fns {
+            let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
+            Self::walk_calls_block(body, &mut calls);
+            for (i, p) in params.iter().enumerate() {
+                if !Self::is_fn_typed(&p.ty) {
+                    continue;
+                }
+                // Every DIRECT invocation of THIS parameter, bare-call-shaped
+                // (matching Seed A's own detection), within the SAME body.
+                let sites: Vec<&[Expr]> = calls
+                    .iter()
+                    .filter(|(cname, _args, is_method)| !is_method && *cname == p.name)
+                    .map(|(_, args, _)| *args)
+                    .collect();
+                if sites.is_empty() {
+                    continue;
+                }
+                let max_arity = sites.iter().map(|a| a.len()).max().unwrap_or(0);
+                let mut per_slot: Vec<Option<(usize, Vec<PathStep>)>> = vec![None; max_arity];
+                for (slot, per_slot_entry) in per_slot.iter_mut().enumerate() {
+                    let mut candidate: Option<(usize, Vec<PathStep>)> = None;
+                    let mut ok = true;
+                    for site in &sites {
+                        let Some(arg_expr) = site.get(slot) else {
+                            ok = false;
+                            break;
+                        };
+                        let Some((root, path)) = Self::decompose_container_path(arg_expr) else {
+                            ok = false;
+                            break;
+                        };
+                        let Some(comp_idx) = params
+                            .iter()
+                            .position(|q| q.name == root && q.name != p.name)
+                        else {
+                            ok = false;
+                            break;
+                        };
+                        match &candidate {
+                            None => candidate = Some((comp_idx, path)),
+                            Some((ci, cp)) if *ci == comp_idx && *cp == path => {}
+                            _ => {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if ok {
+                        *per_slot_entry = candidate;
+                    }
+                }
+                result.entry(name.clone()).or_default().insert(i, per_slot);
+            }
+        }
+
+        result
+    }
+
     /// Every RETURN-position expression in `block`: explicit `return expr`
     /// statements (recursing through if/for/while/try-catch so a return
     /// nested in a branch still counts), plus the block's own trailing tail
@@ -1473,9 +1663,12 @@ impl CapabilityChecker {
             // from the ENCLOSING function's own hot parameter (already
             // `own_params`-gated there) by checking whether the name is even
             // IN `own_params` -- if not, it must belong to this argument
-            // lambda's own scope, and gets resolved against a COMPANION
-            // container argument at the SAME call site instead of being
-            // silently dropped (see `find_companion_container_arg`).
+            // lambda's own scope, whose real binding at runtime is
+            // determined by the callee's body, not by this call site's
+            // argument shapes; provenance can't be proven here, so the FULL
+            // capability set is charged (see `accumulate_hot_extra_caps`'s
+            // `DependsOnParam` arm -- a prior shape-matching relief mechanism
+            // here was removed as unsound; see the ledger for why).
             Expr::Lambda { params, body, .. } => {
                 // NOTE: an inline lambda's fn-typed parameter is almost
                 // always UNANNOTATED (`|f| f(10)`, not `|f: fn(i64)->i64|
@@ -1499,6 +1692,8 @@ impl CapabilityChecker {
                     if let Some(hot_p) = hot_own_param {
                         let mut ext_own_params = own_params.clone();
                         ext_own_params.extend(lambda_own_params.iter().cloned());
+                        self.structural_lambda_eval_depth
+                            .set(self.structural_lambda_eval_depth.get() + 1);
                         let body_caps = self.collect_caps_expr(
                             body,
                             working,
@@ -1506,6 +1701,8 @@ impl CapabilityChecker {
                             local_caps,
                             &HashMap::new(),
                         );
+                        self.structural_lambda_eval_depth
+                            .set(self.structural_lambda_eval_depth.get() - 1);
                         if body_caps.is_empty() {
                             return ClosureCapsResult::DependsOnParam(hot_p.clone());
                         }
@@ -2303,37 +2500,142 @@ impl CapabilityChecker {
                     // as well would double-count and, worse, would force a
                     // pure forwarding function (the `std::iter` HOF shape) to
                     // require `all`.
-                    ClosureCapsResult::DependsOnParam(pname) if own_params.contains(&pname) => {}
+                    //
+                    // BUT that deferral is only SOUND when the call site that
+                    // will eventually supply `pname`'s real value is checked
+                    // against the SAME scope this invocation is actually
+                    // running under. It is NOT sound when THIS function has
+                    // narrowed its own scope with a `deny!` block between
+                    // receiving `pname` and invoking it here: the outer call
+                    // site is checked against this function's wider ENTRY
+                    // scope, not the narrower one in effect at this precise
+                    // call -- confirmed live, no decoy or generic needed: `fn
+                    // outer(reader: fn()->str) -> str { deny!(fs:read) {
+                    // return zero_cap_tool(reader) } }`, called from an
+                    // `@capabilities(fs:read)` caller, compiled clean and
+                    // printed the secret from inside the denied scope.
+                    // `current_fn_entry_scope_depth` (see its field doc)
+                    // detects exactly this: if the live scope stack is
+                    // DEEPER than it was at this function's own entry, a
+                    // deny! (or future narrowing construct) is active right
+                    // now, so provenance can't be checked from here and the
+                    // full set must be required instead -- same fallback as
+                    // every other unresolvable case in this file.
+                    ClosureCapsResult::DependsOnParam(pname) if own_params.contains(&pname) => {
+                        *extra = extra.union(&self.deferred_own_param_caps(&pname));
+                    }
                     // Otherwise `pname` belongs to the ARGUMENT LAMBDA's own
                     // scope -- it is not supplied by any future caller, it is
                     // supplied RIGHT HERE, by whichever OTHER argument in
-                    // THIS SAME call is the container the callback iterates
-                    // (structurally located, not by callee name -- see
-                    // `find_companion_container_arg`). Resolve against ITS
-                    // elements; if no companion container can be identified,
-                    // fall through to the same sound `all` fallback as a
-                    // genuinely unresolvable value.
-                    ClosureCapsResult::DependsOnParam(_) => {
-                        let companion = self
-                            .find_companion_container_arg(callee_name, i)
-                            .and_then(|k| {
-                                let comp_idx = if has_self_offset { k.checked_sub(1)? } else { k };
-                                args.get(comp_idx)
-                            });
+                    // THIS SAME call the callee's body actually binds it from
+                    // at the invocation site. A prior version of this code
+                    // (`find_companion_container_arg`, removed) tried to
+                    // infer that "whichever other argument" STRUCTURALLY --
+                    // by matching the callback parameter's DECLARED element
+                    // type against another parameter's declared container
+                    // type, first match wins, with no reference to what the
+                    // callee's body actually does with either value. That is
+                    // exactly the shape-based-inference class of bug this
+                    // file has failed on four times running (see
+                    // docs/10-capabilities.md and the ledger entry for this
+                    // fix): an attacker passes a REAL container carrying the
+                    // secret closure as one argument and an EMPTY DECOY
+                    // container of the SAME DECLARED SHAPE as another: the
+                    // decoy wins the first-match search (contributing no
+                    // capabilities), and the real container -- which the
+                    // callee's body may very well pass to the callback at
+                    // runtime -- is never charged. Confirmed live: a generic
+                    // `apply_to_second<T>(decoy: [T], real: [T], f: fn(T) ->
+                    // str)` that invokes `f(real[0])` leaked a `fs:read`
+                    // closure through the `decoy` companion match with the
+                    // required capability computed as empty.
+                    //
+                    // The ONLY relief this file now implements for this case
+                    // is `hot_param_companions` -- genuine, per-declaration
+                    // DATA-FLOW tracing (not shape guessing): it looks at
+                    // `callee_name`'s OWN, FIXED body to see which OTHER
+                    // parameter it actually passes into the SAME argument
+                    // SLOT of ITS internal invocation of this hot callback
+                    // (`map`'s body literally writes `f(arr[i])`, proving the
+                    // callback is invoked with `arr`'s element regardless of
+                    // any other parameter's declared shape). Because this
+                    // fact is a property of the callee's own source and
+                    // cannot be influenced by which argument a CALLER
+                    // supplies at any position, a decoy at the call site
+                    // cannot change the answer -- unlike the removed
+                    // heuristic, which matched on the CALL SITE's declared
+                    // argument types. `arg` here must be the lambda literal
+                    // ITSELF (`path` empty) for this to apply; a lambda
+                    // reached through a container path falls through to the
+                    // sound `all` fallback below, as does any position
+                    // `hot_param_companions` could not resolve to a single
+                    // agreeing companion.
+                    ClosureCapsResult::DependsOnParam(pname) => {
+                        let companion = if path.is_empty() {
+                            if let Expr::Lambda { params: lambda_params, .. } = arg {
+                                lambda_params
+                                    .iter()
+                                    .position(|lp| lp.name == pname)
+                                    .and_then(|lambda_idx| {
+                                        self.hot_param_companions
+                                            .get(callee_name)
+                                            .and_then(|m| m.get(&i))
+                                            .and_then(|v| v.get(lambda_idx))
+                                            .and_then(|c| c.as_ref())
+                                    })
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
                         match companion {
-                            Some(comp_arg) => match self.resolve_container_path_caps(
-                                comp_arg,
-                                &[PathStep::Index],
-                                working,
-                                &self.fn_return_closure_caps,
-                                local_caps,
-                                local_container_lits,
-                                own_params,
-                            ) {
-                                ClosureCapsResult::Known(c) => *extra = extra.union(&c),
-                                ClosureCapsResult::DependsOnParam(_) => {}
-                                ClosureCapsResult::Unknown => extra.insert(Capability::All),
-                            },
+                            Some((comp_idx, comp_path)) => {
+                                let comp_arg_idx = if has_self_offset {
+                                    comp_idx.checked_sub(1)
+                                } else {
+                                    Some(*comp_idx)
+                                };
+                                match comp_arg_idx.and_then(|k| args.get(k)) {
+                                    Some(comp_arg) => match self.resolve_container_path_caps(
+                                        comp_arg,
+                                        comp_path,
+                                        working,
+                                        &self.fn_return_closure_caps,
+                                        local_caps,
+                                        local_container_lits,
+                                        own_params,
+                                    ) {
+                                        ClosureCapsResult::Known(c) => *extra = extra.union(&c),
+                                        // The proven companion is ITSELF the
+                                        // enclosing function's own parameter
+                                        // -- deferred exactly like the
+                                        // `own_params` arm above, not charged
+                                        // here UNLESS this call is already
+                                        // inside a `deny!` narrower than this
+                                        // function's own entry scope, in
+                                        // which case the same unsoundness
+                                        // applies (see
+                                        // `current_fn_entry_scope_depth`'s
+                                        // doc) and the deferral must not
+                                        // happen.
+                                        ClosureCapsResult::DependsOnParam(cp)
+                                            if own_params.contains(&cp) =>
+                                        {
+                                            *extra = extra.union(&self.deferred_own_param_caps(&cp));
+                                        }
+                                        ClosureCapsResult::DependsOnParam(_)
+                                        | ClosureCapsResult::Unknown => {
+                                            extra.insert(Capability::All)
+                                        }
+                                    },
+                                    None => extra.insert(Capability::All),
+                                }
+                            }
+                            // Genuinely unresolvable provenance -- no
+                            // approximation, no shape guess: the caller must
+                            // hold everything the invoked value could
+                            // possibly carry.
                             None => extra.insert(Capability::All),
                         }
                     }
@@ -2345,55 +2647,6 @@ impl CapabilityChecker {
                 }
             }
         }
-    }
-
-    /// Structurally locate the OTHER parameter of `callee_name` that supplies
-    /// elements to the callback at `callback_idx` -- e.g. `map`'s `arr: [T]`
-    /// for its `f: fn(T) -> U` -- WITHOUT special-casing any function by
-    /// name: matches purely on shape (a `fn(E, ..) -> ..` callback parameter
-    /// paired with an `[E]` array or `map<K, E>` value-typed parameter
-    /// elsewhere in the SAME declaration, `E` compared by generic-name
-    /// identity). Works for any elementwise HOF fitting this shape
-    /// (`map`/`filter`/`find`/`reduce`/`for_each`/a user-written one),
-    /// covering the general case the task calls for instead of enumerating
-    /// `std::iter` function names.
-    fn find_companion_container_arg(&self, callee_name: &str, callback_idx: usize) -> Option<usize> {
-        let params = self.fn_params.get(callee_name)?;
-        let callback_ty = params.get(callback_idx)?.ty.as_ref()?;
-        let TypeExpr::Function { params: cb_params, .. } = callback_ty else {
-            return None;
-        };
-        let elem_ty = cb_params.first()?;
-        for (k, p) in params.iter().enumerate() {
-            if k == callback_idx {
-                continue;
-            }
-            let Some(ty) = &p.ty else { continue };
-            let is_match = match ty {
-                TypeExpr::Array { element, .. } => Self::type_names_match(element, elem_ty),
-                TypeExpr::Generic { name, args: gargs, .. } if name == "map" && gargs.len() == 2 => {
-                    Self::type_names_match(&gargs[1], elem_ty)
-                }
-                _ => false,
-            };
-            if is_match {
-                return Some(k);
-            }
-        }
-        None
-    }
-
-    /// Whether two type expressions name the SAME generic type parameter
-    /// (`T` vs `T`), ignoring `Span` (which `TypeExpr`'s derived `PartialEq`
-    /// does NOT ignore, so a plain `==` between two independently-parsed `T`
-    /// occurrences is always `false`). Deliberately narrow: only a bare
-    /// `Simple` name match counts, so two unrelated concrete types never
-    /// accidentally compare equal.
-    fn type_names_match(a: &TypeExpr, b: &TypeExpr) -> bool {
-        matches!(
-            (a, b),
-            (TypeExpr::Simple { name: n1, .. }, TypeExpr::Simple { name: n2, .. }) if n1 == n2
-        )
     }
 
     /// **FAIL-CLOSED default for a DIRECT INVOCATION of a first-class
@@ -2422,12 +2675,53 @@ impl CapabilityChecker {
     ///   THIS function's caller, so `hot_params`/Seed A/B already defer the
     ///   charge to that caller; nothing to require here (charging it here too
     ///   would double-count AND would force every ordinary user-written HOF —
-    ///   `fn apply(f: fn()->str) -> str { f() }` — to require `all`).
+    ///   `fn apply(f: fn()->str) -> str { f() }` — to require `all`) --
+    ///   UNLESS this direct invocation is already inside a `deny!` block
+    ///   narrower than this function's own entry scope (see
+    ///   `current_fn_entry_scope_depth`'s doc), in which case the deferral is
+    ///   unsound (the outer call site is checked against the wider entry
+    ///   scope, not this narrower one) and `all` is required instead.
+    ///   Confirmed live, no container/generic/decoy needed: `fn outer(r:
+    ///   fn()->str) -> str { deny!(fs:read) { return r() } }` called from an
+    ///   `@capabilities(fs:read)` caller compiled clean and printed the
+    ///   secret from inside the denied scope, pre-fix.
     /// - `Unknown`: genuinely unresolvable provenance — the same conservative
     ///   stance used everywhere else in this file: require `Capability::All`.
     ///   Unknown must mean deny, not "this call needs nothing" — see
     ///   `docs/capability-roadmap.md` for why enumerating shapes here instead
     ///   (three rounds of it) does not converge.
+    /// The correct resolution for a `ClosureCapsResult::DependsOnParam` whose
+    /// name is confirmed to be one of the CURRENT function's own parameters:
+    /// empty (safely deferred to this function's own call sites) UNLESS the
+    /// live scope is currently narrower than this function's own entry scope
+    /// (a `deny!` is active between entry and this point), in which case the
+    /// deferral is unsound and the full set must be required here instead.
+    /// See `current_fn_entry_scope_depth`'s field doc for the full
+    /// rationale and the live repro that found this.
+    fn deferred_own_param_caps(&self, pname: &str) -> CapabilitySet {
+        // A lambda's OWN bound parameter, re-encountered while re-checking
+        // that SAME lambda's own body -- already fully handled at the
+        // enclosing call site (see `transparent_lambda_params`'s doc).
+        // Exempt regardless of scope narrowing; this is not the caller-level
+        // parameter the scope check exists to protect.
+        if self.transparent_lambda_params.contains(pname) {
+            return CapabilitySet::empty();
+        }
+        // A STRUCTURAL classification of a fresh lambda literal's own body
+        // (see `structural_lambda_eval_depth`'s doc) -- scope-independent by
+        // definition, so the ambient scope must never influence it.
+        if self.structural_lambda_eval_depth.get() > 0 {
+            return CapabilitySet::empty();
+        }
+        if self.scope_stack.len() > self.current_fn_entry_scope_depth {
+            let mut c = CapabilitySet::empty();
+            c.insert(Capability::All);
+            c
+        } else {
+            CapabilitySet::empty()
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn resolve_direct_invoke_caps(
         &self,
@@ -2451,7 +2745,7 @@ impl CapabilityChecker {
                 own_params,
             ) {
                 ClosureCapsResult::Known(c) => c,
-                ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+                ClosureCapsResult::DependsOnParam(pname) => self.deferred_own_param_caps(&pname),
                 ClosureCapsResult::Unknown => {
                     let mut c = CapabilitySet::empty();
                     c.insert(Capability::All);
@@ -2478,7 +2772,7 @@ impl CapabilityChecker {
         };
         match result {
             ClosureCapsResult::Known(c) => c,
-            ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+            ClosureCapsResult::DependsOnParam(pname) => self.deferred_own_param_caps(&pname),
             ClosureCapsResult::Unknown => {
                 let mut c = CapabilitySet::empty();
                 c.insert(Capability::All);
@@ -2532,7 +2826,7 @@ impl CapabilityChecker {
         );
         match result {
             ClosureCapsResult::Known(c) => c,
-            ClosureCapsResult::DependsOnParam(_) => CapabilitySet::empty(),
+            ClosureCapsResult::DependsOnParam(pname) => self.deferred_own_param_caps(&pname),
             ClosureCapsResult::Unknown => {
                 let mut c = CapabilitySet::empty();
                 c.insert(Capability::All);
@@ -3256,6 +3550,7 @@ impl CapabilityChecker {
         // a resolvable privileged closure into a hot call reflects that in
         // its own ceiling (not just at direct enforcement sites).
         self.hot_params = self.compute_hot_params(&module.declarations);
+        self.hot_param_companions = self.compute_hot_param_companions(&module.declarations);
         let baseline = self.compute_inferred_capabilities(&module.declarations);
         self.fn_return_closure_caps =
             self.compute_fn_return_closure_caps(&module.declarations, &baseline);
@@ -3517,9 +3812,12 @@ impl CapabilityChecker {
             annotated: effective_annotated,
         };
         self.scope_stack.push(scope);
+        let saved_entry_depth = self.current_fn_entry_scope_depth;
+        self.current_fn_entry_scope_depth = self.scope_stack.len();
         if let Some(block) = body {
             self.check_block(block);
         }
+        self.current_fn_entry_scope_depth = saved_entry_depth;
         self.scope_stack.pop();
     }
 
@@ -3563,6 +3861,8 @@ impl CapabilityChecker {
             annotated: annotated || !matches!(self.mode, CapabilityMode::Permissive),
         };
         self.scope_stack.push(scope);
+        let saved_entry_depth = self.current_fn_entry_scope_depth;
+        self.current_fn_entry_scope_depth = self.scope_stack.len();
         for handler in handlers {
             let own_params: std::collections::HashSet<String> = handler
                 .params
@@ -3584,6 +3884,7 @@ impl CapabilityChecker {
             self.current_local_closure_caps.clear();
             self.current_local_container_lits.clear();
         }
+        self.current_fn_entry_scope_depth = saved_entry_depth;
         self.scope_stack.pop();
     }
 
@@ -3879,15 +4180,19 @@ impl CapabilityChecker {
                 // invocation by the fail-closed default even though the
                 // ENCLOSING call site (`map(tools, |f| f())`) already
                 // resolves and enforces its real authority correctly via
-                // `accumulate_hot_extra_caps`/`find_companion_container_arg`
-                // (see `resolve_closure_caps`'s `Lambda` arm) -- this would
+                // `accumulate_hot_extra_caps` (see `resolve_closure_caps`'s
+                // `Lambda` arm) -- this would
                 // otherwise be a spurious SECOND, wrong diagnostic for
                 // exactly the call the outer machinery already accounts for.
                 let saved = self.current_fn_typed_params.clone();
+                let saved_transparent = self.transparent_lambda_params.clone();
                 self.current_fn_typed_params
+                    .extend(params.iter().map(|p| p.name.clone()));
+                self.transparent_lambda_params
                     .extend(params.iter().map(|p| p.name.clone()));
                 self.check_expr(body);
                 self.current_fn_typed_params = saved;
+                self.transparent_lambda_params = saved_transparent;
             }
             Expr::IfExpr {
                 condition,

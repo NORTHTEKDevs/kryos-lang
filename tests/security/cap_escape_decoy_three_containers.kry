@@ -1,0 +1,27 @@
+// SECURITY -- decoy-companion variant #3: THREE containers of the same
+// declared shape at the call site (two decoys, one real), forcing any
+// first-match-by-shape search to have two chances to pick wrong.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_to_third<T>(decoy_a: [T], decoy_b: [T], real: [T], f: fn(T) -> str) -> str {
+    return f(real[0])
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: [fn() -> str] = []
+    real = push(real, reader)
+    let decoy_a: [fn() -> str] = []
+    let decoy_b: [fn() -> str] = []
+    deny!(fs:read) {
+        let out = apply_to_third(decoy_a, decoy_b, real, |c| c())
+        println("DECOY-THREE-CONTAINERS LEAK: " + out)
+    }
+}

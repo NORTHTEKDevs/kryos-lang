@@ -1,0 +1,37 @@
+// SECURITY -- decoy-companion variant #6: the vulnerable call happens
+// inside an ACTOR MESSAGE HANDLER body rather than an ordinary function.
+// Confirms the data-flow companion tracing (a property of the CALLEE
+// `apply_to_second`'s own body, not of the handler calling it) still holds
+// when the calling context is actor dispatch.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_to_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str {
+    return f(real[0])
+}
+
+actor Worker {
+    tick: i64
+
+    fn run(self, decoy: [fn() -> str], real: [fn() -> str]) {
+        deny!(fs:read) {
+            let out = apply_to_second(decoy, real, |c| c())
+            println("DECOY-ACTOR-MESSAGE LEAK: " + out)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: [fn() -> str] = []
+    real = push(real, reader)
+    let decoy: [fn() -> str] = []
+    let w = Worker()
+    w.run(decoy, real)
+}

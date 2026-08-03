@@ -1,0 +1,49 @@
+// SECURITY -- decoy-companion variant #8: the vulnerable function is reached
+// through `dyn Trait` DYNAMIC dispatch rather than a direct/static call.
+// Confirms the companion tracing (computed once per DECLARATION, keyed by
+// name) still applies at a dyn call site.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+trait Runner {
+    fn apply_third(
+        self: Self,
+        decoy_a: [fn() -> str],
+        decoy_b: [fn() -> str],
+        real: [fn() -> str],
+        f: fn(fn() -> str) -> str,
+    ) -> str
+}
+
+struct RealRunner {}
+
+impl Runner for RealRunner {
+    fn apply_third(
+        self: RealRunner,
+        decoy_a: [fn() -> str],
+        decoy_b: [fn() -> str],
+        real: [fn() -> str],
+        f: fn(fn() -> str) -> str,
+    ) -> str {
+        return f(real[0])
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: [fn() -> str] = []
+    real = push(real, reader)
+    let decoy_a: [fn() -> str] = []
+    let decoy_b: [fn() -> str] = []
+    let d: dyn Runner = RealRunner {}
+    deny!(fs:read) {
+        let out = d.apply_third(decoy_a, decoy_b, real, |c| c())
+        println("DECOY-DYN-TRAIT-METHOD LEAK: " + out)
+    }
+}

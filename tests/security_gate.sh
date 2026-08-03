@@ -286,5 +286,100 @@ else
     tail -5 "$TMP/hil_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 35-42. ROUND 5: the decoy-vs-real companion attack (round 4's
+#        `find_companion_container_arg` shape-based relief, matching a
+#        callback's DECLARED element type against another parameter's
+#        DECLARED container type first-match-wins, was defeated by an EMPTY
+#        DECOY container of the same declared shape -- the real container
+#        went uncharged). Deleted with no shape-based successor; the
+#        replacement (`hot_param_companions`) traces the callee's OWN fixed
+#        body instead of the call site's argument shapes, so a decoy cannot
+#        change the answer. Every variant below must be REJECTED, under
+#        BOTH enforcement modes, across the decoy shape itself (a second
+#        array, a map, a container read out of another container, 3+
+#        containers, the predicate/mapper-style std::iter siblings, a
+#        method receiver with >2 arrays) and the calling CONTEXT (an actor
+#        message handler, a `spawn` capture, a `dyn Trait` method).
+for shape in decoy_map_companion decoy_container_read_source decoy_three_containers decoy_iter_siblings decoy_method_receiver decoy_actor_message decoy_spawn_capture decoy_dyn_trait_method; do
+    f="tests/security/cap_escape_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/decoy_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: decoy-companion [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/decoy_${shape}_$mode_flag"; then
+            echo "  ok   decoy-companion [$shape] escape rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/decoy_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 43. ROUND 5's SECOND, independent bug: the long-standing "a hot argument
+#     that is one of the CURRENT function's own parameters defers its
+#     charge to that function's own call sites" rule is unsound when the
+#     deferring function narrows its OWN scope with `deny!` between
+#     receiving the parameter and invoking it -- confirmed with NO decoy,
+#     NO generic, NO container at all, the plainest possible direct forward.
+#     Must be REJECTED under both modes.
+cat > "$TMP/scope_defer_escape.kry" <<'KRY'
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+fn outer(reader: fn() -> str) -> str {
+    deny!(fs:read) {
+        return zero_cap_tool(reader)
+    }
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    println("recovered INSIDE deny via a scope-deferred parameter: " + outer(reader))
+}
+KRY
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag "$TMP/scope_defer_escape.kry" >"$TMP/scope_defer" 2>&1; then
+        echo "  FAIL: scope-narrowed deferred-param escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/scope_defer"; then
+        echo "  ok   scope-narrowed deferred-param escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/scope_defer" | sed 's/^/    /'; fail=1
+    fi
+done
+
+# 44. No-cascade complement to #35-43: the SAME transparent-forwarding-lambda
+#     shape the decoy attack targets, over an array of PURE closures, called
+#     from INSIDE a `deny!` block narrowing an UNRELATED capability, must
+#     still need zero annotation -- guards against the scope-depth fix
+#     (#43) over-firing on `resolve_closure_caps`'s purely structural
+#     self-classification of a fresh lambda literal.
+cat > "$TMP/decoy_nocascade.kry" <<'KRY'
+fn pure_a() -> str { return "a" }
+fn pure_b() -> str { return "b" }
+fn apply_to_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str {
+    return f(real[0])
+}
+fn main() {
+    let real: [fn() -> str] = [pure_a, pure_b]
+    let decoy: [fn() -> str] = []
+    deny!(net) {
+        println(apply_to_second(decoy, real, |c| c()))
+    }
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/decoy_nocascade.kry" >"$TMP/decoy_nc" 2>&1; then
+    echo "  ok   decoy-companion fix over pure closures inside an unrelated deny! needs no annotation (no cascade)"
+else
+    echo "  FAIL: the round-5 fix cascaded into a pure-closure companion call inside an unrelated deny!:"
+    tail -5 "$TMP/decoy_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

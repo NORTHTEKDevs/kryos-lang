@@ -1,0 +1,32 @@
+// SECURITY -- decoy-companion variant #2: the decoy container is read OUT OF
+// another container (a registry lookup) rather than written as a fresh
+// literal at the call site, and the REAL container is passed through an
+// extra pass-through local first. Confirms the fix does not depend on the
+// decoy/real arguments being immediately-visible literals.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+struct Registries { empty_tools: [fn() -> str] }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_to_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str {
+    return f(real[0])
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut real: [fn() -> str] = []
+    real = push(real, reader)
+    let registries = Registries { empty_tools: [] }
+    let decoy = registries.empty_tools
+    let real_alias = real
+    deny!(fs:read) {
+        let out = apply_to_second(decoy, real_alias, |c| c())
+        println("DECOY-CONTAINER-READ LEAK: " + out)
+    }
+}
