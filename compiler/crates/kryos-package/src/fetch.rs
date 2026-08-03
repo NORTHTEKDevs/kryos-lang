@@ -272,17 +272,52 @@ mod tests {
     use super::*;
 
     #[cfg(unix)]
-    fn make_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fn make_symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::os::unix::fs::symlink(src, dst)
     }
 
     #[cfg(windows)]
-    fn make_symlink(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fn make_symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::os::windows::fs::symlink_dir(src, dst)
     }
 
+    #[cfg(unix)]
+    fn make_symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(src, dst)
+    }
+
+    #[cfg(windows)]
+    fn make_symlink_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+        std::os::windows::fs::symlink_file(src, dst)
+    }
+
+    // Asserting only `result.is_err()` is NOT load-bearing: on Windows,
+    // `fs::copy` of a directory reparse point fails with a plain
+    // `PermissionDenied` all on its own (confirmed live -- with the
+    // `file_type().is_symlink()` guard deleted entirely, this exact test
+    // still reported `ok`), so the assertion passed whether or not the
+    // guard existed. Pinning the exact error kind + the guard's own
+    // message ties the assertion to the guard actually firing, not to an
+    // incidental OS refusal that happens to also return an `Err`.
+    fn assert_is_guard_rejection(result: &std::io::Result<()>, entry_name: &str) {
+        let err = result
+            .as_ref()
+            .expect_err("a symlink entry inside a package directory must be refused, not followed");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "expected the copy_dir_all symlink guard's own error kind, got a different \
+             error (possibly an incidental OS-level refusal unrelated to the guard): {err}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refusing to copy symlink entry") && msg.contains(entry_name),
+            "expected the guard's own rejection message naming `{entry_name}`, got: {msg}"
+        );
+    }
+
     #[test]
-    fn copy_dir_all_refuses_a_symlink_entry_pointing_outside_the_package() {
+    fn copy_dir_all_refuses_a_symlinked_directory_entry_pointing_outside_the_package() {
         // A malicious registry commit could plant a symlink inside a
         // package directory pointing OUTSIDE it (e.g. at another cached
         // package, or further up the filesystem). `Path::is_dir()` follows
@@ -290,7 +325,7 @@ mod tests {
         // copy_dir_all recurse into -- and copy -- content that was never
         // part of the package.
         let base = std::env::temp_dir().join(format!(
-            "kryos-copy-dir-symlink-test-{}",
+            "kryos-copy-dir-symlink-dir-test-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&base);
@@ -308,7 +343,7 @@ mod tests {
         // skip-and-continue -- the whole copy must fail.
         std::fs::write(src.join("real.kry"), "fn main() {}\n").unwrap();
 
-        if make_symlink(&outside, &src.join("evil_link")).is_err() {
+        if make_symlink_dir(&outside, &src.join("evil_link")).is_err() {
             // No permission to create symlinks in this environment (e.g. a
             // locked-down CI runner without Developer Mode) -- skip rather
             // than fail on an unrelated capability gap.
@@ -318,13 +353,58 @@ mod tests {
         }
 
         let result = copy_dir_all(&src, &dst);
-        assert!(
-            result.is_err(),
-            "a symlink entry inside a package directory must be refused, not followed"
-        );
+        assert_is_guard_rejection(&result, "evil_link");
         assert!(
             !dst.join("evil_link").join("secret.txt").exists(),
             "content from outside the package must never be copied into the cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn copy_dir_all_refuses_a_symlinked_file_entry_pointing_outside_the_package() {
+        // The file-symlink case is the one the guard genuinely has to stop:
+        // `DirEntry::file_type()` on a symlink-to-a-file reports the
+        // SYMLINK type (not a directory), so without the guard this entry
+        // falls into the plain `std::fs::copy(&path, &target)` branch --
+        // and `fs::copy` FOLLOWS a file symlink on every OS (unlike the
+        // directory case, there is no incidental OS refusal to mask a
+        // missing guard here: with the guard removed, the outside file's
+        // real content is copied straight into the cache).
+        let base = std::env::temp_dir().join(format!(
+            "kryos-copy-dir-symlink-file-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let src = base.join("src");
+        let outside = base.join("outside");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let secret_content = "not part of the package -- must never be copied in";
+        std::fs::write(outside.join("secret.txt"), secret_content).unwrap();
+        std::fs::write(src.join("real.kry"), "fn main() {}\n").unwrap();
+
+        if make_symlink_file(&outside.join("secret.txt"), &src.join("evil_link")).is_err() {
+            eprintln!("skipping: cannot create a symlink in this environment");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let result = copy_dir_all(&src, &dst);
+        assert_is_guard_rejection(&result, "evil_link");
+        // The smoking-gun assertion: without the guard, `evil_link` would
+        // be materialized in `dst` as a REGULAR FILE holding the outside
+        // secret's actual bytes (fs::copy follows the symlink and reads
+        // its target). With the guard, the entry is rejected before that
+        // copy call ever runs, so it must not exist at all.
+        let leaked = dst.join("evil_link");
+        assert!(
+            !leaked.exists(),
+            "a file symlink pointing outside the package must never be materialized in the \
+             cache -- found {}",
+            leaked.display()
         );
 
         let _ = std::fs::remove_dir_all(&base);

@@ -662,6 +662,46 @@ mod tests {
     }
 
     #[test]
+    fn content_checksum_distinguishes_stdlib_from_src_prefix() {
+        // `collect_kry_files` takes an explicit `prefix` argument (`"src"`
+        // vs `"stdlib"`) specifically so a file's hashed identity records
+        // WHICH directory it came from, not just its filename. If the
+        // prefix were ever hardcoded regardless of the caller (the exact
+        // bug LEDGER item 1b fixed while in this file), a `stdlib/foo.kry`
+        // and a `src/foo.kry` with byte-identical content would hash
+        // IDENTICALLY -- silently letting a package smuggle content from
+        // one tree into the other without changing the recorded checksum.
+        let src_only = std::env::temp_dir().join(format!(
+            "kryos-checksum-prefix-src-{}",
+            std::process::id()
+        ));
+        let stdlib_only = std::env::temp_dir().join(format!(
+            "kryos-checksum-prefix-stdlib-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&src_only);
+        let _ = std::fs::remove_dir_all(&stdlib_only);
+
+        let body = "fn helper() {}\n";
+        std::fs::create_dir_all(src_only.join("src")).unwrap();
+        std::fs::write(src_only.join("src").join("foo.kry"), body).unwrap();
+
+        std::fs::create_dir_all(stdlib_only.join("stdlib")).unwrap();
+        std::fs::write(stdlib_only.join("stdlib").join("foo.kry"), body).unwrap();
+
+        let src_checksum = content_checksum(&src_only).unwrap();
+        let stdlib_checksum = content_checksum(&stdlib_only).unwrap();
+        assert_ne!(
+            src_checksum, stdlib_checksum,
+            "a `src/foo.kry` and a `stdlib/foo.kry` with identical bytes must NOT hash the \
+             same -- the prefix must be part of the hashed path identity"
+        );
+
+        let _ = std::fs::remove_dir_all(&src_only);
+        let _ = std::fs::remove_dir_all(&stdlib_only);
+    }
+
+    #[test]
     fn generate_and_parse_entry_with_caps_round_trips() {
         use crate::caps::CapsBadge;
         use crate::manifest::PackageInfo;
