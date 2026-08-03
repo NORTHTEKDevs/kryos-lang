@@ -337,11 +337,21 @@ type Matrix = [[f64]]
 
 ### 5.6 Extern declarations (FFI)
 
+Extern declarations name `kryos_*` runtime symbols. Arbitrary C-library FFI is
+**not implemented**: declaring a non-`kryos_*` extern is rejected at check time
+with `E0508` rather than failing at link time or misbehaving at runtime.
+
 ```kryos
 extern "C" {
-    fn write(fd: i32, buf: i64, len: i64) -> i64
+    fn kryos_env_get(key: i64) -> i64
 }
 ```
+
+Calling an extern is capability-gated (`E0506`): a `kryos_*` name requires the
+capability of the builtin it backs, so declaring one is free but calling it
+demands authority. Prefer the documented builtin (`env_get("PATH")`) — a
+hand-declared `kryos_*` extern with a `str`/heap signature bypasses the
+str-handle marshalling and will crash.
 
 All `extern` functions are implicitly `unsafe` — calling them requires
 an `unsafe` block.
