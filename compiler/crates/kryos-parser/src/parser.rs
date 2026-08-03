@@ -3182,8 +3182,32 @@ impl Parser {
         // Otherwise parse as block expression
         let mut stmts = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.at_end() {
+            let before = self.pos;
             match self.parse_statement() {
-                Some(stmt) => stmts.push(stmt),
+                Some(stmt) => {
+                    stmts.push(stmt);
+                    // Guard against a statement parse that "succeeded" while
+                    // consuming zero tokens -- the SAME bug class already
+                    // fixed in `parse_block_stmts` and `parse_module`
+                    // (search "zero progress" / "until OOM" in this file).
+                    // `parse_primary`'s unexpected-token fallback
+                    // deliberately does not consume a stray
+                    // `)`/`]`/`}`/`,`, trusting an ENCLOSING call/array/
+                    // struct-literal to consume it during ITS OWN recovery.
+                    // A map-or-block expression's own body loop is exactly
+                    // such an enclosing construct with no forced-advance
+                    // follow-up token (unlike parse_arg_list/parse_struct_literal,
+                    // which always consume at least one token via an
+                    // unconditional `expect(..)` after each element) -- so
+                    // without this guard a stray `]`/`)`/`}`/`,` here re-parses
+                    // the identical zero-progress statement every iteration,
+                    // growing `stmts` (and the diagnostics list) without bound
+                    // until the process OOMs (fuzz_parser finding: 7-byte input
+                    // `let]\x0e{]` hangs the block loop on a bare `]` at EOF).
+                    if self.pos == before {
+                        self.recover_stray_block_token();
+                    }
+                }
                 None => {
                     if !self.check(TokenKind::RBrace) && !self.at_end() {
                         self.advance();

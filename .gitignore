@@ -2,6 +2,10 @@
 target/
 compiler/target/
 
+# cargo-fuzz crash artifacts (ephemeral repro dumps; the permanent record is
+# a corpus entry under compiler/fuzz/corpus/<target>/ plus a regression test)
+compiler/fuzz/artifacts/
+
 # Compiled binaries
 *.exe
 *.pdb

@@ -1472,6 +1472,105 @@ bootstrap 16/16 solo. Stray `kryos.exe` killed before each gate run.
 
 ---
 
+### Wave: `fuzz_parser` OOM (>2GB, CI exit 71) -- resource-exhaustion DoS, FIXED
+
+CI's `fuzz_parser` job reported `libFuzzer: out-of-memory (used: 2100Mb;
+limit: 2048Mb)`. Installed `cargo-fuzz` fresh (not previously set up in this
+environment) and reproduced live rather than guessing from the two prior
+lexer/parser O(n^2)-rebuild fixes (`680be5b`, `fd07331`) the task description
+suggested as likely causes -- **neither applied here**: those were both in
+the SELF-HOST Kryos source (`compiler/self-host/parser.kry`), not the Rust
+`kryos-parser` crate this fuzz target exercises, and the Rust parser's
+existing `nest_depth`/`rec_depth` recursion-depth guard (`MAX_NESTING_DEPTH`
+= 2048, `MAX_RECURSION_DEPTH` = 256, gated at every recursive entry point:
+`parse_block`, `parse_expr_bp`, the Pratt loop's per-operator spine charge,
+`parse_pattern`) was already sound and NOT the culprit -- confirmed by
+auditing every increment/decrement site before touching anything.
+
+**ROOT CAUSE (found via `cargo fuzz run fuzz_parser -- -max_total_time=180`,
+Windows MSVC build, no clang available so `cargo install cargo-fuzz` +
+rustc's built-in libFuzzer support was used instead):** a fuzzer run
+surfaced a 13s timeout, minimized with `-minimize_crash=1` to a 7-byte
+reproducer, `let]\x0e{]` (bytes `6c 65 74 5d 0e 7b 5d`). Running that exact
+minimized input alone at `-rss_limit_mb=2048` reproduces the CI failure
+EXACTLY: `libFuzzer: out-of-memory (used: 2055Mb; limit: 2048Mb)`, exit 71.
+Traced live: `let ]` fails name/`=` recovery and lands on parsing `{...}` as
+a value; `parse_map_or_block_expr`'s "otherwise parse as a block" loop then
+sees a bare `]` with nothing after it but EOF. `parse_statement` ->
+`parse_primary`'s unexpected-token fallback deliberately does NOT consume a
+stray `)`/`]`/`}`/`,` (comment in that function: it trusts an ENCLOSING
+call/array/struct-literal to consume it during recovery), so
+`parse_statement()` returns `Some(stmt)` having advanced the cursor by
+**zero tokens**. `parse_block_stmts` and `parse_module` both already guard
+this exact "zero progress" case (their own comments cross-reference an
+earlier fuzz OOM: the 2-byte top-level input `}:`) -- but
+`parse_map_or_block_expr`'s OWN block-body loop, a THIRD, independent call
+site with the identical shape, was never given the same guard. Every other
+loop that calls a selectively-non-advancing parse function
+(`parse_arg_list`, `parse_struct_literal`, `parse_map_literal_body`, the
+tuple-pattern loop) is naturally protected because the element parse is
+always followed by an UNCONDITIONALLY-advancing `expect(..)`/`expect_name()`
+call; audited all of them, none share this gap. This is error-recovery
+retry-and-accumulate (the third candidate class the task description named),
+not a missing nesting bound and not a container-rebuild quadratic -- the
+existing depth guard was correctly ruled out as the cause, not extended.
+
+**FIX** (`kryos-parser/src/parser.rs`, `parse_map_or_block_expr`): added the
+same `before = self.pos` / `if self.pos == before { self.recover_stray_block_token() }`
+guard already used by `parse_block_stmts`, reusing the existing
+`recover_stray_block_token` helper (reports one diagnostic and force-advances
+past the stray token, no-op at `}`/EOF) rather than inventing a new
+mechanism.
+
+PROOF BOTH WAYS: minimized repro alone against the fuzz target --
+pre-fix: `out-of-memory (used: 2055Mb; limit: 2048Mb)`, exit 71 (`git stash`
+just `parser.rs`, `cargo fuzz build`, ran); post-fix: `Executed ... in 2 ms`,
+exit 0 (`git stash pop`, rebuild, ran). Same both-ways proof repeated against
+the new `kryos-parser` regression test
+(`fuzz_regression_map_or_block_stray_rbracket_terminates`, asserts a BOUNDED
+diagnostic count, not just "didn't crash"): pre-fix, `cargo test -p
+kryos-parser` on that one test hangs and is killed by a 20s external
+`timeout` (exit 143, growing RSS observed); post-fix, passes in <1ms.
+
+Corpus: minimized 7-byte reproducer added permanently at
+`compiler/fuzz/corpus/fuzz_parser/oom_map_or_block_stray_rbracket` so CI's
+mutation-based fuzzing starts from it every run. `.gitignore` gained
+`compiler/fuzz/artifacts/` (ephemeral per-run crash dumps; the corpus entry
++ regression test are the permanent record, not the raw artifact).
+
+Re-ran the fuzzer past the CI duration after the fix: `-max_total_time=120
+-rss_limit_mb=2048` seeded from the (now non-empty) corpus -- 373,614 execs,
+zero crashes, zero timeouts, zero OOMs.
+
+Gates: `cargo build --release` (full; `kryos-parser` feeds `kryos-cli`'s
+own parsing, no staticlib-caching concern but rebuilt fully anyway per
+policy) clean. `kryos-loop.sh gates 2`: tier1 GREEN (conformance 58/58, all
+11 other tier-1 checks PASS); tier2's `examples_e2e` showed the
+already-documented tier-3-adjacent parallel-gate contention flake (10/12,
+matching the EXACT pattern this file's own prior entry already recorded for
+this same script -- "flaked 10/12 and 8/12 under tier-3 contention... both
+times clean 12/12 re-run alone"); re-ran `run_examples_e2e.sh` alone: clean
+12/12 (layer 1 11/11, layer 2 2/2, layer 3 12/12). `tests/security_gate.sh`
+PASS (every existing check, unaffected -- this wave touched parser recovery,
+not the capability checker). `test_bootstrap.sh` run ALONE: 16/16 (one stray
+`kryos.exe` killed first). Full `cargo test -p kryos-parser`: 65/65 pass excluding 2 pre-existing
+DEBUG-BUILD-ONLY stack-overflow tests (`test_nesting_guard_deep_parens` and
+`test_nesting_guard_allows_reasonable_depth` -- `test_nesting_guard_long_chain`
+passes fine, it's the iterative-spine case with no deep recursion) --
+confirmed via `git stash` on unmodified HEAD that these two overflow the
+default debug-test thread stack identically WITHOUT this wave's change (not
+a regression introduced here; likely a debug-only thread-stack-size gap --
+`test_nesting_guard_allows_reasonable_depth` overflowing on just 200 nested
+parens in an UNOPTIMIZED build, when the guard's own limit is 2048/256, says
+the debug parser's per-frame stack cost is the real issue, not the depth
+guard's threshold). Left unfixed as out of scope for this wave.
+
+Not fixed / out of scope: the pre-existing debug-build stack-overflow flake
+on `test_nesting_guard_deep_parens`/`_allows_reasonable_depth` noted above
+(reproduces on unmodified HEAD; unrelated to the OOM this wave targeted).
+
+---
+
 ## MEASUREMENT TRAPS (each cost real time)
 
 - **`cargo build -p kryos-cli` leaves the staticlibs stale.** Runtime edits are

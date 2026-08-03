@@ -1172,6 +1172,37 @@ fn fuzz_regression_stray_rbrace_at_top_level_terminates() {
     }
 }
 
+#[test]
+fn fuzz_regression_map_or_block_stray_rbracket_terminates() {
+    // fuzz_parser OOM finding (CI: "out-of-memory (used: 2100Mb; limit:
+    // 2048Mb)"). Minimized 7-byte reproducer: `let]\x0e{]`.
+    //
+    // Root cause: `let ]` fails name/`=` parsing and recovers up to the `{`
+    // of `... = { ... }`. `parse_map_or_block_expr`'s "otherwise parse as a
+    // block" loop then hits a bare `]`: `parse_statement` -> `parse_primary`
+    // deliberately does NOT consume a stray `)`/`]`/`}`/`,` (it trusts an
+    // enclosing call/array/struct-literal to consume it during recovery),
+    // so `parse_statement()` returns `Some(stmt)` having advanced the
+    // cursor by zero tokens. Unlike `parse_block_stmts`/`parse_module`
+    // (which already guard the identical zero-progress case), this loop had
+    // no such guard, so it re-parsed the SAME statement every iteration,
+    // growing `stmts` (and the diagnostics list) without bound until the
+    // process was killed by the OS/allocator — a real DoS vector for any
+    // build service or editor plugin that parses untrusted source.
+    let src = "let]\x0e{]";
+    let tokens = Lexer::new(src, 0).tokenize();
+    let result = parse(tokens);
+    // Must terminate (this line alone would hang/OOM pre-fix) and produce a
+    // clean, BOUNDED diagnostic list rather than one entry per infinite
+    // iteration -- a handful of "unexpected token" errors, not thousands.
+    let diags = result.unwrap_err();
+    assert!(
+        diags.len() < 20,
+        "expected a small, bounded diagnostic count, got {} (runaway loop?)",
+        diags.len()
+    );
+}
+
 // ======================== Nesting depth guard (E0010) ========================
 
 #[test]

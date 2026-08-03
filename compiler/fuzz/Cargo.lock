@@ -56,14 +56,14 @@ dependencies = [
 
 [[package]]
 name = "kryos-ast"
-version = "0.3.5"
+version = "0.9.0"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-errors"
-version = "0.3.5"
+version = "0.9.0"
 
 [[package]]
 name = "kryos-fuzz"
@@ -79,14 +79,14 @@ dependencies = [
 
 [[package]]
 name = "kryos-lexer"
-version = "0.3.5"
+version = "0.9.0"
 dependencies = [
  "kryos-errors",
 ]
 
 [[package]]
 name = "kryos-parser"
-version = "0.3.5"
+version = "0.9.0"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "kryos-types"
-version = "0.3.5"
+version = "0.9.0"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
