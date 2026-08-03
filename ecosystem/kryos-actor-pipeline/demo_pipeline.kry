@@ -69,27 +69,28 @@ fn run_report(in_ch: i64, out_ch: i64) -> i64 {
     return 0
 }
 
-// Referencing a stage body AS A VALUE hands out that function's authority, so
-// this builder must itself hold everything the three stages need: `compute` for
-// ingest/square and `io` for report.
-@capabilities(compute, io)
-fn build_stages() -> [Stage] {
-    return [
-        stage_new("ingest", ["compute"], run_ingest),
-        stage_new("square", ["compute"], run_square),
-        stage_new("report", ["io"], run_report)
-    ]
-}
-
-// main assembles the stage table, so it holds the union of the stage bodies'
-// authority (`compute` + `io`) as well as the `io` it uses for its own output.
+// main assembles the stage table AS A LITERAL, directly (not through a
+// helper function): referencing a stage body's launcher AS A VALUE hands out
+// that function's authority, and the capability checker can only trace that
+// authority through a fn-value's provenance when the container it flows
+// through is a literal it can see, not one built by an intermediate function
+// call and returned (see docs/10-capabilities.md and CLAUDE.md's
+// capability-checker gotcha on this). Inlined here, the compiler resolves the
+// pipeline's real requirement precisely -- `compute` for ingest/square, `io`
+// for report -- instead of falling back to the sound-but-coarse `all`. main
+// holds that same union (`compute` + `io`) plus the `io` it uses for its own
+// output.
 @capabilities(compute, io)
 fn main() {
     let n = 8
     println("=== kryos-actor-pipeline: source -> transform -> sink ===")
     println("")
 
-    let stages = build_stages()
+    let stages: [Stage] = [
+        Stage { name: "ingest", caps: ["compute"], run: run_ingest },
+        Stage { name: "square", caps: ["compute"], run: run_square },
+        Stage { name: "report", caps: ["io"], run: run_report }
+    ]
     print_authority(stages)
     println("")
 

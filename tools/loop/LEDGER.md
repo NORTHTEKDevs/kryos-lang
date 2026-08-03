@@ -1381,6 +1381,97 @@ checks pass), bootstrap 16/16 solo.
 
 ---
 
+### Wave: capability cascade -- round 5's fail-closed fix landed on 2 shipped ecosystem packages (HEAD 8fba060 at start)
+
+`bash tests/ecosystem_check.sh` regressed from 259/259 to 257/259 after round
+5 (`2041367`, deleted the last shape-based fn-value relief -- see the Round 5
+entry above): `ecosystem/kryos-actor-pipeline/demo_pipeline.kry`'s `main` and
+`tests/test_pipeline.kry`'s 3 scenario functions all called `pipeline_run(..)`
+with a `[Stage]` argument whose elements carry a fn-typed `run` field
+(`stages[i].run(a, b)`, a struct-field invocation the checker must trace the
+provenance of), and all four call sites required `[all]` post-fix.
+
+**DETERMINED WHICH CASE, WITH EVIDENCE (per the mandate): case (b) is
+superficially what it looks like, but the checker's OWN documentation
+(`docs/10-capabilities.md` line 115, `resolve_container_path_caps`'s doc
+comment in `checker.rs`) states this is an INTENTIONAL, already-decided scope
+boundary, not an undiscovered precision bug -- "a container from a genuinely
+non-literal source still requires `all`" is the accepted cost, not a gap to
+close in the checker.** Traced the actual break live: `demo_pipeline.kry`
+built its stage table via `let stages = build_stages()` where `build_stages()
+-> [Stage]` returned an array of `stage_new(name, caps, run)` CALLS;
+`test_pipeline.kry`'s scenarios called `pipeline_run(three_stages())`
+directly, same shape. `resolve_container_path_caps`'s `Identifier` arm only
+resolves a local through `local_container_lits`, which `build_local_container_lits`
+populates ONLY for a `let x = <literal>` (or an alias of an already-tracked
+literal) -- a `let x = some_fn_call()` is never tracked, by design (extending
+it to unfold arbitrary function-call return values would mean re-deriving a
+callee's return shape at every call site, the same class of inference this
+file's doc explicitly rules out extending). Separately, even a literal ARRAY
+containing `stage_new(..)` CALLS as elements (as `scenario_ordering_preserved`/
+`scenario_single_stage` already did, pre-fix) does not help: walking a
+`Field("run")` step into an `Expr::FnCall` element matches no arm in
+`resolve_container_path_caps` (only `StructLiteral`/`ArrayLiteral`/`MapLiteral`
+are traced) and falls to `Unknown` regardless of what `stage_new`'s own trivial
+body does. So the fix is (a): restructure so provenance is resolvable by
+construction, not extend the checker's resolution surface.
+
+**FIX: replaced the `build_stages()`/`three_stages()` helper-function
+indirection with a `Stage { name: .., caps: .., run: run_ingest }` struct
+LITERAL constructed inline, directly inside each function that calls
+`pipeline_run`** (`main` in demo_pipeline.kry; all 3 scenarios in
+test_pipeline.kry). `stage_new()` itself is untouched and stays in
+`src/stage.kry` -- it is still fine for the (common) case where a `Stage`'s
+`.run` field is only ever READ as data (`test_units.kry`'s
+`test_stage_metadata` still uses it, unaffected, since it never invokes
+`.run`), just not for a call site whose hot fn-value the checker needs to
+trace. Once each `run:` field is a bare `Identifier` referencing a named,
+`@capabilities`-annotated launcher, `resolve_closure_caps` resolves it via
+`working.get(name)` precisely, and the union over the array literal is exact:
+demo_pipeline.kry's `main` now requires exactly `{compute, io}` (unchanged
+from its existing declaration, so NO annotation had to change there);
+test_pipeline.kry's 3 scenarios now require the EMPTY set (their launcher
+functions, `t_run_double`/`t_run_plus10`/`t_run_collect`, are unannotated and
+call no gated builtin), so no new annotations were needed there either --
+proving the restructuring alone was sufficient without loosening or adding
+any `@capabilities` beyond what was already honest. Verified both ways:
+`git stash` the 2-file restructuring -> both files reproduce the exact
+pre-fix `[all]` E0507 (`kryos check` on each, shown above); restore -> both
+`kryos check` clean AND `kryos run` produce IDENTICAL output/values to
+before this wave (demo_pipeline's `[1,4,9,16,25,36,49,64]`, test_pipeline's
+`3/3 end-to-end pipeline scenarios passed`).
+
+**EXHAUSTIVE CASCADE CHECK (per the mandate -- "no third surprise"):**
+- `tests/ecosystem_check.sh` (every `ecosystem/*/` + `packages/*/` `.kry`
+  file, inferred/deny-by-default, the same mode real usage compiles under):
+  257/259 -> **259/259 clean** (0 failed, 6 negative fixtures excluded by
+  design, unchanged).
+- `tests/strict_caps_examples.sh` (`examples/*.kry` +
+  `examples/showcase/{,extra/}*.kry` under `--strict-capabilities`): still
+  **91/91 pass**, unaffected -- confirms the wave's own claim that this
+  corpus was already checked and missed the ecosystem regression, and that it
+  remains clean now.
+- `examples/real/**/*.kry` + `examples/extracted_packages/*/src/*.kry` (25
+  files) -- NOT covered by any existing gate script (checked manually,
+  `kryos check`, inferred mode): **25/25 clean**, no regression.
+- `tools/docs-examples/check.py` (fenced ` ```kryos ` blocks in
+  `docs/learn/**`, the numbered chapters, `QUICKSTART.md`, `CLAUDE.md`): pins
+  `--capabilities-mode=permissive` deliberately (its own comment: "not
+  capability hygiene... should not have to carry an `@capabilities`
+  annotation"), so it is structurally unreachable by an inferred-mode
+  regression like this one -- not re-run, correctly out of scope.
+- `tests/` (the compiler's own regression corpus, incl.
+  `kryos-capabilities/tests/capabilities.rs` and `tests/security_gate.sh`'s
+  decoy/scope-narrowing live repros): covered by the mandated gates below,
+  all green -- no capability regression outside the 2 ecosystem files found.
+
+Gates: `kryos-loop.sh gates 2` GREEN (conformance 58/58, all tier1+tier2
+checks pass), `tests/security_gate.sh` PASS (every decoy-companion and
+scope-narrowed-deferred-param repro from round 5 still rejected, both modes),
+bootstrap 16/16 solo. Stray `kryos.exe` killed before each gate run.
+
+---
+
 ## MEASUREMENT TRAPS (each cost real time)
 
 - **`cargo build -p kryos-cli` leaves the staticlibs stale.** Runtime edits are

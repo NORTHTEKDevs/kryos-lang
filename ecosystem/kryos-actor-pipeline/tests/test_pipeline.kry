@@ -64,19 +64,27 @@ fn t_run_collect(in_ch: i64, out_ch: i64) -> i64 {
     return 0
 }
 
-fn three_stages() -> [Stage] {
-    return [
-        stage_new("double", ["compute"], t_run_double),
-        stage_new("plus10", ["compute"], t_run_plus10),
-        stage_new("collect", ["io"], t_run_collect)
-    ]
-}
-
 // --- Scenarios (real gates, run from main) ----------------------------------
+//
+// Each scenario builds its stage table AS A LITERAL, directly inline, rather
+// than through a shared helper function: the capability checker traces a
+// fn-value's provenance (here, each stage's `run` launcher) only through
+// containers it can see as literals, not through an intermediate function
+// call's return value (see demo_pipeline.kry's `main` for the full rationale
+// and CLAUDE.md's capability-checker gotcha). Inlined here, every scenario's
+// real requirement resolves precisely -- none of `t_run_double`/`t_run_plus10`/
+// `t_run_collect` are annotated or call a gated builtin, so each scenario's
+// resolved requirement is the empty set, same as before this fix, instead of
+// falling back to the sound-but-coarse `all`.
 
 fn scenario_three_stage_end_to_end() {
     let n = 10
-    let p = pipeline_run(three_stages())
+    let stages: [Stage] = [
+        Stage { name: "double", caps: ["compute"], run: t_run_double },
+        Stage { name: "plus10", caps: ["compute"], run: t_run_plus10 },
+        Stage { name: "collect", caps: ["io"], run: t_run_collect }
+    ]
+    let p = pipeline_run(stages)
 
     let mut items: [i64] = []
     let mut i = 0
@@ -101,7 +109,7 @@ fn scenario_three_stage_end_to_end() {
 fn scenario_ordering_preserved() {
     // One identity stage: a scrambled input must come out in the same order
     // (each channel has exactly one producer and one consumer -> strict FIFO).
-    let stages: [Stage] = [stage_new("collect", ["io"], t_run_collect)]
+    let stages: [Stage] = [Stage { name: "collect", caps: ["io"], run: t_run_collect }]
     let p = pipeline_run(stages)
 
     let input: [i64] = [5, 1, 9, 3, 7, 2, 8]
@@ -118,7 +126,7 @@ fn scenario_ordering_preserved() {
 }
 
 fn scenario_single_stage() {
-    let stages: [Stage] = [stage_new("double", ["compute"], t_run_double)]
+    let stages: [Stage] = [Stage { name: "double", caps: ["compute"], run: t_run_double }]
     let p = pipeline_run(stages)
 
     let input: [i64] = [3, 4, 5]
