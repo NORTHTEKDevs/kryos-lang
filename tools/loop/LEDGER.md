@@ -51,6 +51,96 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 16. LIVE CAPABILITY ESCAPE — a privileged closure stored into an ACTOR's own state field defeats `deny!()` when read back and invoked from a separate actor method (RED TEAM round 3, cap-escape lens, found 2026-08-04) — NOT FIXED, breaks the trust model
+
+`tests/security/attack_actor_state_stored_closure.kry`. Minimal repro:
+
+```kryos
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn invoke(self) {
+        let leaked = self.reader()
+        println("ACTOR-STATE-STORED (was NOT CLOSED): " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+    }
+}
+```
+
+**Verified live against `compiler/target/release/kryos.exe`, HEAD `00b3cf7`,
+no compiler changes, reproduced twice (deterministic — a static compile-time
+check, not a race):**
+```
+$ kryos run attack_actor_state_stored_closure.kry
+ACTOR-STATE-STORED (was NOT CLOSED): TOPSECRET-CLOSURE-9f8e7d6c5b4a
+$ echo $?
+0
+$ kryos check --strict-capabilities attack_actor_state_stored_closure.kry
+$ echo $?
+0
+```
+Both the default inferred mode and `--strict-capabilities` compile it clean
+and the secret prints from INSIDE `deny!(fs:read)`.
+
+**Why this is a real escape, not a re-report of item 10 or an already-closed
+container/field-mutation case:** `main` legitimately holds `fs:read` outside
+the `deny!` block (same decisive-proof shape as the closed
+`cap_escape_closure_launder_deny.kry`), so the only question is whether the
+block's narrowing holds — it does not. This is mechanically DIFFERENT from
+item 10 (closure-wraps-closure): no new closure literal is ever constructed
+here — `self.reader = r` and `self.reader()` are a plain store-then-read,
+the exact shape `cap_escape_closure_launder_field_mutate.kry` already closes
+for an ORDINARY struct field (`reg.reader = reader` then `reg.reader()`
+correctly rejects with E0507). Actor state is a distinct storage form (an
+actor's fields are private, self-contained, and normally only reachable
+through its own methods — the model's whole selling point per
+`docs/09-concurrency.md`), and the capability checker's data-flow tracing
+that correctly follows a plain struct field does not extend to an actor's
+state field: writing it through one method (`stash`) and reading+invoking it
+through a completely separate method (`invoke`) attributes the invocation
+site an empty (not fail-closed `[all]`) capability requirement.
+
+**Decisive control (not vacuous), same round:** swapping `reader` for a
+zero-capability decoy closure in the IDENTICAL actor shape compiles and runs
+identically clean (`CONTROL (decoy, expected no error): decoy-no-secret`,
+exit 0) — confirming the only reason this file should fail to compile is the
+real `fs:read` authority `reader` carries, not some incidental syntax issue
+with actor state holding a `fn` field at all.
+
+**Prior actor probes did not cover this shape:** `attack_wrap_closure_actor.kry`
+(round 2) tested an actor method that WRAPS a received closure into a NEW
+lambda and returns it (blocked, partly on an orthogonal E0110 non-unit-return
+rule); `cap_escape_decoy_actor_message.kry` tested a decoy-companion call
+happening entirely INSIDE one synchronous actor-method invocation (no
+state persisted across two separate calls). Neither exercises
+store-in-state-then-read-in-a-different-method, which is the ordinary way an
+actor is meant to be used (encapsulated mutable state read back by later
+messages) — so this is not a contrived shape.
+
+**Not attempted this round (attacker-only mandate):** root-causing inside
+the checker (`checker.rs`) itself; whether this also defeats inference
+outright with no `deny!` (main unannotated); whether an actor field of a
+CONTAINER type holding a closure (`[fn()->str]`, `map<str, fn()->str>`) as
+actor state reproduces identically or needs its own repro.
+
 ### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — NOT FIXED
 
 `tests/security/attack_container_element_alias_refcount.kry`. CLAUDE.md
@@ -117,6 +207,140 @@ under `KRYOS_FREE_DIAG=1`, both with and without diag):**
   and probed by the concurrency-lens agent this same round — `6665c4f` —
   before this agent got to run them; results agree (clean, exit 0, value-
   correct) and are not re-litigated here to avoid duplicate ledger entries.)
+
+### 16. DEADLOCK/HANG: an uncaught `throw` inside a `spawn` task silently skips every statement after it in that task, including a `wg_done(wg)` the caller was relying on — turning ONE ordinary exception into a PERMANENT hang of every `wg_wait()` (RED TEAM round 3, concurrency lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/attack_spawn_uncaught_throw_waitgroup_hang.kry`. Read (not
+guessed) `kryos-rt/src/spawn.rs::kryos_spawn`: the spawned OS thread's
+closure runs `invoke_task(fn_ptr, &args)` then calls
+`kryos_exception_report_thread_if_pending()`, whose own source comment says
+exactly "A `throw` that unwound out of the thread's entry function would
+otherwise vanish with the thread-local state. Report it like a Rust thread
+panic: message to stderr, thread dies, process lives." This isolation
+mechanism is itself correct and already documented/verified (LEDGER's
+2026-08-01 error-handling wave: "`spawn { throw .. }` is isolated ... parent
+survives"). The gap this round found is the UNEXAMINED CONSEQUENCE: Kryos
+exceptions are flag-based, not native stack unwinding (CLAUDE.md, codegen
+comment) — there is no unwind-then-continue and no `finally`, so "thread
+dies" means the spawned FUNCTION BODY simply stops executing at the throw
+point. Any statement written AFTER it in the same task — most commonly the
+ordinary "signal I'm done" idiom, `wg_done(wg)` at the end of a worker body
+— never runs. `std::sync::WaitGroup.wait()` (`compiler/stdlib/sync.kry`)
+busy-polls `while self.counter.load() > 0 { sleep(1) }` with nothing left
+alive that will ever decrement it back to the target, so the wait is a
+PERMANENT hang, not a slow one.
+
+Live repro, `compiler/target/release/kryos.exe`, no compiler changes,
+`KRYOS_STDLIB_DIR` set per repo convention — 8 workers `spawn`ed, each does
+`risky_work(idx)` (worker index 3 throws) then `wg_done(wg)`, `main` does
+`wg_wait(wg)` afterward:
+```
+$ timeout 25 kryos.exe run attack_spawn_uncaught_throw_waitgroup_hang.kry
+worker 0 result=0
+worker 1 result=2
+kryos: uncaught exception in spawned thread: worker 2 result=4
+boom in worker 3worker 4 result=8
+worker 5 result=10
+main: waiting on wg...
+worker 6 result=12
+worker 7 result=14
+$ echo $?
+124
+```
+`echo 124` is `timeout`'s own kill signal — the process never reaches "main:
+all workers done" (the intentionally-unreachable-if-the-hypothesis-holds
+final line). Every other worker's `result=` line printed and (implicitly,
+since the program otherwise hangs) called `wg_done` — only worker 3, the one
+that threw, is missing, exactly matching the "one skipped `wg_done` starves
+the counter by exactly 1, forever" prediction.
+
+**Proven both ways.** Negative control — the byte-identical program with the
+throw's trigger condition changed to one that never fires (`n == 99` instead
+of `n == 3`) — completes normally, prints every worker's result INCLUDING
+`worker 3 result=6`, and reaches the final line:
+```
+$ timeout 20 kryos.exe run /tmp_control.kry
+worker 0 result=0
+...
+worker 3 result=6
+...
+main: waiting on wg...
+worker 7 result=14
+main: all workers done (this line should be unreachable if the hang hypothesis is correct)
+$ echo $?
+0
+```
+
+**Both backends agree** (consistent with the defect living in shared runtime
+code — `kryos-rt/src/spawn.rs` is linked into both, not backend-specific
+codegen): `kryos build --release` on the same source, then running the
+resulting binary, reproduces the identical hang (`timeout 20 ./bin` exits
+124) with the identical interleaved-output shape (worker 3's line missing,
+`main: waiting on wg...` printed, no further progress).
+
+**Sample size, honestly reported (severe shared-workspace contention this
+session — bash and background-task turnaround routinely exceeded a minute
+for trivial commands, matching the documented `feedback_machine_slowness`
+class):** 4/4 independent `kryos run` invocations hang (all `timeout`-killed
+at 124, none reach the final line); 1/1 `kryos build --release` + binary run
+hangs identically. This is well short of the 50-run bar the task brief asks
+for, but the mechanism is fully deterministic by construction (worker 3's
+throw condition is unconditional on `n == 3`, not a race), so repeat count
+adds confidence about environment reproducibility, not about a hidden
+probabilistic component — there isn't one to find here.
+
+**Blast radius:** this is the exact "spawn N workers, wait for them via a
+WaitGroup" idiom used elsewhere IN THIS OWN CAMPAIGN
+(`attack_actor_multiword_send_contention.kry`,
+`attack_spawn_mutating_closure_reentrancy.kry`) and is the natural pattern
+for any worker-pool / fan-out-fan-in program — none of those existing
+attacks happen to have a worker that can throw, which is why this was not
+already surfaced. Any real program using `spawn` + `WaitGroup` for a batch
+job where a SINGLE item's processing can throw (a malformed record, a
+timeout, a validation failure) hangs the entire batch forever the moment
+that one throw fires, with no diagnostic connecting the printed
+`kryos: uncaught exception in spawned thread: ...` stderr line to the silent
+hang that follows it — a caller watching only stdout/exit status has no
+signal at all beyond "the process never finishes."
+
+**Ruled out this round (checked, not just assumed — evidence attached):**
+- **The LEDGER item 7b closure-capture-lock does NOT stay held across a
+  throw inside the locked closure's own body** (this was this round's other
+  explicit "untested" target from the task brief, besides reentrancy which
+  item 11 already closed). Read `kryos-codegen-cranelift/src/codegen.rs`
+  ~1741-1900: the env-thunk that wraps every mutating closure has exactly
+  ONE return point — `call orig_ref` (the closure's compiled body) is a
+  PLAIN Cranelift call that always returns control to the thunk regardless
+  of whether the callee's body executed a `throw`, because Kryos exceptions
+  are a thread-local flag checked at each CALL SITE with a synthesized
+  early-return, not native stack unwinding (per CLAUDE.md and the codegen's
+  own `exc_return_block` comments) — there is no non-local jump that could
+  skip past the thunk's own unconditional
+  `kryos_mutex_unlock`(kryos-codegen-cranelift/src/codegen.rs:1895-1899)
+  after the call. This is independently confirmed by EXISTING live evidence
+  already in this ledger (item 11, round 2): `attack_closure_mutate_then_throw_state.kry`
+  calls a mutating closure `f(5)` that mutates its capture then throws via a
+  helper, catches the exception, and calls `f(0)` again — the SECOND call
+  completes and returns a value (not a hang) on both backends, which could
+  only happen if the first call's lock was released. No new repro added;
+  citing existing evidence plus the code read that explains WHY it holds.
+
+**Fix shape (not attempted — attacker-only mandate this round):** this is a
+documentation/API-design gap more than a single-line bug — `kryos_spawn`
+could offer a hook to run cleanup on the isolated-exception path (today's
+`kryos_exception_report_thread_if_pending` only reports, it has no callback
+mechanism a Kryos program can register), or `std::sync::WaitGroup` specific
+to spawn could track "task N started, not yet done" and fail wait() with a
+diagnostic instead of hanging forever when a tracked task's thread exits
+without calling done(). Absent either, the least-code mitigation is
+documentation: `docs/09-concurrency.md`'s existing "spawn isolates a throw"
+claim should say explicitly that this means any code after the throw point
+in that task — including a paired `wg_done`/`chan_send`/actor-notify — is
+skipped, so a caller relying on such a signal must wrap the task body in its
+own `try`/`catch` and call the signal from the `catch` arm too if it wants
+`wg_wait()` to ever return.
+
+---
 
 ### 14. RESOURCE-DOS: `parse_statement`'s stray-`;` recovery recurses with NO nesting/depth guard — a flat run of semicolons stack-overflows the compiler on `kryos check` (RED TEAM round 2, resource-dos lens, found 2026-08-04) — NOT FIXED
 

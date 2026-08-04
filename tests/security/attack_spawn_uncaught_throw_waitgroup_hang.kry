@@ -1,0 +1,63 @@
+// RED TEAM round 3, concurrency lens: does an uncaught `throw` inside a
+// SPAWNED thread's task function permanently hang everyone else waiting on
+// that thread's WaitGroup signal?
+//
+// Read (not guessed) `kryos-rt/src/spawn.rs::kryos_spawn`: the spawned OS
+// thread's closure runs `invoke_task(fn_ptr, &args)` then calls
+// `kryos_exception_report_thread_if_pending()` -- the comment says exactly
+// "A `throw` that unwound out of the thread's entry function would otherwise
+// vanish with the thread-local state. Report it like a Rust thread panic:
+// message to stderr, thread dies, process lives." So an uncaught `throw`
+// inside a spawned task's own top-level function is designed to kill ONLY
+// that thread and let the process continue -- correct and documented-in-code
+// behavior, matching Rust's own thread::spawn + panic semantics.
+//
+// The hazard this program probes is a CONSEQUENCE the design does not call
+// out anywhere: whatever Kryos statements were supposed to run AFTER the
+// throw point inside that same spawned function body simply never execute,
+// because "thread dies" means the whole function body stops at the throw --
+// there is no unwind-then-continue, no finally, and the exception-check
+// early-return path only propagates the exception UP through the current
+// function's own call stack, it does not resume after. If the killed
+// function's job was to call `wg_done(wg)` once it finished (the ordinary
+// "worker signals completion" idiom shown in std::chan's own doc examples
+// and in this campaign's own attack_actor_multiword_send_contention.kry /
+// attack_spawn_mutating_closure_reentrancy.kry files), that wg_done() is
+// silently skipped -- and `wg_wait()` in main spins on
+// `while self.counter.load() > 0 { sleep(1) }` (std::sync::WaitGroup.wait)
+// with NOTHING that will ever decrement the counter back to the target.
+// That's not a race or a corruption -- it's a deterministic, 100%-reproducible
+// permanent hang triggered by exactly ONE ordinary uncaught exception among
+// many workers, with no diagnostic pointing at the real cause (the spawned
+// thread DOES print "kryos: uncaught exception in spawned thread: ..." to
+// stderr, but nothing connects that message to the main thread silently
+// hanging forever afterward).
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+fn risky_work(n: i64) -> i64 {
+    if n == 3 {
+        throw "boom in worker " + to_string(n)
+    }
+    return n * 2
+}
+
+fn main() {
+    let mut wg = new_wait_group()
+    let mut i = 0
+    while i < 8 {
+        wg = wg_add(wg, 1)
+        let idx = i
+        spawn {
+            // ordinary worker idiom: do work, then signal done -- no
+            // try/catch, matching how most of this campaign's own spawn
+            // repros are written (they don't guard against a throw either)
+            let r = risky_work(idx)
+            println("worker " + to_string(idx) + " result=" + to_string(r))
+            wg_done(wg)
+        }
+        i = i + 1
+    }
+    println("main: waiting on wg...")
+    wg_wait(wg)
+    println("main: all workers done (this line should be unreachable if the hang hypothesis is correct)")
+}
