@@ -612,6 +612,76 @@ environment; it should not be read as the full extent of this surface.
 
 ---
 
+### 19. RESOURCE-DOS: monomorphization mangled-name generation is O(2^depth) for a generic function whose return type PAIRS its own input into a tuple — `kryos check` hangs for minutes on a 24-line source file, no depth/size cap (RED TEAM round 3, resource-dos lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/attack_monomorphization_tuple_doubling_explosion.kry`. This
+is the "larger-scale monomorphization-explosion probe" flagged as not
+attempted in round 2's session note above (that round only ruled out a
+LINEAR self-referential-type chain at depth 60) — attempted this round, and
+it explodes.
+
+`monomorphize` (`kryos-mir/src/lower.rs:15806`) builds a mangled function
+name via `mono_mangled_name` (`kryos-mir/src/lower.rs:14694`), which calls
+`format!("{t}")` on each concrete type argument. `MirType`'s `Display` impl
+for `Tuple` (`kryos-mir/src/ir.rs:134-143`) recurses fully into every
+element with no interning or structural sharing. `fn dup<T>(x: T) -> (T, T)`
+called in a chain (`dup(dup(dup(x)))`) makes each level's return type a
+tuple containing the PREVIOUS level's type TWICE — so the mangled name's
+length (and the cost of building/hashing/caching it) doubles per level of
+nesting: O(2^depth) from a source program that only grows O(depth) (one
+extra `let dN = dup(dN-1)` line per level). Neither `monomorphize` nor
+`mono_mangled_name` has any depth or size cap of its own.
+
+Live, `compiler/target/release/kryos.exe` HEAD `00b3cf7`, no compiler
+changes, `kryos check` (type-check only — codegen is never reached, so this
+is pure monomorphization/type-checking cost), each depth timed back-to-back
+in one script to minimize cross-run noise, cross-checked against a
+freshly-measured baseline (depth-10 `kryos check`: 1.4s wall, ~0.17s user —
+the machine was not under heavy load when these numbers were taken):
+
+```
+depth 15/18/20/22  -- all fast, a few seconds each, exit 0
+depth 23           -- 34s,  exit 0
+depth 24           -- 65s,  exit 0   (~1.9x depth 23, ~2x per level)
+depth 25           -- did not finish inside 100s (`timeout 100`, exit 124)
+depth 30           -- did not finish inside 5+ minutes wall clock; killed
+                       externally, no crash, no diagnostic, just unresponsive
+```
+
+**Control, proven both ways by construction (no fix exists yet to revert,
+so the "both ways" proof is this contrast):** the same-shape chain using a
+LINEAR wrapper instead of a doubling tuple (`struct Box_<T> { v: T }`,
+`fn boxit<T>(x: T) -> Box_<T> { return Box_{v: x} }`, chained identically)
+stays FLAT at depth 24 AND depth 60 — both complete in ~8s, the same
+few-seconds process-overhead floor every trivial `kryos check` showed this
+session. This isolates the DOUBLING type structure specifically as the
+cause, not "many monomorphizations" in general — matching and going beyond
+the already-closed linear-chain probe from round 2's session note (that one
+only reached depth 60 on a chain that, per this round's measurement,
+would have stayed flat at any depth, since it never pairs a type with
+itself).
+
+**Blast radius:** this needs no adversarial obfuscation — `fn dup<T>(x: T)
+-> (T, T)` is an entirely ordinary "pair/duplicate" combinator, and pairing
+a generic result with itself across a handful of pipeline stages is a
+normal thing to write by accident (not even deliberately hostile) in
+data-pipeline or combinator-style code. A 24-line, unremarkable-looking
+source file makes `kryos check`/`run`/`build` hang for over a minute; the
+growth trend (~2x per level) implies depth 30 is on the order of an hour
+and depth 35+ is effectively unbounded — from source that is barely bigger.
+
+Fix shape (not attempted — attacker-only mandate this round): same class of
+remedy as LEDGER item 14 — cap monomorphization recursion/instantiation
+depth with a clean diagnostic (mirroring the parser's
+`MAX_NESTING_DEPTH`/`MAX_RECURSION_DEPTH` budgets), or give
+`mono_mangled_name` a content-addressed/interned name (hash the structural
+type via a memoized recursive hash that shares repeated subtrees, or assign
+each distinct `MirType` a small integer id via a canonicalizing arena)
+instead of a full recursive `Display`-based string. A speed-up alone (same
+exponential formula, faster constant) is not a fix.
+
+---
+
 ### 12. SUPPLY CHAIN: `kryos pkg install` never reads `kryos.lock` — silently re-resolves live and overwrites the lock on every run, with no warning (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) — NOT FIXED
 
 `tests/security/pkg_install_ignores_lock.sh`. CLAUDE.md documents (and the

@@ -1,0 +1,131 @@
+// RED TEAM round 3, resource-dos lens (2026-08-04).
+//
+// Hypothesis: `monomorphize` (kryos-mir/src/lower.rs:15806) and its mangled
+// name builder `mono_mangled_name` (kryos-mir/src/lower.rs:14694) have no
+// depth or size cap -- confirmed by reading both functions directly. The
+// mangled name is built by calling `format!("{t}")` on each concrete type
+// argument, and `MirType`'s `Display` impl for `Tuple` (kryos-mir/src/ir.rs:
+// 134-143) recurses fully into EVERY element with no interning/sharing. A
+// generic function whose return type PAIRS its own input into a tuple
+// (`fn dup<T>(x: T) -> (T, T)`) therefore doubles the printed size of its
+// type on every nested call: `dup(dup(dup(x)))` has a return type that is a
+// tuple containing the PREVIOUS type TWICE, so the mangled name's length --
+// and therefore the cost of building, hashing, and caching it -- grows as
+// O(2^depth) in the nesting depth, from a SOURCE program that only grows
+// O(depth) (one extra `let dN = dup(dN-1)` line per level).
+//
+// This is a DIFFERENT mechanism from the already-ruled-out generic-depth
+// probe in this campaign (`monomorphization of a SELF-REFERENTIAL type at
+// shallow depth (60 levels) does not explode`, LEDGER item 14): that probe
+// chained `wrap<T>(x: T, depth: i64)` into `wrap(Box{val: x}, depth-1)`, a
+// LINEAR chain of DISTINCT wrapper types (`Box<Box<...<i64>>>`) whose
+// mangled name grows O(depth). The present attack instead pairs the SAME
+// type into BOTH slots of a tuple at every level -- a DOUBLING structure,
+// not a chaining one -- which is the standard "instantiate the same
+// template twice per level" shape that makes C++ template metaprogramming
+// combinatorially explosive. Re-verified live this round (control below)
+// that the LINEAR case stays flat even at depth 60, isolating the doubling
+// structure specifically as the cause.
+//
+// LIVE MEASUREMENTS, `compiler/target/release/kryos.exe` HEAD `00b3cf7`, no
+// compiler changes, `kryos check` (type-check only, so codegen is not even
+// reached -- this is pure monomorphization/type-checking cost), each run
+// individually timed back-to-back in one script (minimizes cross-run noise
+// on this shared, sometimes-contended machine) and cross-checked against a
+// freshly-measured baseline (`kryos check` on the depth-10 program below:
+// 1.4s wall, ~0.17s user -- i.e. the machine was NOT under heavy load when
+// these numbers were taken):
+//
+//   dup<T> depth 15/18/20/22  -- all fast, a few seconds each, exit 0
+//   dup<T> depth 23           -- 34s,  exit 0
+//   dup<T> depth 24           -- 65s,  exit 0   (~1.9x depth 23 -- ~2x per
+//                                                 level, matching the O(2^d)
+//                                                 hypothesis)
+//   dup<T> depth 25           -- did not finish inside 100s (`timeout 100`,
+//                                 exit 124)
+//   dup<T> depth 30           -- did not finish inside 5+ minutes wall
+//                                 clock; killed externally (no crash, no
+//                                 diagnostic -- just unresponsive)
+//
+// CONTROL (proves the doubling structure, not just "many monomorphizations
+// in general", is the cause): the LINEAR chain below (`boxit<T>(x: T) ->
+// Box_<T>`, one distinct wrapper type per level, same depths) stays FLAT --
+// depth 24 and depth 60 both complete in ~8s (the same few-seconds-of-
+// process-overhead floor every trivial `kryos check` invocation showed in
+// this session), not the 65s the doubling version took at the SAME depth
+// 24. (Control source, not committed as its own file since it is by
+// construction non-hostile and reproduces the already-closed LEDGER item 14
+// shape -- regenerate with the one-liner in the fix-shape note below if
+// re-verifying.)
+//
+// This program is depth 24 -- the largest depth in this file that still
+// completes in about a minute, so it stays usable as a live, provable-
+// both-ways regression trigger rather than an impractical multi-minute/
+// -hour file (matching the convention set by the already-committed
+// semicolon-chain harmless-n=10 repro for LEDGER item 14 -- the actually
+// hostile depths, 30+, are not committed here for the same reason that
+// item's 500k-semicolon bomb was not: regenerate with a one-liner instead
+// of shipping a multi-minute-to-compile fixture).
+//
+// PROVEN BOTH WAYS by construction, not by reverting a fix (there is no fix
+// yet to revert): the depth-15/18/20/22 runs of this EXACT same doubling
+// construct are fast (a few seconds), and the LINEAR control at the SAME
+// depth 24 is fast (~8s) -- so the slowdown is specific to (a) this
+// mechanism and (b) depth beyond ~22-23, not a property of `kryos check`,
+// generics, or this machine in general.
+//
+// Fix shape (not attempted -- attacker-only mandate this round): the same
+// class of remedy as LEDGER item 14 -- either cap monomorphization
+// recursion/instantiation count with a clean diagnostic (mirroring the
+// parser's `MAX_NESTING_DEPTH`/`MAX_RECURSION_DEPTH` budgets), or give
+// `mono_mangled_name` a content-addressed/interned name (e.g. hash the
+// STRUCTURAL type via a memoized recursive hash that shares repeated
+// subtrees, or assign each distinct MirType a small integer id via a
+// canonicalizing arena) instead of a full recursive `Display`-based string.
+// Either closes the O(2^depth) blowup; a speed-up alone (making the same
+// exponential formula run in less time) is not a fix per the task brief.
+//
+// Regenerate deeper depths with:
+//   python3 -c "
+//   depth = 30
+//   lines = ['fn dup<T>(x: T) -> (T, T) {', '    return (x, x)', '}', '',
+//             'fn main() {', '    let d0: i64 = 1']
+//   for i in range(1, depth+1):
+//       lines.append(f'    let d{i} = dup(d{i-1})')
+//   lines.append(f'    println(\"built depth {depth}\")')
+//   lines.append('}')
+//   print(chr(10).join(lines))
+//   " > bomb.kry
+
+fn dup<T>(x: T) -> (T, T) {
+    return (x, x)
+}
+
+fn main() {
+    let d0: i64 = 1
+    let d1 = dup(d0)
+    let d2 = dup(d1)
+    let d3 = dup(d2)
+    let d4 = dup(d3)
+    let d5 = dup(d4)
+    let d6 = dup(d5)
+    let d7 = dup(d6)
+    let d8 = dup(d7)
+    let d9 = dup(d8)
+    let d10 = dup(d9)
+    let d11 = dup(d10)
+    let d12 = dup(d11)
+    let d13 = dup(d12)
+    let d14 = dup(d13)
+    let d15 = dup(d14)
+    let d16 = dup(d15)
+    let d17 = dup(d16)
+    let d18 = dup(d17)
+    let d19 = dup(d18)
+    let d20 = dup(d19)
+    let d21 = dup(d20)
+    let d22 = dup(d21)
+    let d23 = dup(d22)
+    let d24 = dup(d23)
+    println("built depth 24")
+}
