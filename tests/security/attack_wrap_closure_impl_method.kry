@@ -1,0 +1,47 @@
+// RULED OUT, RED TEAM round 2, cap-escape lens, found 2026-08-04.
+// impl-METHOD variant of the wrap_once launder (LEDGER item 10): instead of
+// a free function constructing and returning the forwarding lambda, an impl
+// method does it. Tests whether the missing fail-closed propagation is
+// specific to free-function bodies or also present when the lambda literal
+// is built inside a method body (self-receiver in scope, different MIR
+// lowering path for the enclosing function).
+//
+// RESULT: NOT an escape -- and NOT because the wrap is detected; the
+// checker rejects it for the ORDINARY reason `wrapped()` is called through
+// an un-traced fn-value at all: "call through a function value requires
+// capabilities [all] not granted to caller ... its provenance could not be
+// resolved to a proven-safe capability set, so the caller must hold
+// everything it could possibly carry". This is the same fail-closed [all]
+// default that item 10 shows is WRONGLY skipped for the free-function
+// shape -- here it correctly fires. So the missing-propagation bug is
+// narrower than "any function that builds+returns a forwarding lambda"; it
+// is specific to a FREE function doing so (confirmed on both the concrete
+// and generic free-function forms), not impl methods. Verified live,
+// compiler/target/release/kryos.exe, HEAD 00b3cf7, no compiler changes,
+// both `kryos run` and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Decorator {
+    tag: i64,
+}
+
+impl Decorator {
+    fn wrap(self: Decorator, inner: fn() -> str) -> fn() -> str {
+        return || inner()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let d = Decorator { tag: 1 }
+    let wrapped = d.wrap(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("IMPL-METHOD WRAP CLOSURE LEAK: " + leaked)
+    }
+}

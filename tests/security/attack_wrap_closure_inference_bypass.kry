@@ -1,0 +1,44 @@
+// RULED OUT, RED TEAM round 2, cap-escape lens, found 2026-08-04. Follow-up
+// on LEDGER item 10 (cap_escape_closure_wraps_closure.kry): does the SAME
+// wrapping-closure mechanism defeat capability INFERENCE outright -- no
+// deny!() block, just an UNANNOTATED main -- rather than only the deny!()
+// narrowing?
+//
+// If wrap_once's returned closure is (wrongly) attributed an EMPTY
+// capability set, then main's transitive capability requirement, computed
+// by walking the call graph from main, would also see nothing to require --
+// meaning main can stay UNANNOTATED (declare zero capabilities) while still
+// reading a file through the laundered closure. That's a strictly worse
+// finding than the deny!() bypass: the tool's core promise ("an unannotated
+// main that transitively uses a gated builtin is rejected") is violated at
+// the ENTRY POINT, with no narrowing construct involved at all.
+//
+// RESULT: NOT an escape. REJECTED (E0507) under both `kryos run` and
+// `--strict-capabilities` -- both at the `make_secret_reader(...)` call
+// (main lacks fs:read outright) AND at `wrap_once(reader)` itself, whose own
+// error explicitly names the mechanism: "some of this authority is carried
+// by a closure/fn-value ARGUMENT passed at this call site, not by
+// `wrap_once`'s own declaration". So the checker's call-SITE tracking (as
+// opposed to the returned closure's own body, which item 10 shows is wrong)
+// DOES correctly account for a privileged closure passed as an argument when
+// there is no narrowing declaration to satisfy it first. The item-10 escape
+// is specific to `deny!()`'s narrowing not being re-checked at the later,
+// disconnected `wrapped()` call site -- it does not generalize to bypassing
+// top-level inferred-mode entry-point enforcement. Verified live,
+// compiler/target/release/kryos.exe, HEAD 00b3cf7, no compiler changes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrapped = wrap_once(reader)
+    let leaked = wrapped()
+    println("NO-DENY INFERENCE BYPASS: " + leaked)
+}

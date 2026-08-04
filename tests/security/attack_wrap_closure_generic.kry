@@ -1,0 +1,45 @@
+// SECURITY -- LIVE ESCAPE, RED TEAM round 2, cap-escape lens, found
+// 2026-08-04. Generic-monomorphization variant of the wrap_once launder
+// (LEDGER item 10, `cap_escape_closure_wraps_closure.kry`). Generics have
+// carried 3 of the 4 historical capability bugs -- this tests whether
+// making wrap_once GENERIC over the closure's return type changes the
+// checker's behavior at all (a different code path through
+// monomorphization than the concrete `fn() -> str` version).
+//
+// RESULT: reproduces identically to the concrete version. The escape is not
+// specific to a monomorphic `fn() -> str` signature -- it survives generic
+// instantiation unchanged, confirming the missing fail-closed propagation
+// lives in how a RETURNED LAMBDA LITERAL's own body is attributed capability
+// requirements, independent of whether the enclosing function is generic.
+// This is evidence the fix (whenever attempted) must be verified against a
+// generic wrap_once, not just the concrete repro.
+//
+// VERIFIED LIVE (compiler/target/release/kryos.exe, HEAD 00b3cf7 unmodified,
+// no compiler changes):
+//   kryos run                              -> exit 0, prints
+//     "GENERIC-WRAP CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a"
+//   kryos check --strict-capabilities      -> exit 0, no diagnostic
+//
+// EXPECTED (currently violated): REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`, same
+// as the already-open item 10. Do not weaken this test to match current
+// (wrong) behavior.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn wrap_once_generic<T>(inner: fn() -> T) -> fn() -> T {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrapped = wrap_once_generic(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("GENERIC-WRAP CLOSURE LEAK: " + leaked)
+    }
+}

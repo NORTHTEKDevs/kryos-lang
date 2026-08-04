@@ -1,0 +1,41 @@
+// RULED OUT, RED TEAM round 2, cap-escape lens, found 2026-08-04. ACTOR
+// variant of the wrap_once launder (LEDGER item 10): an actor method (zero
+// declared capability) receives the privileged closure as a message
+// argument and constructs+returns a NEW forwarding lambda, exactly like
+// wrap_once but through actor dispatch instead of a plain function call.
+//
+// RESULT: NOT an escape -- rejected on TWO independent grounds. (1) An
+// actor method with a non-unit return type is rejected outright at compile
+// time (E0110: "actor sends are asynchronous fire-and-forget ... there is
+// no synchronous reply channel"), an orthogonal soundness-adjacent check
+// that happens to also block this shape. (2) Even setting that aside, the
+// `wrapped()` call site independently hits the same fail-closed [all]
+// rejection as the impl-method variant (E0507, "call through a function
+// value requires capabilities [all]"). Actor dispatch is not a laundering
+// vector for this mechanism. Verified live,
+// compiler/target/release/kryos.exe, HEAD 00b3cf7, no compiler changes,
+// both `kryos run` and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Wrapper {
+    tick: i64
+
+    fn wrap(self, inner: fn() -> str) -> fn() -> str {
+        return || inner()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let w = Wrapper()
+    let wrapped = w.wrap(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("ACTOR-WRAP CLOSURE LEAK: " + leaked)
+    }
+}
