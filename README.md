@@ -1,7 +1,7 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Release](https://img.shields.io/badge/release-v1.0.0--rc.2-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](STABILITY.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-77%2F77-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Diff-fuzz](https://img.shields.io/badge/differential_fuzz-14k%2B_programs%2C_0_divergences-brightgreen.svg)](tools/diff-fuzz/)
@@ -338,7 +338,7 @@ kryos-lang/
   compiler/
     crates/          22 Rust crates (~115k lines) — the toolchain
     stdlib/          66 stdlib modules (.kry sources)
-  examples/          51 runnable example programs (repo root)
+  examples/          59 runnable example programs (repo root)
   docs/              20-chapter manual + grammar + learn/
   editors/
     vscode/          Marketplace-ready VS Code extension

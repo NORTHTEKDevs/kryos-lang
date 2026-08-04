@@ -5,7 +5,8 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-07-28 (v0.9.0).
+Last updated: 2026-08-04 (v0.9.0). Check counts sync to README/CI, which
+`tests/docs_status_gate.sh` gate-checks; this file is refreshed after them.
 
 ---
 
@@ -72,7 +73,7 @@ A release tag is cut when **all** of the following hold:
   `native_build_release_tests` suite (155 programs, both backends).
 - Compiler unit tests: **100%** (495 tests across the front/middle/back end).
 - Capability soundness: `inferred_soundness.sh` green; `strict_caps_examples.sh`
-  **90 / 90**; `ecosystem_check.sh` **253 / 253** (deny-by-default across all
+  **91 / 91**; `ecosystem_check.sh` **259 / 259** (deny-by-default across all
   packages, incl. the extern-call gate).
 - Examples gate: root **45 / 45**, fixtures **16 / 16**, showcase **24 / 24**,
   capability-rejection **1 / 1**, multi-file project OK.
@@ -88,7 +89,7 @@ A release tag is cut when **all** of the following hold:
 
 Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
 use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
-a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 48/48
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 59/59
 on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
 are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
 [docs/BUGS.md](docs/BUGS.md).
