@@ -813,6 +813,53 @@ contexts. Worth unifying.
 
 ---
 
+## CAPABILITY SOUNDNESS THEOREM AUDIT (2026-08-04)
+
+Wrote `docs/capability-soundness.md`: a precise theorem (authority
+confinement, refined for `deny!` narrowing, sub-capabilities, the raw-memory
+TCB split, and call-site-polymorphic HOFs), a 22-invariant table covering
+every way authority enters/travels/is stored/is invoked, and a per-invariant
+status against `kryos-capabilities/src/{checker,model}.rs` read directly
+(not from memory of prior rounds).
+
+**Prime-suspect hypothesis (generic monomorphization producing a WRONG
+companion, not just an unresolved one) traced to ground and RULED OUT, by
+construction, not by re-running old tests.** `compute_hot_param_companions`/
+`compute_hot_params` run once over the pre-monomorphization AST; every
+gating predicate (`is_fn_typed`, `is_fn_bearing_type`,
+`decompose_container_path`, parameter-name matching) reads the DECLARED
+`TypeExpr` and the callee's own literal call-site argument syntax — no
+substituted/instantiated type is ever consulted (grepped
+`kryos-capabilities` for `monomorph`/`type_arg`/`instantiat*`: zero hits).
+Two instantiations of the same generic declaration therefore cannot receive
+different companion facts; the mechanism cannot observe `T` at all, so it
+cannot prove a wrong companion from it.
+
+**One live attack constructed and run this session** (not merely reasoned
+about): a bare unconstrained generic parameter invoked as a function,
+`fn invoke_generic<T>(x: T) -> str { return x() }`, called with a closure
+argument. Result: REJECTED twice, independently — `E0110` (Kryos's type
+checker refuses to call a value of unconstrained generic type; no trait-
+bound syntax exists to make this legal) AND, separately, the capability
+checker's own inference for the same program computed `invoke_generic` as
+requiring `[all]` (`Unknown -> Capability::All`, the documented fail-closed
+default firing correctly on an unresolvable callee). No escape.
+
+**Re-verified live, not just re-cited, that the round-5 fix still holds at
+current HEAD** (`00b3cf7`, no code changed this session):
+`tests/security/cap_escape_decoy_map_companion.kry` (a generic
+`apply_from_map<T>(decoy: map<str,T>, real: map<str,T>, f: fn(T)->str)` HOF
+companion decoy) run against `compiler/target/release/kryos.exe`, both
+`kryos run` (inferred) and `kryos check --strict-capabilities` — REJECTED
+(E0507) both modes, correctly attributing the requirement to the closure
+argument, not the decoy.
+
+No new escape found; no code changed. Gates (unmodified, docs-only commit):
+`kryos-loop.sh gates 2` GREEN (conformance 59/59, tier1+tier2 all PASS),
+`tests/security_gate.sh` PASS, `test_bootstrap.sh` run ALONE 16/16.
+
+---
+
 ## DIFFERENTIAL FUZZ HARNESS (2026-07-31)
 
 Built `tests/fuzz/` (`gen_fuzz.py` + `run_diff.py` + `shrink.py` +
