@@ -1,0 +1,46 @@
+// RULED OUT, RED TEAM round 3, cap-escape lens (2026-08-04). Combines the
+// two factors that individually behave OPPOSITELY in the LEDGER item-10
+// family --
+// (a) a GENERIC wrapper defeats deny!() (attack_wrap_closure_generic.kry,
+//     confirmed escape, round 2)
+// (b) an IMPL-METHOD wrapper does NOT defeat deny!() (attack_wrap_closure_
+//     impl_method.kry, ruled out, round 2 -- correctly hits the ordinary
+//     fail-closed [all] rejection)
+// Probed whether a GENERIC impl method (impl<T> ...) reintroduces the
+// generic-free-function escape inside the impl-method context that was
+// otherwise safe, i.e. whether "impl-method" safety only held for the
+// MONOMORPHIC impl-method case that was actually tested.
+//
+// RESULT: NOT an escape. `d.wrap(reader)` still hits the ordinary
+// fail-closed [all] rejection at `wrapped()`, same as the non-generic
+// impl-method case -- adding a generic receiver type parameter does not
+// resurrect the free-function-specific bug. The item-10 hole remains
+// confirmed specific to a FREE function building+returning the forwarding
+// lambda; impl methods (generic or not) are unaffected. Verified live,
+// `compiler/target/release/kryos.exe`, HEAD `00b3cf7`, no compiler
+// changes, both `kryos run` and `--strict-capabilities`, exit 1, secret
+// never printed.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Decorator<T> { tag: T }
+
+impl<T> Decorator<T> {
+    fn wrap(self: Decorator<T>, inner: fn() -> str) -> fn() -> str {
+        return || inner()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let d: Decorator<i64> = Decorator { tag: 1 }
+    let wrapped = d.wrap(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("GENERIC-IMPL-METHOD-WRAP LEAK: " + leaked)
+    }
+}

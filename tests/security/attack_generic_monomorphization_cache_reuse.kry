@@ -1,0 +1,53 @@
+// RULED OUT, RED TEAM round 3, cap-escape lens (2026-08-04). Exploit
+// attempt against MONOMORPHIZATION CACHING rather than argument-shape
+// matching. `apply<T>` is instantiated at `T = fn() -> str` TWICE: once at
+// an early, LEGITIMATELY-CLEAN call site (decoy closure, no capability,
+// outside any deny scope) and once later with the PRIVILEGED closure,
+// INSIDE deny!(fs:read). Probed whether the checker computes/caches the
+// capability requirement for the `apply<fn()->str>` instantiation ONCE
+// (from the first, harmless call) and reuses that verdict for the second
+// call site instead of re-resolving provenance per call site.
+//
+// RESULT: NOT an escape. Capability resolution is per-CALL-SITE, not
+// per-monomorphized-instantiation -- the first (decoy) call to
+// `apply(decoys, |c| c())` compiles and runs clean (prints the decoy
+// value), and the second call with the real container is independently
+// rejected with E0507 at that exact call site ("some of this authority is
+// carried by a closure/fn-value ARGUMENT passed at this call site, not by
+// `apply`'s own declaration"), unaffected by the earlier warm-up call to
+// the same generic instantiation. Verified live,
+// `compiler/target/release/kryos.exe`, HEAD `00b3cf7`, no compiler
+// changes, both `kryos run` and `--strict-capabilities`, exit 1, secret
+// never printed.
+
+fn apply<T>(container: [T], f: fn(T) -> str) -> str {
+    return f(container[0])
+}
+
+fn zero_cap_decoy() -> str {
+    return "decoy-no-secret"
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    // First instantiation of apply<fn()->str>: entirely harmless, outside
+    // any deny scope, decoy closure only. Establishes/warms whatever the
+    // checker caches for this generic instantiation.
+    let decoys: [fn() -> str] = [zero_cap_decoy]
+    let warm = apply(decoys, |c| c())
+    println("warm-up (expected decoy): " + warm)
+
+    // Second instantiation of the SAME generic signature apply<fn()->str>,
+    // this time with the privileged closure, inside deny!(fs:read).
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let real: [fn() -> str] = [reader]
+    deny!(fs:read) {
+        let leaked = apply(real, |c| c())
+        println("MONOMORPHIZATION-CACHE-REUSE LEAK: " + leaked)
+    }
+}

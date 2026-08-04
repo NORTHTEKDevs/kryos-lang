@@ -1,0 +1,71 @@
+// SECURITY -- LIVE CAPABILITY ESCAPE, confirmed. RED TEAM round 3,
+// cap-escape lens (2026-08-04). Prior actor probes (attack_wrap_closure_
+// actor.kry, cap_escape_decoy_actor_message.kry) tested (a) an actor
+// method WRAPPING a received closure into a NEW lambda and returning it
+// (blocked, partly on an orthogonal non-unit-return rule), and (b) a
+// decoy-companion shape where BOTH the vulnerable call and its containers
+// live inside a single actor-method invocation (`w.run(decoy, real)`,
+// itself an ordinary synchronous call). Neither probed a THIRD shape: the
+// privileged closure is STORED into the actor's own private state field by
+// one fire-and-forget dispatch (`h.stash(reader)`, unit return -- so the
+// E0110 non-unit-return rule that blocked the wrap-return shape does not
+// apply), and a SEPARATE, independently-dispatched zero-cap message later
+// reads that field and invokes it directly from inside the actor's own
+// method body (`h.invoke()`). Ordinary struct-field mutation-then-read
+// through this exact shape is already CLOSED (see
+// cap_escape_closure_launder_field_mutate.kry -- E0507 fail-closed) --
+// actor state is NOT ordinary struct-field storage this checker tracks the
+// same way, and it silently defeats `deny!()`.
+//
+// VERIFIED LIVE against `compiler/target/release/kryos.exe`, HEAD
+// `00b3cf7`, no compiler changes, both `kryos run` and
+// `kryos check --strict-capabilities`, reproduced twice (deterministic --
+// this is a static compile-time check, not a race):
+//
+//   $ kryos run attack_actor_state_stored_closure.kry
+//   ACTOR-STATE-STORED (was NOT CLOSED): TOPSECRET-CLOSURE-9f8e7d6c5b4a
+//   $ echo $?
+//   0
+//   $ kryos check --strict-capabilities attack_actor_state_stored_closure.kry
+//   $ echo $?
+//   0
+//
+// Decisive control (not vacuous): swapping `reader` for a zero-capability
+// decoy closure in the identical actor shape compiles and runs identically
+// clean ("CONTROL (decoy, expected no error): decoy-no-secret", exit 0) --
+// so the shape is legitimately capability-clean when the stored closure
+// really is zero-cap, and the ONLY reason this file should fail is the
+// real `fs:read` authority carried by `reader`, which `deny!(fs:read)` is
+// supposed to strip and does not.
+//
+// ACCEPTANCE (not yet met): must be REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn invoke(self) {
+        let leaked = self.reader()
+        println("ACTOR-STATE-STORED (was NOT CLOSED): " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

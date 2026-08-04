@@ -1,0 +1,37 @@
+// RULED OUT, RED TEAM round 3, cap-escape lens (2026-08-04). The LEDGER
+// item-10 wrap escape used a top-level NAMED function (`wrap_once`) to
+// build+return the forwarding lambda. Probed whether the SAME mechanism
+// fires when the wrapping itself is done by a LOCAL closure VARIABLE (a
+// lambda that returns a lambda, assigned to a `let`) instead of a named
+// top-level function -- a different code shape that a real laundering
+// helper (an inline memoizer/retry wrapper defined as a local instead of
+// hoisted to a top-level fn) would plausibly use.
+//
+// RESULT: NOT an escape -- and a genuinely different outcome from the
+// named-function case, narrowing item 10's root cause further. `wrapped()`
+// correctly hits the ordinary fail-closed [all] rejection here, unlike the
+// identical-shaped top-level `wrap_once` function. So the item-10 bug is
+// specific to a NAMED top-level function building+returning the forwarding
+// lambda, not to "any code that builds and returns a closure wrapping a
+// captured fn-value parameter" -- a local closure doing the same thing is
+// safe. Verified live, `compiler/target/release/kryos.exe`, HEAD `00b3cf7`,
+// no compiler changes, both `kryos run` and `--strict-capabilities`, exit
+// 1, secret never printed.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrap = |inner: fn() -> str| {
+        return || inner()
+    }
+    let wrapped = wrap(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("LOCAL-LAMBDA-WRAP LEAK: " + leaked)
+    }
+}

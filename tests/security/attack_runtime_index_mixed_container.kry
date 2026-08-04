@@ -1,0 +1,47 @@
+// RULED OUT, RED TEAM round 3, cap-escape lens (2026-08-04). A SINGLE
+// array (not two decoy/real arrays at the same call site -- every existing
+// decoy-companion test uses that shape) holds BOTH a zero-cap decoy
+// closure and the privileged closure as two elements of the SAME
+// container, selected by a RUNTIME (non-literal-constant) index the
+// checker cannot constant-fold. Probed whether the container's attributed
+// capability set is the UNION of every element ever pushed into it
+// (sound), or only the FIRST-pushed / a syntactically-fixed element
+// (unsound if selection is index[1] but the checker only ever inspects
+// index[0]-shaped literals as it does in the already-closed fixed-index
+// tests).
+//
+// RESULT: NOT an escape. Any direct invocation of a fn-value read out of a
+// container (fixed OR runtime index) fails closed to `[all]` unconditionally
+// -- the checker does not special-case index shape at all for this path,
+// so a mixed-capability container with a runtime-computed selector is no
+// more permissive than the already-closed fixed-index case. Verified live,
+// `compiler/target/release/kryos.exe`, HEAD `00b3cf7`, no compiler changes,
+// both `kryos run` and `--strict-capabilities` reject with E0507 at
+// `handlers[idx]()`, exit 1, secret never printed.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_decoy() -> str {
+    return "decoy-no-secret"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut handlers: [fn() -> str] = []
+    handlers = push(handlers, zero_cap_decoy)
+    handlers = push(handlers, reader)
+    // Runtime-computed index -- derived from len(), not a literal the
+    // checker could special-case as "always index 0".
+    let idx = len(handlers) - 1
+    deny!(fs:read) {
+        // Pre-fix candidate: if the checker only tracks a fixed literal
+        // index shape, this may slip through despite the array containing
+        // the real privileged closure.
+        let leaked = handlers[idx]()
+        println("RUNTIME-INDEX MIXED CONTAINER LEAK: " + leaked)
+    }
+}
