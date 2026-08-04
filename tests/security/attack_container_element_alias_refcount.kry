@@ -1,0 +1,44 @@
+// RED TEAM (memory-unsafety lens, round 2): container element ownership via
+// MULTIPLE aliases read out of the same slot. Gotcha #23 documents that
+// `let a = arr[0]` returns a SHARED handle to the stored box (not a snapshot)
+// -- a mutation through one alias is visible through another. The
+// self-referential-struct fix (owner count in the allocation header, second
+// word) exists specifically so a struct box can be freed only once even when
+// several live references point at it. This probes whether an array-element
+// READ (as opposed to a struct-FIELD clone, which is what the owner-count fix
+// was built for) actually increments that owner count per alias, or whether
+// it is a raw pointer copy with no bump -- in which case FOUR references to
+// one box (three `let` aliases + the array's own slot) unwinding out of scope
+// in sequence would free the same box 4 times (double free / UAF / heap
+// corruption), not just alias visibility.
+struct Item {
+    tag: str,
+    vals: [i64],
+}
+
+fn round(i: i64) -> str {
+    let mut arr: [Item] = []
+    arr = push(arr, Item { tag: "x" + to_string(i), vals: [1, 2, 3, 4, 5] })
+    let a = arr[0]
+    let b = arr[0]
+    let c = arr[0]
+    // mutate through one alias -- confirm shared-handle visibility (documented)
+    a.tag = a.tag + "!"
+    let seen_through_a = a.tag
+    let seen_through_b = b.tag
+    let seen_through_c = c.tag
+    let seen_through_arr = arr[0].tag
+    // all of a, b, c, arr drop here -- 4 live references to the SAME box
+    return seen_through_a + "|" + seen_through_b + "|" + seen_through_c + "|" + seen_through_arr + "|" + to_string(len(c.vals))
+}
+
+fn main() {
+    let mut i = 0
+    let mut last: str = ""
+    while i < 20000 {
+        last = round(i)
+        i = i + 1
+    }
+    println("last=" + last)
+    println("done")
+}

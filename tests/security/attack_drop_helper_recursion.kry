@@ -1,0 +1,41 @@
+// RED TEAM: drop-helper recursion depth. A self-referential struct chain (linked
+// list via struct field) built very deep, then dropped. Each __kryos_drop_<T>
+// call recurses into its fields' drop helpers; if that recursion is not
+// tail-call/loop-converted, a sufficiently deep chain could stack-overflow
+// during teardown (a crash) or, if the recursion mishandles the owner-count
+// check, corrupt the heap.
+
+struct Node {
+    val: i64,
+    next: [Node],   // 0 or 1 element array standing in for Option<Box<Node>>
+}
+
+fn build_chain(n: i64) -> Node {
+    let mut cur: Node = Node { val: 0, next: [] }
+    let mut i = 1
+    while i < n {
+        cur = Node { val: i, next: [cur] }
+        i = i + 1
+    }
+    return cur
+}
+
+fn chain_len(n: Node) -> i64 {
+    let mut count = 0
+    let mut cur: Node = n
+    loop {
+        count = count + 1
+        if len(cur.next) == 0 {
+            break
+        }
+        cur = cur.next[0]
+    }
+    return count
+}
+
+fn main() {
+    let depth = 200000
+    let chain = build_chain(depth)
+    println("built len=" + to_string(chain_len(chain)))
+    // chain drops here at scope end -- deep recursive teardown
+}

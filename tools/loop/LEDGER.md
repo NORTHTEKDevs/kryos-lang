@@ -51,6 +51,73 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/attack_container_element_alias_refcount.kry`. CLAUDE.md
+gotcha #23 states: "reading a struct element out of a collection returns a
+SHARED handle to the stored box on both backends: a later in-place mutation
+... IS visible through `a` ... both backends agree — a semantic boundary,
+not a miscompile." This is TRUE for the documented direction (mutate through
+the CONTAINER, read through a previously-taken alias) but FALSE for the
+reverse: mutate through an alias taken via `arr[i]`, then read back through
+a SECOND alias taken via the same `arr[i]`, or through the container itself.
+
+Minimal repro: build a one-element `[Item]` (struct with a `str` field),
+take three separate `let` reads of the same slot (`let a = arr[0]`,
+`let b = arr[0]`, `let c = arr[0]`), mutate a field through `a`
+(`a.tag = a.tag + "!"`), then read the field back through `a`, `b`, `c`, and
+`arr[0]` directly, 20000 iterations, exit code checked both runs:
+
+```
+$ kryos run attack_container_element_alias_refcount.kry
+last=x19999!|x19999!|x19999!|x19999!|5      # a|b|c|arr[0] — ALL FOUR see the mutation
+$ kryos build --release attack_container_element_alias_refcount.kry -o bin && ./bin
+last=x19999!|x19999|x19999|x19999|5         # a|b|c|arr[0] — only `a` itself sees it
+```
+
+Both runs exit 0 — no crash, purely a silent value divergence, classified by
+the printed VALUE not by grepping. Proven both ways by construction: the
+JIT's own `a` value is identical to AOT's `a` value (`x19999!` in both), so
+the mutation itself is correctly applied in both backends — only its
+VISIBILITY through separately-taken aliases of the same read expression
+diverges. Per the loop's own rule ("backends diverging => read the emitted
+IR, do not guess from source"), the IR was not read this round (attacker-only
+mandate, environment severely contended — see the item 14 session note
+below, which applied equally to this investigation); the working hypothesis,
+NOT verified against MIR/LLVM-IR, is that `let x = arr[i]` on AOT lowers to
+a value-copy (matching AOT's `@copy`-struct-assignment semantics) while the
+same expression on Cranelift lowers to a raw pointer load (matching how
+`m["k"]` container-mutation-then-alias-read was verified), i.e. the two
+backends may be implementing two DIFFERENT points on the shared/copy
+spectrum for the identical source construct rather than one of them having
+a bug in an otherwise-shared model. This needs an `--emit-mir`/`--emit-llvm`
+read to confirm before attempting a fix — flagging as the next concrete step,
+not attempting it (out of scope this round).
+
+Not double-free/UAF: `KRYOS_FREE_DIAG=1` census on both the JIT and AOT run
+is clean (no diagnostic output, exit 0) at 20000 iterations — this is a
+values-diverge defect, not a corruption defect, despite living in exactly
+the "aliases created by reading out of a container" surface this round's
+brief named as a corruption-suspicion area. Distinct from all four
+already-found items this campaign (cap-escape-closure-wraps-closure,
+closure-lock-reentrant-self-deadlock, closure-mutating-costale-scalar-capture,
+map-hash-collision-dos) and from item 14 above (different lens, different
+file).
+
+**Ruled out this round, evidence attached (exit 0, value-correct, clean
+under `KRYOS_FREE_DIAG=1`, both with and without diag):**
+- `tests/security/attack_drop_helper_recursion.kry` — a 200000-deep
+  self-referential struct chain (`Node{val, next:[Node]}`) built iteratively
+  then dropped (recursive `__kryos_drop_Node` teardown, one native stack
+  frame per link): `built len=200000`, exit 0, with and without diag. No
+  stack overflow or corruption at this depth (higher depths not attempted —
+  environment cost).
+- (`attack_throw_unwind_heap_locals.kry`, `attack_closure_env_teardown_twice.kry`,
+  `attack_spawn_mutating_closure_reentrancy.kry` were independently written
+  and probed by the concurrency-lens agent this same round — `6665c4f` —
+  before this agent got to run them; results agree (clean, exit 0, value-
+  correct) and are not re-litigated here to avoid duplicate ledger entries.)
+
 ### 14. RESOURCE-DOS: `parse_statement`'s stray-`;` recovery recurses with NO nesting/depth guard — a flat run of semicolons stack-overflows the compiler on `kryos check` (RED TEAM round 2, resource-dos lens, found 2026-08-04) — NOT FIXED
 
 `tests/security/attack_parser_semicolon_chain_stack_overflow.kry`. The
