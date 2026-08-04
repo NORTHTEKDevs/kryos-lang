@@ -51,6 +51,107 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 14. RESOURCE-DOS: `parse_statement`'s stray-`;` recovery recurses with NO nesting/depth guard — a flat run of semicolons stack-overflows the compiler on `kryos check` (RED TEAM round 2, resource-dos lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/attack_parser_semicolon_chain_stack_overflow.kry`. The
+parser OOM fix already landed (verified current state) hardened the
+LOOP-shaped zero-progress hazards: `parse_module`'s declaration loop,
+`parse_block_stmts`, and `parse_map_or_block_expr`'s block-body loop all
+detect `self.pos == before` and force-advance instead of spinning. Every
+OTHER recursive-descent entry point in the same file independently checks
+`self.nesting_exhausted()` (`MAX_NESTING_DEPTH = 2048`, `MAX_RECURSION_DEPTH
+= 256`) and bumps `rec_depth`/`nest_depth` before recursing:
+`parse_block` (parser.rs:1169-1187), `parse_expr_bp` (parser.rs:1987-2004),
+and `parse_type` (parser.rs:3534-3553) all fail closed with one clean
+`E0010` diagnostic ("program nesting exceeds the maximum depth of 2048")
+on adversarially deep input instead of exhausting a resource.
+
+`parse_statement` (parser.rs:1336) is the one recursive-descent entry point
+that was missed. Its `TokenKind::Semicolon` arm (parser.rs:1385-1394)
+reports "unexpected `;`", consumes the token, then calls
+`self.parse_statement()` again to continue — a genuine Rust call, one stack
+frame per `;`, with **no** `nesting_exhausted()` check and **no**
+`rec_depth` increment anywhere on this path. It is invisible to both
+existing depth budgets.
+
+Live repro, `compiler/target/release/kryos.exe` HEAD 00b3cf7, no compiler
+changes, `KRYOS_STDLIB_DIR` set per repo convention:
+```
+$ python3 -c "print('fn main() {'); print(';' * 500000); print('println(\"done\")'); print('}')" > bomb.kry
+$ kryos check bomb.kry
+kryos: stack overflow (unbounded recursion?)
+$ echo $?
+253
+```
+`kryos check` — type-check only, no codegen — crashes on the parse itself;
+`run`/`build --release` are equally exposed since the crash happens before
+either backend is reached. Proven both ways: the SAME construct at n=10
+semicolons (`tests/security/attack_parser_semicolon_chain_stack_overflow.kry`,
+committed) is harmless — ten clean `E0009` diagnostics, `error: compilation
+failed`, exit 1, no crash — confirming the defect is the ABSENCE of a bound
+on n, not the semicolon-recovery mechanism itself being wrong. The 500k-line
+bomb file is not committed (impractical size); regenerate via the one-liner
+above.
+
+Fix shape (not attempted — attacker-only mandate this round): apply the
+exact same guard the three sibling entry points already use around the
+self-recursive call at parser.rs:1394 — check `self.nesting_exhausted()`
+and bump `rec_depth` (and pop it after the call returns) — so a long
+semicolon run degrades to the existing `E0010` diagnostic instead of an
+uncatchable native stack overflow. This is a one-function fix mirroring
+code already present three times in the same file.
+
+**Ruled out this session (round 2), evidence attached:**
+- **Every comma-separated list loop already checked** (`parse_param_list`,
+  `parse_struct_decl` fields, `parse_enum_decl` variants, `parse_struct_literal`,
+  `parse_array_literal`, `parse_generics`, `skip_impl_target_type_args`,
+  generic type-arg lists): each either has an explicit `self.pos == before`
+  progress guard, or terminates via `expect_name`/`expect_ident` (which
+  always advances at least one token on both the match AND mismatch
+  branches, per parser.rs:229-331) or the general `expect()` fallback (which
+  also unconditionally advances on mismatch, parser.rs:229-253) — so none of
+  them can spin. Read directly, not guessed; this is why `expect_name`'s
+  earlier fix transitively protects most comma-list loops that call it.
+- **`std::json::parse`'s recursive-descent `_parse_value` already has a
+  depth guard** (`compiler/stdlib/json.kry:151-157`, `depth > 1000` throws
+  "maximum nesting depth exceeded") and its string-accumulation path already
+  fixed an O(n²) quadratic-append DoS (same file, `_parse_string` comment:
+  "a ~1MB string field made parse() take ~19s, a single-request DoS") — a
+  COMPILED PROGRAM calling `std::json::parse` on a deeply-nested or
+  adversarially-large JSON document is not exposed via this stdlib module.
+- **Generic monomorphization of a SELF-REFERENTIAL type at shallow depth
+  (60 levels) does not explode**: `wrap<T>(x: T, depth: i64)` recursively
+  calling `wrap(Box{val: x}, depth-1)` (so each recursive call instantiates
+  `wrap` at a NEW, one-level-deeper generic argument type, `Box<Box<...<i64>>>`)
+  compiles clean (`kryos check`, exit 0, no diagnostics) at depth 60 within
+  30s. **Not a full ruling-out of the monomorphization-explosion surface** —
+  60 distinct instantiations is a small probe, not a stress test, and larger
+  depths were not attempted this session (environment constraints, see
+  below); flagging as the next thing to push on this surface, not as
+  closed. `monomorphize`/`monomorphize_struct`/`monomorphize_enum`
+  (kryos-mir/src/lower.rs:15227-15870) have no depth cap of their own —
+  only per-mangled-name memoization, which does not bound a chain of
+  DISTINCT names.
+- **Array push/map growth use standard doubling realloc** (`kryos-rt/src/
+  array.rs:154`, `kryos-rt/src/map.rs:83,300`, `new_cap = cap * 2`) with a
+  header-corruption sanity check ahead of every grow — read, not stress-run
+  live this session (environment constraints); no bug found in the growth
+  logic itself, consistent with amortized-O(1) push documented in CLAUDE.md.
+
+**Session note — environment, not code, was the binding constraint.** This
+shared workspace was under severe, sustained contention this session
+(consistent with the documented `feedback_machine_slowness` class): trivial
+`bash` commands (`echo hello`) sometimes took several minutes to return, and
+compiler invocations took proportionally longer. This bounded how many
+distinct attacks could be RUN (as opposed to hypothesized) — the codegen-
+blowup, inference-blowup, and larger-scale monomorphization-explosion
+probes the task brief asked for were not attempted live this session for
+that reason, reported honestly as not done rather than invented. The one
+finding above was fully executed and proven both ways despite the
+environment; it should not be read as the full extent of this surface.
+
+---
+
 ### 12. SUPPLY CHAIN: `kryos pkg install` never reads `kryos.lock` — silently re-resolves live and overwrites the lock on every run, with no warning (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) — NOT FIXED
 
 `tests/security/pkg_install_ignores_lock.sh`. CLAUDE.md documents (and the
@@ -233,6 +334,52 @@ currently infers to empty, which strict mode accepted without complaint —
 worth checking whether strict mode's OWN declaration requirement should have
 forced a human to notice and gate `wrap_once`, and didn't because inference
 computed empty before the human ever had to choose a value).
+
+**RED TEAM round 2 (2026-08-04), same item, new evidence — blast radius
+CONFIRMED WIDER, two vectors RULED OUT:**
+
+- **CONFIRMED — survives generic monomorphization.**
+  `tests/security/attack_wrap_closure_generic.kry`: `fn wrap_once_generic<T>(inner: fn() -> T) -> fn() -> T { return || inner() }`
+  reproduces IDENTICALLY to the concrete `fn() -> str` form — live,
+  `kryos run` exit 0 prints the secret, `--strict-capabilities` exit 0, no
+  diagnostic, `compiler/target/release/kryos.exe` HEAD `00b3cf7`, no
+  compiler changes. This answers the open "generics are the highest-suspicion
+  surface, untested" question for this specific hole: the missing
+  fail-closed propagation is in how a returned LAMBDA LITERAL's own body is
+  attributed capabilities, and that attribution is equally wrong whether the
+  enclosing function is monomorphic or generic — not a distinct generics-only
+  bug, but proof the existing bug's fix must be verified against a generic
+  wrapper too, not just the concrete repro.
+- **RULED OUT — does not defeat inference outright without `deny!`.**
+  `tests/security/attack_wrap_closure_inference_bypass.kry`: same
+  `wrap_once`, but `main` is UNANNOTATED and there is no `deny!` block at
+  all. REJECTED (E0507) at `wrap_once(reader)` itself — the error names the
+  mechanism directly: "some of this authority is carried by a
+  closure/fn-value ARGUMENT passed at this call site, not by `wrap_once`'s
+  own declaration". So the checker's call-SITE argument tracking is sound
+  when there is no narrowing scope to satisfy first; the item-10 hole is
+  specific to `deny!()`'s narrowing not being re-checked at the later,
+  syntactically-disconnected `wrapped()` call site, not a general inference
+  gap.
+- **RULED OUT — impl-method wrap.** `tests/security/attack_wrap_closure_impl_method.kry`:
+  same shape via `impl Decorator { fn wrap(self, inner: fn() -> str) -> fn() -> str { return || inner() } }`.
+  REJECTED (E0507) at `wrapped()` — but for the ORDINARY fail-closed reason
+  ("call through a function value requires capabilities [all] ... provenance
+  could not be resolved"), the exact default item 10 shows is wrongly
+  skipped for the free-function case. So the bug is narrower than "any
+  function that builds+returns a forwarding lambda" — confirmed specific to
+  a FREE function doing so, not an impl method.
+- **RULED OUT — actor-handler wrap.** `tests/security/attack_wrap_closure_actor.kry`:
+  same shape via an actor method. REJECTED on two independent grounds: (1)
+  E0110, actor handlers with a non-unit return type are rejected outright
+  (fire-and-forget dispatch has no reply channel) — orthogonal but also
+  blocks this shape; (2) even so, `wrapped()` independently hits the same
+  correct [all] fail-closed rejection as the impl-method case. Actor
+  dispatch is not a laundering vector for this mechanism.
+
+All four probes verified live against the same unmodified
+`compiler/target/release/kryos.exe`, no compiler changes, both `kryos run`
+and `kryos check --strict-capabilities`.
 
 ---
 

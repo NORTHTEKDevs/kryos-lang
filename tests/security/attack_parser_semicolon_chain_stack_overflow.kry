@@ -1,0 +1,52 @@
+// RED TEAM round 2, resource-dos lens (2026-08-04).
+//
+// `parse_statement` (kryos-parser/src/parser.rs:1336) handles a stray `;`
+// by consuming it and then calling ITSELF recursively (line 1394,
+// `self.parse_statement()`) to continue parsing the "real" next statement.
+// Every OTHER recursive-descent entry point in this parser -- parse_type,
+// parse_expr_bp, parse_block -- checks `self.nesting_exhausted()` and bumps
+// `rec_depth`/`nest_depth` before recursing (parser.rs:1180-1181, 1990-1999,
+// 3536-3548), so a deeply-nested construct fails closed with a clean E0010
+// "program nesting exceeds the maximum depth of 2048" diagnostic. This one
+// recursive call site is the exception: it has NO nesting check and NO
+// rec_depth increment, so it is not covered by MAX_RECURSION_DEPTH (256) or
+// MAX_NESTING_DEPTH (2048) at all.
+//
+// A flat run of semicolons at statement position inside a block -- ordinary
+// (if pointless) syntax, not a "trick" the grammar has to accept nested
+// constructs for -- drives this recursion directly, one native stack frame
+// per `;`, with no depth accounting whatsoever.
+//
+// Live repro, `compiler/target/release/kryos.exe` HEAD 00b3cf7, no compiler
+// changes, KRYOS_STDLIB_DIR set per repo convention:
+//   $ python3 -c "print('fn main() {'); print(';' * 500000); print('println(\"done\")'); print('}')" > bomb.kry
+//   $ kryos check bomb.kry
+//   kryos: stack overflow (unbounded recursion?)
+//   $ echo $?
+//   253
+// `kryos check` -- type-check only, no codegen -- crashes on the PARSE
+// itself. `kryos run`/`kryos build --release` are equally exposed (the
+// crash happens before either backend is reached). Every other unbounded-
+// growth shape in this parser (parse_module's declaration loop, block-stmt
+// loops, the map-or-block expression loop) was hardened to fail closed with
+// ONE diagnostic instead of exhausting a resource; this one still aborts
+// the whole process with no diagnostic the caller can catch or report.
+//
+// Not fixed (attacker-only mandate this round): the shape of the fix is the
+// same guard already used at every sibling recursive-descent entry point --
+// check `self.nesting_exhausted()` and bump `rec_depth` around the
+// self-recursive call at parser.rs:1394, mirroring parse_type/parse_expr_bp/
+// parse_block, so a long semicolon run degrades to the existing E0010
+// "program nesting exceeds the maximum depth" diagnostic instead of an
+// uncatchable stack overflow.
+//
+// This file is a small, checked-in illustration of the SHAPE (a handful of
+// semicolons is harmless and compiles fine) -- the actual crash needs
+// roughly 500k consecutive `;` at statement position in one block, which is
+// impractical to commit verbatim; regenerate via the one-liner above to
+// reproduce the crash live.
+
+fn main() {
+    ;;;;;;;;;;
+    println("a small semicolon run is harmless; the crash needs ~500k in a row")
+}
