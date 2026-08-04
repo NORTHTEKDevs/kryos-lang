@@ -51,6 +51,84 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 12. SUPPLY CHAIN: `kryos pkg install` never reads `kryos.lock` — silently re-resolves live and overwrites the lock on every run, with no warning (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/pkg_install_ignores_lock.sh`. CLAUDE.md documents (and the
+LEDGER item 1b checksum work implies) that "pinning a specific version still
+depends on committing kryos.lock" — but `kryos pkg install` never opens
+`kryos.lock` at all. Grepped: `LockFile::from_file` is called exactly once
+in the whole CLI, by `kryos pkg outdated` (`compiler/crates/kryos-cli/src/
+commands/pkg.rs:482`) — `install()` (line 221) and `update()` (line 157)
+only ever *write* a fresh lock via `LockFile::from_resolved(&graph)` after
+resolving straight from the manifest against a live registry lookup. There
+is no code path anywhere that compares a freshly resolved graph against a
+previously committed lock, and no warning is printed when they diverge.
+
+Live repro (offline, path dependency, no network needed — the mechanism is
+identical for a Remote/registry dependency, where the drift would come from
+a newly published or force-pushed index entry instead of a hand-edited
+`kryos.toml`): `kryos pkg install` locks `dep` at `v1.0.0`; with
+`kryos.lock` present and UNTOUCHED, `dep`'s own `kryos.toml` is bumped to
+`v2.0.0` with different source content; a second `kryos pkg install` in the
+same project silently rewrites `kryos.lock` to `v2.0.0` and prints the exact
+same `installed 1 package` / `wrote kryos.lock` success banner as the first,
+honest run — no diff, no prompt, no exit-code change (exit 0 both times).
+
+For a Remote dependency this is a genuine supply-chain hole: LEDGER item
+1b's checksum verification (`fetch::verify_package_checksum`) only checks
+that the fetched bytes match the checksum recorded for WHATEVER VERSION
+`resolve()` just picked — it does nothing to stop `resolve()` from picking a
+different, newer version than the one a team committed to `kryos.lock` in
+the first place. A compromised or force-pushed registry entry (the exact
+threat LEDGER item 1b's own writeup names — "a force-pushed history") is
+silently adopted by every consumer's next `kryos pkg install`, checksum
+intact, lock file re-signed to match, with zero observable difference from
+a routine install. Committing `kryos.lock` today provides no protection
+against this at all; the file's only real reader is the informational
+`kryos pkg outdated` report.
+
+Fix shape (not attempted — this is a design/behavior decision, not a
+one-line patch): `install()` should read an existing `kryos.lock` first and
+resolve pinned to it (fetch exactly the locked name@version, verify its
+checksum, done) unless `--update`/no-lock-present, matching `cargo
+install`/`npm ci` semantics; `update()` remains the explicit "re-resolve
+and possibly move the lock" operation. Until then, treat `kryos.lock` as
+non-authoritative — it records the last resolution, it does not pin it.
+
+### 13. `kryos audit` is blind to capability violations `kryos check`/`build` reject outright — reports a clean bill of health on code that will not compile (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/audit_blind_to_capability_violations.sh`. `kryos audit`'s
+own description is "Audit capability usage, extern surface, and secret
+patterns" — but it never runs (or cross-references) the same
+inference/enforcement pass `kryos check`/`run`/`build` use. It only
+inventories `@capabilities(...)` annotations that are textually PRESENT and
+regex-sweeps for extern blocks / secret-looking strings; it has no
+awareness that a called builtin unconditionally REQUIRES a capability.
+
+Live repro: a one-function file with no `@capabilities` annotation calling
+`file_write` (requires `fs:write`). `kryos check` on it fails immediately
+(`error[E0505]: builtin \`file_write\` requires \`fs:write\` capability`,
+exit 1 — the file cannot compile at all). `kryos audit` on the byte-identical
+file exits 0 and prints `(no @capabilities annotations found)` under a
+"Capability inventory" heading, with no error, warning, or hint that the
+file is capability-invalid. Same result for a file using the raw-memory FFI
+builtins (`alloc`/`ptr_write_i64`/`ptr_read_i64`/`free_bytes`) — `check`
+rejects them (they require `ffi` on this build; see the ruled_out note
+below, this CORRECTS the CLAUDE.md gotcha claiming they need no capability
+at all), `audit` is silent.
+
+This is a real trust trap for the tool's stated purpose: a reviewer running
+`kryos audit` on a third-party package to vet its capability footprint gets
+a "clean" report on code that either won't build at all, or — in a mixed
+file where SOME functions are correctly annotated — omits any mention of
+the specific gated builtins reachable from the unannotated ones, since audit
+never runs the inference pass that would find them. `audit` should at
+minimum run the same capability inference `check` does (in inferred/report
+mode, not enforcing) and list the INFERRED requirement per function
+alongside whatever `@capabilities` annotation is or isn't present, so its
+"Capability inventory" reflects what the code actually needs rather than
+only what a human already bothered to write down.
+
 ### 10. LIVE CAPABILITY ESCAPE — a closure returned by a zero-cap wrapper function defeats `deny!()` on BOTH enforcement modes (round 6 red-team, found 2026-08-04) — NOT FIXED, HIGHEST PRIORITY (breaks the trust model)
 
 `tests/security/cap_escape_closure_wraps_closure.kry`. Minimal repro (single
