@@ -1,0 +1,44 @@
+// RED TEAM round 3 (memory-unsafety lens): container-element ownership via
+// SLOT OVERWRITE while a prior alias is still LIVE. LEDGER item 15 / gotcha
+// #boundary probed "read the slot multiple times, mutate a FIELD through one
+// alias" (shared handle, visible everywhere) and "replace the whole element
+// (`arr[i] = Inner{..}`) isolates a STORED CLOSURE's captured copy" -- but
+// neither probed the shape here: take a plain (non-closure) alias via
+// `let a = arr[0]`, then OVERWRITE that same slot (`arr[0] = NewItem{..}`)
+// while `a` is still live and later used. If the overwrite's codegen frees
+// the old box (to release the slot's old owner-count before storing the new
+// value) without accounting for the extra live reference `a` holds, `a`
+// becomes a dangling/use-after-free handle; if it does NOT free the old box
+// (relying on `a`'s own drop to eventually free it), `a`'s later scope-exit
+// drop must be the ONLY free -- if BOTH the overwrite AND `a`'s drop free
+// the same box, that is a double free.
+struct Item {
+    tag: str,
+    vals: [i64],
+}
+
+fn round(i: i64) -> str {
+    let mut arr: [Item] = []
+    arr = push(arr, Item { tag: "orig" + to_string(i), vals: [1, 2, 3] })
+    // alias taken BEFORE the overwrite -- shares the box per gotcha #boundary
+    let a = arr[0]
+    // overwrite the slot with a brand new box while `a` still references the old one
+    arr[0] = Item { tag: "new" + to_string(i), vals: [9, 9] }
+    // read through the alias -- must still see the ORIGINAL value, uncorrupted
+    let via_alias = a.tag
+    let via_alias_len = len(a.vals)
+    let via_slot = arr[0].tag
+    // `a` drops here (old box, its only remaining owner), `arr[0]`'s new box drops separately
+    return via_alias + "|" + to_string(via_alias_len) + "|" + via_slot
+}
+
+fn main() {
+    let mut i = 0
+    let mut last: str = ""
+    while i < 20000 {
+        last = round(i)
+        i = i + 1
+    }
+    println("last=" + last)
+    println("done")
+}

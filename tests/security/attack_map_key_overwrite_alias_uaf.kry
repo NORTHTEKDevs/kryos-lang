@@ -1,0 +1,37 @@
+// RED TEAM round 3 (memory-unsafety lens): the map analogue of the array
+// slot-overwrite probe above. `let a = m["k"]` takes a shared handle to the
+// stored box (gotcha #boundary). This probes whether OVERWRITING the same
+// key (`m["k"] = NewItem{..}`) while `a` is still live frees the box out
+// from under `a` (use-after-free at `a`'s later read, or a double free when
+// both the map-side teardown and `a`'s own scope-exit drop try to release
+// the same allocation). (Kryos maps have no key-removal builtin -- grepped
+// the runtime and every stdlib module; `remove`/`map_remove`/`delete` exist
+// only for List<T> elements-by-index and the raw i64 `std::set`, not for
+// `map<K,V>` by key -- so the REMOVE variant of this probe is untestable as
+// a language feature, not merely undone this session.)
+struct Item {
+    tag: str,
+    vals: [i64],
+}
+
+fn round_overwrite(i: i64) -> str {
+    let mut m: map<str, Item> = {}
+    m["k"] = Item { tag: "orig" + to_string(i), vals: [1, 2, 3] }
+    let a = m["k"]
+    m["k"] = Item { tag: "new" + to_string(i), vals: [9, 9] }
+    let via_alias = a.tag
+    let via_alias_len = len(a.vals)
+    let via_map = m["k"].tag
+    return via_alias + "|" + to_string(via_alias_len) + "|" + via_map
+}
+
+fn main() {
+    let mut i = 0
+    let mut last_ow: str = ""
+    while i < 20000 {
+        last_ow = round_overwrite(i)
+        i = i + 1
+    }
+    println("overwrite_last=" + last_ow)
+    println("done")
+}

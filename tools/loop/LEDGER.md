@@ -51,7 +51,131 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 16. LIVE CAPABILITY ESCAPE — a privileged closure stored into an ACTOR's own state field defeats `deny!()` when read back and invoked from a separate actor method (RED TEAM round 3, cap-escape lens, found 2026-08-04) — NOT FIXED, breaks the trust model
+### 17. SUPPLY CHAIN: a dependency's explicit `git = "..."` / `github:org/repo@ver` source in `kryos.toml` is NEVER consulted by `kryos pkg install`/`update` — silently replaced by a pure by-name lookup against the single hardcoded official registry, or a flat failure, either way ignoring what the manifest says (RED TEAM round 3, toolchain-supply lens, found 2026-08-04) — NOT FIXED
+
+`tests/security/pkg_manifest_git_source_ignored.sh`. `kryos-package/src/
+manifest.rs`'s `DepSpec` Deserialize impl accepts a `git = "..."` TOML key
+(and `parse_dep_string`, which backs `kryos pkg add <spec>`, accepts
+`github:org/repo@ver`) — both produce a real `DepSpec::Remote { source,
+version_req }` with the user's chosen source recorded. But
+`compiler/crates/kryos-cli/src/commands/pkg.rs::install()`'s handling of a
+`DepSpec::Remote` dependency destructures it as `kryos_package::DepSpec::
+Remote { .. }` — a wildcard that discards `source` and `version_req`
+entirely — and instead does a lookup of the dependency's NAME in the local
+registry index, unconditionally synthesizing `github_subdir:NORTHTEKDevs/
+kryos-registry/packages/<name>/<version>` from whatever entry it finds
+there. `update()` has the same shape. The manifest's declared source is
+never read by either command.
+
+**Verified live, both directions, against `compiler/target/release/
+kryos.exe`, HEAD `fc05cce`, no compiler changes:**
+
+**(A) Name not in the registry index — fully offline, no network needed.**
+A project's `kryos.toml`:
+```toml
+[dependencies]
+totally-unregistered-name-zzz = { git = "https://github.com/some-real-org/some-real-repo", version = "0.1.0" }
+```
+```
+$ kryos pkg install
+  warning: registry lookup for `totally-unregistered-name-zzz` failed: registry not synced — run `kryos pkg sync` first
+error: dependency resolution failed: package 'totally-unregistered-name-zzz' not found in registry
+$ echo $?
+1
+```
+The install FAILS even though a perfectly valid alternate source was given
+in the manifest — that source is never attempted. The git-source manifest
+syntax is dead code as far as `install`/`update` are concerned.
+
+**(B) Name that DOES exist in the registry (any popular/common package
+name) — the dangerous direction, needs network.** Same manifest shape,
+naming the real `http-router` package with an obviously attacker-controlled
+`git =` source:
+```toml
+[dependencies]
+http-router = { git = "https://github.com/ATTACKER-CONTROLLED/evil-http-router", version = "0.1.0" }
+```
+```
+$ kryos pkg install
+fetching packages ...
+  cloning https://github.com/NORTHTEKDevs/kryos-registry.git (subdir: packages/http-router/0.1.0) -> ...\.kryos\packages\http-router-0.1.0
+installed 1 package
+  http-router (cached: ...\.kryos\packages\http-router-0.1.0)
+  1 remote, 0 local path
+wrote kryos.lock
+$ echo $?
+0
+$ cat kryos.lock
+[[package]]
+name = "http-router"
+version = "0.1.0"
+source = "github_subdir:NORTHTEKDevs/kryos-registry/packages/http-router/0.1.0"
+checksum = "sha256:ec03da9283102b939b7d64bf7a61a3f6154243f979319baac9b354cad9dc044d"
+```
+The OFFICIAL registry package is installed, checksum-verified against the
+OFFICIAL index entry, and the lock file written — a completely "successful,
+honest-looking" install, with **zero** warning, diff, or prompt that the
+manifest's declared `git =` source was never touched. Both the CLI's own
+`installA.log`/`installB.log` and `kryos.lock` were inspected directly (not
+grepped for a marker string) to confirm the attacker URL never appears
+anywhere in the fetch path — the resolver genuinely never constructs it.
+
+**Why this is real and distinct from existing ledger items:** item 12 (lock
+file never read) and item 1b (checksum, CLOSED) both concern the integrity
+of a source `resolve()` has ALREADY picked; this is about `resolve()`
+picking a source that has NO relationship to what the project author wrote
+at all, silently. Blast radius: any project trying to pin a private fork, a
+security-patched mirror, or a vendored copy of a package by declaring an
+explicit `git =`/`github:` source under a name that also exists in the
+public registry gets the PUBLIC package instead, indistinguishable from a
+correct install — this is the textbook "dependency confusion" shape (same
+name, different intended source, wrong one silently wins), just produced by
+the resolver discarding the user's own source field rather than by an
+external registry-priority bug.
+
+**Not yet attempted (follow-up, out of scope this round — no compiler
+changes made):** whether `kryos pkg add github:some/repo@1.0.0` (the CLI
+form, rather than a hand-written `git =` TOML key) reaches the exact same
+dead branch — it produces the same `DepSpec::Remote` shape by construction
+(verified by reading `parse_dep_string`), so it should, but was not
+separately executed live this round to save the shared workspace's budget
+after (A)+(B) already proved the mechanism deterministically. Fix shape (a
+design decision, not attempted): `install()`/`update()` should honor a
+non-empty `DepSpec::Remote.source` directly (treating it as an explicit
+override of the registry lookup, matching what `cargo`'s `git = "..."`
+dependency does) rather than silently discarding it in favor of a pure
+name-based registry match.
+
+**Ruled out this round (round 3, toolchain-supply lens), evidence
+attached, no defect found:**
+- **`kryos fmt` does not alter program MEANING on the shapes tried**: a
+  multi-line string literal (`"line one\nline two\nline three"` written
+  with real embedded newlines) is reformatted into an escaped single-line
+  form and re-run with the IDENTICAL `len()` (28) before and after; the
+  same held for a string containing a real embedded `\r\n` (len 8 before
+  AND after — fmt re-escapes it as `"one\r\ntwo"` rather than normalizing
+  the line ending away). A string containing literal `/* fake */` and
+  `// also fake` text is left byte-identical (fmt's lexer correctly does
+  not treat in-string text as a comment). A program with a genuinely
+  NESTED block comment (`/* outer /* nested */ still-comment */`) makes
+  `kryos fmt` **fail closed** — `skipped <file> (a comment could not be
+  re-anchored; file left untouched)`, exit 0, file byte-identical, rather
+  than silently corrupting or dropping the comment. (Not exhaustive — only
+  these shapes were tried; fmt's general re-indentation was not fuzzed.)
+- **The experimental `--backend wasm` enforces the SAME capability check
+  as the default backend, not a bypass**: a zero-`@capabilities` function
+  calling `file_write` (needs `fs:write`) is rejected with the identical
+  `error[E0505]` under `kryos check` AND under `kryos build --backend
+  wasm`, both exit 1 — the capability inference/enforcement pass runs
+  before backend selection, so it is not a route around `deny!`/inferred
+  mode. (Only the compile-time capability-rejection path was probed, not
+  wasm codegen correctness/parity generally.)
+- **`kryos doc` does not crash on a doc comment containing lexer-trap-
+  looking text** (an unterminated `{interp` and a fake `*/` inside a `///`
+  comment): renders the raw text into the generated Markdown verbatim,
+  exit 0, no panic.
+
+### 18. LIVE CAPABILITY ESCAPE — a privileged closure stored into an ACTOR's own state field defeats `deny!()` when read back and invoked from a separate actor method (RED TEAM round 3, cap-escape lens, found 2026-08-04) — NOT FIXED, breaks the trust model
 
 `tests/security/attack_actor_state_stored_closure.kry`. Minimal repro:
 
@@ -207,6 +331,51 @@ under `KRYOS_FREE_DIAG=1`, both with and without diag):**
   and probed by the concurrency-lens agent this same round — `6665c4f` —
   before this agent got to run them; results agree (clean, exit 0, value-
   correct) and are not re-litigated here to avoid duplicate ledger entries.)
+
+**Ruled out, round 3 (memory-unsafety lens, found 2026-08-04) — went deeper on
+this exact surface (aliases created by reading out of a container +
+container element ownership) with a shape nobody had tried: a SLOT
+OVERWRITE while a prior plain (non-closure) alias is still live, not just a
+field-mutation-then-read.** Hypothesis: `let a = arr[0]` takes a shared
+handle (documented above); does `arr[0] = NewValue{..}` free the OLD box out
+from under `a` (UAF at `a`'s later read) or double-free it (both the
+overwrite's release AND `a`'s own scope-exit drop try to free the same
+allocation)? Falsified — both backends deep-copy on overwrite, `a` keeps its
+own independent, correctly-owned reference:
+- `tests/security/attack_array_slot_overwrite_alias_uaf.kry` — 20000
+  iterations of `let a = arr[0]` then `arr[0] = Item{..}` (brand new box)
+  while `a` is still live, then read both. `kryos run`: `last=orig19999|3|
+  new19999` (exit 0); `KRYOS_FREE_DIAG=1`: identical, no diagnostic (exit
+  0); `kryos build --release`: identical value (exit 0). `a` correctly sees
+  the ORIGINAL struct (uncorrupted, right field count) and the slot shows
+  the NEW one — no UAF, no double free, both backends agree.
+- `tests/security/attack_map_key_overwrite_alias_uaf.kry` — the map
+  analogue (`m["k"] = Item{..}` then overwrite the same key while `let a =
+  m["k"]` is live), same 20000-iteration/both-backend/FREE_DIAG protocol,
+  same clean result (`overwrite_last=orig19999|3|new19999`, exit 0
+  everywhere). (The REMOVE-while-aliased variant of this probe, also in the
+  brief, is untestable as a language feature: grepped the whole runtime and
+  stdlib — `kryos-rt/src/map.rs` and every `.kry` module — and there is no
+  `map<K,V>` key-removal builtin at all; `remove`/`delete` only exist for
+  `List<T>` by-index and the raw i64 `std::set`. Flagging the gap itself,
+  not inventing a repro for a function that does not exist.)
+- Also probed **struct-literal field duplication** (a distinct bullet in
+  this round's brief): `Item { tag: "first", other: 1, tag: "second" }` is
+  rejected at `kryos check` with a clean `error[E0110]: duplicate field
+  \`tag\` in \`Item\` literal -- each field may be set only once` (exit 1,
+  not committed as a repro since it never reaches codegen — no heap value is
+  ever constructed to leak or double-free).
+
+Session note: this round's environment was under the same severe,
+documented contention as prior rounds (concurrent compiler jobs from other
+agents sharing this workspace, per `fc05cce`/`6665c4f`/`a537504` all landing
+the same day) — several individually-fast (`kryos run` a two-line
+`println`) commands queued for multiple minutes and one `kryos run` hit a
+transient `LNK1104 cannot open file` on a temp `.exe` (a file-lock collision
+with a concurrent build, not a language defect — the identical command
+succeeded cleanly on retry with no code or file changes). Reported for
+calibration, not as a finding; both repros above were still proven both
+ways (JIT + AOT + FREE_DIAG) despite it.
 
 ### 16. DEADLOCK/HANG: an uncaught `throw` inside a `spawn` task silently skips every statement after it in that task, including a `wg_done(wg)` the caller was relying on — turning ONE ordinary exception into a PERMANENT hang of every `wg_wait()` (RED TEAM round 3, concurrency lens, found 2026-08-04) — NOT FIXED
 
