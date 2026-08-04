@@ -1,0 +1,64 @@
+// SECURITY -- LIVE ESCAPE, round 6, found 2026-08-04. Minimal repro: ONE
+// level of closure-wrapping defeats `deny!()` entirely, on both enforcement
+// modes.
+//
+// `wrap_once` is a zero-capability user function that takes a privileged
+// fn-value parameter and returns a BRAND NEW closure literal that merely
+// forwards to it (`|| inner()`) -- a real-world logging/memoize/tap-decorator
+// shape. Every existing (closed) closure-launder repro forwards the SAME
+// closure VALUE returned by `make_secret_reader` through a container/HOF
+// call site, which is exactly the shape the round-5 fail-closed fix and its
+// hot-param/companion data-flow tracing were built to catch -- calling a
+// fn-value parameter/local/container-element directly requires [all] unless
+// the checker can trace the bound value back to a fixed-source callee at
+// THAT call site.
+//
+// This repro is a different shape: `inner()` is never called inside
+// `wrap_once`'s OWN body at `wrap_once`'s own call site -- it is called
+// LATER, from inside a freshly-constructed lambda literal, at a wholly
+// separate call site (`wrapped()`) with no syntactic link back to
+// `wrap_once(reader)`'s argument. The checker infers the RETURNED lambda's
+// own capability requirement from what IT directly calls; apparently the
+// "call through a fn-value requires the full unresolved-provenance
+// [all]" fail-closed rule (verified working for a NAMED function's own body,
+// e.g. `zero_cap_tool`) is not applied when the fn-value call lives inside a
+// LAMBDA LITERAL that is itself constructed and returned by another
+// function -- so the returned closure is attributed an EMPTY capability set
+// instead of [all], and the `deny!(fs:read)` block never sees anything to
+// deny.
+//
+// VERIFIED LIVE (compiler/target/release/kryos.exe, HEAD 00b3cf7 unmodified,
+// no compiler changes):
+//   kryos run                              -> exit 0, prints
+//     "SINGLE-WRAPPED CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a"
+//   kryos check --strict-capabilities      -> exit 0, no diagnostic
+// A DOUBLE wrap (`wrap_once(wrap_once(reader))`) reproduces identically --
+// this file uses the minimal single-wrap form per repro-reduction discipline.
+//
+// EXPECTED (currently violated): REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`, same
+// as `cap_escape_closure_launder_deny.kry`. This file's assertions describe
+// the REQUIRED behavior; it will fail to compile once fixed, which is the
+// point -- do not weaken it to match current (wrong) behavior.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Zero capability of its own -- just forwards. Exactly like a real-world
+// logging/memoize/tap decorator.
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrapped = wrap_once(reader)
+    deny!(fs:read) {
+        // LIVE ESCAPE: this compiles clean and prints the secret today.
+        let leaked = wrapped()
+        println("SINGLE-WRAPPED CLOSURE LEAK: " + leaked)
+    }
+}

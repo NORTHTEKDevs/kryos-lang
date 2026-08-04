@@ -1,0 +1,27 @@
+// SECURITY -- round 6 attack: a privileged fn-value carried as a raw TUPLE
+// element (not wrapped in Option/Result, which is the shape the existing
+// `cap_escape_option_result_payload.kry` covers). `zero_cap_tool` destructures
+// a `(fn() -> str, i64)` tuple param and calls the fn field directly.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(t: (fn() -> str, i64)) -> str {
+    let (f, _tag) = t
+    return f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let payload: (fn() -> str, i64) = (reader, 42)
+    deny!(fs:read) {
+        let leaked = zero_cap_tool(payload)
+        println("TUPLE-PAYLOAD LEAK: " + leaked)
+    }
+}

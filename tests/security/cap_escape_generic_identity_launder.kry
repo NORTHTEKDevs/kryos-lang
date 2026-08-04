@@ -1,0 +1,32 @@
+// SECURITY -- round 6 attack: a privileged fn-value round-tripped through a
+// GENERIC IDENTITY function before being invoked inside a deny!() block.
+// `identity<T>` is a bare pass-through with no capability of its own (T is
+// fully unconstrained, no fs:read anywhere in its body), and the checker's
+// hot-param/companion machinery is keyed on FIXED source shapes at the
+// callee's own declaration -- this probes whether routing the closure
+// through a one-line generic identity (the simplest possible "value
+// launderer", used constantly in real code for logging/memoization/tap
+// wrappers) is treated the same as calling it directly.
+//
+// ACCEPTANCE: this program must be REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`. If it
+// compiles clean and prints the secret, that's a real escape.
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let laundered = identity(reader)
+    deny!(fs:read) {
+        let leaked = laundered()
+        println("GENERIC IDENTITY LEAK: " + leaked)
+    }
+}
