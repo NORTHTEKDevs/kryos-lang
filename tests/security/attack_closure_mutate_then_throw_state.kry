@@ -1,0 +1,68 @@
+// ATTACK (red team, concurrency lens): does a mutating closure's persisted
+// state survive a `throw` that occurs AFTER the mutation but BEFORE the
+// closure's normal return?
+//
+// LEDGER item 7's fix persists a mutated scalar capture by boxing it behind
+// an ARC-allocated cell and writing it back via `Instruction::StoreDeref`
+// inserted before every MIR block whose TERMINATOR is `Terminator::Return`
+// (kryos-mir/src/lower.rs ~12717-12724). Kryos exceptions are NOT native
+// stack unwinding -- `throw` sets a thread-local exception flag, and every
+// user-function CALL site checks it immediately after and, if set, takes an
+// early-return path that is synthesized directly in the CODEGEN backend
+// (kryos-codegen-cranelift/src/codegen.rs ~3204-3230, `exc_return_block`),
+// entirely separate from any MIR `Terminator::Return` block. That early
+// exception-return calls `emit_exception_cleanup_drops` (drops str/array/
+// struct/enum locals) but does NOT run the StoreDeref writeback, because
+// the writeback instruction lives in a DIFFERENT MIR block (the one with
+// the real Return terminator) that this path never reaches.
+//
+// Hypothesis: a mutating closure that increments its capture and THEN calls
+// something that throws loses the increment -- the mutation "happened" in
+// the sense that later code inside the SAME call sees it, but never gets
+// persisted to the closure's env for the NEXT call, silently reverting to
+// the previous value instead of either the incremented value or a clean
+// error. This is a correctness/state defect independent of spawn/threads.
+fn risky(trigger: i64, n: i64) -> i64 {
+    if trigger == 1 {
+        throw "boom"
+    }
+    return n
+}
+
+fn main() {
+    let mut counter: i64 = 0
+    let mut trigger: i64 = 1
+    let f = |n: i64| {
+        counter = counter + n
+        let r = risky(trigger, n)
+        counter + r
+    }
+
+    // Baseline: two normal (non-throwing) calls to prove the box/writeback
+    // mechanism works at all in this build (LEDGER item 7's own guarantee).
+    let mut counter2: i64 = 0
+    let g = |n: i64| {
+        counter2 = counter2 + n
+        counter2
+    }
+    let g1 = g(5)
+    let g2 = g(5)
+    println("baseline (no throw): g1=" + to_string(g1) + " g2=" + to_string(g2) + " expect g1=5 g2=10")
+
+    // Attack: call f, which mutates `counter` then throws.
+    try {
+        f(5)
+    } catch e {
+        println("caught: " + e)
+    }
+
+    // Disarm the throw (mutate the OUTER `trigger`, not inside the closure --
+    // stays a plain by-reference capture, visible to `f` per the documented
+    // "mutation after closure creation is visible" rule) and observe whether
+    // the FIRST call's `counter = counter + 5` survived.
+    trigger = 0
+    let after = f(0)
+    println("counter observed by NEXT call to f (n=0, no further mutation this call): " + to_string(after))
+    println("if the writeback ran on the aborted call, after should be 5 (5 persisted + this call's r=0);")
+    println("if the writeback was skipped, `counter` silently reverted to 0 and after == 0")
+}

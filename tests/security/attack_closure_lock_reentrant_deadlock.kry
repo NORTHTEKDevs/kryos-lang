@@ -1,0 +1,39 @@
+// ATTACK (red team, concurrency lens): reentrant self-call through a
+// mutating closure's own stored value.
+//
+// LEDGER item 7b serialized every call to a mutating closure's underlying
+// function with a spin-then-yield mutex (kryos_mutex_lock/unlock,
+// kryos-stdlib-native/src/sync_prims.rs) keyed on a lock word stored in the
+// closure's OWN env block (offset (num_captures+1)*8, wired in
+// kryos-codegen-cranelift/src/codegen.rs ~1791-1904). That mutex is a plain
+// AtomicBool CAS spin lock -- NOT reentrant.
+//
+// If a mutating closure's body calls itself again (same underlying function,
+// same env pointer -> same lock word) on the SAME thread before the outer
+// call returns, the inner call's kryos_mutex_lock spins against a lock the
+// current thread already holds: with an AtomicBool CAS lock this cannot
+// resolve until the OS forcibly kills the process (no spurious wakeup that
+// would break it) -- a permanent hang, no spawn/threads required at all.
+//
+// This program stores the closure into a map cell it also reads from,
+// giving it a live handle to itself (maps are captured by shared handle,
+// not snapshotted -- see CLAUDE.md gotcha #23's map-mutation-boundary note).
+// `counter` is captured and mutated, which is what flags this closure as
+// needing the lock (`needs_capture_lock`) in the first place.
+fn main() {
+    let mut handlers: map<i64, fn(i64) -> i64> = {}
+    let mut counter: i64 = 0
+    let f = |n: i64| {
+        counter = counter + 1
+        if n > 1 {
+            let g = handlers[0]
+            g(n - 1)
+        } else {
+            counter
+        }
+    }
+    handlers[0] = f
+    println("about to call f(3) -- if this hangs, the lock is not reentrant")
+    let result = f(3)
+    println("result: " + to_string(result))
+}

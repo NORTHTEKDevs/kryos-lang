@@ -51,6 +51,246 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 10. LIVE CAPABILITY ESCAPE — a closure returned by a zero-cap wrapper function defeats `deny!()` on BOTH enforcement modes (round 6 red-team, found 2026-08-04) — NOT FIXED, HIGHEST PRIORITY (breaks the trust model)
+
+`tests/security/cap_escape_closure_wraps_closure.kry`. Minimal repro (single
+level of wrapping, no containers, no generics, no spawn):
+
+```kryos
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let wrapped = wrap_once(reader)
+    deny!(fs:read) {
+        let leaked = wrapped()
+        println("SINGLE-WRAPPED CLOSURE LEAK: " + leaked)
+    }
+}
+```
+
+**Verified live against `compiler/target/release/kryos.exe`, HEAD `00b3cf7`,
+no compiler changes:**
+```
+$ kryos run cap_escape_closure_wraps_closure.kry
+SINGLE-WRAPPED CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+$ echo $?
+0
+$ kryos check --strict-capabilities cap_escape_closure_wraps_closure.kry
+$ echo $?
+0
+```
+Both the default inferred mode and `--strict-capabilities` compile it clean
+and the secret prints from INSIDE `deny!(fs:read)`. A DOUBLE wrap
+(`wrap_once(wrap_once(reader))`) reproduces identically (also run live) —
+the single-wrap form is the minimal repro per bisection discipline.
+
+**Why this is a real escape, not a re-report of a closed item:** `main`
+legitimately holds `fs:read` outside the `deny!` block (same decisive-proof
+shape as the already-closed `cap_escape_closure_launder_deny.kry`), so the
+only question is whether the block's narrowing holds — it does not. This is
+a DIFFERENT mechanism from every closed closure-launder variant. Every
+closed repro forwards the *same* closure value `make_secret_reader` returned,
+through a container/HOF call site — exactly the shape the round-5
+fail-closed fix (`4ac8b83`) and its hot-param/companion data-flow tracing
+target: calling a fn-value parameter/local/container-element directly
+requires `[all]` unless the checker can trace the bound value to a
+fixed-source callee AT THAT CALL SITE. Here, `inner()` is never invoked
+inside `wrap_once`'s own body at `wrap_once`'s own call site — `wrap_once`
+only *constructs* a new lambda literal (`|| inner()`) and returns it; the
+actual invocation happens later, from inside that freshly-built closure, at
+an unrelated call site (`wrapped()`) with no syntactic link back to
+`wrap_once(reader)`'s argument. Confirmed by construction (grep, not
+guessed): `wrap_once` itself is correctly inferred to need zero
+capabilities (it never calls a gated builtin in its OWN frame — building a
+closure is not calling one), so the round-5 fail-closed rule has nothing to
+attach to at `wrap_once`'s call site. The rule evidently also isn't applied
+to the RETURNED lambda's own body when *that* lambda is later invoked — it
+gets attributed an empty capability set (rather than the `[all]`
+fail-closed default the two ruled-out attacks below correctly hit) — so
+`deny!(fs:read)` has nothing to reject. Not yet root-caused inside
+`checker.rs` itself (that requires touching the compiler, out of scope for
+this red-team pass per task rules) — the above is inference from black-box
+behavior plus the round-5 commit message, stated as a hypothesis, not a
+verified code-read.
+
+**Blast radius:** any zero-capability "decorator" helper that takes a
+privileged closure and returns a new closure that calls it — a completely
+ordinary shape (logging wrapper, memoizer, retry wrapper, `tap()`) —
+silently launders full authority through `deny!()`, and (untested this
+session, follow-up needed) plausibly through capability inference generally,
+not just `deny!` narrowing.
+
+**Ruled out this session (round 6), evidence attached, no escape:**
+- **Generic identity function round-trip** (`tests/security/
+  cap_escape_generic_identity_launder.kry`): `fn identity<T>(x: T) -> T {
+  return x }`, `let laundered = identity(reader)`, called inside
+  `deny!(fs:read)`. REJECTED (E0507) under both `kryos run` and
+  `--strict-capabilities` — `laundered()` is a direct fn-value invocation
+  whose provenance the checker could not resolve through the generic
+  passthrough, so it correctly fails closed to `[all]`, which the deny block
+  then blocks. The generic-identity vector does NOT bypass the fail-closed
+  default.
+- **Raw tuple payload (not Option/Result)** (`tests/security/
+  cap_escape_tuple_payload_direct.kry`): `fn zero_cap_tool(t: (fn() -> str,
+  i64)) -> str { let (f, _tag) = t  return f() }`, called with `(reader, 42)`
+  inside `deny!(fs:read)`. REJECTED (E0507) under both modes — same
+  fail-closed `[all]` outcome as the array/map/struct-field container
+  variants already closed; a bare tuple slot is not a distinct hole.
+
+**Not yet attempted this session (follow-up for whoever picks this up):**
+whether the SAME wrapping-closure mechanism defeats capability inference
+outright (no `deny!`, just an unannotated `main`) rather than only the
+`deny!` narrowing; whether it also escapes `--strict-capabilities` when the
+wrapper itself is required to declare `@capabilities()` explicitly (it
+currently infers to empty, which strict mode accepted without complaint —
+worth checking whether strict mode's OWN declaration requirement should have
+forced a human to notice and gate `wrap_once`, and didn't because inference
+computed empty before the human ever had to choose a value).
+
+---
+
+### 11. RED TEAM round 1, concurrency lens (2026-08-04): the LEDGER item 7b closure-lock fix has TWO real defects — a genuine self-deadlock (reentrancy) and a SILENT WRONG VALUE (stale non-mutated co-capture) — NOT FIXED
+
+Attacked LEDGER item 7b's serialize-every-call fix for the spawn-shared
+mutating-closure race (`kryos_mutex_lock`/`unlock` on a lock word in the
+closure's own env, `kryos-codegen-cranelift/src/codegen.rs:1791-1904`,
+mirrored in `kryos-codegen-llvm/src/codegen.rs`). Two independent, both-ways
+verified defects, both reachable with ZERO spawn/threads involved:
+
+**(a) CONFIRMED — self-deadlock via reentrancy.** `kryos_mutex_lock`
+(`kryos-stdlib-native/src/sync_prims.rs:44-66`) is a bare `AtomicBool` CAS
+spin-then-yield lock with no owner-thread tracking and no recursion count —
+not reentrant. `tests/security/attack_closure_lock_reentrant_deadlock.kry`
+stores a mutating closure into a `map<i64, fn(i64)->i64>` it also reads from
+(maps are captured by live shared handle, not snapshotted), giving the
+closure a genuine handle to ITSELF; the body calls that handle again before
+returning. The second `kryos_mutex_lock` call spins forever against a lock
+the CURRENT thread already holds. Live:
+```
+$ export KRYOS_STDLIB_DIR=.../compiler/stdlib
+$ timeout 15 kryos.exe run tests/security/attack_closure_lock_reentrant_deadlock.kry
+(no output — process force-killed after 15s)
+$ echo $?
+124
+```
+A recursion depth of 3 should complete in microseconds; instead the process
+had to be forcibly terminated by `timeout`. Root cause is structural, not
+shallow: the fix serializes by ENV POINTER (correct for concurrent DIFFERENT
+threads) but has no notion of "the current thread already holds this" — the
+standard fix is a reentrant mutex (owner-thread-id + recursion count), which
+was not used. **Caution for whoever re-runs this repro:** the compiled
+temp binary appears to survive the `timeout`-killed wrapper process as an
+orphan spinning a full CPU core (this session saw sustained, severe
+machine-wide slowdown for several minutes immediately after running it,
+consistent with an escaped spin-loop); hunt for and kill it after running,
+not just `kryos.exe`.
+
+**(b) CONFIRMED — silent wrong value: a non-mutated co-capture in a mutating
+closure is snapshotted at construction, not re-read, contradicting the
+documented by-reference promise.** CLAUDE.md gotcha #11 states any capture
+NOT mutated inside the closure body sees later outer mutations
+unconditionally. Read (not guessed) `kryos-mir/src/lower.rs`'s
+`box_scalar_captures` comment (~line 12562-12590): the mechanism that makes
+this promise true is scoped **deliberately narrowly to struct-literal-field
+lambdas only**, with the comment explicitly asserting a `let`-bound closure
+"keeps the existing, ALREADY-CORRECT `closure_locals` path" that "re-reads
+the outer variable's CURRENT value at every call site." That assumption is
+FALSE for a `let`-bound closure that ALSO mutates a different capture:
+`closure_locals` is populated only for NON-mutating closures (the
+direct-call fast path it enables is unsafe once a closure owns mutable
+state by move — `mutating_closures` doc comment, same file). So a
+`let`-bound mutating closure's OTHER, non-mutated scalar captures fall into
+neither "correct" mechanism and silently freeze at their construction-time
+value. `tests/security/attack_closure_costale_isolate.kry` isolates this
+with no throw, no spawn, no recursion — two plain sequential calls:
+```kryos
+let mut counter: i64 = 0
+let mut flag: i64 = 1
+let f = |n: i64| { counter = counter + n  counter + flag }
+let r1 = f(1)
+flag = 100
+let r2 = f(1)
+```
+Live, BOTH backends, deterministic, reverse-matches the stale-snapshot
+prediction exactly:
+```
+$ kryos run attack_closure_costale_isolate.kry
+r1=2 r2=3
+$ kryos build --release attack_closure_costale_isolate.kry -o /tmp/x && /tmp/x
+r1=2 r2=3
+```
+Expected if `flag` were live-visible per the documented promise: `r2=102`
+(counter=2, flag=100). Got `r2=3` (counter=2, flag=1 — the value at closure
+construction) on BOTH backends — backends agreeing means the defect is in
+shared MIR, matching where it was read from. `tests/security/attack_closure_mutate_then_throw_state.kry`
+shows the same root cause causing a worse-looking symptom: a plain outer
+reassignment (`trigger = 0`, meant to disarm a conditional `throw` inside a
+helper the closure calls) is silently ignored on the closure's next call, so
+an exception the caller specifically arranged NOT to happen fires anyway,
+uncaught, and kills the process (exit 101) — live, JIT:
+```
+baseline (no throw): g1=5 g2=10 expect g1=5 g2=10
+caught: boom
+kryos: uncaught exception: boom
+THROW_TEST_EXIT=101
+```
+Not fixed (attacker-only mandate this round). Whoever picks this up: the
+narrow fix is to extend `box_scalar_captures`'s boxing to `let`-bound
+mutating closures' non-mutated scalar co-captures too (the SAME
+`RValue::ArcAlloc`/`MirType::Shared` machinery already used for the
+struct-literal-field case and for the mutated-capture case itself in the
+same function) — a write-through at the outer assignment site plus a
+dereference at each call would close it without an ABI change.
+
+**RULED OUT this round (checked, not reproduced — evidence, not assumption):**
+- **Actor `kryos_actor_lock`/`unlock` reentrancy or throw-during-lock**
+  (`kryos-rt/src/actor.rs:249-286`, emitted by `Instruction::ActorSend`,
+  `kryos-codegen-cranelift/src/codegen.rs:3766-3858`): lock-send-unlock is
+  ONE MIR instruction with no throwable call in between (only
+  `kryos_string_clone`/`kryos_array_clone`/`kryos_map_clone`/
+  `kryos_arc_retain`, all `kryos_`-prefixed and therefore exempt from the
+  exception-check-and-early-return gate per `should_check`'s own filter,
+  `kryos-codegen-cranelift/src/codegen.rs:3160-3189`) — no window for a
+  throw mid-lock. (Read-only ruling — not independently stress-run this
+  session due to the environment failure below.)
+- **Actor mailbox self-send deadlock** (`kryos_actor_recv`, same file): the
+  mailbox `Mutex` is released via `Condvar::wait` while blocking, and `recv`
+  never holds the lock across message HANDLING (returns as soon as it
+  dequeues) — a handler that sends to itself cannot deadlock against its
+  own prior `recv`.
+- **Channel close/drain** (`kryos-rt/src/channel.rs`): plain `Mutex` +
+  `Condvar`, short critical sections, no lock held across a wait; no new
+  hazard found. The documented "`recv` on a closed drained channel returns
+  0, indistinguishable from `send(ch,0)`" ambiguity is unchanged, already
+  known — not re-reported.
+- **Spawn capture kinds** (`Instruction::Spawn`,
+  `kryos-codegen-cranelift/src/codegen.rs:3449-3670`): Str/Array/Map/
+  Function/Struct/Enum each have deliberate, individually-commented deep-
+  copy/clone/snapshot handling with a visible history of prior fixes per
+  kind. Read closely, found no new gap in the STATIC logic — but did not get
+  to run a fresh adversarial multi-thread stress pass against this surface
+  this session (see below); treat as read-only assurance, weaker than the
+  two executed findings above.
+
+**Session note:** bash/background-task infrastructure in this shared
+workspace became severely unresponsive for an extended period immediately
+following the reentrancy repro (matches `feedback_machine_slowness` class
+symptoms) — several planned probes (actor reentrancy live-run, spawn
+capture-kind adversarial stress, 50-run race-rate sampling per the task
+brief) were not completed as a result. Reported honestly as not done rather
+than invented.
+
+---
+
 ### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific — a free function leaks

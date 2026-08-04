@@ -1,0 +1,20 @@
+// ISOLATION probe (not necessarily an attack by itself): does a READ-ONLY
+// co-capture in a MUTATING closure see a later outer mutation, as CLAUDE.md
+// gotcha #11 claims for any capture the closure itself does not mutate?
+// No throw involved -- isolates whether the env-thunk mechanism a mutating
+// closure always uses (direct-call fast path is disabled for it) re-reads
+// a live value for its OTHER (non-mutated) captures each call, or snapshots
+// them once at closure-construction time.
+fn main() {
+    let mut counter: i64 = 0
+    let mut flag: i64 = 1
+    let f = |n: i64| {
+        counter = counter + n
+        counter + flag
+    }
+    let r1 = f(1)
+    flag = 100
+    let r2 = f(1)
+    println("r1=" + to_string(r1) + " r2=" + to_string(r2))
+    println("expect r1=2 (counter=1,flag=1); r2=102 if flag visible, r2=3 if flag stale/snapshotted")
+}
