@@ -16,4 +16,16 @@ the file here.
 | File | Bug |
 |---|---|
 | `closure_pipe_continuation_silent_wrong.kry` | The parser has no newline-awareness at all; a fresh statement starting with `\|\|` (the closure literal opener, which doubles as boolean-or) silently merges into the PREVIOUS statement's trailing expression when types allow, with zero diagnostic. `let c: bool = a` followed by `\|\| b` on the next line parses as `let c: bool = (a \|\| b)`, printing `true` instead of the intended `false`. Also the true root cause of what CLAUDE.md used to (mis)describe as "a closure that is the tail value of a block cannot capture that block's earlier let bindings" -- see CLAUDE.md gotcha #1/#11. Found during the closures/fn-values/captures hardening wave. |
-| `spawn_closure_shared_env_race.kry` | A closure captured by `spawn` and called from multiple OS threads is a genuine DATA RACE: `Instruction::Spawn`'s Function/Shared arm `kryos_arc_retain`s the closure's env box instead of snapshotting it (every other heap capture kind -- str/array/map/struct/enum -- deep-copies), so concurrent callers share one env allocation; a mutated-scalar capture's non-atomic call-then-writeback persistence mechanism (gotcha #11) then loses updates under contention. 10/10 failures on JIT, 7/10 on AOT at 50 threads x 2000 calls. Found during the spawn/actors/channels/sync hardening wave. |
+
+FIXED and folded into `tests/conformance/conf_spawn_closure_capture_lock.kry`:
+`spawn_closure_shared_env_race.kry` (LEDGER item 7b) -- a closure captured
+by `spawn` and called from multiple OS threads was a genuine DATA RACE (a
+mutated-scalar capture's non-atomic call-then-writeback persistence
+mechanism lost updates under contention: 10/10 failures on JIT, 7/10 on AOT
+at 50 threads x 2000 calls). Fix: every call to a mutating closure's
+underlying function is now serialized under a lock scoped to that
+closure's own env allocation (one extra i64 "lock word" slot at the end of
+the env, same ARC lifetime as the env itself -- no new allocation), applied
+inside the `{name}_env` thunk that every call to a mutating closure value
+goes through (the direct-call fast path is unconditionally disabled for
+mutating closures already). See `docs/09-concurrency.md`'s spawn section.

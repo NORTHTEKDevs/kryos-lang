@@ -1,0 +1,74 @@
+// Conformance: a closure/fn-value shared across `spawn`-ed threads mutates
+// its own persisted capture state CORRECTLY under concurrent calls.
+// (Reference manual chapter 9, concurrency -- "Sharing is now safe.")
+//
+// LEDGER item 7b. A closure captured by `spawn` does NOT snapshot (unlike
+// every other capture kind) -- it is reference-counted and SHARED
+// (`kryos_arc_retain`), by design, so a single stateful closure can act as
+// shared state across threads the same way a Mutex/atomic_int/actor does.
+// Before this fix, that sharing was a genuine, reproducible cross-thread
+// DATA RACE: two threads calling the SAME closure concurrently could both
+// read its persisted capture's pre-mutation value before either wrote back,
+// silently losing updates (~100% failure rate on Cranelift/JIT, ~65-70% on
+// LLVM/AOT at this scale -- see git history for
+// `tests/known_failures/spawn_closure_shared_env_race.kry`, the repro this
+// test supersedes). The fix serializes every call to a mutating closure's
+// underlying function -- regardless of which thread or call path reaches
+// it -- under a lock scoped to that closure's own env allocation (a plain
+// blocking mutex around the WHOLE call, not a CAS retry, so no side effect
+// in the closure body can be duplicated).
+//
+// A race is probabilistic. This assertion is exact (the total must be the
+// mathematically correct value, not merely "close"), so ANY lost update
+// fails the gate deterministically -- no flake tolerance, unlike a
+// statistical check. 30 threads x 1000 calls each keeps CI runtime bounded
+// while still exercising real contention (the wave that fixed this measured
+// 50/50 clean runs at 50 threads x 2000 calls on both backends).
+
+use std::sync::{wait_group}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let mut count: i64 = 0
+    let bump = || {
+        count = count + 1
+        count
+    }
+
+    let wg = wait_group()
+    let threads = 30
+    let per_thread = 1000
+    wg.add(threads)
+    let mut i = 0
+    while i < threads {
+        spawn {
+            let mut j = 0
+            while j < per_thread {
+                bump()
+                j = j + 1
+            }
+            wg.done()
+        }
+        i = i + 1
+    }
+    wg.wait()
+
+    // Read the CLOSURE's own persisted state via its own return value (not
+    // the outer `count`, which stays frozen at 0 by design -- gotcha #11's
+    // by-move capture semantics; that is a separate, already-correct
+    // boundary from the one this test checks).
+    let final_val = bump()
+    let expected = threads * per_thread + 1
+    expect(
+        final_val == expected,
+        "shared mutating closure lost update(s) under concurrent spawn calls: got {final_val} want {expected}"
+    )
+
+    println("conformance spawn closure-capture lock: PASS")
+}

@@ -264,6 +264,28 @@ pub struct MirAttributes {
     /// pre-Return `StoreDeref`), so this vec only ever holds Struct-typed
     /// capture indices.
     pub mutated_capture_ptr_slots: Vec<u32>,
+    /// Set (in lower.rs's Lambda arm) whenever this lambda has ANY mutated
+    /// capture (scalar or struct -- same condition that populates
+    /// `mutating_closures`/`mutated_capture_ptr_slots`). LEDGER item 7b: a
+    /// closure VALUE shared across `spawn`-ed threads is a single retained
+    /// env allocation (`kryos_arc_retain`, not a snapshot -- see docs/09-
+    /// concurrency.md), so two threads calling the SAME closure concurrently
+    /// race on its persisted-capture load-mutate-store with no lock. Both
+    /// codegen backends read this flag to (a) reserve one extra i64 "lock
+    /// word" slot at the END of the closure's env allocation (offset
+    /// `(1 + captures.len()) * 8`, seeded 0 -- same allocation, same ARC
+    /// lifetime as the env itself, so this adds no new allocation and no new
+    /// leak) and (b) wrap the ENTIRE underlying-function call inside the
+    /// generated `{name}_env` thunk -- the ONE call path every invocation of
+    /// a mutating closure value goes through, since `closure_locals`'s
+    /// direct-call fast path is unconditionally disabled for exactly this
+    /// closure set -- with `kryos_mutex_lock`/`kryos_mutex_unlock` on that
+    /// word, serializing concurrent calls to the SAME closure value. A plain
+    /// blocking lock (not a CAS retry) is deliberate: each caller executes
+    /// the body exactly once, so no side effect in the closure body can be
+    /// duplicated. False for ordinary (non-mutating) closures and all
+    /// non-closure functions -- adds no overhead there.
+    pub needs_capture_lock: bool,
 }
 
 /// A single MIR function.

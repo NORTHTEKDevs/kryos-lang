@@ -440,7 +440,16 @@ pub fn compile_module_with_options(
     // what makes a mutating counter/accumulator closure's state persist
     // across calls instead of resetting to the initial capture value every
     // time -- see the thunk-body loop below.
-    let mut closure_info: BTreeMap<String, (usize, usize, Vec<Option<MirType>>, Option<u32>)> =
+    // 5th tuple field: `needs_capture_lock` from `MirFunction::attributes`
+    // (kryos-mir/src/lower.rs), set whenever this closure has ANY mutated
+    // capture. LEDGER item 7b: the closure's env allocation is SHARED (not
+    // snapshotted) across `spawn`-ed threads via `kryos_arc_retain`, so
+    // concurrent calls through the same env race on the unlocked persisted-
+    // capture load-mutate-store. When true, the thunk body loop below wraps
+    // the underlying-function call with `kryos_mutex_lock`/`unlock` on a
+    // lock word stored in one extra env slot (see the env-alloc site in
+    // `RValue::Closure` codegen).
+    let mut closure_info: BTreeMap<String, (usize, usize, Vec<Option<MirType>>, Option<u32>, bool)> =
         BTreeMap::new();
     for mir_func in &module.functions {
         for bb in &mir_func.blocks {
@@ -455,14 +464,15 @@ pub fn compile_module_with_options(
                 } = inst
                 {
                     if !closure_info.contains_key(func_name.as_str()) {
-                        let (user_params, mutated_slot) =
+                        let (user_params, mutated_slot, needs_lock) =
                             if let Some(f) = mir_func_map.get(func_name.as_str()) {
                                 (
                                     f.params.len().saturating_sub(captures.len()),
                                     f.attributes.mutated_capture_slot,
+                                    f.attributes.needs_capture_lock,
                                 )
                             } else {
-                                (0, None)
+                                (0, None, false)
                             };
                         let cap_types: Vec<Option<MirType>> = captures
                             .iter()
@@ -477,7 +487,7 @@ pub fn compile_module_with_options(
                             .collect();
                         closure_info.insert(
                             func_name.clone(),
-                            (captures.len(), user_params, cap_types, mutated_slot),
+                            (captures.len(), user_params, cap_types, mutated_slot, needs_lock),
                         );
                     }
                 }
@@ -485,11 +495,21 @@ pub fn compile_module_with_options(
         }
     }
 
+    // LEDGER item 7b: func names (of closures' OWN underlying functions)
+    // whose env allocation needs the extra lock-word slot -- consulted by
+    // `RValue::Closure` codegen (env alloc) via `FuncTranslator::
+    // closure_needs_lock` during the per-function translate loop below.
+    let closure_needs_lock_set: HashSet<String> = closure_info
+        .iter()
+        .filter(|(_, (_, _, _, _, needs_lock))| *needs_lock)
+        .map(|(name, _)| name.clone())
+        .collect();
+
     // Declare thunk functions in the module.
     let mut thunk_ids: HashMap<String, FuncId> = HashMap::new();
     {
         let call_conv = object_module.isa().default_call_conv();
-        for (func_name, (_, user_param_count, _, _)) in &closure_info {
+        for (func_name, (_, user_param_count, _, _, _)) in &closure_info {
             let env_thunk_name = format!("{func_name}_env");
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // env pointer
@@ -508,7 +528,7 @@ pub fn compile_module_with_options(
     let mut dropper_ids: HashMap<String, FuncId> = HashMap::new();
     {
         let call_conv = object_module.isa().default_call_conv();
-        for (func_name, (_, _, cap_types, _)) in &closure_info {
+        for (func_name, (_, _, cap_types, _, _)) in &closure_info {
             let has_heap_caps = cap_types.iter().any(|ct| {
                 matches!(
                     ct,
@@ -1402,6 +1422,7 @@ pub fn compile_module_with_options(
                 options.checked_arithmetic,
                 &module.copy_structs,
                 &user_func_names,
+                &closure_needs_lock_set,
             )?;
             builder.seal_all_blocks();
             builder.finalize();
@@ -1712,8 +1733,39 @@ pub fn compile_module_with_options(
         }
     }
 
+    // LEDGER item 7b: declare the native mutex primitives once, up front,
+    // if ANY closure in this module needs a lock. Reused inside the
+    // thunk-body loop below to serialize concurrent calls to a shared
+    // (spawn-retained, not snapshotted) closure env -- see
+    // `closure_info`'s 5th field and `MirAttributes::needs_capture_lock`.
+    let mutex_lock_unlock_ids: Option<(FuncId, FuncId)> = if closure_info
+        .values()
+        .any(|(_, _, _, _, needs_lock)| *needs_lock)
+    {
+        let call_conv = object_module.isa().default_call_conv();
+        // I64 return (not the Rust-accurate I32) to match the generic
+        // all-I64 signature `ensure_func_ref_with_args` uses for ANY extern
+        // call by name -- a program that ALSO calls into `std::sync::Mutex`/
+        // `wait_group`/etc. (which reach `kryos_mutex_lock` via that generic
+        // path) would otherwise hit a hard Cranelift module error
+        // ("signature ... is incompatible with previous declaration") the
+        // moment both declarations of the same symbol disagree.
+        let mut sig = Signature::new(call_conv);
+        sig.params.push(AbiParam::new(types::I64));
+        sig.returns.push(AbiParam::new(types::I64));
+        let lock_id = object_module.declare_function("kryos_mutex_lock", Linkage::Import, &sig)?;
+        let unlock_id =
+            object_module.declare_function("kryos_mutex_unlock", Linkage::Import, &sig)?;
+        func_ids.insert("kryos_mutex_lock".to_string(), lock_id);
+        func_ids.insert("kryos_mutex_unlock".to_string(), unlock_id);
+        Some((lock_id, unlock_id))
+    } else {
+        None
+    };
+
     // Generate env-wrapper (thunk) function bodies for closures.
-    for (func_name, (num_captures, user_param_count, _, mutated_slot)) in &closure_info {
+    for (func_name, (num_captures, user_param_count, _, mutated_slot, needs_lock)) in &closure_info
+    {
         let env_thunk_id = thunk_ids[func_name.as_str()];
         let call_conv = object_module.isa().default_call_conv();
 
@@ -1735,6 +1787,22 @@ pub fn compile_module_with_options(
 
             let block_params: Vec<_> = builder.block_params(entry).to_vec();
             let env_val = block_params[0];
+
+            // LEDGER item 7b: acquire the closure's lock word (env slot
+            // `num_captures`, offset `(num_captures+1)*8`) BEFORE touching
+            // any capture, so the entire underlying-function call below --
+            // including its own Deref-at-entry / StoreDeref-before-return
+            // persistence writeback -- runs under the lock.
+            let lock_addr = if *needs_lock {
+                let (lock_id, _) = mutex_lock_unlock_ids.expect("declared above when any closure needs a lock");
+                let lock_offset = ((*num_captures + 1) * 8) as i64;
+                let addr = builder.ins().iadd_imm(env_val, lock_offset);
+                let lock_ref = object_module.declare_func_in_func(lock_id, builder.func);
+                builder.ins().call(lock_ref, &[addr]);
+                Some(addr)
+            } else {
+                None
+            };
 
             // Load captures from env at offsets 8, 16, ...
             let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
@@ -1824,6 +1892,17 @@ pub fn compile_module_with_options(
                     .store(MemFlags::new(), ret_val, env_val, offset);
             }
 
+            // LEDGER item 7b: release the lock acquired at thunk entry.
+            // This is the SOLE return point in this thunk, so this is the
+            // one place that needs to unlock regardless of which branch
+            // produced `ret_val`.
+            if let Some(addr) = lock_addr {
+                let (_, unlock_id) =
+                    mutex_lock_unlock_ids.expect("declared above when any closure needs a lock");
+                let unlock_ref = object_module.declare_func_in_func(unlock_id, builder.func);
+                builder.ins().call(unlock_ref, &[addr]);
+            }
+
             builder.ins().return_(&[ret_val]);
             builder.seal_all_blocks();
             builder.finalize();
@@ -1874,7 +1953,7 @@ pub fn compile_module_with_options(
             }
         }
     }
-    for (func_name, (_, _, cap_types, _)) in &closure_info {
+    for (func_name, (_, _, cap_types, _, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
             let call_conv = object_module.isa().default_call_conv();
             let mut sig = Signature::new(call_conv);
@@ -2431,6 +2510,12 @@ struct FuncTranslator<'a> {
     /// builtin of the same name (e.g. user-defined `index_of(arr, target)`
     /// must not be routed to `kryos_builtin_index_of`).
     user_func_names: &'a HashSet<String>,
+    /// Closures (by underlying function name) whose env allocation needs an
+    /// extra lock-word slot -- LEDGER item 7b, mirrors the LLVM backend's
+    /// `closure_needs_lock`. Consulted by `RValue::Closure` codegen (env
+    /// alloc) below; the thunk-body loop that acquires/releases the lock
+    /// lives in the module-level compile function, not here.
+    closure_needs_lock: &'a HashSet<String>,
 }
 
 /// Deep-copy an `@copy` struct value `val` into a freshly calloc'd block,
@@ -2781,6 +2866,7 @@ pub fn translate_function<M: Module>(
     checked_arithmetic: bool,
     copy_structs: &HashSet<String>,
     user_func_names: &HashSet<String>,
+    closure_needs_lock: &HashSet<String>,
 ) -> Result<(), CodegenError> {
 
     let mut translator = FuncTranslator {
@@ -2799,6 +2885,7 @@ pub fn translate_function<M: Module>(
         checked_arithmetic,
         copy_structs,
         user_func_names,
+        closure_needs_lock,
     };
 
     // Create Cranelift blocks for each MIR basic block.
@@ -5826,8 +5913,15 @@ fn translate_rvalue<M: Module>(
             let has_thunk = translator.func_ids.contains_key(&env_thunk_name);
 
             if has_thunk {
+                // LEDGER item 7b: a mutating closure gets ONE extra i64
+                // "lock word" slot at the end of the env (offset
+                // `(1+captures.len())*8`), seeded 0 below and used by the
+                // module-level thunk-body loop to serialize concurrent
+                // calls to the SAME shared (spawn-retained) env -- see
+                // `closure_needs_lock`'s doc comment.
+                let needs_lock = translator.closure_needs_lock.contains(func_name.as_str());
                 // Allocate env via ARC: [thunk_ptr, cap0, cap1, ...]
-                let env_slots = 1 + captures.len();
+                let env_slots = 1 + captures.len() + if needs_lock { 1 } else { 0 };
                 let env_size = (env_slots * 8) as i64;
                 let size_val = builder.ins().iconst(types::I64, env_size);
                 let arc_alloc_ref =
@@ -5953,6 +6047,19 @@ fn translate_rvalue<M: Module>(
                     };
 
                     builder.ins().store(MemFlags::new(), store_val, ptr, offset);
+                }
+
+                // Seed the lock word (LEDGER item 7b) at the slot right
+                // after the last capture -- 0 = unlocked, matching
+                // `kryos_mutex_lock`'s `AtomicBool::new(false)` layout.
+                // Lives inside this SAME env allocation, so it shares the
+                // env's ARC lifetime; no separate alloc/drop needed.
+                if needs_lock {
+                    let lock_offset = ((1 + captures.len()) * 8) as i32;
+                    let zero = builder.ins().iconst(types::I64, 0);
+                    builder
+                        .ins()
+                        .store(MemFlags::new(), zero, ptr, lock_offset);
                 }
 
                 // Register a dropper function so captured heap values are freed

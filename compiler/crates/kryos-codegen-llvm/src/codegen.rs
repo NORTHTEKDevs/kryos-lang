@@ -106,6 +106,13 @@ pub struct LlvmCodegen {
     /// to the persistent env block instead of a private byval copy discarded
     /// at return -- see `emit_closure_thunks` and `emit_function`.
     closure_struct_ptr_slot: HashMap<String, Vec<u32>>,
+    /// Closures whose underlying-function call must be serialized under a
+    /// lock (LEDGER item 7b), copied from `MirFunction::attributes.
+    /// needs_capture_lock` (see kryos-mir/src/lower.rs). The lock word lives
+    /// as one extra i64 slot at the END of the closure's env allocation
+    /// (offset `(1 + captures.len()) * 8`) -- see `RValue::Closure` codegen
+    /// (env alloc) and `emit_closure_thunks` (lock/unlock around the call).
+    closure_needs_lock: HashSet<String>,
     /// Trait vtable map from MIR: (concrete_type, trait_name) -> ordered list
     /// of mangled method names. Used to materialize trait objects and
     /// dispatch VtableCall.
@@ -159,6 +166,7 @@ impl LlvmCodegen {
             closure_user_sig: HashMap::new(),
             closure_mutated_slot: HashMap::new(),
             closure_struct_ptr_slot: HashMap::new(),
+            closure_needs_lock: HashSet::new(),
             trait_vtables: HashMap::new(),
             func_sig_aggs: HashMap::new(),
             emitted_function_names: Vec::new(),
@@ -248,6 +256,7 @@ impl LlvmCodegen {
         self.closure_user_sig.clear();
         self.closure_mutated_slot.clear();
         self.closure_struct_ptr_slot.clear();
+        self.closure_needs_lock.clear();
         self.module_can_throw = module_has_throw(&module.functions);
         for func in &module.functions {
             self.prescan_function(func);
@@ -313,6 +322,9 @@ impl LlvmCodegen {
                                         func_name.clone(),
                                         mf.attributes.mutated_capture_ptr_slots.clone(),
                                     );
+                                }
+                                if mf.attributes.needs_capture_lock {
+                                    self.closure_needs_lock.insert(func_name.clone());
                                 }
                             }
                         }
@@ -426,6 +438,7 @@ impl LlvmCodegen {
         self.closure_user_sig.clear();
         self.closure_mutated_slot.clear();
         self.closure_struct_ptr_slot.clear();
+        self.closure_needs_lock.clear();
         self.module_can_throw = module_has_throw(functions);
 
         for func in functions {
@@ -505,6 +518,9 @@ impl LlvmCodegen {
                                         func_name.clone(),
                                         mf.attributes.mutated_capture_ptr_slots.clone(),
                                     );
+                                }
+                                if mf.attributes.needs_capture_lock {
+                                    self.closure_needs_lock.insert(func_name.clone());
                                 }
                             }
                         }
@@ -1692,6 +1708,28 @@ impl LlvmCodegen {
             ));
             self.emit_line("entry:");
 
+            // LEDGER item 7b: acquire the closure's lock word (env slot
+            // `cap_types.len()`, i.e. offset `(cap_types.len()+1)*8`) BEFORE
+            // touching any capture, so the entire underlying-function call
+            // below -- including its own Deref-at-entry / StoreDeref-before-
+            // return persistence writeback -- runs under the lock. See
+            // `closure_needs_lock`'s doc comment.
+            let lock_slot: Option<u32> = if self.closure_needs_lock.contains(func_name.as_str()) {
+                Some(cap_types.len() as u32)
+            } else {
+                None
+            };
+            if let Some(slot) = lock_slot {
+                let lock_ptr = self.next_temp();
+                self.emit_line(&format!(
+                    "  {lock_ptr} = getelementptr i64, ptr %env, i64 {}",
+                    slot + 1
+                ));
+                let lock_i64 = self.next_temp();
+                self.emit_line(&format!("  {lock_i64} = ptrtoint ptr {lock_ptr} to i64"));
+                self.emit_line(&format!("  call void @kryos_mutex_lock(i64 {lock_i64})"));
+            }
+
             // Load each capture from env[i+1] (i64-typed slots).
             let mut call_args: Vec<String> = Vec::new();
             let underlying_params = self
@@ -1889,23 +1927,23 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  call void @{func_name}({sret_args})"));
                 let i = self.next_temp();
                 self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
-                self.emit_closure_thunk_return(mutated_slot, &i);
+                self.emit_closure_thunk_return(mutated_slot, lock_slot, &i);
             } else if underlying_ret == "void" {
                 self.emit_line(&format!(
                     "  call void @{func_name}({arg_list})"
                 ));
-                self.emit_line("  ret i64 0");
+                self.emit_closure_thunk_return(mutated_slot, lock_slot, "0");
             } else {
                 let r = self.next_temp();
                 self.emit_line(&format!(
                     "  {r} = call {underlying_ret} @{func_name}({arg_list})"
                 ));
                 if underlying_ret == "i64" {
-                    self.emit_closure_thunk_return(mutated_slot, &r);
+                    self.emit_closure_thunk_return(mutated_slot, lock_slot, &r);
                 } else if underlying_ret == "ptr" {
                     let i = self.next_temp();
                     self.emit_line(&format!("  {i} = ptrtoint ptr {r} to i64"));
-                    self.emit_closure_thunk_return(mutated_slot, &i);
+                    self.emit_closure_thunk_return(mutated_slot, lock_slot, &i);
                 } else if underlying_ret.starts_with('{')
                     || underlying_ret.starts_with('%')
                     || underlying_ret.starts_with('[')
@@ -1927,10 +1965,10 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  store {underlying_ret} {r}, ptr {buf}"));
                     let i = self.next_temp();
                     self.emit_line(&format!("  {i} = ptrtoint ptr {buf} to i64"));
-                    self.emit_closure_thunk_return(mutated_slot, &i);
+                    self.emit_closure_thunk_return(mutated_slot, lock_slot, &i);
                 } else {
                     let coerced = self.coerce_value(&r, &underlying_ret, "i64");
-                    self.emit_closure_thunk_return(mutated_slot, &coerced);
+                    self.emit_closure_thunk_return(mutated_slot, lock_slot, &coerced);
                 }
             }
             self.emit_line("}");
@@ -1945,7 +1983,18 @@ impl LlvmCodegen {
     /// is how a mutating counter/accumulator closure's new value survives
     /// past this call instead of the next call re-reading the stale
     /// original capture value.
-    fn emit_closure_thunk_return(&mut self, mutated_slot: Option<u32>, val: &str) {
+    ///
+    /// `lock_slot`, when present (LEDGER item 7b), releases the closure's
+    /// lock word before returning -- this is the SOLE return point every
+    /// path through `emit_closure_thunks` funnels through, so this is the
+    /// one place that needs to unlock regardless of which branch produced
+    /// `val`.
+    fn emit_closure_thunk_return(
+        &mut self,
+        mutated_slot: Option<u32>,
+        lock_slot: Option<u32>,
+        val: &str,
+    ) {
         if let Some(slot) = mutated_slot {
             let slot_ptr = self.next_temp();
             self.emit_line(&format!(
@@ -1953,6 +2002,16 @@ impl LlvmCodegen {
                 slot + 1
             ));
             self.emit_line(&format!("  store i64 {val}, ptr {slot_ptr}"));
+        }
+        if let Some(slot) = lock_slot {
+            let lock_ptr = self.next_temp();
+            self.emit_line(&format!(
+                "  {lock_ptr} = getelementptr i64, ptr %env, i64 {}",
+                slot + 1
+            ));
+            let lock_i64 = self.next_temp();
+            self.emit_line(&format!("  {lock_i64} = ptrtoint ptr {lock_ptr} to i64"));
+            self.emit_line(&format!("  call void @kryos_mutex_unlock(i64 {lock_i64})"));
         }
         self.emit_line(&format!("  ret i64 {val}"));
     }
@@ -7658,7 +7717,13 @@ impl LlvmCodegen {
                 {
                     // Allocate closure env via ARC: [thunk_fn_ptr: i64, cap0: i64, cap1: i64, ...]
                     // Uniform calling convention regardless of capture count.
-                    let env_size = (1 + captures.len()) * 8;
+                    // LEDGER item 7b: a mutating closure gets ONE extra i64
+                    // "lock word" slot at the end (offset (1+captures.len())*8),
+                    // seeded 0 below and used by `emit_closure_thunks` to
+                    // serialize concurrent calls to the SAME shared env --
+                    // see `closure_needs_lock`'s doc comment.
+                    let needs_lock = self.closure_needs_lock.contains(func_name.as_str());
+                    let env_size = (1 + captures.len() + if needs_lock { 1 } else { 0 }) * 8;
                     let env_i64 = self.next_temp();
                     self.emit_line(&format!(
                         "  {env_i64} = call i64 @kryos_arc_alloc_i64(i64 {env_size})"
@@ -7807,6 +7872,20 @@ impl LlvmCodegen {
                                 }
                             }
                         }
+                    }
+
+                    // Seed the lock word (LEDGER item 7b) at the slot right
+                    // after the last capture -- 0 = unlocked, matching
+                    // `kryos_mutex_lock`'s `AtomicBool::new(false)` layout.
+                    // Lives inside this SAME env allocation, so it shares the
+                    // env's ARC lifetime; no separate alloc/drop needed.
+                    if needs_lock {
+                        let lock_ptr = self.next_temp();
+                        self.emit_line(&format!(
+                            "  {lock_ptr} = getelementptr i64, ptr {env_ptr}, i64 {}",
+                            1 + captures.len()
+                        ));
+                        self.emit_line(&format!("  store i64 0, ptr {lock_ptr}"));
                     }
 
                     // Register dropper so captured heap values are freed when

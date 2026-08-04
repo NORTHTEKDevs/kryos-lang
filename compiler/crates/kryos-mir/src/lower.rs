@@ -12732,6 +12732,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // never safe once the closure owns mutable state by move.
             if !mutated_captures.is_empty() {
                 ctx.mutating_closures.insert(lambda_name.clone());
+                // LEDGER item 7b: this closure persists state across calls
+                // via the boxed-capture / struct-ptr-slot mechanisms below,
+                // with no lock. Sharing the resulting closure VALUE across
+                // `spawn`-ed threads (a plain `kryos_arc_retain`, not a
+                // snapshot) turns the unlocked load-mutate-store into a
+                // cross-thread data race. Tell codegen to serialize calls to
+                // this closure's underlying function -- see
+                // `MirAttributes::needs_capture_lock`'s doc comment.
+                mir_func.attributes.needs_capture_lock = true;
                 // Aggregate (struct) mutated-capture case: no tail-shape
                 // restriction needed here (unlike the OLD scalar mechanism,
                 // superseded above) -- see `mutated_capture_ptr_slots`' doc

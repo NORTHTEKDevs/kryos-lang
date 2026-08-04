@@ -4,7 +4,7 @@
 //! expressions). The JIT module allocates executable memory and returns
 //! raw function pointers that can be called directly.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use cranelift_codegen::ir::{types, AbiParam, Function, InstBuilder, MemFlags, Signature, UserFuncName};
 use cranelift_codegen::settings::{self, Configurable};
@@ -1622,8 +1622,11 @@ impl JitCompiler {
         // causing a segfault (regression test: tests/smoke/test_fn_pointer).
         let mir_func_map: HashMap<&str, &MirFunction> =
             functions.iter().map(|f| (f.name.as_str(), f)).collect();
-        // closure_name -> (num_captures, user_param_count)
-        let mut closure_info: HashMap<String, (usize, usize)> = HashMap::new();
+        // closure_name -> (num_captures, user_param_count, needs_lock).
+        // `needs_lock` (LEDGER item 7b) is copied from `MirFunction::
+        // attributes.needs_capture_lock` -- see the AOT codegen's matching
+        // `closure_info` in codegen.rs for the full rationale.
+        let mut closure_info: HashMap<String, (usize, usize, bool)> = HashMap::new();
         for mir_func in functions {
             for bb in &mir_func.blocks {
                 for inst in &bb.instructions {
@@ -1633,20 +1636,30 @@ impl JitCompiler {
                     } = inst
                     {
                         if !closure_info.contains_key(func_name.as_str()) {
-                            let user_params = if let Some(f) = mir_func_map.get(func_name.as_str()) {
-                                f.params.len().saturating_sub(captures.len())
-                            } else {
-                                0
-                            };
-                            closure_info.insert(func_name.clone(), (captures.len(), user_params));
+                            let (user_params, needs_lock) =
+                                if let Some(f) = mir_func_map.get(func_name.as_str()) {
+                                    (
+                                        f.params.len().saturating_sub(captures.len()),
+                                        f.attributes.needs_capture_lock,
+                                    )
+                                } else {
+                                    (0, false)
+                                };
+                            closure_info
+                                .insert(func_name.clone(), (captures.len(), user_params, needs_lock));
                         }
                     }
                 }
             }
         }
+        let closure_needs_lock_set: HashSet<String> = closure_info
+            .iter()
+            .filter(|(_, (_, _, needs_lock))| *needs_lock)
+            .map(|(name, _)| name.clone())
+            .collect();
 
         let mut thunk_ids: HashMap<String, cranelift_module::FuncId> = HashMap::new();
-        for (func_name, (_, user_param_count)) in &closure_info {
+        for (func_name, (_, user_param_count, _)) in &closure_info {
             let env_thunk_name = format!("{func_name}_env");
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64)); // env pointer
@@ -1693,6 +1706,7 @@ impl JitCompiler {
                     false,
                     copy_structs,
                     &user_func_names,
+                    &closure_needs_lock_set,
                 )?;
                 builder.seal_all_blocks();
                 builder.finalize();
@@ -1713,10 +1727,29 @@ impl JitCompiler {
             })?;
         }
 
+        // LEDGER item 7b: `kryos_mutex_lock`/`kryos_mutex_unlock` are
+        // already unconditionally declared (I64 params/return, matching
+        // `ensure_func_ref_with_args`'s generic convention) by
+        // `declare_runtime_builtins` above -- re-declaring them here with a
+        // different signature (e.g. the Rust-accurate I32 return) is a hard
+        // Cranelift module error ("signature ... is incompatible with
+        // previous declaration") the moment a program also uses
+        // `std::sync::Mutex`/`wait_group`/any other sync primitive that
+        // routes through the same symbol via the generic extern-call path.
+        // Just reuse the existing FuncIds.
+        let mutex_lock_unlock_ids: Option<(FuncId, FuncId)> = if closure_info
+            .values()
+            .any(|(_, _, needs_lock)| *needs_lock)
+        {
+            Some((func_ids["kryos_mutex_lock"], func_ids["kryos_mutex_unlock"]))
+        } else {
+            None
+        };
+
         // Phase 2.5: Generate the env-thunk function bodies. Each thunk loads
         // captures from env at offsets 8.. (count=num_captures), appends user
         // args from its own parameters, and tail-calls the original function.
-        for (func_name, (num_captures, user_param_count)) in &closure_info {
+        for (func_name, (num_captures, user_param_count, needs_lock)) in &closure_info {
             let env_thunk_id = thunk_ids[func_name.as_str()];
 
             let mut sig = Signature::new(call_conv);
@@ -1739,6 +1772,24 @@ impl JitCompiler {
 
                 let block_params: Vec<_> = builder.block_params(entry).to_vec();
                 let env_val = block_params[0];
+
+                // LEDGER item 7b: acquire the closure's lock word (env slot
+                // `num_captures`, offset `(num_captures+1)*8`) BEFORE
+                // touching any capture, so the entire underlying-function
+                // call below -- including its own Deref-at-entry /
+                // StoreDeref-before-return persistence writeback -- runs
+                // under the lock.
+                let lock_addr = if *needs_lock {
+                    let (lock_id, _) = mutex_lock_unlock_ids
+                        .expect("declared above when any closure needs a lock");
+                    let lock_offset = ((*num_captures + 1) * 8) as i64;
+                    let addr = builder.ins().iadd_imm(env_val, lock_offset);
+                    let lock_ref = self.module.declare_func_in_func(lock_id, builder.func);
+                    builder.ins().call(lock_ref, &[addr]);
+                    Some(addr)
+                } else {
+                    None
+                };
 
                 // Load captures from env at offsets 8, 16, ...
                 let mut call_args: Vec<cranelift_codegen::ir::Value> = Vec::new();
@@ -1807,6 +1858,15 @@ impl JitCompiler {
                         result
                     }
                 };
+
+                // LEDGER item 7b: release the lock acquired at thunk entry.
+                // This is the SOLE return point in this thunk.
+                if let Some(addr) = lock_addr {
+                    let (_, unlock_id) = mutex_lock_unlock_ids
+                        .expect("declared above when any closure needs a lock");
+                    let unlock_ref = self.module.declare_func_in_func(unlock_id, builder.func);
+                    builder.ins().call(unlock_ref, &[addr]);
+                }
 
                 builder.ins().return_(&[ret_val]);
                 builder.seal_all_blocks();
@@ -1909,6 +1969,7 @@ impl JitCompiler {
                 false, // no checked arithmetic in JIT/REPL
                 &empty_copy_structs,
                 &single_user_func_names,
+                &HashSet::new(),
             )?;
             builder.seal_all_blocks();
             builder.finalize();

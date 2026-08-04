@@ -465,160 +465,22 @@ through `[any]`/`format`) remains correct and is not a papercut users hit
 by accident (the element-typed `std::iter` HOFs are already generic and
 avoid `any` entirely, per the same gotcha).
 
-### 7b. a closure/fn-value captured by `spawn` does NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates -- STILL NOT FIXED (deep-copy attempted and RULED OUT this session, with evidence)
+### 7b. FIXED — see CLOSED table: "a closure/fn-value captured by `spawn` did NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates"
 
-`tests/known_failures/spawn_closure_shared_env_race.kry` (repro below,
-re-verified fresh this session on the CURRENT HEAD -- AFTER item 7's fix
-above -- at 10/10 JIT and 9/20 AOT, 50 threads x 2000 calls each; the
-original session's 7/10 AOT figure was in the same range, both are real).
-Ranks with item 7 per this ledger's doctrine -- a silent wrong answer
-outranks a crash -- and is the SAME underlying mechanism (a mutated
-capture's persistent state, now item 7's addressable heap-cell box) turning
-into a real, measured race the moment the closure is shared across threads
-instead of called from one.
-
-Every OTHER `spawn` capture kind is a documented, verified SNAPSHOT: str,
-array, map, struct, and (as of `721a9cf`, this session's predecessor) enum
-are all deep-copied at the `Instruction::Spawn` boundary so the spawned
-thread privately owns its capture (`docs/09-concurrency.md`: "every capture
-is a snapshot ... this holds uniformly for arrays, structs, maps, and
-strings"). Read directly in both backends' `Instruction::Spawn` arg-copy
-match (`kryos-codegen-cranelift/src/codegen.rs` and `kryos-codegen-llvm/src/
-codegen.rs`): the `MirType::Function` / `MirType::Shared` arm is the ONE
-exception -- it calls `kryos_arc_retain` on the closure's env box instead of
-cloning it. Every spawned thread that captures the SAME closure value shares
-the identical env allocation with the parent and every sibling thread.
-
-**Why sharing (not just "not snapshotting") is a real bug, not merely a
-documentation gap:** a closure with a mutated scalar capture (e.g.
-`let bump = || { count = count + 1  count }`) persists its state via a
-NON-ATOMIC load-mutate-store with no lock -- true both BEFORE and AFTER
-item 7's fix above, just via a different concrete mechanism. Before: the
-generated `{name}_env` thunk called the closure body (which read
-`env[slot]`, computed, returned) and THEN, as a SEPARATE instruction,
-stored the return value back into `env[slot]`. After item 7's fix: the
-mutated capture is now a POINTER to its own ARC-allocated cell (`Instruction
-::Deref` at function entry reads it into a local, ordinary body arithmetic
-mutates the local, `Instruction::StoreDeref` before every return writes it
-back through the SAME pointer) -- still a plain, unlocked load-then-later-
-store with a window between them. Either way, two threads calling the same
-SHARED closure concurrently can both read the same pre-increment value
-before either writes back, silently losing one thread's increment --
-measured directly:
-
-```
-use std::sync::{wait_group}
-fn main() {
-    let mut count: i64 = 0
-    let bump = || { count = count + 1  count }
-    let wg = wait_group()
-    wg.add(50)
-    let mut i = 0
-    while i < 50 {
-        spawn {
-            let mut j = 0
-            while j < 2000 { bump()  j = j + 1 }
-            wg.done()
-        }
-        i = i + 1
-    }
-    wg.wait()
-    let final_val = bump()   // read the CLOSURE's own state via its own return
-    println("final={final_val} expected=100001")
-}
-```
-JIT: 10/10 runs printed a value less than 100001 (observed range ~46758-
-72073). AOT: 7/10 runs printed a value less than 100001 (observed range
-~97745-99895 -- a narrower, still-real window, likely because LLVM's spawn
-thread startup has more fixed overhead, reducing the contention window, not
-because AOT is exempt). Confirmed this is unrelated to the ALREADY-
-documented "outer variable stays frozen" behavior (gotcha #11's by-move
-semantics: reading `count` directly after defining `bump` correctly stays
-`0` forever, single-threaded, both backends, no bug there) -- this finding
-is specifically about the CLOSURE's OWN persisted state (read via calling
-`bump()` again, not via the outer variable), which should climb
-monotonically and instead loses updates under concurrent access.
-
-**This session: option (a) (deep-copy the closure env at spawn) was
-IMPLEMENTED, tested, and RULED OUT -- with hard evidence, not a guess.**
-Built a full, working per-closure-shape clone mechanism on BOTH backends:
-`Instruction::Spawn` gained a `closure_shapes: Vec<Option<String>>` hint
-(index-aligned with `args`), populated at MIR-lowering time from
-`closure_locals` (the same map the direct-call optimization consults) when
-a spawn-captured name's origin was statically a specific closure literal;
-codegen generated a per-lambda `{name}_clone_env(src) -> new_env` helper
-(mirroring how `__kryos_drop_<Struct>` is generated per struct) that
-allocates a fresh env box and, for a mutated-scalar capture's own heap cell
-(item 7's `Shared(scalar)` box), allocates a FRESH cell seeded with the old
-one's current value instead of sharing the pointer. It compiled clean on
-both backends (LLVM textual IR + Cranelift `FunctionBuilder`) and ran.
-
-**It did not close the race -- re-running the repro many times afterward
-still showed 10/10 JIT and 6-9/20 AOT failures, unchanged.** Two
-INDEPENDENT reasons, both found by reading code and by direct measurement,
-not assumed:
-
-1. **The hint mechanism cannot even fire for the closures that matter.**
-   `closure_locals` (`kryos-mir/src/lower.rs`, the `Stmt::Let` arm) is
-   POPULATED ONLY when `!ctx.mutating_closures.contains(func_name)` --
-   i.e. it deliberately EXCLUDES every mutating closure, by design, because
-   its ORIGINAL and ONLY other consumer (the direct-call optimization) is
-   documented as unsafe for exactly that case (`mutating_closures`' own doc
-   comment: re-reading the outer variable's current value would silently
-   reset persistent state). Since a closure with NO mutated capture has no
-   persistent state to race on in the first place, `closure_locals` is
-   populated for precisely the closures that CANNOT race and empty for
-   precisely the closures that CAN -- confirmed by dumping the generated
-   `--emit-llvm` IR for the repro above: no `bump_clone_env` symbol
-   anywhere, `kryos_arc_retain` unchanged from before the attempt.
-2. **Even if the hint could fire, deep-copy is the WRONG semantics for this
-   shape, not just an unimplemented one.** A closure shared via `spawn`
-   whose ONLY reason to be shared is a program that intentionally wants a
-   SINGLE counter mutated by every thread (this repro's entire point,
-   encoded in its own `expected=100001` oracle) is NOT "a closure that
-   forgot to snapshot" -- it is a program relying on cross-thread SHARING,
-   which snapshotting eliminates entirely rather than making safe. Traced
-   through by hand what a working clone would have produced here: each of
-   the 50 `spawn` calls would clone `bump`'s env fresh (seeded from the
-   ORIGINAL, always-0, never-written-back box), so all 50 threads' 2000
-   increments each would land in 50 throwaway private copies nobody ever
-   reads, and `main`'s own final `bump()` call (the ONLY call that ever
-   touches the original box) would return `1`, not `100001` -- turning a
-   SILENT WRONG ANSWER of "some lost updates" (still recognizably close to
-   the right shape) into a SILENT WRONG ANSWER of "all 100,000 increments
-   of cross-thread work vanish, deterministically, with no diagnostic" --
-   arguably worse, not better. This matches "every other capture kind
-   already snapshots" (`docs/09-concurrency.md`) for capture kinds that
-   DON'T carry persistent state across calls, but a MUTATING closure is
-   exactly the shape where the language has no other primitive doing this
-   job -- the actual supported answer for "shared mutable state across
-   `spawn`" is `std::sync::atomic_int()`/`Mutex`/an actor, not a captured
-   Kryos closure, and this session did not find a way to make a captured
-   closure behave like one of those without either (a) snapshotting
-   (wrong, per above) or (b) an atomic/lock-based read-modify-write, which
-   remains the only shape that could preserve this test's own semantics.
-
-**Reverted cleanly** (`git checkout` on the two files that were pure
-additions -- `kryos-mir/src/display.rs`, `kryos-mir/src/optimize/inline.rs`,
-`kryos-codegen-llvm/src/codegen.rs`, `kryos-codegen-cranelift/src/codegen.rs`
--- plus manual reversion of the `Instruction::Spawn.closure_shapes`
-additions in `kryos-mir/src/ir.rs`/`lower.rs`, which also carried item 7's
-unrelated, kept fix); rebuilt and re-verified conformance 53/53, tier1+tier2
-GREEN, bootstrap 16/16, and `conf_spinlock_mutex` specifically (5/5 clean,
-both backends) after the revert, confirming a clean return to the pre-
-attempt state. **Remaining fix shape, not attempted:** (b) make the
-load-mutate-store atomic under a per-closure lock (or a CAS retry loop for
-the narrow case where the mutation is a pure recomputation of the captured
-value with no other side effects in the closure body) -- taxes the common
-uncontended single-thread case and, for a CAS-retry design, risks
-DUPLICATING any side effect in the closure body on a retry (a `println`
-inside a racing closure would print twice) unless retries are proven
-restricted to side-effect-free bodies, which is its own analysis. Genuinely
-harder than item 7 was, and not a one-line patch either way. **Docs
-corrected in the original session** (kept, still accurate): `docs/09-
-concurrency.md`'s spawn section states the closure/fn-value exception to
-the snapshot contract explicitly, and CLAUDE.md gotcha #22 has a matching
-bullet.
+Was OPEN item 7b (closure/fn-value shared, not snapshotted, across `spawn`
+threads -- a mutated-scalar capture's non-atomic call-then-writeback
+persistence mechanism lost updates under contention: 10/10 failures on
+JIT, 7/10 on AOT at 50 threads x 2000 calls). A prior session attempted
+and RULED OUT deep-copying the closure env at spawn (wrong semantics for
+a closure whose whole point is shared mutable state, and the hint
+mechanism couldn't even fire for mutating closures -- both `closure_locals`
+gates on `!mutating_closures.contains(func_name)`). This session
+implemented the ledger's own suggested remaining shape instead: serialize
+every call to a mutating closure's underlying function under a lock
+scoped to that closure's own env allocation. Full writeup, evidence both
+ways (before/after on both backends), and gate output in CLOSED below.
+`tests/known_failures/spawn_closure_shared_env_race.kry` folded into
+`tests/conformance/conf_spawn_closure_capture_lock.kry` and deleted.
 
 ### 9. `\|\|`-continuation parse trap also swallows closure literals silently -- previously mis-cataloged as a "block-tail closure capture scoping" bug -- DOCS CORRECTED, not a new code defect to fix
 
@@ -924,6 +786,7 @@ and unrelated.
 | **docs/BUGS.md drifted twice: once claiming "none currently tracked" while 2 tests deadlocked, later claiming those same 2 tests were still open for weeks after the fix shipped** | File also had an exact accidental DUPLICATE of its own header + first two sections pasted back-to-back, with the duplicate's "Active" section describing `conf_spinlock_mutex`/`conf_errors_concurrency` as still-open blockers -- both now verified PASS cleanly (`kryos build --release` + run, exit 0, no hang) and were already closed in this same file's own (non-duplicate) first "Active" section and in this ledger's CLOSED table. Rewrote `docs/BUGS.md`: removed the duplication, moved both to Resolved with the real fix, corrected the stale conformance count (was 40/40 hardcoded, live count is 47/47 and growing). Added `tests/docs_status_gate.sh`, wired into `kryos-loop.sh gates` tier1: (1) scans `docs/BUGS.md`'s `## Active` section for `tests/conformance/conf_*.kry` paths and fails if any named-as-open test now passes cleanly, (2) checks `conformance N/N`-style prose claims in README.md/docs/BUGS.md/STABILITY.md against the live `tests/conformance/*.kry` file count. Proof both ways: gate FAILS when a synthetic stale "Active" entry naming a passing test is appended (verified), and FAILED for real against the pre-fix README's stale "40/40" (verified, then fixed); PASSES clean on the corrected files. Does not catch every drift shape (prose claims with no associated test file) -- a mechanical narrowing, not full auto-generation, documented as such in `docs/BUGS.md` itself |
 | **Broader docs audit (same session): several other docs pages oversold unimplemented/removed features in present tense** | `docs/07-error-handling.md`'s "self-healing runtime" section (165 lines) described `@constraint`/`@fallback`/`--heal-report`/auto div-by-zero-and-index-clamp recovery in confident present tense below a single "not yet implemented" banner readers would skim past -- verified `@constraint(">= 0", "<= 100")` is a complete no-op (`clamp_percent(150.0)` returns `150`, not the doc's claimed `100`) and `--heal-report` is not a recognized CLI flag at all; rewrote the whole section in consistent future/planned tense with inline TODAY-vs-PLANNED contrasts. `docs/13-ffi.md` claimed arbitrary C-library FFI "is fully implemented" and showed `puts`/`getpid`/`getenv`/`-lsodium` linking as working examples -- verified `puts("hello from Kryos")` builds and exits 0 but prints NOTHING (silently wrong, worse than a link failure), `getpid`/`strlen` fail to link ("use of undefined value"), `[build] link` in `kryos.toml` has no effect, and the `sin`/`cos`/`pow` example that DOES work only works because those names collide with Kryos builtins (not because real FFI linking works) -- also found `kryos bindgen` DOES work despite the doc claiming the opposite. `docs/19-language-reference.md` §7.4 claimed field/index mutation through an immutable binding is rejected -- verified false (`let p = Point{..}; p.x = 9` compiles and runs; CLAUDE.md already documented this as a known-wrong line that was never fixed in the doc itself). `docs/10-capabilities.md` and `docs/capability-roadmap.md` claimed capability enforcement is "sound across every path" / "every function auditable in isolation" with no caveat -- added a prominent "Known limitation" section documenting the closure/fn-value capability escape (OPEN item #1 in this ledger) with its repro, since this is the exact security-adjacent gap the target use case (a secret-managing agent) needs disclosed, not silently omitted. Same caveat threaded into `README.md`'s capability bullet and `STABILITY.md`'s known-limitations section. All verified live against this commit's binary, not inferred from reading source. No code change for any of these -- docs only |
 | **`copy_dir_all_refuses_a_symlink_entry_pointing_outside_the_package` (shipped in `fbd1e5b`, item 1b) was VACUOUS for the directory-symlink case -- passed whether or not the guard existed** | REPRODUCED first, per the loop's own rule: with the `file_type().is_symlink()` guard deleted entirely from `copy_dir_all` and `cargo test -p kryos-package` rerun, the existing test still reported `ok`. Root cause matches the assigned brief exactly: `fs::copy(&path, &target)` on a directory reparse point fails with a plain OS `PermissionDenied` on Windows regardless of the guard's presence, and the test only asserted `result.is_err()` -- true either way. FIX, two independent hardenings (both applied, not either/or): (1) a new `assert_is_guard_rejection` helper pins the error to the GUARD'S OWN signature -- `ErrorKind::InvalidData` plus the literal message text and the offending entry name -- so any other `Err` (an incidental OS refusal, or a different failure entirely) now fails the assertion instead of satisfying it; renamed the test to `copy_dir_all_refuses_a_symlinked_directory_entry_pointing_outside_the_package` for clarity against its new sibling; (2) added `copy_dir_all_refuses_a_symlinked_file_entry_pointing_outside_the_package` -- a FILE symlink (not a directory) pointing outside the package, which is the case that genuinely exercises the guard: `DirEntry::file_type()` reports the symlink type either way, so a missing guard falls into the plain `fs::copy` branch, and `fs::copy` FOLLOWS a file symlink on every OS with no incidental refusal to mask it. Proof both ways, both tests, one `guard`-stripped rebuild: with the guard removed, the directory test goes RED on the exact predicted mechanism (`left: PermissionDenied, right: InvalidData`) and the file test goes RED because the call returns `Ok(())` -- the outside file's real secret content is copied straight into the cache with no error at all (the smoking-gun case the brief asked for); with the guard restored, both pass. Also hardened `registry.rs`'s `content_checksum_is_deterministic_and_content_sensitive` coverage gap named in this wave's brief: added `content_checksum_distinguishes_stdlib_from_src_prefix`, proving `collect_kry_files`'s `prefix` argument is load-bearing (a `src/foo.kry` and a byte-identical `stdlib/foo.kry` must NOT hash the same) -- proof both ways: hardcoding `"src"` for the `stdlib_dir` call site (reproducing the exact hardcoded-prefix bug `fbd1e5b` already fixed) makes the two checksums collide and the new test go RED; the real code keeps them distinct. Also verified (adjacent items named in the brief, no code change needed): a checksum-MISSING entry is already rejected identically to a checksum-MISMATCH, both at the `verify_package_checksum` level (`verify_package_checksum_rejects_missing_checksum`) and end-to-end through `fetch_resolved` (`fetch_resolved_rejects_a_package_with_no_recorded_checksum`) -- both tests already existed and pass. Partial-destination cleanup on a failed fetch (`fetch_resolved`'s `let _ = std::fs::remove_dir_all(&dest)` on any `Err`) is verified BY CODE INSPECTION, not a fresh dedicated test -- the cleanup line is unconditional and identical regardless of whether the `Err` originates from `fetch_github`/`fetch_github_subdir` (a copy failure) or from `verify_package_checksum` (already covered live by both `fetch_resolved_rejects_a_tampered_cache_entry_and_wipes_it` and `fetch_resolved_rejects_a_package_with_no_recorded_checksum`, both of which assert `!dest.exists()` post-failure); a genuine copy-failure-specific repro would need a real `git clone` of a crafted malicious subdirectory, which is out of scope to plant against the live public registry and not attempted here -- flagged honestly rather than claimed as tested. Gates: `kryos-package` unit+integration tests 65/65 (41 lib + 5 `checksum_verification.rs` + 19 `package.rs`), full `cargo build --release` clean, `kryos-loop.sh gates 2` GREEN (conformance 58/58, tier1+tier2 all PASS), `test_bootstrap.sh` 16/16, `security_gate.sh` PASS (33/33). |
+| **OPEN item 7b: a closure/fn-value shared (not snapshotted) across `spawn`-ed threads was a genuine cross-thread DATA RACE with silent lost updates** | A prior session RULED OUT deep-copying the closure env at spawn (wrong semantics -- a closure whose whole point is shared mutable state would have each thread's mutations land in a throwaway private copy instead; also structurally couldn't fire, since `closure_locals`, the only provenance-tracking mechanism available, is unconditionally empty for every mutating closure by design) and left the remaining shape unimplemented: "make the load-mutate-store atomic under a per-closure lock". Implemented that shape instead of retrying deep-copy. Mechanism: `MirAttributes.needs_capture_lock` (new field, `kryos-mir/src/ir.rs`) is set in `lower.rs`'s Lambda arm exactly where `mutating_closures` already gets populated (same condition, `!mutated_captures.is_empty()`, covering both the scalar-box and struct-ptr-slot mutation shapes). Both codegen backends (LLVM `codegen.rs`, Cranelift `codegen.rs` + `jit.rs`) read this flag to (a) reserve ONE extra i64 "lock word" slot at the end of the closure's existing env allocation (offset `(1+captures.len())*8`, seeded 0) -- same ARC allocation, same lifetime as the env itself, so this adds no new allocation and no new leak/drop-ordering surface -- and (b) wrap the underlying-function call inside the generated `{name}_env` thunk with `kryos_mutex_lock`/`kryos_mutex_unlock` on that word. The thunk is the ONE call path every invocation of a mutating closure value goes through (direct calls are provably excluded: `closure_locals`'s direct-call fast path is unconditionally disabled for any closure in `mutating_closures`), so this needed no call-site enumeration and no change to the underlying function's own arity/ABI -- purely additive at the env/thunk layer. A plain blocking lock, not a CAS retry: each caller executes the closure body exactly once, so no side effect (e.g. a `println` inside the closure) can be duplicated by a retry. Reused the EXISTING native `kryos_mutex_lock`/`kryos_mutex_unlock` runtime primitives (`kryos-stdlib-native`, already used by `std::sync::Mutex`) rather than adding new runtime code; hit and fixed one real bug along the way -- an initial I32-return Cranelift declaration for these two symbols conflicted with the pre-existing all-I64 declaration `std::sync`'s own Mutex usage installs (`declare_runtime_builtins`/`ensure_func_ref_with_args`'s uniform convention), a hard "signature ... is incompatible with previous declaration" Cranelift module error, not a runtime deadlock as first suspected -- fixed by matching the established I64-return convention (and, in `jit.rs`, by reusing the already-declared `FuncId` instead of re-declaring). Proof both ways, both backends, MANY runs (a race is probabilistic; one green run is not evidence): pre-fix (stashed the fix, full `cargo build --release`) `tests/known_failures/spawn_closure_shared_env_race.kry` at 50 threads x 2000 calls -- JIT 20/20 runs RACE (lost updates, e.g. `final=74293 want=100001`), AOT 13/20 runs RACE (65%, matching the ledger's prior ~70% figure); post-fix (restored, rebuilt) the SAME repro -- JIT 50/50 clean, AOT 50/50 clean, all printing the exact expected total with zero lost updates. `conf_spinlock_mutex` (the test a naive ownership-based attempt at this same bug previously broke, per this ledger's own warning) 10/10 clean on BOTH backends after the fix. Folded the repro into a permanent regression test, `tests/conformance/conf_spawn_closure_capture_lock.kry` (30 threads x 1000 calls, exact-value `expect()` assertion, no flake tolerance), and deleted `tests/known_failures/spawn_closure_shared_env_race.kry` per that directory's own "when fixed, fold and delete" convention; updated `tests/known_failures/README.md` and `docs/09-concurrency.md`'s spawn section (the language's documented concurrency contract: closures still don't snapshot, by design, but sharing a mutating closure across `spawn` is now SAFE, not merely possible, with the tradeoff -- serialized, not lock-free -- stated explicitly; `std::sync::atomic_int()` remains the faster purpose-built choice for a hot shared counter). Gates: `kryos-loop.sh gates 2` GREEN (conformance 59/59, tier1+tier2 all PASS), `tests/security_gate.sh` PASS, `test_bootstrap.sh` 16/16 (run alone). Not attempted / out of scope: making the lock reentrant (a mutating closure calling itself recursively through its own stored value would self-deadlock -- no evidence this is reachable today, since gotcha #11 already documents that a self-referential closure built via reassignment captures the OLD binding rather than truly recursing) and a CAS-based lock-free fast path for the provably-side-effect-free case (deferred per the original ruled-out attempt's own reasoning: proving side-effect-freedom is its own analysis, not needed once a correct blocking lock exists). |
 
 ---
 
