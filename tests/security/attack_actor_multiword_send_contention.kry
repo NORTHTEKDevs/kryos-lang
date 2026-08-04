@@ -1,0 +1,81 @@
+// RED TEAM round 2, concurrency lens: live stress of the actor multi-word
+// send lock (`kryos_actor_lock`/`kryos_actor_unlock`, kryos-rt/src/actor.rs).
+// Round 1 only READ this code and ruled out a hazard (lock-send-unlock is one
+// MIR instruction, no throwable call in between) -- it was explicitly NOT
+// independently stress-run. This attacks it live: many OS threads (spawned,
+// not actors themselves) send multi-word (str + i64) messages to the SAME
+// actor concurrently, which is exactly the scenario the send lock exists to
+// serialize. Hypothesis: under real contention the spinlock either (a) drops
+// or corrupts interleaved tag+arg words (a message's str arg pairs with the
+// wrong i64, or a message is lost), or (b) is fine -- serialization holds.
+
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+actor Sink {
+    total: i64
+    msgs_seen: i64
+    last_tag_len_ok: i64
+
+    fn ping(self, tag: str, n: i64) {
+        self.total = self.total + n
+        self.msgs_seen = self.msgs_seen + 1
+        // A corrupted interleave would likely produce a tag that doesn't
+        // match the "t<thread>-<k>" shape at all (empty, truncated, or
+        // spliced from two different sends) -- sanity length check.
+        if len(tag) > 0 {
+            self.last_tag_len_ok = self.last_tag_len_ok + 1
+        }
+    }
+
+    // Actor handlers are fire-and-forget (no return value supported), so
+    // report by printing from inside the handler -- FIFO ordering within
+    // this one actor's mailbox guarantees this runs after every ping()
+    // sent before it, so it reads the fully-settled state.
+    fn report(self, expected: i64, expected_seen: i64) {
+        println("expected=" + to_string(expected))
+        println("final_total=" + to_string(self.total))
+        println("seen=" + to_string(self.msgs_seen) + " expected_seen=" + to_string(expected_seen))
+        println("ok_tags=" + to_string(self.last_tag_len_ok))
+    }
+}
+
+fn main() {
+    let sink = Sink()
+
+    // Baseline from main thread only.
+    let mut i = 0
+    let mut expected = 0
+    while i < 500 {
+        sink.ping("main-" + to_string(i), i)
+        expected = expected + i
+        i = i + 1
+    }
+
+    // Now hammer the SAME actor from 40 concurrent OS threads, each sending
+    // 100 multi-word (str+i64) messages -- 4000 concurrent sends racing the
+    // send lock.
+    let mut wg = new_wait_group()
+    let mut t = 0
+    while t < 40 {
+        wg = wg_add(wg, 1)
+        spawn {
+            let mut k = 0
+            while k < 100 {
+                sink.ping("thread-" + to_string(t) + "-" + to_string(k), 1)
+                k = k + 1
+            }
+            wg_done(wg)
+        }
+        t = t + 1
+    }
+    wg_wait(wg)
+    expected = expected + 40 * 100
+
+    // report() is itself just another FIFO message to this actor's mailbox,
+    // so by the time it runs, every ping() sent above (from main AND from
+    // all 40 spawned threads, since wg_wait already joined them) has been
+    // processed -- no sleep/poll needed for correctness.
+    sink.report(expected, 500 + 40 * 100)
+    sleep(300)
+    println("main done")
+}

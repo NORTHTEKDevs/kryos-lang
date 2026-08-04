@@ -1,0 +1,51 @@
+// RED TEAM: spawn mutating-closure reentrancy. A closure that captures a
+// mutable scalar is spawned, and the SAME closure value is also invoked
+// directly (reentrantly) from the spawning thread while spawned copies are
+// still running, and a spawned thread itself spawns another task that
+// touches the same captured closure again. Documented behavior (item 7b) is
+// a benign lost-update DATA RACE, not corruption -- this probes whether
+// REENTRANCY (nested spawn-of-spawn touching the same env, plus a direct
+// call racing spawned calls) stays a lost-update race or crosses into a
+// crash / corruption (which would be new).
+
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+// NOTE: per CLAUDE.md's documented closure-capture model, a mutated scalar
+// capture persists in the CLOSURE'S OWN environment, not written back to the
+// enclosing `main`'s own `counter` binding -- so reading `counter` directly
+// in `main` after calling `bump()` always shows main's ORIGINAL value. To
+// observe the closure's internal accumulated state under concurrency, `bump`
+// must RETURN its own post-increment value, and the caller must read the
+// RETURN, not the outer variable.
+fn main() {
+    let mut counter = 0
+    let bump = || {
+        counter = counter + 1
+        counter
+    }
+
+    let mut wg = new_wait_group()
+    let mut i = 0
+    while i < 300 {
+        wg = wg_add(wg, 1)
+        spawn {
+            bump()
+            // reentrant nested spawn touching the SAME captured env from
+            // inside an already-spawned task
+            spawn {
+                bump()
+                wg_done(wg)
+            }
+        }
+        // direct call from the spawning thread too, racing the spawned ones
+        bump()
+        i = i + 1
+    }
+    wg_wait(wg)
+    // all 900 calls (300 direct + 300 spawned + 300 nested-spawned) have
+    // returned by now (wg_done only fires after the nested bump() call).
+    // One more call reveals the closure's OWN internal accumulated total.
+    let final_val = bump()
+    // expected upper bound if every increment survived: 901 (900 + this call)
+    println("final_val=" + to_string(final_val))
+}

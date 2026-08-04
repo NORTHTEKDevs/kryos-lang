@@ -1,0 +1,36 @@
+// RED TEAM: closure env teardown reached twice. Store the SAME closure value
+// in two different container slots (both non-mutating references, per the
+// documented model), then let both containers go out of scope. If the env's
+// ARC isn't retained per-store, the second scope-end drop double-frees the
+// first's already-freed env.
+
+fn make_adder(n: i64) -> fn(i64) -> i64 {
+    return |x: i64| x + n
+}
+
+fn scope_a(f: fn(i64) -> i64) -> i64 {
+    let arr: [fn(i64) -> i64] = [f, f, f]   // same closure value 3x in one array
+    return arr[0](1) + arr[1](2) + arr[2](3)
+}
+
+fn scope_b(f: fn(i64) -> i64) -> i64 {
+    let mut m: map<str, fn(i64) -> i64> = {}
+    m["a"] = f
+    m["b"] = f   // same closure value stored under 2 keys
+    return m["a"](10) + m["b"](20)
+}
+
+fn main() {
+    let mut i = 0
+    let mut total = 0
+    while i < 5000 {
+        let f = make_adder(i)
+        // f is referenced in TWO separate scopes below, each building its own
+        // container holding (possibly multiple copies of) the SAME closure box
+        total = total + scope_a(f)
+        total = total + scope_b(f)
+        // f itself also drops here, a THIRD reference to the same env box
+        i = i + 1
+    }
+    println("total=" + to_string(total))
+}

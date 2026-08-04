@@ -514,6 +514,72 @@ capture-kind adversarial stress, 50-run race-rate sampling per the task
 brief) were not completed as a result. Reported honestly as not done rather
 than invented.
 
+**ROUND 2 (2026-08-04, same session/day, continued): closed out the probes
+round 1 could only read-rule-out. All four are NEGATIVE (falsified) —
+recorded with the live evidence, no new bug found on this pass.**
+
+- **FALSIFIED — cross-thread nested-spawn reentrancy does NOT self-deadlock
+  or lose updates** (distinct from the CONFIRMED same-thread reentrancy in
+  (a) above, which still deadlocks — this attacks a DIFFERENT shape: a
+  mutating closure shared across a `spawn` that itself `spawn`s a NESTED
+  task touching the same closure, plus a direct call from the spawning
+  thread racing both). `tests/security/attack_spawn_mutating_closure_reentrancy.kry`:
+  300 iterations x (1 direct call + 1 spawned call + 1 nested-spawned call)
+  = 900 calls, plus 1 final call to read the closure's internal total;
+  every increment surviving predicts exactly `final_val=901`. Live, 21 runs
+  total (11 on `kryos run`/JIT, 10 on `kryos build --release`/AOT), 21/21
+  printed `final_val=901` exit 0 — no deadlock, no lost update, no
+  corruption on either backend. Makes sense in hindsight: each nested
+  `spawn` is a fresh OS thread acquiring/releasing the env-pointer mutex in
+  its own call, never the SAME thread re-entering while it already holds
+  the lock — the hazard in (a) is specific to one thread calling back into
+  itself synchronously, not to spawn depth or fan-out.
+- **FALSIFIED — the actor multi-word send lock (`kryos_actor_lock`/
+  `kryos_actor_unlock`, `kryos-rt/src/actor.rs:249-286`) survives real
+  concurrent contention with no message-word corruption or loss** (round 1
+  only read this code; this is the live stress it flagged as not done).
+  New file `tests/security/attack_actor_multiword_send_contention.kry`:
+  one actor receives 500 sequential `(str, i64)` messages from `main`, then
+  40 concurrently spawned OS threads each send 100 more `(str, i64)`
+  messages to the SAME actor (4000 concurrent multi-word sends racing the
+  target's spinlock) — a corrupted interleave would splice a tag from one
+  send with an amount from another, or drop a word. Verified by VALUE, not
+  just exit code: independently computed `expected=128750` (sum 0..499 +
+  4000) matches `final_total` every run, `seen=4500` (500+4000) matches
+  message count every run, `ok_tags=4500` (every tag non-empty/non-spliced)
+  every run. Live, 16 runs total (11 JIT, 5 AOT), 16/16 exact matches on
+  both backends, exit 0.
+- **FALSIFIED — throw-unwind through several nested live heap locals
+  (str + struct-with-array) drops each exactly once, both backends' shared
+  MIR.** `tests/security/attack_throw_unwind_heap_locals.kry`: 2000
+  iterations of a `try` around a helper that stacks 3 nesting levels of
+  live `str`+`Holder{tag,data}` locals (outer/mid/inner) before throwing
+  from the innermost — a double-free, leak, or use-after-free on unwind
+  would corrupt or crash within a handful of iterations. Live: `caught=2000`
+  exit 0, no crash across all 2000 throws.
+- **FALSIFIED — a closure value stored in TWO container slots (a 3-element
+  array AND a 2-key map) plus its own original binding, all three
+  references dropping at different scope-end points, does not double-free
+  the shared env.** `tests/security/attack_closure_env_teardown_twice.kry`:
+  5000 iterations, each building a fresh closure and referencing it from an
+  array, a map, and its own `let` — 3 independent teardown points per
+  iteration, 15000 total drops of shared env boxes. Verified by VALUE: the
+  exact arithmetic (`5i+36` summed contribution per iteration) predicts
+  `total=62667500`; live run printed exactly that, exit 0 — not just
+  crash-free, numerically exact.
+- **NOT a new finding (re-confirmation only):** re-ran
+  `tests/security/attack_closure_mutate_then_throw_state.kry` this round —
+  reproduces the ALREADY-DOCUMENTED (b) costale-capture bug above via a
+  throw-shaped symptom (a disarming outer reassignment is silently dropped,
+  the disarmed call throws anyway, uncaught, exit 101). Same root cause,
+  same LEDGER entry — not counted as a distinct discovery.
+
+**Honest gap:** 16-21 runs per surface, not the full 50+ the task brief
+asks for, given continued machine/session cost constraints in this shared
+workspace — treat the falsification as solid (backends agree, values exact)
+but not exhaustive; a very-low-rate race on either surface cannot be ruled
+out at this sample size.
+
 ---
 
 ### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)

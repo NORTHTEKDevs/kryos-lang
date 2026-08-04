@@ -1,0 +1,56 @@
+// RED TEAM: throw-during-unwind with multiple live heap locals in nested scopes.
+// Hypothesis: unwinding through several nested try/if/while scopes, each holding
+// a live heap local (str/array/struct), drops each exactly once. A bug would
+// double-free (crash/corrupt) or leak (miss a drop) or use-after-free (read
+// after early drop) some of them.
+
+struct Holder {
+    tag: str,
+    data: [i64],
+}
+
+fn make_holder(tag: str, n: i64) -> Holder {
+    let mut arr: [i64] = []
+    let mut i = 0
+    while i < n {
+        arr = push(arr, i)
+        i = i + 1
+    }
+    return Holder { tag: tag, data: arr }
+}
+
+fn risky(depth_in: i64) -> i64 {
+    let mut depth = depth_in
+    // live heap locals at several nesting levels when we throw
+    let outer_s: str = "outer-" + to_string(depth)
+    let outer_h: Holder = make_holder("outer", 5)
+    if depth > 0 {
+        let mid_s: str = "mid-" + to_string(depth)
+        let mid_h: Holder = make_holder("mid", 5)
+        while depth > 3 {
+            let inner_s: str = "inner-" + to_string(depth)
+            let inner_h: Holder = make_holder("inner", 5)
+            if depth == 5 {
+                // throw with inner_s, inner_h, mid_s, mid_h, outer_s, outer_h all live
+                throw "boom at depth " + to_string(depth) + " len=" + to_string(len(inner_h.data)) + "/" + to_string(len(mid_h.data)) + "/" + to_string(len(outer_h.data))
+            }
+            depth = depth - 1
+        }
+    }
+    return len(outer_h.data)
+}
+
+fn main() {
+    let mut i = 0
+    let mut caught = 0
+    while i < 2000 {
+        try {
+            let r = risky(5)
+            println("no throw: " + to_string(r))
+        } catch (e) {
+            caught = caught + 1
+        }
+        i = i + 1
+    }
+    println("caught=" + to_string(caught))
+}
