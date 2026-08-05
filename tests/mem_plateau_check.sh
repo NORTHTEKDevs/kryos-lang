@@ -83,7 +83,24 @@ fn main() {
             cells[0] = mk_str(i)
             rec.name = mk_str(i)
             acc = acc + len(slots["k"]) + len(cells[0]) + len(rec.name)
+            // `break`/`continue` used to lower to a bare goto with NO drop
+            // instructions for named heap locals declared earlier in their
+            // own loop-body block -- the scope-end drop block only the
+            // block's OWN normal fallthrough reaches, so nothing ever jumped
+            // into it on either exit path. One-shot inner loop isolates
+            // `break`; the `continue` below fires every outer iteration.
+            let mut once = 0
+            while once < 1 {
+                let brk_s: str = "brk-" + to_string(i)
+                let brk_arr: [str] = [brk_s, brk_s]
+                acc = acc + len(brk_arr)
+                break
+            }
+            let cnt_s: str = "cnt-" + to_string(i)
+            let cnt_arr: [str] = [cnt_s, cnt_s]
+            acc = acc + len(cnt_arr)
             i = i + 1
+            continue
         }
         total = total + acc
         r = r + 1

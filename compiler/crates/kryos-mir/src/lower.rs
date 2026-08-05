@@ -33,6 +33,15 @@ pub struct LoweringContext {
     loop_headers: Vec<BlockId>,
     /// Stack of loop exits for `break`.
     loop_exits: Vec<BlockId>,
+    /// Stack of `ctx.locals.len()` snapshots taken at each loop body's own
+    /// entry (parallel to `loop_headers`/`loop_exits`). `break`/`continue`
+    /// need this to drop every NAMED heap local declared since the loop body
+    /// started (possibly several nested blocks deep, e.g. inside an `if`
+    /// nested in the loop) before jumping out -- a bare `goto` with no drops
+    /// left every such local dead code (nothing ever jumps into the normal
+    /// scope-end drop block emitted by `lower_block_stmts`), leaking on
+    /// every `break`/`continue` out of a block holding a live heap local.
+    loop_scope_starts: Vec<usize>,
     /// Struct definitions: struct_name -> ordered list of (field_name, MirType).
     struct_defs: HashMap<String, Vec<(String, MirType)>>,
     /// Enum definitions: enum_name -> ordered list of variants.
@@ -437,6 +446,7 @@ impl LoweringContext {
             next_block: 0,
             loop_headers: Vec::new(),
             loop_exits: Vec::new(),
+            loop_scope_starts: Vec::new(),
             struct_defs: HashMap::new(),
             enum_defs: HashMap::new(),
             func_ret_types: HashMap::new(),
@@ -697,6 +707,7 @@ impl LoweringContext {
         self.next_block = 1; // 0 is already the entry block
         self.loop_headers.clear();
         self.loop_exits.clear();
+        self.loop_scope_starts.clear();
         self.dropped_locals.clear();
         self.param_locals.clear();
         self.hidden_locals.clear();
@@ -729,6 +740,7 @@ impl LoweringContext {
             next_block: self.next_block,
             loop_headers: std::mem::take(&mut self.loop_headers),
             loop_exits: std::mem::take(&mut self.loop_exits),
+            loop_scope_starts: std::mem::take(&mut self.loop_scope_starts),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
             closure_locals: std::mem::take(&mut self.closure_locals),
             capture_boxes: std::mem::take(&mut self.capture_boxes),
@@ -779,6 +791,7 @@ impl LoweringContext {
         self.next_block = state.next_block;
         self.loop_headers = state.loop_headers;
         self.loop_exits = state.loop_exits;
+        self.loop_scope_starts = state.loop_scope_starts;
         self.hidden_locals = state.hidden_locals;
         self.closure_locals = state.closure_locals;
         self.capture_boxes = state.capture_boxes;
@@ -802,6 +815,7 @@ struct FunctionState {
     next_block: u32,
     loop_headers: Vec<BlockId>,
     loop_exits: Vec<BlockId>,
+    loop_scope_starts: Vec<usize>,
     hidden_locals: HashSet<u32>,
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     capture_boxes: HashMap<String, Vec<LocalId>>,
@@ -2835,6 +2849,59 @@ fn emit_named_scope_drops(ctx: &mut LoweringContext, scope_start: usize) {
     for i in scope_start..scope_end {
         if ctx.locals[i].name.is_some() {
             ctx.hidden_locals.insert(ctx.locals[i].id.0);
+        }
+    }
+}
+
+/// Drop every named heap local declared since the innermost loop body's own
+/// entry, right before a `break`/`continue` jumps out of it.
+///
+/// `ast::Stmt::Break`/`Continue` used to lower to a bare `goto exit`/`goto
+/// header` with ZERO drop instructions. `lower_block_stmts` only emits a
+/// block's scope-end drops into the block its OWN normal fallthrough reaches
+/// -- nothing else ever jumps into that block, so for any program that
+/// breaks or continues out of a block holding a live named heap local
+/// (str/array/map/struct-with-heap-fields/string_builder/etc.) those drops
+/// were dead code and the local leaked every time. This mirrors the
+/// `Stmt::Return` handling above (same drop-then-mark-dropped pattern, same
+/// accepted tradeoff: `dropped_locals` is a single compile-time-global set
+/// with no per-CFG-path tracking, so marking a local dropped here can only
+/// ever SUPPRESS a later drop on a sibling path, never double-free it -- see
+/// the Return case's comment for the full rationale), but scoped to the
+/// current LOOP BODY (`loop_scope_starts`), not the whole function: a local
+/// declared before the loop is still live after `break` and still needed on
+/// the next iteration after `continue`, so only locals from the loop body's
+/// own entry onward are dropped. Unlike `emit_named_scope_drops`, this does
+/// NOT touch `hidden_locals` -- control never falls through past this point
+/// in the lexical block that contains the break/continue, so there is no
+/// later same-scope code whose name resolution could be affected (any code
+/// textually after an unconditional break/continue is unreachable).
+fn drop_loop_exit_locals(ctx: &mut LoweringContext, tag: &str) {
+    let scope_start = match ctx.loop_scope_starts.last() {
+        Some(&s) => s,
+        None => return,
+    };
+    let scope_end = ctx.locals.len();
+    for i in (scope_start..scope_end).rev() {
+        if ctx.locals[i].name.is_some() {
+            let local_id = ctx.locals[i].id;
+            if ctx.param_locals.contains(&local_id.0) || ctx.borrowed_locals.contains(&local_id.0)
+            {
+                continue;
+            }
+            if !ctx.dropped_locals.contains(&local_id.0)
+                && !ctx.partial_moved_locals.contains(&local_id.0)
+            {
+                let lbl = format!(
+                    "{}:{}:{:?}",
+                    tag,
+                    ctx.locals[i].name.as_deref().unwrap_or("?"),
+                    ctx.locals[i].ty
+                );
+                drop_tag(ctx, &lbl);
+                ctx.emit(Instruction::Drop { local: local_id });
+                ctx.dropped_locals.insert(local_id.0);
+            }
         }
     }
 }
@@ -5224,6 +5291,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
         ast::Stmt::Break { .. } => {
             if let Some(&exit) = ctx.loop_exits.last() {
+                drop_loop_exit_locals(ctx, "break-stmt-scope-end");
                 let next = ctx.alloc_block();
                 ctx.finish_block(Terminator::Goto(exit), next);
             }
@@ -5231,6 +5299,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
         ast::Stmt::Continue { .. } => {
             if let Some(&header) = ctx.loop_headers.last() {
+                drop_loop_exit_locals(ctx, "continue-stmt-scope-end");
                 let next = ctx.alloc_block();
                 ctx.finish_block(Terminator::Goto(header), next);
             }
@@ -5768,9 +5837,11 @@ fn lower_while(ctx: &mut LoweringContext, condition: &ast::Expr, body: &ast::Blo
     // Body.
     ctx.loop_headers.push(header_bb);
     ctx.loop_exits.push(exit_bb);
+    ctx.loop_scope_starts.push(ctx.locals.len());
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
+    ctx.loop_scope_starts.pop();
 
     // Back-edge: jump to header.
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
@@ -5936,9 +6007,11 @@ fn lower_for(
     // never advances and the loop spins forever.
     ctx.loop_headers.push(increment_bb);
     ctx.loop_exits.push(exit_bb);
+    ctx.loop_scope_starts.push(ctx.locals.len());
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
+    ctx.loop_scope_starts.pop();
 
     // Fall through to increment block.
     ctx.finish_block(Terminator::Goto(increment_bb), increment_bb);
@@ -6043,9 +6116,11 @@ fn lower_for_range(
     // `continue` must jump to increment_bb so _idx advances.
     ctx.loop_headers.push(increment_bb);
     ctx.loop_exits.push(exit_bb);
+    ctx.loop_scope_starts.push(ctx.locals.len());
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
+    ctx.loop_scope_starts.pop();
 
     // Fall through to increment block.
     ctx.finish_block(Terminator::Goto(increment_bb), increment_bb);

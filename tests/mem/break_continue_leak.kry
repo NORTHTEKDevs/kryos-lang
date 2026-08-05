@@ -1,0 +1,62 @@
+// Soundness probe: does `break`/`continue` drop locals declared EARLIER in
+// the SAME loop-body block iteration before jumping out?
+//
+// ast::Stmt::Break / ast::Stmt::Continue (kryos-mir/src/lower.rs) lower to a
+// bare `goto exit` / `goto header` with NO drop instructions at all. A loop
+// body is lowered via lower_block_stmts, which only emits its scope-end
+// drops (emit_named_scope_drops) AFTER all statements, on the block's own
+// normal fall-through path -- i.e. at the position right before the goto
+// that continues the loop. break/continue jump directly out of the middle
+// of that same block, so any statement's drop-emission that hasn't executed
+// yet (including the final scope-end pass) is skipped -- same structural
+// shape as the match-arm-in-try-catch defect in throw_unwind_leak.kry.
+//
+// Modes (LEAK_MODE):
+//   break_mid     - str + array local declared each iteration, THEN a
+//                   conditional break (never actually taken -- false
+//                   condition -- so the loop runs to natural completion;
+//                   this isolates codegen shape from "fewer iterations ran")
+//   continue_mid  - same shape but `continue` instead of `break`, taken
+//                   EVERY iteration after the locals are built
+//   baseline      - same locals, no break/continue -- control
+//
+// Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./break_continue_leak
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 250000 } else { parse_int(raw) }
+
+    let mut acc = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "break_mid" {
+            // Inner one-shot loop so `break` fires on EVERY outer iteration
+            // (breaking only the inner loop) while the outer iteration count
+            // driving the soak stays identical across all modes.
+            let mut j = 0
+            while j < 1 {
+                let s: str = "brk-" + to_string(i)
+                let arr: [str] = [s, s]
+                acc = acc + len(arr)
+                break
+            }
+        } elif mode == "continue_mid" {
+            let s2: str = "cnt-" + to_string(i)
+            let arr2: [str] = [s2, s2]
+            acc = acc + len(arr2)
+            i = i + 1
+            continue
+        } elif mode == "baseline" {
+            let s3: str = "base-" + to_string(i)
+            let arr3: [str] = [s3, s3]
+            acc = acc + len(arr3)
+        } else {
+            println("unknown LEAK_MODE: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println(mode + " iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
