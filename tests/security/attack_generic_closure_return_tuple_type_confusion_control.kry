@@ -1,0 +1,15 @@
+// Control for attack_generic_closure_return_tuple_type_confusion.kry.
+// NON-generic closure returning a tuple directly (no generic T involved).
+// This is CORRECT on both backends -- confirms the sibling test's defect is
+// specific to the GENERIC monomorphized closure-return path, not to
+// tuple-returning closures in general.
+fn make() -> fn() -> (f64, str) {
+    return || (3.14, "hello")
+}
+
+fn main() {
+    let f = make()
+    let r = f()
+    println("r0=" + to_string(r.0))
+    println("r1=" + r.1)
+}

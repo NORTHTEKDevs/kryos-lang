@@ -1,0 +1,86 @@
+// Conformance (generic-closure-return-tuple-type-confusion, LEDGER item
+// closed 2026-08-05): a generic function that directly returns a captured
+// value as a zero-param closure (`fn wrap<T>(x: T) -> fn() -> T { return || x }`)
+// must render an AGGREGATE T (a tuple) correctly on BOTH backends, not just
+// scalar T (i64/f64/str), which was already covered by
+// conf_generic_closure_return_f64.kry and conf_curried_generic_closure.kry.
+//
+// Reproduced live pre-fix: `kryos run` (Cranelift/JIT) was correct
+// (a=3.14, b=hello), but `kryos build --release` (LLVM/AOT) printed a
+// denormalized-float garbage bit pattern for `a` and lost the ENTIRE `b=`
+// line (even the literal "b=" prefix, not just an empty payload) -- exit 0
+// both backends, no crash, no diagnostic. A matched non-generic control
+// (a plain `fn() -> (f64, str)` closure, no generic T) was correct on both
+// backends, isolating the defect to the GENERIC monomorphized zero-param
+// closure-return path specifically.
+//
+// ROOT CAUSE (two compounding bugs, both in the generic closure-return
+// path, kryos-mir/src/lower.rs + kryos-codegen-llvm/src/codegen.rs):
+//
+// 1. A directly-returned lambda with NO params of its own (`|| x`, unlike
+//    `make_appender<T>`'s `|x| x + suffix`) has no PARAM to carry
+//    `pending_lambda_ret_hint` through, so its own return type was never
+//    resolved from the per-instantiation concrete signature -- it always
+//    fell through to a blind `i64` default. Harmless for scalar T (fits
+//    the closure ABI's single-i64-slot bitcast, unboxed correctly at the
+//    call site from the CALLER's own concrete type) but wrong for an
+//    aggregate T: the lambda function was compiled with a scalar i64
+//    return, so LLVM codegen's `func_sig_aggs` never recorded a real
+//    aggregate return for it and `emit_closure_thunks` never routed the
+//    call through the sret ABI the caller's tuple-typed call site expects.
+//    Fixed: the lambda's own effective return type now consults the hint's
+//    concrete return type when it names an aggregate (Tuple/Struct),
+//    leaving scalar T on the untouched i64 default.
+//
+// 2. Fixing (1) alone turned the silent-garbage bug into a clean segfault:
+//    `emit_closure_thunks`' env-capture-read loop had a byval-pointer-ABI
+//    exception for STRUCT captures (pass the heap-boxed capture pointer
+//    directly as `ptr byval(%Agg)`, matching the aggregate ABI every other
+//    aggregate param uses) but never extended it to TUPLE captures, which
+//    fell into the generic scalar-slot branch, loaded the box's VALUE (not
+//    its pointer), and passed that raw aggregate value where the callee's
+//    `ptr byval({..})` parameter expected a pointer -- an ABI mismatch.
+//    Fixed: the byval-pointer exception now also covers Tuple captures.
+//
+// Proof this is a real gate: reverting BOTH fixes reproduces the exact
+// pre-fix symptom on `kryos build --release` (garbage float + missing `b=`
+// line); with the fixes, this program exits 0 with PASS on both backends.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn wrap<T>(x: T) -> fn() -> T {
+    return || x
+}
+
+fn main() {
+    // Scalar T=i64 instantiation: parity guard, must not regress.
+    let g = wrap(42)
+    expect(g() == 42, "i64 instantiation of zero-param generic closure return")
+
+    // Aggregate T=(f64, str) instantiation -- the actual regression.
+    let t: (f64, str) = (3.14, "hello")
+    let f = wrap(t)
+    let (a, b) = f()
+    expect(a > 3.13 and a < 3.15, "tuple instantiation field 0 (f64): expected ~3.14, got " + to_string(a))
+    expect(b == "hello", "tuple instantiation field 1 (str): expected 'hello', got '" + b + "'")
+
+    // Direct field access (not just destructure) on a second call.
+    let r = f()
+    expect(r.0 > 3.13 and r.0 < 3.15, "tuple instantiation r.0: expected ~3.14, got " + to_string(r.0))
+    expect(r.1 == "hello", "tuple instantiation r.1: expected 'hello', got '" + r.1 + "'")
+
+    // Re-read after interleaving with the scalar instantiation, to catch
+    // cross-instantiation state leakage between monomorphized copies.
+    let g2 = g()
+    expect(g2 == 42, "i64 instantiation re-read after interleave")
+    let (a2, b2) = f()
+    expect(a2 > 3.13 and a2 < 3.15, "tuple instantiation re-read field 0")
+    expect(b2 == "hello", "tuple instantiation re-read field 1")
+
+    println("conformance generic_closure_return_tuple: PASS")
+}

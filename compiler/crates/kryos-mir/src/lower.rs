@@ -12542,15 +12542,47 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // body is a void-returning call, in which case the lambda has
             // no return value and we pass None so `lower_function` treats
             // the function as returning void.
+            //
+            // AGGREGATE exception (generic-closure-return-tuple-type-
+            // confusion): a directly-returned lambda inside a generic
+            // function (`return || x`) has no PARAM to carry
+            // `lambda_ret_hint` through (unlike the make_appender<T> case,
+            // which fixes an annotated param via the same hint a few lines
+            // up), so its own return type stayed unresolved at the type
+            // checker's single unspecialized-template pass and always fell
+            // through to the blind i64 default below. That is harmless for
+            // a SCALAR T (i64/f64/str all fit the closure ABI's single-i64
+            // -slot bitcast and are correctly unboxed at the call site from
+            // the CALLER's own concrete type) but wrong for an AGGREGATE T
+            // (tuple/struct): the lambda function got compiled with a
+            // scalar i64 return, so `func_sig_aggs` (kryos-codegen-llvm)
+            // never recorded a real aggregate return for it and
+            // `emit_closure_thunks` never routed the call through the sret
+            // ABI the caller's tuple-typed call site expects -- the callee
+            // wrote nothing through the sret buffer the caller allocated,
+            // leaving it as whatever `kryos_arc_alloc` handed back (a
+            // denormalized-float bit pattern for the f64 slot and a lost
+            // str field). Use the concrete per-instantiation hint ONLY for
+            // an aggregate return so the lambda compiles with its real
+            // return type and picks up the existing sret machinery; leave
+            // scalar T on the untouched i64 default to avoid disturbing the
+            // already-verified bitcast path.
             let inferred_ret: Option<ast::TypeExpr>;
             let effective_ret = match ret_ty {
                 Some(_) => ret_ty,
                 None if body_is_void_call => &None,
                 None => {
-                    inferred_ret = Some(ast::TypeExpr::Simple {
+                    let agg_hint = lambda_ret_hint.as_ref().and_then(|(_, fr)| {
+                        if matches!(fr, MirType::Tuple(_) | MirType::Struct(_)) {
+                            mir_type_to_type_expr(fr)
+                        } else {
+                            None
+                        }
+                    });
+                    inferred_ret = Some(agg_hint.unwrap_or_else(|| ast::TypeExpr::Simple {
                         name: "i64".to_string(),
                         span: kryos_errors::Span::DUMMY,
-                    });
+                    }));
                     &inferred_ret
                 }
             };

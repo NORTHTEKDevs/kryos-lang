@@ -1,0 +1,49 @@
+// RED TEAM round 3, type-confusion lens.
+// Hypothesis: `wrap<T>(x: T) -> fn() -> T { return || x }` -- the generic
+// closure-return path already fixed for scalar T (i64/f64), T=str, and T
+// itself being a nested fn type (per CLAUDE.md gotcha #22's
+// pending_lambda_ret_hint fix) -- has never been tried with T being a
+// multi-word AGGREGATE (a tuple). The fix threads ONE concrete `fn(A) -> B`
+// signature through the lambda codegen fallback and the closure env-thunk
+// bitcasts a SINGLE i64-sized slot in/out for the erased generic return.
+// A tuple `(f64, str)` does not fit in one register the way the aggregate-
+// return-through-a-fn-value path (a DIFFERENT, already-fixed bug, same
+// gotcha) requires an sret out-param for. If the generic path reuses the
+// single-slot bitcast instead of routing through sret for an aggregate T,
+// capturing/returning a tuple T should render a wrong/garbage value instead
+// of failing to compile.
+//
+// CONFIRMED: AOT-only silent wrong value + partial data loss (not a crash --
+// exit 0 both backends, execution proceeds past the read, diagnostic markers
+// prove no early return). A CONTROL (non-generic `fn() -> (f64, str)`
+// closure, `attack_generic_closure_return_tuple_type_confusion_control.kry`
+// -- see companion file) is CORRECT on both backends, isolating the defect
+// to the GENERIC erasure/monomorphization path specifically, not tuple-
+// returning closures in general.
+//
+// kryos run   (Cranelift/JIT):  a=3.14              b=hello       (correct)
+// kryos build --release (AOT):  a=<garbage denormal float bit pattern>
+//                                b=<completely empty -- even the "b=" string
+//                                   literal prefix is lost from the concat>
+// Both runs exit 0.
+fn wrap<T>(x: T) -> fn() -> T {
+    return || x
+}
+
+fn main() {
+    let t: (f64, str) = (3.14, "hello")
+    let f = wrap(t)
+    let (a, b) = f()
+    println("a=" + to_string(a))
+    println("b=" + b)
+
+    // Interleave with a scalar instantiation of the SAME generic function to
+    // catch cross-talk between instantiations.
+    let g = wrap(42)
+    println("g=" + to_string(g()))
+
+    // Re-read the tuple closure again after the interleave.
+    let (a2, b2) = f()
+    println("a2=" + to_string(a2))
+    println("b2=" + b2)
+}

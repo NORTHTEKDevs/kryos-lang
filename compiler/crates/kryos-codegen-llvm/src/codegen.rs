@@ -1756,30 +1756,42 @@ impl LlvmCodegen {
                     | Some(MirType::Function { .. })
                     | Some(MirType::Shared(_))
                     | Some(MirType::Struct(_))
-                    | Some(MirType::Enum(_)) => {
+                    | Some(MirType::Enum(_))
+                    | Some(MirType::Tuple(_)) => {
                         self.emit_line(&format!("  {raw} = load ptr, ptr {cap_ptr}"));
                         // If the underlying fn expects a pointer-shaped
                         // param, pass as-is; otherwise coerce to i64.
                         if expected_ty == "ptr" {
                             call_args.push(format!("ptr {raw}"));
-                        } else if matches!(cap_ty, Some(MirType::Struct(_)))
-                            && expected_ty.starts_with('%')
+                        } else if (matches!(cap_ty, Some(MirType::Struct(_)))
+                            && expected_ty.starts_with('%'))
+                            || (matches!(cap_ty, Some(MirType::Tuple(_)))
+                                && expected_ty.starts_with('{'))
                         {
-                            // Struct captures: the underlying function's
+                            // Struct/Tuple captures: the underlying function's
                             // aggregate param uses the byval-pointer ABI
-                            // (`ptr byval(%Agg)`, matching every other
-                            // aggregate param -- see the user-arg loop
-                            // below). `raw` is already the pointer to the
-                            // heap-boxed struct copy (see the
+                            // (`ptr byval(%Agg)` / `ptr byval({..})`, matching
+                            // every other aggregate param -- see the user-arg
+                            // loop below). `raw` is already the pointer to the
+                            // heap-boxed struct/tuple copy (see the
                             // Struct/Enum/Tuple box arm in RValue::Closure),
                             // so pass it directly as byval instead of
                             // round-tripping through ptrtoint + coerce_value.
-                            // The old path loaded the struct BY VALUE and
+                            // The old path loaded the aggregate BY VALUE and
                             // passed it as a bare aggregate operand -- a
                             // call-site ABI mismatch against the
                             // byval-pointer callee that corrupted the
                             // argument registers/stack and segfaulted on
-                            // AOT (the Cranelift JIT tolerated it).
+                            // AOT (the Cranelift JIT tolerated it). The Tuple
+                            // arm was missing entirely until the generic
+                            // closure-return-tuple-type-confusion fix gave a
+                            // tuple-returning lambda a real (non-i64) return
+                            // type -- before that, a tuple capture fell into
+                            // the scalar `_` arm below and its garbage/lost-
+                            // field symptom masked this separate capture-
+                            // passing bug; fixing the return type alone
+                            // turned the masked corruption into a clean
+                            // segfault, which is what surfaced this.
                             //
                             // EXCEPTION: when this closure mutates this
                             // EXACT capture (`closure_struct_ptr_slot`),
@@ -1794,7 +1806,12 @@ impl LlvmCodegen {
                             // so a field write lands in the SAME heap block
                             // env[i+1] points at -- see `emit_function`'s
                             // matching non-byval signature/prologue for
-                            // this same func_name+slot.
+                            // this same func_name+slot. (Tuple captures are
+                            // never registered in `closure_struct_ptr_slot`
+                            // today -- mutated-tuple-capture is a separate,
+                            // untested surface -- so this check is a no-op
+                            // for the Tuple arm and always takes the byval
+                            // path; left shared for symmetry.)
                             if self
                                 .closure_struct_ptr_slot
                                 .get(func_name.as_str())

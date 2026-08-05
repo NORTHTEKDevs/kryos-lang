@@ -89,7 +89,7 @@ A release tag is cut when **all** of the following hold:
 
 Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
 use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
-a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 59/59
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 62/62
 on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
 are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
 [docs/BUGS.md](docs/BUGS.md).
