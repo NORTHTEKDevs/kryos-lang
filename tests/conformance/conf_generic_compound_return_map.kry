@@ -1,0 +1,68 @@
+// Conformance (CLAUDE.md gotcha #17, `map<K,T>` sibling): a generic method
+// whose return TYPE is `map<K, T>` where T mentions the impl's type
+// parameter must return a REAL per-instantiation-typed value, not the
+// erased i64-slot bit pattern, when it is a BARE self-field passthrough.
+//
+// `fn get_map(self: Holder<T>) -> map<str, T> { return self.m }` was
+// wrongly left on the single erased-to-i64 compiled copy because
+// `instance_ret_needs_monomorphization` in kryos-mir/src/lower.rs excluded
+// `TypeExpr::Generic { name: "map", .. }` from the SAME monomorphization
+// trigger its `[T]`/`(T, i64)` siblings get two arms below (see
+// conf_generic_compound_return_f64.kry) -- on the theory that map, like an
+// enum, has no nominal STRUCT-LAYOUT mismatch. That's true but irrelevant:
+// the bug here is ELEMENT-TYPE erasure (the map's VALUE type), the same
+// class the array/tuple arms exist to fix, not struct layout.
+//
+// Reproduced live pre-fix: `Holder<f64>.get_map()["k"]` rendered the raw
+// i64 bit pattern of 1.5 (`4609434218613702656`) via to_string, and
+// `Holder<str>.get_map()["k"]` rendered a raw pointer integer instead of
+// "hello" -- identically on both backends (shared-MIR bug). Direct `+`
+// concat on the str value worked (doesn't need static-type dispatch),
+// proving str is NOT "already stable" here the way it is for array/tuple.
+//
+// Fix: `instance_ret_needs_monomorphization`'s `TypeExpr::Generic` arm no
+// longer excludes `name == "map"`; map now gets the same per-receiver
+// monomorphization as any other generic-arg-mentioning return type.
+//
+// Proof this is a real gate: reverting the `map` exclusion removal (i.e.
+// restoring `if name != "map"` on the `TypeExpr::Generic` arm) makes both
+// `to_string` assertions below fail on BOTH backends while the numeric
+// range check keeps passing -- it is the RENDER path that breaks, not the
+// underlying bits, so a proxy check on the bits would NOT catch this.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct Holder<T> { m: map<str, T> }
+impl<T> Holder<T> {
+    fn get_map(self: Holder<T>) -> map<str, T> { return self.m }
+}
+
+fn main() {
+    // f64 value: bits are correct either way (range check is NOT the gate);
+    // to_string dispatches on static type, which erasure destroys.
+    let mut hm: map<str, f64> = {}
+    hm["k"] = 1.5
+    let h = Holder { m: hm }
+    let rm = h.get_map()
+    let v = rm["k"]
+    expect(v > 1.49 and v < 1.51, "f64 map compound return value range")
+    expect(to_string(v) == "1.5", "f64 map compound return RENDERS as 1.5, not its bit pattern")
+
+    // str value: direct `+` concat works even under the bug (no static-type
+    // dispatch needed); to_string is the part that breaks.
+    let mut hs: map<str, str> = {}
+    hs["k"] = "hello"
+    let hstr = Holder { m: hs }
+    let rs = hstr.get_map()
+    let vs = rs["k"]
+    expect(vs == "hello", "str map compound return value equality")
+    expect(("x" + vs) == "xhello", "str map compound return concat (was already stable)")
+    expect(to_string(vs) == "hello", "str map compound return RENDERS as hello, not a raw pointer")
+
+    println("conformance generic_compound_return_map: PASS")
+}

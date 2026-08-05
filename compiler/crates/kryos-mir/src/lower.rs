@@ -14970,15 +14970,28 @@ fn type_expr_mentions_param(ty: &ast::TypeExpr, param: &str) -> bool {
 /// Pair::get_first/second_of/swap's OWN bare-field-return siblings, the
 /// self-host compiler's heavy use of this shape).
 ///
-/// Also deliberately false for `map<K, V>` (the builtin, not a user
-/// struct/enum template) -- enums are UNAFFECTED by the bug this targets in
-/// the first place: every enum lowers to the SAME anonymous/unnamed LLVM
-/// literal struct `{ i64, i64, ... }` (`enum_llvm_type`) regardless of which
-/// enum or which monomorphization -- there is no nominal-type mismatch
-/// possible for enums, only for named struct types. Restricting to `name !=
-/// "map"` here is a conservative no-op filter; it costs nothing to also
-/// register a (harmless, unused) template for a generic-enum return, but
-/// there is no bug to fix there.
+/// `map<K, V>` (the builtin, not a user struct/enum template) used to be
+/// excluded here on the theory that -- like an enum, which lowers to the
+/// SAME anonymous/unnamed LLVM literal struct `{ i64, i64, ... }`
+/// (`enum_llvm_type`) regardless of instantiation -- there was no nominal
+/// STRUCT-LAYOUT mismatch for it, so no bug to fix. That reasoning conflated
+/// two different problems. The struct-constructing case this function
+/// otherwise guards against (`-> Box<T>`) is about layout: does the returned
+/// struct SHAPE differ per instantiation. A bare self-field passthrough
+/// returning `map<K, T>` has no layout problem either (a map's runtime
+/// representation is uniform regardless of K/V) -- but it has the exact same
+/// ELEMENT-TYPE-ERASURE problem the `[T]` / `(T, i64)` arms below exist to
+/// fix (see that paragraph): `map<str, T>`'s VALUE type must be individually
+/// retyped per instantiation so `to_string`/render dispatch on a looked-up
+/// value knows it's an f64 or a str instead of a bare erased i64. Reproduced
+/// live: `Holder<f64>.get_map()["k"]` rendered the raw i64 bit pattern of
+/// 1.5, and `Holder<str>.get_map()["k"]` rendered a raw pointer integer
+/// instead of the string -- identically on JIT and AOT (shared-MIR bug),
+/// because `name != "map"` fell through to `_ => false` and left the method
+/// on the single erased-to-i64 `func_ret_types` copy exactly like the `[T]`
+/// case below did before it got its own arm. Map is therefore folded into
+/// the same `TypeExpr::Generic` arm as any other generic-arg-mentioning
+/// return type, with no `name` exclusion.
 ///
 /// TRUE for `[T]` / `(T, i64)`-shaped compound returns too (added after the
 /// struct-constructing case above shipped): a BARE self-field passthrough of
@@ -15007,9 +15020,7 @@ fn instance_ret_needs_monomorphization(
 ) -> bool {
     let mentions = |a: &ast::TypeExpr| impl_generics.iter().any(|gp| type_expr_mentions_param(a, gp));
     match ret_ty {
-        Some(ast::TypeExpr::Generic { name, args, .. }) if name != "map" => {
-            args.iter().any(mentions)
-        }
+        Some(ast::TypeExpr::Generic { args, .. }) => args.iter().any(mentions),
         Some(ast::TypeExpr::Array { element, .. }) => mentions(element),
         Some(ast::TypeExpr::Tuple { elements, .. }) => elements.iter().any(mentions),
         _ => false,
