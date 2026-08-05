@@ -215,6 +215,16 @@ jobs:
         # for local replay and a much larger sweep.
         run: bash tests/fuzz/fuzz_gate.sh
 
+      - name: Combined-category grammar fuzz gate (tests/fuzz, generics x closures x dyn x spawn/actors)
+        # Complements fuzz_gate.sh's independent per-category blocks: this
+        # generator threads generics/closures/dyn/spawn/actors/enums/
+        # Option/Result/tuples/try-throw through ONE connected data-flow
+        # story per program (9 scenarios), the cross-category interaction
+        # shape neither gen2.py nor gen_fuzz.py's independent blocks reach.
+        # Bounded, deterministic seed range; see tests/fuzz/README.md for
+        # local replay and a much larger sweep.
+        run: bash tests/fuzz/fuzz_gate_grammar.sh
+
       - name: Memory-plateau gate
         # A heavy string+array churn workload must keep peak RSS under a hard
         # ceiling. The pre-fix build grew to ~10.7GB on this workload
