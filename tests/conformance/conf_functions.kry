@@ -220,6 +220,24 @@ fn stateful_factory_mutated_scalar() -> [i64] {
     return [c1(), c2()]
 }
 
+// LEDGER: closure-mutating-costale-scalar-capture. A `let`-bound MUTATING
+// closure's OTHER, non-mutated scalar co-capture used to freeze at its
+// closure-construction-time value instead of tracking a later outer
+// mutation, contradicting gotcha #11's unconditional by-reference promise
+// for non-mutated captures. `flag` is never touched inside the closure body
+// -- only `counter` is mutated -- so `flag`'s later reassignment must be
+// visible on the closure's SECOND call (want r1=2, r2=102; got r2=3, the
+// value of `flag` at construction time).
+fn costale_scalar_cocapture() -> [i64] {
+    let mut counter: i64 = 0
+    let mut flag: i64 = 1
+    let f = |n: i64| { counter = counter + n  counter + flag }
+    let r1 = f(1)
+    flag = 100
+    let r2 = f(1)
+    return [r1, r2]
+}
+
 // A `dyn Trait` param whose METHOD is called inside a GENERIC function must
 // still be passed as a trait object (fat pointer): the generic-call lowering
 // path bypassed the dyn-Trait coercion the normal call path does, so a concrete
@@ -372,6 +390,13 @@ fn main() {
 
     let sfm = stateful_factory_mutated_scalar()
     expect(sfm[0] == 1 and sfm[1] == 2, "solitary mutated scalar capture persists across calls even when the tail is not that identifier")
+
+    // LEDGER: closure-mutating-costale-scalar-capture. A non-mutated scalar
+    // co-capture (`flag`) in a mutating closure must see a later outer
+    // mutation (was silently frozen at closure-construction time: r2=3
+    // instead of 102).
+    let csc = costale_scalar_cocapture()
+    expect(csc[0] == 2 and csc[1] == 102, "non-mutated scalar co-capture in a mutating closure tracks a later outer mutation")
 
     // dyn-Trait method call inside a generic fn: struct arg must be wrapped as
     // a trait object, not passed raw (was a segfault on both backends).

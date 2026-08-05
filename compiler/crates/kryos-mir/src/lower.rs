@@ -12562,33 +12562,51 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Box non-mutated SCALAR captures behind an ARC-managed heap
             // cell (reusing the SAME `RValue::ArcAlloc`/`RValue::Deref`
             // machinery that already backs `&x` borrows) when this lambda
-            // literal is a struct-literal field's direct value. Rationale:
-            // a struct-field closure's env is populated ONCE at construction
-            // and never re-read, so (unlike a `let`-bound closure invoked by
-            // name, which gets a direct-call substitution that re-reads the
-            // outer variable's CURRENT value at every call site --
-            // `closure_locals`) it silently sees a STALE snapshot of any
-            // capture mutated after construction, even though it was never
-            // mutated INSIDE the closure -- gotcha #11 promises by-reference
-            // semantics unconditionally for those. A heap cell (not a raw
-            // stack address) is required because a struct literal holding
-            // this closure can itself be returned from the defining function
-            // (`make_handler` in t06_closure_struct_field.kry) -- the
-            // variable's OWN stack slot would then be popped/reused while
-            // the closure still holds a pointer to it.
+            // literal is a struct-literal field's direct value, OR when this
+            // lambda is itself a MUTATING closure (has >=1 mutated capture).
+            // Rationale: a struct-field closure's env is populated ONCE at
+            // construction and never re-read, so (unlike a NON-mutating
+            // `let`-bound closure invoked by name, which gets a direct-call
+            // substitution via `closure_locals` that re-reads the outer
+            // variable's CURRENT value at every call site) it silently sees
+            // a STALE snapshot of any capture mutated after construction,
+            // even though it was never mutated INSIDE the closure -- gotcha
+            // #11 promises by-reference semantics unconditionally for those.
+            // A heap cell (not a raw stack address) is required because a
+            // struct literal holding this closure can itself be returned
+            // from the defining function (`make_handler` in
+            // t06_closure_struct_field.kry) -- the variable's OWN stack slot
+            // would then be popped/reused while the closure still holds a
+            // pointer to it.
             //
-            // Deliberately narrow: only struct-literal-field lambdas (a
-            // `let`-bound closure keeps the existing, already-correct
-            // `closure_locals` path -- boxing it too would require that fast
-            // path to ALSO pass a pointer, a wider change this fix avoids);
-            // only NON-mutated captures (a MUTATED capture gets its own
-            // separate persistent pointer-box treatment below, with a
-            // write-back before every return -- see the mutated-scalar-
-            // capture block just after this one); only scalar types (str/array/map/
-            // struct captures are not boxed here -- their existing capture
-            // behavior is left exactly as before).
+            // The MUTATING-closure case (LEDGER: closure-mutating-costale-
+            // scalar-capture) has the IDENTICAL hazard for a completely
+            // different reason: `mutating_closures` (below) disables the
+            // `closure_locals` direct-call fast path for ANY closure that
+            // mutates even one capture (the fast path re-reads by re-passing
+            // the CURRENT arguments at each call site, which is unsafe once
+            // the closure owns persistent mutable state by move) -- so a
+            // `let`-bound MUTATING closure's OTHER, non-mutated scalar
+            // co-captures fall through BOTH mechanisms: not struct-literal-
+            // field (so the box loop below used to skip them), and not
+            // eligible for `closure_locals` either (mutation disqualifies
+            // the whole closure from that path, not just the mutated
+            // capture). They silently froze at their construction-time
+            // value instead of tracking later outer mutations. Safe to widen
+            // unconditionally: a mutating closure never uses the
+            // `closure_locals` fast path regardless of whether we box here,
+            // so there is no fast-path conflict to avoid.
+            //
+            // Still scoped to: only NON-mutated captures (a MUTATED capture
+            // gets its own separate persistent pointer-box treatment below,
+            // with a write-back before every return -- see the mutated-
+            // scalar-capture block just after this one); only scalar types
+            // (str/array/map/struct captures are not boxed here -- their
+            // existing capture behavior, including the documented capture-
+            // by-reference-into-subobjects boundary, is left exactly as
+            // before).
             let mut boxed_capture_names: HashSet<String> = HashSet::new();
-            if box_scalar_captures {
+            if box_scalar_captures || !mutated_captures.is_empty() {
                 for (idx, cap_name) in captures.iter().enumerate() {
                     if mutated_captures.contains(cap_name) {
                         continue;
