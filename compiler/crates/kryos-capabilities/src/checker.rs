@@ -449,6 +449,25 @@ struct CapabilityChecker {
     /// call needs nothing." Populated per-actor by `check_actor`, cleared
     /// after its handlers are checked (actors do not nest).
     current_actor_fn_state_fields: HashSet<String>,
+    /// Locals bound DIRECTLY to a `self.<path>` expression inside the
+    /// current actor handler (`let x = self.b`), mapped to the actor state
+    /// field the binding's path starts with (`Some("b")`), or `None` when
+    /// the path starts with an unnameable step (`self.arr[i]` — an `Index`
+    /// step; fails closed unconditionally rather than being silently
+    /// dropped). Deliberately narrow and syntactic (one hop, no chained
+    /// alias-of-an-alias tracking) — this exists ONLY to close the specific
+    /// residual `resolve_method_field_invoke_caps`'s literal-only tracking
+    /// leaves open: a fn-bearing state field aliased into a local BEFORE
+    /// being invoked (`let x = self.b; x.f()`), where the ordinary
+    /// "positively confirmed literal, else charge nothing" stance would
+    /// otherwise attribute the call empty authority because `x` is not a
+    /// tracked struct literal. See `resolve_actor_self_field_invoke_caps`.
+    /// A broader fix (consulting the general `local_caps` provenance map
+    /// for ANY unresolved method-call root) was tried and reverted — it
+    /// over-rejected ordinary code broadly; see that function's doc for the
+    /// measured cost. Populated per-actor-handler by `check_actor`, cleared
+    /// after each handler is checked.
+    current_actor_state_alias_locals: HashMap<String, Option<String>>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -480,6 +499,7 @@ impl CapabilityChecker {
             current_local_closure_caps: HashMap::new(),
             current_local_container_lits: HashMap::new(),
             current_actor_fn_state_fields: HashSet::new(),
+            current_actor_state_alias_locals: HashMap::new(),
             mode,
         }
     }
@@ -687,14 +707,49 @@ impl CapabilityChecker {
         }
     }
 
+    /// Exhaustive over `TypeExpr` (structural guarantee — no wildcard arm;
+    /// see `docs/capability-soundness.md` §3 "the structural guarantee").
+    /// Adding a new `TypeExpr` variant to the AST fails this match at
+    /// compile time until someone explicitly decides whether it can carry a
+    /// function value, rather than silently falling through a `_ => false`
+    /// that would misclassify a genuinely fn-bearing new type as safe.
+    /// `DynTrait` and `Inferred` resolve to `true` (fail closed): a trait
+    /// object's or an unresolved type's transitive shape cannot be proven
+    /// NOT to carry a function value from here, and this helper's whole
+    /// contract is "definitely does not carry a fn value" == `false`,
+    /// everything else must be `true`.
     fn is_fn_bearing_type_inner(&self, ty: &TypeExpr, depth: u32) -> bool {
         if depth > 8 {
+            // Recursion-depth bound, reached on a self-/mutually-recursive
+            // struct graph (`struct Node { next: Node }`, `struct Tree {
+            // kids: [Tree] }`) — these are common, legitimate, and almost
+            // always NOT fn-bearing, so unlike every other branch in this
+            // match, "false" here is the historically-measured-safe
+            // default, not a soundness gap: a cycle that never crosses a
+            // `Function` within 8 levels of DECLARED-type nesting (not
+            // runtime depth — this walks the type graph, so a self-
+            // referential type re-enters at the SAME logical depth on every
+            // recursive field) has no way to introduce one at level 9 that
+            // it didn't already have at level 8. Flipping this to `true`
+            // was tried and reverted: it makes every self-referential
+            // struct type "fn-bearing" purely from the depth cap, which
+            // would force `all` on any actor state field of a recursive
+            // struct type regardless of whether it holds a closure —
+            // measured as a large, unjustified false-positive class, not a
+            // real closure escape.
             return false;
         }
         match ty {
             TypeExpr::Function { .. } => true,
             TypeExpr::Array { element, .. } => self.is_fn_bearing_type_inner(element, depth + 1),
+            TypeExpr::Tuple { elements, .. } => elements
+                .iter()
+                .any(|e| self.is_fn_bearing_type_inner(e, depth + 1)),
             TypeExpr::Optional { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
+            TypeExpr::Reference { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
+            TypeExpr::Shared { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
+            TypeExpr::Weak { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
+            TypeExpr::Pointer { inner, .. } => self.is_fn_bearing_type_inner(inner, depth + 1),
             TypeExpr::Generic { name, args, .. } if (name == "map" || name == "Map") && args.len() == 2 => {
                 self.is_fn_bearing_type_inner(&args[1], depth + 1)
             }
@@ -708,7 +763,7 @@ impl CapabilityChecker {
                 .is_some_and(|fields| {
                     fields.iter().any(|(_, fty)| self.is_fn_bearing_type_inner(fty, depth + 1))
                 }),
-            _ => false,
+            TypeExpr::DynTrait { .. } | TypeExpr::Inferred { .. } => true,
         }
     }
 
@@ -1705,9 +1760,9 @@ impl CapabilityChecker {
                 // annotation that is normally absent.
                 let lambda_own_params: HashSet<String> =
                     params.iter().map(|p| p.name.clone()).collect();
+                let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
+                Self::walk_calls_expr(body, &mut calls);
                 if !lambda_own_params.is_empty() {
-                    let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
-                    Self::walk_calls_expr(body, &mut calls);
                     let hot_own_param = lambda_own_params.iter().find(|pname| {
                         calls
                             .iter()
@@ -1732,6 +1787,66 @@ impl CapabilityChecker {
                         }
                         return ClosureCapsResult::Known(body_caps);
                     }
+                }
+                // CAPTURED-HOT-PARAMETER CASE (closes LEDGER item 10, the
+                // "wrapper closure" trust-model bypass — see
+                // `tests/security/cap_escape_closure_wraps_closure.kry` and
+                // `docs/capability-soundness.md` invariant 7-captured). A
+                // lambda literal that is itself RETURNED from an enclosing
+                // function and directly calls one of THAT function's own
+                // fn-typed parameters (captured by closure, not one of the
+                // lambda's OWN params — `fn wrap_once(inner: fn()->str) ->
+                // fn()->str { return || inner() }`) used to fall straight
+                // through to the generic `collect_caps_expr` fallback below.
+                // `collect_caps_expr` computes "what does running this code
+                // require", where a call to a fn-typed OWN parameter is
+                // correctly deferred to zero (`hot_params`'s whole point —
+                // `wrap_once` itself must stay capability-free so ordinary
+                // HOF wrapping isn't blanket-denied). That deferral is sound
+                // for code that runs INLINE as part of the enclosing
+                // function's own call — but this body does NOT run inline:
+                // it is captured into a fresh closure VALUE that escapes
+                // (returned, then invoked independently at a wholly
+                // separate call site later). Treating that escaping value's
+                // own requirement as the same "zero, deferred" answer
+                // silently drops the deferral's other half — nothing ever
+                // resolves it against the real argument, because the
+                // eventual call site (`wrapped()`) has no syntactic link
+                // back to `wrap_once(reader)`'s argument at all. Fix:
+                // recognize this shape explicitly and resolve to
+                // `DependsOnParam` against the ENCLOSING function's own
+                // parameter, exactly like the lambda's-own-param case above
+                // — `resolve_closure_caps`'s `FnCall` arm already knows how
+                // to follow a `DependsOnParam` result back through
+                // `fn_params`/the actual call-site argument (this is what
+                // makes `wrap_once(reader)` correctly resolve to `reader`'s
+                // real authority once this fires).
+                let captured_hot_param = own_params.iter().find(|pname| {
+                    !lambda_own_params.contains(pname.as_str())
+                        && calls
+                            .iter()
+                            .any(|(cname, _args, is_method)| !is_method && *cname == pname.as_str())
+                });
+                if let Some(hot_p) = captured_hot_param {
+                    let body_caps = self.collect_caps_expr(
+                        body,
+                        working,
+                        own_params,
+                        local_caps,
+                        &HashMap::new(),
+                    );
+                    if body_caps.is_empty() {
+                        return ClosureCapsResult::DependsOnParam(hot_p.clone());
+                    }
+                    // The body needs BOTH the deferred captured-parameter
+                    // authority AND some additional statically-known
+                    // capability. `ClosureCapsResult` has no variant that
+                    // represents "Known(X) unioned with a deferred
+                    // DependsOnParam" — rather than silently dropping
+                    // either half (which is exactly the class of bug this
+                    // fix closes), fail closed: unknown must mean `all`,
+                    // never a guess (invariant 22).
+                    return ClosureCapsResult::Unknown;
                 }
                 ClosureCapsResult::Known(self.collect_caps_expr(
                     body,
@@ -1834,10 +1949,99 @@ impl CapabilityChecker {
                     Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
                         self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, own_params)
                     }
-                    _ => ClosureCapsResult::Unknown,
+                    // Exhaustive over `Expr` — every OTHER shape a call's
+                    // callee sub-expression could syntactically be
+                    // (`(cond ? f1 : f2)()`, `arr[pick()]()` reached via a
+                    // non-Identifier root, a literal used nonsensically as
+                    // a callee, ...) has no special resolution here and
+                    // falls to the sound default. See the structural-
+                    // guarantee note on the outer match below — this list
+                    // is deliberately spelled out rather than a wildcard so
+                    // a new `Expr` variant fails to compile here until
+                    // someone decides it.
+                    Expr::IntLiteral { .. }
+                    | Expr::FloatLiteral { .. }
+                    | Expr::StringLiteral { .. }
+                    | Expr::InterpolatedString { .. }
+                    | Expr::CharLiteral { .. }
+                    | Expr::BoolLiteral { .. }
+                    | Expr::NoneLiteral { .. }
+                    | Expr::FieldAccess { .. }
+                    | Expr::IndexAccess { .. }
+                    | Expr::BinaryOp { .. }
+                    | Expr::UnaryOp { .. }
+                    | Expr::ArrayLiteral { .. }
+                    | Expr::TupleLiteral { .. }
+                    | Expr::MapLiteral { .. }
+                    | Expr::StructLiteral { .. }
+                    | Expr::Lambda { .. }
+                    | Expr::IfExpr { .. }
+                    | Expr::MatchExpr { .. }
+                    | Expr::RangeExpr { .. }
+                    | Expr::PipeExpr { .. }
+                    | Expr::Borrow { .. }
+                    | Expr::Deref { .. }
+                    | Expr::SharedExpr { .. }
+                    | Expr::MoveExpr { .. }
+                    | Expr::WeakExpr { .. }
+                    | Expr::ComptimeBlock { .. }
+                    | Expr::QuantumBlock { .. }
+                    | Expr::UnsafeBlock { .. }
+                    | Expr::Cast { .. }
+                    | Expr::Block { .. }
+                    | Expr::Await { .. } => ClosureCapsResult::Unknown,
                 }
             }
-            _ => ClosureCapsResult::Unknown,
+            // STRUCTURAL GUARANTEE (see docs/capability-soundness.md §3
+            // "the structural guarantee"): this outer match is exhaustive
+            // over `Expr` with NO wildcard arm, deliberately. Every value-
+            // producing expression FORM this checker does not have a
+            // precise resolver for is spelled out here explicitly, routed
+            // to the fail-closed `Unknown` default (which every caller of
+            // this function turns into `Capability::All`). This is
+            // load-bearing: if a future `Expr` variant is added to the AST
+            // (a new literal kind, a new control-flow form, a new capture
+            // form, ...) and it is capable of producing or laundering a
+            // function value, this match FAILS TO COMPILE until a human
+            // explicitly adds an arm and decides whether it needs a real
+            // resolver or is safe to leave on the fail-closed default —
+            // converting "we forgot a shape" from a silent security hole
+            // into a build error. Do not collapse this back into `_ => ...`
+            // even though the RUNTIME behavior would be identical today;
+            // the whole point is the compile-time forcing function for
+            // whoever adds the next variant.
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::InterpolatedString { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::IndexAccess { .. }
+            | Expr::BinaryOp { .. }
+            | Expr::UnaryOp { .. }
+            | Expr::MethodCall { .. }
+            | Expr::StaticMethodCall { .. }
+            | Expr::ArrayLiteral { .. }
+            | Expr::TupleLiteral { .. }
+            | Expr::MapLiteral { .. }
+            | Expr::StructLiteral { .. }
+            | Expr::IfExpr { .. }
+            | Expr::MatchExpr { .. }
+            | Expr::RangeExpr { .. }
+            | Expr::PipeExpr { .. }
+            | Expr::Borrow { .. }
+            | Expr::Deref { .. }
+            | Expr::SharedExpr { .. }
+            | Expr::MoveExpr { .. }
+            | Expr::WeakExpr { .. }
+            | Expr::ComptimeBlock { .. }
+            | Expr::QuantumBlock { .. }
+            | Expr::UnsafeBlock { .. }
+            | Expr::Cast { .. }
+            | Expr::Block { .. }
+            | Expr::Await { .. } => ClosureCapsResult::Unknown,
         }
     }
 
@@ -1882,30 +2086,46 @@ impl CapabilityChecker {
         let Some((head, rest)) = path.split_first() else {
             return self.resolve_closure_caps(expr, working, fn_return_caps, local_caps, own_params);
         };
-        match (head, expr) {
-            (PathStep::Field(fname), Expr::StructLiteral { fields, .. }) => {
-                match fields.iter().find(|(n, _)| n == fname) {
+        // STRUCTURAL GUARANTEE (see docs/capability-soundness.md §3 "the
+        // structural guarantee"): exhaustive over `Expr`, no wildcard arm —
+        // same rationale as `resolve_closure_caps`'s outer match. `head`
+        // (a `PathStep`, a 2-variant internal helper type — not itself an
+        // AST form a program can add to) is handled as a nested condition
+        // WITHIN the three container-literal arms rather than as a second
+        // dimension of the outer match, so this stays a genuine per-`Expr`-
+        // variant enumeration instead of a much larger, less legible cross
+        // product; an unmatched `(head, expr)` COMBINATION (e.g. an `Index`
+        // step into a `StructLiteral`, or a `Field` step into an
+        // `ArrayLiteral`/`MapLiteral` — not a valid program shape, but not
+        // provably unreachable from this function's own signature either)
+        // still falls to `Unknown`, explicitly, inside the relevant arm.
+        match expr {
+            Expr::StructLiteral { fields, .. } => match head {
+                PathStep::Field(fname) => match fields.iter().find(|(n, _)| n == fname) {
                     Some((_, fexpr)) => self.resolve_container_path_caps(
                         fexpr, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
                     ),
                     None => ClosureCapsResult::Unknown,
-                }
-            }
-            (PathStep::Index, Expr::ArrayLiteral { elements, .. }) => {
-                Self::merge_all(elements.iter().map(|el| {
+                },
+                PathStep::Index => ClosureCapsResult::Unknown,
+            },
+            Expr::ArrayLiteral { elements, .. } => match head {
+                PathStep::Index => Self::merge_all(elements.iter().map(|el| {
                     self.resolve_container_path_caps(
                         el, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
                     )
-                }))
-            }
-            (PathStep::Index, Expr::MapLiteral { entries, .. }) => {
-                Self::merge_all(entries.iter().map(|(_, vexpr)| {
+                })),
+                PathStep::Field(_) => ClosureCapsResult::Unknown,
+            },
+            Expr::MapLiteral { entries, .. } => match head {
+                PathStep::Index => Self::merge_all(entries.iter().map(|(_, vexpr)| {
                     self.resolve_container_path_caps(
                         vexpr, rest, working, fn_return_caps, local_caps, local_container_lits, own_params,
                     )
-                }))
-            }
-            (_, Expr::Identifier { name, .. }) => {
+                })),
+                PathStep::Field(_) => ClosureCapsResult::Unknown,
+            },
+            Expr::Identifier { name, .. } => {
                 if let Some(lit) = local_container_lits.get(name) {
                     // Clone to release the borrow of `local_container_lits`
                     // before recursing back into it.
@@ -1919,7 +2139,44 @@ impl CapabilityChecker {
                 }
                 ClosureCapsResult::Unknown
             }
-            _ => ClosureCapsResult::Unknown,
+            // Every remaining `Expr` variant reached as a container-path
+            // root/intermediate (a function-call return, a conditionally-
+            // selected container, a tuple/struct-literal field that isn't a
+            // struct-literal-shaped sub-expression, ...) has no precise
+            // resolver and falls to the sound `Unknown` default — spelled
+            // out explicitly rather than a wildcard, per the structural
+            // guarantee above.
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::InterpolatedString { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::FieldAccess { .. }
+            | Expr::IndexAccess { .. }
+            | Expr::BinaryOp { .. }
+            | Expr::UnaryOp { .. }
+            | Expr::FnCall { .. }
+            | Expr::MethodCall { .. }
+            | Expr::StaticMethodCall { .. }
+            | Expr::TupleLiteral { .. }
+            | Expr::Lambda { .. }
+            | Expr::IfExpr { .. }
+            | Expr::MatchExpr { .. }
+            | Expr::RangeExpr { .. }
+            | Expr::PipeExpr { .. }
+            | Expr::Borrow { .. }
+            | Expr::Deref { .. }
+            | Expr::SharedExpr { .. }
+            | Expr::MoveExpr { .. }
+            | Expr::WeakExpr { .. }
+            | Expr::ComptimeBlock { .. }
+            | Expr::QuantumBlock { .. }
+            | Expr::UnsafeBlock { .. }
+            | Expr::Cast { .. }
+            | Expr::Block { .. }
+            | Expr::Await { .. } => ClosureCapsResult::Unknown,
         }
     }
 
@@ -2462,6 +2719,81 @@ impl CapabilityChecker {
         }
     }
 
+    /// See `current_actor_state_alias_locals`'s doc. Narrow, single-hop,
+    /// purely syntactic scan of `handler`'s body for `let name =
+    /// self.<path>` bindings, recording the FIRST step of `<path>` (the
+    /// actor state field actually being aliased) against `name`. A `let x =
+    /// self` (path empty — aliasing the whole receiver, not a specific
+    /// field) is not recorded: nothing to name, and it is not the shape
+    /// this closes. Recurses into nested blocks the same way its sibling
+    /// container-literal tracker does, for the same reason (a binding
+    /// inside a bare `{ }`/`if`/`while`/`try` must still be visible to a
+    /// later read in an enclosing or sibling scope within the same flat,
+    /// best-effort model the rest of this file uses).
+    fn build_actor_state_alias_locals(block: &kryos_ast::Block) -> HashMap<String, Option<String>> {
+        let mut locals = HashMap::new();
+        Self::build_actor_state_alias_locals_block(block, &mut locals);
+        locals
+    }
+
+    fn build_actor_state_alias_locals_block(
+        block: &kryos_ast::Block,
+        locals: &mut HashMap<String, Option<String>>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let {
+                    name, value: Some(v), ..
+                } => {
+                    if let Some((root, path)) = Self::decompose_container_path(v) {
+                        if root == "self" && !path.is_empty() {
+                            let field = match &path[0] {
+                                PathStep::Field(f) => Some(f.clone()),
+                                PathStep::Index => None,
+                            };
+                            locals.insert(name.clone(), field);
+                        }
+                    }
+                    if let Expr::Block { block: inner, .. } = v {
+                        Self::build_actor_state_alias_locals_block(inner, locals);
+                    }
+                }
+                Stmt::If {
+                    then_block,
+                    elif_clauses,
+                    else_block,
+                    ..
+                } => {
+                    Self::build_actor_state_alias_locals_block(then_block, locals);
+                    for (_, b) in elif_clauses {
+                        Self::build_actor_state_alias_locals_block(b, locals);
+                    }
+                    if let Some(b) = else_block {
+                        Self::build_actor_state_alias_locals_block(b, locals);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    Self::build_actor_state_alias_locals_block(body, locals)
+                }
+                Stmt::TryCatch {
+                    try_block,
+                    catch_block,
+                    ..
+                } => {
+                    Self::build_actor_state_alias_locals_block(try_block, locals);
+                    Self::build_actor_state_alias_locals_block(catch_block, locals);
+                }
+                Stmt::Expr {
+                    expr: Expr::Block { block: inner, .. },
+                    ..
+                } => {
+                    Self::build_actor_state_alias_locals_block(inner, locals);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// Compute, for every function whose DECLARED return type is
     /// `fn(...) -> ...`, the statically-resolved authority of the closure it
     /// returns (see `ClosureCapsResult`). A monotone fixed point (mutual
@@ -2873,6 +3205,29 @@ impl CapabilityChecker {
     /// ordinary method call (`p.distance(other)`) is never misclassified as
     /// an unresolvable field read (which would otherwise force every method
     /// call in the language to require `all`).
+    ///
+    /// **Tried and REVERTED, recorded here so it is not re-attempted the
+    /// same way:** an earlier version of this fix, when `object`'s root was
+    /// NOT a locally-tracked struct literal, fell back to consulting
+    /// `local_caps` (the general closure-provenance map, keyed by EVERY
+    /// `let`-bound local regardless of whether its value is a
+    /// container/closure at all) and charged `all` whenever the root
+    /// resolved to `Unknown` there. This is UNSOUND-BY-OVER-REJECTION:
+    /// `build_local_closure_caps_block` inserts an `Unknown` entry for
+    /// ANY `let name = f(..)` binding where `f` is a plain (non-fn-
+    /// returning) user function with no tracked return-closure entry —
+    /// i.e. the overwhelming majority of ordinary local bindings in real
+    /// code, completely unrelated to fn-bearing containers. Wiring that
+    /// into every `MethodCall`'s fallback broke conformance/generics/actor
+    /// examples broadly (measured live: conf_generics, conf_errors_
+    /// concurrency, examples/actors.kry, and 2 type-soundness + 2 inferred-
+    /// soundness probes all false-positived under this change — see
+    /// `tools/loop/LEDGER.md`). Reverted in favor of the narrow, precisely-
+    /// scoped `current_actor_state_alias_locals` mechanism below, which
+    /// only tracks LOCALS BOUND DIRECTLY TO A `self.<path>` EXPRESSION
+    /// inside an actor handler — see `resolve_actor_self_field_invoke_caps`
+    /// and `check_actor`'s `build_actor_state_alias_locals` for where that
+    /// residual (`let x = self.b; x.f()`) is actually closed.
     #[allow(clippy::too_many_arguments)]
     fn resolve_method_field_invoke_caps(
         &self,
@@ -2918,27 +3273,81 @@ impl CapabilityChecker {
         }
     }
 
-    /// **FAIL-CLOSED default for `self.<field>()` inside an actor handler,
-    /// when `<field>` is one of the actor's own FN-TYPED state fields**
-    /// (closes LEDGER item 18). See `current_actor_fn_state_fields`'s doc for
-    /// the full rationale: a state field's value can be written by ANY
-    /// handler at ANY prior dispatch, so there is no sound way to trace
-    /// which closure a given `self.<field>()` call site actually holds —
+    /// **FAIL-CLOSED default for a call rooted at `self` inside an actor
+    /// handler, at ANY access depth, when the access crosses one of the
+    /// actor's own FN-BEARING state fields** (closes LEDGER item 18 AND its
+    /// nested-container residual — see `docs/capability-soundness.md`
+    /// invariant 4-actor). See `current_actor_fn_state_fields`'s doc for the
+    /// full rationale: a state field's value can be written by ANY handler
+    /// at ANY prior dispatch, so there is no sound way to trace which
+    /// closure a given self-rooted call site actually holds —
     /// `resolve_method_field_invoke_caps`'s precise struct-literal tracking
     /// never covers `self` (it is not a locally-tracked container literal),
-    /// so without this, the call is attributed EMPTY authority instead of
-    /// the conservative `all` every other genuinely-unresolvable fn-value
-    /// invocation in this file requires. Only engages for a BARE `self`
-    /// receiver (`self.reader()`, not `self.other.reader()` — a nested path
-    /// falls through to the ordinary, already-sound handling for whatever
-    /// type `other` is).
+    /// so without this, the call would be attributed EMPTY authority
+    /// instead of the conservative `all` every other genuinely-unresolvable
+    /// fn-value invocation in this file requires.
+    ///
+    /// PREVIOUSLY (the live bypass this closes): this only engaged for a
+    /// BARE `self` receiver (`self.reader()`), checking whether `method`
+    /// itself named a fn-bearing state field. A ONE-level indirection
+    /// (`self.b.f()`, where `b: Box` and `Box.f: fn() -> str`) defeated it
+    /// entirely: `current_actor_fn_state_fields` DOES already classify `b`
+    /// as fn-bearing (it is computed via the transitive
+    /// `is_fn_bearing_type_inner`, not a direct-type check), but the old
+    /// code only ever tested `method` ("f") against that set, never the
+    /// actual state-field name being stepped through ("b"). `self.b.f()`
+    /// reached neither `resolve_method_field_invoke_caps` (which requires a
+    /// LOCALLY-tracked struct literal for its root, and `self` is never
+    /// one) nor this function (bare-`self` guard), so `extra` stayed empty
+    /// and the call was charged NOTHING.
+    ///
+    /// FIX: decompose the full receiver chain (`decompose_container_path`)
+    /// rather than requiring a bare `self` object. If the chain's root is
+    /// `self`, the state field actually being touched is the FIRST step of
+    /// the path (`self.b.f()` touches `b`; `self.b.c.f()` still touches
+    /// `b` — we cannot trace past the actor-state boundary, only detect
+    /// that the access crosses it), or `method` itself when the path is
+    /// empty (the original `self.f()` case). An `Index` first step
+    /// (`self.arr[i].f()`) cannot even be named, so it fails closed
+    /// unconditionally rather than falling through as "not a state
+    /// access" — this is deliberate: `self` is never eligible for the
+    /// ordinary "not positively confirmed => not a field call, charge
+    /// nothing" stance any other receiver gets (see
+    /// `resolve_method_field_invoke_caps`), because actor state is the one
+    /// place in the language where a value's identity is NOT determined by
+    /// its own local `let`/literal syntax.
     fn resolve_actor_self_field_invoke_caps(&self, object: &Expr, method: &str) -> CapabilitySet {
-        if let Expr::Identifier { name, .. } = object {
-            if name == "self" && self.current_actor_fn_state_fields.contains(method) {
-                let mut c = CapabilitySet::empty();
-                c.insert(Capability::All);
-                return c;
+        let Some((root, path)) = Self::decompose_container_path(object) else {
+            return CapabilitySet::empty();
+        };
+        let all = || {
+            let mut c = CapabilitySet::empty();
+            c.insert(Capability::All);
+            c
+        };
+        if root == "self" {
+            let touched_field: &str = match path.first() {
+                Some(PathStep::Field(f)) => f.as_str(),
+                Some(PathStep::Index) => return all(),
+                None => method,
+            };
+            if self.current_actor_fn_state_fields.contains(touched_field) {
+                return all();
             }
+            return CapabilitySet::empty();
+        }
+        // Not rooted at `self` directly -- check whether `root` is a LOCAL
+        // that `current_actor_state_alias_locals` recorded as a one-hop
+        // alias of a `self.<field>` binding (`let x = self.b; x.f()`, or
+        // deeper: `x.c.f()` still touches the SAME aliased field `b`,
+        // regardless of `path`/`method` past the root, exactly like the
+        // direct-`self` case above only ever looks at the FIRST step).
+        if let Some(alias) = self.current_actor_state_alias_locals.get(root) {
+            return match alias {
+                None => all(), // aliased via an unnameable (Index) step -- fail closed unconditionally
+                Some(field) if self.current_actor_fn_state_fields.contains(field.as_str()) => all(),
+                Some(_) => CapabilitySet::empty(),
+            };
         }
         CapabilitySet::empty()
     }
@@ -3993,6 +4402,7 @@ impl CapabilityChecker {
                 .map(|p| p.name.clone())
                 .collect();
             self.current_local_container_lits = Self::build_local_container_lits(&handler.body);
+            self.current_actor_state_alias_locals = Self::build_actor_state_alias_locals(&handler.body);
             self.current_local_closure_caps = self.build_local_closure_caps(
                 &handler.body,
                 &self.fn_capabilities,
@@ -4005,6 +4415,7 @@ impl CapabilityChecker {
             self.current_fn_typed_params.clear();
             self.current_local_closure_caps.clear();
             self.current_local_container_lits.clear();
+            self.current_actor_state_alias_locals.clear();
         }
         self.current_actor_fn_state_fields = saved_actor_fn_fields;
         self.current_fn_entry_scope_depth = saved_entry_depth;

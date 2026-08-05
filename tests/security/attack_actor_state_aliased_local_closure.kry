@@ -1,0 +1,52 @@
+// SECURITY -- adversarial variant of attack_actor_state_nested_field_closure
+// .kry: instead of calling `self.b.f()` directly, alias the fn-bearing state
+// field into a LOCAL first (`let x = self.b`), then invoke through the
+// local (`x.f()`). This probes a SEPARATE code path:
+// `resolve_method_field_invoke_caps`'s root-not-a-tracked-literal fallback,
+// which used to return `CapabilitySet::empty()` unconditionally whenever
+// the receiver's root wasn't a locally-tracked struct LITERAL -- even
+// though `local_caps` already recorded `x`'s provenance as `Unknown` at the
+// `let x = self.b` binding (via `build_local_closure_caps_block`'s
+// container-path branch, which itself resolves through
+// `resolve_container_path_caps` and correctly returns `Unknown` for a
+// `self`-rooted read). The MethodCall-site resolver simply never consulted
+// that map for its fallback case. Fixed alongside the nested-field fix
+// (`resolve_method_field_invoke_caps` now checks `local_caps.get(root)`
+// before falling back to `CapabilitySet::empty()`).
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        let x = self.b
+        let leaked = x.f()
+        println("ALIASED-LOCAL ACTOR-STATE LEAK (was NOT CLOSED): " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

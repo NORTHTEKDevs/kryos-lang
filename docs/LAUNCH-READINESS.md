@@ -40,6 +40,23 @@ generation itself, not just to individual bug fixes.
 
 ---
 
+> **UPDATE (2026-08-05, structural-completeness wave):** LEDGER item 10 — the specific
+> blocker this document's condition names in §1 and §3.1 — is **CLOSED**, re-verified live:
+> `kryos check`/`kryos check --strict-capabilities tests/security/
+> cap_escape_closure_wraps_closure.kry` now both exit 1 with `E0507`, both directions proven
+> (leaks on the pre-fix binary, rejects on the post-fix binary). Two further live escapes in
+> the SAME closure-provenance family were found and closed the same wave (a one-hop-deeper
+> variant of the already-closed item 18, and its aliased-local sibling) — see
+> `tools/loop/LEDGER.md`'s structural-completeness-wave entry and
+> `docs/capability-soundness.md`'s top update note for full evidence. **This clears the
+> specific condition in §1** ("blocked from all launch copy until LEDGER item 10 is closed and
+> re-verified live"). It does NOT by itself upgrade the overall verdict below beyond that one
+> named condition — blockers #2-8 in §3 (evidence-pack process discipline, item 15's backend
+> divergence, the spawn-hang/parser-DoS/monomorphization/supply-chain/any-erasure items) are
+> unrelated to the capability-provenance closure family this wave addressed and were not
+> re-examined this session; a full re-adjudication of the launch verdict needs a fresh
+> synthesis pass over all of §3, not just this one blocker.
+
 ## 1. VERDICT: **LAUNCH-AS-BETA** — conditional, with one marketing claim hard-blocked
 
 Not LAUNCH: the language cannot be presented as "production ready" or "capability-safe" (a
@@ -170,14 +187,16 @@ leverage step toward one, and the step that would have prevented item 10 by cons
 
 Each entry: what must be true to clear it.
 
-1. **LEDGER item 10 — live capability escape (wrapper closure defeats `deny!()`, both modes).**
-   Re-verified live this session (`rc=0`, secret printed, both enforcement modes). **Blocks:**
-   any "capability-safe" claim in launch copy. **Clears when:** the repro
-   (`tests/security/cap_escape_closure_wraps_closure.kry`) exits non-zero under both modes,
-   is wired into `security_gate.sh` as a tracked check (even before the fix, as a known-failing
-   red check, per the certifier's own recommendation — near-zero cost, prevents silent
-   regression-of-the-regression), and the fix is re-verified live post-change, not
-   self-reported.
+1. **LEDGER item 10 — live capability escape (wrapper closure defeats `deny!()`, both modes).
+   CLOSED 2026-08-05 (structural-completeness wave).** `tests/security/
+   cap_escape_closure_wraps_closure.kry` now exits 1 (`E0507`) under both `kryos check` and
+   `kryos check --strict-capabilities`, re-verified live, proven both directions (pre-fix
+   binary reproduces the leak; post-fix binary rejects). Wired into `security_gate.sh` checks
+   #47-50 alongside two further live escapes in the same family found and closed the same
+   wave. See `tools/loop/LEDGER.md`'s structural-completeness-wave CLOSED entry and
+   `docs/capability-soundness.md` invariants 23-24 for the fix and full evidence. **Was
+   blocking:** any "capability-safe" claim in launch copy — that specific condition is now
+   cleared.
 2. **Evidence-pack accuracy (§0).** Two false claims (one over-claim, one under-claim) reached
    this synthesis from the campaign's own summary. **Blocks:** trusting any future
    "CONFIRMED FIXED" / "NOT CONFIRMED" claim about a capability/trust-model item without an

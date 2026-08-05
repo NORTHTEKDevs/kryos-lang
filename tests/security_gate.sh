@@ -434,5 +434,100 @@ else
     tail -5 "$TMP/actor_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 47. LEDGER item 18 residual (structural sweep, 2026-08-05): ONE level of
+#     struct indirection (`self.b.f()` where `b: Box`, `Box.f: fn()->str`)
+#     defeated item 18's fix entirely -- see attack_actor_state_nested_field
+#     _closure.kry for the full root-cause writeup. Must reject at ANY
+#     access depth, both enforcement modes.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_actor_state_nested_field_closure.kry \
+        >"$TMP/nested_$mode_flag" 2>&1; then
+        echo "  FAIL: nested-actor-state-field closure escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/nested_$mode_flag"; then
+        echo "  ok   nested-actor-state-field closure escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/nested_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 48. Adversarial variant of #47: alias the fn-bearing state field into a
+#     LOCAL before invoking through it (`let x = self.b; x.f()`) -- see
+#     attack_actor_state_aliased_local_closure.kry.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_actor_state_aliased_local_closure.kry \
+        >"$TMP/alias_$mode_flag" 2>&1; then
+        echo "  FAIL: aliased-local actor-state closure escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/alias_$mode_flag"; then
+        echo "  ok   aliased-local actor-state closure escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/alias_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 49. LEDGER item 10 (HIGHEST PRIORITY, blocked the "capability-safe" launch
+#     claim): a zero-capability wrapper function that returns a FRESH
+#     closure literal calling its own (captured) fn-typed parameter --
+#     `fn wrap_once(inner: fn()->str) -> fn()->str { return || inner() }` --
+#     must not defeat deny!() when the wrapped closure is invoked later at a
+#     wholly separate call site. See cap_escape_closure_wraps_closure.kry.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/cap_escape_closure_wraps_closure.kry \
+        >"$TMP/wrap_$mode_flag" 2>&1; then
+        echo "  FAIL: wrapper-closure escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/wrap_$mode_flag"; then
+        echo "  ok   wrapper-closure escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/wrap_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 50. No-cascade complement to #47-49: an ordinary zero-capability wrapper
+#     decorator (the exact `wrap_once` shape, legitimate use) must still
+#     compile with NO annotation when the wrapped closure genuinely carries
+#     no authority, and a nested actor-state struct field that is NOT
+#     fn-bearing must not spuriously fall into the new checks.
+cat > "$TMP/wrap_nocascade.kry" <<'KRY'
+fn pure_greeter() -> fn() -> str {
+    return || "hello"
+}
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+struct Box2 {
+    n: i64
+}
+actor Holder2 {
+    b: Box2
+    fn stash(self, nb: Box2) { self.b = nb }
+    fn read(self) { println(to_string(self.b.n)) }
+}
+fn main() {
+    let greeter = pure_greeter()
+    let wrapped = wrap_once(greeter)
+    deny!(fs:read) {
+        println(wrapped())
+        let h = Holder2()
+        h.stash(Box2 { n: 42 })
+        h.read()
+        sleep(10)
+    }
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/wrap_nocascade.kry" >"$TMP/wrap_nc" 2>&1; then
+    echo "  ok   pure wrapper closure + non-fn-bearing nested actor field need no annotation (no cascade)"
+else
+    echo "  FAIL: the wrapper-closure/nested-field fixes cascaded into ordinary pure code:"
+    tail -8 "$TMP/wrap_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

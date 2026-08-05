@@ -1,6 +1,31 @@
 # Capability soundness: theorem, invariants, and implementation audit
 
-> **CORRECTION (2026-08-05, final launch synthesis — read this before anything below):**
+> **UPDATE (2026-08-05, structural-completeness wave — read this FIRST, supersedes the
+> correction below):** LEDGER item 10 (the wrapper-closure escape described in the
+> correction immediately below) is now **FIXED**, along with two further live escapes
+> found this wave by re-deriving the actor-state invariant from the closed set of
+> value-producing `Expr` forms rather than trusting the prior "closed" status: a
+> ONE-LEVEL-DEEPER variant of item 18 (`self.b.f()` where `b: Box`, `Box.f: fn()->str`
+> — item 18's fix only ever checked the METHOD name against the actor's fn-bearing-field
+> set, never the actual field being stepped through) and an aliased-local variant of the
+> same gap (`let x = self.b; x.f()`). All three verified live, both directions (leak
+> pre-fix, reject post-fix), both enforcement modes — see `tools/loop/LEDGER.md`'s
+> structural-completeness-wave CLOSED entry for the full root-cause writeup and evidence.
+> Additionally, `resolve_closure_caps` and `resolve_container_path_caps` — the two
+> functions this document's invariant table cites for nearly every "D" (derivation)
+> rating — are now EXHAUSTIVE `match` statements over the `Expr` AST enum with **no
+> wildcard arm**, a genuine structural (not just empirical) soundness argument; see §7
+> below. The theorem in §1 is reinstated as the CURRENT claim, with the same caveat every
+> version of this document has carried: this is a structured code audit backed by
+> executed counterexamples for every fail-closed claim, not a mechanized proof (§2(a) of
+> `docs/LAUNCH-READINESS.md` remains accurate on that distinction). The known residual
+> from this wave's own "measure the cost" step: a CHAINED alias-of-an-alias
+> (`let y = x` where `x` is itself a `self.<field>` alias, two hops before invocation) is
+> NOT covered by the narrow fix that closed the one-hop alias case — a broader fix was
+> attempted and reverted after it measurably broke unrelated conformance/actor code (see
+> the LEDGER entry); this is a known, disclosed, narrow open edge, not a silent gap.
+>
+> **CORRECTION (2026-08-05, final launch synthesis — historical, superseded above):**
 > A red-team round that ran AFTER this document was written found a live,
 > reproducible counterexample to the theorem stated in §1, within the SAME
 > baseline (HEAD `00b3cf7`) this document audits: a closure returned by an
@@ -148,6 +173,8 @@ against the four enforcement modes and the shapes named in the task brief.
 | 20 | A NAME COLLISION between two distinct declarations sharing a bare name (e.g. `std::iter::find`/`std::re::find`/`std::string::find`) must never let one declaration's own-parameter list leak into another's inference. | name-collision hygiene |
 | 21 | A **decoy** argument of the same declared shape as the real authority-carrying argument must never be provable as the "real" companion merely by occupying a matching declared TYPE at the call site — companion resolution must derive from the callee's own fixed source, not from call-site shape. | decoy resistance |
 | 22 | `Unknown` (unresolvable provenance) resolves to `Capability::All` at every site listed above — never to an empty set — and this is enforced UNIFORMLY (not per-shape) so no enumeration gap can silently default to "nothing needed". | fail-closed default |
+| 23 | A **fresh closure literal** constructed and RETURNED by an enclosing function, whose body directly calls one of the ENCLOSING function's own fn-typed parameters (captured by closure, not a parameter of the literal itself — `fn wrap_once(inner: fn()->str) -> fn()->str { return \|\| inner() }`), resolves the RETURNED closure's own authority to `DependsOnParam(<enclosing param>)`, not the enclosing function's own (correctly empty) declared/inferred requirement — closing LEDGER item 10. | escaping wrapper closure (captured hot parameter) |
+| 24 | A read of an actor-state field ANY NUMBER of field-access hops from `self` (`self.b.f()`, not just `self.f()`) whose FIRST hop names a field the actor's own state declaration makes transitively fn-bearing is fail-closed to `all`, regardless of the method/field name at the end of the chain; the same holds when the fn-bearing field is aliased into a local ONE hop before invocation (`let x = self.b; x.f()`). A chained alias-of-an-alias (two or more hops of local aliasing) is a known, disclosed, NOT-yet-covered residual (see the 2026-08-05 update note at the top of this document). | nested/aliased actor-state field access |
 
 ## 3. Per-invariant status against `checker.rs`/`model.rs`
 
@@ -182,6 +209,8 @@ prior-session evidence cited in the ledger).
 | 20 | **D** | Round-3 fix: `collect_functions` now carries each declaration's OWN param list inline rather than a later name-based re-lookup (per the CLOSED table entry) — specifically to close the `find`/`find`/`find` collision. Not independently re-run this session. |
 | 21 | **D**, confirmed live this session | `find_companion_container_arg` (the shape-matching heuristic) is DELETED — grepped `checker.rs` for `find_companion_container_arg`: zero hits. The only companion-resolution path remaining is `hot_param_companions` (invariant 7), which is call-site-shape-blind by construction. Live-verified: `cap_escape_decoy_map_companion.kry` still rejected at HEAD (§5). |
 | 22 | **D** | Every `ClosureCapsResult::Unknown` arm across `resolve_closure_caps`, `resolve_container_path_caps`, `resolve_direct_invoke_caps`, `resolve_method_field_invoke_caps` terminates in the same two-line pattern (`CapabilitySet::empty(); c.insert(Capability::All)`) — checked by reading every call site of `Unknown =>` in `checker.rs` reached during this audit (2749-2753, 2776-2780, and the analogous arm inside `accumulate_hot_extra_caps`'s `DependsOnParam` non-`own_params` branch at 2627-2630). No arm returning `CapabilitySet::empty()` directly for an `Unknown`/unresolved case was found. |
+| 23 | **D**, closed 2026-08-05 (LEDGER item 10) | `resolve_closure_caps`'s `Lambda` arm: a new "captured hot parameter" branch runs `walk_calls_expr` over the lambda body, checks whether any call target is one of the ENCLOSING function's own `own_params` (not the lambda's own params — that's the pre-existing, separate "lambda's own hot parameter" branch), and if `collect_caps_expr` over the body (with that param still correctly deferred) comes back empty, resolves to `DependsOnParam(<that param>)` instead of falling through to the plain `Known(collect_caps_expr(..))` fallback that previously silently dropped the deferral. If the body ALSO needs some other statically-known capability, resolves to `Unknown` (fail closed — `ClosureCapsResult` has no variant expressing "Known(X) plus a deferred Y", and this file's own rule is never to guess). Proven live, both directions: pre-fix `kryos run cap_escape_closure_wraps_closure.kry` leaks (rc=0); post-fix rejects with the PRECISE excess capability named (`[fs:read]`, not a blanket `[all]`), both `inferred` and `--strict-capabilities`. |
+| 24 | **D** (one-hop), disclosed residual beyond one hop | `resolve_actor_self_field_invoke_caps` rewritten to decompose the full receiver chain and check the FIRST field stepped through from `self` (not the trailing method name) against `current_actor_fn_state_fields` — closes the `self.b.f()` shape that defeated item 18's original bare-`self`-only check. A new, deliberately narrow `current_actor_state_alias_locals` map (built per-handler, populated ONLY from a syntactically-recognized `let x = self.<path>` binding) closes the one-hop alias variant (`let x = self.b; x.f()`) the same way. A BROADER fix (consulting the general `local_caps` provenance map for any method-call root not found as a literal) was implemented, measured, and REVERTED this same wave — it over-rejected ordinary code broadly (conf_generics, conf_errors_concurrency, examples/actors.kry, 2 type-soundness + 2 inferred-soundness probes all false-positived), because that map also holds an `Unknown` entry for ordinary locals bound to any plain non-fn-returning function call. A chained alias-of-an-alias (`let y = x` where `x` is itself a `self.<path>` alias) is therefore NOT covered — an honest, disclosed gap, not a silent one. |
 
 ## 4. Generic monomorphization — the prime suspect, examined directly
 
@@ -333,3 +362,75 @@ ratings for a claim of unconditional soundness:
   for either (both are concurrency/exception-safety questions orthogonal
   to capability provenance, which was the assigned scope) — still open
   for a future audit.
+- A CHAINED alias-of-an-alias of an actor fn-bearing state field (`let y =
+  x` where `x` is itself a `let x = self.b` alias, two hops before
+  invocation) is NOT covered by this wave's fix — see invariant 24 and §7
+  below for why a broader fix was reverted rather than shipped.
+
+## 7. The structural guarantee: exhaustive `match`, no wildcard arm
+
+Added 2026-08-05, closing the specific request that ends the six-round
+enumerate-and-patch cycle: make the capability-resolution path a `match`
+over the value-producing expression enum with **no wildcard arm**, so
+adding a new `Expr` variant to the language fails to compile until someone
+explicitly decides its capability treatment.
+
+**Where it lives.** `kryos-capabilities/src/checker.rs`, three matches:
+
+1. `resolve_closure_caps`'s outer match (the top-level dispatch: is this
+   expression a `Lambda`, an `Identifier`, an `FnCall`, or something else).
+2. The SAME function's inner match on a call's callee sub-expression
+   (`callee.as_ref()`, inside the `FnCall` arm) — a second, independent
+   place a bare `Expr` needs classifying.
+3. `resolve_container_path_caps`'s match — previously matched the tuple
+   `(PathStep, &Expr)` directly (`(PathStep::Field(fname),
+   Expr::StructLiteral{..}) => ..`), which would need ~70 explicit cells
+   (2 `PathStep` variants × 35 `Expr` variants) to make genuinely
+   exhaustive without becoming illegible. Restructured to match primarily
+   on `Expr` (35 arms, no wildcard) with `PathStep` handled as a nested
+   `match` WITHIN the three container-literal arms, which stays a real
+   per-`Expr`-variant enumeration — the thing that actually matters for
+   "did we forget a value-producing FORM" — without the combinatorial
+   blow-up. The 4 `(head, expr)` cell combinations that are syntactically
+   unreachable in a well-typed program (e.g. an `Index` step into a
+   `StructLiteral`) still resolve to `Unknown`, explicitly, inside the
+   relevant arm — not assumed unreachable and elided.
+
+**Every arm not given a real resolver routes to `ClosureCapsResult::Unknown`**
+(which every one of this function's callers already converts to
+`Capability::All` — invariant 22), spelled out one `Expr` variant per line
+(grouped with `|` where several fall to the identical default, matching the
+style the AST's own `Expr::span()` method already uses) rather than
+collapsed into `_ => Unknown`. This is a pure refactor, not a behavior
+change: verified via `cargo build --release` producing zero
+"unreachable pattern" / "non-exhaustive match" diagnostics — every arm the
+new enumeration lists really was reachable and really was falling through
+the old wildcard to the same `Unknown` result.
+
+**Why this is a real (if partial) soundness argument, not just tidiness.**
+The six-round cycle's failure mode was never "the fail-closed default is
+wrong" — every round's fix correctly defaulted to `all` for whatever it
+DID recognize as unresolvable. The failure was narrower and sneakier: a
+few call sites (`resolve_actor_self_field_invoke_caps`,
+`resolve_method_field_invoke_caps`'s root-not-found branch, this wave's
+`resolve_closure_caps` Lambda arm before its fix) had their OWN, separate
+"nothing to charge" fallback that never routed through the `Unknown`
+machinery at all — a *positive* default (`CapabilitySet::empty()`) chosen
+because the ordinary, common case genuinely needs no charge (an actual
+struct method call, an escaping lambda that needs nothing), with no way to
+tell that case apart syntactically from the rare unsound one. The
+exhaustive-match conversion does NOT fix those call sites by itself (they
+are fixed individually, invariants 18/23/24) — what it guarantees is that
+the CENTRAL closure-provenance resolvers (`resolve_closure_caps`,
+`resolve_container_path_caps`), which every one of those call sites
+ultimately calls into for the shapes they DO recognize, can never silently
+stop covering a new `Expr` form. If Kryos's AST gains a new expression kind
+tomorrow (a new literal, a new capture syntax, a new control-flow
+construct) and that new form can produce or launder a function value, this
+match block fails to compile until a human adds an arm and decides: does
+this need a real resolver, or is the existing fail-closed default correct
+for it. That is a narrower guarantee than "the whole checker is sound" —
+it converts exactly one historically-repeated failure mode (a shape
+falling through an enumeration nobody remembered to extend) from a silent
+security hole into a build error, for the two functions that are the
+common resolution path for almost every invariant in §3's table.

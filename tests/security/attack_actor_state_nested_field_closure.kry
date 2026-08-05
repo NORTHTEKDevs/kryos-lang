@@ -1,0 +1,63 @@
+// SECURITY -- LIVE CAPABILITY ESCAPE, closed this wave (structural sweep,
+// 2026-08-05). Residual of LEDGER item 18 (attack_actor_state_stored_
+// closure.kry): item 18's fix (`current_actor_fn_state_fields` /
+// `resolve_actor_self_field_invoke_caps`) only engaged for a BARE `self`
+// receiver (`self.reader()`, checking whether `method` itself named a
+// fn-bearing state field). ONE level of struct indirection defeated it
+// completely: wrapping the same privileged closure in a plain struct field
+// (`struct Box { f: fn() -> str }`, actor state `b: Box`) and invoking
+// `self.b.f()` instead of `self.reader()` was never checked against
+// anything -- `current_actor_fn_state_fields` DOES already classify `b` as
+// fn-bearing (computed transitively via `is_fn_bearing_type_inner`, not a
+// direct-type check), but the old resolver only ever compared `method`
+// ("f") against that set, never the actual state-field name being stepped
+// through ("b"). Verified live pre-fix (HEAD 4a1b197, no compiler changes):
+//
+//   $ kryos run attack_actor_state_nested_field_closure.kry
+//   NESTED-ACTOR-STATE LEAK (was NOT CLOSED): TOPSECRET-CLOSURE-9f8e7d6c5b4a
+//   $ echo $?
+//   0
+//   $ kryos check --strict-capabilities attack_actor_state_nested_field_closure.kry
+//   $ echo $?
+//   0
+//
+// ACCEPTANCE (MET): REJECTED (E0507) under both `--capabilities-mode=
+// inferred` (default) and `--strict-capabilities`. Fixed by rewriting
+// `resolve_actor_self_field_invoke_caps` to decompose the FULL receiver
+// chain (`decompose_container_path`) instead of requiring a bare `self`
+// object, and checking the FIRST field stepped through from `self` against
+// `current_actor_fn_state_fields` (not `method`). Wired into
+// tests/security_gate.sh.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        let leaked = self.b.f()
+        println("NESTED-ACTOR-STATE LEAK (was NOT CLOSED): " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}
