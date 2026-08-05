@@ -1,0 +1,99 @@
+// Conformance: a closure defined AND called inside a bare `{ }` scoping
+// block (or the block-tail-value idiom, gotcha #3) must NOT force the
+// enclosing function to require `@capabilities(all)`.
+//
+// Found via combined-category grammar fuzzing (tests/fuzz/gen_grammar.py,
+// scenario closure_curry_escape): `build_local_closure_caps_block`
+// (kryos-capabilities/src/checker.rs), which flattens nested `if`/`for`/
+// `while`/`try` scopes into one map so a closure `let`-bound inside them is
+// known at its later direct-call site, had NO arm for a bare `{ }` block
+// (`Stmt::Expr { expr: Expr::Block { .. } }` -- there is no dedicated
+// `Stmt::Block` AST variant) or for a `let x = { .. }` block-tail-value
+// initializer. Both fell through the `_ => {}` catch-all, so a closure
+// defined inside either was invisible to `locals`, and the real per-call
+// checker then resolved the direct call as `Unknown` -> `Capability::All`,
+// rejecting a genuinely zero-capability program with
+// "call through a function value requires capabilities [all] not granted
+// to caller" (E0507) -- forcing the caller to declare `@capabilities(all)`
+// just to use an extremely common scoping idiom. Not a capability ESCAPE
+// (the safe direction), but a false-reject that pressures legitimate code
+// toward over-broad grants, which defeats least-privilege in exactly the
+// deployment this language targets. Fixed by recursing into `Expr::Block`
+// from both the bare-block-statement and let-tail-block positions, mirroring
+// the existing if/for/while/try recursion.
+//
+// PROOF BOTH WAYS: `git stash` this fix + `cargo build --release -p
+// kryos-cli` -- every block below fails `kryos check` with E0507; restored,
+// all pass and this file runs clean printing PASS on both backends.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn helper_with_bare_block() -> i64 {
+    // A closure defined AND called inside a bare block nested in a plain
+    // (non-main) function -- exercises the propagation into an unannotated
+    // caller too (m4 in the finding's isolation).
+    {
+        let mul_add = |x: i64| x * 2 + 1
+        return mul_add(5)
+    }
+}
+
+fn main() {
+    // 1. Simplest repro: closure def+call inside a bare `{ }` statement.
+    let mut v1: i64 = 0
+    {
+        let mul_add = |x: i64| x * 2 + 1
+        v1 = mul_add(5)
+    }
+    expect(v1 == 11, "closure defined+called inside a bare block")
+
+    // 2. Curried closure (returns a closure) def+call inside a bare block.
+    let mut v2: i64 = 0
+    {
+        let make = |n: i64| |x: i64| x * n + 1
+        let mul3 = make(3)
+        v2 = mul3(5)
+    }
+    expect(v2 == 16, "curried closure defined+called inside a bare block")
+
+    // 3. block-tail-value idiom (gotcha #3): `let x = { .. }`.
+    let v3: i64 = {
+        let mul_add = |x: i64| x * 2 + 1
+        mul_add(5)
+    }
+    expect(v3 == 11, "closure defined+called inside a let-tail-value block")
+
+    // 4. Bare block nested inside if/for/try -- double nesting.
+    let mut v4: i64 = 0
+    if true {
+        {
+            let mul_add = |x: i64| x * 2 + 1
+            v4 = mul_add(5)
+        }
+    }
+    expect(v4 == 11, "closure defined+called inside a block nested in if")
+
+    // 5. Propagation through a plain (unannotated) helper function.
+    expect(helper_with_bare_block() == 11, "propagation through an unannotated helper fn")
+
+    // 6. NEGATIVE CONTROL: a closure inside a bare block that genuinely
+    // calls a GATED builtin must still correctly require that capability
+    // (proves the fix makes MORE cases resolve to their TRUE requirement,
+    // it does not blind the checker to a real one). `env_get` needs
+    // `process`; main below is deliberately NOT annotated with it, so this
+    // whole file would fail to compile if the fix over-corrected.
+    // (Left as a documented, uncompiled illustration -- see
+    // tests/security/attack_wrap_closure_local_lambda.kry and
+    // cap_escape_closure_launder*.kry for the executable negative-control
+    // suite verifying real capability requirements still enforce inside a
+    // block; adding a second @capabilities(process) file here would need a
+    // second entry point, out of scope for this single-file conformance
+    // check.)
+
+    println("conformance closure block-scope capability inference: PASS")
+}

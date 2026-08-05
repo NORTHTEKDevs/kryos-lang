@@ -1964,6 +1964,18 @@ impl CapabilityChecker {
                     // consistent with this function's existing "best-effort,
                     // not scope-precise" design; the recursion handles
                     // arbitrary nesting depth.
+                    // A `let x = { .. }` BLOCK-TAIL-VALUE initializer
+                    // (gotcha #3's documented idiom) can itself `let`-bind a
+                    // closure and call it as its own tail expression -- same
+                    // gap and same fix as the bare-block-statement case
+                    // above: recurse into the block's inner statements
+                    // before computing `v`'s own capability below, so a
+                    // closure defined inside the block is registered in
+                    // `locals` before any call to it (inside the same
+                    // block) is resolved by the real per-call checker.
+                    if let Expr::Block { block: inner, .. } = v {
+                        self.build_local_closure_caps_block(inner, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
                     if let Expr::Lambda { body, .. } = v {
                         // A self-recursive nested named function (`fn nfact(n)
                         // { return n * nfact(n - 1) }`, desugared to `let
@@ -2047,6 +2059,29 @@ impl CapabilityChecker {
                 } => {
                     self.build_local_closure_caps_block(try_block, working, fn_return_caps, own_params, local_container_lits, locals);
                     self.build_local_closure_caps_block(catch_block, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+                // A BARE `{ }` block used purely for local scoping desugars
+                // to `Stmt::Expr { expr: Expr::Block { .. } }` (there is no
+                // dedicated `Stmt::Block` variant) -- previously fell through
+                // the `_ => {}` catch-all below, so a closure `let`-bound
+                // INSIDE a bare block was never added to `locals`, and the
+                // real per-call checker (`check_expr`, which DOES walk into
+                // `Expr::Block` for every other purpose) then resolved a
+                // direct call through that closure as `Unknown` ->
+                // `Capability::All`, forcing the enclosing function to
+                // declare `@capabilities(all)` for a closure that in fact
+                // requires nothing -- a real over-approximation reachable by
+                // the ordinary `{ let f = |..| ..; f(..) }` / block-tail-
+                // value (gotcha #3) idiom, found via combined-category
+                // grammar fuzzing (tests/fuzz/gen_grammar.py). Recurse the
+                // same way an `if`/`for`/`while`/`try` body already does,
+                // consistent with this function's documented "flatten nested
+                // scopes into one map" design.
+                Stmt::Expr {
+                    expr: Expr::Block { block: inner, .. },
+                    ..
+                } => {
+                    self.build_local_closure_caps_block(inner, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 _ => {}
             }
@@ -2344,6 +2379,14 @@ impl CapabilityChecker {
                             locals.insert(name.clone(), existing);
                         }
                     }
+                    // `let x = { .. }` block-tail-value initializer: recurse
+                    // so a container literal built INSIDE the block (by its
+                    // own nested `let`s) is tracked before a later read
+                    // reaching into it (within the same block) is resolved --
+                    // same fix as the bare-block-statement arm below.
+                    Expr::Block { block: inner, .. } => {
+                        Self::build_local_container_lits_block(inner, locals);
+                    }
                     _ => {}
                 },
                 Stmt::Assign { target, op, value, .. } => {
@@ -2373,6 +2416,22 @@ impl CapabilityChecker {
                 } => {
                     Self::build_local_container_lits_block(try_block, locals);
                     Self::build_local_container_lits_block(catch_block, locals);
+                }
+                // Sibling gap to the one fixed in `build_local_closure_caps_block`
+                // above: a bare `{ }` scoping block desugars to `Stmt::Expr {
+                // expr: Expr::Block { .. } }` (no dedicated `Stmt::Block`
+                // variant) and previously fell through `_ => {}` here too, so
+                // a container literal (holding a closure/fn-value element)
+                // built AND read back INSIDE a bare block was invisible to
+                // `resolve_container_path_caps`, falling through to `Unknown`
+                // -> `Capability::All` for a call through a container element
+                // (e.g. `store[0]()` after `store = push(store, reader)`)
+                // exactly like the direct-local-closure case.
+                Stmt::Expr {
+                    expr: Expr::Block { block: inner, .. },
+                    ..
+                } => {
+                    Self::build_local_container_lits_block(inner, locals);
                 }
                 _ => {}
             }
