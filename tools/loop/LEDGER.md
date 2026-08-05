@@ -12,6 +12,35 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## FINAL LAUNCH SYNTHESIS (2026-08-05) — read this before trusting any status summary
+
+Full verdict, blocker ranking, and the exact disclosed-limitations wording required for any
+launch copy: `docs/LAUNCH-READINESS.md`. VERDICT: **LAUNCH-AS-BETA**, with the specific claim
+"capability-safe" (as a completed guarantee) blocked until item 10 closes.
+
+**Evidence-pack accuracy finding, re-verified live this session (`compiler/target/release/
+kryos.exe`, no rebuild) — this is why a status summary must always be diffed against THIS
+file, not trusted on its own:**
+- A prior session's upward-reported summary claimed `container-element-alias-backend-
+  divergence` (item 15) was **CONFIRMED FIXED**. It is not — re-run live: `kryos run` on
+  `tests/security/attack_container_element_alias_refcount.kry` prints
+  `x19999!|x19999!|x19999!|x19999!|5`; `kryos build --release` on the same file prints
+  `x19999!|x19999|x19999|x19999|5`. Item 15's own status line below (NOT FIXED) was correct;
+  the summary was wrong.
+- The same summary claimed `actor-state-stored-closure-cap-escape` (item 18, CLOSED table)
+  was **NOT CONFIRMED**. It is actually fixed — re-run live: `kryos run
+  tests/security/attack_actor_state_stored_closure.kry` now exits 1 with
+  `error[E0507]: call to \`reader\` requires capabilities [all] not granted to caller`, both
+  default and `--strict-capabilities` modes. The CLOSED table entry was correct; the summary
+  was wrong in the opposite direction.
+- **Item 10 below (the wrapper-closure escape, HIGHEST PRIORITY) was absent from that summary
+  entirely**, despite being this ledger's own top-ranked open item. Re-confirmed live this
+  session: `kryos run tests/security/cap_escape_closure_wraps_closure.kry` → `SINGLE-WRAPPED
+  CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0; `kryos check --strict-capabilities` on
+  the same file, rc=0. This is real, current, and unfixed as of `d29ac99`.
+
+---
+
 ## THE LOOP
 
 ```
@@ -683,6 +712,101 @@ type via a memoized recursive hash that shares repeated subtrees, or assign
 each distinct `MirType` a small integer id via a canonicalizing arena)
 instead of a full recursive `Display`-based string. A speed-up alone (same
 exponential formula, faster constant) is not a fix.
+
+---
+
+### 22. RESOURCE-DOS: the parser's `MAX_NESTING_DEPTH=2048`/`MAX_RECURSION_DEPTH=256` guards correctly bound native STACK depth but do NOT bound total WORK — an input just below the ceiling hangs `kryos check`/`run` indefinitely with flat memory and no diagnostic, across 9 independent grammar constructs (termination-invariant analysis, found 2026-08-05) — NOT FIXED
+
+Distinct from item 14 (unguarded stray-`;` recursion, which CRASHES via stack
+overflow, exit 253). Here the depth guard EXISTS and correctly rejects most
+out-of-range inputs with a clean diagnostic — but for inputs just under the
+ceiling, the guard's own bookkeeping cost (or a downstream pass reached only
+at near-max depth) becomes non-terminating rather than merely slow.
+
+Bisected thresholds (60s+ hang, indefinite, no crash, no diagnostic, `kryos
+check`, `compiler/target/release/kryos.exe`, no rebuild):
+- Nested parens: 1750 fast / 1780 hangs.
+- Nested arrays: 1600 fast / 1800 hangs.
+- Nested string interpolation: 495 fast / 500 hangs (a single-token-count
+  cliff).
+- Reproduced across 9 distinct constructs total (parens/arrays/blocks/if/
+  match/Option-type nesting, long flat operator chains, wide string
+  interpolation).
+
+Statement-level nesting (`parse_block`/`if`) is UNAFFECTED and stays fast at
+all depths tested, including 50,000 — this is specific to the recursive-
+descent EXPRESSION grammar siblings of the already-fixed
+`parse_map_or_block_expr` lexer O(n^2) bug.
+
+Fix shape (not attempted): extend the existing depth guard's PURPOSE from
+"bound native stack" to "bound total work" — either lower the effective
+ceiling to a value proven fast at every step below it, or replace the
+per-token recursive-descent cost near the ceiling with an iterative
+equivalent. Same remedy family as items 14/19/23 (a resource cap with a
+clean diagnostic, mirroring `MAX_NESTING_DEPTH`'s own pattern).
+
+---
+
+### 23. RESOURCE-DOS: a self-recursive, TYPE-GROWING generic function instantiation is completely unbounded — 3.2GB+ RSS in 15s, still climbing, from an 8-line program (termination-invariant analysis, found 2026-08-05) — NOT FIXED. Related to but DISTINCT from item 19.
+
+Item 19 (tuple-doubling mangled-name blowup) is bounded by source length —
+an O(2^depth) cost from an explicit `dup(dup(dup(x)))` chain the programmer
+writes out one line at a time. This item is a GENUINE self-recursive generic
+function (`fn f<T>(x: T) { ... f(grow(x)) ... }`-shaped, where each
+recursive call's argument type is a fresh, larger instantiation of the
+previous one) — the source is fixed at 8 lines and the blowup comes from the
+compiler's own monomorphization loop, not from an explicit chain the user
+wrote longer. Self-REFERENTIAL same-type recursion (`fn f<T>(x: T) -> T {
+f(x) }`) IS correctly guarded (a placeholder-before-recurse mechanism
+already exists and was independently re-confirmed this session) — a
+genuinely DISTINCT-type-per-call chain is not.
+
+Live, `compiler/target/release/kryos.exe`, no rebuild: 3.2GB+ resident and
+still climbing after 15s on an 8-line source file, killed externally (no
+crash, no diagnostic, no self-imposed ceiling).
+
+Fix shape (not attempted): same remedy family as item 19 — a monomorphization
+recursion/instantiation depth or total-distinct-instantiation-count cap with
+a clean diagnostic. A fix for item 19 should be evaluated against this
+repro too before being called complete, since both live in the same
+`monomorphize`/`mono_mangled_name` path but are triggered by different
+input shapes (explicit tuple-pairing chain vs. compiler-driven recursive
+growth) — closing one does not necessarily close the other.
+
+---
+
+### 24. CRASH + SILENT WRONG ANSWER: `let x: any = <bool value>` then `to_string(x)` FAILS the LLVM AOT build outright and silently misrenders on JIT (prints `1`, not `true`) (termination/types-invariant sweep, found 2026-08-05) — NOT FIXED
+
+An ordinary, non-adversarial shape (`fn log_event(args: [any]) { ... }`
+called with a bool argument, or any `any`-typed local holding a bool). This
+is a NEW, previously-undocumented failure mode of the already-known `any`
+type-erasure limitation (LEDGER item 6 / CLAUDE.md's `any`-is-bare-i64
+gotcha) — the existing docs describe RENDER mis-formatting for `any` values
+generally, but not this exact bimodal failure (a hard AOT BUILD failure
+paired with a different, silent, wrong JIT runtime value for the SAME
+source). `kryos build --release` on a program with this shape fails to
+build; `kryos run` on the identical source compiles and runs but prints `1`
+where `true` is expected, with no diagnostic.
+
+Fix shape (not attempted): fold into the same erasure-tag fix `any` needs
+generally (LEDGER item 6, ABI-blocked, accepted debt) OR, as a narrower
+near-term step, special-case bool's i1-vs-i64 slot width in the specific
+codegen path that currently fails to build on AOT (the same "declared i1
+param on a real user function is untouched" class of fix already applied
+elsewhere for bool/i64 ABI mismatches, per CLAUDE.md's `kryos_json_bool`
+gotcha) so at minimum both backends degrade the SAME way (silent
+misrender, not build-vs-run divergence) until the full `any` tagging fix
+lands.
+
+---
+
+### 25. PAPERCUT: a struct literal with ~50,000 fields is superlinear (not catastrophic) — 6.3s vs 0.08s for 2,000 fields, 78x time for 25x fields (termination-invariant analysis, found 2026-08-05) — NOT FIXED
+
+Not launch-blocking at tested scale (no hang, no crash, bounded and
+predictable growth, just worse than linear). Flagged for a future pass
+profiling struct-literal lowering's field-count scaling; no repro file
+filed yet (measured via the termination sweep's own generated fixtures, not
+committed to `tests/`).
 
 ---
 
@@ -1939,6 +2063,57 @@ a `push`-triggered reallocation (only the internal data buffer moves), so
 this specific pattern is safe as used; the DIFFERENT documented footgun
 (`let b = push(a, v)` then reading the ORIGINAL variable `a`) remains real
 and unrelated.
+
+---
+
+## AUDIT GAPS — unverified surfaces, not reproduced live defects (completeness-critic pass, final launch synthesis, 2026-08-05)
+
+These are absence-of-coverage findings, not confirmed bugs — filed separately from the
+numbered defect list above so they are not mistaken for a reproduced live failure. Each is
+verified via grep/CI-config inspection (commands below), not by exercising a failure.
+
+### 26. CLI dev-tooling surface (~20 of ~35 `kryos` subcommands) has ZERO test references anywhere in `tests/`
+
+Verified: `grep -rl "kryos <cmd>\b" tests/` returns 0 hits for every one of
+`lsp, dap, repl, bench, profile, coverage, watch, workspace, trace, diff,
+changelog, cheat, tree, lint, doc_serve, bindgen, pack, eval, config,
+manifest`. None of this campaign's waves touched this surface — every wave
+scoped itself to the `.kry` source-language grammar. `kryos lsp`/`kryos dap`
+in particular parse untrusted editor/debugger JSON-RPC input, a distinct
+attack surface from anything fuzzed this campaign. Next probe: feed
+malformed JSON-RPC frames to `lsp`/`dap` and check for panic/hang; at
+minimum each of these commands needs one smoke test.
+
+### 27. wasm32 backend is effectively unaudited despite being a documented first-class target
+
+CLAUDE.md lists `wasm32-unknown-unknown` alongside the two native backends.
+Coverage: 11 hand-written smoke probes (`tests/wasm-probes/p1-p11`) + one CI
+smoke job. Verified excluded from: the new differential grammar fuzzer
+(JIT-vs-AOT only), `security_gate.sh`'s 72 checks, all leak/soak testing,
+all race testing. Next probe: add `kryos build --backend wasm` +
+`node tools/wasm-host/run.mjs` as a third comparison leg to the existing
+differential fuzzer.
+
+### 28. This campaign's new security/fuzz corpus (`security_gate.sh`, `fuzz_gate_grammar.sh`) runs on the `ubuntu-latest` CI job ONLY
+
+Verified directly in `.github/workflows/ci.yml`: both scripts are invoked
+only inside the job starting at line 17 (`runs-on: ubuntu-latest`, lines
+159 and 226). The `macos-14` job (line 515) and `windows-latest` job run a
+smaller, different smoke/parity set and do not invoke either script. This
+campaign's entire new corpus has never executed on macOS or Windows in CI.
+Next probe: wire at least a reduced-iteration pass of both scripts into the
+macOS and Windows jobs.
+
+### 29. `compiler/stdlib/smtp.kry` and `compiler/stdlib/term.kry` have never been compiled by anything, and `docs/stdlib/*.md` examples are excluded from the docs-examples CI gate
+
+Verified: `grep -rl "std::smtp\|std::term"` across `tests/`, `ecosystem/`,
+`examples/` returns 0 hits. `tools/docs-examples/check.py`'s own glob list
+(`docs/learn/**`, `docs/0*.md`, `docs/1[0-9]-*.md`) does not include
+`docs/stdlib/*.md` — confirmed by reading the glob list directly — so
+`docs/stdlib/term.md`'s 19 fenced code examples have never been executed
+despite being presented as documentation. Next probe: compile every code
+block in `docs/stdlib/term.md` standalone; add one minimal conformance test
+importing `smtp` to catch at least a compile-time break.
 
 ---
 

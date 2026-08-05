@@ -1,5 +1,25 @@
 # Capability soundness: theorem, invariants, and implementation audit
 
+> **CORRECTION (2026-08-05, final launch synthesis — read this before anything below):**
+> A red-team round that ran AFTER this document was written found a live,
+> reproducible counterexample to the theorem stated in §1, within the SAME
+> baseline (HEAD `00b3cf7`) this document audits: a closure returned by an
+> ordinary zero-capability wrapper function (`fn wrap_once(inner: fn() -> str)
+> -> fn() -> str { return || inner() }`) defeats `deny!()` under BOTH the
+> default-inferred and `--strict-capabilities` enforcement modes. Re-verified
+> live against `compiler/target/release/kryos.exe` on 2026-08-05 (independent
+> of this document's own session): `kryos run
+> tests/security/cap_escape_closure_wraps_closure.kry` prints
+> `SINGLE-WRAPPED CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0, and
+> `kryos check --strict-capabilities` on the same file also exits 0. See
+> `tools/loop/LEDGER.md` item 10 (ranked HIGHEST PRIORITY — breaks the trust
+> model) and `docs/LAUNCH-READINESS.md` for the full verdict. **The "0
+> findings" status and the theorem below do not hold as stated until item 10
+> is fixed.** Everything else in this document (the invariant table, the
+> monomorphization deep-dive, the attack programs in §5) is unaffected and
+> stands as an audit of the OTHER 21 invariants — only the top-line soundness
+> claim is retracted.
+
 Status: living audit document. Written 2026-08 against HEAD `00b3cf7` (post
 round-5 fail-closed fix, `hot_param_companions` as the sole non-shape-based
 relief mechanism). This is not a proof; it is a structured claim with, for
