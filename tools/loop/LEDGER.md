@@ -175,7 +175,7 @@ attached, no defect found:**
   comment): renders the raw text into the generated Markdown verbatim,
   exit 0, no panic.
 
-### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — NOT FIXED
+### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — ROOT-CAUSED, DESIGN NOTE, NOT FIXED (2026-08-05)
 
 `tests/security/attack_container_element_alias_refcount.kry`. CLAUDE.md
 gotcha #23 states: "reading a struct element out of a collection returns a
@@ -286,6 +286,100 @@ with a concurrent build, not a language defect — the identical command
 succeeded cleanly on retry with no code or file changes). Reported for
 calibration, not as a finding; both repros above were still proven both
 ways (JIT + AOT + FREE_DIAG) despite it.
+
+#### Root-caused 2026-08-05 (assigned to fix this item): confirmed by reading both backends' IR-emission code end to end, not guessed. DESIGN NOTE, NOT FIXED — this is the SAME architectural gap as item 3, not a separate bug.
+
+Re-reproduced fresh against the committed repro, HEAD at task start, no
+compiler changes before measuring: `kryos run` ->
+`last=x19999!|x19999!|x19999!|x19999!|5` (exit 0); `kryos build --release`
+-> `last=x19999!|x19999|x19999|x19999|5` (exit 0). Matches the round-2
+numbers exactly.
+
+The prior round's working hypothesis ("AOT lowers `let x = arr[i]` to a
+value-copy, Cranelift to a raw pointer load — needs an `--emit-mir`/
+`--emit-llvm` read to confirm") is **CONFIRMED**, and the mechanism is more
+precise than "value-copy vs pointer": it is a difference in how the two
+backends represent EVERY struct/enum value, not something special about
+the `let`/index-read site.
+
+- **Cranelift never materializes struct/enum storage at all.** `RValue::Index`
+  (`kryos-codegen-cranelift/src/codegen.rs:5638-5737`) calls
+  `kryos_array_get` and, for a Struct/Enum element type, returns the raw
+  result UNMODIFIED — the code comment there is explicit: "a plain Index
+  read is intentionally left as an alias (no copy) ... copying
+  unconditionally on every read leaked one struct block per read that was
+  never stored anywhere else" (this was tried and reverted before; MIR's
+  drop-tracking has no way to free a codegen-only copy, so an unconditional
+  clone here is a guaranteed leak, not a free lunch). Every subsequent
+  FieldAccess on that value GEPs directly off the same pointer. `a`, `b`,
+  `c`, and a fresh `arr[0]` read are the literal same i64 pointer value,
+  dereferenced live at each use — hence all four see a later mutation.
+- **LLVM materializes struct/enum values as first-class SSA aggregates
+  everywhere**, never as a pointer, by construction: `mir_type_to_llvm`
+  (`kryos-codegen-llvm/src/codegen.rs:11029-11081`) maps `MirType::Struct(name)`
+  to `"%name"` (an LLVM aggregate TYPE, not `ptr`) unconditionally — there
+  is no alternate "boxed" representation to opt into. `RValue::Index`'s
+  aggregate branch (`codegen.rs:7234-7371`, specifically the `is_aggregate`
+  arm at `7306-7335`) does `p = inttoptr i64 raw to ptr` then
+  `v = load {dest_ty}, ptr p` — a genuine value copy into a fresh SSA
+  register, additionally spilled into the local's OWN `alloca %Name` (never
+  the source pointer `p`) if the local is later mutated (`mutable_locals`,
+  populated for ANY local that is later the target of a field store, not
+  just `let mut` bindings). `RValue::Field` (`codegen.rs:7025-7135`) reads a
+  named-struct field via `extractvalue {obj_ty} {obj_val}, {field_idx}` —
+  operating on the SSA aggregate VALUE, never a GEP off a shared address.
+  There is no `obj_ty == "ptr"` fallback in this arm (checked: the only
+  `ptr`-object branches in this file are for anonymous tuple/array element
+  types and dyn-trait fat pointers, `codegen.rs:4433,7240,7350,8255` — none
+  apply to a named struct). So `let a = arr[0]` / `let b = arr[0]` /
+  `arr[0].tag` are THREE INDEPENDENT LLVM value copies of the same box;
+  mutating `a`'s copy is invisible to the other two, matching the observed
+  `x!|x|x|x`.
+
+**This is not a second bug to fix independently of item 3.** It is the same
+representational fork — "every struct/enum value is a byval SSA aggregate on
+LLVM, a raw heap pointer on Cranelift" — showing up as a value-divergence
+here instead of a leak there. Item 3's own design note already scoped and
+costed the only fix that closes this class for good: **Design A, uniform
+boxing of struct values** (every struct-typed local/param/return becomes a
+pointer to a `kryos_calloc` box on BOTH backends, so `RValue::Field` reads
+GEP off a shared address instead of `extractvalue`-ing a materialized copy).
+Item 3's own cost analysis for Design A applies unchanged here: an ABI break
+on LLVM AOT touching every call site, every `emit_aggregate_struct` literal,
+every method receiver, every generic instantiation, and field-access GEP
+codegen; a new `kryos_calloc` per struct construction (currently free for
+flat structs); and unmeasured self-host bootstrap memory risk (bootstrap is
+already struct-heavy and running at the edge of survivable memory per item
+3's own bootstrap note). Item 3's Design B (retain-walk at call boundaries,
+no ABI change) does NOT close this item — Design B only fixes ownership at
+call/return boundaries; it does nothing for `RValue::Index`/`RValue::Field`
+materializing independent copies on every array/map struct-element READ,
+which is this item's entire mechanism. **A narrow, LOCAL fix confined to just
+`RValue::Index`/`RValue::Field` (without the ABI change) was evaluated and
+rejected**: making the array-Index-read destination `ptr`-typed instead of
+`%Name`-typed would require `RValue::Field`'s extractvalue path (and every
+other named-struct-aggregate consumer in this file — struct-to-struct
+assignment, function-argument passing, comparison, printing) to grow a
+parallel GEP-based code path for a "this local is actually a pointer"
+representation that does not exist today anywhere outside the
+already-narrow `Ptr(elem_ty)` temp used by the FieldAssign chained-target
+case (`kryos-mir/src/lower.rs:10288-10343`, which is a short-lived TEMP
+consumed once, never a general user-visible local) — the same blast radius
+as Design A, just approached from the read side instead of the
+call-boundary side.
+
+**Recommendation:** do not attempt this and item 3 as two patches. Whoever
+picks up item 3's Design A should verify it also closes this item's repro
+(`tests/security/attack_container_element_alias_refcount.kry`, both
+backends, `last=x19999!|x19999!|x19999!|x19999!|5` on AOT after the fix) as
+part of that change's own proof, rather than re-deriving this analysis.
+Until then this stays a documented, accepted boundary — CLAUDE.md gotcha #23
+corrected (2026-08-05) to state the true boundary: mutating through a
+CHAINED `container[key].field = ...` target and reading through a
+previously-bound alias agrees on both backends (unaffected, already fixed
+via the `Ptr(elem_ty)` mechanism above); mutating through an alias `let`
+binding itself and reading through a SECOND alias or the container does
+NOT.
 
 ### 16. DEADLOCK/HANG: an uncaught `throw` inside a `spawn` task silently skips every statement after it in that task, including a `wg_done(wg)` the caller was relying on — turning ONE ordinary exception into a PERMANENT hang of every `wg_wait()` (RED TEAM round 3, concurrency lens, found 2026-08-04) — NOT FIXED
 
