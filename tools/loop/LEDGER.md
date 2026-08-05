@@ -2611,3 +2611,102 @@ on `test_nesting_guard_deep_parens`/`_allows_reasonable_depth` noted above
   says "no leak".
 - **`kryos_string_clone` is not a deep copy.** It is a refcount bump returning
   the same pointer, identical to `kryos_string_retain`.
+
+---
+
+## COMBINED-CATEGORY GRAMMAR FUZZ WAVE (2026-08-04)
+
+Task: go beyond `tests/fuzz`'s template harness (14 independent per-category
+blocks, 0 spawn/dyn, shallow generics) with real grammar-based generation
+that deliberately COMBINES generics/closures/dyn/spawn/actors/enums/
+Option/Result/tuples/try-throw in ONE connected data-flow story per program
+-- the shape the existing harness's own README documents it cannot reach
+("blocks are independent... cannot find bugs that need CROSS-CATEGORY
+interaction... e.g. a generic struct holding a closure holding an array
+holding a struct").
+
+**Built `tests/fuzz/gen_grammar.py` + `run_diff_grammar.py` +
+`fuzz_gate_grammar.sh`** (full design/scope notes in `tests/fuzz/README.md`,
+module docstrings). 9 scenarios, each a connected story (not independent
+blocks), each built on `ExprGen` -- a genuine recursive expression grammar
+(random operator/operand/depth choice at every node: arithmetic, bitwise,
+casts at narrow-type boundaries, nested `{ if .. } else { .. }`-valued
+blocks, string interpolation, comparisons). HONEST SCOPE stated up front in
+both the code and README: the expression layer is a real grammar; the
+surrounding statement/declaration scaffolding is 9 hand-designed,
+parameterized scenario shapes, not a fully unconstrained statement grammar
+-- a fully free statement grammar against Kryos's capability/ownership/type
+rules has too low a valid-program rate to be worth the run budget, so this
+was a deliberate tradeoff, not an oversight.
+
+**One real bug found and FIXED** (two instances of the same root cause) --
+see CLOSED table: the capability provenance checker
+(`build_local_closure_caps_block` / `build_local_container_lits_block` in
+`kryos-capabilities/src/checker.rs`) false-rejected a zero-capability
+closure call when the closure was defined+called inside a bare `{ }`
+scoping block or a `let x = { .. }` block-tail-value initializer, forcing
+`@capabilities(all)` on ordinary code -- found because this generator wraps
+every scenario body in its own `{ }` for local scoping, exactly the
+combined-category-generator behavior the task asked for. Not a JIT/AOT
+stdout divergence (both backends rejected identically -- `run_diff_grammar
+.py`'s NEW `both-fail` bucket, added specifically so this class of finding
+isn't silently discarded like `gen_fuzz.py`'s README warns its own harness
+would). Fixed, proven both ways (`git stash`/rebuild), verified the fix
+doesn't weaken any of 72 capability-escape checks in `security_gate.sh`.
+
+**A third, deeper instance found and deliberately left OPEN** (item 20):
+calling the chained return of a generic passthrough accessor method
+(`holder.get()()`) needs tracing a generic method's own body, not a
+scope-recursion fix -- confirmed via isolation (reproduces even at top
+level, even through an intermediate local) that it is NOT the same root
+cause before filing it separately, per the non-negotiable "prove before
+fixing" discipline. Has a clean workaround (read the field directly); the
+generator's own `mega_combo` scenario was adjusted to use the workaround so
+the rest of that scenario still exercises.
+
+**Scale reached this wave (final): 1,600 grammar-fuzz cases post-fix, run in
+bounded batches (seeds 1-160, 9 scenarios + the shuffled `all`-combo = 10
+variants/seed), 0 divergences, 0 both-fail, 0.00% divergence rate.** An
+initial single seeds-16-300 (2,850-case) sweep was launched unbounded in the
+background and had to be killed by the harness's own runtime cap before it
+finished -- Python's default block-buffering on a redirected stream meant
+its output never flushed, so that specific run's result could not be
+verified and is NOT counted here (a partial/unflushed run is not evidence,
+per this ledger's own non-negotiables). Re-run instead as four bounded,
+fully-captured batches (`python -u` unbuffered, seeds 16-40/41-80/81-120/
+121-160) that each completed and printed a real summary. Rate ~1.3-2.2s/case
+(build+link across 2 backends dominates, same as the existing template
+harness; the range reflects real contention from other agents sharing this
+machine during the run, not generator overhead). Also re-ran the EXISTING
+template harness (`gen_fuzz.py`/`run_diff.py`) at seeds 1-300 as a
+regression check on the shared `kryos-capabilities` change: 300/300 match,
+0 divergences -- confirms the checker fix did not affect the existing
+harness's coverage. Also ran `tools/diff-fuzz/memsafety_fuzz.py`
+(KRYOS_FREE_DIAG double-free sweep) for 400 cases: 0 with double-free.
+
+**Also run this wave** (per task requirement to check the memory-safety
+path and existing cargo-fuzz targets, not just the new generator):
+- `tools/diff-fuzz/memsafety_fuzz.py` (KRYOS_FREE_DIAG double-free sweep):
+  see this section's follow-up for count/result.
+- cargo-fuzz `fuzz_parser`/`fuzz_typechecker`/`fuzz_lexer`: nightly toolchain
+  IS installed (`nightly-x86_64-pc-windows-msvc`) but `cargo fuzz run`
+  failed out of the box with `STATUS_DLL_NOT_FOUND` then
+  `STATUS_ENTRYPOINT_NOT_FOUND` -- the MSVC-target ASan runtime DLL
+  (`clang_rt.asan_dynamic-x86_64.dll`) is not on `PATH` by default in this
+  environment, and the standalone LLVM install's copy (`C:\Program
+  Files\LLVM\lib\clang\21\...`) is the WRONG one (entrypoint mismatch,
+  presumably a version/toolset mismatch with what rustc's sanitizer runtime
+  expects) -- the one that actually works is the MSVC-toolchain-bundled
+  copy: `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\
+  Tools\MSVC\<ver>\bin\Hostx64\x64\clang_rt.asan_dynamic-x86_64.dll`. Once
+  that directory is on `PATH`, all three targets ran clean:
+  `fuzz_parser` 287,247 execs/90s, `fuzz_typechecker` 225,620 execs/90s,
+  `fuzz_lexer` 456,487 execs/60s, **zero crashes/timeouts/OOMs across all
+  three.** (This PATH requirement is worth remembering for the next agent
+  who hits the same DLL errors and assumes cargo-fuzz is broken -- it
+  isn't, it's a PATH gap specific to this Windows MSVC environment.)
+
+Gates (this wave, before the follow-up commit): conformance 60/60 (was
+59/59 -- new regression test), tier1+tier2 GREEN, `security_gate.sh` PASS
+(72 checks), bootstrap 16/16 solo, combined-category grammar sweep 150/150
+match (0 diverge, 0 both-fail) post-fix.
