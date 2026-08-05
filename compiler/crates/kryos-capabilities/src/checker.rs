@@ -6,7 +6,7 @@
 //! 3. Immutability: no runtime escalation of capabilities.
 //! 4. Budget and sandbox annotations are validated.
 
-use kryos_ast::{Annotation, Decl, Expr, Module, Param, Stmt, TypeExpr};
+use kryos_ast::{Annotation, Decl, Expr, Module, Param, Stmt, StructField, TypeExpr};
 use kryos_errors::{Diagnostic, Span};
 
 use std::collections::{HashMap, HashSet};
@@ -426,6 +426,29 @@ struct CapabilityChecker {
     /// authority depends on WHICH field/index path is later invoked, which
     /// isn't known yet when the `let` is bound).
     current_local_container_lits: HashMap<String, Expr>,
+    /// **Actor-state fail-closed set (closes LEDGER item 18,
+    /// `actor-state-stored-closure-cap-escape`).** The FN-TYPED state field
+    /// names of the actor whose handler body is currently being checked. A
+    /// message handler runs at an arbitrary later time relative to whichever
+    /// OTHER handler last wrote the field (`self.reader = r` in `stash`,
+    /// read+invoked in a separate dispatch `invoke`), so unlike an ordinary
+    /// local struct literal (`current_local_container_lits`, whose value is
+    /// pinned to source visible within THIS function), there is no sound way
+    /// to trace which value a `self.<field>` call site actually holds at
+    /// runtime — the write could come from any handler, any message, in any
+    /// order. `resolve_method_field_invoke_caps` intentionally returns empty
+    /// for this shape (its precise struct-literal tracking never covers
+    /// `self`, since `self` is never a locally-tracked container literal),
+    /// and ordinary method-call handling ALSO contributes nothing because no
+    /// function or handler is actually named after the field — the two gaps
+    /// compounded into an unresolvable call being attributed EMPTY authority
+    /// instead of the sound fail-closed default. `self.<name>()` where `name`
+    /// is in this set is therefore always charged `Capability::All`
+    /// (`resolve_actor_self_field_invoke_caps`), matching the standing rule
+    /// used everywhere else in this file: "Unknown must mean deny, not this
+    /// call needs nothing." Populated per-actor by `check_actor`, cleared
+    /// after its handlers are checked (actors do not nest).
+    current_actor_fn_state_fields: HashSet<String>,
     /// The active enforcement mode.
     mode: CapabilityMode,
 }
@@ -456,6 +479,7 @@ impl CapabilityChecker {
             current_fn_typed_params: HashSet::new(),
             current_local_closure_caps: HashMap::new(),
             current_local_container_lits: HashMap::new(),
+            current_actor_fn_state_fields: HashSet::new(),
             mode,
         }
     }
@@ -2894,6 +2918,31 @@ impl CapabilityChecker {
         }
     }
 
+    /// **FAIL-CLOSED default for `self.<field>()` inside an actor handler,
+    /// when `<field>` is one of the actor's own FN-TYPED state fields**
+    /// (closes LEDGER item 18). See `current_actor_fn_state_fields`'s doc for
+    /// the full rationale: a state field's value can be written by ANY
+    /// handler at ANY prior dispatch, so there is no sound way to trace
+    /// which closure a given `self.<field>()` call site actually holds —
+    /// `resolve_method_field_invoke_caps`'s precise struct-literal tracking
+    /// never covers `self` (it is not a locally-tracked container literal),
+    /// so without this, the call is attributed EMPTY authority instead of
+    /// the conservative `all` every other genuinely-unresolvable fn-value
+    /// invocation in this file requires. Only engages for a BARE `self`
+    /// receiver (`self.reader()`, not `self.other.reader()` — a nested path
+    /// falls through to the ordinary, already-sound handling for whatever
+    /// type `other` is).
+    fn resolve_actor_self_field_invoke_caps(&self, object: &Expr, method: &str) -> CapabilitySet {
+        if let Expr::Identifier { name, .. } = object {
+            if name == "self" && self.current_actor_fn_state_fields.contains(method) {
+                let mut c = CapabilitySet::empty();
+                c.insert(Capability::All);
+                return c;
+            }
+        }
+        CapabilitySet::empty()
+    }
+
     /// Whether `lit` (a container literal reachable via `local_container_lits`)
     /// explicitly writes a field named `field` at the position `path` walks
     /// to. Used ONLY to confirm the `obj.method(...)` shape is really a field
@@ -3738,11 +3787,12 @@ impl CapabilityChecker {
             }
             Decl::Actor {
                 name,
+                state_fields,
                 annotations,
                 handlers,
                 ..
             } => {
-                self.check_actor(name, annotations, handlers);
+                self.check_actor(name, annotations, state_fields, handlers);
             }
             Decl::Extern { items, span, .. } => {
                 self.check_extern(items, *span);
@@ -3884,6 +3934,7 @@ impl CapabilityChecker {
         &mut self,
         name: &str,
         annotations: &[Annotation],
+        state_fields: &[StructField],
         handlers: &[kryos_ast::MessageHandler],
     ) {
         let caps = CapabilitySet::from_annotations(annotations);
@@ -3922,6 +3973,18 @@ impl CapabilityChecker {
         self.scope_stack.push(scope);
         let saved_entry_depth = self.current_fn_entry_scope_depth;
         self.current_fn_entry_scope_depth = self.scope_stack.len();
+        // See `current_actor_fn_state_fields`'s doc: any fn-typed state field
+        // is opaque authority across handler dispatches -- no `let`/`assign`
+        // write-site tracking crosses a message-handler boundary, so a
+        // `self.<field>()` call is fail-closed to `all` for every field named
+        // here, regardless of which handler wrote it or what it actually
+        // holds at runtime.
+        let saved_actor_fn_fields = std::mem::take(&mut self.current_actor_fn_state_fields);
+        self.current_actor_fn_state_fields = state_fields
+            .iter()
+            .filter(|f| self.is_fn_bearing_type_inner(&f.ty, 0))
+            .map(|f| f.name.clone())
+            .collect();
         for handler in handlers {
             let own_params: std::collections::HashSet<String> = handler
                 .params
@@ -3943,6 +4006,7 @@ impl CapabilityChecker {
             self.current_local_closure_caps.clear();
             self.current_local_container_lits.clear();
         }
+        self.current_actor_fn_state_fields = saved_actor_fn_fields;
         self.current_fn_entry_scope_depth = saved_entry_depth;
         self.scope_stack.pop();
     }
@@ -4172,6 +4236,12 @@ impl CapabilityChecker {
                     &self.current_local_container_lits,
                     &self.current_fn_typed_params,
                 ));
+                // FAIL-CLOSED: `self.<field>()` invoking one of the current
+                // actor's own FN-TYPED state fields — see
+                // `resolve_actor_self_field_invoke_caps`'s doc (LEDGER item
+                // 18). No-op outside an actor handler body (the tracked set
+                // is empty there).
+                extra = extra.union(&self.resolve_actor_self_field_invoke_caps(object, method));
                 self.enforce_callee_name(method, *span, false, &extra);
 
                 self.check_expr(object);

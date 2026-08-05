@@ -38,8 +38,14 @@
 // real `fs:read` authority carried by `reader`, which `deny!(fs:read)` is
 // supposed to strip and does not.
 //
-// ACCEPTANCE (not yet met): must be REJECTED (E0507) under both
+// ACCEPTANCE (MET, LEDGER item 18 CLOSED): REJECTED (E0507) under both
 // `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+// Fixed via `current_actor_fn_state_fields` /
+// `resolve_actor_self_field_invoke_caps` in
+// kryos-capabilities/src/checker.rs -- `self.<field>()` invoking one of the
+// current actor's own fn-typed state fields now fails closed to
+// `Capability::All`, since no other handler's prior write to that field is
+// traceable from here. Wired into tests/security_gate.sh checks #45-46.
 
 @capabilities(fs:read)
 fn make_secret_reader(path: str) -> fn() -> str {

@@ -1,0 +1,51 @@
+// CONTROL for attack_actor_state_stored_closure.kry -- decoy variant, zero-cap closure.
+//
+// PRE-FIX (LEDGER item 18 not yet closed): this compiled/ran clean, which was the
+// decisive evidence that the sibling file's rejection-worthiness was due to the real
+// fs:read authority carried by `reader`, not an incidental syntax issue in the shape.
+//
+// POST-FIX: this now ALSO fails closed with E0507, same as the real attack. This is
+// the expected, sound over-approximation, not a regression: the fix
+// (`current_actor_fn_state_fields` / `resolve_actor_self_field_invoke_caps` in
+// kryos-capabilities/src/checker.rs) treats ANY invocation of an actor's own fn-typed
+// state field through `self.<field>()` as requiring `Capability::All`, because a
+// message handler runs at an arbitrary later time relative to whichever OTHER handler
+// last wrote the field -- there is no sound way to trace which specific closure value
+// (real secret vs. this decoy) a given call site holds at runtime. Distinguishing the
+// two would need real cross-handler data-flow tracing of every `self.<field> = ..`
+// write site's ORIGIN across the whole actor, which the ordinary struct-field tracker
+// (`resolve_method_field_invoke_caps` / `current_local_container_lits`) cannot do for
+// actor state (that tracker is function-local; actor state persists and is written by
+// arbitrary OTHER dispatches, not the current function). Per this project's fail-closed
+// doctrine ("Unknown must mean deny, not this call needs nothing"), rejecting this
+// legitimately-safe decoy is an acceptable false rejection given the alternative is the
+// live capability escape this file was written to control for. An actor that genuinely
+// needs to invoke a stored closure must declare `@capabilities(all)` (or the closure's
+// real requirement, once/if precise cross-handler tracking is built).
+
+fn make_decoy() -> fn() -> str {
+    return || "decoy-no-secret"
+}
+
+actor Holder {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn invoke(self) {
+        let leaked = self.reader()
+        println("CONTROL (decoy, expected no error): " + leaked)
+    }
+}
+
+fn main() {
+    let reader = make_decoy()
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

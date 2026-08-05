@@ -381,5 +381,58 @@ else
     tail -5 "$TMP/decoy_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 45. LEDGER item 18: a privileged closure STORED into an actor's own state
+#     field by one message (`h.stash(reader)`) and read+invoked from a
+#     SEPARATE, independently-dispatched message (`h.invoke()`) must NOT
+#     defeat `deny!(fs:read)`, under EITHER enforcement mode. This is the
+#     actor-state-storage residual of check #4/#7-10: `self.<field>()` is not
+#     covered by the ordinary struct-field-mutation tracker (`self` is never
+#     a locally-tracked container literal), so it must fall closed to `all`
+#     on its own -- see `resolve_actor_self_field_invoke_caps` in
+#     kryos-capabilities/src/checker.rs.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_actor_state_stored_closure.kry \
+        >"$TMP/actor_state_$mode_flag" 2>&1; then
+        echo "  FAIL: actor-state-stored-closure escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -q "E0507" "$TMP/actor_state_$mode_flag"; then
+        echo "  ok   actor-state-stored-closure escape rejected (E0507) [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/actor_state_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 46. No-cascade complement to #45: an actor with a fn-typed state field that
+#     is NEVER invoked (only stored/read-and-passed-around, or invoked with
+#     the actor properly annotated `@capabilities(all)`) must not spuriously
+#     break unrelated actor usage that has nothing to do with the escape --
+#     an ordinary actor with only SCALAR state, dispatched from a `deny!`
+#     block narrowing an unrelated capability, still needs zero annotation.
+cat > "$TMP/actor_state_nocascade.kry" <<'KRY'
+actor Counter {
+    total: i64
+
+    fn bump(self, n: i64) {
+        self.total = self.total + n
+    }
+}
+fn main() {
+    let c = Counter()
+    deny!(net) {
+        c.bump(5)
+        sleep(10)
+    }
+    println("ok")
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/actor_state_nocascade.kry" >"$TMP/actor_nc" 2>&1; then
+    echo "  ok   ordinary scalar-state actor dispatch inside an unrelated deny! needs no annotation (no cascade)"
+else
+    echo "  FAIL: the actor-state fix cascaded into ordinary scalar-state actor dispatch:"
+    tail -5 "$TMP/actor_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
