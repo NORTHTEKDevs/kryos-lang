@@ -1,0 +1,25 @@
+// POSITIVE CONTROL for attack_match_bound_var_field_invoke.kry: the SAME
+// secret, SAME deny!(fs:read) boundary, SAME struct-field-holds-a-closure
+// shape -- but `b` is bound via an ordinary `let` to a LOCAL StructLiteral
+// (no Option, no match/pattern binding) so `local_container_lits` DOES
+// track it. Expected: REJECTED -- confirms it is specifically the
+// match-arm PATTERN binding (not something generic about struct-field
+// closures or this scenario) that defeats the checker in the sibling
+// attack file.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b: Box = Box { f: reader }
+    deny!(fs:read) {
+        println("LET-BOUND FIELD: " + b.f())
+        sleep(100)
+    }
+}

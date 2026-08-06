@@ -1,0 +1,44 @@
+// ATTACK: a closure-bearing struct is unwrapped from an Option via a MATCH
+// PATTERN BINDING (`Some(b) => ...`), not a `let` statement -- then the
+// bound variable's fn-bearing FIELD is invoked via method-call syntax
+// (`b.f()`) inside the SAME function, inside a deny! block.
+// `local_container_lits`/`build_local_closure_caps` are built by walking
+// `let` statements in the function body (see their doc comments and every
+// call site walking `Stmt::Let`) -- a match ARM's pattern-bound variable is
+// never a `let` statement, so it is never inserted into
+// `local_container_lits`. `resolve_method_field_invoke_caps`'s root lookup
+// (`local_container_lits.get(root)`) would then fail for `b`, and per the
+// function's own documented behavior (checker.rs ~3244-3246) that returns
+// CapabilitySet::empty() -- "not confirmed as a field access, treat as an
+// ordinary method call, charge nothing" -- rather than Unknown->all. Unlike
+// the cross-function struct-PARAMETER variant (already tested, caught by
+// the call-site hot-param/container argument charge), this is entirely
+// INLINE in one function, so there is no separate call-site argument
+// expression for any other mechanism to charge either. Testing whether this
+// is a genuine, previously-unfound escape.
+
+use std::option::{Option, Some, None}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+fn make_boxed_opt(r: fn() -> str) -> Option<Box> {
+    return Some(Box { f: r })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let opt: Option<Box> = make_boxed_opt(reader)
+    deny!(fs:read) {
+        match opt {
+            Some(b) => println("MATCH-BOUND FIELD LEAK: " + b.f()),
+            None() => println("none"),
+        }
+        sleep(100)
+    }
+}
