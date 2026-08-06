@@ -1,0 +1,44 @@
+// SECURITY RED-TEAM PROBE (round 7, 2026-08-06) -- candidate escape.
+// General (non-actor) version of the accessor-method hypothesis: reach a
+// fn-bearing struct field through a plain FUNCTION CALL that returns the
+// container (`get_box(h)`), then invoke the fn-typed field on the call's
+// RETURN VALUE directly (`get_box(h).f()`), with no intervening `let`.
+//
+// Hypothesis: `resolve_method_field_invoke_caps` (the resolver responsible
+// for `X.f()` where `f` is a function-typed struct FIELD, not a genuine
+// method) requires `decompose_container_path(object)` to succeed, and that
+// helper only handles `Identifier`/`FieldAccess`/`IndexAccess` roots -- NOT
+// `FnCall`/`MethodCall`/`StaticMethodCall`. When `object` is itself a call
+// expression (`get_box(h)`), decomposition returns `None` and the resolver
+// bails out to `CapabilitySet::empty()` -- NOT the fail-closed `all` every
+// other unresolvable-provenance shape in this file uses (invariant 22).
+// `resolve_actor_self_field_invoke_caps` is not engaged here at all (no
+// actor involved), so nothing else covers this call site.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+struct Holder {
+    b: Box
+}
+
+fn get_box(h: Holder) -> Box {
+    return h.b
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder { b: Box { f: reader } }
+    deny!(fs:read) {
+        let leaked = get_box(h).f()
+        println("ACCESSOR-FN-CALL CONTAINER LEAK: " + leaked)
+        sleep(100)
+    }
+}

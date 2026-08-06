@@ -1,0 +1,36 @@
+// SECURITY RED-TEAM PROBE (round 7, 2026-08-06) -- candidate escape,
+// MethodCall-root variant of attack_container_via_accessor_fn_call.kry
+// (which uses a free FUNCTION call as the accessor). Same root cause
+// (`decompose_container_path` has no arm for `MethodCall`/`FnCall`/
+// `StaticMethodCall`), reached via an ordinary `impl` method instead of a
+// free function, to confirm the gap is general and not FnCall-specific.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+struct Holder {
+    b: Box
+}
+
+impl Holder {
+    fn get_box(self) -> Box {
+        return self.b
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder { b: Box { f: reader } }
+    deny!(fs:read) {
+        let leaked = h.get_box().f()
+        println("ACCESSOR-METHOD-CALL CONTAINER LEAK: " + leaked)
+        sleep(100)
+    }
+}
