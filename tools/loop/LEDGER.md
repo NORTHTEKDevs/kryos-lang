@@ -12,6 +12,27 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## RE-ADJUDICATION (2026-08-06) — supersedes the "FINAL LAUNCH SYNTHESIS" section below on current status
+
+The section below is dated 2026-08-05 at HEAD `d29ac99` and states item 10 (closed) as the
+sole condition on the "capability-safe" claim. HEAD has since moved to `0d6b426` (10 commits
+ahead) and the trust-model picture has changed materially: **item 10 is still correctly closed**
+(re-verified live this session, exact doctrine repro rejects E0507 both modes), but **four
+further live bypasses are open and unresolved as of this commit** — item 30 (accessor-call,
+found 2026-08-06, already in this ledger) plus items 32/33/34 (tuple-index call, actor-to-actor
+forwarding, double-alias — found this re-adjudication session, added above, previously existed
+only as undocumented test files under `tests/security/` with no ledger entry). **The verdict is
+unchanged (LAUNCH-AS-BETA, "capability-safe" still blocked) but the reason has shifted from "one
+named blocker" to "the enumerate-and-patch pattern itself has not terminated across 7+ red-team
+rounds, and the newest finding (item 32) shows the gap is in the checker's dispatch/routing
+layer, not only its closure-provenance resolvers."** See `docs/LAUNCH-READINESS.md` for the full
+current synthesis — that document has been rewritten this session and is now the authoritative
+one; the 2026-08-05 section immediately below is retained for history but its verdict-clearing
+claims about "the specific condition in §1" should be read as superseded by the 2026-08-06
+document, not as current status.
+
+---
+
 ## FINAL LAUNCH SYNTHESIS (2026-08-05) — read this before trusting any status summary
 
 Full verdict, blocker ranking, and the exact disclosed-limitations wording required for any
@@ -80,7 +101,158 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
-### 30. LIVE CAPABILITY ESCAPE — a fn-bearing struct field reached through an ACCESSOR CALL (`get_box(h).f()` / `h.get_box().f()`) instead of a direct field-access chain defeats `deny!()` on BOTH enforcement modes (RED TEAM round 7, cap-escape lens, found 2026-08-06) — HIGHEST PRIORITY, NOT FIXED
+### 32. LIVE CAPABILITY ESCAPE, MOST SEVERE OF ALL OPEN ITEMS — a tuple-index call (`pair.1()`) bypasses ALL capability enforcement for ANY fn value stored as a tuple element, anywhere in the language, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
+
+Repros: `tests/security/attack_verify_tuple_call_general.kry` (plain local
+tuple) and `tests/security/attack_verify_tuple_in_state.kry` (tuple stored
+as an actor-state field). Both re-verified live this session against the
+existing `compiler/target/release/kryos.exe`, no compiler changes:
+
+```
+$ kryos run tests/security/attack_verify_tuple_call_general.kry
+GENERAL TUPLE-CALL LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+$ echo $?
+0
+$ kryos check --strict-capabilities tests/security/attack_verify_tuple_call_general.kry
+$ echo $?
+0
+```
+
+Root cause, confirmed by direct source read (not just behavior): `compiler/
+crates/kryos-parser/src/parser.rs` lines 2094-2104. The postfix `.` loop's
+tuple-index branch (triggered when the field token is an integer literal,
+e.g. `.1`) unconditionally builds `Expr::FieldAccess` and `continue`s —
+unlike the NAMED-field branch 30 lines below (line 2136), which explicitly
+checks for a trailing `(` and builds `Expr::MethodCall` when present. So
+`pair.1()` parses as `Expr::FnCall{ callee: FieldAccess(pair, "1"), args:
+[] }`, NEVER `Expr::MethodCall`. Downstream in `checker.rs::
+check_callee_capabilities` (~line 3822 onward), `resolve_path(callee)`
+returns a 2-segment path (`["pair","1"]`, or similar) for this
+`FieldAccess` chain. BOTH enforcement branches are gated on segment count:
+the named-callee branch requires `segments.len() == 1` (false here), and —
+this is the actually dangerous part — the FAIL-CLOSED DIRECT-INVOKE
+DEFAULT (the mechanism `docs/capability-soundness.md` names as the backstop
+for "callee shape `resolve_path` cannot even see") is ALSO gated
+`segments.len() <= 1` (line 3865, and identically at line 4875 in the
+sibling actor-self-field-invoke resolver). A 2-segment path fails BOTH
+gates and receives ZERO enforcement — not even the documented
+`Capability::All` fallback for an unresolvable callee. This is a dispatch-
+routing hole that sits OUTSIDE `resolve_closure_caps`/
+`resolve_container_path_caps` entirely: neither function is ever invoked
+for this shape, so their exhaustive (no-wildcard) `Expr` match — real and
+verified for the shapes that DO reach it — buys nothing here.
+
+Reproduces identically for a tuple actor-state field
+(`self.pair.1()`, `attack_verify_tuple_in_state.kry`) — not actor-specific,
+not container-specific: this is a general parser/checker-integration gap
+for tuple-typed values anywhere a fn value can be an element.
+
+Not chased further (no compiler changes this session, per task
+instructions — shared workspace, existing binary used read-only
+throughout). Suggested fix: make the tuple-index branch (line ~2094)
+mirror the named-field branch's trailing-`(` check and emit
+`Expr::MethodCall` (or a dedicated `Expr::TupleIndexCall`) instead of
+`Expr::FnCall{ callee: FieldAccess }`; independently, `check_callee_
+capabilities`'s fail-closed default at both `segments.len() <= 1` gates
+(line 3865, line 4875) should not exempt a multi-segment `FieldAccess`-only
+path (as opposed to a genuine qualified stdlib call) — the qualified-path
+comment's own reasoning ("an ordinary `obj.field(...)` chain is parsed as
+MethodCall, not multi-segment FieldAccess") is exactly the invariant the
+parser bug above violates, so the two fixes are complementary defense in
+depth, not alternatives.
+
+Ranked above item 30 because it requires no actor, no accessor function,
+and no container/HOF machinery at all — the minimal reproducing program is
+a two-line tuple literal and a call — and because it demonstrates the
+checker's enforcement dispatch itself (not just its closure-provenance
+resolvers) has an un-swept gap.
+
+---
+
+### 33. LIVE CAPABILITY ESCAPE — closure parameter forwarded actor-to-actor through a message send escapes capability tracking entirely, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
+
+Repro: `tests/security/attack_verify_actor_to_actor_message.kry`. Verified
+live this session against the existing `compiler/target/release/
+kryos.exe`, no compiler changes:
+
+```
+$ kryos run tests/security/attack_verify_actor_to_actor_message.kry
+ACTOR-TO-ACTOR MESSAGE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+$ echo $?
+0
+```
+
+Shape: `actor Sender { fn relay(self, target: Receiver, f: fn()->str) {
+target.receive(f) } }`, `actor Receiver { fn receive(self, f: fn()->str) {
+f() } }`, called as `s.relay(r, reader)` inside `deny!(fs:read)` in `main`.
+
+Root cause, confirmed by direct source read: `checker.rs`'s
+`accumulate_hot_extra_caps`/`compute_hot_params` propagation loop sets
+`has_self_offset = is_method && !actor_handler_names.contains(callee)` —
+i.e. it assumes offset 0 (no receiver slot) for any call to a name that is
+an actor-handler, on the stated rationale "an actor handler has no
+receiver slot in its own params." This is false: `kryos-parser/src/
+parser.rs`'s `parse_actor_decl` (~lines 965-999) uses the plain
+`parse_param_list()` for actor handlers, identically to an ordinary `impl`
+method, so a handler declared `fn receive(self, f: fn()->str)` stores
+`self` literally at `params[0]` and `f` at `params[1]`. `hot_params
+["receive"]` is therefore recorded at key 1, but the call-site lookup
+(under the false offset-0 assumption) looks up key 0 and misses the entry
+— so `target.receive(f)`'s real `fs:read` requirement is never attributed
+to `relay`, and `relay`'s caller (`main`, under `deny!`) is charged
+nothing.
+
+Not chased further (no compiler changes this session, per task
+instructions). Suggested fix: `has_self_offset` for an actor-handler callee
+should match the general `is_method` case (offset 1, not 0) — the special-
+cased exemption for actor handlers appears to be simply wrong given the
+parser's actual behavior, not a deliberate design choice with a caveat;
+verify against `parse_actor_decl` directly (already done, cited above)
+before changing, and re-run `security_gate.sh` plus this repro both ways.
+
+---
+
+### 34. LIVE CAPABILITY ESCAPE — a `let`-alias of a `let`-alias (two local hops) of an actor-state fn-bearing field defeats `deny!()`, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED, disclosed residual of item 18/24's one-hop fix
+
+Repro: `tests/security/attack_verify_double_alias.kry`. Verified live this
+session against the existing `compiler/target/release/kryos.exe`, no
+compiler changes:
+
+```
+$ kryos run tests/security/attack_verify_double_alias.kry
+DOUBLE-ALIAS LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+$ echo $?
+0
+```
+
+Shape: `let x = self.b; let y = x; y.f()` inside `deny!(fs:read)`, `b` a
+struct field holding a privileged closure. The ONE-hop case (`let x =
+self.b; x.f()`) is already fixed and gated in `security_gate.sh` — this is
+the two-hop case, previously disclosed as an untested residual by the
+wave that closed the one-hop shape, now independently reproduced live.
+
+Root cause, confirmed by direct source read: `build_actor_state_alias_
+locals` only records a `let name = self.<path>` binding whose RHS root is
+LITERALLY the `self` identifier. `let y = x` has RHS root `x` (an ordinary
+local), which is never recorded, so `resolve_actor_self_field_invoke_caps`
+falls through to `CapabilitySet::empty()` for `y.f()` instead of tracing
+`y` back to `x` back to `self.b`.
+
+Not chased further (no compiler changes this session, per task
+instructions). Suggested fix: `build_actor_state_alias_locals` needs to
+resolve its RHS root TRANSITIVELY through the SAME locals map it is
+building (a fixed-point pass over the block, or a first pass collecting
+all `let name = <ident>` aliases before resolving self-paths) instead of
+requiring the RHS to be `self` literally — this is the general form of the
+bug LEDGER item 30 also exhibits in miniature (an indirection one hop past
+what the resolver's syntactic pattern anticipates defeats it); an N-hop
+alias chain of any length should be expected to keep failing until the
+resolution is made recursive/fixed-point rather than pattern-matched to a
+fixed hop count.
+
+---
+
+### 30. LIVE CAPABILITY ESCAPE — a fn-bearing struct field reached through an ACCESSOR CALL (`get_box(h).f()` / `h.get_box().f()`) instead of a direct field-access chain defeats `deny!()` on BOTH enforcement modes (RED TEAM round 7, cap-escape lens, found 2026-08-06) — NOT FIXED. Superseded as "highest priority" by item 32 (2026-08-06 re-adjudication): item 32 requires no actor/accessor machinery at all and is structurally more general. Both are open; fixing one does not fix the other.
 
 Repros: `tests/security/attack_container_via_accessor_fn_call.kry` (free
 function accessor) and `tests/security/attack_container_via_accessor_method_call.kry`
@@ -1485,6 +1657,103 @@ change to two backends' exception-return synthesis is a new, separately-
 scoped fix. No regression test added for this item since it is unfixed;
 the live repro above (`tests/security/attack_closure_mutate_then_throw_state.kry`,
 already committed) reproduces it on demand.
+
+---
+
+### 31. PERMANENT HANG: `std::sync::Mutex.lock()`/`.unlock()` called WITHOUT reassigning the return value leaves the real native mutex locked forever, with no diagnostic (RED TEAM round 2, concurrency lens, found 2026-08-06) — NOT FIXED
+
+`tests/security/attack_mutex_unreassigned_self_deadlock.kry` (attack) +
+`tests/security/attack_mutex_unreassigned_self_deadlock_control.kry`
+(control, proves the reassignment IS the cause). Single-threaded, no
+`spawn` required — deterministic by construction, not a race.
+
+`compiler/stdlib/sync.kry`'s `Mutex.lock`/`.unlock` are value-return
+methods (`fn lock(self: Mutex) -> Mutex { ... return Mutex { ..., locked:
+true, ... } }`), matching the SAME "returns a new value, must reassign"
+convention CLAUDE.md's gotcha #22 already documents for `push(arr, v)`.
+Unlike `push`, nothing here is silently dropped — the native call
+(`kryos_mutex_lock(self.handle)`, a real AtomicBool CAS spin-then-yield
+lock in `kryos-stdlib-native/src/sync_prims.rs`) genuinely succeeds and
+locks. If the caller writes the natural-looking `mu.lock()` as a bare
+statement (discarding the returned `Mutex{locked:true}`), the ORIGINAL
+`mu` binding's own `locked` field is untouched (still `false`) — so
+`Mutex.unlock()`'s own guard (`if not self.locked { throw "sync error:
+unlock on unlocked mutex" }`) fires and throws, NEVER reaching the real
+`kryos_mutex_unlock` call, leaving the native mutex permanently held. A
+second `mu.lock()` on that same (never-reassigned, still `locked=false`)
+binding sees no guard to stop it and issues a SECOND real
+`kryos_mutex_lock` against the same still-locked handle — a plain
+AtomicBool CAS spin with no owner-thread/reentrancy tracking (unlike the
+SEPARATE, already-hardened `kryos_closure_lock_acquire` used for the
+compiler-inserted closure-capture lock) — which spins forever, 100% of one
+core, no diagnostic distinguishing it from any other hang.
+
+Live, both backends, both hang identically after printing exactly the
+same two lines then producing nothing further (confirmed by letting each
+run past 3+ minutes with zero further output/CPU-idle change, then
+force-killing the stray process, which itself confirms the process was
+still alive/spinning, not merely slow):
+```
+$ kryos run tests/security/attack_mutex_unreassigned_self_deadlock.kry
+first lock() call returned (native mutex is now actually locked)
+about to call lock() again on the same (never-reassigned) mutex -- hangs forever if the hypothesis holds
+<hangs, no further output, process force-killed after 45s+>
+
+$ kryos build --release tests/security/attack_mutex_unreassigned_self_deadlock.kry -o mutex_deadlock.exe && ./mutex_deadlock.exe
+first lock() call returned (native mutex is now actually locked)
+about to call lock() again on the same (never-reassigned) mutex -- hangs forever if the hypothesis holds
+<hangs, no further output, process force-killed after 3min+>
+```
+**Control (proves the mechanism, not incidental Mutex breakage):** the
+sibling file with the correct `mu = mu.lock()` / `mu = mu.unlock()`
+reassignment pattern completes cleanly, exit 0, all 4 expected lines,
+including a full second lock/unlock cycle:
+```
+$ kryos run tests/security/attack_mutex_unreassigned_self_deadlock_control.kry
+first lock() call returned (native mutex is now actually locked)
+unlocked correctly
+about to call lock() again -- should succeed immediately since properly unlocked
+SUCCESS: second lock()/unlock() cycle completed, no hang
+```
+
+**Not the same bug as any other concurrency finding in this campaign**:
+distinct from the compiler-inserted closure-capture lock's self-reentrancy
+(item 11(a), fixed — that one now fails loudly via
+`kryos_closure_lock_acquire`'s thread-local tracking; `std::sync::Mutex`
+has no such tracking and was never meant to, since non-reentrant is its
+correct contract, same as a Rust/C mutex) and distinct from the AB-BA
+cross-closure lock-order deadlock (`attack_cross_closure_lock_deadlock.kry`).
+This is a stdlib API-usage footgun in `std::sync::Mutex` ITSELF, single-
+threaded, no lock ordering or cross-thread interleaving involved.
+`Mutex.with_lock(callback)` (which internally reassigns `locked = self.lock()`
+correctly) is NOT affected — only direct `.lock()`/`.unlock()` calls are.
+`SpinLock` (same file) does NOT share this bug: its `unlock()` has no
+bookkeeping guard at all (`self.flag.store(0)` unconditionally, and
+`flag`'s underlying cell is a raw pointer shared regardless of struct
+reassignment), so a forgotten reassignment there is harmless — it is
+specifically `Mutex`'s safety-guard field (`locked: bool`, meant to catch
+misuse) that converts a would-be-harmless mistake into an undiagnosable
+permanent hang, by blocking the real unlock the guard was meant to
+require.
+
+**Blast radius:** `mu.lock()` / `mu.unlock()` as bare statements (not
+`let mu = mu.lock()`) is the FIRST thing anyone reading `docs/`'s
+class-style method examples elsewhere in this codebase (`Mutex { handle,
+locked, dropped }`, ordinary OOP-looking methods) would naturally write,
+with zero compiler warning (the return value is silently discardable,
+same as gotcha #22's other value-semantics footguns) and zero indication
+that this specific method, unlike most others, requires reassignment to
+avoid a process-fatal deadlock instead of a merely-wrong value.
+
+**Fix shape (not attempted — attacker-only mandate this round):**
+either (a) make `Mutex` genuinely mutate in place via a heap-boxed
+`locked` flag (mirroring how the compiler's OWN closure-capture lock
+persists its mutated state through an ARC-boxed cell, item 7), removing
+the reassignment requirement entirely, or (b) document the requirement
+loudly next to `Mutex.lock`/`unlock` in `docs/09-concurrency.md` (which
+currently says nothing about `std::sync::Mutex` usage at all) and add a
+`kryos audit`-style lint for a bare `.lock()`/`.unlock()` call whose
+return value is discarded. Not fixed this session (attacker-only mandate).
 
 ---
 
@@ -3102,3 +3371,49 @@ Gates (this wave, before the follow-up commit): conformance 60/60 (was
 59/59 -- new regression test), tier1+tier2 GREEN, `security_gate.sh` PASS
 (72 checks), bootstrap 16/16 solo, combined-category grammar sweep 150/150
 match (0 diverge, 0 both-fail) post-fix.
+
+## CAPABILITY-TYPED FN VALUES: FINAL SPEC SYNTHESIZED (2026-08-06)
+
+After R1-R7 (see CAPABILITY SOUNDNESS THEOREM AUDIT above) proved the
+syntax-tracing checker architecture cannot converge, three independent
+implementation specs were drafted for the effect-typing fix sketched in
+`docs/capability-roadmap.md` Part 1b, then judged against each other and
+synthesized into one document: `docs/capability-effects-spec.md`.
+
+Decisive finding during judging (verified by reading the actual source,
+not assumed): `kryos_types::Type` derives `Eq, Hash` (`ty.rs:9`), but
+`kryos_capabilities::model::CapabilitySet` derives only `Debug, Clone,
+PartialEq, Eq` -- **not** `Hash` (`model.rs:157`), because its inner
+`HashSet<Capability>` cannot soundly implement `Hash`. Two of the three
+drafts represented a function's capability requirement as
+`CapReq::Closed(CapabilitySet)` / `CapRow::Concrete(CapabilitySet)`
+embedded inside `Type::Function` -- neither would compile once `#[derive
+(Hash)]` is attempted transitively. The surviving draft's representation
+(`CapBits`: a `Copy + Eq + Hash + Ord` bitset over the 15 `Capability`
+variants, `model.rs:13-45`) avoids this and was adopted as the base.
+
+Also rejected: the principled-effects draft's `C: CapSet` explicit generic
+bound, because its own migration stage requires hand-editing
+`std::iter::map/filter/fold/reduce/find` (and every ecosystem HOF relying
+on the old checker's leniency) to add the bound -- a real annotation-burden
+cost the other two drafts' fully-implicit per-declaration row-variable
+generalization (any unannotated fn-typed parameter/return gets a fresh row
+var, independent of ordinary type-genericity) avoids entirely.
+
+Grafted in from the other two drafts: the pragmatic-migration draft's
+8-stage rollout (Stage 2's differential harness compares new inference
+against the OLD heuristic checker's charge, call-site by call-site, across
+the full corpus BEFORE the new mechanism gets any enforcement authority;
+Stage 6's numeric <10% compile-time-regression budget and IR-residue grep
+proving the zero-ABI claim instead of asserting it); the principled-effects
+draft's closed-bitset-vs-open-Koka-row justification (Kryos's capability
+label set is small, fixed, and compiler-defined -- never extended by a
+Kryos program -- so a set-variable is the correct-weight polymorphism, not
+a full row-with-tail).
+
+No code changed, no rebuild performed -- this is a design-specification
+deliverable only. Every "impossible by construction" claim in the spec is
+explicitly flagged as needing live re-verification during implementation
+(revert/rebuild/confirm-bug-reappears, restore/rebuild/confirm-gone), per
+this repo's own operational rule #6 -- nothing in the spec is claimed
+proven.
