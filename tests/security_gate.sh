@@ -529,5 +529,62 @@ else
     tail -8 "$TMP/wrap_nc" | sed 's/^/    /'; fail=1
 fi
 
+# 51. RESOURCE-DOS (LEDGER item 19): a generic that pairs its own type
+#     parameter into a tuple return, chained (`dup(dup(dup(x)))`), used to
+#     make `kryos check` hang for 65s+ at depth 24 with no diagnostic (the
+#     real blowup site is `kryos-types`'s `InferenceEngine::resolve`, not
+#     MIR lowering -- `kryos check` never reaches MIR lowering at all).
+#     Bounded via a 4096-node type-tree budget; assert it now fails FAST
+#     (well under the un-bounded ~65s) with the resource-limit diagnostic,
+#     not silently or by hanging.
+t0=$(date +%s)
+if timeout 15 "$K" check tests/security/attack_monomorphization_tuple_doubling_explosion.kry \
+    >"$TMP/mono19" 2>&1; then
+    echo "  FAIL: monomorphization tuple-doubling explosion compiled clean (should be rejected)"
+    fail=1
+else
+    rc=$?
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
+    if [ "$rc" -eq 124 ]; then
+        echo "  FAIL: monomorphization tuple-doubling explosion HUNG past the 15s bound (no cap fired)"
+        fail=1
+    elif grep -q "E0113" "$TMP/mono19" && [ "$elapsed" -le 10 ]; then
+        echo "  ok   monomorphization tuple-doubling explosion rejected fast (${elapsed}s, error[E0113])"
+    else
+        echo "  FAIL: rejected, but not cleanly (no E0113) or too slow (${elapsed}s):"
+        tail -3 "$TMP/mono19" | sed 's/^/    /'; fail=1
+    fi
+fi
+
+# 52. RESOURCE-DOS (LEDGER item 23): a genuinely self-recursive generic
+#     function whose recursive call instantiates a NEW, larger concrete type
+#     at every level (`fn f<T>(x: T) { f(wrap(x)) }`) used to grow past
+#     3.2GB RSS in 15s and keep climbing, with no cap and no diagnostic --
+#     distinct from #51: the source is FIXED-length and the blowup comes
+#     from the compiler's OWN recursive `monomorphize` call stack (MIR
+#     lowering), only reached by `run`/`build`, not `check`. Bounded via a
+#     300-deep monomorphization-recursion-depth cap; assert it now fails
+#     FAST with the resource-limit diagnostic instead of hanging/OOMing.
+t0=$(date +%s)
+if timeout 15 "$K" run tests/security/attack_monomorphization_self_recursive_growth.kry \
+    >"$TMP/mono23" 2>&1; then
+    echo "  FAIL: self-recursive type-growing generic ran to completion (should be rejected)"
+    fail=1
+else
+    rc=$?
+    t1=$(date +%s)
+    elapsed=$((t1 - t0))
+    if [ "$rc" -eq 124 ]; then
+        echo "  FAIL: self-recursive type-growing generic HUNG/OOMed past the 15s bound (no cap fired)"
+        fail=1
+    elif grep -q "E0113" "$TMP/mono23" && [ "$elapsed" -le 10 ]; then
+        echo "  ok   self-recursive type-growing generic rejected fast (${elapsed}s, error[E0113])"
+    else
+        echo "  FAIL: rejected, but not cleanly (no E0113) or too slow (${elapsed}s):"
+        tail -3 "$TMP/mono23" | sed 's/^/    /'; fail=1
+    fi
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

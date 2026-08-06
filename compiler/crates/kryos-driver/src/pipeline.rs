@@ -564,11 +564,39 @@ fn compile_module_impl(
             source_map.line_starts_snapshot(),
         )));
     }
-    let mut mir =
-        kryos_mir::lower_module_with_lambda_params(&module, &lambda_param_types, &let_types);
+    // Lowering is infallible by signature (`-> MirModule`, not `-> Result`),
+    // but a pathological generic monomorphization (LEDGER items 19/23 --
+    // e.g. `fn dup<T>(x: T) -> (T, T)` chained, or a self-recursive generic
+    // whose recursive call instantiates a genuinely larger type at every
+    // level) is deliberately made to PANIC with the shared
+    // `kryos_errors::ResourceLimitExceeded` payload once a bounded resource
+    // limit is hit, rather than let the process OOM/hang unresponsive with
+    // no diagnostic. Catch exactly that payload here and turn it into an
+    // ordinary `error[E0113]` diagnostic; any OTHER panic is a genuine
+    // internal-compiler-error and is re-raised unchanged so it still
+    // surfaces as a real crash instead of being silently swallowed.
+    let mono_result = kryos_errors::ResourceLimitExceeded::catch(std::panic::AssertUnwindSafe(
+        || kryos_mir::lower_module_with_lambda_params(&module, &lambda_param_types, &let_types),
+    ));
     if debug_instrument {
         kryos_mir::set_debug_line_resolver(None);
     }
+    let mut mir = match mono_result {
+        Ok(mir) => mir,
+        Err(limit) => {
+            diagnostics
+                .push(Diagnostic::error(limit.message).with_code(kryos_errors::codes::E0113));
+            return CompileResult {
+                diagnostics,
+                source_map,
+                success: false,
+                output_path: None,
+                mir: None,
+                object_bytes: None,
+                llvm_ir: None,
+            };
+        }
+    };
 
     // 9a. Populate source_file / source_line on each MIR function from AST spans.
     //     This is what drives accurate panic traces ("file.kry:42" instead of

@@ -6224,8 +6224,45 @@ pub fn type_check(module: &Module) -> Vec<Diagnostic> {
 }
 
 /// Type-check a module and also return the resolved types of un-annotated
-/// lambda parameters (keyed by lambda span), for the MIR lowering to consume.
+/// lambda parameters (keyed by lambda span), for the MIR lowering to
+/// consume.
+///
+/// Resource-DoS guard (LEDGER item 19, 2026-08-05): a pathological generic
+/// instantiation (a generic that pairs/duplicates its own type parameter
+/// across a chain of calls, e.g. `fn dup<T>(x: T) -> (T, T)` chained) makes
+/// `InferenceEngine::resolve` -- called deep inside `type_check_with_lambda_
+/// params_inner`'s unification passes -- deliberately PANIC with the shared
+/// `kryos_errors::ResourceLimitExceeded` payload once a bounded type-tree-
+/// size limit is hit, rather than let the process exhaust memory or hang
+/// unresponsive with no diagnostic (see `resolve`'s own doc comment for the
+/// full mechanism). This is the SINGLE point where every caller of
+/// `type_check`/`type_check_with_lambda_params` (the driver's compile
+/// pipeline, `check_file_with_options_full`, `check_source`, and the LSP's
+/// diagnostics pass) gets that panic caught and turned into an ordinary
+/// `error[E0113]` diagnostic instead of a raw Rust panic -- any OTHER panic
+/// payload is a genuine internal-compiler-error and is re-raised via
+/// `resume_unwind` so it still surfaces as a real crash, never silently
+/// swallowed.
 pub fn type_check_with_lambda_params(
+    module: &Module,
+) -> (
+    Vec<Diagnostic>,
+    std::collections::HashMap<Span, Vec<Option<TypeExpr>>>,
+    std::collections::HashMap<Span, TypeExpr>,
+) {
+    match kryos_errors::ResourceLimitExceeded::catch(std::panic::AssertUnwindSafe(|| {
+        type_check_with_lambda_params_inner(module)
+    })) {
+        Ok(result) => result,
+        Err(limit) => (
+            vec![Diagnostic::error(limit.message).with_code(kryos_errors::codes::E0113)],
+            std::collections::HashMap::new(),
+            std::collections::HashMap::new(),
+        ),
+    }
+}
+
+fn type_check_with_lambda_params_inner(
     module: &Module,
 ) -> (
     Vec<Diagnostic>,

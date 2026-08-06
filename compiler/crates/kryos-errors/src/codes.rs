@@ -28,6 +28,7 @@ pub const E0109: &str = "E0109"; // Self used outside of impl/trait
 pub const E0110: &str = "E0110"; // type error (general / uncategorized)
 pub const E0111: &str = "E0111"; // integer literal out of range for declared type
 pub const E0112: &str = "E0112"; // non-exhaustive match
+pub const E0113: &str = "E0113"; // generic monomorphization resource limit exceeded
 
 // Resolution errors (E02xx)
 pub const E0200: &str = "E0200"; // module path / import could not be resolved

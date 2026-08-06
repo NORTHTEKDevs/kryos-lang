@@ -9,6 +9,15 @@ use kryos_errors::{Diagnostic, Span};
 
 use crate::ty::Type;
 
+/// Maximum type-tree node count `InferenceEngine::resolve` will build for a
+/// single call before aborting (LEDGER item 19 -- see `resolve`'s doc
+/// comment for the full rationale). Set far above any legitimate concrete
+/// type's structural size (a handful to a few dozen nodes for realistic
+/// generic instantiations, even nested ones like `Option<Result<[Box<T>],
+/// str>>`) and far below the point where building/walking the tree itself
+/// becomes the bottleneck.
+const MAX_RESOLVE_NODES: usize = 4096;
+
 /// Check if `from` can be widened to `to` (safe integer promotion).
 ///
 /// Rules: signed integers widen to larger signed integers,
@@ -172,66 +181,136 @@ impl InferenceEngine {
 
     /// Apply all known substitutions to a type, recursively resolving
     /// type variables to their concrete types.
+    ///
+    /// Resource-DoS guard (LEDGER item 19, 2026-08-05): this is the ACTUAL
+    /// site of the "generic that pairs its own type parameter" exponential
+    /// blowup, not `kryos-mir`'s `mono_mangled_name` as an earlier round of
+    /// this investigation assumed from the mangled-name symptom alone --
+    /// `kryos check` never reaches MIR lowering at all
+    /// (`check_file_with_options_full` stops after type-check/ownership/
+    /// capabilities), so the ~65s-at-depth-24 hang measured under `kryos
+    /// check` happens entirely here. `fn dup<T>(x: T) -> (T, T)` chained
+    /// (`dup(dup(dup(x)))`) binds a type VARIABLE to a `Type::Tuple`
+    /// containing the PREVIOUS type TWICE; this function rebuilds a fresh,
+    /// fully-expanded (non-shared) tree on every call, so a chain of N
+    /// `dup` calls costs O(2^N) to resolve even once -- and `unify` (below)
+    /// calls `resolve` on both operands at the START of every single
+    /// unification, so the cost is paid repeatedly, not once. Bounded via
+    /// `resolve_bounded`, which aborts the walk (not just the allocation)
+    /// the instant the node budget is exhausted, so detecting the
+    /// violation costs at most `MAX_RESOLVE_NODES` node visits -- never the
+    /// exponential true size of the pathological type.
     pub fn resolve(&self, ty: &Type) -> Type {
-        match ty {
+        let mut budget = MAX_RESOLVE_NODES;
+        match self.resolve_bounded(ty, &mut budget) {
+            Some(resolved) => resolved,
+            None => kryos_errors::ResourceLimitExceeded::abort(format!(
+                "type resolution produced a concrete type exceeding \
+                 {MAX_RESOLVE_NODES} type-tree nodes while resolving a single type. \
+                 This is the signature of a generic that PAIRS or otherwise \
+                 duplicates its own type parameter in its return type across a \
+                 chain of calls (e.g. `fn f<T>(x: T) -> (T, T) {{ return (x, x) }}` \
+                 called as `f(f(f(x)))`), which doubles the concrete type's size at \
+                 every level and produces an exponentially large type from a \
+                 linear source program. Break the chain, or stop pairing the \
+                 generic's own result back into itself."
+            )),
+        }
+    }
+
+    /// Bounded worker for `resolve`: mirrors its exact recursive structure,
+    /// decrementing `budget` by one per node visited and returning `None`
+    /// the INSTANT `budget` reaches zero -- before descending into any
+    /// further children, and short-circuiting the whole walk via `?` the
+    /// moment any nested call bails. This keeps the cost of DETECTING a
+    /// pathological type bounded by `budget`, never by the type's true
+    /// (possibly exponential) size.
+    fn resolve_bounded(&self, ty: &Type, budget: &mut usize) -> Option<Type> {
+        if *budget == 0 {
+            return None;
+        }
+        *budget -= 1;
+        Some(match ty {
             Type::Var(id) => {
                 if let Some(resolved) = self.substitutions.get(id) {
                     // Chase the substitution chain (handles transitive vars).
-                    self.resolve(resolved)
+                    self.resolve_bounded(resolved, budget)?
                 } else {
                     ty.clone()
                 }
             }
             Type::Array { element, size } => Type::Array {
-                element: Box::new(self.resolve(element)),
+                element: Box::new(self.resolve_bounded(element, budget)?),
                 size: *size,
             },
-            Type::Tuple { elements } => Type::Tuple {
-                elements: elements.iter().map(|e| self.resolve(e)).collect(),
-            },
+            Type::Tuple { elements } => {
+                let mut out = Vec::with_capacity(elements.len());
+                for e in elements {
+                    out.push(self.resolve_bounded(e, budget)?);
+                }
+                Type::Tuple { elements: out }
+            }
             Type::Map { key, value } => Type::Map {
-                key: Box::new(self.resolve(key)),
-                value: Box::new(self.resolve(value)),
+                key: Box::new(self.resolve_bounded(key, budget)?),
+                value: Box::new(self.resolve_bounded(value, budget)?),
             },
             Type::Set { element } => Type::Set {
-                element: Box::new(self.resolve(element)),
+                element: Box::new(self.resolve_bounded(element, budget)?),
             },
             Type::Option { inner } => Type::Option {
-                inner: Box::new(self.resolve(inner)),
+                inner: Box::new(self.resolve_bounded(inner, budget)?),
             },
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.resolve(ok)),
-                err: Box::new(self.resolve(err)),
+                ok: Box::new(self.resolve_bounded(ok, budget)?),
+                err: Box::new(self.resolve_bounded(err, budget)?),
             },
-            Type::Struct { name, generics } => Type::Struct {
-                name: name.clone(),
-                generics: generics.iter().map(|g| self.resolve(g)).collect(),
-            },
-            Type::Enum { name, generics } => Type::Enum {
-                name: name.clone(),
-                generics: generics.iter().map(|g| self.resolve(g)).collect(),
-            },
-            Type::Function { params, ret } => Type::Function {
-                params: params.iter().map(|p| self.resolve(p)).collect(),
-                ret: Box::new(self.resolve(ret)),
-            },
+            Type::Struct { name, generics } => {
+                let mut out = Vec::with_capacity(generics.len());
+                for g in generics {
+                    out.push(self.resolve_bounded(g, budget)?);
+                }
+                Type::Struct {
+                    name: name.clone(),
+                    generics: out,
+                }
+            }
+            Type::Enum { name, generics } => {
+                let mut out = Vec::with_capacity(generics.len());
+                for g in generics {
+                    out.push(self.resolve_bounded(g, budget)?);
+                }
+                Type::Enum {
+                    name: name.clone(),
+                    generics: out,
+                }
+            }
+            Type::Function { params, ret } => {
+                let mut out = Vec::with_capacity(params.len());
+                for p in params {
+                    out.push(self.resolve_bounded(p, budget)?);
+                }
+                Type::Function {
+                    params: out,
+                    ret: Box::new(self.resolve_bounded(ret, budget)?),
+                }
+            }
             Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(self.resolve(inner)),
+                inner: Box::new(self.resolve_bounded(inner, budget)?),
                 mutable: *mutable,
             },
             Type::Shared { inner } => Type::Shared {
-                inner: Box::new(self.resolve(inner)),
+                inner: Box::new(self.resolve_bounded(inner, budget)?),
             },
             Type::Weak { inner } => Type::Weak {
-                inner: Box::new(self.resolve(inner)),
+                inner: Box::new(self.resolve_bounded(inner, budget)?),
             },
             Type::Pointer { inner, mutable } => Type::Pointer {
-                inner: Box::new(self.resolve(inner)),
+                inner: Box::new(self.resolve_bounded(inner, budget)?),
                 mutable: *mutable,
             },
             // Primitives and Error pass through unchanged.
             _ => ty.clone(),
-        }
+        })
     }
 
     /// Unify two types, making them equal. Returns Ok(()) on success,

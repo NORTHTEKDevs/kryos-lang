@@ -107,6 +107,20 @@ pub struct LoweringContext {
     monomorphized: HashMap<String, bool>,
     /// Functions produced by monomorphization (collected after lowering).
     monomorphized_functions: Vec<MirFunction>,
+    /// Current recursive monomorphization call-stack depth: incremented on
+    /// entry to `monomorphize`/`monomorphize_impl_fn`/`monomorphize_struct`/
+    /// `monomorphize_enum` for a NEW (not-yet-cached) instantiation, and
+    /// decremented on return. A self-recursive generic whose recursive call
+    /// instantiates a genuinely NEW, larger concrete type at every level
+    /// (LEDGER item 23) recurses through this counter once per level, unlike
+    /// ordinary (cached) recursion which returns at the `contains_key` check
+    /// before ever incrementing it. See `MAX_MONO_DEPTH`.
+    mono_depth: usize,
+    /// Parallel stack of mangled names, one per currently-open
+    /// monomorphization frame -- used only to render the instantiation chain
+    /// in the `MAX_MONO_DEPTH`/`MAX_MONO_TOTAL` diagnostic, so a user hitting
+    /// the limit can see WHICH generic and WHICH chain of calls produced it.
+    mono_chain: Vec<String>,
     /// Struct/enum type names for which a `__kryos_eq_<Type>` structural
     /// equality helper has already been synthesized (see
     /// `ensure_struct_eq_helper` / `ensure_enum_eq_helper`). Keyed by the
@@ -464,6 +478,8 @@ impl LoweringContext {
             generic_enum_templates: HashMap::new(),
             monomorphized: HashMap::new(),
             monomorphized_functions: Vec::new(),
+            mono_depth: 0,
+            mono_chain: Vec::new(),
             synthesized_eq_helpers: HashSet::new(),
             lambda_counter: 0,
             lambda_param_types: HashMap::new(),
@@ -14814,9 +14830,240 @@ fn substitute_type_expr_to_mir(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Monomorphization resource-DoS guards (LEDGER items 19 / 23, 2026-08-05).
+//
+// Two independent unbounded-growth surfaces were found in this pass, neither
+// gated by any existing limit:
+//
+//   - Item 19: `mono_mangled_name` builds a name by calling `format!("{t}")`
+//     on each concrete type argument, and `MirType::Tuple`'s `Display` impl
+//     recurses fully into every element with NO interning/structural
+//     sharing. A generic whose return type pairs its own input into a tuple
+//     (`fn dup<T>(x: T) -> (T, T)`) called in a chain doubles the printed
+//     size of the type at every level -- O(2^depth) from an O(depth) source
+//     program (measured: depth 24 took 65s, depth 30 did not finish in 5+
+//     minutes, `kryos check`, no codegen even reached).
+//   - Item 23: a genuinely self-recursive generic function whose recursive
+//     call instantiates a NEW, larger concrete type at every level (`fn
+//     f<T>(x: T) { ... f(grow(x)) ... }`) recurses through this Rust
+//     compiler's OWN `monomorphize` call stack once per level -- unlike
+//     ordinary self-recursion at a FIXED type, which returns at the
+//     `ctx.monomorphized.contains_key` cache check before ever recursing
+//     further. Measured: 3.2GB+ resident and still climbing after 15s from
+//     an 8-line source file, no cap, no diagnostic.
+//
+// `MAX_MONO_DEPTH` bounds item 23 (real recursive Rust call-stack depth
+// through `monomorphize`/`monomorphize_impl_fn`/`monomorphize_struct`/
+// `monomorphize_enum` for a genuinely NEW instantiation). `MAX_MONO_TOTAL`
+// bounds pure BREADTH (many distinct shallow instantiations with no deep
+// chain). `MAX_MONO_TYPE_NODES`, checked by `mir_type_within_node_budget`
+// BEFORE `mono_mangled_name` ever calls `format!`, bounds item 19 -- the
+// budget walk itself bails out the instant the budget is exhausted, so
+// DETECTING the violation costs at most `MAX_MONO_TYPE_NODES` node visits,
+// never the exponential true size of the pathological type.
+//
+// Limits are chosen well above any real generic instantiation chain (the
+// self-host compiler's own deepest generic chains -- `List<T>`/`Option<T>`/
+// `Result<T,E>` wrapper nesting, the handful of generic combinator helpers
+// in its stdlib-facing code -- are well under 20 monomorphization levels and
+// well under 100 distinct type-tree nodes for any one concrete type) and far
+// below the point where the existing bugs make the compiler unresponsive.
+
+/// Maximum recursive monomorphization depth for one instantiation CHAIN
+/// (item 23). Mirrors the parser's own `MAX_RECURSION_DEPTH = 256` cap in
+/// spirit (a resource-DoS guard on unbounded compiler-driven recursion, not
+/// a hard language limit) with headroom for legitimately deeper generic
+/// nesting than the parser's grammar-recursion case allows.
+const MAX_MONO_DEPTH: usize = 300;
+
+/// Maximum total DISTINCT successful monomorphizations across one compile
+/// (guards pure breadth-explosion -- many distinct shallow instantiations
+/// with no single deep chain -- the same way `MAX_MONO_DEPTH` guards depth).
+const MAX_MONO_TOTAL: usize = 200_000;
+
+/// Maximum MirType tree node count for a single concrete generic type
+/// argument, checked by `mir_type_within_node_budget` before it is ever
+/// formatted into a mangled name.
+const MAX_MONO_TYPE_NODES: usize = 4096;
+
+/// Walk `ty`'s node tree, decrementing `budget` by one per node visited and
+/// bailing out (returning `false`) the INSTANT `budget` reaches zero --
+/// crucially, before descending into any further children. This keeps this
+/// function's own cost bounded by the budget, never by the true (possibly
+/// exponential, per item 19) size of a pathological type: a doubling tree
+/// exhausts a 4096 budget within roughly the first dozen nodes visited at
+/// the top of the tree, not by enumerating all 2^depth leaves.
+fn mir_type_within_node_budget(ty: &MirType, budget: &mut usize) -> bool {
+    if *budget == 0 {
+        return false;
+    }
+    *budget -= 1;
+    match ty {
+        MirType::Ptr(inner) | MirType::Shared(inner) | MirType::Array(inner, _) => {
+            mir_type_within_node_budget(inner, budget)
+        }
+        MirType::Ref { inner, .. } => mir_type_within_node_budget(inner, budget),
+        MirType::Tuple(elems) => elems.iter().all(|e| mir_type_within_node_budget(e, budget)),
+        MirType::Function { params, ret } => {
+            params.iter().all(|p| mir_type_within_node_budget(p, budget))
+                && mir_type_within_node_budget(ret, budget)
+        }
+        MirType::Map { key, value } => {
+            mir_type_within_node_budget(key, budget) && mir_type_within_node_budget(value, budget)
+        }
+        _ => true,
+    }
+}
+
+/// Render the current instantiation-chain stack for a diagnostic, truncating
+/// a long chain to its first/last few entries (a genuinely limit-tripping
+/// chain can be up to `MAX_MONO_DEPTH` entries long, too long to usefully
+/// print in full).
+fn format_mono_chain(chain: &[String]) -> String {
+    // Cap each individual mangled name too: a growing-type chain (item 23)
+    // produces names whose OWN length grows with depth (the mangled suffix
+    // embeds the full nested type), so printing all of even a HEAD_TAIL-
+    // trimmed set of full names can still run to tens of KB. A truncated
+    // name is still enough to recognize the growing shape at a glance.
+    const NAME_MAX: usize = 60;
+    let short = |s: &str| -> String {
+        if s.len() <= NAME_MAX {
+            s.to_string()
+        } else {
+            format!("{}...({} chars)", &s[..NAME_MAX], s.len())
+        }
+    };
+    const HEAD_TAIL: usize = 3;
+    if chain.len() <= HEAD_TAIL * 2 + 2 {
+        chain.iter().map(|s| short(s)).collect::<Vec<_>>().join(" -> ")
+    } else {
+        let head = chain[..HEAD_TAIL]
+            .iter()
+            .map(|s| short(s))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        let tail = chain[chain.len() - HEAD_TAIL..]
+            .iter()
+            .map(|s| short(s))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        format!(
+            "{head} -> ... ({} more) ... -> {tail}",
+            chain.len() - HEAD_TAIL * 2
+        )
+    }
+}
+
+/// Abort MIR lowering with a monomorphization resource-limit diagnostic.
+///
+/// `kryos-mir`'s lowering entry points (`lower_module`/
+/// `lower_module_with_lambda_params`) are infallible by signature (`->
+/// MirModule`, not `-> Result<..>`) and have ~50 direct callers across the
+/// crate's own test suite and the driver benchmark harness, so threading a
+/// `Result` through every recursive lowering call this deep was rejected as
+/// disproportionate to a resource-bound fix (a real ABI/API change, not a
+/// bounded patch). Instead this panics with the shared
+/// `kryos_errors::ResourceLimitExceeded` payload type; `kryos-driver`'s
+/// `pipeline::compile` wraps the ONE call to
+/// `lower_module_with_lambda_params` in `catch_unwind`, downcasts for this
+/// specific payload, and turns it into an ordinary `error[E0113]`
+/// diagnostic -- any OTHER panic (a genuine internal-compiler-error) is
+/// re-raised via `resume_unwind` and still surfaces as a real crash, so this
+/// mechanism cannot mask an unrelated bug as a clean diagnostic.
+fn mono_fatal(ctx: &LoweringContext, detail: String) -> ! {
+    let chain = if ctx.mono_chain.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\ninstantiation chain ({} deep): {}",
+            ctx.mono_chain.len(),
+            format_mono_chain(&ctx.mono_chain)
+        )
+    };
+    kryos_errors::ResourceLimitExceeded::abort(format!(
+        "monomorphization limit exceeded: {detail}{chain}"
+    ));
+}
+
+/// Enter a NEW (not-yet-cached) monomorphization frame for `func_name` /
+/// `mangled` -- checks and enforces `MAX_MONO_TOTAL` (breadth, item 19-class
+/// defense-in-depth) and `MAX_MONO_DEPTH` (real recursive depth through
+/// `monomorphize`/`monomorphize_impl_fn`, item 23), then pushes the frame.
+/// Call ONLY after the `ctx.monomorphized.contains_key` cache-hit check has
+/// already returned early -- a cache hit is NOT a new frame and must not
+/// count against either limit. Pair with `exit_mono_frame` after the
+/// specialized body finishes lowering.
+fn enter_mono_frame(ctx: &mut LoweringContext, func_name: &str, mangled: &str) {
+    if ctx.monomorphized.len() >= MAX_MONO_TOTAL {
+        mono_fatal(
+            ctx,
+            format!(
+                "this compile produced more than {MAX_MONO_TOTAL} distinct generic \
+                 instantiations (most recently monomorphizing `{func_name}` as \
+                 `{mangled}`). This usually means a generic is being instantiated at a \
+                 new concrete type on every one of a large number of call sites, or a \
+                 generic combinator is being composed across an unexpectedly large \
+                 number of distinct shapes."
+            ),
+        );
+    }
+    ctx.monomorphized.insert(mangled.to_string(), true);
+
+    ctx.mono_depth += 1;
+    ctx.mono_chain.push(mangled.to_string());
+    if ctx.mono_depth > MAX_MONO_DEPTH {
+        mono_fatal(
+            ctx,
+            format!(
+                "generic `{func_name}` recursively monomorphized to a depth of {} \
+                 (max {MAX_MONO_DEPTH}). This is the signature of a self-recursive \
+                 generic function whose recursive call instantiates a GENUINELY NEW, \
+                 larger concrete type at every level (e.g. `fn f<T>(x: T) {{ ... \
+                 f(grow(x)) ... }}`), so each level of the recursion is a fresh, \
+                 uncached monomorphization rather than bounded recursion at one fixed \
+                 type. Bound the type growth, or restructure the recursion to reuse a \
+                 single instantiation.",
+                ctx.mono_depth
+            ),
+        );
+    }
+}
+
+/// Exit the monomorphization frame opened by the matching `enter_mono_frame`
+/// call, after the specialized body has finished lowering.
+fn exit_mono_frame(ctx: &mut LoweringContext) {
+    ctx.mono_depth -= 1;
+    ctx.mono_chain.pop();
+}
+
 /// Produce a mangled name for a monomorphized specialization.
 /// e.g., `id` with `[I64]` → `id___i64`.
-fn mono_mangled_name(base: &str, concrete_types: &[MirType]) -> String {
+fn mono_mangled_name(ctx: &LoweringContext, base: &str, concrete_types: &[MirType]) -> String {
+    // Resource-DoS guard (LEDGER item 19): reject an over-large concrete
+    // type BEFORE paying the cost of formatting it (see the module-level
+    // comment above this function for the full rationale).
+    let mut budget = MAX_MONO_TYPE_NODES;
+    if !concrete_types
+        .iter()
+        .all(|t| mir_type_within_node_budget(t, &mut budget))
+    {
+        mono_fatal(
+            ctx,
+            format!(
+                "generic `{base}` was instantiated with a concrete type argument \
+                 whose structural size exceeds {MAX_MONO_TYPE_NODES} type-tree nodes. \
+                 This is the signature of a generic that PAIRS or otherwise duplicates \
+                 its own type parameter in its return type across a chain of calls \
+                 (e.g. `fn f<T>(x: T) -> (T, T) {{ return (x, x) }}` called as \
+                 `f(f(f(x)))`), which doubles the concrete type's size at every level \
+                 and produces an exponentially large type from a linear source \
+                 program. Break the chain, or stop pairing the generic's own result \
+                 back into itself."
+            ),
+        );
+    }
+
     // Sanitize to identifier-safe chars: a Tuple displays as "(i64, str)",
     // and parens/commas/spaces leak into LLVM symbol names (e.g. the
     // generated drop helper), which clang then mis-parses as a param list.
@@ -15388,7 +15635,7 @@ fn monomorphize_struct(
         .iter()
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
-    let mangled = mono_mangled_name(struct_name, &concrete_ordered);
+    let mangled = mono_mangled_name(ctx, struct_name, &concrete_ordered);
     ctx.mono_instance_args
         .entry(mangled.clone())
         .or_insert_with(|| concrete_ordered.clone());
@@ -15458,7 +15705,7 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
         .iter()
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
-    let mangled = mono_mangled_name(enum_name, &concrete_ordered);
+    let mangled = mono_mangled_name(ctx, enum_name, &concrete_ordered);
     // Mirror monomorphize_struct: register this instance's concrete type args
     // so extract_type_bindings can recover a generic fn's type param from an
     // argument whose static type is this monomorphized enum (e.g. binding V
@@ -15974,13 +16221,13 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
         .iter()
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
-    let mangled = mono_mangled_name(func_name, &concrete_ordered);
+    let mangled = mono_mangled_name(ctx, func_name, &concrete_ordered);
 
     // If already monomorphized, just return the name.
     if ctx.monomorphized.contains_key(&mangled) {
         return mangled;
     }
-    ctx.monomorphized.insert(mangled.clone(), true);
+    enter_mono_frame(ctx, func_name, &mangled);
 
     // Register the return type for the specialized function. Substitute
     // generic params recursively (handles `-> T`, `-> [T]`, `-> (A, B)`).
@@ -16031,6 +16278,7 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
     // Restore the caller's function state.
     ctx.active_generic_bindings = saved_bindings;
     ctx.restore_function_state(saved);
+    exit_mono_frame(ctx);
 
     // Store the monomorphized function for collection by lower_module.
     ctx.monomorphized_functions.push(mir_func);
@@ -16185,13 +16433,13 @@ fn monomorphize_impl_fn(
         .map(|gp| type_map.get(gp).cloned().unwrap_or(MirType::I64))
         .collect();
     let base_mangled = format!("{target}__{method}");
-    let mangled = mono_mangled_name(&base_mangled, &concrete_ordered);
+    let mangled = mono_mangled_name(ctx, &base_mangled, &concrete_ordered);
 
     // If already monomorphized, just return the name.
     if ctx.monomorphized.contains_key(&mangled) {
         return mangled;
     }
-    ctx.monomorphized.insert(mangled.clone(), true);
+    enter_mono_frame(ctx, &base_mangled, &mangled);
 
     // Register the return type for the specialized function.
     let specialized_ret = if let Some(ret_ty) = &template_ret_ty {
@@ -16259,6 +16507,7 @@ fn monomorphize_impl_fn(
     ctx.restore_function_state(saved);
     ctx.current_self_type = prev_self;
     ctx.current_impl_generics = prev_impl_generics;
+    exit_mono_frame(ctx);
 
     // Store the monomorphized function for collection by lower_module.
     ctx.monomorphized_functions.push(mir_func);

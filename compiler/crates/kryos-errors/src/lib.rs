@@ -3,6 +3,77 @@
 pub mod codes;
 pub mod explain;
 
+/// Panic payload used by a compiler pass to abort on a bounded resource
+/// limit (e.g. generic monomorphization depth/count/type-size -- see
+/// `kryos-types`'s `InferenceEngine::resolve` and `kryos-mir`'s
+/// `monomorphize`/`mono_mangled_name`, LEDGER items 19/23) instead of
+/// letting the process exhaust memory or hang unresponsive with no
+/// diagnostic. A caller that can safely recover (return an ordinary
+/// `Diagnostic` instead of propagating the panic) should use
+/// `ResourceLimitExceeded::catch`, which converts exactly this payload type
+/// into a normal `Err` and re-raises any OTHER panic unchanged.
+#[derive(Debug, Clone)]
+pub struct ResourceLimitExceeded {
+    pub message: String,
+}
+
+thread_local! {
+    /// When true, this thread's installed panic hook swallows the default
+    /// "thread '...' panicked at ..." trace for a panic in flight. Set only
+    /// for the duration of `ResourceLimitExceeded::catch`'s inner call, and
+    /// only ever consulted on the panicking thread itself (see `catch`'s
+    /// doc comment for why this can't affect any other thread).
+    static SUPPRESS_PANIC_HOOK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+static INSTALL_HOOK: std::sync::Once = std::sync::Once::new();
+
+impl ResourceLimitExceeded {
+    /// Panic with this payload, aborting the enclosing compiler pass.
+    pub fn abort(message: String) -> ! {
+        std::panic::panic_any(ResourceLimitExceeded { message })
+    }
+
+    /// Run `f`, catching a panic raised via `abort` and returning it as an
+    /// `Err` instead of letting it propagate. The default panic hook's raw
+    /// "thread '...' panicked at ..." trace is suppressed for exactly this
+    /// intentional, bounded abort, so a caller sees only the clean
+    /// diagnostic it builds from the returned message -- not a trace that
+    /// reads like an internal-compiler-error crash. Any OTHER panic is
+    /// re-raised via `resume_unwind` with its normal hook output intact;
+    /// only a panic actually raised by `abort` can ever be suppressed.
+    ///
+    /// Suppression is THREAD-LOCAL, not a global hook swap: the shared hook
+    /// installed once via `INSTALL_HOOK` consults a per-thread flag, so a
+    /// genuine, unrelated panic firing concurrently on another thread while
+    /// this call is in flight still prints normally. Reentrant (nested)
+    /// calls on the same thread save/restore the flag correctly.
+    pub fn catch<F, T>(f: F) -> Result<T, ResourceLimitExceeded>
+    where
+        F: FnOnce() -> T + std::panic::UnwindSafe,
+    {
+        INSTALL_HOOK.call_once(|| {
+            let default_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                let suppress = SUPPRESS_PANIC_HOOK.with(|c| c.get());
+                if !suppress {
+                    default_hook(info);
+                }
+            }));
+        });
+        let prev = SUPPRESS_PANIC_HOOK.with(|c| c.replace(true));
+        let result = std::panic::catch_unwind(f);
+        SUPPRESS_PANIC_HOOK.with(|c| c.set(prev));
+        match result {
+            Ok(v) => Ok(v),
+            Err(payload) => match payload.downcast::<ResourceLimitExceeded>() {
+                Ok(limit) => Err(*limit),
+                Err(other) => std::panic::resume_unwind(other),
+            },
+        }
+    }
+}
+
 /// Source location span: file_id, start byte offset, end byte offset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {

@@ -32,6 +32,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0110" => Some(E0110),
         "E0111" => Some(E0111),
         "E0112" => Some(E0112),
+        "E0113" => Some(E0113),
         "E0100" => Some(E0100),
         "E0101" => Some(E0101),
         "E0102" => Some(E0102),
@@ -83,6 +84,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0110", "type error"),
         ("E0111", "integer literal out of range for declared type"),
         ("E0112", "non-exhaustive match"),
+        ("E0113", "generic monomorphization resource limit exceeded"),
         ("E0100", "type mismatch"),
         ("E0101", "unknown type"),
         ("E0102", "undefined variable"),
@@ -696,6 +698,58 @@ Fixes:
 
 Exhaustiveness makes adding a new enum variant a compile error at every
 match that must handle it, rather than a silent fall-through at runtime.
+"#;
+
+const E0113: &str = r#"E0113: generic monomorphization resource limit exceeded
+
+The compiler bounds how much work generic monomorphization can be made to
+do, on three axes: recursive instantiation DEPTH, total distinct
+instantiation COUNT, and the structural SIZE of any one concrete type
+argument. This error fires when a program crosses one of those bounds.
+
+This is a compile-time denial-of-service guard, not an ordinary type error:
+without it, either of the two shapes below makes the compiler exhaust
+memory or hang indefinitely on a tiny source file, with no diagnostic.
+
+1. A generic that PAIRS or otherwise duplicates its own type parameter in
+   its return type, called in a chain:
+
+       fn dup<T>(x: T) -> (T, T) {
+           return (x, x)
+       }
+       let d1 = dup(x)
+       let d2 = dup(d1)   // T = (T0, T0)
+       let d3 = dup(d2)   // T = ((T0,T0),(T0,T0))  -- doubles every level
+
+   Each level's concrete type is TWICE the size of the previous one, so a
+   linear chain of calls produces an exponentially large type.
+
+2. A self-recursive generic function whose recursive call instantiates a
+   genuinely NEW, larger concrete type at every level:
+
+       fn f<T>(x: T) {
+           f(grow(x))   // grow(x) has a DIFFERENT, larger type than x
+       }
+
+   Unlike ordinary self-recursion at a single fixed type (which the
+   compiler caches and does not re-monomorphize), each level here is an
+   uncached, fresh instantiation, so the recursion is unbounded.
+
+Fixes:
+  - stop composing the generic's own result back into itself across a long
+    chain (shape 1) -- if you need a fixed-size aggregate, build it with a
+    concrete (non-doubling) type instead of `(T, T)`;
+  - bound the recursion in shape 2 to a fixed type (e.g. recurse on the
+    SAME `T`, converting/growing the VALUE without growing the TYPE), or
+    convert the recursion into an explicit loop over a homogeneous
+    collection.
+
+The limits themselves (instantiation depth, total instantiation count, and
+per-type node-count) are set far above what any legitimate generic-heavy
+program needs -- if you believe you have hit one without either of the
+above patterns, the diagnostic names the offending generic and prints the
+instantiation chain that led to the limit; that chain is the place to look
+for an unintended type-growing or count-growing loop.
 "#;
 
 // ----- E0300 ----------------------------------------------------------------

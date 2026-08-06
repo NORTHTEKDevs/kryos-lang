@@ -1,0 +1,55 @@
+// RESOURCE-DOS repro for LEDGER item 23 (termination-invariant analysis,
+// found 2026-08-05).
+//
+// Hypothesis: a genuinely self-recursive generic function whose recursive
+// call instantiates a NEW, larger concrete type at every level triggers
+// unbounded recursion through the Rust compiler's OWN `monomorphize` call
+// stack (kryos-mir/src/lower.rs) -- distinct from item 19 (an explicit
+// `dup(dup(dup(x)))` chain the programmer writes out one line at a time):
+// here the source is FIXED at a handful of lines and the blowup comes from
+// the compiler's own monomorphization loop re-entering itself once per
+// recursive call, because `f<T>`'s body always contains a call
+// `f(wrap(x))` whose argument is a FRESH, strictly larger type than `T`
+// (`Box_<T>`) -- so every level is a genuinely NEW, never-before-seen
+// mangled name, and `ctx.monomorphized`'s cache (which correctly bounds
+// ordinary same-type self-recursion, e.g. `fn f<T>(x: T) -> T { f(x) }`)
+// never gets a cache hit to stop the recursion.
+//
+// LIVE MEASUREMENT PRE-FIX (documented in tools/loop/LEDGER.md item 23,
+// termination-invariant analysis session, 2026-08-05): 3.2GB+ resident and
+// still climbing after 15s on an 8-line source file of this exact shape,
+// killed externally -- no crash, no diagnostic, no self-imposed ceiling.
+//
+// `kryos check` does NOT reach this bug (`check_file_with_options_full`
+// stops after type-check/ownership/capabilities, never calls MIR
+// lowering) -- unlike item 19, whose real blowup site turned out to be
+// `kryos-types`'s `InferenceEngine::resolve`, this one is a genuine
+// MIR-lowering-time (`kryos-mir::monomorphize`) recursion and is only
+// reached by `kryos run` / `kryos build --release`, both of which run MIR
+// lowering after type-checking succeeds (this program type-checks clean --
+// the type checker checks a generic function's body ONCE, polymorphically,
+// not once per instantiation, so there is no type-checker-side blowup to
+// find here).
+//
+// POST-FIX: `MAX_MONO_DEPTH` (kryos-mir/src/lower.rs) bounds the recursive
+// monomorphization call-stack depth at 300, well above any real generic
+// call chain and far below the multi-GB blowup -- `kryos run`/`kryos build
+// --release` on this file now fail fast with `error[E0113]` naming `f` and
+// the instantiation chain, instead of hanging/OOMing.
+
+struct Box_<T> {
+    v: T,
+}
+
+fn wrap<T>(x: T) -> Box_<T> {
+    return Box_ { v: x }
+}
+
+fn f<T>(x: T) {
+    let y = wrap(x)
+    f(y)
+}
+
+fn main() {
+    f(0)
+}
