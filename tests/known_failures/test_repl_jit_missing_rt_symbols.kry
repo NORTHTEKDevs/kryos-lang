@@ -1,0 +1,80 @@
+// `kryos test` and `kryos repl` both crash the whole process (Rust panic,
+// rc=101, NOT a clean diagnostic) on the most basic possible struct
+// literal. `kryos check`/`kryos run`/`kryos build --release` all accept
+// this file and run it correctly -- this is specific to the two
+// in-process-JIT-based commands.
+//
+// Repro:
+//   kryos test tests/known_failures/test_repl_jit_missing_rt_symbols.kry
+//
+// Observed (HEAD, kryos 0.9.0):
+//   running 1 @test function
+//
+//   thread 'kryos-main' (<pid>) panicked at
+//   .../cranelift-jit-0.116.1/src/backend.rs:345:21:
+//   can't resolve symbol kryos_calloc
+//   note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+//   rc=101
+//
+// `kryos repl` crashes identically and interactively on the same two
+// lines typed at the prompt:
+//   struct Point { x: i64 y: i64 }
+//   let p = Point { x: 1, y: 2 }
+//
+// Root cause (read, not just observed): `kryos test`/`kryos repl` both
+// build an in-process `cranelift_jit::JITBuilder` via
+// compiler/crates/kryos-codegen-cranelift/src/jit.rs, which registers a
+// hand-maintained allowlist of ~120 `kryos_*` runtime symbols (string ops,
+// map ops, ffi, a handful of named builtins). `kryos_calloc` -- the
+// allocator EVERY struct/array construction lowers to -- is not in that
+// list (grep confirms no `jit_builder.symbol("kryos_calloc", ...)` call
+// exists anywhere in the file), so cranelift-jit's own linker aborts the
+// process the moment it needs to resolve a call to it. `kryos run` does
+// not hit this: per CLAUDE.md, `kryos run` is "AOT + subprocess, not an
+// in-process JIT" -- it links a real object file against the full
+// `kryos_rt.lib` static library (every exported symbol present), then
+// executes a separate process. `kryos test`/`kryos repl` are the only two
+// user-facing commands that go through jit.rs's partial symbol table.
+//
+// Severity: struct literals are one of the most basic constructs in the
+// language (every non-trivial Kryos program uses them). This means
+// `kryos test` cannot run ANY test that constructs a struct -- not a rare
+// edge case, the common case -- and the failure mode is a raw Rust panic
+// that kills the whole test binary (rc=101), not a per-test failure
+// report; a file with N tests where only one constructs a struct loses
+// all N results, not just the offending one. Also directly contradicts
+// CLAUDE.md's own claim for `kryos test`: "Works with stdlib imports and
+// @capabilities" -- confirmed false for `std::json`, `std::csv`, and
+// `std::string::string_builder` (all crash with the same missing-symbol
+// panic; `std::math`, which has no struct/array-allocating functions,
+// does NOT crash, isolating the trigger to allocation, not imports in
+// general). A second, narrower symptom of the same underlying gap was
+// also observed: files importing `std::json` and calling `stringify`
+// fail with a JIT VERIFIER error instead of a panic (`internal error:
+// function \`__kry_pm_json__format_number\`: ... arg 0 has type f64,
+// expected i64`) -- a distinct failure shape, not yet root-caused past
+// "the same incomplete in-process JIT setup", filed here as the same
+// class rather than a separate item.
+//
+// Ruled out: `kryos check` (rc=0), `kryos run` (rc=0, prints "3"),
+// `kryos build --release` -- not re-verified this file specifically but
+// consistent with `kryos run` sharing the AOT codegen path per
+// docs/commands.md; only the in-process-JIT commands are affected.
+
+struct Point {
+    x: i64
+    y: i64
+}
+
+@test
+fn test_struct_alloc() {
+    let p: Point = Point { x: 1, y: 2 }
+    if p.x + p.y != 3 {
+        throw "bad struct"
+    }
+}
+
+fn main() {
+    let p: Point = Point { x: 1, y: 2 }
+    println(to_string(p.x + p.y))
+}
