@@ -173,6 +173,7 @@ cmd_gates() {
     run "utf8_invalid_string" bash tests/utf8_invalid_string_gate.sh
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
+    run "parser_nesting"      bash tests/parser_nesting_gate.sh
     run "selfhost_regressions" bash compiler/self-host/test_regressions.sh
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
 

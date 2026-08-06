@@ -1247,6 +1247,59 @@ fn test_nesting_guard_allows_reasonable_depth() {
     parse_ok(&chain);
 }
 
+#[test]
+fn test_nesting_guard_flat_chain_no_false_positive_near_ceiling() {
+    // Regression: the spine loop used to charge nesting budget merely for
+    // PEEKING at the next token to decide whether a flat chain continues,
+    // even when that peek found nothing to continue with (e.g. the first
+    // token of the following statement). That "look, find nothing, still
+    // pay" charge let the counter reach MAX_NESTING_DEPTH a few tokens
+    // before the chain's true, legal size, so a 2044-term `+` chain --
+    // comfortably under the 2048 ceiling -- was wrongly rejected with
+    // E0010. A 2045-term chain here must parse clean.
+    let ok_chain = format!(
+        "fn main() {{ let x = {}1\n println(to_string(x)) }}",
+        "1+".repeat(2045)
+    );
+    parse_ok(&ok_chain);
+}
+
+#[test]
+fn test_nesting_guard_diagnostic_points_at_real_site_not_next_statement() {
+    // Companion regression: when a flat chain genuinely IS too deep, the
+    // E0010 must be attributed to the offending expression itself, not to
+    // an unrelated, syntactically valid statement that merely happened to
+    // be examined by the same "is there more chain here?" lookahead that
+    // tripped the budget. Before the fix, this exact shape put the
+    // diagnostic's span on the `println` call on the second line.
+    let over_chain = format!(
+        "fn main() {{ let x = {}1\n println(to_string(x)) }}",
+        "1+".repeat(2100)
+    );
+    let println_offset = over_chain
+        .find("println")
+        .expect("test source must contain println") as u32;
+
+    let diags = parse_err(&over_chain);
+    let e0010: Vec<_> = diags
+        .iter()
+        .filter(|d| d.code.as_deref() == Some("E0010"))
+        .collect();
+    assert_eq!(e0010.len(), 1, "expected exactly one E0010, got {diags:?}");
+    let label_span = e0010[0]
+        .labels
+        .first()
+        .expect("E0010 should carry a label span")
+        .span;
+    assert!(
+        label_span.start < println_offset,
+        "E0010 span (start={}) should land inside the deep chain expression \
+         (before byte {println_offset}, where the unrelated `println` \
+         statement begins), not be misattributed to it",
+        label_span.start
+    );
+}
+
 // ======================== Newcomer-mistake diagnostics ========================
 
 #[test]

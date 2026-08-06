@@ -2032,6 +2032,50 @@ impl Parser {
             if self.at_end() {
                 break;
             }
+
+            let kind = self.peek_kind();
+            // Only needed to disambiguate `|>` / a would-be closure opener
+            // from bitwise-or infix, but computed once up front so both the
+            // will-extend check below and the infix dispatch further down
+            // can share it without re-peeking.
+            let next_kind = if kind == TokenKind::Pipe {
+                Some(self.peek_nth(1))
+            } else {
+                None
+            };
+
+            // Decide WITHOUT charging any nesting budget whether this token
+            // actually continues the chain (i.e. will build one more AST
+            // level) -- mirrors every gate below exactly. A token that does
+            // NOT continue the chain (most commonly: the first token of the
+            // NEXT statement, examined only to answer "is there more
+            // expression here?") must cost nothing. The previous code
+            // charged the budget unconditionally before making this
+            // determination, so a purely negative lookahead -- one that
+            // built no AST node at all -- could still consume the last unit
+            // of budget: a legitimately-under-the-ceiling flat chain (e.g.
+            // 2044 levels, well under MAX_NESTING_DEPTH=2048) was rejected
+            // by the final "is there more?" peek past its last operand, and
+            // the resulting E0010 diagnostic pointed at whatever unrelated
+            // token the cursor happened to be sitting on (the next
+            // statement), not at any real nesting site. Verified live via
+            // `KRYOS_DEBUG_NEST=1`: the trip fired exactly on that trailing
+            // peek, at nest_depth==MAX_NESTING_DEPTH, with the next-token
+            // span belonging to a syntactically unrelated following
+            // statement (see LEDGER item 22's investigation writeup — not a
+            // hang, this false-positive-plus-misattributed-span bug is what
+            // was actually reproducible near the ceiling).
+            let extends_chain = match kind {
+                TokenKind::Dot | TokenKind::LBracket | TokenKind::LParen | TokenKind::Question => {
+                    POSTFIX_BP >= min_bp
+                }
+                TokenKind::DotDot | TokenKind::DotDotEq => min_bp <= 1,
+                _ => infix_binding_power(kind, next_kind).is_some_and(|(l_bp, _)| l_bp >= min_bp),
+            };
+            if !extends_chain {
+                break;
+            }
+
             spine += 1;
             self.nest_depth += 1;
             if self.nest_depth >= MAX_NESTING_DEPTH {
@@ -2040,8 +2084,6 @@ impl Parser {
                 self.nesting_overflow();
                 break;
             }
-
-            let kind = self.peek_kind();
 
             // Postfix operators: `.field`, `[index]`, `(call)`
             if kind == TokenKind::Dot && POSTFIX_BP >= min_bp {
@@ -2262,12 +2304,8 @@ impl Parser {
                 continue;
             }
 
-            // Infix operators
-            let next_kind = if kind == TokenKind::Pipe {
-                Some(self.peek_nth(1))
-            } else {
-                None
-            };
+            // Infix operators (`next_kind` computed once, above, alongside
+            // the will-extend pre-check).
             if let Some((l_bp, r_bp)) = infix_binding_power(kind, next_kind) {
                 if l_bp < min_bp {
                     break;
