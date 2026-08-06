@@ -3417,3 +3417,108 @@ explicitly flagged as needing live re-verification during implementation
 (revert/rebuild/confirm-bug-reappears, restore/rebuild/confirm-gone), per
 this repo's own operational rule #6 -- nothing in the spec is claimed
 proven.
+
+## CAPABILITY-TYPED FN VALUES: STAGE 1 (core-representation) COMPLETE (2026-08-06)
+
+Implements `docs/capability-effects-spec.md` §1/§2/§4's Stage 0+1+2 scope in one
+pass: the capability set now lives IN the type (`kryos-types::Type::Function.caps:
+CapRow`), inferred automatically, no enforcement yet (behaviour-preserving by
+construction -- `kryos-capabilities`'s own checker is completely untouched).
+
+**Representation** (`kryos-types/src/ty.rs`): `CapBits` (15-variant bitset,
+mirrors `Capability` 1:1 via `CapBits::from_capability`), `CapRow` (closed bits +
+open `Vec<CapVarId>`, sorted/deduped for correct `Eq`/`Hash`). `Type::Function`
+gains `caps: CapRow`. **Deviation from the spec's "no new Cargo.toml edge"**:
+`kryos-types` now depends on `kryos-capabilities` (one-directional, no cycle) so
+gated-builtin-name lookup reuses `required_capability_for_builtin` directly
+instead of duplicating that ~80-line, actively-maintained table a second time --
+judged a smaller drift risk than the dependency edge.
+
+**Inference** (`kryos-types/src/infer.rs` + `check.rs`): `InferenceEngine` gains
+a parallel `cap_substitutions: HashMap<CapVarId, CapRow>` map, `fresh_cap_var`,
+`bind_cap_var` (union-on-rebind), `resolve_cap_row` (cycle-guarded chase),
+`instantiate_row`. **Load-bearing fix found live during this wave**:
+`instantiate_row` must `resolve_cap_row` FIRST, then only freshen vars still
+open after that -- freshening blindly (my first attempt) silently detached a
+return-position's row from its own binding the instant the enclosing function
+was referenced (`main`'s dump showed an unresolved `?C6` instead of `{fs:read}`
+for a plain `apply(make_secret_reader(..))` chain; caught by the dump itself,
+fixed, re-verified). `FunctionSig` gains `generic_cap_var_ids` (freshened per
+reference, true HOF row-polymorphism) and `own_cap_var` (bound ONCE from the
+declaration's own body-walk, never freshened directly -- see `env.rs`'s doc
+comment for why these must NOT be the same mechanism).
+
+Capability charging is NOT a separate AST walk -- it rides the EXISTING
+type-checker's own call-resolution: `Expr::FnCall`/static/module-qualified calls
+and the fn-typed-struct-field `MethodCall` arm each union the resolved callee's
+`.caps` into a per-body `cap_accum_stack` accumulator; a direct gated-builtin
+call by name unions its bit via `accumulate_builtin_call`. This is what makes
+container/alias/loop propagation automatic with ZERO bespoke tracing code: the
+row travels through `let`, struct fields, actor state, array/map/tuple elements,
+`spawn`, and curried application because those already flow through ordinary
+unification, not because each shape was special-cased.
+
+**Debug dump**: `KRYOS_DUMP_FN_EFFECTS=1` prints every declared
+function/lambda/actor-handler's final resolved row (`kryos check`/`run`/`build`,
+stderr). Verified against a corpus (`scratchpad/cap_effects_corpus/`, not
+committed) covering: lambda literal, plain named fn, HOF passthrough (open
+row var), array element, map value, tuple index, struct field, `spawn` capture,
+curried/chained application, generic stdlib HOF (`map`) -- plus, as the
+acceptance-critical evidence, BOTH live-bypass repros named in this stage's
+task brief:
+
+```
+attack_container_param_alias_defeats_hotparam.kry:
+  invoke_via_alias @ ... => {fs:read}   (let c = b; c.f() -- param alias)
+  main             @ ... => {fs:read}
+
+attack_actor_state_forloop_alias.kry:
+  Holder::invoke   @ ... => {fs:read}   (for x in [self.b] { x.f() } -- loop alias)
+  main             @ ... => {}          (correctly EMPTY: h.invoke() is an
+                                          async actor SEND, not a synchronous
+                                          call -- the charge belongs to the
+                                          handler's own entry, not main's)
+```
+
+Both privileged rows survive their respective alias/loop route with zero
+shape-specific code -- direct type-level proof the redesign's core claim holds
+for exactly the two shapes that defeated seven rounds of heuristic patching.
+
+**Gates (this wave, full evidence, not summarized-away)**:
+- `tools/loop/kryos-loop.sh gates 2`: conformance 62/62, tier1 13/13, tier2 4/4,
+  ALL GREEN, byte-identical accept/reject to pre-change baseline (nothing in
+  `kryos-capabilities` was touched, so this is expected, not merely observed).
+- `tests/security_gate.sh`: 84/84 PASS -- every existing attack/decoy/container/
+  actor-state repro still rejected identically, both modes.
+- `compiler/self-host/test_bootstrap.sh`: 16/16 PASS, alone (self-host compiler
+  --  22,893 lines of Kryos -- type-checks and AOT-compiles clean through the
+  new inference pass; this run took unusually long on this shared machine,
+  ~20+ min, re-confirmed NOT a hang by process inspection before it completed).
+- `tests/ecosystem_check.sh`: 259/259 clean.
+- `python tools/docs-examples/check.py`: 74/74 clean.
+- Full `cargo build --release` (workspace) clean, one PRE-EXISTING unrelated
+  warning (`tail_value_is_identifier` dead code in `kryos-mir`, not touched by
+  this change).
+
+**What Stage 1 deliberately does NOT cover (disclosed, not silently gapped)**:
+- No `@{...}` surface syntax yet (out of THIS stage's scope; every fn-typed
+  position is "unannotated" by construction, so every position infers).
+- Ordinary `impl`/trait method bodies get a fresh `own_cap_var` allocated but
+  UNBOUND (never wired to their own body's accumulator this wave) -- only
+  top-level functions, lambda literals, and actor handlers are. An unbound var
+  stays visibly open in the dump, never silently empty.
+- `instantiate_row`'s resolve-then-freshen fix depends on file-order
+  declaration checking; a genuine FORWARD reference (A, declared earlier,
+  calling B, declared later) can still freshen a not-yet-resolved var before
+  B's own binding lands -- same open-item class as spec §10's self-recursive-
+  HOF residual, not a new soundness claim made and broken.
+- `CapBits::contains_bits`/`CapRow::is_subset_of` are raw bitwise, NOT the
+  coarse/sub-capability lattice (`net` ⊇ `net:http`, etc.) -- explicitly marked
+  not-enforcement-ready in their own doc comments; nothing calls them yet.
+
+No enforcement changed. No accept/reject decision changed anywhere in the
+corpus this wave touched, by construction (the old checker is unmodified) and
+by measurement (all gates above). Next stage (per the spec's Stage 3) is the
+dual-run differential harness comparing this inference against the old
+checker's charge, call-site by call-site, before either mechanism gets
+enforcement authority.

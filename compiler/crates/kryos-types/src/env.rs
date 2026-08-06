@@ -5,7 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::ty::Type;
+use crate::ty::{CapVarId, Type};
 
 /// Information about a struct definition.
 #[derive(Debug, Clone)]
@@ -38,6 +38,30 @@ pub struct FunctionSig {
     /// Used to instantiate fresh type variables at each call site
     /// so that generic functions monomorphize correctly.
     pub generic_var_ids: Vec<u32>,
+    /// Capability-row variable IDs for every UNANNOTATED fn-typed parameter
+    /// or return position in this declaration's OWN signature (not counting
+    /// row vars nested further inside a called/returned function's own
+    /// signature). Populated independently of `generic_var_ids` — a
+    /// type-monomorphic HOF (`fn apply(f: fn()->str) -> str`) gets a fresh
+    /// row var here even with `generic_var_ids` empty, per
+    /// `docs/capability-effects-spec.md` §2.3's generalization rule (the
+    /// annotation-burden win over tying row-var creation to `<T, U>`).
+    /// Freshened at each call site by `InferenceEngine::instantiate_sig`,
+    /// exactly like `generic_var_ids`.
+    pub generic_cap_var_ids: Vec<CapVarId>,
+    /// A SEPARATE capability-row var representing this declaration's OWN
+    /// total inferred capability requirement (the union of its direct
+    /// gated-builtin calls plus the rows of everything it calls,
+    /// including — for a HOF — its own `generic_cap_var_ids` entries).
+    /// Bound exactly once, by `check_decl`, after the declaration's body
+    /// has been walked; every REFERENCE to this function as a value reads
+    /// it (freshening any `generic_cap_var_ids` it happens to mention,
+    /// via `InferenceEngine::instantiate_row`) rather than the raw
+    /// template value, so two different call sites of a row-polymorphic
+    /// HOF never share a binding. Deliberately NOT itself a member of
+    /// `generic_cap_var_ids` — see `check.rs`'s `Expr::Identifier` arm for
+    /// the resolve-then-instantiate sequencing this requires.
+    pub own_cap_var: CapVarId,
     pub params: Vec<(String, Type)>,
     pub ret: Type,
 }

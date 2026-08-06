@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use kryos_errors::{Diagnostic, Span};
 
-use crate::ty::Type;
+use crate::ty::{CapRow, CapVarId, Type};
 
 /// Maximum type-tree node count `InferenceEngine::resolve` will build for a
 /// single call before aborting (LEDGER item 19 -- see `resolve`'s doc
@@ -87,6 +87,21 @@ pub struct InferenceEngine {
     /// used to type-check clean and die at link time (unresolved trait
     /// method symbol) or at runtime (backlog #89).
     var_bounds: HashMap<u32, Vec<String>>,
+    /// Next fresh capability-row variable id. A SEPARATE numbering space
+    /// from `next_var` (ordinary type vars) — a `CapVarId` is never an
+    /// index into `substitutions`, only into `cap_substitutions`, so the
+    /// two spaces are allowed to collide numerically without ambiguity
+    /// (each is only ever looked up in its own map). Kept separate (rather
+    /// than sharing `next_var`) so capability-row inference can be disabled
+    /// without perturbing ordinary type-variable numbering anywhere a test
+    /// or diagnostic hardcodes a `?T<n>` id.
+    next_cap_var: CapVarId,
+    /// Substitution map for capability-row variables: `CapVarId` → resolved
+    /// `CapRow` (which may itself still contain other, still-open vars —
+    /// chased transitively by `resolve_cap_row`, mirroring `resolve`'s
+    /// handling of `substitutions`). See
+    /// `docs/capability-effects-spec.md` §2.3.
+    cap_substitutions: HashMap<CapVarId, CapRow>,
 }
 
 impl Default for InferenceEngine {
@@ -102,7 +117,110 @@ impl InferenceEngine {
             substitutions: HashMap::new(),
             trait_impls: std::collections::HashSet::new(),
             var_bounds: HashMap::new(),
+            next_cap_var: 0,
+            cap_substitutions: HashMap::new(),
         }
+    }
+
+    /// Generate a fresh, unresolved capability-row variable id.
+    pub fn fresh_cap_var(&mut self) -> CapVarId {
+        let id = self.next_cap_var;
+        self.next_cap_var += 1;
+        id
+    }
+
+    /// Bind a capability-row variable to a row (used both by ordinary
+    /// unification, invariant to it, and by whatever populates a function's
+    /// OWN inferred row once its body has been walked).
+    pub fn bind_cap_var(&mut self, id: CapVarId, row: CapRow) {
+        // A var already bound is UNIONED with the new row rather than
+        // overwritten -- mirrors CapRow::union's "more information can only
+        // widen, never shrink" direction, and avoids a last-write-wins bug
+        // if the same var is bound from two different call sites (e.g. a
+        // recursive function whose own row-var is touched more than once
+        // while its body is walked).
+        let merged = match self.cap_substitutions.get(&id) {
+            Some(existing) => existing.union(&row),
+            None => row,
+        };
+        self.cap_substitutions.insert(id, merged);
+    }
+
+    /// Resolve a `CapRow`, recursively chasing every var in it through
+    /// `cap_substitutions` to a fixed point (bounded by the number of
+    /// distinct vars seen, so a genuine cycle -- e.g. an unresolved
+    /// self-recursive row-polymorphic HOF, spec §10 -- terminates instead
+    /// of looping forever; the unresolved var is left in the result rather
+    /// than guessed at, matching this codebase's fail-closed-by-leaving-
+    /// unresolved discipline elsewhere).
+    pub fn resolve_cap_row(&self, row: &CapRow) -> CapRow {
+        let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        self.resolve_cap_row_inner(row, &mut seen)
+    }
+
+    fn resolve_cap_row_inner(
+        &self,
+        row: &CapRow,
+        seen: &mut std::collections::HashSet<CapVarId>,
+    ) -> CapRow {
+        row.with_vars_replaced(|v| {
+            if !seen.insert(v) {
+                // Cycle guard: already expanding this var higher up the
+                // chase -- stop here rather than recursing forever; leave
+                // it open (still a var), never silently drop it.
+                return None;
+            }
+            let next = self.cap_substitutions.get(&v).cloned();
+            let resolved = next.map(|r| self.resolve_cap_row_inner(&r, seen));
+            seen.remove(&v);
+            resolved
+        })
+    }
+
+    /// Remap `row` through `cap_var_map`, then freshen ONLY whatever is
+    /// still an unresolved var after that.
+    ///
+    /// Critical ordering, worth stating precisely: this RESOLVES `row`
+    /// first (chases `cap_substitutions` to current knowledge), and only
+    /// then remaps any var STILL open. A capability-row var populated by
+    /// `resolve_type_expr` on an unannotated fn-typed position is
+    /// ambiguous at creation time between two different roles that only
+    /// resolve once the declaration's OWN body has been walked:
+    ///
+    /// - a position whose value is a FIXED FACT the body determines on its
+    ///   own (e.g. a return position built from a closure the body
+    ///   constructs internally, independent of any argument) -- this
+    ///   var gets bound to a CLOSED row during the declaration's own
+    ///   `check_decl` pass, and every reference must see that SAME closed
+    ///   value, never a fresh unbound copy (freshening it would silently
+    ///   detach the reference from the binding and leave it permanently
+    ///   unresolved -- the bug this ordering exists to prevent);
+    /// - a position that genuinely VARIES per call site because its value
+    ///   is DERIVED FROM one of the declaration's OWN fn-typed parameters
+    ///   (a real HOF, spec §4) -- this var is NEVER bound to anything
+    ///   closed during the declaration's own body-check (its charge stays
+    ///   expressed in terms of the parameter's own row var), so resolving
+    ///   it here is a no-op and freshening is correct.
+    ///
+    /// Resolving first is what tells the two apart: nothing else about a
+    /// `TypeExpr::Function` occurrence at creation time distinguishes them.
+    /// Known ordering residual (disclosed, not silently assumed away): this
+    /// depends on the referenced declaration's OWN body having already been
+    /// walked by the time this call site is checked. `check_decl` processes
+    /// declarations in file order, so a genuine FORWARD reference (a
+    /// function calling another one declared LATER in the same file) can
+    /// still observe an unresolved var here and freshen it before the
+    /// later declaration's own binding lands -- the same open-item class as
+    /// spec §10's self-recursive-HOF residual, not a new soundness claim
+    /// this stage makes and fails to keep.
+    pub fn instantiate_row(&self, row: &CapRow, cap_var_map: &HashMap<CapVarId, CapVarId>) -> CapRow {
+        let resolved = self.resolve_cap_row(row);
+        let mut out = CapRow::closed(resolved.concrete_bits());
+        for &v in resolved.var_ids() {
+            let mapped = cap_var_map.get(&v).copied().unwrap_or(v);
+            out = out.union(&CapRow::var(mapped));
+        }
+        out
     }
 
     /// Attach trait bounds to a (fresh, call-site) generic type variable.
@@ -284,7 +402,7 @@ impl InferenceEngine {
                     generics: out,
                 }
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, caps } => {
                 let mut out = Vec::with_capacity(params.len());
                 for p in params {
                     out.push(self.resolve_bounded(p, budget)?);
@@ -292,6 +410,12 @@ impl InferenceEngine {
                 Type::Function {
                     params: out,
                     ret: Box::new(self.resolve_bounded(ret, budget)?),
+                    // Capability rows are chased separately (own cycle
+                    // guard in `resolve_cap_row`), not charged against the
+                    // node budget above -- a row is bounded by its own
+                    // (small, finite) var count, never structurally
+                    // recursive the way a paired generic type can be.
+                    caps: self.resolve_cap_row(caps),
                 }
             }
             Type::Reference { inner, mutable } => Type::Reference {
@@ -505,10 +629,12 @@ impl InferenceEngine {
                 Type::Function {
                     params: p1,
                     ret: r1,
+                    caps: c1,
                 },
                 Type::Function {
                     params: p2,
                     ret: r2,
+                    caps: c2,
                 },
             ) => {
                 let is_opaque = |params: &Vec<Type>, ret: &Box<Type>| -> bool {
@@ -517,6 +643,9 @@ impl InferenceEngine {
                         && matches!(ret.as_ref(), Type::Error)
                 };
                 if is_opaque(p1, r1) || is_opaque(p2, r2) {
+                    // Opaque `fn` unifies with anything, capability row
+                    // included -- an opaque callable's own row is never
+                    // meaningful, so there is nothing to bind here.
                     return Ok(());
                 }
                 if p1.len() != p2.len() {
@@ -530,7 +659,38 @@ impl InferenceEngine {
                 for (t1, t2) in p1.iter().zip(p2.iter()) {
                     self.unify(t1, t2, span)?;
                 }
-                self.unify(r1, r2, span)
+                self.unify(r1, r2, span)?;
+                // Capability-row unification (spec §2.3): never a hard
+                // error -- accept/reject for a function TYPE is decided
+                // entirely by params/ret above (Stage 1 adds no new
+                // rejection). A bare row var on either side binds to the
+                // other side's row (mirroring the ordinary `Type::Var`
+                // arms above); two closed rows UNION rather than requiring
+                // exact equality, which is intentionally MORE permissive
+                // than a naive equality check would be (spec §8's
+                // documented compatibility note: mixing two closed-row
+                // closures, e.g. in an array literal, must still unify).
+                match (c1.is_closed(), c2.is_closed()) {
+                    (false, _) => {
+                        for &v in c1.var_ids() {
+                            self.bind_cap_var(v, c2.clone());
+                        }
+                    }
+                    (true, false) => {
+                        for &v in c2.var_ids() {
+                            self.bind_cap_var(v, c1.clone());
+                        }
+                    }
+                    (true, true) => {
+                        // Both closed: nothing to bind, nothing to reject --
+                        // the union is implicit at every read site via
+                        // `resolve_cap_row`/`CapRow::union` wherever the two
+                        // flow together (e.g. an array literal's element
+                        // type is unioned explicitly by its own checker
+                        // code, not by this arm).
+                    }
+                }
+                Ok(())
             }
 
             // Reference: mutability and inner type must match.
@@ -645,7 +805,7 @@ impl InferenceEngine {
             Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
                 generics.iter().any(|g| self.occurs_in(id, g))
             }
-            Type::Function { params, ret } => {
+            Type::Function { params, ret, .. } => {
                 params.iter().any(|p| self.occurs_in(id, p)) || self.occurs_in(id, ret)
             }
             Type::Reference { inner, .. }
@@ -681,7 +841,28 @@ impl InferenceEngine {
     /// type and replace any `Var(old_id)` with `Var(new_id)`. This is used
     /// to create fresh copies of generic function signatures at each call site
     /// so that unification at one call doesn't pollute another.
+    ///
+    /// Capability-row variables nested inside `ty` are left UNCHANGED by
+    /// this entry point (empty `cap_var_map`) — every existing caller of
+    /// `instantiate` predates capability-row polymorphism and instantiates
+    /// ordinary struct/enum generics where no row-variable freshening is
+    /// needed. `instantiate_sig` (the one place row-variable freshening
+    /// actually matters, spec §2.3) calls `instantiate_with_caps` directly
+    /// with a real `cap_var_map` instead.
     pub fn instantiate(&self, ty: &Type, var_map: &HashMap<u32, u32>) -> Type {
+        self.instantiate_with_caps(ty, var_map, &HashMap::new())
+    }
+
+    /// Same as `instantiate`, but also remaps any `CapVarId` found inside a
+    /// nested `Type::Function`'s `caps` row through `cap_var_map` (mirrors
+    /// `var_map`'s treatment of ordinary `Type::Var`). See
+    /// `docs/capability-effects-spec.md` §2.3.
+    pub fn instantiate_with_caps(
+        &self,
+        ty: &Type,
+        var_map: &HashMap<u32, u32>,
+        cap_var_map: &HashMap<CapVarId, CapVarId>,
+    ) -> Type {
         match ty {
             Type::Var(id) => {
                 if let Some(&new_id) = var_map.get(id) {
@@ -691,62 +872,63 @@ impl InferenceEngine {
                 }
             }
             Type::Array { element, size } => Type::Array {
-                element: Box::new(self.instantiate(element, var_map)),
+                element: Box::new(self.instantiate_with_caps(element, var_map, cap_var_map)),
                 size: *size,
             },
             Type::Tuple { elements } => Type::Tuple {
                 elements: elements
                     .iter()
-                    .map(|e| self.instantiate(e, var_map))
+                    .map(|e| self.instantiate_with_caps(e, var_map, cap_var_map))
                     .collect(),
             },
             Type::Map { key, value } => Type::Map {
-                key: Box::new(self.instantiate(key, var_map)),
-                value: Box::new(self.instantiate(value, var_map)),
+                key: Box::new(self.instantiate_with_caps(key, var_map, cap_var_map)),
+                value: Box::new(self.instantiate_with_caps(value, var_map, cap_var_map)),
             },
             Type::Set { element } => Type::Set {
-                element: Box::new(self.instantiate(element, var_map)),
+                element: Box::new(self.instantiate_with_caps(element, var_map, cap_var_map)),
             },
             Type::Option { inner } => Type::Option {
-                inner: Box::new(self.instantiate(inner, var_map)),
+                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
             },
             Type::Result { ok, err } => Type::Result {
-                ok: Box::new(self.instantiate(ok, var_map)),
-                err: Box::new(self.instantiate(err, var_map)),
+                ok: Box::new(self.instantiate_with_caps(ok, var_map, cap_var_map)),
+                err: Box::new(self.instantiate_with_caps(err, var_map, cap_var_map)),
             },
             Type::Struct { name, generics } => Type::Struct {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.instantiate(g, var_map))
+                    .map(|g| self.instantiate_with_caps(g, var_map, cap_var_map))
                     .collect(),
             },
             Type::Enum { name, generics } => Type::Enum {
                 name: name.clone(),
                 generics: generics
                     .iter()
-                    .map(|g| self.instantiate(g, var_map))
+                    .map(|g| self.instantiate_with_caps(g, var_map, cap_var_map))
                     .collect(),
             },
-            Type::Function { params, ret } => Type::Function {
+            Type::Function { params, ret, caps } => Type::Function {
                 params: params
                     .iter()
-                    .map(|p| self.instantiate(p, var_map))
+                    .map(|p| self.instantiate_with_caps(p, var_map, cap_var_map))
                     .collect(),
-                ret: Box::new(self.instantiate(ret, var_map)),
+                ret: Box::new(self.instantiate_with_caps(ret, var_map, cap_var_map)),
+                caps: self.instantiate_row(caps, cap_var_map),
             },
             Type::Reference { inner, mutable } => Type::Reference {
-                inner: Box::new(self.instantiate(inner, var_map)),
+                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
                 mutable: *mutable,
             },
             Type::Shared { inner } => Type::Shared {
-                inner: Box::new(self.instantiate(inner, var_map)),
+                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
             },
             Type::Weak { inner } => Type::Weak {
-                inner: Box::new(self.instantiate(inner, var_map)),
+                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
             },
             Type::Pointer { inner, mutable } => Type::Pointer {
-                inner: Box::new(self.instantiate(inner, var_map)),
+                inner: Box::new(self.instantiate_with_caps(inner, var_map, cap_var_map)),
                 mutable: *mutable,
             },
             // Primitives, Error, Never, DynTrait, etc. pass through unchanged.
@@ -759,14 +941,27 @@ impl InferenceEngine {
     ///
     /// For each generic type parameter's original var ID, a new fresh var is
     /// allocated, and all occurrences in the param/ret types are replaced.
+    /// Also freshens every `generic_cap_var_ids` entry the SAME way (spec
+    /// §2.3/§4): a row-polymorphic HOF's callback-parameter row gets a
+    /// fresh `CapVarId` at each call site, exactly like `T`/`U`, so
+    /// unifying THIS call's actual argument only binds THIS call's copy of
+    /// the row var, never polluting another call site (mirrors why
+    /// ordinary generic vars are freshened at all -- ADR already proven
+    /// sound for `T`/`U`, applied one field over).
+    /// Returns `(params, ret, var_map, cap_var_map)` -- `cap_var_map` is the
+    /// freshening this call site applied to `sig.generic_cap_var_ids`,
+    /// returned so the caller can ALSO remap `sig.own_cap_var`'s resolved
+    /// row through it (see `check.rs`'s `Expr::Identifier` arm) -- `
+    /// own_cap_var` itself is deliberately not a member of
+    /// `generic_cap_var_ids`, so it is not freshened directly here.
     pub fn instantiate_sig(
         &mut self,
         sig: &crate::env::FunctionSig,
-    ) -> (Vec<Type>, Type, HashMap<u32, u32>) {
-        if sig.generic_var_ids.is_empty() {
+    ) -> (Vec<Type>, Type, HashMap<u32, u32>, HashMap<CapVarId, CapVarId>) {
+        if sig.generic_var_ids.is_empty() && sig.generic_cap_var_ids.is_empty() {
             // Non-generic function — no instantiation needed.
             let params = sig.params.iter().map(|(_, t)| t.clone()).collect();
-            return (params, sig.ret.clone(), HashMap::new());
+            return (params, sig.ret.clone(), HashMap::new(), HashMap::new());
         }
 
         // Build old_id → new_id mapping.
@@ -778,14 +973,21 @@ impl InferenceEngine {
             }
         }
 
+        // Same freshening for the declaration's own capability-row
+        // variables (unannotated fn-typed param/return positions).
+        let mut cap_var_map: HashMap<CapVarId, CapVarId> = HashMap::new();
+        for &old_id in &sig.generic_cap_var_ids {
+            cap_var_map.insert(old_id, self.fresh_cap_var());
+        }
+
         let params = sig
             .params
             .iter()
-            .map(|(_, t)| self.instantiate(t, &var_map))
+            .map(|(_, t)| self.instantiate_with_caps(t, &var_map, &cap_var_map))
             .collect();
-        let ret = self.instantiate(&sig.ret, &var_map);
+        let ret = self.instantiate_with_caps(&sig.ret, &var_map, &cap_var_map);
 
-        (params, ret, var_map)
+        (params, ret, var_map, cap_var_map)
     }
 
     /// Get the current substitution map (for debugging/testing).

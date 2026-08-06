@@ -128,6 +128,50 @@ pub struct TypeChecker {
     /// mismatched array literal passed to a DIFFERENT opaque-typed param
     /// keeps both diagnostics.
     dyn_container_reject_params: std::collections::HashSet<(String, usize)>,
+
+    // ── Capability-typed fn values (Stage 1: representation + inference,
+    // no enforcement -- docs/capability-effects-spec.md) ──────────────
+    /// Fresh capability-row variable ids collected while resolving a
+    /// SINGLE declaration's own signature (`resolve_type_expr` pushes one
+    /// entry per `TypeExpr::Function` it resolves, top-level or nested
+    /// inside a container/generic arg). Drained by the caller right after
+    /// signature resolution into that declaration's `FunctionSig::
+    /// generic_cap_var_ids`. Left un-drained (and simply ignored) for
+    /// non-declaration resolutions (e.g. a struct field's own type, a
+    /// `let` annotation) -- harmless, since nothing else reads this field.
+    pending_cap_var_ids: Vec<crate::ty::CapVarId>,
+    /// One entry per function/lambda body CURRENTLY being checked (a
+    /// stack because bodies nest: a lambda literal inside a function
+    /// body inside another lambda...). Every gated-builtin call and every
+    /// call through a resolved `Type::Function` value unions its
+    /// `caps`/required bits into `.last_mut()`. Popped and used to
+    /// finalize that body's own inferred row when the body finishes.
+    cap_accum_stack: Vec<crate::ty::CapRow>,
+    /// `KRYOS_DUMP_FN_EFFECTS=1` debug dump, read once at construction.
+    /// When set, every declared function and lambda literal's FINAL
+    /// (fully `resolve_cap_row`-resolved) capability row is recorded here
+    /// as it finishes checking, and `kryos-driver` prints it after the
+    /// whole module is checked -- ground truth for verifying the
+    /// inference against, per this stage's acceptance criteria.
+    dump_fn_effects: bool,
+    /// `(label, span, row)` entries recorded when `dump_fn_effects` is on.
+    /// `row` is recorded RAW (not yet `resolve_cap_row`-resolved) since
+    /// more bindings can still land after this entry is pushed (e.g. an
+    /// earlier function referencing a later one); the actual dump output
+    /// resolves each entry's row once, at the very end of the whole
+    /// module (see `TypeChecker::dump_fn_effects_report`).
+    pub cap_effects_log: Vec<(String, Span, crate::ty::CapRow)>,
+    /// One shared, permanently-empty-bound capability-row var used as
+    /// EVERY compiler-builtin `FunctionSig`'s `own_cap_var`. A builtin
+    /// referenced as a first-class value therefore always displays `{}`
+    /// via this field -- the REAL gated-capability charge for a builtin
+    /// CALL is applied separately, by name, at the call site
+    /// (`accumulate_builtin_call`, reusing `kryos_capabilities::model::
+    /// required_capability_for_builtin` directly) rather than by encoding
+    /// per-builtin capability info into all ~200 registrations below,
+    /// which would duplicate that table's maintenance burden a second
+    /// time in this crate.
+    builtin_cap_var: crate::ty::CapVarId,
 }
 
 impl Default for TypeChecker {
@@ -138,9 +182,12 @@ impl Default for TypeChecker {
 
 impl TypeChecker {
     pub fn new() -> Self {
+        let mut engine = InferenceEngine::new();
+        let builtin_cap_var = engine.fresh_cap_var();
+        engine.bind_cap_var(builtin_cap_var, crate::ty::CapRow::empty());
         Self {
             env: TypeEnv::new(),
-            engine: InferenceEngine::new(),
+            engine,
             diagnostics: Vec::new(),
             current_return_type: None,
             current_function_name: None,
@@ -160,7 +207,69 @@ impl TypeChecker {
             pattern_dup_seen: None,
             suppress_array_elem_unify: std::collections::HashSet::new(),
             dyn_container_reject_params: std::collections::HashSet::new(),
+            pending_cap_var_ids: Vec::new(),
+            cap_accum_stack: Vec::new(),
+            dump_fn_effects: std::env::var("KRYOS_DUMP_FN_EFFECTS")
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
+            cap_effects_log: Vec::new(),
+            builtin_cap_var,
         }
+    }
+
+    /// Union `row` into the capability accumulator for whichever
+    /// function/lambda body is currently being checked (no-op if nothing
+    /// is on the stack -- e.g. a call made while resolving a top-level
+    /// `let mut` initializer outside any function body). See the "single
+    /// enforcement rule" write-up in `docs/capability-effects-spec.md` §6:
+    /// this is the ONE place authority a value carries gets folded into
+    /// its caller's own requirement, driven entirely by the callee's
+    /// TYPE -- never by re-deriving provenance from the call's syntax.
+    fn accumulate_caps(&mut self, row: &crate::ty::CapRow) {
+        if let Some(top) = self.cap_accum_stack.last_mut() {
+            *top = top.union(row);
+        }
+    }
+
+    /// Union a single gated-builtin/extern capability bit, by NAME, into
+    /// the current accumulator. Reuses `kryos_capabilities::model`'s
+    /// builtin-name table directly (this crate depends on
+    /// `kryos-capabilities` for exactly this bridge -- see `ty.rs`'s
+    /// `CapBits::from_capability` doc comment) rather than duplicating an
+    /// ~80-line, actively-maintained table a second time.
+    fn accumulate_builtin_call(&mut self, name: &str) {
+        if let Some(cap) = kryos_capabilities::model::required_capability_for_builtin(name) {
+            let bits = crate::ty::CapBits::from_capability(cap);
+            if let Some(top) = self.cap_accum_stack.last_mut() {
+                *top = top.union_bits(bits);
+            }
+        }
+    }
+
+    /// Record a fn-typed binding's row for the `KRYOS_DUMP_FN_EFFECTS`
+    /// debug dump. `row` is stored as given (may still contain open vars
+    /// resolved only once the WHOLE module finishes checking); resolution
+    /// happens in `dump_fn_effects_report`, called once at the very end.
+    fn log_fn_effect(&mut self, label: impl Into<String>, span: Span, row: crate::ty::CapRow) {
+        if self.dump_fn_effects {
+            self.cap_effects_log.push((label.into(), span, row));
+        }
+    }
+
+    /// Render the final (fully resolved) capability row for every logged
+    /// fn-typed binding, one line per entry, in recording order. Called
+    /// once by `kryos-driver` after the whole module (register_decl +
+    /// check_decl for every declaration) has finished checking, so every
+    /// forward reference has had a chance to resolve.
+    pub fn dump_fn_effects_report(&self) -> String {
+        let mut out = String::new();
+        for (label, span, row) in &self.cap_effects_log {
+            let resolved = self.engine.resolve_cap_row(row);
+            out.push_str(&format!(
+                "{label} @ {}:{} => {}\n",
+                span.start, span.end, resolved.display()
+            ));
+        }
+        out
     }
 
     /// Reject duplicate names in a parameter list. Params are stored
@@ -233,7 +342,7 @@ impl TypeChecker {
         {
             if let Some(ref expected) = self.current_return_type {
                 let resolved = self.engine.resolve(expected);
-                if let Type::Function { params: eps, ret: er } = &resolved {
+                if let Type::Function { params: eps, ret: er, .. } = &resolved {
                     if eps.len() == lparams.len() {
                         self.lambda_expected_types
                             .insert(*lspan, (eps.clone(), (**er).clone()));
@@ -608,10 +717,24 @@ impl TypeChecker {
                 params,
                 ret,
                 span: _,
-            } => Type::Function {
-                params: params.iter().map(|p| self.resolve_type_expr(p)).collect(),
-                ret: Box::new(self.resolve_type_expr(ret)),
-            },
+            } => {
+                // No `@{...}` surface syntax yet (Stage 1: representation +
+                // inference only) -- every fn-typed position is therefore
+                // "unannotated" by construction, and gets a fresh
+                // capability-row variable per spec §2.3/§2.4. Collected
+                // into `pending_cap_var_ids` so the caller resolving a
+                // DECLARATION's own signature (register_decl) can drain it
+                // into that declaration's `generic_cap_var_ids`; harmless
+                // (simply unused) for any other resolution context (a
+                // struct field, a `let` annotation, ...).
+                let cap_var = self.engine.fresh_cap_var();
+                self.pending_cap_var_ids.push(cap_var);
+                Type::Function {
+                    params: params.iter().map(|p| self.resolve_type_expr(p)).collect(),
+                    ret: Box::new(self.resolve_type_expr(ret)),
+                    caps: crate::ty::CapRow::var(cap_var),
+                }
+            }
             TypeExpr::Optional { inner, span: _ } => Type::Option {
                 inner: Box::new(self.resolve_type_expr(inner)),
             },
@@ -1040,6 +1163,12 @@ impl TypeChecker {
                     }
                 }
 
+                // Capability-row inference (Stage 1): every unannotated
+                // fn-typed param/return position resolved below gets a
+                // fresh row var (`resolve_type_expr`'s `TypeExpr::Function`
+                // arm), collected into `pending_cap_var_ids`. Clear first
+                // so only THIS declaration's own positions are drained.
+                self.pending_cap_var_ids.clear();
                 let param_types: Vec<(String, Type)> = params
                     .iter()
                     .enumerate()
@@ -1077,10 +1206,17 @@ impl TypeChecker {
                     self.env.pop_scope();
                 }
 
+                let generic_cap_var_ids = std::mem::take(&mut self.pending_cap_var_ids);
+                // This declaration's OWN total capability requirement --
+                // bound once the body is actually walked (`check_decl`);
+                // see `FunctionSig::own_cap_var`'s doc comment.
+                let own_cap_var = self.engine.fresh_cap_var();
                 let sig = FunctionSig {
                     name: name.clone(),
                     generic_params: generics.iter().map(|g| g.name.clone()).collect(),
                     generic_var_ids,
+                    generic_cap_var_ids,
+                    own_cap_var,
                     params: param_types,
                     ret,
                 };
@@ -1312,6 +1448,7 @@ impl TypeChecker {
                             ..
                         } = m
                         {
+                            self.pending_cap_var_ids.clear();
                             let param_types: Vec<(String, Type)> = params
                                 .iter()
                                 .map(|p| {
@@ -1332,6 +1469,19 @@ impl TypeChecker {
                                 .as_ref()
                                 .map(|t| self.resolve_type_expr(t))
                                 .unwrap_or(Type::Void);
+                            // NOTE (Stage 1 scope): impl-method own_cap_var is
+                            // allocated fresh but left UNBOUND here -- a
+                            // method's body-accumulated row is not wired
+                            // back into it in this stage (only top-level
+                            // functions, lambdas, and actor handlers are).
+                            // An unbound var resolves to itself (stays
+                            // open) in the debug dump, never to a silently
+                            // wrong empty set -- a disclosed limitation,
+                            // not a soundness gap, since nothing enforces
+                            // on this yet.
+                            let method_generic_cap_var_ids =
+                                std::mem::take(&mut self.pending_cap_var_ids);
+                            let method_own_cap_var = self.engine.fresh_cap_var();
                             Some(FunctionSig {
                                 name: name.clone(),
                                 generic_params: generics.iter().map(|g| g.name.clone()).collect(),
@@ -1340,6 +1490,8 @@ impl TypeChecker {
                                 // var contamination). Vars the method does not
                                 // mention are a no-op during instantiation.
                                 generic_var_ids: impl_generic_var_ids.clone(),
+                                generic_cap_var_ids: method_generic_cap_var_ids,
+                                own_cap_var: method_own_cap_var,
                                 params: param_types,
                                 ret,
                             })
@@ -1402,6 +1554,13 @@ impl TypeChecker {
                                     name: trait_method.name.clone(),
                                     generic_params: trait_method.generic_params.clone(),
                                     generic_var_ids: trait_method.generic_var_ids.clone(),
+                                    // Inherits the trait's own (unbound --
+                                    // see the impl-method site above)
+                                    // capability-row vars verbatim; a
+                                    // default method's body is the TRAIT's
+                                    // body, not re-walked per impl.
+                                    generic_cap_var_ids: trait_method.generic_cap_var_ids.clone(),
+                                    own_cap_var: trait_method.own_cap_var,
                                     params: rewritten_params,
                                     ret: trait_method.ret.clone(),
                                 };
@@ -1512,6 +1671,7 @@ impl TypeChecker {
                             ..
                         } = m
                         {
+                            self.pending_cap_var_ids.clear();
                             let param_types: Vec<(String, Type)> = params
                                 .iter()
                                 .map(|p| {
@@ -1526,10 +1686,17 @@ impl TypeChecker {
                                 .as_ref()
                                 .map(|t| self.resolve_type_expr(t))
                                 .unwrap_or(Type::Void);
+                            let trait_method_generic_cap_var_ids =
+                                std::mem::take(&mut self.pending_cap_var_ids);
                             Some(FunctionSig {
                                 name: name.clone(),
                                 generic_params: generics.iter().map(|g| g.name.clone()).collect(),
                                 generic_var_ids: vec![],
+                                generic_cap_var_ids: trait_method_generic_cap_var_ids,
+                                // A trait method DECLARATION (no body here --
+                                // bodies live in each `impl`) has no
+                                // meaningful own-row to bind; fresh + unbound.
+                                own_cap_var: self.engine.fresh_cap_var(),
                                 params: param_types,
                                 ret,
                             })
@@ -1687,10 +1854,17 @@ impl TypeChecker {
                     generics: vec![],
                 };
                 // `Counter()` -- zero-arg constructor spawning the actor.
+                // Constructing (not yet invoking any handler) requires no
+                // authority of its own -- bind its own_cap_var to empty
+                // immediately rather than leaving it open.
+                let ctor_cap_var = self.engine.fresh_cap_var();
+                self.engine.bind_cap_var(ctor_cap_var, crate::ty::CapRow::empty());
                 self.env.define_function(FunctionSig {
                     name: name.clone(),
                     generic_params: vec![],
                     generic_var_ids: vec![],
+                    generic_cap_var_ids: vec![],
+                    own_cap_var: ctor_cap_var,
                     params: vec![],
                     ret: actor_ty.clone(),
                 });
@@ -1735,6 +1909,12 @@ impl TypeChecker {
                             name: h.name.clone(),
                             generic_params: vec![],
                             generic_var_ids: vec![],
+                            generic_cap_var_ids: vec![],
+                            // Bound for real once the handler BODY is walked
+                            // -- see the `Decl::Actor` arm of `check_decl`,
+                            // which looks this same var back up via
+                            // `lookup_method` and binds it there.
+                            own_cap_var: self.engine.fresh_cap_var(),
                             params,
                             ret: Type::Void,
                         }
@@ -1936,7 +2116,13 @@ impl TypeChecker {
 
                 self.current_function_name = Some(name.clone());
                 self.seed_tail_lambda_expected(body);
+                self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
+                let fn_caps = self.cap_accum_stack.pop().unwrap_or_default();
+                if let Some(own_var) = sig.as_ref().map(|s| s.own_cap_var) {
+                    self.engine.bind_cap_var(own_var, fn_caps.clone());
+                    self.log_fn_effect(name.clone(), *span, crate::ty::CapRow::var(own_var));
+                }
                 self.current_function_name = None;
 
                 // Check for missing return in non-void functions.
@@ -2019,7 +2205,21 @@ impl TypeChecker {
                     );
                     let prev_fn = self.current_function_name.take();
                     self.current_function_name = Some(h.name.clone());
+                    self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
+                    let handler_caps = self.cap_accum_stack.pop().unwrap_or_default();
+                    if let Some(own_var) = self
+                        .env
+                        .lookup_method(name, &h.name)
+                        .map(|sig| sig.own_cap_var)
+                    {
+                        self.engine.bind_cap_var(own_var, handler_caps.clone());
+                        self.log_fn_effect(
+                            format!("{name}::{}", h.name),
+                            h.span,
+                            crate::ty::CapRow::var(own_var),
+                        );
+                    }
                     self.current_function_name = prev_fn;
                     self.current_return_type = prev_ret;
                     self.env.pop_scope();
@@ -2704,7 +2904,7 @@ impl TypeChecker {
                 {
                     if let Some(ref expected) = self.current_return_type {
                         let resolved_ret = self.engine.resolve(expected);
-                        if let Type::Function { params: eps, ret: er } = &resolved_ret {
+                        if let Type::Function { params: eps, ret: er, .. } = &resolved_ret {
                             if eps.len() == lparams.len() {
                                 self.lambda_expected_types
                                     .insert(*lspan, (eps.clone(), (**er).clone()));
@@ -3537,9 +3737,14 @@ impl TypeChecker {
                     name: name.clone(),
                     generics: generics.iter().map(|g| walk(g, map)).collect(),
                 },
-                Type::Function { params, ret } => Type::Function {
+                Type::Function { params, ret, caps } => Type::Function {
                     params: params.iter().map(|p| walk(p, map)).collect(),
                     ret: Box::new(walk(ret, map)),
+                    // Capability row is untouched by ORDINARY generic
+                    // substitution (it has nothing to do with `T`/`U`) --
+                    // carried through unchanged, same as e.g. a field's
+                    // `mutable`/`size` flag on the arms around this one.
+                    caps: caps.clone(),
                 },
                 Type::Reference { inner, mutable } => Type::Reference {
                     inner: Box::new(walk(inner, map)),
@@ -3604,9 +3809,14 @@ impl TypeChecker {
                     name: name.clone(),
                     generics: generics.iter().map(|g| walk(g, map)).collect(),
                 },
-                Type::Function { params, ret } => Type::Function {
+                Type::Function { params, ret, caps } => Type::Function {
                     params: params.iter().map(|p| walk(p, map)).collect(),
                     ret: Box::new(walk(ret, map)),
+                    // Capability row is untouched by ORDINARY generic
+                    // substitution (it has nothing to do with `T`/`U`) --
+                    // carried through unchanged, same as e.g. a field's
+                    // `mutable`/`size` flag on the arms around this one.
+                    caps: caps.clone(),
                 },
                 Type::Reference { inner, mutable } => Type::Reference {
                     inner: Box::new(walk(inner, map)),
@@ -3776,7 +3986,7 @@ impl TypeChecker {
                     // each call site gets independent type inference (prevents
                     // generic type pinning across call sites).
                     let sig = sig.clone();
-                    let (params, ret, var_map) = self.engine.instantiate_sig(&sig);
+                    let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
                     // Carry the sig's trait bounds onto the fresh call-site
                     // vars so unify can enforce them (backlog #89).
                     for (old_id, new_id) in &var_map {
@@ -3784,9 +3994,25 @@ impl TypeChecker {
                             self.engine.set_var_bounds(*new_id, bounds);
                         }
                     }
+                    // This reference's own row: resolve the declaration's
+                    // OWN capability var (its body's inferred total, which
+                    // may itself still mention one of `sig`'s
+                    // `generic_cap_var_ids` -- e.g. a HOF whose total
+                    // charge IS exactly its callback parameter's row) as
+                    // far as currently known, THEN remap whatever's left
+                    // through THIS call site's fresh `cap_var_map` -- so a
+                    // row-polymorphic function's OWN charge tracks the
+                    // SAME freshened var its param type uses, not the
+                    // shared template. See `FunctionSig::own_cap_var`'s
+                    // doc comment and `docs/capability-effects-spec.md` §4.
+                    let own_row = self
+                        .engine
+                        .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                    let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
                     Type::Function {
                         params,
                         ret: Box::new(ret),
+                        caps: ref_caps,
                     }
                 } else if let Some(edef) = self.env.lookup_enum(name).cloned() {
                     // Enum name used as a namespace (e.g., `Color` in `Color.Red`).
@@ -4139,6 +4365,17 @@ impl TypeChecker {
                     _ => None,
                 };
 
+                // Capability-row inference (Stage 1): a direct call to a
+                // GATED BUILTIN charges its capability bit by NAME (the
+                // builtin's own `FunctionSig` always carries the shared,
+                // permanently-empty `builtin_cap_var` -- see its doc
+                // comment -- so this name-based check is the actual
+                // source of truth for a builtin call, exactly mirroring
+                // `kryos_capabilities::checker`'s own `collect_caps_expr`).
+                if let Some(ref cname) = callee_name_str {
+                    self.accumulate_builtin_call(cname);
+                }
+
                 // @deprecated: warn when calling a deprecated function.
                 if let Some(ref name) = callee_name_str {
                     if self.deprecated_functions.contains(name) {
@@ -4226,7 +4463,16 @@ impl TypeChecker {
                 let callee_ty = self.engine.resolve(&callee_ty);
 
                 match &callee_ty {
-                    Type::Function { params, ret } => {
+                    Type::Function { params, ret, caps } => {
+                        // Every call site charges whatever the CALLEE'S
+                        // OWN TYPE carries -- direct call, call through a
+                        // parameter, local, container element, or actor-
+                        // state field/alias, all resolve here uniformly,
+                        // because `callee_ty` is the ordinary already-
+                        // resolved type the checker computed above, not a
+                        // re-derivation from this call expression's own
+                        // syntax. See `docs/capability-effects-spec.md` §6.
+                        self.accumulate_caps(caps);
                         // Special handling for assert(): accept 1 or 2 args.
                         // assert(condition) uses a default message at codegen time.
                         let is_assert_1arg = matches!(&callee_name_str, Some(n) if n == "assert")
@@ -4344,6 +4590,7 @@ impl TypeChecker {
                                     if let Type::Function {
                                         params: eps,
                                         ret: er,
+                                        ..
                                     } = &resolved_pty
                                     {
                                         if eps.len() == lparams.len() {
@@ -4738,7 +4985,7 @@ impl TypeChecker {
                         //   2. Erasure -- `to_string(box_f64.get())` reported the
                         //      i64 slot and printed raw bits; the self-unify now
                         //      resolves the return to the real f64.
-                        let (inst_params, inst_ret, var_map) =
+                        let (inst_params, inst_ret, var_map, _cap_var_map) =
                             self.engine.instantiate_sig(&sig);
                         for (old_id, new_id) in &var_map {
                             if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
@@ -4839,8 +5086,23 @@ impl TypeChecker {
                     if let Some(Type::Function {
                         params: fn_params,
                         ret: fn_ret,
+                        caps: fn_caps,
                     }) = field_ty
                     {
+                        // A call through a fn-typed struct/actor-state FIELD
+                        // (`t.f()`, `self.b.f()`, an aliased `let c = b;
+                        // c.f()`, or a `for x in [self.b] { x.f() }` loop
+                        // variable -- this ONE resolution path is reached by
+                        // every one of those syntactic routes uniformly,
+                        // because none of them change `field_ty`'s STATIC
+                        // TYPE, which is all this arm ever consults). Union
+                        // the field's inferred row into whatever enclosing
+                        // function/lambda body is making this call -- see
+                        // `docs/capability-effects-spec.md` §6, the two live
+                        // repros this closes: attack_container_param_alias_
+                        // defeats_hotparam.kry / attack_actor_state_forloop_
+                        // alias.kry.
+                        self.accumulate_caps(&fn_caps);
                         // Opaque callable (bare `fn` type) accepts any arity.
                         let is_opaque = fn_params.len() == 1
                             && matches!(&fn_params[0], Type::Error)
@@ -4983,11 +5245,19 @@ impl TypeChecker {
                     // the first call's concrete type bound them permanently, so
                     // a second call at a different concrete type unified against
                     // an already-bound var and was wrongly rejected with E0100.
-                    let (inst_params, inst_ret, var_map) = self.engine.instantiate_sig(&sig);
+                    let (inst_params, inst_ret, var_map, cap_var_map) =
+                        self.engine.instantiate_sig(&sig);
                     for (old_id, new_id) in &var_map {
                         if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
                             self.engine.set_var_bounds(*new_id, bounds);
                         }
+                    }
+                    {
+                        let own_row = self
+                            .engine
+                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                        self.accumulate_caps(&ref_caps);
                     }
                     // Static call — skip 'self' parameter.
                     let expected_params: Vec<Type> =
@@ -5028,11 +5298,18 @@ impl TypeChecker {
                     // so apply the same name-based purity check as a bare call.
                     self.check_pure_free_call(method, *span);
                     let sig = self.env.lookup_function(method).cloned().unwrap();
-                    let (params, ret, var_map) = self.engine.instantiate_sig(&sig);
+                    let (params, ret, var_map, cap_var_map) = self.engine.instantiate_sig(&sig);
                     for (old_id, new_id) in &var_map {
                         if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
                             self.engine.set_var_bounds(*new_id, bounds);
                         }
+                    }
+                    {
+                        let own_row = self
+                            .engine
+                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                        self.accumulate_caps(&ref_caps);
                     }
                     if args.len() != params.len() {
                         self.error(
@@ -5308,6 +5585,15 @@ impl TypeChecker {
                         Type::Function {
                             params: param_types.clone(),
                             ret: Box::new(ret.clone()),
+                            // Self-recursive row polymorphism (a fixed-point
+                            // HOF whose own row varies across its own
+                            // recursive calls) is an explicit open item,
+                            // spec §10 -- default to empty here rather than
+                            // guessing; the lambda's OWN caps (computed
+                            // below, after its body is walked) is what
+                            // actually gets attached to the value once
+                            // checking finishes.
+                            caps: crate::ty::CapRow::empty(),
                         },
                     );
                 }
@@ -5316,7 +5602,9 @@ impl TypeChecker {
                 for (param, ty) in params.iter().zip(param_types.iter()) {
                     self.env.define_var(param.name.clone(), ty.clone());
                 }
+                self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 let body_ty = self.infer_expr(body);
+                let lambda_caps = self.cap_accum_stack.pop().unwrap_or_default();
                 self.env.pop_scope();
 
                 self.current_return_type = prev_ret;
@@ -5360,9 +5648,16 @@ impl TypeChecker {
                     }
                 }
 
+                self.log_fn_effect(
+                    format!("<lambda@{}:{}>", lambda_span.start, lambda_span.end),
+                    *lambda_span,
+                    lambda_caps.clone(),
+                );
+
                 Type::Function {
                     params: param_types,
                     ret: Box::new(ret),
+                    caps: lambda_caps,
                 }
             }
 
@@ -6207,7 +6502,7 @@ fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
         // type to MIR, so `fns[k]()`'s return is typed (was erased to i64 --
         // a str/f64-returning closure read out of an untyped array printed
         // raw handle bits; CLAUDE.md untyped-closure-array gotcha).
-        Type::Function { params, ret } => TypeExpr::Function {
+        Type::Function { params, ret, .. } => TypeExpr::Function {
             params: params
                 .iter()
                 .map(concrete_type_to_type_expr)
@@ -6278,6 +6573,8 @@ fn type_check_with_lambda_params_inner(
         name: "println".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -6287,6 +6584,8 @@ fn type_check_with_lambda_params_inner(
         name: "print".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -6296,6 +6595,8 @@ fn type_check_with_lambda_params_inner(
         name: "eprintln".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Void,
     });
@@ -6305,6 +6606,8 @@ fn type_check_with_lambda_params_inner(
         name: "exit".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("code".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -6315,6 +6618,8 @@ fn type_check_with_lambda_params_inner(
         name: "range".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("start".to_string(), Type::I64),
             ("end".to_string(), Type::I64),
@@ -6332,6 +6637,8 @@ fn type_check_with_lambda_params_inner(
         name: "len".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("collection".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -6341,6 +6648,8 @@ fn type_check_with_lambda_params_inner(
         name: "to_string".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
     });
@@ -6350,6 +6659,8 @@ fn type_check_with_lambda_params_inner(
         name: "chan".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
@@ -6359,6 +6670,8 @@ fn type_check_with_lambda_params_inner(
         name: "send".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ch".to_string(), Type::I64),
             ("value".to_string(), Type::I64),
@@ -6371,6 +6684,8 @@ fn type_check_with_lambda_params_inner(
         name: "recv".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -6380,6 +6695,8 @@ fn type_check_with_lambda_params_inner(
         name: "chan_try_recv".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -6389,6 +6706,8 @@ fn type_check_with_lambda_params_inner(
         name: "chan_last_recv".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
@@ -6398,6 +6717,8 @@ fn type_check_with_lambda_params_inner(
         name: "file_read".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -6407,6 +6728,8 @@ fn type_check_with_lambda_params_inner(
         name: "file_write".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("path".to_string(), Type::Str),
             ("content".to_string(), Type::Str),
@@ -6419,6 +6742,8 @@ fn type_check_with_lambda_params_inner(
         name: "file_exists".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6428,6 +6753,8 @@ fn type_check_with_lambda_params_inner(
         name: "append_file".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("path".to_string(), Type::Str),
             ("content".to_string(), Type::Str),
@@ -6440,6 +6767,8 @@ fn type_check_with_lambda_params_inner(
         name: "file_size".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6451,6 +6780,8 @@ fn type_check_with_lambda_params_inner(
         name: "read_file".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -6458,6 +6789,8 @@ fn type_check_with_lambda_params_inner(
         name: "write_file".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("path".to_string(), Type::Str),
             ("content".to_string(), Type::Str),
@@ -6470,6 +6803,8 @@ fn type_check_with_lambda_params_inner(
         name: "create_dir".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6479,6 +6814,8 @@ fn type_check_with_lambda_params_inner(
         name: "read_line".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Str,
     });
@@ -6493,6 +6830,8 @@ fn type_check_with_lambda_params_inner(
         name: "map_has".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("m".to_string(), Type::Error),
             ("key".to_string(), Type::Error),
@@ -6509,6 +6848,8 @@ fn type_check_with_lambda_params_inner(
         name: "map_delete".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("m".to_string(), Type::Error),
             ("key".to_string(), Type::Error),
@@ -6521,6 +6862,8 @@ fn type_check_with_lambda_params_inner(
         name: "map_keys".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -6530,6 +6873,8 @@ fn type_check_with_lambda_params_inner(
         name: "env_get".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("key".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -6539,6 +6884,8 @@ fn type_check_with_lambda_params_inner(
         name: "time_now".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
@@ -6548,6 +6895,8 @@ fn type_check_with_lambda_params_inner(
         name: "sleep".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ms".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -6565,6 +6914,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_spawn".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         // The argument is a task expression handled specially at lowering; the
         // checker accepts any single argument type (Type::Error = wildcard).
         params: vec![("task".to_string(), Type::Error)],
@@ -6574,6 +6925,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_yield".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Void,
     });
@@ -6581,6 +6934,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_run".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Void,
     });
@@ -6588,6 +6943,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_reset".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Void,
     });
@@ -6595,6 +6952,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_record".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("tag".to_string(), Type::Str)],
         ret: Type::Void,
     });
@@ -6602,6 +6961,8 @@ fn type_check_with_lambda_params_inner(
         name: "coop_order".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Str,
     });
@@ -6611,6 +6972,8 @@ fn type_check_with_lambda_params_inner(
         name: "close_chan".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -6621,6 +6984,8 @@ fn type_check_with_lambda_params_inner(
         name: "chan_is_closed".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ch".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -6637,6 +7002,8 @@ fn type_check_with_lambda_params_inner(
         name: "str_to_ptr".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6649,6 +7016,8 @@ fn type_check_with_lambda_params_inner(
         name: "arr_to_ptr".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("arr".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -6658,6 +7027,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_to_str".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("len".to_string(), Type::I64),
@@ -6670,6 +7041,8 @@ fn type_check_with_lambda_params_inner(
         name: "alloc".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("size".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -6679,6 +7052,8 @@ fn type_check_with_lambda_params_inner(
         name: "free_bytes".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("size".to_string(), Type::I64),
@@ -6691,6 +7066,8 @@ fn type_check_with_lambda_params_inner(
         name: "ptr_byte_at".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("i".to_string(), Type::I64),
@@ -6703,6 +7080,8 @@ fn type_check_with_lambda_params_inner(
         name: "ptr_set_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("i".to_string(), Type::I64),
@@ -6716,6 +7095,8 @@ fn type_check_with_lambda_params_inner(
         name: "handle_to_str".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::Str,
     });
@@ -6725,6 +7106,8 @@ fn type_check_with_lambda_params_inner(
         name: "ptr_read_i64".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("i".to_string(), Type::I64),
@@ -6737,6 +7120,8 @@ fn type_check_with_lambda_params_inner(
         name: "ptr_write_i64".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("i".to_string(), Type::I64),
@@ -6750,6 +7135,8 @@ fn type_check_with_lambda_params_inner(
         name: "assert".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("condition".to_string(), Type::Bool),
             ("msg".to_string(), Type::Str),
@@ -6765,6 +7152,8 @@ fn type_check_with_lambda_params_inner(
         name: "assert_eq".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("left".to_string(), Type::Error),
             ("right".to_string(), Type::Error),
@@ -6779,6 +7168,8 @@ fn type_check_with_lambda_params_inner(
         name: "panic".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("msg".to_string(), Type::Str)],
         ret: Type::Void,
     });
@@ -6788,6 +7179,8 @@ fn type_check_with_lambda_params_inner(
         name: "parse_int".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6797,6 +7190,8 @@ fn type_check_with_lambda_params_inner(
         name: "parse_float".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::F64,
     });
@@ -6820,6 +7215,8 @@ fn type_check_with_lambda_params_inner(
             name: op.to_string(),
             generic_params: vec![],
             generic_var_ids: vec![],
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![
                 ("a".to_string(), Type::I64),
                 ("b".to_string(), Type::I64),
@@ -6833,6 +7230,8 @@ fn type_check_with_lambda_params_inner(
         name: "type_of".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("value".to_string(), Type::Error)],
         ret: Type::Str,
     });
@@ -6842,6 +7241,8 @@ fn type_check_with_lambda_params_inner(
         name: "char_code".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("c".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -6851,6 +7252,8 @@ fn type_check_with_lambda_params_inner(
         name: "char_from".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("n".to_string(), Type::I64)],
         ret: Type::Str,
     });
@@ -6860,6 +7263,8 @@ fn type_check_with_lambda_params_inner(
         name: "substr".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("start".to_string(), Type::I64),
@@ -6876,6 +7281,8 @@ fn type_check_with_lambda_params_inner(
         name: "index_of".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("sub".to_string(), Type::Str),
@@ -6893,6 +7300,8 @@ fn type_check_with_lambda_params_inner(
         name: "push".to_string(),
         generic_params: vec!["T".to_string()],
         generic_var_ids: vec![push_t],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             (
                 "arr".to_string(),
@@ -6912,6 +7321,8 @@ fn type_check_with_lambda_params_inner(
         name: "pop".to_string(),
         generic_params: vec!["T".to_string()],
         generic_var_ids: vec![pop_t],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![(
             "arr".to_string(),
             Type::Array { element: Box::new(Type::Var(pop_t)), size: None },
@@ -6924,6 +7335,8 @@ fn type_check_with_lambda_params_inner(
         name: "sort".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("arr".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -6933,6 +7346,8 @@ fn type_check_with_lambda_params_inner(
         name: "reverse".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("arr".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -6942,6 +7357,8 @@ fn type_check_with_lambda_params_inner(
         name: "int".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -6951,6 +7368,8 @@ fn type_check_with_lambda_params_inner(
         name: "float".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::Error)],
         ret: Type::F64,
     });
@@ -6960,6 +7379,8 @@ fn type_check_with_lambda_params_inner(
         name: "sqrt".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -6969,6 +7390,8 @@ fn type_check_with_lambda_params_inner(
         name: "floor".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -6978,6 +7401,8 @@ fn type_check_with_lambda_params_inner(
         name: "ceil".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -6987,6 +7412,8 @@ fn type_check_with_lambda_params_inner(
         name: "round".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7003,6 +7430,8 @@ fn type_check_with_lambda_params_inner(
             name: "abs".to_string(),
             generic_params: vec!["T".to_string()],
             generic_var_ids: abs_var_id,
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![("x".to_string(), abs_tv.clone())],
             ret: abs_tv,
         });
@@ -7020,6 +7449,8 @@ fn type_check_with_lambda_params_inner(
             name: "min".to_string(),
             generic_params: vec!["T".to_string()],
             generic_var_ids: min_var_id,
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![
                 ("a".to_string(), min_tv.clone()),
                 ("b".to_string(), min_tv.clone()),
@@ -7040,6 +7471,8 @@ fn type_check_with_lambda_params_inner(
             name: "max".to_string(),
             generic_params: vec!["T".to_string()],
             generic_var_ids: max_var_id,
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![
                 ("a".to_string(), max_tv.clone()),
                 ("b".to_string(), max_tv.clone()),
@@ -7053,6 +7486,8 @@ fn type_check_with_lambda_params_inner(
         name: "sin".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7062,6 +7497,8 @@ fn type_check_with_lambda_params_inner(
         name: "cos".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7071,6 +7508,8 @@ fn type_check_with_lambda_params_inner(
         name: "tan".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7080,6 +7519,8 @@ fn type_check_with_lambda_params_inner(
         name: "log".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7089,6 +7530,8 @@ fn type_check_with_lambda_params_inner(
         name: "log2".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7098,6 +7541,8 @@ fn type_check_with_lambda_params_inner(
         name: "log10".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7107,6 +7552,8 @@ fn type_check_with_lambda_params_inner(
         name: "pow".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64), ("y".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7116,6 +7563,8 @@ fn type_check_with_lambda_params_inner(
         name: "abs_f".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7125,6 +7574,8 @@ fn type_check_with_lambda_params_inner(
         name: "min_f".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("a".to_string(), Type::F64), ("b".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7134,6 +7585,8 @@ fn type_check_with_lambda_params_inner(
         name: "max_f".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("a".to_string(), Type::F64), ("b".to_string(), Type::F64)],
         ret: Type::F64,
     });
@@ -7143,6 +7596,8 @@ fn type_check_with_lambda_params_inner(
         name: "keys".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::Error)],
         ret: Type::Array {
             element: Box::new(Type::Str),
@@ -7155,6 +7610,8 @@ fn type_check_with_lambda_params_inner(
         name: "sleep_ms".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ms".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -7166,6 +7623,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_new".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("capacity".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7175,6 +7634,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("byte".to_string(), Type::I64),
@@ -7187,6 +7648,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_i16_le".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -7199,6 +7662,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_i32_le".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -7211,6 +7676,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_i64_le".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -7223,6 +7690,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_bytes".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("dst".to_string(), Type::I64),
             ("src".to_string(), Type::I64),
@@ -7236,6 +7705,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_str".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("s".to_string(), Type::Str),
@@ -7248,6 +7719,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_zeros".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("count".to_string(), Type::I64),
@@ -7260,6 +7733,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_len".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7269,6 +7744,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_str".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::Str,
     });
@@ -7278,6 +7755,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_get_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -7290,6 +7769,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_set_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -7303,6 +7784,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_patch_i32_le".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -7316,6 +7799,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_patch_i64_le".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("offset".to_string(), Type::I64),
@@ -7329,6 +7814,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_write_to_file".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("path".to_string(), Type::Str),
@@ -7341,6 +7828,8 @@ fn type_check_with_lambda_params_inner(
         name: "buf_free".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -7350,6 +7839,8 @@ fn type_check_with_lambda_params_inner(
         name: "args".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Array {
             element: Box::new(Type::Str),
@@ -7382,6 +7873,8 @@ fn type_check_with_lambda_params_inner(
             name: name.to_string(),
             generic_params: vec![],
             generic_var_ids: vec![],
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params,
             ret: Type::I64,
         });
@@ -7392,6 +7885,8 @@ fn type_check_with_lambda_params_inner(
         name: "mem_read_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ptr".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7399,6 +7894,8 @@ fn type_check_with_lambda_params_inner(
         name: "mem_write_byte".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -7409,6 +7906,8 @@ fn type_check_with_lambda_params_inner(
         name: "mem_read_i64".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("ptr".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7416,6 +7915,8 @@ fn type_check_with_lambda_params_inner(
         name: "mem_write_i64".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("val".to_string(), Type::I64),
@@ -7426,6 +7927,8 @@ fn type_check_with_lambda_params_inner(
         name: "mem_copy".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("src".to_string(), Type::I64),
             ("dst".to_string(), Type::I64),
@@ -7442,6 +7945,8 @@ fn type_check_with_lambda_params_inner(
         name: "str_byte_len".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -7449,6 +7954,8 @@ fn type_check_with_lambda_params_inner(
         name: "str_data_ptr".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -7456,6 +7963,8 @@ fn type_check_with_lambda_params_inner(
         name: "str_from_bytes".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("ptr".to_string(), Type::I64),
             ("len".to_string(), Type::I64),
@@ -7468,6 +7977,8 @@ fn type_check_with_lambda_params_inner(
         name: "__int_to_float".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("x".to_string(), Type::I64)],
         ret: Type::F64,
     });
@@ -7475,6 +7986,8 @@ fn type_check_with_lambda_params_inner(
         name: "__get_process_args".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Array {
             element: Box::new(Type::Str),
@@ -7491,6 +8004,8 @@ fn type_check_with_lambda_params_inner(
         name: "__builtin_len".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("collection".to_string(), Type::Error)],
         ret: Type::I64,
     });
@@ -7498,6 +8013,8 @@ fn type_check_with_lambda_params_inner(
         name: "__builtin_push".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("arr".to_string(), Type::Error),
             ("val".to_string(), Type::Error),
@@ -7508,6 +8025,8 @@ fn type_check_with_lambda_params_inner(
         name: "__builtin_pop".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("arr".to_string(), Type::Error)],
         ret: Type::Error,
     });
@@ -7515,6 +8034,8 @@ fn type_check_with_lambda_params_inner(
         name: "__builtin_range".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("start".to_string(), Type::I64),
             ("end".to_string(), Type::I64),
@@ -7534,6 +8055,8 @@ fn type_check_with_lambda_params_inner(
             name: name.to_string(),
             generic_params: vec![],
             generic_var_ids: vec![],
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![
                 ("m".to_string(), Type::Error),
                 ("key".to_string(), Type::Error),
@@ -7546,6 +8069,8 @@ fn type_check_with_lambda_params_inner(
             name: name.to_string(),
             generic_params: vec![],
             generic_var_ids: vec![],
+            generic_cap_var_ids: vec![],
+            own_cap_var: checker.builtin_cap_var,
             params: vec![("m".to_string(), Type::Error)],
             ret: Type::Error,
         });
@@ -7558,6 +8083,8 @@ fn type_check_with_lambda_params_inner(
         name: "contains".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         // BOTH params are lenient (Type::Error): contains works on a str
         // (substring search, needle: str), a str-keyed map (key membership,
         // needle: str), AND an int-keyed map (key membership, needle: i64).
@@ -7577,6 +8104,8 @@ fn type_check_with_lambda_params_inner(
         name: "starts_with".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("prefix".to_string(), Type::Str),
@@ -7589,6 +8118,8 @@ fn type_check_with_lambda_params_inner(
         name: "ends_with".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("suffix".to_string(), Type::Str),
@@ -7601,6 +8132,8 @@ fn type_check_with_lambda_params_inner(
         name: "trim".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -7610,6 +8143,8 @@ fn type_check_with_lambda_params_inner(
         name: "to_upper".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -7619,6 +8154,8 @@ fn type_check_with_lambda_params_inner(
         name: "to_lower".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -7628,6 +8165,8 @@ fn type_check_with_lambda_params_inner(
         name: "replace".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("from".to_string(), Type::Str),
@@ -7641,6 +8180,8 @@ fn type_check_with_lambda_params_inner(
         name: "split".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("s".to_string(), Type::Str),
             ("delimiter".to_string(), Type::Str),
@@ -7656,6 +8197,8 @@ fn type_check_with_lambda_params_inner(
         name: "join".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             (
                 "arr".to_string(),
@@ -7674,6 +8217,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_connect".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("host".to_string(), Type::Str),
             ("port".to_string(), Type::I64),
@@ -7686,6 +8231,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_listen".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("host".to_string(), Type::Str),
             ("port".to_string(), Type::I64),
@@ -7698,6 +8245,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_accept".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7707,6 +8256,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_send".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("fd".to_string(), Type::I64),
             ("data".to_string(), Type::Str),
@@ -7719,6 +8270,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_recv".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("fd".to_string(), Type::I64),
             ("max_bytes".to_string(), Type::I64),
@@ -7731,6 +8284,8 @@ fn type_check_with_lambda_params_inner(
         name: "tcp_close".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -7740,25 +8295,25 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "tcp_set_nonblocking".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64), ("nonblocking".to_string(), Type::Bool)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "tcp_try_accept".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("listener_fd".to_string(), Type::I64)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "tcp_try_recv".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64), ("max_bytes".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "sleep_ms".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("ms".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -7771,6 +8326,8 @@ fn type_check_with_lambda_params_inner(
         name: "tls_server_config".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("cert_path".to_string(), Type::Str),
             ("key_path".to_string(), Type::Str),
@@ -7783,6 +8340,8 @@ fn type_check_with_lambda_params_inner(
         name: "tls_accept".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("client_tcp_fd".to_string(), Type::I64),
             ("config_handle".to_string(), Type::I64),
@@ -7795,6 +8354,8 @@ fn type_check_with_lambda_params_inner(
         name: "tls_send".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("fd".to_string(), Type::I64),
             ("data".to_string(), Type::Str),
@@ -7807,6 +8368,8 @@ fn type_check_with_lambda_params_inner(
         name: "tls_recv".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("fd".to_string(), Type::I64),
             ("max_bytes".to_string(), Type::I64),
@@ -7819,6 +8382,8 @@ fn type_check_with_lambda_params_inner(
         name: "tls_close".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -7831,6 +8396,8 @@ fn type_check_with_lambda_params_inner(
         name: "pg_connect".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("conn_str".to_string(), Type::Str)],
         ret: Type::I64,
     });
@@ -7840,6 +8407,8 @@ fn type_check_with_lambda_params_inner(
         name: "pg_exec".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("sql".to_string(), Type::Str),
@@ -7852,6 +8421,8 @@ fn type_check_with_lambda_params_inner(
         name: "pg_query".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("handle".to_string(), Type::I64),
             ("sql".to_string(), Type::Str),
@@ -7864,6 +8435,8 @@ fn type_check_with_lambda_params_inner(
         name: "pg_close".to_string(),
         generic_params: vec![],
         generic_var_ids: vec![],
+        generic_cap_var_ids: vec![],
+        own_cap_var: checker.builtin_cap_var,
         params: vec![("handle".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -7872,29 +8445,29 @@ fn type_check_with_lambda_params_inner(
     // Unix domain sockets (v2.0)
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
-        name: "uds_connect".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_connect".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)], ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
-        name: "uds_bind".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_bind".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("path".to_string(), Type::Str)], ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
-        name: "uds_accept".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_accept".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)], ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
-        name: "uds_send".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_send".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64), ("data".to_string(), Type::Str)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
-        name: "uds_recv".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_recv".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64), ("max_bytes".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "uds_close".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "uds_close".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)], ret: Type::I64,
     });
 
@@ -7902,31 +8475,31 @@ fn type_check_with_lambda_params_inner(
     // WebSocket (RFC 6455) helpers (v2.0)
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
-        name: "ws_accept_key".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_accept_key".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("key".to_string(), Type::Str)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_encode_text".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_encode_text".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_encode_binary".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_encode_binary".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_encode_close".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_encode_close".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("code".to_string(), Type::I64)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_encode_ping".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_encode_ping".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_encode_pong".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_encode_pong".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("payload".to_string(), Type::Str)], ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_unmask".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_unmask".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("buf".to_string(), Type::Str),
             ("payload_off".to_string(), Type::I64),
@@ -7936,7 +8509,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
-        name: "ws_read_frame".to_string(), generic_params: vec![], generic_var_ids: vec![],
+        name: "ws_read_frame".to_string(), generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("fd".to_string(), Type::I64)], ret: Type::Str,
     });
 
@@ -7945,19 +8518,19 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "json_parse".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_stringify".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "json_object".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("keys".to_string(), Type::Array { element: Box::new(Type::Str), size: None }),
             ("vals".to_string(), Type::Array { element: Box::new(Type::I64), size: None }),
@@ -7966,79 +8539,79 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "json_array".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("items".to_string(), Type::Array { element: Box::new(Type::I64), size: None })],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_string".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_number".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("v".to_string(), Type::F64)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_bool".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("v".to_string(), Type::Bool)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_null".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_get".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("obj".to_string(), Type::I64), ("key".to_string(), Type::Str)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_get_index".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("arr".to_string(), Type::I64), ("idx".to_string(), Type::I64)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_to_str".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "json_to_int".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_to_float".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::F64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_is_null".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::Bool,
     });
     checker.env.define_function(FunctionSig {
         name: "json_length".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "json_type".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("node".to_string(), Type::I64)],
         ret: Type::Str,
     });
@@ -8048,43 +8621,43 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "sha256".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "sha512".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "hmac_sha256".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("key".to_string(), Type::Str), ("data".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "ed25519_generate".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "ed25519_public".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("pkcs8_hex".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "ed25519_sign".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("pkcs8_hex".to_string(), Type::Str), ("msg".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "ed25519_verify".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("pub_hex".to_string(), Type::Str),
             ("msg".to_string(), Type::Str),
@@ -8094,19 +8667,19 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "hex_to_base64url".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("hex".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "base64url_to_hex".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("b64url".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "pbkdf2_sha256".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("password".to_string(), Type::Str),
             ("salt_hex".to_string(), Type::Str),
@@ -8116,43 +8689,43 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "random_bytes".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("n".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "sha1_hex".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "sha1_base64".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "base64_encode".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "base64_decode".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "chr".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("n".to_string(), Type::I64)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "byte_at".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("s".to_string(), Type::Str), ("idx".to_string(), Type::I64)],
         ret: Type::I64,
     });
@@ -8162,25 +8735,25 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "regex_new".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("pattern".to_string(), Type::Str)],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "regex_match".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("re".to_string(), Type::I64), ("text".to_string(), Type::Str)],
         ret: Type::Bool,
     });
     checker.env.define_function(FunctionSig {
         name: "regex_find".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("re".to_string(), Type::I64), ("text".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "regex_find_pos".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("re".to_string(), Type::I64),
             ("text".to_string(), Type::Str),
@@ -8190,7 +8763,7 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "regex_find_end".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("re".to_string(), Type::I64),
             ("text".to_string(), Type::Str),
@@ -8200,7 +8773,7 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "regex_replace_all".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("re".to_string(), Type::I64),
             ("text".to_string(), Type::Str),
@@ -8210,7 +8783,7 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "regex_drop".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("re".to_string(), Type::I64)],
         ret: Type::Void,
     });
@@ -8220,7 +8793,7 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "http_request".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("method".to_string(), Type::Str),
             ("url".to_string(), Type::Str),
@@ -8232,7 +8805,7 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "https_get".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("url".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -8242,13 +8815,13 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "http2_get".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("url".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "http2_post".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("url".to_string(), Type::Str),
             ("body".to_string(), Type::Str),
@@ -8257,7 +8830,7 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "http2_request".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("method".to_string(), Type::Str),
             ("url".to_string(), Type::Str),
@@ -8274,25 +8847,25 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "dom_set_text".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("id".to_string(), Type::Str), ("text".to_string(), Type::Str)],
         ret: Type::Void,
     });
     checker.env.define_function(FunctionSig {
         name: "dom_get_value".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("id".to_string(), Type::Str)],
         ret: Type::Str,
     });
     checker.env.define_function(FunctionSig {
         name: "alert".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("msg".to_string(), Type::Str)],
         ret: Type::Void,
     });
     checker.env.define_function(FunctionSig {
         name: "canvas_fill_rect".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![
             ("canvas_id".to_string(), Type::Str),
             ("x".to_string(), Type::I64),
@@ -8305,13 +8878,13 @@ fn type_check_with_lambda_params_inner(
     });
     checker.env.define_function(FunctionSig {
         name: "canvas_clear".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("canvas_id".to_string(), Type::Str)],
         ret: Type::Void,
     });
     checker.env.define_function(FunctionSig {
         name: "fetch_text".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("url".to_string(), Type::Str)],
         ret: Type::Str,
     });
@@ -8321,49 +8894,61 @@ fn type_check_with_lambda_params_inner(
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "time_now_secs".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "time_now_millis".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
     // `time_millis` is the documented short alias for `time_now_millis`.
     checker.env.define_function(FunctionSig {
         name: "time_millis".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "mutex_new".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![],
         ret: Type::I64,
     });
     checker.env.define_function(FunctionSig {
         name: "mutex_lock".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::I64)],
         ret: Type::Void,
     });
     checker.env.define_function(FunctionSig {
         name: "mutex_unlock".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::I64)],
         ret: Type::Void,
     });
     checker.env.define_function(FunctionSig {
         name: "mutex_drop".to_string(),
-        generic_params: vec![], generic_var_ids: vec![],
+        generic_params: vec![], generic_var_ids: vec![], generic_cap_var_ids: vec![], own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::I64)],
         ret: Type::Void,
     });
 
     checker.check_module(module);
+
+    // `KRYOS_DUMP_FN_EFFECTS=1` debug dump (Stage 1 -- capability-typed fn
+    // values, docs/capability-effects-spec.md): print every logged
+    // declared-function/lambda/actor-handler's FINAL inferred capability
+    // row, fully resolved now that the whole module has finished checking
+    // (every forward reference has had a chance to bind). Printed to
+    // stderr so it never pollutes stdout for tools parsing normal
+    // diagnostics/output.
+    if checker.dump_fn_effects {
+        eprint!("{}", checker.dump_fn_effects_report());
+    }
+
     // Resolve recorded empty-array let bindings through the (now fully unified)
     // engine and convert to TypeExpr for the MIR. Only keep those whose element
     // resolved to a concrete (non-var) type.

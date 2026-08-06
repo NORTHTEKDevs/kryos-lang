@@ -13281,7 +13281,10 @@ pub fn lower_resolved_type(ty: &Type) -> MirType {
         }
         Type::Struct { name, .. } => MirType::Struct(name.clone()),
         Type::Enum { name, .. } => MirType::Enum(name.clone()),
-        Type::Function { params, ret } => MirType::Function {
+        // `caps` (the inferred capability row, Stage 1 -- docs/capability-
+        // effects-spec.md) is deliberately ERASED here: it never reaches
+        // codegen, matching spec §9's zero-ABI-impact claim.
+        Type::Function { params, ret, .. } => MirType::Function {
             params: params.iter().map(lower_resolved_type).collect(),
             ret: Box::new(lower_resolved_type(ret)),
         },

@@ -662,13 +662,23 @@ fn resolve_function_type() {
         span: S,
     };
     let ty = checker.resolve_type_expr(&te);
-    assert_eq!(
-        ty,
-        Type::Function {
-            params: vec![Type::I32],
-            ret: Box::new(Type::Bool),
+    // NOTE: not a full assert_eq! against a hand-built `Type::Function` —
+    // an un-annotated fn-typed position now carries a fresh capability-row
+    // variable (`CapRow::var(id)`) whose exact id is allocator-order-
+    // dependent, not a fixed value to hardcode. Assert the structural shape
+    // (params/ret) and that the row was in fact left OPEN (inferred, not
+    // silently defaulted to a closed empty set).
+    match ty {
+        Type::Function { params, ret, caps } => {
+            assert_eq!(params, vec![Type::I32]);
+            assert_eq!(*ret, Type::Bool);
+            assert!(
+                !caps.is_closed(),
+                "an un-annotated fn-typed position must get an open row variable, not a closed default"
+            );
         }
-    );
+        other => panic!("expected Type::Function, got {other:?}"),
+    }
 }
 
 #[test]
