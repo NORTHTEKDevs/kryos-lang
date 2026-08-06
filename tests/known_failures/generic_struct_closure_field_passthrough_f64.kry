@@ -1,0 +1,50 @@
+// Type-confusion red team, round 1 (lens: type-confusion).
+//
+// A generic struct field of type `fn() -> T` (a closure/fn-value field),
+// returned by a BARE self-field passthrough method (`return self.f`),
+// loses its per-instantiation return type at T=f64: calling the returned
+// closure and formatting the result with to_string() prints the raw i64
+// bit pattern of the float instead of the float value.
+//
+// This is the same class of bug CLAUDE.md gotcha #17 documents as FIXED
+// for Array/Tuple/map bare self-field passthrough
+// (`instance_ret_needs_monomorphization` in kryos-mir/src/lower.rs) --
+// that fix's TypeExpr::Array/TypeExpr::Tuple/"map" coverage does not
+// extend to a bare-passthrough field typed `fn() -> T`, so the erased
+// i64-return compiled copy is still used for this one shape.
+//
+// str at the same call shape is unaffected (str is already pointer-sized,
+// so the erasure doesn't corrupt it) -- only float payloads reinterpret
+// their bits as an integer.
+//
+// Reproduces IDENTICALLY on both backends (not a JIT/AOT divergence --
+// a silent wrong VALUE agreed on by both).
+//
+// Expected:  closure-field-f64=4.5
+// Actual (both backends): closure-field-f64=4616752568008179712
+//   (== the raw i64 reinterpretation of the f64 bits of 4.5, verified via
+//   struct.unpack('<q', struct.pack('<d', 4.5)) == 4616752568008179712)
+//
+//     kryos run tests/known_failures/generic_struct_closure_field_passthrough_f64.kry
+//     kryos build --release tests/known_failures/generic_struct_closure_field_passthrough_f64.kry -o /tmp/x && /tmp/x
+
+struct Holder<T> {
+    f: fn() -> T
+}
+
+impl<T> Holder<T> {
+    fn get_closure(self: Holder<T>) -> fn() -> T {
+        return self.f
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let hf: Holder<f64> = Holder { f: || 4.5 }
+    let cf = hf.get_closure()
+    println("closure-field-f64=" + to_string(cf()))
+
+    let hs: Holder<str> = Holder { f: || "closure-field-secret" }
+    let cs = hs.get_closure()
+    println("closure-field-str=" + cs())
+}
