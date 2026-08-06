@@ -1,0 +1,56 @@
+// SECURITY RED-TEAM PROBE (round 7, 2026-08-06) -- candidate escape.
+// Seed B of `compute_hot_params` (the mechanism that marks a container-typed
+// PARAMETER "hot" when the callee's body invokes a field/index chain rooted
+// at that exact parameter, e.g. `b.f()`) requires the occurrence's ROOT
+// identifier to equal the parameter's own NAME literally
+// (`walk_container_calls_expr`'s MethodCall arm decomposes `object` via
+// `decompose_container_path`, which only sees the SYNTACTIC root of the
+// chain -- it does not trace through a `let` alias). If the callee instead
+// aliases the parameter into a fresh local FIRST (`let c = b`) and invokes
+// the field THROUGH the alias (`c.f()`), the recorded occurrence root is
+// "c", which never matches the parameter name "b", so `compute_hot_params`
+// never marks parameter 0 hot for this function at all.
+//
+// Consequently: (1) the CALL SITE's `accumulate_hot_extra_caps` has no hot-
+// param entry to consult for this callee, so it charges nothing extra for
+// the `b` argument; (2) INSIDE the callee, `resolve_method_field_invoke_caps`
+// (the resolver for `X.f()` field-invocation) decomposes `c.f()` to
+// root="c", looks up `local_container_lits.get("c")` -- but "c" was bound
+// via `let c = b` (an Identifier RHS, not a struct-literal RHS), so it is
+// never entered into `local_container_lits` either -- and bails out to
+// `CapabilitySet::empty()` (the same fail-open branch as the accessor-call
+// finding already on the ledger, but reached through PARAMETER ALIASING
+// rather than a call-expression receiver). Both the call-site defense
+// (hot_params) and the body-internal defense (resolve_method_field_invoke_caps)
+// are defeated by the SAME one-line alias, independently of each other.
+//
+// Positive control: the non-aliased sibling
+// (`attack_container_via_param_root.kry`, calling `b.f()` directly with no
+// intervening `let`) IS correctly rejected -- confirming the alias, not
+// something generic about a struct-typed parameter, is what defeats the
+// guard here.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+fn invoke_via_alias(b: Box) -> str {
+    let c = b
+    return c.f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = invoke_via_alias(b)
+        println("PARAM-ALIAS CONTAINER LEAK: " + leaked)
+        sleep(100)
+    }
+}

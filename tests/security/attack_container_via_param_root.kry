@@ -1,0 +1,42 @@
+// SECURITY RED-TEAM PROBE (round 7, 2026-08-06) -- candidate escape.
+// A DIFFERENT gap in the SAME resolver item 30 already flagged
+// (`resolve_method_field_invoke_caps`), but a different fail-open branch:
+// not the `decompose_container_path` failure (item 30, `Expr::FnCall`
+// root), but the SECOND bail-out a few lines later -- `local_container_lits
+// .get(root)` returning `None` when the receiver decomposes fine (a plain
+// `Expr::Identifier` root) but that identifier is a FUNCTION PARAMETER,
+// not a `let`-bound struct literal local. `current_local_container_lits`
+// is populated only from literal `let` bindings within the function being
+// checked (see its own doc comment) -- an ordinary struct-typed PARAMETER
+// is never entered into it. Both branches return `CapabilitySet::empty()`
+// instead of the fail-closed `all` invariant 22 requires.
+//
+// This is a much more ordinary shape than item 30's accessor-call receiver:
+// passing a struct that carries a closure field INTO a helper function as
+// a plain parameter, then invoking the field on the parameter -- no
+// accessor call, no `self`, no aliasing chain, just an everyday function
+// argument.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+fn invoke_via_param(b: Box) -> str {
+    return b.f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = invoke_via_param(b)
+        println("PARAM-ROOT CONTAINER LEAK: " + leaked)
+        sleep(100)
+    }
+}
