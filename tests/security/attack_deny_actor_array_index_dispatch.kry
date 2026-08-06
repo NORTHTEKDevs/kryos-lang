@@ -1,0 +1,35 @@
+// RED TEAM round 2, deny-narrowing lens (2026-08-06). The existing
+// `attack_deny_actor_handler_spawn.kry` repro dispatches through a BARE
+// actor-reference identifier (`r.read_secret(path)`). This variant reaches
+// the identical handler through an ARRAY-INDEXED receiver
+// (`actors[0].read_secret(path)`) instead, checking whether the capability
+// charge for an actor-handler MethodCall is attributed purely by the
+// callee METHOD NAME (independent of the receiver expression shape, per
+// invariant 17's "declaration-enforced" design) or whether the charge path
+// requires the receiver to `decompose_container_path` cleanly to a bare
+// identifier the way `resolve_method_field_invoke_caps`'s struct-field path
+// does (items 30/32's dispatch-routing gaps both stem from exactly this
+// kind of receiver-shape sensitivity in a DIFFERENT resolver).
+//
+// ACCEPTANCE: REJECTED (E0507) under inferred (default) mode -- the actor's
+// declared fs:read must not be exercisable from a scope that denied it,
+// regardless of how the receiver reference was obtained.
+
+@capabilities(fs:read)
+actor SecretReader {
+    dummy: i64
+
+    fn read_secret(self, path: str) {
+        let content: str = file_read(path)
+        println("ACTOR-ARRAY-INDEX-DENY LEAK: " + content)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let r = SecretReader()
+        let actors: [SecretReader] = [r]
+        actors[0].read_secret("tests/security/secret_for_closure_launder.txt")
+    }
+}

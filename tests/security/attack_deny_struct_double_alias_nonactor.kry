@@ -1,0 +1,38 @@
+// RED TEAM round 2, deny-narrowing lens (2026-08-06). LEDGER item 34 found a
+// two-hop `let`-alias-of-an-alias defeats deny! for an ACTOR-STATE
+// fn-bearing field (`let x = self.b; let y = x; y.f()`), via
+// `build_actor_state_alias_locals` only recording a `let name = self.<path>`
+// binding whose RHS root is LITERALLY `self`. This variant tests the SAME
+// two-hop alias shape but through a PLAIN (non-actor) struct field and the
+// GENERAL container-path resolver (`resolve_container_path_caps`/
+// `local_container_lits`) instead -- a structurally different code path
+// from item 34's actor-specific one. Per `docs/capability-soundness.md`
+// invariant 4/§6, a container read that goes beyond what the tracked-local
+// extension follows is documented to fail closed to `Unknown -> all` (not
+// silently empty) -- this checks that claim holds for a REAL two-hop chain,
+// not just the one-hop case the doc's own text describes.
+//
+// ACCEPTANCE: REJECTED (E0507) under inferred (default) mode. If this
+// compiles clean and leaks, it is a genuinely new dispatch-routing gap
+// (general container-path resolution, not actor-state resolution) distinct
+// from item 34.
+
+struct Holder {
+    reader: fn() -> str
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let h = Holder { reader: make_secret_reader("tests/security/secret_for_closure_launder.txt") }
+    deny!(fs:read) {
+        let x = h.reader
+        let y = x
+        let leaked = y()
+        println("STRUCT-DOUBLE-ALIAS-DENY LEAK: " + leaked)
+    }
+}

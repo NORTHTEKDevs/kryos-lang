@@ -1,0 +1,42 @@
+// RED TEAM round 2, deny-narrowing lens (2026-08-06). Tests whether a
+// deferred own-param hot-param call (the exact shape `deferred_own_param_caps`'s
+// own doc comment names, checker.rs invariant 12) routed through a `catch`
+// block -- reached only via a REAL runtime exception unwind out of the
+// paired `try` block -- is still charged against the live (narrowed) scope
+// depth the same way a plain statement would be. The try block throws for
+// real (not a decoy) so the catch body is what actually executes at runtime,
+// exercising the CHECKER's static treatment of `catch_block` (which per a
+// direct read of checker.rs's `Stmt::TryCatch` arm shares `current_locals`
+// with try_block but does NOT push/pop `scope_stack` of its own) against the
+// REAL control-flow path, not just the AST shape.
+//
+// ACCEPTANCE: REJECTED (E0507, `all` required) under inferred (default)
+// mode -- `outer`'s `reader` param is deferred to `outer`'s caller, but a
+// `deny!(fs:read)` is active between `outer`'s entry and the deferred
+// invocation (inside the catch block), so the deferred charge must fire.
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+fn outer(reader: fn() -> str) {
+    deny!(fs:read) {
+        try {
+            throw "trigger the catch path"
+        } catch (e) {
+            let leaked = zero_cap_tool(reader)
+            println("TRYCATCH-DENY LEAK: " + leaked)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}
