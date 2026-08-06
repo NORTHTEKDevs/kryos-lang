@@ -1,0 +1,65 @@
+// RED TEAM round (toolchain-realworld lens, 2026-08-06): the WASM backend
+// never truncates a narrow integer type (u8/i8/u16/i16/u32/i32) to its
+// declared width after arithmetic -- every store/compute stays in the
+// underlying i32/i64 wasm value with no mask/wrap applied. Both native
+// backends agree on the width-correct wrapped value (CLAUDE.md gotcha #21
+// documents this as DEFINED, checked/wrapped behavior, fixed on AOT for
+// exactly this class of bug for struct fields; this is the same defect,
+// unfixed, for the WASM backend, and for PLAIN LOCALS not just struct
+// fields).
+//
+// docs/wasm-contract.md states the WASM backend "never miscompiles
+// silently" and that anything outside its supported subset "fails at
+// compile time with a clear `unsupported in WASM` error". Narrow integer
+// arithmetic on plain locals IS accepted (compiles and runs) on wasm, so
+// this is not an unsupported-construct rejection -- it is a silent
+// wrong-answer miscompile, contradicting that claim.
+//
+// Run three ways and compare:
+//   kryos run tests/known_failures/wasm_narrow_int_no_truncation.kry
+//   kryos build tests/known_failures/wasm_narrow_int_no_truncation.kry --release -o /tmp/x && /tmp/x
+//   kryos build tests/known_failures/wasm_narrow_int_no_truncation.kry --release --backend wasm -o /tmp/x.wasm && node tools/wasm-host/run.mjs /tmp/x.wasm
+//
+// EXPECTED (both native backends agree, verified live):
+//   4
+//   -126
+//   4
+//   -32766
+//   4
+//   -2147483646
+//
+// OBSERVED on wasm (verified live, 2026-08-06, HEAD at time of finding):
+//   260
+//   130
+//   65540
+//   32770
+//   4294967300
+//   2147483650
+// -- every value is the untruncated raw arithmetic result, out of range for
+// its declared type, and differs from BOTH native backends on every line.
+
+fn main() {
+    let mut v: u8 = 250
+    v = v + 10
+    println(to_string(v))
+
+    let mut a: i8 = 120
+    a = a + 10
+    println(to_string(a))
+
+    let mut b: u16 = 65530
+    b = b + 10
+    println(to_string(b))
+
+    let mut c: i16 = 32760
+    c = c + 10
+    println(to_string(c))
+
+    let mut d: u32 = 4294967290
+    d = d + 10
+    println(to_string(d))
+
+    let mut e: i32 = 2147483640
+    e = e + 10
+    println(to_string(e))
+}
