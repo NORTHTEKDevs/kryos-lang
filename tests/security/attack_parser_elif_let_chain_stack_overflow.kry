@@ -1,0 +1,95 @@
+// RED TEAM round 3, resource-dos lens (2026-08-06).
+//
+// A GUARD-FREE recursive-descent path, distinct from LEDGER item 14
+// (parse_statement's stray-`;` recovery, same lens, different function)
+// and distinct from item 22 (the parse_expr_bp_inner Pratt-loop lookahead
+// overcharge, already fixed): a chain of `if let ... elif let ...`
+// clauses.
+//
+// Read directly (compiler/crates/kryos-parser/src/parser.rs): every OTHER
+// genuinely recursive parse entry point checks `self.nesting_exhausted()`
+// (`MAX_NESTING_DEPTH = 2048`, `MAX_RECURSION_DEPTH = 256`) before
+// recursing -- `parse_block` (~1169), `parse_expr_bp` (~1990),
+// `parse_pattern` (~3302), `parse_type` (~3574). The if-let desugar chain
+// is a FIFTH genuine recursive-descent cycle that checks nothing:
+//
+//   parse_if_rest -> (sees `let`) -> parse_if_let -> parse_if_let_else
+//   -> (sees `elif`) -> parse_if_rest (RECURSE, zero guard anywhere
+//      in this 3-function cycle)
+//
+// `parse_if_rest`'s own `while self.eat(Elif) { .. }` loop (a few lines
+// above) DOES bound a chain of plain `elif`s with a loop, not recursion --
+// but the moment an `elif` is followed by `let`, control re-enters
+// `parse_if_rest` via `parse_if_let_else`'s explicit recursive call
+// (parser.rs:1568), and NOTHING checks `nesting_exhausted()` anywhere in
+// `parse_if_rest`/`parse_if_let`/`parse_if_let_else`. A flat chain of
+// `elif let` clauses is therefore genuine, unbounded native Rust
+// recursion, invisible to the guard that already protects four sibling
+// entry points.
+//
+// Live repro, `compiler/target/release/kryos.exe`, no compiler changes,
+// `KRYOS_STDLIB_DIR` set per repo convention. This 3-clause file is the
+// harmless control (parses clean, reaches the checker, exit 1 with
+// ordinary E0507/E0102 diagnostics -- no crash), proving the construct
+// itself is legal and the parser accepts it up to this depth:
+fn f() -> Option<i64> {
+    return Some(1)
+}
+
+fn main() {
+    if let Some(x) = f() {
+        println("0")
+    } elif let Some(x) = f() {
+        println("1")
+    } elif let Some(x) = f() {
+        println("2")
+    } else {
+        println("done")
+    }
+}
+
+// At scale the SAME construct crashes the compiler itself, on `kryos
+// check` alone (before any codegen), well under any documented depth
+// ceiling. Regenerate the bomb (impractical size to commit, mirrors item
+// 14's convention) and run:
+//
+//   python3 -c "
+//   n = 50000
+//   lines = ['fn f() -> Option<i64> { return Some(1) }', 'fn main() {']
+//   lines.append('    if let Some(x) = f() {')
+//   lines.append('        println(\"0\")')
+//   lines.append('    }')
+//   for i in range(1, n):
+//       lines.append('    elif let Some(x) = f() {')
+//       lines.append('        println(\"%d\")' % i)
+//       lines.append('    }')
+//   lines.append('    else { println(\"done\") }')
+//   lines.append('}')
+//   open('bomb.kry', 'w').write(chr(10).join(lines))
+//   "
+//   $ kryos check bomb.kry
+//   kryos: stack overflow (unbounded recursion?)
+//   $ echo $?
+//   253
+//
+// Proven both ways, live, this session, classified by EXIT CODE + the
+// crash message (not by grepping source text -- this message is a fixed
+// runtime string, not an echo of any source line, so it cannot be the
+// documented false-positive-grep trap):
+//   N=1000    (3,006-line file)   -- pending bisection at time of filing
+//   N=50000   (150,006-line file) -- rc=253, "kryos: stack overflow
+//                                     (unbounded recursion?)", ~real time
+//   N=150000  (450,006-line file) -- rc=253, same crash
+//   N=300000  (900,006-line file) -- rc=253, same crash
+// `kryos check` crashes before typecheck/codegen is ever reached, so
+// `run`/`build --release` are equally exposed (identical to item 14's
+// blast radius) -- the crash happens during parsing itself.
+//
+// Fix shape (not attempted -- attacker-only mandate this round): the
+// exact same guard already used 4 times in this file --
+// `self.nesting_exhausted()` checked (and `rec_depth` bumped/popped)
+// around the recursive `self.parse_if_rest(kw)` call in
+// `parse_if_let_else` (parser.rs:1568 and 1584) -- degrades this to the
+// existing clean E0010 diagnostic instead of an uncatchable native stack
+// overflow. One-function-family fix mirroring the pattern already present
+// elsewhere in the same file, same shape as item 14's fix.
