@@ -171,6 +171,7 @@ cmd_gates() {
     run "module_case_gate"    bash tests/module_case_gate.sh
     run "docs_status_gate"    bash tests/docs_status_gate.sh
     run "utf8_invalid_string" bash tests/utf8_invalid_string_gate.sh
+    run "backend_divergence_pins" bash tests/backend_divergence_pins.sh
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
