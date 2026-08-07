@@ -1,0 +1,27 @@
+// Positive control for attack_static_method_hotparam_offset.kry: the
+// IDENTICAL shape as an INSTANCE method (self-receiver, MethodCall not
+// StaticMethodCall) is correctly REJECTED -- confirming the escape is
+// specific to the static-call has_self_offset miscomputation, not
+// something generic about a struct-hosted hot fn-typed parameter.
+struct Invoker { tag: i64 }
+
+impl Invoker {
+    fn run(self: Invoker, f: fn() -> str) -> str {
+        return f()
+    }
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_static_method_hotparam_offset_secret.txt")
+    let inv = Invoker { tag: 1 }
+    deny!(fs:read) {
+        let leaked = inv.run(reader)
+        println("INSTANCE-METHOD CONTROL LEAK: " + leaked)
+    }
+}

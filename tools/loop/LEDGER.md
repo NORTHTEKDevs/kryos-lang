@@ -252,6 +252,75 @@ fixed hop count.
 
 ---
 
+### 35. LIVE CAPABILITY ESCAPE — a hot fn-typed parameter at index 0 of a STATIC method (`Type::method(f)`, no `self`) is silently dropped by the same `has_self_offset` mechanism that item 33 found wrongly FALSE for actor handlers — here it is wrongly TRUE, on BOTH enforcement modes (infer-wrong lens, found 2026-08-06) — NOT FIXED
+
+Repro: `tests/security/attack_static_method_hotparam_offset.kry`. Verified
+live this session against the existing `compiler/target/release/
+kryos.exe`, no compiler changes:
+
+```
+$ kryos check tests/security/attack_static_method_hotparam_offset.kry
+$ echo $?
+0
+$ kryos run tests/security/attack_static_method_hotparam_offset.kry
+STATIC-METHOD OFFSET LEAK: TOPSECRET-STATIC-OFFSET-7a6b5c
+$ echo $?
+0
+$ kryos check --strict-capabilities tests/security/attack_static_method_hotparam_offset.kry
+$ echo $?
+0
+```
+
+Shape: `impl Invoker { fn run(f: fn()->str) -> str { return f() } }` (a
+STATIC method — no `self` parameter), called as `Invoker::run(reader)`
+inside `deny!(fs:read)` in `main`.
+
+Root cause, confirmed by direct source read: `accumulate_hot_extra_caps`
+(checker.rs ~2864-2891) computes `has_self_offset = is_method_or_static &&
+!actor_handler_names.contains(callee_name)`, and its TWO call sites
+(`Expr::MethodCall`, checker.rs ~3889, and `Expr::StaticMethodCall`,
+checker.rs ~3919) both pass a literal `true` for `is_method_or_static` —
+there is no branch distinguishing a real receiver-bearing method call from
+a static one. `compute_hot_params`'s Seed A indexes a static method's own
+`params.iter().enumerate()` with NO offset at declaration time (correct —
+`kryos-parser/src/parser.rs` ~2586-2599 confirms `Type::method(args)`
+parses as `Expr::StaticMethodCall`, and `parse_param_list()` for a static
+`impl` method never inserts an implicit `self` at `params[0]`), so
+`hot_params["run"] = {0: {[]}}`. But at the CALL site,
+`accumulate_hot_extra_caps` unconditionally computes `arg_idx =
+i.checked_sub(1)` whenever `has_self_offset` is true; for `i == 0` this is
+`None`, and the entry is `continue`d past under the comment "hot index 0
+is `self` for a method — never a caller-supplied arg" — false for a static
+call, where index 0 IS the first real argument. The closure's authority is
+dropped entirely: not charged to `Invoker::run`'s own inferred set, not
+deferred to any caller either (the `FnCall`-shaped deferral machinery never
+engages, since this call is parsed as `StaticMethodCall`, not `FnCall`).
+
+Same root mechanism as item 33 (actor-handler `has_self_offset` wrongly
+FALSE), opposite direction (static-method `has_self_offset` wrongly TRUE) —
+confirms the mechanism needs a real THREE-way classification (bare
+function / receiver-bearing method / static method), not the current
+boolean.
+
+**Positive control, same session**:
+`tests/security/attack_static_method_hotparam_offset_control.kry` — the
+IDENTICAL shape as an INSTANCE method (`inv.run(reader)`, `MethodCall` not
+`StaticMethodCall`) is correctly REJECTED (`E0507: call to \`run\` requires
+capabilities [fs:read] not granted to caller`, exit 1, both `kryos check`
+and `kryos run`) — confirming the static-vs-instance call shape, not
+something generic about a struct-hosted hot fn-typed parameter, is what
+defeats the guard.
+
+Not chased further (no compiler changes this session, per task
+instructions). Suggested fix: give `accumulate_hot_extra_caps` a real
+3-state `ReceiverKind { None, Instance, ActorHandler }` (or pass
+`is_static: bool` separately from `is_method`) instead of collapsing
+method-vs-static into one `is_method_or_static: bool`, so a static call's
+own index-0 argument is never treated as an implicit receiver; re-run
+`security_gate.sh` plus this repro and item 33's both ways before changing.
+
+---
+
 ### 30. LIVE CAPABILITY ESCAPE — a fn-bearing struct field reached through an ACCESSOR CALL (`get_box(h).f()` / `h.get_box().f()`) instead of a direct field-access chain defeats `deny!()` on BOTH enforcement modes (RED TEAM round 7, cap-escape lens, found 2026-08-06) — NOT FIXED. Superseded as "highest priority" by item 32 (2026-08-06 re-adjudication): item 32 requires no actor/accessor machinery at all and is structurally more general. Both are open; fixing one does not fix the other.
 
 Repros: `tests/security/attack_container_via_accessor_fn_call.kry` (free

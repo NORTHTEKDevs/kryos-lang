@@ -1,0 +1,73 @@
+// ADVERSARIAL PROBE (infer-wrong lens, round 5, 2026-08-06): a DIFFERENT
+// blind spot from LEDGER item 33 (actor-handler `has_self_offset` wrongly
+// FALSE) -- this is the mirror-image bug, wrongly TRUE, for a STATIC
+// method call.
+//
+// `accumulate_hot_extra_caps` (checker.rs ~2864-2891) computes:
+//   has_self_offset = is_method_or_static && !actor_handler_names.contains(callee)
+// and BOTH call sites that invoke it pass a literal `true` for
+// `is_method_or_static`: `Expr::MethodCall` (checker.rs ~3889) AND
+// `Expr::StaticMethodCall` (checker.rs ~3919) -- there is no branch that
+// distinguishes a real receiver-bearing method call from a static one.
+//
+// A static method (`impl Invoker { fn run(f: fn()->str) -> str { .. } }`,
+// no `self` parameter, called `Invoker::run(reader)` -- parses as
+// `Expr::StaticMethodCall`, confirmed by reading kryos-parser/src/parser.rs
+// ~2586-2599) has NO implicit receiver slot: its own `params[0]` IS the
+// first real, caller-supplied argument. `compute_hot_params`'s Seed A
+// indexes `params.iter().enumerate()` directly (no offset at DECLARATION
+// time, correctly, since a static method's params list has no `self`), so
+// `hot_params["run"] = {0: {[]}}` -- the hot fn-typed parameter is at index
+// 0. But `accumulate_hot_extra_caps`, at the CALL site, unconditionally
+// applies `arg_idx = i.checked_sub(1)` whenever `has_self_offset` is true --
+// for `i == 0` this returns `None`, and the whole hot-index entry is
+// silently `continue`d past (see the comment there: "hot index 0 is `self`
+// for a method -- never a caller-supplied arg"). For a STATIC call this
+// comment is simply false: index 0 IS a caller-supplied arg, and the
+// closure's real authority is dropped from `extra` entirely -- never
+// charged to the call site, never charged to any deferred caller either
+// (this is the FnCall-shaped machinery's job, and it never even resolves
+// `Invoker::run` as a `FnCall` since it's parsed as `StaticMethodCall`).
+//
+// Net effect: `Invoker::run(reader)`'s own inferred requirement comes out
+// completely EMPTY -- not `all`, not `[fs:read]` -- inside a `deny!(fs:read)`
+// block, even though the closure it invokes needs `fs:read`. Confirmed
+// live against `compiler/target/release/kryos.exe`, no compiler changes:
+//
+//   $ kryos check tests/security/attack_static_method_hotparam_offset.kry
+//   (no errors, exit 0)
+//   $ kryos run tests/security/attack_static_method_hotparam_offset.kry
+//   STATIC-METHOD OFFSET LEAK: TOPSECRET-STATIC-OFFSET-7a6b5c
+//   $ echo $?
+//   0
+//   $ kryos check --strict-capabilities tests/security/attack_static_method_hotparam_offset.kry
+//   (no errors, exit 0)
+//
+// Positive control: `attack_static_method_hotparam_offset_control.kry`
+// calls the IDENTICAL shape as an INSTANCE method (`inv.run(reader)`,
+// `MethodCall` not `StaticMethodCall`) and is correctly REJECTED
+// (`E0507: call to \`run\` requires capabilities [fs:read]`, exit 1, both
+// `check` and `run`) -- confirming the static-vs-instance call shape, not
+// something generic about a struct-hosted hot fn-typed parameter, is what
+// defeats the guard.
+struct Invoker { tag: i64 }
+
+impl Invoker {
+    fn run(f: fn() -> str) -> str {
+        return f()
+    }
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_static_method_hotparam_offset_secret.txt")
+    deny!(fs:read) {
+        let leaked = Invoker::run(reader)
+        println("STATIC-METHOD OFFSET LEAK: " + leaked)
+    }
+}
