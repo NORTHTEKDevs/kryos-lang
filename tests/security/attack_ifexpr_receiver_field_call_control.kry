@@ -1,0 +1,25 @@
+// POSITIVE CONTROL for attack_ifexpr_receiver_field_call.kry -- identical
+// scenario but the receiver is a DIRECT `let`-bound value (`a.f()`), no
+// `if`/`else` indirection. Confirms `deny!(fs:read)` correctly rejects the
+// ordinary direct-field-call shape, isolating the `if`-expression receiver
+// (not something generic about this scenario/struct shape) as what defeats
+// the guard in the sibling attack file.
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    let a: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = a.f()
+        println("SHOULD NOT PRINT: " + leaked)
+        sleep(100)
+    }
+}

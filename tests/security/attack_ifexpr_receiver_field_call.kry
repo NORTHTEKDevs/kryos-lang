@@ -1,0 +1,38 @@
+// SECURITY RED-TEAM PROBE (assault round 4, strip-the-effect lens, 2026-08-06).
+//
+// Hypothesis: `decompose_container_path` (checker.rs ~line 932) only has arms
+// for `Expr::Identifier` / `Expr::FieldAccess` / `Expr::IndexAccess` -- every
+// OTHER expression form used as a `.field()` call's RECEIVER hits the `_ =>
+// None` catch-all. `resolve_method_field_invoke_caps` and
+// `resolve_actor_self_field_invoke_caps` both bail out to
+// `CapabilitySet::empty()` (NOT the fail-closed `all`) when decomposition
+// fails. LEDGER item 30 already proved this for a `FnCall` receiver
+// (`get_box(h).f()`). This probe tests a DIFFERENT, more ordinary receiver
+// shape the item-30 writeup never covered: a plain `if`/`else` CONDITIONAL
+// EXPRESSION used directly as the receiver, with no accessor function and no
+// container/HOF machinery at all -- just picking between two struct values
+// holding the same privileged closure field.
+//
+// No compiler changes made in this session (existing
+// compiler/target/release/kryos.exe used read-only throughout).
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    let cond: bool = true
+    let a: Box = Box { f: reader }
+    let b: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = (if cond { a } else { b }).f()
+        println("IFEXPR-RECEIVER LEAK: " + leaked)
+        sleep(100)
+    }
+}

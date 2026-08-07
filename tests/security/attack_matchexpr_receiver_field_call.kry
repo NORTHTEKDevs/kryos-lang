@@ -1,0 +1,37 @@
+// SECURITY RED-TEAM PROBE (assault round 4, strip-the-effect lens, 2026-08-06).
+//
+// Same root cause as attack_ifexpr_receiver_field_call.kry
+// (`decompose_container_path` has no arm for `Expr::MatchExpr`, so
+// `resolve_method_field_invoke_caps` bails to `CapabilitySet::empty()`
+// instead of the fail-closed `all`) but through a MATCH expression receiver
+// instead of an `if`/`else` receiver -- a distinct AST node
+// (`Expr::MatchExpr`, not `Expr::IfExpr`), exercising the same gap through
+// the language's other conditional-value form (round-4 brief explicitly
+// names "match ... bindings" as a route to probe).
+//
+// No compiler changes made in this session (existing
+// compiler/target/release/kryos.exe used read-only throughout).
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    let flag: i64 = 1
+    let a: Box = Box { f: reader }
+    let b: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = (match flag {
+            1 => a,
+            _ => b,
+        }).f()
+        println("MATCHEXPR-RECEIVER LEAK: " + leaked)
+        sleep(100)
+    }
+}

@@ -332,6 +332,84 @@ until the precise trace exists).
 
 ---
 
+### 35. LIVE CAPABILITY ESCAPE — item 30's root cause is NOT specific to accessor-CALL receivers: `decompose_container_path`'s `_ => None` catch-all fails closed to `CapabilitySet::empty()` (not `all`) for ANY non-Identifier/FieldAccess/IndexAccess receiver, and an ordinary `if`/`else` OR `match` conditional expression used directly as a `.field()` call's receiver is just as effective a bypass as an accessor call — no function call, actor, or container/HOF machinery involved at all (assault round 4, strip-the-effect lens, found 2026-08-06) — NOT FIXED
+
+Repros: `tests/security/attack_ifexpr_receiver_field_call.kry` (`if`/`else`
+receiver) and `tests/security/attack_matchexpr_receiver_field_call.kry`
+(`match` receiver). Both verified LIVE against the existing
+`compiler/target/release/kryos.exe`, HEAD `4b2afc4`, no compiler changes:
+
+```
+$ kryos run tests/security/attack_ifexpr_receiver_field_call.kry
+IFEXPR-RECEIVER LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+DONE_RC=0
+$ kryos check --strict-capabilities tests/security/attack_ifexpr_receiver_field_call.kry
+DONE_RC=0   (no diagnostics at all)
+
+$ kryos run tests/security/attack_matchexpr_receiver_field_call.kry
+MATCHEXPR-RECEIVER LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+DONE_RC=0
+$ kryos check --strict-capabilities tests/security/attack_matchexpr_receiver_field_call.kry
+DONE_RC=0   (no diagnostics at all)
+```
+
+**Positive control, same session** (`tests/security/attack_ifexpr_receiver_
+field_call_control.kry`): the identical scenario with a plain direct
+receiver (`a.f()`, no `if`/`match` indirection) inside the same
+`deny!(fs:read)` block is correctly REJECTED under DEFAULT inferred mode
+(no `--strict-capabilities` needed): `error[E0507]: call to \`f\` requires
+capabilities [fs:read] not granted to caller`, `DONE_RC=1` — confirming the
+conditional-expression receiver, not something generic about the struct
+shape or scenario, is what defeats the guard.
+
+Root cause, confirmed by direct source read of `checker.rs`: exactly item
+30's mechanism, generalized. `decompose_container_path` (~line 932) has
+arms only for `Expr::Identifier`, `Expr::FieldAccess`, `Expr::IndexAccess`;
+`_ => None` for every other `Expr` variant. `resolve_method_field_invoke_
+caps` (~line 3241) and `resolve_actor_self_field_invoke_caps` (~line 3320)
+both do `let Some((root, path)) = decompose_container_path(object) else {
+return CapabilitySet::empty() }` — a bare empty set, not `docs/capability-
+soundness.md` invariant 22's mandated `Capability::All` fallback for an
+unresolvable receiver. In the `MethodCall` branch of `check_expr` (~line
+4636), `extra` is built by unioning `compute_hot_extra_caps(method, ...)`
+(empty — `f` is a struct field name, not a tracked hot parameter/function)
+with the two resolvers above (also empty, decompose failed) and passed to
+`enforce_callee_name("f", ..., &extra)`; since `f` is not in
+`fn_capabilities` either (it is a field, not a declared function), the
+union is empty and the call passes with **zero enforcement of any kind** —
+not even a diagnostic under `--strict-capabilities`.
+
+Item 30's own writeup already names an `IfExpr`/`MatchExpr`-style catch-all
+gap in its "suggested direction" section as a hypothetical generalization,
+but its OWN executed repros only covered a call-expression (`FnCall`)
+receiver. This item is the first LIVE, EXECUTED confirmation that the same
+`_ => None` catch-all is reachable through the language's two ordinary
+conditional-VALUE forms (`if`/`else` used as an expression, `match` used as
+an expression — both are everyday Kryos idioms per gotcha #3, not exotic
+constructs), independent of item 30's accessor-function angle. Any future
+`Expr` variant reaching a `.field()` receiver position through this same
+catch-all (a parenthesized `Block` value, a `ComptimeBlock`, a `Borrow`/
+`Deref`/`SharedExpr`-wrapped otherwise-decomposable path, `Await`, ...) is
+presumptively exploitable the same way and was NOT individually tested this
+round (scope: two concrete repros proving the class, not an exhaustive
+sweep of every remaining `Expr` variant).
+
+Not chased further (no compiler changes this round, per task instructions).
+The fix is the SAME one item 30 already proposes and is not duplicated
+here: make the `None`-from-`decompose_container_path` case in both
+resolvers return `all()` instead of `empty()` (matching every other
+unresolvable-provenance shape in this file), OR extend
+`decompose_container_path` itself to recurse into `IfExpr`/`MatchExpr`
+(unioning both/all branches' resolved paths, same index-insensitive
+philosophy `PathStep::Index` already uses for array/map literals) for a
+precise, non-over-rejecting fix. Fixing item 30's `FnCall` case alone,
+without addressing the shared `_ => None` catch-all, would NOT close this
+item — confirmed by reading the fix suggested in item 30 against this
+item's control, which exercises the identical code path via a different
+`Expr` variant.
+
+---
+
 ### 17. SUPPLY CHAIN: a dependency's explicit `git = "..."` / `github:org/repo@ver` source in `kryos.toml` is NEVER consulted by `kryos pkg install`/`update` — silently replaced by a pure by-name lookup against the single hardcoded official registry, or a flat failure, either way ignoring what the manifest says (RED TEAM round 3, toolchain-supply lens, found 2026-08-04) — NOT FIXED
 
 `tests/security/pkg_manifest_git_source_ignored.sh`. `kryos-package/src/
