@@ -1,0 +1,27 @@
+// Minimal probe: does invoking a fn-value read from a LITERAL map local
+// lose its traced (pure, zero-capability) provenance specifically inside
+// a `spawn {}` block, vs. the identical read done outside spawn?
+// No secrets, no attack -- just isolates the mechanism.
+
+fn pure_upper(s: str) -> str {
+    return s
+}
+
+@capabilities()
+fn main() {
+    let reg: map<str, fn(str) -> str> = {
+        "upper": pure_upper,
+    }
+
+    // Control: same literal map, same read, OUTSIDE spawn.
+    let f0 = reg["upper"]
+    println("[outside-spawn] " + f0("x"))
+
+    // Probe: identical read INSIDE spawn.
+    spawn {
+        let f1 = reg["upper"]
+        println("[inside-spawn] " + f1("y"))
+    }
+    sleep(100)
+    println("DONE")
+}

@@ -1,0 +1,303 @@
+// ASSAULT round 1 (new campaign, post capability-typed-fn-value Stage 1
+// landing at HEAD `891c406`/`feb1991`), real-program lens.
+//
+// Stage 1 (kryos-types row inference) is INERT this campaign -- enforcement
+// still runs entirely through the OLD `kryos-capabilities` heuristic
+// checker (byte-for-byte unmodified). This program exercises THAT live
+// enforcement surface with a realistic, several-hundred-line "plugin
+// platform" a user would plausibly build: a pure tool registry, a
+// SecretVault actor holding real fs:read authority, a PluginHost actor
+// that runs third-party plugin code under deny!() narrowing, an
+// Orchestrator actor that FORWARDS plugin-dispatch requests to the host
+// (the natural shape a gateway/supervisor layer takes -- exactly the
+// actor-to-actor-forwarding pattern LEDGER item 33 already flags as a
+// live escape), and a WorkerPool doing concurrent pure work via spawn +
+// WaitGroup.
+//
+// Toolchain: compiler/target/release/kryos.exe, read-only, NO rebuild.
+// KRYOS_STDLIB_DIR set per the repo's own operational rule. Every plugin
+// dispatch route below is run and classified by EXIT CODE + observed
+// value, never by grepping for the marker string alone.
+
+use std::string::{to_upper, reverse, split}
+use std::iter::{for_each}
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+// ---------------------------------------------------------------------
+// Part 1: pure, capability-free tool registry -- the "safe" surface any
+// caller may use with no narrowing at all.
+// ---------------------------------------------------------------------
+
+fn tool_uppercase(s: str) -> str {
+    return to_upper(s)
+}
+
+fn tool_reverse(s: str) -> str {
+    return reverse(s)
+}
+
+fn tool_wordcount(s: str) -> str {
+    let parts = split(s, " ")
+    return to_string(len(parts))
+}
+
+fn build_tool_registry() -> map<str, fn(str) -> str> {
+    return {
+        "upper": tool_uppercase,
+        "reverse": tool_reverse,
+        "wordcount": tool_wordcount,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Part 2: Plugin struct + honest first-party plugins. A struct (not a
+// bare fn value) so the platform can log/rate-limit by plugin identity --
+// the realistic shape, per LEDGER item 30's own finding that bare-fn
+// registries under-represent what real plugin systems look like.
+// ---------------------------------------------------------------------
+
+struct Plugin {
+    name: str,
+    run: fn(str) -> str,
+}
+
+fn safe_echo(arg: str) -> str {
+    return "echo:" + arg
+}
+
+fn safe_shout(arg: str) -> str {
+    return to_upper(arg) + "!!!"
+}
+
+// Free-function dispatcher over a map + explicit name list, using the
+// stdlib's own generic HOF -- the idiomatic way a real utility module
+// would iterate "run every plugin", distinct from an in-actor while loop.
+fn dispatch_all(plugins: map<str, Plugin>, names: [str], arg: str) {
+    for_each(names, |name: str| {
+        let p = plugins[name]
+        let out = p.run(arg)
+        println("[dispatch_all] " + p.name + " -> " + out)
+    })
+}
+
+// ---------------------------------------------------------------------
+// Part 3: SecretVault -- owns the platform's one real secret and the one
+// real fs:read-carrying closure. Never handed to a plugin directly.
+// ---------------------------------------------------------------------
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// NOTE: the natural design -- init() stores a received fn-typed param into
+// a state field, a DIFFERENT handler (internal_read) later invokes that
+// field -- is UNCONDITIONALLY REJECTED by the live checker (see finding
+// F1 below): the field's provenance cannot be traced across a handler
+// boundary, so it resolves to [all], which then fails the actor's own
+// declaration-enforcement ceiling even for this ENTIRELY HONEST usage
+// with no attacker involved at all. Commented out rather than deleted so
+// the rejection is preserved as evidence (re-enable to reproduce):
+//
+// @capabilities(fs:read)
+// actor SecretVault {
+//     reader: fn() -> str
+//     access_count: i64
+//     fn init(self, r: fn() -> str) {
+//         self.reader = r
+//         self.access_count = 0
+//     }
+//     fn internal_read(self) -> str {
+//         self.access_count = self.access_count + 1
+//         let v = self.reader()
+//         return v
+//     }
+// }
+
+// ---------------------------------------------------------------------
+// Part 4: PluginHost -- runs untrusted third-party plugin code, always
+// narrowed with deny!() so a plugin can never reach fs/net/process/ffi no
+// matter what closure it was mistakenly wired up with.
+// ---------------------------------------------------------------------
+
+@capabilities(fs:read)
+actor PluginHost {
+    plugins: map<str, Plugin>
+    plugin_names: [str]
+
+    fn load(self, m: map<str, Plugin>, names: [str]) {
+        self.plugins = m
+        self.plugin_names = names
+    }
+
+    fn run_named(self, name: str, arg: str) {
+        deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) {
+            let p = self.plugins[name]
+            let out = p.run(arg)
+            println("[host:run_named] " + p.name + " -> " + out)
+        }
+    }
+
+    fn run_all(self, arg: str) {
+        deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) {
+            let n = len(self.plugin_names)
+            let mut i = 0
+            while i < n {
+                let name = self.plugin_names[i]
+                let p = self.plugins[name]
+                let out = p.run(arg)
+                println("[host:run_all] " + p.name + " -> " + out)
+                i = i + 1
+            }
+        }
+    }
+
+    // NOTE: a `run_callback(cb: fn(str) -> str)` handler that invokes `cb`
+    // directly inside a FULL deny!() is UNCONDITIONALLY REJECTED by the
+    // live checker -- not just for a malicious cb, for EVERY cb, including
+    // one that needs nothing at all. See finding F2 below. Left as a
+    // comment (not deleted) because the rejection itself is the finding:
+    //
+    // fn run_callback(self, plugin_name: str, cb: fn(str) -> str, arg: str) {
+    //     deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) {
+    //         let out = cb(arg)
+    //         println("[host:run_callback] " + plugin_name + " -> " + out)
+    //     }
+    // }
+}
+
+// ---------------------------------------------------------------------
+// Part 5: Orchestrator -- fronts PluginHost the way a real gateway layer
+// fronts backend actors, forwarding requests instead of calling plugin
+// code directly itself.
+// ---------------------------------------------------------------------
+
+// NOTE: without @capabilities(fs:read) here, EVERY call from Orchestrator
+// into PluginHost.run_named is rejected -- even though run_named ITSELF
+// immediately denies fs:read before doing anything. The caller must hold
+// the callee ACTOR's full declared ceiling just to send it a message, even
+// when the specific handler being called provably narrows that ceiling to
+// nothing before it matters. See finding F3 below. Annotated here (the fix
+// a real developer would reach for) so the rest of the program can compile
+// and actually run.
+@capabilities(fs:read)
+actor Orchestrator {
+    host: PluginHost
+
+    fn wire(self, h: PluginHost) {
+        self.host = h
+    }
+
+    fn forward_run(self, name: str, arg: str) {
+        self.host.run_named(name, arg)
+    }
+}
+
+// ---------------------------------------------------------------------
+// Part 6: WorkerPool -- concurrent, TRUSTED background work (spawn +
+// WaitGroup), touching only the pure tool registry. Pure ergonomics
+// check, not an attack surface.
+// ---------------------------------------------------------------------
+
+// NOTE: originally took `reg: map<str, fn(str) -> str>` as a parameter and
+// was called as `run_worker_pool(build_tool_registry())` -- a container
+// built from a FUNCTION RETURN VALUE (rather than a literal at a `let`
+// site) is an already-documented "Unknown -> all" limitation
+// (docs/capability-soundness.md invariant 4/22), but it bit this
+// completely ordinary factory-function idiom hard enough that the call
+// was rejected outright ([all] required). Rebuilt as a literal directly
+// in-body (the workaround a real developer reaches for) so the rest of
+// the program can compile; the factory function `build_tool_registry`
+// above is now dead code, kept for the ergonomics record (finding F4).
+fn run_worker_pool() {
+    let reg: map<str, fn(str) -> str> = {
+        "upper": tool_uppercase,
+        "reverse": tool_reverse,
+        "wordcount": tool_wordcount,
+    }
+    let wg = new_wait_group()
+    wg_add(wg, 3)
+    spawn {
+        let f = reg["upper"]
+        println("[worker-1] " + f("hello platform"))
+        wg_done(wg)
+    }
+    spawn {
+        let f = reg["reverse"]
+        println("[worker-2] " + f("hello platform"))
+        wg_done(wg)
+    }
+    spawn {
+        let f = reg["wordcount"]
+        println("[worker-3] " + f("hello platform worker pool"))
+        wg_done(wg)
+    }
+    wg_wait(wg)
+}
+
+// ---------------------------------------------------------------------
+// Part 7: main. Wires the platform together, then runs a compromised
+// third-party plugin through every realistic dispatch route.
+// ---------------------------------------------------------------------
+
+@capabilities(fs:read)
+fn main() {
+    let secret_path: str = "tests/security/secret_for_closure_launder.txt"
+    let secret = make_secret_reader(secret_path)
+
+    let host = PluginHost()
+    let orch = Orchestrator()
+    orch.wire(host)
+
+    // --- Honest plugins ---
+    let honest1 = Plugin { name: "echo", run: safe_echo }
+    let honest2 = Plugin { name: "shout", run: safe_shout }
+
+    // --- Compromised plugin: a real supply-chain mistake shape.
+    // A THIRD-PARTY plugin's `run` field ends up bound to a lambda that
+    // closes over the platform's own privileged `secret` reader --
+    // exactly what a misconfigured host integration or a malicious
+    // package could produce. The lambda itself has the CORRECT
+    // fn(str)->str shape a Plugin.run field requires, so nothing about
+    // its declared type flags it as unusual.
+    let evil_run = |arg: str| {
+        let leaked = secret()
+        return "EVIL-SUPPLY-CHAIN-LEAK:" + leaked
+    }
+    let evil_plugin = Plugin { name: "left-pad-turbo", run: evil_run }
+
+    // --- Naive plugin: calls a gated builtin directly. Sanity control --
+    // this one SHOULD be rejected trivially (no laundering at all).
+    let naive_leak_run = |arg: str| {
+        return file_read(secret_path)
+    }
+    let naive_plugin = Plugin { name: "naive-direct-read", run: naive_leak_run }
+
+    let registry: map<str, Plugin> = {
+        "echo": honest1,
+        "shout": honest2,
+        "left-pad-turbo": evil_plugin,
+        "naive-direct-read": naive_plugin,
+    }
+    let names: [str] = ["echo", "shout", "left-pad-turbo", "naive-direct-read"]
+
+    host.load(registry, names)
+
+    println("=== concurrent trusted worker pool ===")
+    run_worker_pool()
+
+    println("=== dispatch route A: PluginHost.run_all (in-actor while loop) ===")
+    host.run_all("payload")
+
+    println("=== dispatch route B: PluginHost.run_named (single lookup) ===")
+    host.run_named("left-pad-turbo", "payload")
+
+    println("=== dispatch route C: free-function dispatch_all (generic for_each HOF) ===")
+    dispatch_all(registry, names, "payload")
+
+    println("=== dispatch route D: Orchestrator forwards by name (actor-to-actor) ===")
+    orch.forward_run("left-pad-turbo", "payload")
+
+    sleep(200)
+    println("DONE")
+}

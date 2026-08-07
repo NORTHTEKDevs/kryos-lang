@@ -12,6 +12,137 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## ASSAULT round 1 (new campaign, post capability-typed-fn-value Stage 1), real-program lens — zero compiler changes this session
+
+Wrote a real, several-hundred-line "plugin platform" program (pure tool registry, a SecretVault
+actor holding real `fs:read` authority, a `PluginHost` actor running third-party plugins under
+`deny!()`, an `Orchestrator` actor forwarding requests actor-to-actor, a `spawn`+`WaitGroup`
+concurrent worker pool) against the existing `compiler/target/release/kryos.exe`, read-only, no
+rebuild. Result: **no new LIVE CAPABILITY ESCAPE found** — the checker correctly REJECTED the
+compromised-plugin dispatch before it could even run, both `kryos run` (inferred, default) and
+`kryos check --strict-capabilities` (5 and 7 errors respectively). That is a genuinely solid
+result for the attack surface itself. But getting there required the program to be rewritten
+around three separate FALSE-REJECTION/over-approximation defects that make honest, non-malicious
+code un-writable — reported here because "a sound system nobody can write code in does not ship."
+Repro: `tests/security/assault_r1_real_program_plugin_platform.kry` (comments mark exactly what
+was removed/reworked and why, each tagged Fn below); minimal isolation probe:
+`tests/security/assault_r1_probe_spawn_literal_container.kry`.
+
+- **F1 — storing a bare fn-typed PARAMETER into an actor state field in one handler, then
+  invoking that field from a DIFFERENT handler, is unconditionally rejected even with zero
+  attacker involvement.** `SecretVault.init(self, r: fn()->str) { self.reader = r }` /
+  `SecretVault.internal_read(self) { self.reader() }` — `internal_read` is never even CALLED
+  anywhere in the program, yet `kryos check --strict-capabilities` rejects it: `call to \`reader\`
+  requires capabilities [all] not granted to caller`. Actors are declaration-enforced per-handler
+  in both modes (invariant 17), and the field's provenance can't be traced across the handler
+  boundary (the hot-param mechanism is per-declaration), so it resolves to `Unknown -> all`, which
+  then fails the actor's own ceiling — for what is the single most natural "vault holds a
+  capability-gated accessor closure" shape. Not independently root-caused this session.
+- **F2 — an actor handler `run_callback(cb: fn(str)->str)` that invokes `cb` directly inside a
+  FULL `deny!()` is unconditionally rejected for EVERY possible `cb`, safe or not.** Per invariant
+  12, a `deny!` interposed before invoking a bare fn-typed param forces the charge immediately, to
+  `[all]`, against whatever the (now-empty) narrowed scope holds — which can never be satisfied
+  regardless of what's actually passed. This makes "a sandbox host that executes an opaque plugin
+  callback under narrowed capabilities" — arguably the single most idiomatic way to implement a
+  capability-gated plugin sandbox — completely unwritable, pushing a real developer toward either
+  removing the `deny!()` (defeating the actual security boundary) or avoiding opaque callbacks
+  entirely.
+- **F3 — calling ANY handler on an actor declared `@capabilities(X)` requires the CALLER to hold
+  X, even when that specific handler's body immediately `deny!()`s X before doing anything.**
+  `Orchestrator` (declared with no capabilities) calling `PluginHost.run_named` (whose entire body
+  is wrapped in `deny!(fs:read, ...)`) is rejected: `function \`run_named\` has @capabilities(fs:read)
+  but caller lacks [fs:read]`. This means a properly-sandboxed actor (the whole point of which is
+  to safely narrow authority before touching untrusted code) cannot be called by a legitimately
+  less-privileged component — the caller must hold the callee's full raw ceiling just to send it a
+  message, undermining the least-privilege value of delegating to a sandboxing actor at all. Fixed
+  in the repro by giving `Orchestrator` the same `@capabilities(fs:read)` (the workaround a real
+  developer reaches for), which of course also defeats some of the intended privilege separation.
+- **F4 — a tool/plugin registry built by an ordinary factory function
+  (`fn build_registry() -> map<str, fn(...)->...> { return {...} }`) and passed as an argument is
+  unresolvable (`Unknown -> all`).** This is the ALREADY-DOCUMENTED invariant-4/22 cost
+  (`docs/capability-soundness.md` §6), re-confirmed here as genuinely painful in practice: it
+  blocked the single most natural way to factor a reusable registry-builder, forcing every
+  registry in the repro to be inlined as a literal at its point of use instead. Not a new finding;
+  listed for completeness since it fired immediately on ordinary code.
+- **F5 — NEW, freshly verified via a minimal isolated control/probe pair, root-caused by direct
+  source read: a `let`-bound closure/container LITERAL defined outside a `spawn {}` block works
+  fine when read and invoked inside the spawn body if it's captured — but a closure/fn-value that
+  is BOTH looked up from a container AND locally re-bound (`let f1 = reg["upper"]`) INSIDE the
+  spawn block is unconditionally rejected, even for a zero-capability function under
+  `@capabilities()` (explicit empty) on `main`.** Minimal repro
+  (`tests/security/assault_r1_probe_spawn_literal_container.kry`): the IDENTICAL
+  `let f = reg["upper"]; f("x")` sequence compiles clean outside `spawn {}` and is rejected
+  (`call through a function value requires capabilities [all]`) inside it, one file, same `reg`,
+  same run. Root cause confirmed by direct source read of `kryos-capabilities/src/checker.rs`:
+  `build_local_closure_caps_block` and `build_local_container_lits_block` — the two builders that
+  populate `local_caps`/`local_container_lits` before the real per-call checker consults them —
+  have an existing, already-fixed arm for the sibling case of a bare `{ }` scoping block
+  (`Stmt::Expr { expr: Expr::Block {..} }`, ~2344-2358 and ~2701-2714, whose own code comment
+  describes this EXACT failure mode: "a closure let-bound INSIDE a bare block was never added to
+  locals... forcing the enclosing function to declare @capabilities(all) for a closure that in
+  fact needs nothing") but **no matching arm exists for `Stmt::Spawn`** (grepped the whole file:
+  `Stmt::Spawn` appears only at lines 1157/1364/3742/4561, none inside either builder) — so a
+  `spawn {}` block's own internal `let`s are invisible to both trackers, the unfixed sibling of an
+  already-diagnosed-and-fixed bug class. Practical impact: a `spawn`-based concurrent worker pool
+  dispatching from a shared, provably-safe tool registry — exactly the "pool of concurrent
+  workers" shape this round's own brief asked for — is unwritable without either avoiding `spawn`
+  for such dispatch or over-granting `@capabilities(all)` to the enclosing function, which then
+  covers everything else that function does too. This is a false-rejection (fail-closed, not a
+  security hole) but a real security-ERODING pressure: it trains developers to reach for `all` to
+  unblock ordinary safe concurrency. Not chased to a fix this session (no compiler changes, per
+  task instructions).
+
+No new LIVE CAPABILITY ESCAPE found this round — the 7 already-open trust-model items (30, 32,
+33, 34, 36, 37, plus the earlier wrapper-closure class already closed) remain the current list;
+none were independently re-verified this session (out of scope: real-program lens, not
+re-verification). F1-F5 above are the round's actual yield.
+
+---
+
+## VERIFICATION SESSION (2026-08-07, HEAD `feb1991`) — independent re-check, zero fixes applied this session
+
+Verification-only session (task: adjudicate whether the beta gate clears after the capability-typed
+fn-value Stage 1 landed, `891c406`). Full writeup: `docs/LAUNCH-READINESS.md` (rewritten, dated
+2026-08-07, supersedes the 2026-08-06 version below in the same nested-history pattern that document
+already uses). Summary, evidence not repeated here (see that document's §1/§2/§5 for full commands
+and output):
+
+- **Re-ran 6 existing open-item attack files live** against `compiler/target/release/kryos.exe`
+  (no rebuild): `attack_container_param_alias_defeats_hotparam.kry`,
+  `attack_actor_state_forloop_alias.kry`, `attack_deny_pipe_bare_ident_call.kry` (item 36),
+  `attack_deref_borrow_param_defeats_field_resolver.kry` (item 37),
+  `attack_reassign_local_defeats_hotparam.kry`, `attack_deny_bare_closure_reassign_escape.kry`.
+  **All 6 still LEAK, rc=0, secret printed, both `kryos run` and `--strict-capabilities`.** Their
+  `_control.kry` counterparts still correctly reject (`E0507`, rc=1) — confirms these are real,
+  targeted gaps, not a broken harness.
+- **`tests/security_gate.sh` re-run: PASS** (84/84, none of the above 6 files are wired into it —
+  the "test exists, gate silent" gap flagged in the 2026-08-06 doc is still present).
+- **`tests/ecosystem_check.sh` and `python tools/docs-examples/check.py` re-run: PASS** (74/74 docs).
+- **`find_companion_container_arg` confirmed genuinely deleted** (grepped `kryos-capabilities/src/`,
+  zero live references, two comments only).
+- **NEW finding, this session, via a novel probe (not a pre-existing test file):** a `dyn Trait`
+  method that *returns* a capability-carrying closure loses its row in the NEW `kryos-types`
+  inference (`KRYOS_DUMP_FN_EFFECTS` shows `main`'s row as an unresolved `{?C3}`, never bound to
+  `{fs:read}`). **No live security regression today** — `kryos-capabilities/checker.rs` is
+  unmodified this stage and independently rejects the program twice (`E0507` at both the method
+  call and the invoke). This is a forward-looking risk: if Stage 2/3 wires this inference to
+  enforcement without first fixing dyn-dispatch row propagation, this reproduces the "Unknown must
+  mean All, never nothing" violation class. Two other novel probes this session (`Result::Ok` payload
+  via `?` inside `deny!()`; `while let Some(f) = ...` Option-destructure inside `deny!()`) found
+  nothing — both correctly rejected, `[all]`, both modes.
+- **CI on HEAD `feb1991`: `in_progress` 2h25m+ at review time**; the 4 prior pushes show
+  cancelled/cancelled/failure/cancelled — not a clean green streak. Disclosed, not diagnosed further
+  this session (no budget to pull failure logs or wait out the in-progress run).
+- **NOT run this session** (disclosed gap, not silent): `tools/loop/kryos-loop.sh gates 2`,
+  `compiler/self-host/test_bootstrap.sh` alone. Both are known-expensive/contention-prone in this
+  shared workspace; run before the next commit that touches `kryos-capabilities`/`kryos-types`.
+- **VERDICT: unchanged — LAUNCH-AS-BETA, "capability-safe" still blocked.** At least 7 distinct
+  "LIVE CAPABILITY ESCAPE" items remain open (30, 32, 33, 34, 35 [two distinct bugs share this
+  number in the OPEN section below — itself a small ledger-hygiene defect worth fixing next time
+  numbers are touched], 36, 37). None were fixed this session by design (verification-only mandate).
+
+---
+
 ## RE-ADJUDICATION (2026-08-06) — supersedes the "FINAL LAUNCH SYNTHESIS" section below on current status
 
 The section below is dated 2026-08-05 at HEAD `d29ac99` and states item 10 (closed) as the
@@ -100,6 +231,63 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 ---
 
 ## OPEN — ranked
+
+### 37. LIVE CAPABILITY ESCAPE — a `&`/`*` (Borrow/Deref) receiver indirection on a fn-bearing struct field defeats `deny!()`, on BOTH enforcement modes and BOTH backends (assault round 6, classic-regression lens, found 2026-08-07) — NOT FIXED
+
+Repro: `tests/security/attack_deref_borrow_param_defeats_field_resolver.kry`
+(attack) + `..._control.kry` (control, identical program calling `b.f()`
+directly with no `&`/`*` — correctly rejected `E0507`). Verified live
+against the existing `compiler/target/release/kryos.exe`, no compiler
+changes, 3/3 repeated runs plus AOT:
+
+```
+$ kryos run tests/security/attack_deref_borrow_param_defeats_field_resolver.kry
+DEREF-BORROW LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+RC=0            (x3, stable)
+$ kryos check --strict-capabilities tests/security/attack_deref_borrow_param_defeats_field_resolver.kry
+RC=0             (zero diagnostics)
+$ kryos build --release tests/security/attack_deref_borrow_param_defeats_field_resolver.kry -o /tmp/deref_attack.exe
+RC=0             (compiles clean)
+$ /tmp/deref_attack.exe
+DEREF-BORROW LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+RC=0             (AOT binary also leaks)
+$ kryos run tests/security/attack_deref_borrow_param_defeats_field_resolver_control.kry
+error[E0507]: call to `invoke_direct` requires capabilities [fs:read] not granted to caller
+RC=1
+```
+
+Shape: `fn invoke_via_deref(b: &Box) -> str { return (*b).f() }`, called as
+`invoke_via_deref(&b)` inside `deny!(fs:read)` in `main`, where `Box.f` holds
+an `fs:read` closure. Ordinary `&T`/`*T`/`&x`/`*x` surface syntax
+(`parser.rs:2400-2423`, `:3614-3625`) — not gated behind `unsafe`.
+
+Root cause: this is the SAME catch-all items 30/31 already diagnosed and
+explicitly flagged as untested for this exact shape (`docs/capability-
+soundness.md` update / LEDGER's own item-30 writeup: "a `Borrow`/`Deref`/
+`SharedExpr`-wrapped otherwise-decomposable path... is presumptively
+exploitable the same way and was NOT individually tested this round"). This
+item is that live execution. `decompose_container_path` (checker.rs:932-947)
+has arms only for `Identifier`/`FieldAccess`/`IndexAccess`; `Expr::Deref`/
+`Expr::Borrow` fall to `_ => None`. Both `resolve_method_field_invoke_caps`
+(checker.rs:3241-3246, `let Some((root,path)) = decompose_container_path(..)
+else { return CapabilitySet::empty() }`) and `compute_hot_params`'s
+structural walk (`walk_container_calls_expr`, checker.rs:1212, which calls
+`decompose_container_path` directly on the `MethodCall`'s `object` before
+separately recursing into `Deref`'s `inner`) fail open on this shape:
+neither the call site (`invoke_via_deref(&b)`) nor the callee body
+(`(*b).f()`) is charged anything, so total required capability for the
+whole chain is empty and the call passes inside `deny!(fs:read)` even though
+it invokes an `fs:read` closure at runtime.
+
+Not chased further (no compiler changes this session, per task
+instructions — shared workspace, existing binary used read-only
+throughout). Same fix direction as items 30/31: make the `None`-from-
+`decompose_container_path` case in both call sites fail CLOSED (`all()`)
+instead of `empty()`, or extend `decompose_container_path` to recurse
+through `Borrow`/`Deref`/`SharedExpr` (unwrap to the inner path, same as
+`walk_container_calls_expr` already does for its OWN unrelated recursion).
+
+---
 
 ### 36. LIVE CAPABILITY ESCAPE — the PIPE operator (`a |> f`) bypasses capability enforcement ENTIRELY for the callee, on BOTH backends and BOTH enforcement modes (assault round 5, deny-narrowing lens, found 2026-08-06/07) — NOT FIXED
 
