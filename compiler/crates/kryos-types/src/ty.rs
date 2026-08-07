@@ -118,20 +118,49 @@ impl CapBits {
 /// an ordinary `Type`. See `docs/capability-effects-spec.md` §1.3/§2.3.
 pub type CapVarId = u32;
 
-/// A capability row: a concrete lower bound plus zero or more still-open row
-/// variables. `vars` is kept SORTED + DEDUPED as a struct invariant so
-/// `#[derive(Eq, Hash)]` gives correct structural equality for free (an
-/// unsorted `Vec` would make two structurally-identical rows compare
-/// unequal depending on insertion order).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
-pub struct CapRow {
-    concrete: CapBits,
-    vars: Vec<CapVarId>,
+/// A capability row.
+///
+/// **Structural fail-closed guarantee (row-propagation stage,
+/// `docs/capability-effects-spec.md`, gap 2 in the stage-1 verifier's
+/// close-out list):** this is an ENUM, not a struct with a `Default` impl,
+/// specifically so "provenance is unknown" and "provenance is the empty
+/// set" are two constructions that cannot be confused or silently
+/// substituted for one another. There is deliberately no
+/// `impl Default for CapRow` — every site that needs a row MUST pick one of
+/// `closed`/`empty`/`var`/`unknown` explicitly; a hypothetical
+/// `CapRow::default()` that quietly meant "empty" is exactly the shape of
+/// bug that caused every prior "Unknown must mean all, never nothing"
+/// violation in this codebase's capability-checker history (see
+/// `docs/capability-soundness.md` invariant 22), just relocated into the
+/// new type-directed inference instead of the old syntax-directed checker.
+///
+/// - `Resolved { concrete, vars }` — a concrete lower bound plus zero or
+///   more still-open row VARIABLES (ordinary Hindley-Milner-style
+///   metavariables that WILL be bound by unification once enough of the
+///   program has been walked — see `InferenceEngine::cap_substitutions`).
+///   `vars` is kept SORTED + DEDUPED as a struct invariant so
+///   `#[derive(Eq, Hash)]` gives correct structural equality for free.
+/// - `Unknown` — provenance is not merely "not yet bound", it is
+///   PERMANENTLY UNRESOLVABLE by this design: the value's real behavior
+///   depends on a concrete implementation the checker cannot and never
+///   will identify statically (a `dyn Trait` dispatch or a generic
+///   trait-bound method call, where more than one — or zero yet-unwritten
+///   — `impl` could be the one that actually runs). Every operation below
+///   is defined so `Unknown` POISONS through it (`union`, `with_vars_
+///   replaced`) and so any site that needs to materialize a row into
+///   concrete bits (`concrete_bits`) gets `CapBits::ALL`, never
+///   `CapBits::EMPTY`, for `Unknown` — the fail-closed default is therefore
+///   the type's own structure, not a check a future call site has to
+///   remember to perform.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum CapRow {
+    Resolved { concrete: CapBits, vars: Vec<CapVarId> },
+    Unknown,
 }
 
 impl CapRow {
     pub fn closed(bits: CapBits) -> Self {
-        Self {
+        Self::Resolved {
             concrete: bits,
             vars: vec![],
         }
@@ -142,52 +171,110 @@ impl CapRow {
     }
 
     pub fn var(v: CapVarId) -> Self {
-        Self {
+        Self::Resolved {
             concrete: CapBits::EMPTY,
             vars: vec![v],
         }
     }
 
-    pub fn is_closed(&self) -> bool {
-        self.vars.is_empty()
+    /// Provenance is genuinely, permanently unresolvable by this design —
+    /// see the type-level doc comment above. Used by `dyn Trait` method
+    /// dispatch and generic trait-bound method dispatch (row-propagation
+    /// stage), and available to any future call site that discovers the
+    /// same shape of gap.
+    pub fn unknown() -> Self {
+        Self::Unknown
     }
 
+    pub fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown)
+    }
+
+    /// A row is "closed" only when it is `Resolved` with no open vars.
+    /// `Unknown` is deliberately NOT closed — treating it as closed would
+    /// let `is_subset_of` read its `concrete_bits()` (`ALL`) as if that
+    /// were a proven fact rather than a fail-closed placeholder, which
+    /// would happen to be sound for `is_subset_of` today (`ALL` fails
+    /// almost every subset check) but is exactly the kind of coincidental
+    /// soundness this stage is required not to rely on.
+    pub fn is_closed(&self) -> bool {
+        match self {
+            Self::Resolved { vars, .. } => vars.is_empty(),
+            Self::Unknown => false,
+        }
+    }
+
+    /// Materialize this row into a concrete bitset. `Unknown` MUST erase to
+    /// `CapBits::ALL` here — this is the one erasure point every other
+    /// erasure/display helper in this file is built from, so the
+    /// fail-closed choice is made exactly once, structurally, instead of
+    /// being a convention every future call site has to remember. NOTE:
+    /// even for `Resolved`, this drops any still-open `vars` silently —
+    /// callers that care whether a row is FULLY resolved must check
+    /// `is_closed()` first (unchanged from before this stage).
     pub fn concrete_bits(&self) -> CapBits {
-        self.concrete
+        match self {
+            Self::Resolved { concrete, .. } => *concrete,
+            Self::Unknown => CapBits::ALL,
+        }
     }
 
     pub fn var_ids(&self) -> &[CapVarId] {
-        &self.vars
+        match self {
+            Self::Resolved { vars, .. } => vars,
+            Self::Unknown => &[],
+        }
     }
 
     /// Union of two rows: bits OR'd, var lists merged (sorted + deduped).
+    /// `Unknown` POISONS the union — once any contributor to a row is
+    /// unresolvable, the whole row is, by construction, never silently
+    /// downgraded back to a merely-open-var or closed row by unioning in
+    /// more (concrete) information.
     pub fn union(&self, other: &CapRow) -> CapRow {
-        let mut vars = self.vars.clone();
-        for v in &other.vars {
-            if !vars.contains(v) {
-                vars.push(*v);
+        match (self, other) {
+            (Self::Unknown, _) | (_, Self::Unknown) => Self::Unknown,
+            (
+                Self::Resolved { concrete: c1, vars: v1 },
+                Self::Resolved { concrete: c2, vars: v2 },
+            ) => {
+                let mut vars = v1.clone();
+                for v in v2 {
+                    if !vars.contains(v) {
+                        vars.push(*v);
+                    }
+                }
+                vars.sort_unstable();
+                Self::Resolved {
+                    concrete: c1.union(*c2),
+                    vars,
+                }
             }
-        }
-        vars.sort_unstable();
-        CapRow {
-            concrete: self.concrete.union(other.concrete),
-            vars,
         }
     }
 
     pub fn union_bits(&self, bits: CapBits) -> CapRow {
-        CapRow {
-            concrete: self.concrete.union(bits),
-            vars: self.vars.clone(),
+        match self {
+            Self::Unknown => Self::Unknown,
+            Self::Resolved { concrete, vars } => Self::Resolved {
+                concrete: concrete.union(bits),
+                vars: vars.clone(),
+            },
         }
     }
 
     /// Substitute every var in `vars` using `resolve`, unioning in whatever
     /// row each resolves to; drops vars that don't resolve (still open).
-    /// Used by `InferenceEngine::resolve_cap_row`.
+    /// Used by `InferenceEngine::resolve_cap_row`. `Unknown` has no vars to
+    /// substitute and stays `Unknown` unconditionally — it is already a
+    /// terminal answer, never a placeholder waiting on `resolve`.
     pub fn with_vars_replaced(&self, mut resolve: impl FnMut(CapVarId) -> Option<CapRow>) -> CapRow {
-        let mut out = CapRow::closed(self.concrete);
-        for &v in &self.vars {
+        let (concrete, vars) = match self {
+            Self::Unknown => return Self::Unknown,
+            Self::Resolved { concrete, vars } => (*concrete, vars),
+        };
+        let mut out = CapRow::closed(concrete);
+        for &v in vars {
             match resolve(v) {
                 Some(row) => out = out.union(&row),
                 None => out = out.union(&CapRow::var(v)),
@@ -201,19 +288,28 @@ impl CapRow {
     /// rule (not implemented here — Stage 1 carries no enforcement
     /// consumer). NOTE (see `CapBits::contains_bits`): this is raw bitwise
     /// containment, not the coarse/sub-capability lattice — not
-    /// enforcement-ready.
+    /// enforcement-ready. `Unknown.is_closed()` is `false`, so `Unknown`
+    /// always reports "not a subset" here, never a false pass.
     pub fn is_subset_of(&self, other: &CapRow) -> bool {
-        self.is_closed() && other.concrete.contains_bits(self.concrete)
+        self.is_closed() && other.concrete_bits().contains_bits(self.concrete_bits())
     }
 
-    /// Render as `{fs:read, net:http}` / `{}` / `{fs:read, ?C3}` (open var),
-    /// for the `KRYOS_DUMP_FN_EFFECTS` debug dump.
+    /// Render as `{fs:read, net:http}` / `{}` / `{fs:read, ?C3}` (open var)
+    /// / `{unknown->all}` (permanently unresolvable provenance — spelled
+    /// out distinctly, never rendered as `{}`), for the
+    /// `KRYOS_DUMP_FN_EFFECTS` debug dump.
     pub fn display(&self) -> String {
-        let mut parts: Vec<String> = self.concrete.names().into_iter().map(|s| s.to_string()).collect();
-        for v in &self.vars {
-            parts.push(format!("?C{v}"));
+        match self {
+            Self::Unknown => "{unknown->all}".to_string(),
+            Self::Resolved { concrete, vars } => {
+                let mut parts: Vec<String> =
+                    concrete.names().into_iter().map(|s| s.to_string()).collect();
+                for v in vars {
+                    parts.push(format!("?C{v}"));
+                }
+                format!("{{{}}}", parts.join(", "))
+            }
         }
-        format!("{{{}}}", parts.join(", "))
     }
 }
 
@@ -376,6 +472,100 @@ impl Type {
             | Type::Weak { inner }
             | Type::Pointer { inner, .. } => inner.has_vars(),
             _ => false,
+        }
+    }
+
+    /// Recursively rewrite every capability row reachable inside this type
+    /// to `CapRow::Unknown` — used at any dispatch site where the checker
+    /// cannot statically name the concrete implementation that will
+    /// actually run (`dyn Trait` method dispatch, generic trait-bound
+    /// method dispatch; see `docs/capability-effects-spec.md`, gaps 1/3 of
+    /// the row-propagation stage). An EXHAUSTIVE match over every `Type`
+    /// variant, with NO wildcard arm, deliberately — mirrors
+    /// `docs/capability-soundness.md` §7's argument for
+    /// `kryos-capabilities/src/checker.rs`'s exhaustive `Expr` matches: if
+    /// a future `Type` variant is added that can carry a `Type::Function`
+    /// value (a new container/wrapper kind), this fails to compile until a
+    /// human decides whether it needs to recurse here, instead of silently
+    /// passing an un-stamped — and therefore wrongly still-Resolved,
+    /// possibly wrongly still-EMPTY — row through an unrecognized shape.
+    pub fn with_caps_erased_to_unknown(&self) -> Type {
+        match self {
+            // Primitives and Error/Never/DynTrait/Var carry no capability
+            // row anywhere inside them — nothing to stamp.
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::I128
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::U128
+            | Type::F32
+            | Type::F64
+            | Type::Bool
+            | Type::Char
+            | Type::Str
+            | Type::USize
+            | Type::ISize
+            | Type::Void
+            | Type::Never
+            | Type::DynTrait { .. }
+            | Type::Var(_)
+            | Type::Error => self.clone(),
+            Type::Array { element, size } => Type::Array {
+                element: Box::new(element.with_caps_erased_to_unknown()),
+                size: *size,
+            },
+            Type::Tuple { elements } => Type::Tuple {
+                elements: elements.iter().map(|e| e.with_caps_erased_to_unknown()).collect(),
+            },
+            Type::Map { key, value } => Type::Map {
+                key: Box::new(key.with_caps_erased_to_unknown()),
+                value: Box::new(value.with_caps_erased_to_unknown()),
+            },
+            Type::Set { element } => Type::Set {
+                element: Box::new(element.with_caps_erased_to_unknown()),
+            },
+            Type::Option { inner } => Type::Option {
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
+            },
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(ok.with_caps_erased_to_unknown()),
+                err: Box::new(err.with_caps_erased_to_unknown()),
+            },
+            Type::Struct { name, generics } => Type::Struct {
+                name: name.clone(),
+                generics: generics.iter().map(|g| g.with_caps_erased_to_unknown()).collect(),
+            },
+            Type::Enum { name, generics } => Type::Enum {
+                name: name.clone(),
+                generics: generics.iter().map(|g| g.with_caps_erased_to_unknown()).collect(),
+            },
+            Type::Function { params, ret, caps: _ } => Type::Function {
+                params: params.iter().map(|p| p.with_caps_erased_to_unknown()).collect(),
+                ret: Box::new(ret.with_caps_erased_to_unknown()),
+                // The function VALUE itself is the thing dynamic dispatch
+                // cannot pin to one concrete implementation — its own row
+                // is the primary target this stamp exists to fix.
+                caps: CapRow::unknown(),
+            },
+            Type::Reference { inner, mutable } => Type::Reference {
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
+                mutable: *mutable,
+            },
+            Type::Shared { inner } => Type::Shared {
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
+            },
+            Type::Weak { inner } => Type::Weak {
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
+            },
+            Type::Pointer { inner, mutable } => Type::Pointer {
+                inner: Box::new(inner.with_caps_erased_to_unknown()),
+                mutable: *mutable,
+            },
         }
     }
 

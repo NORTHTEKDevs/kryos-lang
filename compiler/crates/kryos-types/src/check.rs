@@ -2118,7 +2118,7 @@ impl TypeChecker {
                 self.seed_tail_lambda_expected(body);
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
-                let fn_caps = self.cap_accum_stack.pop().unwrap_or_default();
+                let fn_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                 if let Some(own_var) = sig.as_ref().map(|s| s.own_cap_var) {
                     self.engine.bind_cap_var(own_var, fn_caps.clone());
                     self.log_fn_effect(name.clone(), *span, crate::ty::CapRow::var(own_var));
@@ -2207,7 +2207,7 @@ impl TypeChecker {
                     self.current_function_name = Some(h.name.clone());
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
-                    let handler_caps = self.cap_accum_stack.pop().unwrap_or_default();
+                    let handler_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                     if let Some(own_var) = self
                         .env
                         .lookup_method(name, &h.name)
@@ -4808,7 +4808,32 @@ impl TypeChecker {
                                             }
                                         }
                                     }
-                                    return sig.ret.clone();
+                                    // Row-propagation stage gap 1/3
+                                    // (docs/capability-effects-spec.md):
+                                    // `T`'s bound only tells us WHICH TRAIT
+                                    // a call site's concrete `T` implements
+                                    // -- it does not tell us WHICH impl.
+                                    // `sig` is the TRAIT's own declared
+                                    // signature, whose `own_cap_var` has no
+                                    // body to ever bind it (see
+                                    // `Decl::Trait`'s registration, a few
+                                    // hundred lines up: "no body here --
+                                    // bodies live in each impl"), so it can
+                                    // never be resolved to a real charge --
+                                    // and even if it somehow were, it would
+                                    // still only describe ONE arbitrary
+                                    // impl, not the one this call site
+                                    // actually reaches at runtime. Charge
+                                    // this call itself as `Unknown` (never
+                                    // silently free) and stamp every
+                                    // capability row reachable inside the
+                                    // trait's declared return type as
+                                    // `Unknown` too -- a returned closure
+                                    // could have come from ANY implementing
+                                    // type, so its row is exactly as
+                                    // unknowable as the call itself.
+                                    self.accumulate_caps(&crate::ty::CapRow::unknown());
+                                    return sig.ret.with_caps_erased_to_unknown();
                                 }
                             }
                         }
@@ -4880,7 +4905,22 @@ impl TypeChecker {
                                 );
                                 return Type::Error;
                             }
-                            return sig.ret.clone();
+                            // Row-propagation stage gap 1
+                            // (docs/capability-effects-spec.md): a `dyn
+                            // Trait` VALUE could be holding any concrete
+                            // implementer of `trait_name` at runtime (that
+                            // is the entire point of a trait object) --
+                            // `sig` is only the TRAIT's own declared
+                            // signature, whose `own_cap_var` has no body to
+                            // ever bind it. Charge this dispatch as
+                            // `Unknown` (never silently free) and stamp
+                            // every capability row reachable inside the
+                            // trait's declared return type as `Unknown` too
+                            // -- see the identical treatment (and full
+                            // rationale) for the generic trait-bound
+                            // MethodCall arm a few hundred lines up.
+                            self.accumulate_caps(&crate::ty::CapRow::unknown());
+                            return sig.ret.with_caps_erased_to_unknown();
                         }
                     }
                     self.error(
@@ -5604,7 +5644,7 @@ impl TypeChecker {
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 let body_ty = self.infer_expr(body);
-                let lambda_caps = self.cap_accum_stack.pop().unwrap_or_default();
+                let lambda_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                 self.env.pop_scope();
 
                 self.current_return_type = prev_ret;
