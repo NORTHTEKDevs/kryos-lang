@@ -1,0 +1,36 @@
+// Control for attack_actor_state_block_expr_alias.kry / attack_actor_state_
+// match_arm_alias.kry: identical actor/struct/deny! setup with NO alias at
+// all -- a direct `self.b.f()` call. Must be REJECTED (E0507) to prove the
+// two sibling files' rc=0 is caused specifically by the block-expr / match-
+// arm binding forms, not by something generic about this test's Box/actor
+// scaffolding failing to engage deny! narrowing at all.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        println("DIRECT-FIELD (should not print): " + self.b.f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

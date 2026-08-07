@@ -1,0 +1,59 @@
+// SECURITY RED-TEAM PROBE (assault round 5, classic-regression lens,
+// 2026-08-06). Third binding-form variant of the actor-state fn-field alias
+// gap (invariant 24 family). `build_actor_state_alias_locals_block`
+// (checker.rs:2739-2795) walks exactly these `Stmt` shapes looking for a
+// name bound to `self.<path>`: `Let`, `If`/elif/else, `For`/`While` (body
+// only), `TryCatch`, and `Expr`-wrapping-`Block`. It has NO arm for a
+// `match` statement/expression at all -- a name bound by a MATCH ARM
+// PATTERN (`match self.b { x => ... }`, an ordinary catch-all binding
+// pattern, ubiquitous Kryos idiom per gotcha #15/CLAUDE.md) is invisible to
+// this tracker regardless of which Stmt it's nested inside, because no
+// `_ => {}` fallthrough case ever descends into `Expr::Match`'s arms.
+//
+// This produces the same empty-charge failure as the for-loop/block-expr
+// siblings: no `let` anywhere binds the alias, so
+// `current_actor_state_alias_locals` never contains "x"; the match arm's
+// own local scope for "x" is a plain type-checking local, not one any
+// capability tracker enters into `current_local_container_lits` either
+// (that tracker's own builder has the identical Stmt-shape blind spot).
+// Both the call-site charge for `x.f()` and the in-body resolver therefore
+// see an untracked identifier and fall to `CapabilitySet::empty()`.
+//
+// Positive control: attack_actor_state_forloop_alias.kry (same LEDGER item)
+// proves the `let`-bound alias form IS rejected -- the delta here is
+// specifically routing the SAME value through a match-arm pattern binding
+// instead of a `let`, with no other change.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        match self.b {
+            x => {
+                println("MATCH-ARM-ALIAS LEAK: " + x.f())
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

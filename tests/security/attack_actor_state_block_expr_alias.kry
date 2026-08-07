@@ -1,0 +1,67 @@
+// SECURITY RED-TEAM PROBE (assault round 5, classic-regression lens,
+// 2026-08-06). NEW variant of the actor-state fn-field alias gap (invariant
+// 24 / LEDGER item 18's fix family, `resolve_actor_self_field_invoke_caps` +
+// `current_actor_state_alias_locals`), found by reading
+// `build_actor_state_alias_locals_block` directly (checker.rs:2739-2795)
+// rather than guessing a binding-form shape blind.
+//
+// The tracker's `Stmt::Let` arm only registers an alias when the RHS
+// EXPRESSION decomposes via `decompose_container_path` -- and that function
+// (checker.rs:932-947) has exactly THREE arms: `Identifier`, `FieldAccess`,
+// `IndexAccess`. `Expr::Block` is not one of them, so it falls through to
+// `_ => None`. The SAME `Stmt::Let` arm DOES special-case `Expr::Block` --
+// but only to RECURSE into the block's own interior `Let` statements
+// (checker.rs:2757-2759), never to treat the block's own TRAILING VALUE as
+// the thing being bound to `name`. Kryos block-expressions are a normal
+// value position (`let y = { if c {a} else {b} }` is documented, working
+// syntax -- see tests/smoke/test_block_tail_if.kry) so `let c = { self.b }`
+// is ordinary, unremarkable Kryos and evaluates to exactly the same VALUE as
+// `let c = self.b` -- but the checker's alias tracker only recognizes the
+// latter syntactic shape. Wrapping the identical RHS in a trivial `{ }`
+// block is enough to make "c" invisible to
+// `current_actor_state_alias_locals`, exactly the same downstream failure
+// mode as the already-closed for-loop-alias/tuple-alias gaps: the call-site
+// charge for `c.f()` and the body-internal resolver both fall to
+// `CapabilitySet::empty()` (never the fail-closed `all` invariant 22
+// requires) because "c" is untracked by any of the three trackers
+// (`current_actor_state_alias_locals`, `current_local_container_lits`,
+// `local_caps`).
+//
+// Positive control: attack_actor_state_forloop_alias.kry (registered, same
+// LEDGER item) proves the un-wrapped `let c = self.b; c.f()` form IS
+// rejected -- so if THIS program is instead accepted, the delta is
+// specifically the trivial `{ }` wrapper, not something generic about
+// self-field aliasing.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        let c = {
+            self.b
+        }
+        println("BLOCK-EXPR-ALIAS LEAK: " + c.f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}
