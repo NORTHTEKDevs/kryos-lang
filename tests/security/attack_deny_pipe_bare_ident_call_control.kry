@@ -1,0 +1,24 @@
+// Control for `attack_deny_pipe_bare_ident_call.kry`. IDENTICAL program,
+// same privileged closure, same `deny!(fs:read)` block, same call target --
+// the ONLY difference is `reader(0)` (an ordinary direct call) instead of
+// `0 |> reader` (pipe syntax). Proves the bypass is specific to the
+// PipeExpr AST shape, not a general property of "invoking a bare-Identifier
+// fn-typed local inside deny!" (which is already covered and enforced by
+// `attack_bare_fn_param_alias_defeats_hotparam.kry`'s family).
+//
+// ACCEPTANCE: REJECTED (E0507) under both modes -- and confirmed live
+// below.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn(i64) -> str {
+    return |unused: i64| file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = reader(0)
+        println("CONTROL-DIRECT-CALL-DENY LEAK (should never print): " + leaked)
+    }
+}

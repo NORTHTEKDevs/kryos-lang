@@ -1,0 +1,55 @@
+// RED TEAM round 5, deny-narrowing lens (2026-08-06). Targets a code path
+// no prior deny-narrowing round exercised: the PIPE operator (`a |> f`).
+//
+// `desugar_pipe` (kryos-mir/src/lower.rs:7174-7196) rewrites `a |> f`
+// (whenever `f` is a bare Identifier/closure-var/inline-lambda, i.e. NOT
+// itself already a call expression) into `Expr::FnCall { callee: f, args:
+// [a] }` -- but this desugaring happens in the MIR-LOWERING crate, which
+// runs AFTER capability checking. `kryos-capabilities` never desugars pipe;
+// it processes the raw `Expr::PipeExpr { left, right }` node directly.
+//
+// Read directly in `checker.rs`: BOTH tree-walkers that matter --
+// `check_expr` (the real-time enforcement walk, ~line 4758) and
+// `collect_caps_expr` (the closure-provenance inference walk, ~line 3981)
+// -- have an `Expr::PipeExpr` arm that does ONLY:
+//     self.check_expr(left); self.check_expr(right);
+// i.e. it treats `right` as an independent VALUE expression, exactly like
+// checking a bare `let x = right` reference. Neither walker ever calls
+// `check_callee_capabilities(right, [left], span)` or `enforce_callee_name`
+// for a PipeExpr -- the entire call-site enforcement path (`Expr::FnCall`'s
+// arm at checker.rs:4595-4611, which is what actually charges a callee's
+// capability) is never reached for this shape. A bare Identifier value
+// reference only gets a capability charge via `check_builtin_value_ref`,
+// which is keyed to RAW BUILTIN NAMES (`file_read` referenced bare) -- it
+// does not fire for an ordinary local variable bound to a privileged
+// closure, which is exactly what `reader` is here.
+//
+// So `left |> reader` -- desugared by MIR lowering into the REAL call
+// `reader(left)` and executed as such at runtime -- receives ZERO
+// capability enforcement from the checker at either enforcement mode,
+// `deny!` active or not, because the checker's own AST walk for this
+// syntactic form never recognizes it as a call in the first place.
+//
+// The privileged closure must accept exactly one parameter (ignored) so
+// pipe's implicit argument-prepend produces a well-typed call — the
+// checker's blindness to PipeExpr-as-call is independent of arity, this is
+// just what's needed to stay past the (unrelated) type checker.
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507, `all` required)
+// under BOTH `--capabilities-mode=inferred` (default) and
+// `--strict-capabilities` -- `main` explicitly denies `fs:read` and the
+// piped call reads a file inside that denial.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn(i64) -> str {
+    return |unused: i64| file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = 0 |> reader
+        println("PIPE-BARE-IDENT-DENY LEAK: " + leaked)
+    }
+}

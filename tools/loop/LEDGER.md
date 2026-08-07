@@ -101,6 +101,85 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 36. LIVE CAPABILITY ESCAPE — the PIPE operator (`a |> f`) bypasses capability enforcement ENTIRELY for the callee, on BOTH backends and BOTH enforcement modes (assault round 5, deny-narrowing lens, found 2026-08-06/07) — NOT FIXED
+
+Repros: `tests/security/attack_deny_pipe_bare_ident_call.kry` (attack) and
+`tests/security/attack_deny_pipe_bare_ident_call_control.kry` (control,
+identical program with `reader(0)` instead of `0 |> reader` — proves the
+gap is specific to pipe syntax, not "invoking a bare fn-typed local inside
+`deny!`" in general, which is already covered and enforced). Verified live
+this session against the existing `compiler/target/release/kryos.exe`, no
+compiler changes:
+
+```
+$ kryos run tests/security/attack_deny_pipe_bare_ident_call.kry
+PIPE-BARE-IDENT-DENY LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+RC=0
+$ kryos check --strict-capabilities tests/security/attack_deny_pipe_bare_ident_call.kry
+RC=0   (zero diagnostics)
+$ kryos build --release tests/security/attack_deny_pipe_bare_ident_call.kry -o /tmp/pipe_attack.exe
+RC=0   (compiles clean)
+$ /tmp/pipe_attack.exe
+PIPE-BARE-IDENT-DENY LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+RC=0   (AOT binary also leaks)
+```
+
+Control, same program with `reader(0)` in place of `0 |> reader`, proving
+`deny!(fs:read)` DOES correctly enforce this exact closure/scope otherwise:
+
+```
+$ kryos run tests/security/attack_deny_pipe_bare_ident_call_control.kry
+error[E0507]: call through a function value requires capabilities [fs:read] not granted to caller
+RC=1
+```
+
+Root cause, confirmed by direct source read: `desugar_pipe`
+(`kryos-mir/src/lower.rs:7174-7196`) rewrites `a |> f` into `Expr::FnCall {
+callee: f, args: [a, ...] }` — but this desugaring is a MIR-LOWERING-time
+transform, which runs strictly AFTER capability checking. `kryos-
+capabilities` never desugars pipe: it walks the raw, still-`Expr::PipeExpr`
+node. Both tree-walkers that matter for enforcement —
+`checker.rs::check_expr` (the real-time enforcement walk, `Expr::PipeExpr`
+arm ~line 4758) and `checker.rs::collect_caps_expr` (the closure-provenance
+inference walk, `Expr::PipeExpr` arm ~line 3981) — have an arm that does
+ONLY `self.check_expr(left); self.check_expr(right);`, i.e. treats `right`
+as an independent VALUE expression exactly like a bare reference. Neither
+walker ever calls `check_callee_capabilities`/`enforce_callee_name` for a
+`PipeExpr` — the ENTIRE call-site enforcement path (the `Expr::FnCall` arm,
+checker.rs:4595-4611, which is what actually charges a callee's capability)
+is never reached for this AST shape. A bare Identifier reference only gets
+a capability charge via `check_builtin_value_ref`, which is keyed to raw
+BUILTIN names (e.g. a bare `file_read` reference) — it does not fire for an
+ordinary local variable bound to a privileged closure, which is exactly
+what `reader` is in the repro. Net effect: `left |> callee` — which MIR
+lowering turns into, and the runtime executes as, a real call to `callee`
+— receives ZERO capability enforcement at check time, `deny!` active or
+not, in either enforcement mode, on either backend.
+
+This is a DIFFERENT dispatch-routing gap from item 32 (tuple-index call):
+item 32's `pair.1()` still reaches `check_callee_capabilities` and falls
+through a segment-count gate inside it; a `PipeExpr`-shaped call never
+reaches `check_callee_capabilities`/`check_expr`'s `FnCall` arm AT ALL —
+one level further outside the enforcement path than item 32, and (like
+item 32) outside `resolve_closure_caps`/`resolve_container_path_caps`
+entirely, so their exhaustive no-wildcard `Expr` match buys nothing here
+either (that match is only ever consulted from within functions this call
+shape never reaches).
+
+Not chased further (no compiler changes this session, per task
+instructions — shared workspace, existing binary used read-only
+throughout). Suggested fix: give `check_expr` and `collect_caps_expr` a
+real `Expr::PipeExpr` arm that desugars identically to
+`kryos-mir::desugar_pipe` (recognize whether `right` is itself an
+`Expr::FnCall`/`MethodCall`/`StaticMethodCall` and prepend `left` to its
+args, vs. treating `right` as `callee` with `args: [left]` otherwise) and
+routes the result through the SAME `check_callee_capabilities`/
+`enforce_callee_name` call the `Expr::FnCall` arm uses — rather than
+reimplementing enforcement logic a second time, extract a shared helper
+both arms call so the two can never re-diverge.
+
+---
+
 ### 32. LIVE CAPABILITY ESCAPE, MOST SEVERE OF ALL OPEN ITEMS — a tuple-index call (`pair.1()`) bypasses ALL capability enforcement for ANY fn value stored as a tuple element, anywhere in the language, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
 
 Repros: `tests/security/attack_verify_tuple_call_general.kry` (plain local
