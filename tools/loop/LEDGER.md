@@ -12,6 +12,149 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## ASSAULT round 3 (historical-regression lens, 2026-08-07) — zero compiler changes this session
+
+Re-ran historical bypass classes in fresh syntactic dress per the round-3 brief, targeting
+compositions not yet individually executed. Three new probes, all against the existing
+`compiler/target/release/kryos.exe`, read-only, no rebuild. **No new root cause** — all three
+reproduce items 30 and 32 (already OPEN, both documented above) through syntax those items'
+existing repros did not individually cover; reported for completeness and because one of the
+three ("go different or deeper") surfaced that the for-loop indirection I set out to test was
+not actually load-bearing, an important negative result in its own right. Repros:
+`tests/security/assault_round3_generic_accessor_field_call.kry` (+`_control.kry`),
+`tests/security/assault_round3_twohop_tuple_index.kry` (+`_control.kry`),
+`tests/security/assault_round3_forloop_struct_tuple_index.kry` (+`_control.kry`).
+
+- **Item 30's `decompose_container_path`-has-no-`Expr::FnCall`-arm gap reproduces identically
+  when the accessor is a GENERIC identity function** (`fn get_generic<T>(x: T) -> T { return x
+  }`) instead of item 30's original concrete non-generic accessor. `kryos run`: `GENERIC-ACCESSOR
+  LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0; `kryos check --strict-capabilities`: rc=0, zero
+  diagnostics. Control (`b.f()` direct, no generic-call indirection) correctly rejected both
+  modes: `error[E0507]: call to \`f\` requires capabilities [fs:read] not granted to caller`,
+  rc=1. Confirms generic monomorphization does not add any incidental protection — the checker
+  operates on the pre-monomorphization AST shape, exactly as item 30's root-cause writeup implies
+  but had not been separately executed against a generic accessor before this probe.
+
+- **Item 32's tuple-index-call parser bug (`.N()` always parses as
+  `Expr::FnCall{callee: FieldAccess}`, never `Expr::MethodCall`, and the checker's fail-closed
+  default only covers a `segments.len() <= 1` path) reproduces for a TWO-HOP nested tuple**
+  (`let outer = (pair, "tag"); outer.0.1()`, where `pair = (0, reader)`) — explicitly called out
+  as untested in the round-3 brief ("tuple-index calls (one and two hop)"), item 32's own repro
+  being one-hop only. `kryos run`: `TWOHOP-TUPLE-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`,
+  rc=0; `--strict-capabilities`: rc=0. Control (`reader()` direct, no tuple nesting) correctly
+  rejected both modes: `error[E0507]: call through a function value requires capabilities
+  [fs:read]...`, rc=1.
+
+- **Negative result, worth recording precisely because it complicates the intended hypothesis:**
+  set out to test whether combining item 32's tuple-index gap with the separately-documented
+  for-loop-bound-variable-invisible-to-alias-trackers class (`attack_plain_forloop_container_
+  alias.kry` et al.) through an extra struct-field hop (`for hh in holders { hh.pair.1() }`,
+  `holders: [Holder]`, `Holder.pair: (i64, fn()->str)`) was a genuinely new composition, deeper
+  than item 38's for-loop-bound-TUPLE-directly case. It DOES leak (`kryos run`:
+  `FORLOOP-STRUCT-TUPLE-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0; `--strict-capabilities`:
+  rc=0) — but so does the intended "control" (`h.pair.1()`, same struct/tuple shape, called
+  directly with **no for-loop at all**, still inside the identical `deny!(fs:read)`): rc=0,
+  `CONTROL DIRECT LEAK (should not compile): TOPSECRET-CLOSURE-9f8e7d6c5b4a`, both modes. This
+  is NOT a valid control (it fails to isolate the variable it was written to isolate) and the
+  for-loop is NOT shown to contribute anything here — the underlying cause is that
+  `h.pair.1()` alone resolves to a 3-segment path (`["h","pair","1"]`), which fails item 32's
+  same `segments.len() <= 1` fail-closed gate on its own, with zero for-loop or container-alias
+  machinery involved. Recorded as a generalization of item 32 (a struct-field-then-tuple-index
+  chain leaks the same as a bare tuple local, not for-loop-specific), not as a new for-loop
+  finding — reporting the invalid-control result rather than silently discarding it or
+  overclaiming a for-loop-specific mechanism the evidence does not support.
+
+Not chased to a fix (no compiler changes this session, per task instructions). AOT (`kryos build
+--release`) not independently re-run for any of the three this session (time budget; the leak
+mechanism in all three is a checker/compile-time gap common to both backends per items 30/32's
+existing root-cause writeups, not a backend-specific runtime divergence, so both backends leaking
+identically is expected but not independently re-confirmed here — disclosed, not assumed).
+
+Two stray `kryos.exe` processes (PIDs 22404, 21672) were observed running in this shared
+workspace during this session, not started by this session's commands and not killed (per
+"agents share this workspace" — no compiler changes or gating were performed this session, so
+killing another agent's in-flight process was out of scope and would have been destructive).
+
+---
+
+## ASSAULT round 2 (real-program lens, 2026-08-07) — zero compiler changes this session
+
+Wrote a ~230-line "plugin/tool registry + agent" program exercising FIVE natural
+container/dispatch idioms a real Kryos user would reach for (struct-of-callbacks array,
+(name, handler) tuple-list, `dyn Trait` object picked by a runtime factory function,
+accessor-method handing back a stored handler pulled from an array element, and
+concurrent actor workers dispatching from the shared registry), plus three isolated
+single-vector probes, against the existing `compiler/target/release/kryos.exe`,
+read-only, no rebuild. Repros: `tests/security/assault_round2_real_program_plugin_agent.kry`,
+`tests/security/assault_round2_probe_dyn_factory.kry`,
+`tests/security/assault_round2_probe_registry_accessor.kry`,
+`tests/security/assault_round2_probe_trait_method_name_conflation.kry`.
+
+**No new LIVE CAPABILITY ESCAPE found.** Every `deny!(fs:read)`-scoped dispatch path
+that reaches the `exfil` plugin, across all five idioms, is rejected at compile time
+(`kryos check` on the combined file: rc=1, 11 errors, 0 warnings; the program never
+runs, so nothing could leak). Consistent with round 1's verdict for this lens.
+
+**F6 — NEW, verified live three independent ways (combined program + two standalone
+single-vector probes): capability inference for a method call is computed as a UNION
+across every declaration sharing that bare method NAME anywhere in the program, not
+per concrete receiver and not even scoped to one trait.** Minimal
+shape: `trait Plugin { fn run(self: Self, input: str) -> str }` with two impls —
+`EchoObj.run` (calls nothing gated) and `ExfilObj.run` (calls `load_secret()`, needs
+`fs:read`). Calling `EchoObj{}.run()` through a `dyn Plugin` value obtained from a
+runtime factory (`pick_plugin(false)`) is rejected with the IDENTICAL diagnostic as
+calling the real `ExfilObj{}.run()`:
+```
+error[E0507]: call to `run` requires capabilities [fs:read] not granted to caller
+  = note: function `run` has @capabilities(fs:read) but caller lacks [fs:read]
+```
+— even though the concrete receiver is provably the capability-free `EchoObj`, with
+no fn-value/container/actor machinery involved at all (a plain trait-method call).
+Verified live: `tests/security/assault_round2_probe_dyn_factory.kry` (standalone, 2
+errors, rc=1, both the control and real call fail identically) and reproduced again
+inside the combined program (idiom C, same two-error signature). This is a
+FALSE-REJECTION (fail-closed, no security hole) but a severe, previously-undocumented
+ergonomics defect distinct from F1-F5 (which were about container/spawn/actor
+provenance): it makes ANY `trait` with more than one implementor, where even ONE
+implementor needs a capability, entirely uncallable through `dyn Trait` dispatch for
+EVERY implementor — the plugin-interface pattern documented as the required
+workaround for "no `dyn Trait` inside a container" (gotcha #22) is itself broken the
+moment the trait has a mixed-privilege implementor set. **Confirmed, follow-up probe, worse than the trait-scoped hypothesis: the conflation
+is keyed by bare method NAME across the WHOLE program, not scoped to the trait at
+all.** `tests/security/assault_round2_probe_trait_method_name_conflation.kry`: two
+completely UNRELATED traits (`Loader`/`SecretLoader`, needs `fs:read`; `Formatter`/
+`PlainFormatter`, needs nothing, shares no type/trait/module relationship with the
+first pair) each independently declare a method named `run`. The program calls ONLY
+`PlainFormatter{}.run()` (zero relation to the gated pair) inside `deny!(fs:read)` —
+still rejected, same diagnostic: `function \`run\` has @capabilities(fs:read) but
+caller lacks [fs:read]`, `kryos check` rc=1, 1 error. This means a single common verb
+method name (`run`, `execute`, `process`, `handle`, ...) used ANYWHERE in a program
+with ANY capability requirement silently poisons EVERY unrelated method sharing that
+bare name, program-wide — not just sibling implementors of one trait. This is
+significantly more severe than F1-F5's container/spawn/actor-specific false
+rejections: it is a whole-program name-collision hazard that will fire on ordinary,
+completely unrelated code the moment two types anywhere use the same common method
+name and one of them happens to need a capability.
+
+Idioms A/B/E (array-of-struct registry, tuple-list registry, actor-handler argument)
+all reproduce the SAME already-documented false-rejection class as round 1's F4 —
+"a container/argument carrying even one privileged fn-value poisons the WHOLE call as
+needing `[all]`, including a simultaneous call to a benign element of the same
+container" — extended here to three container/argument shapes F4 didn't specifically
+cover (a plain array of structs, a tuple list, and an actor-handler's fn-bearing
+argument), not independently new but confirms the blast radius is broad, not
+`map<str,fn>`-specific.
+
+Idiom D (accessor method returning `self.entries[idx].handler`, an array-element hop
+combined with LEDGER item 30's accessor shape) does NOT reproduce item 30's silent
+escape in this combination — verified twice (combined program + standalone probe
+`assault_round2_probe_registry_accessor.kry`), both control and real calls correctly
+fail-closed to `[all]` via the generic "container element" catch-all, rc=1, no leak.
+Reported as ruled-out for this specific shape, not assumed from item 30's existing
+single-field repro.
+
+---
+
 ## ASSAULT round 1 (new campaign, post capability-typed-fn-value Stage 1), real-program lens — zero compiler changes this session
 
 Wrote a real, several-hundred-line "plugin platform" program (pure tool registry, a SecretVault
@@ -231,6 +374,80 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 ---
 
 ## OPEN — ranked
+
+### 38. LIVE CAPABILITY ESCAPE — a `for`-loop-bound TUPLE ELEMENT's index-call (`for x in items { x.0() }`) defeats `deny!()`, on BOTH enforcement modes (assault round 2, historical-regression lens, found 2026-08-07) — NOT FIXED
+
+Repro: `tests/security/attack_r2_tuple_forloop_index_call.kry`. Verified live
+against the existing `compiler/target/release/kryos.exe`, no compiler changes:
+
+```
+$ kryos run tests/security/attack_r2_tuple_forloop_index_call.kry
+TUPLE-FORLOOP-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+RC=0
+$ kryos check --strict-capabilities tests/security/attack_r2_tuple_forloop_index_call.kry
+RC=0   (no diagnostics at all)
+```
+
+Shape: `let items: [(fn()->str, str)] = [(reader, "tag")]`, then inside
+`deny!(fs:read)`, `for x in items { out = x.0() }` — the loop-bound variable
+`x` (a `Stmt::For` pattern binding, never a `Stmt::Let`) is a TUPLE, and the
+call is a tuple-index call (`x.0()`) on that binding, in one expression, no
+extra `let` anywhere.
+
+Root cause (by combination, not independently re-read this session — matches
+two already-documented mechanisms composing): item 32's tuple-index gap
+(`Tuple.elements[N]` invoked directly is untracked by the closure/hot-param
+resolvers, LEDGER item 32) already establishes that a tuple element's own
+provenance is not traced through index access. Separately, the for-loop-alias
+class (items covering `attack_actor_state_forloop_alias.kry` /
+`attack_plain_forloop_container_alias.kry`, both citing `Stmt::For`'s builder
+arms only recursing INTO the loop body, never recording the loop variable
+itself) already establishes that a for-loop's own bound variable is invisible
+to `build_local_container_lits`/`build_local_closure_caps`/(for actor state)
+`build_actor_state_alias_locals_block`. This repro is the first LIVE
+confirmation that the two compose: even a program that never triggers either
+gap in isolation (a `let`-bound tuple local's `.0()` is item 32's own
+territory; a for-loop-bound STRUCT's `.field()` is the other class's) leaks
+through the combination, and — same as every other item in this class map —
+resolves to a silent EMPTY charge, not the documented `Unknown -> all`
+fallback (invariant 22 violated again, in a new syntax).
+
+Not chased further (no compiler changes this session, per task
+instructions — shared workspace, existing binary used read-only throughout).
+Same fix direction as item 32 combined with the for-loop-alias items: either
+teach `decompose_container_path`/`build_local_container_lits` to record a
+`Stmt::For` pattern binding as a tracked local (closing the general for-loop
+gap once, benefiting every shape in this family including this one), or make
+the tuple-index-call resolver's `None`/unrecognized-root case fail CLOSED
+(`all()`) instead of `empty()`.
+
+**Ruled out, same session, same batch (two fresh probes, both correctly
+REJECTED, not new escapes):**
+- `attack_r2_if_expr_direct_call_receiver.kry` — a bare DIRECT call on an
+  inline if-expression receiver (`(if c { reader } else { decoy })()`, no
+  field/method access) is correctly rejected under both modes (`E0507
+  requires capabilities [all]`, rc=1). This is a different code path from
+  the already-open if/match-as-FIELD-ACCESS-receiver leak
+  (`attack_ifexpr_receiver_field_call.kry` / `attack_matchexpr_receiver_
+  field_call.kry`, item 30's generalization, which DOES leak via
+  `decompose_container_path`'s missing `Expr::If`/`Expr::MatchExpr` arms) —
+  a bare direct call on an unresolvable receiver expression correctly falls
+  through to the generic `resolve_direct_invoke_caps` `Unknown -> all` path
+  instead. Confirms the gap is specific to the field/method resolver, not
+  callee-expression resolution generally. (Nearly identical in shape to the
+  pre-existing, apparently never-executed `attack_round1_conditional_expr_
+  receiver.kry` — this run is also the first live confirmation of THAT
+  file's expected result.)
+- `attack_r2_dynamic_map_insert_read.kry` — a map built empty then
+  populated via `m[computed_key] = reader` inside a `while` loop (function-
+  computed keys, not literals) and read back with a separately-recomputed
+  key (`m[k]()`) inside `deny!()` is correctly rejected, and PRECISELY
+  charged (`E0507 requires capabilities [fs:read]`, not the fail-closed
+  `[all]`), both modes, rc=1. `apply_container_assign`'s map-insert tracking
+  (which already closed the literal-vs-`push`-mutated array case, see the
+  CLOSED `PUSHED-CONTAINER` entry) extends correctly to computed map keys.
+
+---
 
 ### 37. LIVE CAPABILITY ESCAPE — a `&`/`*` (Borrow/Deref) receiver indirection on a fn-bearing struct field defeats `deny!()`, on BOTH enforcement modes and BOTH backends (assault round 6, classic-regression lens, found 2026-08-07) — NOT FIXED
 

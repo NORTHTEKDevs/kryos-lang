@@ -1,0 +1,21 @@
+// Control for assault_round3_forloop_struct_tuple_index.kry: same program,
+// direct call outside the for-loop / container indirection. Should be
+// REJECTED (E0507).
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Holder {
+    pair: (i64, fn() -> str),
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder { pair: (0, reader) }
+    deny!(fs:read) {
+        let leaked = h.pair.1()
+        println("CONTROL DIRECT LEAK (should not compile): " + leaked)
+    }
+}

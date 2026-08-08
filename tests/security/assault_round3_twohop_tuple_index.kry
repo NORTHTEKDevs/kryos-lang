@@ -1,0 +1,22 @@
+// ASSAULT round 3, historical-regression lens (2026-08-07). Deeper variant
+// of item 32 (tuple-index-call parser bug: `.N()` always parses as
+// Expr::FnCall{callee: FieldAccess} never Expr::MethodCall, and the fail-
+// closed segments.len()<=1 default doesn't cover a 2-segment FieldAccess
+// path). Item 32's repro is a ONE-hop tuple (`pair.1()`). This is TWO hops:
+// a tuple nested inside another tuple (`outer.0.1()`), explicitly called out
+// as untested in the round-3 brief ("tuple-index calls (one and two hop)").
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let pair = (0, reader)
+    let outer = (pair, "tag")
+    deny!(fs:read) {
+        let leaked = outer.0.1()
+        println("TWOHOP-TUPLE-INDEX LEAK: " + leaked)
+    }
+}

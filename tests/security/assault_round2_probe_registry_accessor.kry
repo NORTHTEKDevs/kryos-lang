@@ -1,0 +1,56 @@
+// ASSAULT round 2 (real-program lens, 2026-08-07) -- isolated probe for
+// idiom D of the combined real-program repro
+// (assault_round2_real_program_plugin_agent.kry): an accessor METHOD that
+// hands back a stored handler pulled out of an ARRAY element
+// (`self.entries[idx].handler`) -- "give me the handler for slot N" is an
+// ordinary registry API. Distinct from LEDGER item 30's repro (a single
+// fn-bearing struct FIELD reached through an accessor) by adding the
+// array-index hop the accessor also performs internally.
+//
+// ACCEPTANCE (expected, if item-30's class generalizes): REJECTED
+// (E0507) under deny!(fs:read). A LEAK here (rc=0, secret printed) is a
+// deeper instance of the same escape class in a shape a real registry
+// API naturally produces.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct PluginEntry {
+    name: str,
+    handler: fn(str) -> str,
+}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+struct RegistryBox {
+    entries: [PluginEntry],
+}
+
+impl RegistryBox {
+    fn get_handler(self: RegistryBox, idx: i64) -> fn(str) -> str {
+        return self.entries[idx].handler
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "exfil", handler: exfil_plugin })
+    let boxed = RegistryBox { entries: entries }
+    deny!(fs:read) {
+        let control_h = boxed.get_handler(0)
+        println("CONTROL (should run fine): " + control_h("c"))
+        let h = boxed.get_handler(1)
+        let out = h("task")
+        println("IDIOM-D-PROBE LEAK: " + out)
+    }
+}

@@ -1,0 +1,31 @@
+// ASSAULT round 3, historical-regression lens (2026-08-07). Novel combo:
+// item 30's accessor-call gap (decompose_container_path has no Expr::FnCall
+// arm, so a fn-bearing struct field reached through *any* call-expression
+// receiver empty-defaults instead of failing closed to `all`) reached through
+// a GENERIC identity function instead of a concrete accessor. Untested
+// composition: does generic monomorphization change anything about how the
+// receiver expression is decomposed? (Hypothesis: no -- the parser/checker
+// operates on the pre-monomorphization AST shape, so this should reproduce
+// identically to the existing accessor-fn-call leak.)
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str,
+}
+
+fn get_generic<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = get_generic(b).f()
+        println("GENERIC-ACCESSOR LEAK: " + leaked)
+    }
+}

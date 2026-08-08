@@ -1,0 +1,50 @@
+// ASSAULT round 2 (real-program lens, 2026-08-07) -- follow-up probe to
+// the dyn-factory finding in assault_round2_probe_dyn_factory.kry: is the
+// checker's capability requirement for a trait method conflated across
+// ALL implementors of the SAME trait (still a real ergonomics problem,
+// but scoped), or across ANY method sharing the same bare NAME anywhere
+// in the program (a much larger blast radius)? Two completely UNRELATED
+// traits, each with a method literally named `run`; only one trait's one
+// impl ever touches a gated builtin. If the benign, unrelated trait's
+// `run` is ALSO rejected, capability inference for trait methods is
+// keyed by bare method name, not by (trait, method) or (impl, method).
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+// Trait A: privileged. One impl touches fs:read via `run`.
+trait Loader {
+    fn run(self: Self) -> str
+}
+
+struct SecretLoader {}
+impl Loader for SecretLoader {
+    fn run(self: SecretLoader) -> str {
+        return load_secret()
+    }
+}
+
+// Trait B: totally unrelated, zero relation to Loader/SecretLoader, and
+// its one impl needs NO capability at all.
+trait Formatter {
+    fn run(self: Self) -> str
+}
+
+struct PlainFormatter {}
+impl Formatter for PlainFormatter {
+    fn run(self: PlainFormatter) -> str {
+        return "formatted-output"
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        // Only the UNRELATED, capability-free Formatter.run is called here.
+        let f = PlainFormatter {}
+        let out = f.run()
+        println("UNRELATED-TRAIT CONTROL (should run fine): " + out)
+    }
+}

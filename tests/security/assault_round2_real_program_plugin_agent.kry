@@ -1,0 +1,210 @@
+// ASSAULT round 2 (real-program lens, 2026-08-07): a plausible several
+// -hundred-line program -- an agent core holding a secret, a plugin
+// registry fed by multiple natural container/dispatch idioms a real
+// Kryos user would reach for, and concurrent worker actors pulling
+// plugins off that registry. One plugin ("exfil") stands in for a
+// compromised/malicious third-party plugin that ignores its input and
+// hands back the agent's secret as its "result" -- ordinary data
+// exfiltration dressed as a normal tool response. `main` NEVER grants
+// the untrusted-dispatch path `fs:read`; every place a plugin actually
+// executes is wrapped in `deny!(fs:read)`.
+//
+// ACCEPTANCE (what SHOULD happen): every deny!()-scoped dispatch that
+// reaches the exfil plugin should be REJECTED at compile time (E0507),
+// so this file should fail `kryos check`/`kryos run` outright and never
+// print anything. Each `println` below that actually executes and shows
+// the real secret value is a live capability escape reached through an
+// ordinary idiom, not a contrived one.
+
+use std::string::{to_upper}
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+// ---------------------------------------------------------------------
+// Plugin bodies -- indistinguishable from the outside; a well-behaved
+// plugin and a malicious one have the exact same fn(str) -> str shape.
+// ---------------------------------------------------------------------
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+// ---------------------------------------------------------------------
+// Idiom A: struct-of-callbacks registry -- the ordinary "plugin list"
+// shape.
+// ---------------------------------------------------------------------
+
+struct PluginEntry {
+    name: str,
+    handler: fn(str) -> str,
+}
+
+fn build_registry() -> [PluginEntry] {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "upper", handler: upper_plugin })
+    entries = push(entries, PluginEntry { name: "exfil", handler: exfil_plugin })
+    return entries
+}
+
+fn dispatch_by_name(entries: [PluginEntry], name: str, input: str) -> str {
+    let mut i = 0
+    while i < len(entries) {
+        if entries[i].name == name {
+            return entries[i].handler(input)
+        }
+        i = i + 1
+    }
+    return "not-found"
+}
+
+// ---------------------------------------------------------------------
+// Idiom B: (name, handler) tuple-list registry -- an equally ordinary
+// "quick lookup table" a real dev reaches for instead of a struct.
+// ---------------------------------------------------------------------
+
+fn build_registry_tuples() -> [(str, fn(str) -> str)] {
+    let mut pairs: [(str, fn(str) -> str)] = []
+    pairs = push(pairs, ("echo", echo_plugin))
+    pairs = push(pairs, ("upper", upper_plugin))
+    pairs = push(pairs, ("exfil", exfil_plugin))
+    return pairs
+}
+
+fn dispatch_by_name_tuple(pairs: [(str, fn(str) -> str)], name: str, input: str) -> str {
+    let mut i = 0
+    while i < len(pairs) {
+        let pair = pairs[i]
+        if pair.0 == name {
+            return pair.1(input)
+        }
+        i = i + 1
+    }
+    return "not-found"
+}
+
+// ---------------------------------------------------------------------
+// Idiom C: trait-based plugin object chosen by a runtime factory --
+// config-driven plugin selection, also completely ordinary OOP style.
+// ---------------------------------------------------------------------
+
+trait Plugin {
+    fn run(self: Self, input: str) -> str
+}
+
+struct EchoObj {}
+impl Plugin for EchoObj {
+    fn run(self: EchoObj, input: str) -> str {
+        return input
+    }
+}
+
+struct ExfilObj {}
+impl Plugin for ExfilObj {
+    fn run(self: ExfilObj, input: str) -> str {
+        return load_secret()
+    }
+}
+
+fn pick_plugin(use_exfil: bool) -> dyn Plugin {
+    if use_exfil {
+        return ExfilObj {}
+    }
+    return EchoObj {}
+}
+
+// ---------------------------------------------------------------------
+// Idiom D: an accessor method handing back a stored handler -- "give me
+// the handler for slot N" is a completely ordinary registry API.
+// ---------------------------------------------------------------------
+
+struct RegistryBox {
+    entries: [PluginEntry],
+}
+
+impl RegistryBox {
+    fn get_handler(self: RegistryBox, idx: i64) -> fn(str) -> str {
+        return self.entries[idx].handler
+    }
+}
+
+// ---------------------------------------------------------------------
+// Idiom E: concurrent worker actors pulling entries out of shared
+// registry state and running them -- the "N workers draining a task
+// queue" shape.
+// ---------------------------------------------------------------------
+
+actor Worker {
+    fn process(self, entries: [PluginEntry], idx: i64, input: str, tag: str) {
+        let out = entries[idx].handler(input)
+        println("WORKER " + tag + " RESULT: " + out)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    let tuple_registry = build_registry_tuples()
+    let boxed = RegistryBox { entries: registry }
+
+    println("=== idiom A: struct-of-callback registry, direct dispatch ===")
+    deny!(fs:read) {
+        // control: an ordinary (non-gated) plugin must still work under
+        // the same attenuated scope -- proves deny! isn't just refusing
+        // everything wholesale.
+        let control_a = dispatch_by_name(registry, "upper", "control")
+        println("IDIOM-A CONTROL (should run fine): " + control_a)
+        let out_a = dispatch_by_name(registry, "exfil", "task-a")
+        println("IDIOM-A LEAK: " + out_a)
+    }
+
+    println("=== idiom B: (name, handler) tuple-list registry ===")
+    deny!(fs:read) {
+        let control_b = dispatch_by_name_tuple(tuple_registry, "upper", "control")
+        println("IDIOM-B CONTROL (should run fine): " + control_b)
+        let out_b = dispatch_by_name_tuple(tuple_registry, "exfil", "task-b")
+        println("IDIOM-B LEAK: " + out_b)
+    }
+
+    println("=== idiom C: dyn Trait plugin chosen by a runtime factory ===")
+    deny!(fs:read) {
+        let control_obj: dyn Plugin = pick_plugin(false)
+        println("IDIOM-C CONTROL (should run fine): " + control_obj.run("control"))
+        let obj: dyn Plugin = pick_plugin(true)
+        let out_c = obj.run("task-c")
+        println("IDIOM-C LEAK: " + out_c)
+    }
+
+    println("=== idiom D: accessor method handing back a stored handler ===")
+    deny!(fs:read) {
+        let control_h = boxed.get_handler(1)
+        println("IDIOM-D CONTROL (should run fine): " + control_h("control"))
+        let h = boxed.get_handler(2)
+        let out_d = h("task-d")
+        println("IDIOM-D LEAK: " + out_d)
+    }
+
+    println("=== idiom E: concurrent worker actors dispatching from shared registry ===")
+    deny!(fs:read) {
+        let w1 = Worker()
+        let w2 = Worker()
+        let w3 = Worker()
+        // w3 runs the benign "upper" plugin (control); w1/w2 run "exfil".
+        w1.process(registry, 2, "task-e1", "w1")
+        w2.process(registry, 2, "task-e2", "w2")
+        w3.process(registry, 1, "task-e3-control", "w3")
+        sleep(300)
+    }
+    println("idiom E done")
+}

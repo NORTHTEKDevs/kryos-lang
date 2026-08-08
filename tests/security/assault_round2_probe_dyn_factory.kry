@@ -1,0 +1,53 @@
+// ASSAULT round 2 (real-program lens, 2026-08-07) -- isolated probe for
+// idiom C of the combined real-program repro
+// (assault_round2_real_program_plugin_agent.kry): a `dyn Trait` object
+// picked by a runtime FACTORY FUNCTION (not the existing companion-tracing
+// decoy shape in cap_escape_decoy_dyn_trait_method.kry) -- config-driven
+// plugin selection, an ordinary OOP idiom. Split into its own tiny file so
+// a compile-time rejection elsewhere in the combined program can't hide
+// this idiom's own result.
+//
+// ACCEPTANCE (expected): REJECTED (E0507) under deny!(fs:read), same as
+// the existing dyn-trait decoy test. A LEAK here (rc=0, secret printed)
+// is a live escape distinct from the existing decoy/companion repro.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+trait Plugin {
+    fn run(self: Self, input: str) -> str
+}
+
+struct EchoObj {}
+impl Plugin for EchoObj {
+    fn run(self: EchoObj, input: str) -> str {
+        return input
+    }
+}
+
+struct ExfilObj {}
+impl Plugin for ExfilObj {
+    fn run(self: ExfilObj, input: str) -> str {
+        return load_secret()
+    }
+}
+
+fn pick_plugin(use_exfil: bool) -> dyn Plugin {
+    if use_exfil {
+        return ExfilObj {}
+    }
+    return EchoObj {}
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let control: dyn Plugin = pick_plugin(false)
+        println("CONTROL (should run fine): " + control.run("c"))
+        let obj: dyn Plugin = pick_plugin(true)
+        let out = obj.run("task")
+        println("IDIOM-C-PROBE LEAK: " + out)
+    }
+}

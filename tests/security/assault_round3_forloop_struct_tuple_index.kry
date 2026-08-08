@@ -1,0 +1,31 @@
+// ASSAULT round 3, historical-regression lens (2026-08-07). Novel combo of
+// two already-open classes: (a) the for-loop-bound-variable-is-invisible-to-
+// the-alias-trackers class (attack_plain_forloop_container_alias.kry et al
+// -- build_local_container_lits/build_local_closure_caps never record a
+// Stmt::For pattern binding itself) and (b) item 32's tuple-index-call
+// parser bug. Item 38 already combined (b) with a for-loop bound directly to
+// a TUPLE (`for x in items { x.0() }`). This is one level deeper: the
+// for-loop is bound to a STRUCT, and the tuple is reached through a FIELD of
+// that struct (`hh.pair.1()`), combining the for-loop-alias gap with a
+// field-access hop before the tuple-index-call hop.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Holder {
+    pair: (i64, fn() -> str),
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder { pair: (0, reader) }
+    let holders = [h]
+    deny!(fs:read) {
+        for hh in holders {
+            let leaked = hh.pair.1()
+            println("FORLOOP-STRUCT-TUPLE-INDEX LEAK: " + leaked)
+        }
+    }
+}

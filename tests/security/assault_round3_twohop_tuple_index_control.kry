@@ -1,0 +1,15 @@
+// Control for assault_round3_twohop_tuple_index.kry: same program, direct
+// call `reader()` in place of `outer.0.1()`. Should be REJECTED (E0507).
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = reader()
+        println("CONTROL DIRECT LEAK (should not compile): " + leaked)
+    }
+}
