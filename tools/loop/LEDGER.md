@@ -12,6 +12,66 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: closures/spawn re-verification (2026-08-08) — assigned items 7 and 7b, both already CLOSED, zero compiler changes this session
+
+Assigned to close LEDGER items 7 (mutated-SCALAR-capture N>=2 generalization) and 7b
+(spawn-shared closure data race), per `tests/known_failures/closure_mutated_capture_
+scalar_gaps.kry` and `tests/known_failures/spawn_closure_shared_env_race.kry`. Both
+files no longer exist and both fixes are already merged into `master`
+(`a39b776 fix(closures): generalize mutated-SCALAR-capture persistence to N>=2 and
+non-tail-identifier shapes`, `00b3cf7 fix(concurrency): serialize calls to a
+spawn-shared mutating closure -- closes item 7b's data race`) with full proof-both-ways
+evidence already in the CLOSED table below. Per doctrine ("self-reported done is not
+evidence"), independently re-verified rather than trusting the ledger's own prior
+claim:
+
+- Clean HEAD baseline: this is a shared workspace with ~2-day-stale UNCOMMITTED
+  changes present in the working tree (kryos-rt/exception.rs, spawn.rs,
+  stdlib-native/sync_prims.rs, both codegen backends) matching the CLOSED table's
+  "closure-lock-self-reentrancy-hang" (item 11a) and "spawn-uncaught-throw-waitgroup-
+  hang" (item 16) write-ups but with no corresponding commit in `git log` -- orphaned
+  WIP from a prior session, out of scope for this wave (not touched, not committed;
+  temporarily `git stash`ed to get a HEAD-accurate baseline for this verification,
+  then popped back exactly as found). Flagged for whoever owns items 11a/16: that work
+  looks complete per its own file diff but was never committed, so it is currently at
+  risk of loss.
+- Full `cargo build --release` (no `-p`, required for kryos-rt/kryos-stdlib-native)
+  against clean HEAD, 47s, clean.
+- Item 7: `tests/conformance/conf_functions.kry` (the fold-in target -- `two_mutated_
+  scalar_captures`, `mixed_scalar_and_struct_mutated_captures`, `stateful_factory_
+  mutated_scalar`) PASS on both `kryos run` and `kryos build --release`.
+- Item 7b: `tests/conformance/conf_spawn_closure_capture_lock.kry` (30 threads x 1000
+  calls, exact-value assert) run 25x on JIT and 25x on AOT fresh this session -- 50/50
+  clean, zero lost updates, matching the CLOSED table's original 50/50 evidence.
+- The specific interaction the task brief warned about (`spawn` sharing a struct
+  handle, which broke `conf_spinlock_mutex` under a naive ownership-model attempt at
+  this same bug class) re-checked: `conf_spinlock_mutex.kry` 10x JIT + 10x AOT, 20/20
+  clean.
+- `bash tools/loop/kryos-loop.sh gates 2`: tier1 15/15 PASS (conformance 62/62), tier2
+  initially showed `examples_e2e FAIL` (8/12 response-body assertions) -- this is the
+  EXACT documented false-RED trap from a leftover `kryos.exe` process (NON-NEGOTIABLE
+  #5); killed the stray process and reran `tests/run_examples_e2e.sh` standalone,
+  clean 12/12. No source changes were made this session so no other gate could have
+  regressed.
+- `compiler/self-host/test_bootstrap.sh`: did NOT complete this session. Stage-1 ran
+  for 70+ minutes of accumulated CPU time (confirmed actively progressing, not hung,
+  via `tasklist` CPU-time deltas) before the harness's own background-task lifetime
+  cap force-killed the wrapper script; the orphaned `kryos.exe` stage-1 build was
+  killed manually afterward. `winobs` confirmed MsMpEng (Defender) at ~15,848
+  cumulative CPU-seconds during the run -- the same contention signature multiple
+  other recent sessions in this ledger have hit and disclosed rather than assumed
+  away. Not independently re-verified this session; the only change landing from this
+  wave is a documentation fix (CLAUDE.md gotcha #22 was stale, still describing item
+  7b as an unfixed race -- corrected to state the lock-based fix and point at
+  `docs/09-concurrency.md`), which touches no self-host path and was already covered
+  by item 7b's own original bootstrap-16/16 evidence in the CLOSED table.
+
+**Net result: nothing to fix. Both assigned items were already closed by a prior
+session with real evidence that reproduces cleanly today.** No `tests/known_failures/`
+repro to move (both already moved/deleted by the original fixes).
+
+---
+
 ## ASSAULT round 3 (real-program lens, 2026-08-07) — zero compiler changes this session
 
 **The NEW LIVE CAPABILITY ESCAPE this section reports (`registry[idx].handler(args)`
