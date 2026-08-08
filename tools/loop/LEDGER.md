@@ -12,6 +12,96 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## ASSAULT round 3 (real-program lens, 2026-08-07) — zero compiler changes this session
+
+Wrote a "tool registry + agent + concurrent workers" program exercising four idioms not
+covered by round 1/round 2's real-program sweeps -- enum-of-fn-values tagged dispatch,
+generic trait-bound dispatch (`fn f<T: Plugin>`), a `spawn`+`chan()` work-queue pool, and
+decorator/middleware closure composition -- against the existing
+`compiler/target/release/kryos.exe`, read-only, no rebuild. Three of the four
+(enum-of-fn, generic trait-bound, decorator closure) fail closed with FALSE rejections
+(the whole combined file was already rejected on its shared registry-construction
+backbone, so each was re-verified isolated: all three reject even their own benign
+CONTROL call, an ergonomics defect consistent with F6/round2's bare-name-conflation
+class, not independently new). The fourth is a genuine new hole:
+
+**NEW, LIVE CAPABILITY ESCAPE — a fn-typed struct FIELD reached via `container[idx]
+.field(args)` (array index, then a NAMED field, called directly) INSIDE the SAME
+function as the `deny!()` narrowing it, bypasses ALL capability enforcement whenever
+the container is bound from a factory-FUNCTION return rather than a literal — on
+BOTH enforcement modes.** This is the single most ordinary way to build a plugin
+registry (`let registry = build_registry()` then dispatch off it), not a contrived
+shape, and is unrelated to spawn/concurrency despite being first surfaced through a
+`spawn`+`chan()` idiom (spawn is NOT load-bearing -- reproduces identically with no
+spawn at all). Repros, all against HEAD, no compiler changes:
+`tests/security/assault_round3_probe_spawn_chan_registry.kry` (spawn+chan work queue,
+where it was first noticed as the ONLY one of four idioms producing zero `kryos check`
+diagnostics in the combined file), `tests/security/assault_round3_control_direct_no_spawn.kry`
+(spawn removed, still leaks), `tests/security/assault_round3_control_direct_annotated.kry`
+(every function given an explicit `@capabilities` annotation to rule out strict mode's
+unrelated "must self-declare" rule as the explanation -- still leaks under BOTH modes),
+and `tests/security/assault_round3_control_literal_bound_registry.kry` (root-cause
+POSITIVE control: identical shape but `registry` bound to a literal array expression
+instead of a factory function -- correctly REJECTED, isolating the literal-vs-factory
+distinction as the exact trigger).
+
+```
+$ kryos run tests/security/assault_round3_control_direct_annotated.kry
+CONTROL RESULT: DIRECT-CONTROL
+DIRECT LEAK (should NOT print if deny works): ROUND3-TOP-SECRET-9f3a1c
+$ echo $?
+0
+$ kryos check --strict-capabilities tests/security/assault_round3_control_direct_annotated.kry
+$ echo $?
+0
+```
+5/5 repeated runs of the spawn+chan variant agree (`tools/loop/LEDGER.md` session log).
+Positive control (literal-bound registry, otherwise byte-identical): both the control
+AND the exfil call are correctly rejected, `error[E0507]: call to \`handler\` requires
+capabilities [fs:read] not granted to caller`, rc=1, both modes.
+
+Root cause, confirmed by direct source read: `compiler/crates/kryos-capabilities/src/
+checker.rs::resolve_method_field_invoke_caps` (~line 3232) is the enforcement routine
+for exactly this shape (`obj.method(args)` where `method` is actually a fn-typed struct
+FIELD, not a real trait/impl method). Its receiver-root lookup (line 3244:
+`let Some(lit) = local_container_lits.get(root) else { return
+CapabilitySet::empty() }`) only recognizes a root that is a LOCALLY-TRACKED LITERAL
+binding (`let x = [...]`/`let x = S{...}`) — a deliberate, documented choice (see the
+large comment above it explaining an earlier, broader version was reverted for
+over-rejecting ordinary method calls). When the root is instead bound from ANY other
+expression — most commonly a factory-function's return value, exactly how a real
+registry-builder is written — the function returns `CapabilitySet::empty()`, i.e.
+"this call needs nothing," rather than falling back to the same `Unknown -> all`
+default every other genuinely-unresolvable fn-value invocation in this file uses
+(confirmed as the general policy at lines 3164-3169, 3191-3196, and 3268-3272 of the
+same file — this is the ONE call site of that pattern that returns `empty()` on the
+unresolved branch instead of `all`). Because no other check in
+`check_callee_capabilities` covers this AST shape (`resolve_path` collapses
+`registry[idx].handler` to a single bogus segment `["handler"]` since it has no
+`IndexAccess` arm — see item 32's writeup for the same `resolve_path` gap in a
+different shape — but that only matters for the `FnCall`-shaped tuple-index case; here
+the parser correctly emits `Expr::MethodCall`, which is enforced entirely through
+`resolve_method_field_invoke_caps`, so its `empty()` fallback is the ONLY thing that
+would have caught this and doesn't), the call is charged NOTHING and the deny!()
+narrowing is silently defeated. This is the SAME invariant-22 violation
+("Unknown must mean all, never nothing") the round-3 briefing calls out as the
+crux gap for the NEXT-generation effect-row system — this finding shows the CURRENT
+shape-based checker already has a live instance of it, in the one function whose own
+doc comment explicitly discusses (and rejects, for false-positive reasons) the
+sound `all` fallback for this exact unresolved-root case.
+
+Distinct from item 30 (fn-bearing field reached through an ACCESSOR CALL,
+`get_box(h).f()`) — no accessor call anywhere here, just an inline index-then-field
+receiver chain — and from item 32 (tuple `.N()` parsing as `FnCall{FieldAccess}` due
+to a missing `MethodCall` branch for integer field names) — `handler` is a named
+field, so the parser DOES correctly build `Expr::MethodCall`; the gap is entirely in
+`resolve_method_field_invoke_caps`'s enforcement, not in parsing or path resolution.
+Not fixed; not yet added to the numbered OPEN list pending triage against items 30/32
+(likely warrants its own number given the distinct root-cause function and distinct
+trigger condition: literal-vs-factory-bound container root).
+
+---
+
 ## ASSAULT round 3 (historical-regression lens, 2026-08-07) — zero compiler changes this session
 
 Re-ran historical bypass classes in fresh syntactic dress per the round-3 brief, targeting

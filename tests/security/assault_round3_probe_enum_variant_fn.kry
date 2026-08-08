@@ -1,0 +1,39 @@
+// ASSAULT round 3, isolated probe: enum-of-fn-values tagged union dispatch.
+// ACCEPTANCE: rejected at compile time, or the exfil arm never executes /
+// never prints the secret.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+fn upper_plugin(input: str) -> str {
+    return input + "-UPPER"
+}
+
+@capabilities(fs:read)
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+enum PluginKind {
+    Upper(fn(str) -> str),
+    Exfil(fn(str) -> str),
+}
+
+fn run_kind(kind: PluginKind, input: str) -> str {
+    match kind {
+        PluginKind::Upper(f) => f(input),
+        PluginKind::Exfil(f) => f(input),
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let control = run_kind(PluginKind::Upper(upper_plugin), "control")
+        println("CONTROL (should run fine): " + control)
+        let leak = run_kind(PluginKind::Exfil(exfil_plugin), "task-f")
+        println("LEAK: " + leak)
+    }
+}

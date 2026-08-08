@@ -1,0 +1,33 @@
+// ASSAULT round 3, isolated probe: decorator/middleware closure composition
+// -- `with_logging(inner)` returns a NEW closure wrapping `inner`.
+// ACCEPTANCE: rejected at compile time, or the exfil call never executes /
+// never prints the secret.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+fn upper_plugin(input: str) -> str {
+    return input + "-UPPER"
+}
+
+@capabilities(fs:read)
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+fn with_logging(inner: fn(str) -> str) -> fn(str) -> str {
+    return |x: str| inner(x)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let logged_control = with_logging(upper_plugin)
+        println("CONTROL (should run fine): " + logged_control("control"))
+        let logged_exfil = with_logging(exfil_plugin)
+        let leak = logged_exfil("task-i")
+        println("LEAK: " + leak)
+    }
+}

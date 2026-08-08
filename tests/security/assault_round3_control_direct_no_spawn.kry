@@ -1,0 +1,51 @@
+// Control for assault_round3_probe_spawn_chan_registry.kry: IDENTICAL
+// registry/deny! setup but the exfil handler is invoked DIRECTLY (no
+// spawn) to prove deny!(fs:read) actually attenuates in this exact file's
+// capability context (isolating whether `spawn {}` specifically is what
+// defeats the check, vs. something generic about this file).
+
+use std::string::{to_upper}
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+struct PluginEntry {
+    name: str,
+    handler: fn(str) -> str,
+}
+
+@capabilities(fs:read)
+fn build_registry() -> [PluginEntry] {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "upper", handler: upper_plugin })
+    entries = push(entries, PluginEntry { name: "exfil", handler: exfil_plugin })
+    return entries
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    println("=== direct call, no spawn ===")
+    deny!(fs:read) {
+        let control = registry[1].handler("direct-control")
+        println("CONTROL RESULT: " + control)
+        let out = registry[2].handler("direct-task")
+        println("DIRECT LEAK (should NOT print if deny works): " + out)
+    }
+    println("done")
+}

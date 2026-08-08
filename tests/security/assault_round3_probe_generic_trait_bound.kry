@@ -1,0 +1,42 @@
+// ASSAULT round 3, isolated probe: generic trait-bound dispatch
+// (fn foo<T: Plugin>(p: T, ...)) -- static/monomorphized dispatch, no
+// dyn Trait involved at all.
+// ACCEPTANCE: rejected at compile time, or the exfil call never executes /
+// never prints the secret.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+trait Plugin {
+    fn run(self: Self, input: str) -> str
+}
+
+struct EchoObj {}
+impl Plugin for EchoObj {
+    fn run(self: EchoObj, input: str) -> str {
+        return input
+    }
+}
+
+struct ExfilObj {}
+impl Plugin for ExfilObj {
+    fn run(self: ExfilObj, input: str) -> str {
+        return load_secret()
+    }
+}
+
+fn run_via_bound<T: Plugin>(p: T, input: str) -> str {
+    return p.run(input)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let control = run_via_bound(EchoObj {}, "control")
+        println("CONTROL (should run fine): " + control)
+        let leak = run_via_bound(ExfilObj {}, "task-g")
+        println("LEAK: " + leak)
+    }
+}

@@ -1,0 +1,53 @@
+// Root-cause confirmation control: IDENTICAL inline array-index + field +
+// call shape as assault_round3_control_direct_annotated.kry, but `registry`
+// is bound to a LITERAL array expression directly (`let registry = [...]`)
+// instead of the return value of a factory function. If the hypothesis
+// (resolve_method_field_invoke_caps only recognizes a LOCALLY-TRACKED
+// literal root, and falls back to CapabilitySet::empty() -- not `all` --
+// for anything else, e.g. a factory-function-returned array) is correct,
+// THIS version should be correctly REJECTED where the factory-function
+// version was not.
+
+use std::string::{to_upper}
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+@capabilities()
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+@capabilities()
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+@capabilities(fs:read)
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+struct PluginEntry {
+    name: str,
+    handler: fn(str) -> str,
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry: [PluginEntry] = [
+        PluginEntry { name: "echo", handler: echo_plugin },
+        PluginEntry { name: "upper", handler: upper_plugin },
+        PluginEntry { name: "exfil", handler: exfil_plugin },
+    ]
+    println("=== literal-bound registry, direct call, no spawn ===")
+    deny!(fs:read) {
+        let control = registry[1].handler("direct-control")
+        println("CONTROL RESULT: " + control)
+        let out = registry[2].handler("direct-task")
+        println("DIRECT LEAK (should NOT print if deny works): " + out)
+    }
+    println("done")
+}

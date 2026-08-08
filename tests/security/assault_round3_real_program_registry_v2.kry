@@ -1,0 +1,169 @@
+// ASSAULT round 3 (real-program lens, 2026-08-07): several-hundred-line
+// "agent + tool registry + concurrent workers" program exercising FOUR
+// idioms NOT covered by round 1 or round 2's real-program sweeps:
+//   F: enum-of-fn-values tagged union dispatch (match on a payload closure)
+//   G: generic trait-bound dispatch (fn foo<T: Plugin>(p: T, ...))
+//   H: spawn + chan() work-queue worker pool (not actors, not WaitGroup-only)
+//   I: decorator/middleware closure composition (fn returning a wrapped fn)
+// plus a reused struct-registry backbone (idiom A shape, for plumbing only,
+// not claimed as a new finding).
+//
+// ACCEPTANCE: every deny!(fs:read)-scoped dispatch that reaches the exfil
+// plugin should be REJECTED at compile time (E0507); this file should fail
+// `kryos check`/`kryos run` outright and print nothing. Each "LEAK" println
+// that actually executes and shows the real secret is a live capability
+// escape reached through an ordinary idiom.
+
+use std::string::{to_upper}
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/assault_round3_secret_r3.txt")
+}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+// ---------------------------------------------------------------------
+// Backbone registry (idiom A shape, reused plumbing only).
+// ---------------------------------------------------------------------
+
+struct PluginEntry {
+    name: str,
+    handler: fn(str) -> str,
+}
+
+fn build_registry() -> [PluginEntry] {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "upper", handler: upper_plugin })
+    entries = push(entries, PluginEntry { name: "exfil", handler: exfil_plugin })
+    return entries
+}
+
+// ---------------------------------------------------------------------
+// Idiom F: enum-of-fn-values tagged union -- a config-driven "plugin kind"
+// dispatch table where each variant CARRIES its own handler closure. This
+// is an ordinary alternative to the struct-registry when plugins have
+// heterogeneous config, not a contrived shape.
+// ---------------------------------------------------------------------
+
+enum PluginKind {
+    Echo(fn(str) -> str),
+    Upper(fn(str) -> str),
+    Exfil(fn(str) -> str),
+}
+
+fn run_kind(kind: PluginKind, input: str) -> str {
+    match kind {
+        PluginKind::Echo(f) => f(input),
+        PluginKind::Upper(f) => f(input),
+        PluginKind::Exfil(f) => f(input),
+    }
+}
+
+// ---------------------------------------------------------------------
+// Idiom G: generic trait-bound dispatch -- `fn run_via_bound<T: Plugin>`
+// is the idiomatic "generic over any plugin implementor" pattern, distinct
+// from round 2's `dyn Trait` factory idiom (no trait object involved at
+// all -- purely static/generic dispatch).
+// ---------------------------------------------------------------------
+
+trait Plugin {
+    fn run(self: Self, input: str) -> str
+}
+
+struct EchoObj {}
+impl Plugin for EchoObj {
+    fn run(self: EchoObj, input: str) -> str {
+        return input
+    }
+}
+
+struct ExfilObj {}
+impl Plugin for ExfilObj {
+    fn run(self: ExfilObj, input: str) -> str {
+        return load_secret()
+    }
+}
+
+fn run_via_bound<T: Plugin>(p: T, input: str) -> str {
+    return p.run(input)
+}
+
+// ---------------------------------------------------------------------
+// Idiom I: decorator/middleware closure composition -- a "wrap with
+// logging" helper that takes a plugin fn and returns a NEW fn closing
+// over it. This is the idiomatic way to add cross-cutting behavior
+// (timing, logging, auth) around a handler without touching its body.
+// ---------------------------------------------------------------------
+
+fn with_logging(inner: fn(str) -> str) -> fn(str) -> str {
+    return |x: str| inner(x)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+
+    println("=== idiom F: enum-of-fn-values tagged union dispatch ===")
+    deny!(fs:read) {
+        let control_f = run_kind(PluginKind::Upper(upper_plugin), "control")
+        println("IDIOM-F CONTROL (should run fine): " + control_f)
+        let out_f = run_kind(PluginKind::Exfil(exfil_plugin), "task-f")
+        println("IDIOM-F LEAK: " + out_f)
+    }
+
+    println("=== idiom G: generic trait-bound dispatch (static, no dyn) ===")
+    deny!(fs:read) {
+        let control_g = run_via_bound(EchoObj {}, "control")
+        println("IDIOM-G CONTROL (should run fine): " + control_g)
+        let out_g = run_via_bound(ExfilObj {}, "task-g")
+        println("IDIOM-G LEAK: " + out_g)
+    }
+
+    println("=== idiom H: spawn + chan() work-queue worker pool ===")
+    deny!(fs:read) {
+        let ch = chan()
+        let done = chan()
+        spawn {
+            // worker 1: pulls an index off the queue, dispatches the
+            // registry entry at that index -- ordinary "N workers drain a
+            // shared task queue" pattern.
+            let idx = recv(ch)
+            let out = registry[idx].handler("task-h1")
+            println("WORKER-H1 RESULT: " + out)
+            send(done, 1)
+        }
+        spawn {
+            let idx = recv(ch)
+            let out = registry[idx].handler("task-h2-control")
+            println("WORKER-H2 CONTROL RESULT: " + out)
+            send(done, 1)
+        }
+        send(ch, 2)   // exfil index -> worker 1
+        send(ch, 1)   // upper index (control) -> worker 2
+        recv(done)
+        recv(done)
+    }
+
+    println("=== idiom I: decorator/middleware closure composition ===")
+    deny!(fs:read) {
+        let logged_control = with_logging(upper_plugin)
+        println("IDIOM-I CONTROL (should run fine): " + logged_control("control"))
+        let logged_exfil = with_logging(exfil_plugin)
+        let out_i = logged_exfil("task-i")
+        println("IDIOM-I LEAK: " + out_i)
+    }
+
+    println("all idioms done")
+}
