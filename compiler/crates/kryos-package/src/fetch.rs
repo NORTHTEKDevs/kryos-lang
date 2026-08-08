@@ -139,10 +139,34 @@ fn fetch_github(source: &str, dest: &Path) -> Result<(), String> {
         return Err(format!("unsupported package source: {source}"));
     };
 
+    clone_and_guard(&url, dest)
+}
+
+/// Clone `url` directly into `dest` via `git clone --depth 1`, then refuse
+/// the result if it contains any symlink entry.
+///
+/// Unlike `fetch_github_subdir` (which copies the cloned subdirectory into
+/// `dest` through `copy_dir_all`'s symlink guard), this whole-repo clone
+/// path writes straight to `dest` via `git clone` itself and never went
+/// through that guard at all -- a malicious repo's history can commit a
+/// symlink and `git clone` will happily materialize it on disk (confirmed
+/// live on this machine: a real Windows symlink, `Get-Content` through it
+/// reads the linked-to file's actual bytes) pointing anywhere the fetching
+/// machine's filesystem permits. Split into its own function so the guard
+/// is directly testable against a real local git clone, not just inferred.
+fn clone_and_guard(url: &str, dest: &Path) -> Result<(), String> {
     eprintln!("  fetching {url} -> {}", dest.display());
 
+    // Force real symlink materialization regardless of this machine's own
+    // git config: if the local/global `core.symlinks` is `false` (a common
+    // Windows default without Developer Mode), a committed symlink checks
+    // out as an inert text file instead of a real symlink -- harmless, but
+    // it would also make `reject_symlinks` below a no-op that LOOKS like
+    // it's guarding something when it isn't. Forcing `true` here means the
+    // guard sees the real artifact a POSIX default (`core.symlinks=true`)
+    // checkout would produce, on every platform.
     let output = Command::new("git")
-        .args(["clone", "--depth", "1", &url])
+        .args(["-c", "core.symlinks=true", "clone", "--depth", "1", url])
         .arg(dest)
         .output()
         .map_err(|e| format!("failed to run git clone: {e}"))?;
@@ -152,6 +176,44 @@ fn fetch_github(source: &str, dest: &Path) -> Result<(), String> {
         return Err(format!("git clone failed: {stderr}"));
     }
 
+    if let Err(e) = reject_symlinks(dest, dest) {
+        // Don't leave a partially-trusted, symlink-bearing clone sitting
+        // in the cache for a later run to mistake for a good install.
+        let _ = std::fs::remove_dir_all(dest);
+        return Err(format!("refusing package: {e}"));
+    }
+
+    Ok(())
+}
+
+/// Recursively reject any symlink entry under `dir` (skipping `.git`,
+/// which legitimately carries no package content and is never read by
+/// `registry::content_checksum`). Mirrors `copy_dir_all`'s guard -- see
+/// its doc comment for the full threat model.
+fn reject_symlinks(dir: &Path, root: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            let path = entry.path();
+            let rel = path.strip_prefix(root).unwrap_or(&path);
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "refusing to trust symlink entry `{}` in a cloned package -- a package \
+                     must not contain symlinks (could point outside the package and pull \
+                     unrelated files into the local cache)",
+                    rel.display()
+                ),
+            ));
+        }
+        if file_type.is_dir() {
+            reject_symlinks(&entry.path(), root)?;
+        }
+    }
     Ok(())
 }
 
@@ -184,8 +246,11 @@ fn fetch_github_subdir(spec: &str, dest: &Path) -> Result<(), String> {
         dest.display()
     );
 
+    // Force real symlink materialization regardless of local git config --
+    // see `clone_and_guard`'s comment. `copy_dir_all` below only sees a
+    // real symlink to reject if the checkout actually produced one.
     let output = Command::new("git")
-        .args(["clone", "--depth", "1", &url])
+        .args(["-c", "core.symlinks=true", "clone", "--depth", "1", &url])
         .arg(&tmp)
         .output()
         .map_err(|e| format!("failed to run git clone: {e}"))?;
@@ -405,6 +470,101 @@ mod tests {
             "a file symlink pointing outside the package must never be materialized in the \
              cache -- found {}",
             leaked.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The whole-repo (non-`github_subdir:`) clone path never went through
+    /// `copy_dir_all` at all -- `git clone` writes straight to `dest`, so a
+    /// symlink committed in the source repo's history is a live escape
+    /// distinct from (and unguarded by) the `copy_dir_all` tests above.
+    /// This builds a REAL local git repo containing a symlink, clones it
+    /// through `clone_and_guard` (the exact function `fetch_github`'s
+    /// plain-clone branch calls), and requires the clone to be rejected.
+    #[test]
+    fn clone_and_guard_rejects_a_symlink_committed_in_the_source_repo() {
+        let base = std::env::temp_dir().join(format!(
+            "kryos-clone-guard-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let outside = base.join("outside");
+        let dest = base.join("dest");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(
+            outside.join("secret.txt"),
+            "not part of the package -- must never be copied in",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("kryos.toml"),
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+
+        if make_symlink_file(&outside.join("secret.txt"), &repo.join("evil_link")).is_err() {
+            eprintln!("skipping: cannot create a symlink in this environment");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let git = |args: &[&str]| -> std::process::Output {
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git must be on PATH for this test")
+        };
+        assert!(git(&["init", "-q"]).status.success());
+        assert!(git(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "add",
+            "-A",
+        ])
+        .status
+        .success());
+        let commit = git(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ]);
+        if !commit.status.success() {
+            // e.g. no git identity resolvable at all in this environment --
+            // skip rather than fail on an unrelated capability gap.
+            eprintln!(
+                "skipping: git commit failed: {}",
+                String::from_utf8_lossy(&commit.stderr)
+            );
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let repo_url = repo.to_string_lossy().to_string();
+        let result = clone_and_guard(&repo_url, &dest);
+        assert!(
+            result.is_err(),
+            "a symlink committed inside a cloned repo must be rejected, got Ok"
+        );
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("evil_link"),
+            "expected the guard's rejection to name the offending entry, got: {msg}"
+        );
+        assert!(
+            !dest.exists(),
+            "a rejected whole-repo clone must not be left in the cache -- found {}",
+            dest.display()
         );
 
         let _ = std::fs::remove_dir_all(&base);
