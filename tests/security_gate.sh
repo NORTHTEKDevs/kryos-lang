@@ -586,5 +586,64 @@ else
     fi
 fi
 
+
+# 53-59. LEDGER item 1's ASSAULT round 3 residual (2026-08-07): a closure
+#        stored in a container BOUND FROM A FACTORY FUNCTION'S RETURN (`let
+#        registry = build_registry()`), not a struct/array/map LITERAL, then
+#        read back out and invoked -- DIRECTLY, in the SAME function as the
+#        `deny!(fs:read)` narrowing it. Distinct from checks #7-10 (which
+#        pass the container INTO a separate zero-cap helper as a PARAMETER,
+#        tracked via the parameter's own declared type): this residual is a
+#        purely LOCAL-variable shape, closed by `resolve_method_field_
+#        invoke_caps`'s new type-based fail-closed fallback plus
+#        `fn_return_container_lits`' precise literal-splicing for zero-arg
+#        factory functions. Each shape below must be REJECTED under both
+#        enforcement modes; each `_control_benign` sibling (an all-safe
+#        registry, no privileged entry anywhere) must still compile clean.
+for shape in local_struct_field local_registry_index_field local_map_of_struct_field \
+             local_array_direct local_map_direct local_nested_field_array \
+             local_nested_two_hop_field; do
+    f="tests/security/cap_escape_closure_launder_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/localres_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: local-container-launder [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/localres_${shape}_$mode_flag"; then
+            echo "  ok   local-container-launder [$shape] escape rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/localres_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 60. No-cascade complement to #53-59 (array-of-struct-field shape,
+#     precise-literal-splicing path via named-function field values): an
+#     ALL-SAFE registry (no privileged entry anywhere), built the identical
+#     way (factory function, array of structs with fn-typed fields), must
+#     still compile clean with NO annotation.
+if "$K" check --strict-capabilities \
+    tests/security/cap_escape_closure_launder_local_registry_index_field_control_benign.kry \
+    >"$TMP/localres_nc1" 2>&1; then
+    echo "  ok   factory-built array-of-struct-field registry of pure closures needs no annotation (no cascade)"
+else
+    echo "  FAIL: the local-container fix cascaded into a pure-closure factory registry:"
+    tail -5 "$TMP/localres_nc1" | sed 's/^/    /'; fail=1
+fi
+
+# 61. No-cascade complement to #53-59 (struct-field shape routed through an
+#     intermediate LOCAL inside the factory function, not a bare named-
+#     function reference -- exercises `substitute_container_lit_identifiers`'
+#     local-inlining, not just the literal/named-function case #60 covers).
+if "$K" check --strict-capabilities \
+    tests/security/cap_escape_closure_launder_local_struct_field_control_benign.kry \
+    >"$TMP/localres_nc2" 2>&1; then
+    echo "  ok   factory-built struct-field registry via an intermediate local needs no annotation (no cascade)"
+else
+    echo "  FAIL: the local-container fix cascaded into a pure-closure factory registry (intermediate local):"
+    tail -5 "$TMP/localres_nc2" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

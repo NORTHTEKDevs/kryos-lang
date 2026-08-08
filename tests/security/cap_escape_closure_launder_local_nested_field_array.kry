@@ -1,0 +1,33 @@
+// SECURITY -- nested-container probe: a STRUCT FIELD holding an ARRAY of
+// closures, the container LOCAL bound via a FACTORY FUNCTION (not a
+// literal), invoked via `registry.handlers[0]()` INSIDE the same function as
+// `deny!(fs:read)`. The final invocation step is an Index (`[0]()`), not a
+// named `.field(args)` MethodCall, so -- like the two `..._direct.kry`
+// probes -- this decomposes to `FnCall{callee: IndexAccess{FieldAccess}}`
+// and is resolved via `resolve_direct_invoke_caps`, not
+// `resolve_method_field_invoke_caps`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+struct Registry { handlers: [fn() -> str] }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_registry() -> Registry {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    return Registry { handlers: [r] }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix: does this compile clean and print the secret?
+        println("local-nested-field-array launder: " + registry.handlers[0]())
+    }
+}

@@ -403,6 +403,24 @@ struct CapabilityChecker {
     /// reader = make_secret_reader(path)` back to the authority the returned
     /// closure actually carries.
     fn_return_closure_caps: HashMap<String, ClosureCapsResult>,
+    /// For every ZERO-PARAMETER function whose every RETURN-position
+    /// expression (see `collect_return_exprs`) agrees on the SAME
+    /// struct/array/map LITERAL (directly, or via a `let`-bound local
+    /// literal traced within that function's own body), the literal
+    /// template itself — see `compute_fn_return_container_lits`. Lets
+    /// `build_local_container_lits` splice `let registry = build_registry()`
+    /// in as if `registry` had been bound to the literal directly, so the
+    /// EXISTING literal-tracing machinery resolves the REAL, PRECISE
+    /// capability of whatever a no-arg factory function actually built,
+    /// instead of the blunt `Unknown -> all` fallback
+    /// `resolve_method_field_invoke_caps`'s type-based case falls back to
+    /// when a factory function's construction can't be traced this way
+    /// (has parameters, a non-literal/disagreeing return, ...). Closes the
+    /// container-BY-LOCAL-VARIABLE residual (LEDGER item 1's ASSAULT round
+    /// 3 finding) PRECISELY for the common case, avoiding the cascade a
+    /// purely type-based `all` fallback would otherwise force onto every
+    /// ordinary, non-privileged factory-built registry/dispatch-table.
+    fn_return_container_lits: HashMap<String, Expr>,
     /// The fn-typed PARAMETER NAMES of the function currently being checked
     /// (enforcement walk only). An `Identifier` reference to one of these
     /// resolves to `ClosureCapsResult::DependsOnParam`, deferring its charge
@@ -426,6 +444,25 @@ struct CapabilityChecker {
     /// authority depends on WHICH field/index path is later invoked, which
     /// isn't known yet when the `let` is bound).
     current_local_container_lits: HashMap<String, Expr>,
+    /// **Closes the container-BY-LOCAL-VARIABLE residual of the closure/
+    /// fn-value laundering fix (see LEDGER item 1's ASSAULT round 3
+    /// finding).** `current_local_container_lits` only tracks a local bound
+    /// to a struct/array/map LITERAL (or a bare alias of one) — a local
+    /// bound to a FACTORY FUNCTION's return value (`let registry =
+    /// build_registry()`) has no literal to snapshot (the literal lives
+    /// inside `build_registry`'s own body), so it is invisible there and
+    /// `resolve_method_field_invoke_caps` fell through to `empty()` rather
+    /// than the sound fail-closed default. This map records that local's
+    /// STATICALLY KNOWN TYPE instead — from an explicit `let` annotation,
+    /// or (the common unannotated case) the declared return type of a
+    /// directly-called named function, or an alias of another tracked
+    /// local — which is enough to positively confirm (via
+    /// `resolve_type_path`, same mechanism `hot_params`' Seed B already
+    /// uses for a container-typed PARAMETER) that a later `.field()` access
+    /// reaches a genuine fn-typed field/element, without needing to trace
+    /// the actual runtime value. Populated alongside
+    /// `current_local_container_lits` everywhere that map is built.
+    current_local_container_types: HashMap<String, TypeExpr>,
     /// **Actor-state fail-closed set (closes LEDGER item 18,
     /// `actor-state-stored-closure-cap-escape`).** The FN-TYPED state field
     /// names of the actor whose handler body is currently being checked. A
@@ -495,9 +532,11 @@ impl CapabilityChecker {
             hot_params: HashMap::new(),
             hot_param_companions: HashMap::new(),
             fn_return_closure_caps: HashMap::new(),
+            fn_return_container_lits: HashMap::new(),
             current_fn_typed_params: HashSet::new(),
             current_local_closure_caps: HashMap::new(),
             current_local_container_lits: HashMap::new(),
+            current_local_container_types: HashMap::new(),
             current_actor_fn_state_fields: HashSet::new(),
             current_actor_state_alias_locals: HashMap::new(),
             mode,
@@ -1779,6 +1818,7 @@ impl CapabilityChecker {
                             &ext_own_params,
                             local_caps,
                             &HashMap::new(),
+                            &HashMap::new(),
                         );
                         self.structural_lambda_eval_depth
                             .set(self.structural_lambda_eval_depth.get() - 1);
@@ -1834,6 +1874,7 @@ impl CapabilityChecker {
                         own_params,
                         local_caps,
                         &HashMap::new(),
+                        &HashMap::new(),
                     );
                     if body_caps.is_empty() {
                         return ClosureCapsResult::DependsOnParam(hot_p.clone());
@@ -1853,6 +1894,7 @@ impl CapabilityChecker {
                     working,
                     own_params,
                     local_caps,
+                    &HashMap::new(),
                     &HashMap::new(),
                 ))
             }
@@ -2424,9 +2466,12 @@ impl CapabilityChecker {
     /// (fail CLOSED) rather than silently keeping a snapshot that is now
     /// known to be wrong. This is the concrete fix for "an unanalyzable
     /// fn-value must FAIL CLOSED, not open."
-    fn build_local_container_lits(block: &kryos_ast::Block) -> HashMap<String, Expr> {
+    fn build_local_container_lits(
+        block: &kryos_ast::Block,
+        fn_return_container_lits: &HashMap<String, Expr>,
+    ) -> HashMap<String, Expr> {
         let mut locals = HashMap::new();
-        Self::build_local_container_lits_block(block, &mut locals);
+        Self::build_local_container_lits_block(block, &mut locals, fn_return_container_lits);
         locals
     }
 
@@ -2646,7 +2691,11 @@ impl CapabilityChecker {
         }
     }
 
-    fn build_local_container_lits_block(block: &kryos_ast::Block, locals: &mut HashMap<String, Expr>) {
+    fn build_local_container_lits_block(
+        block: &kryos_ast::Block,
+        locals: &mut HashMap<String, Expr>,
+        fn_return_container_lits: &HashMap<String, Expr>,
+    ) {
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Let {
@@ -2660,13 +2709,29 @@ impl CapabilityChecker {
                             locals.insert(name.clone(), existing);
                         }
                     }
+                    // `let x = f()` where `f` is a bare, ZERO-ARGUMENT call
+                    // to a function whose return literal is known (see
+                    // `fn_return_container_lits`'s doc) — splice that
+                    // template in as if `x` had been bound to the literal
+                    // directly, so the ordinary literal-tracing machinery
+                    // resolves the REAL capability of what a no-arg factory
+                    // function actually built (closes the container-BY-
+                    // LOCAL-VARIABLE residual PRECISELY, avoiding the blunt
+                    // `all` fallback's cascade onto non-privileged code).
+                    Expr::FnCall { callee, args, .. } if args.is_empty() => {
+                        if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                            if let Some(lit) = fn_return_container_lits.get(fname) {
+                                locals.insert(name.clone(), lit.clone());
+                            }
+                        }
+                    }
                     // `let x = { .. }` block-tail-value initializer: recurse
                     // so a container literal built INSIDE the block (by its
                     // own nested `let`s) is tracked before a later read
                     // reaching into it (within the same block) is resolved --
                     // same fix as the bare-block-statement arm below.
                     Expr::Block { block: inner, .. } => {
-                        Self::build_local_container_lits_block(inner, locals);
+                        Self::build_local_container_lits_block(inner, locals, fn_return_container_lits);
                     }
                     _ => {}
                 },
@@ -2679,24 +2744,24 @@ impl CapabilityChecker {
                     else_block,
                     ..
                 } => {
-                    Self::build_local_container_lits_block(then_block, locals);
+                    Self::build_local_container_lits_block(then_block, locals, fn_return_container_lits);
                     for (_, b) in elif_clauses {
-                        Self::build_local_container_lits_block(b, locals);
+                        Self::build_local_container_lits_block(b, locals, fn_return_container_lits);
                     }
                     if let Some(b) = else_block {
-                        Self::build_local_container_lits_block(b, locals);
+                        Self::build_local_container_lits_block(b, locals, fn_return_container_lits);
                     }
                 }
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                    Self::build_local_container_lits_block(body, locals)
+                    Self::build_local_container_lits_block(body, locals, fn_return_container_lits)
                 }
                 Stmt::TryCatch {
                     try_block,
                     catch_block,
                     ..
                 } => {
-                    Self::build_local_container_lits_block(try_block, locals);
-                    Self::build_local_container_lits_block(catch_block, locals);
+                    Self::build_local_container_lits_block(try_block, locals, fn_return_container_lits);
+                    Self::build_local_container_lits_block(catch_block, locals, fn_return_container_lits);
                 }
                 // Sibling gap to the one fixed in `build_local_closure_caps_block`
                 // above: a bare `{ }` scoping block desugars to `Stmt::Expr {
@@ -2712,7 +2777,102 @@ impl CapabilityChecker {
                     expr: Expr::Block { block: inner, .. },
                     ..
                 } => {
-                    Self::build_local_container_lits_block(inner, locals);
+                    Self::build_local_container_lits_block(inner, locals, fn_return_container_lits);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// See `current_local_container_types`'s doc for the residual this
+    /// closes. Best-effort, FLAT (same non-lexical-scope-precise model as
+    /// `build_local_container_lits`) map of every `let name = expr`
+    /// binding's STATICALLY KNOWN type, when resolvable:
+    /// - an explicit type annotation on the `let` itself;
+    /// - otherwise (the common case — CLAUDE.md hard rule 6: local `let` may
+    ///   infer), the DECLARED RETURN TYPE of a directly-called NAMED
+    ///   function (`let registry = build_registry()`), via `fn_ret_ty`;
+    /// - an alias of another already-tracked local (`let x = y`).
+    /// Unlike `build_local_container_lits`, a variable's STATIC type never
+    /// changes after its `let` (Kryos is statically typed — a later
+    /// `Stmt::Assign` can only write a value of the SAME declared/inferred
+    /// type), so there is no assignment-invalidation counterpart to
+    /// `apply_container_assign` here: once resolved, a local's type entry
+    /// stays valid for the rest of the block. Anything else (a method call,
+    /// a conditional, an arithmetic expression, a read out of another
+    /// container, ...) is simply absent — callers must treat a miss as
+    /// "type unknown", never as "not fn-bearing".
+    fn build_local_container_types(&self, block: &kryos_ast::Block) -> HashMap<String, TypeExpr> {
+        let mut locals = HashMap::new();
+        self.build_local_container_types_block(block, &mut locals);
+        locals
+    }
+
+    fn build_local_container_types_block(
+        &self,
+        block: &kryos_ast::Block,
+        locals: &mut HashMap<String, TypeExpr>,
+    ) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let {
+                    name, ty: Some(t), ..
+                } => {
+                    locals.insert(name.clone(), t.clone());
+                }
+                Stmt::Let {
+                    name,
+                    ty: None,
+                    value: Some(v),
+                    ..
+                } => match v {
+                    Expr::FnCall { callee, .. } => {
+                        if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                            if let Some(rt) = self.fn_ret_ty.get(fname) {
+                                locals.insert(name.clone(), rt.clone());
+                            }
+                        }
+                    }
+                    Expr::Identifier { name: src, .. } => {
+                        if let Some(t) = locals.get(src).cloned() {
+                            locals.insert(name.clone(), t);
+                        }
+                    }
+                    Expr::Block { block: inner, .. } => {
+                        self.build_local_container_types_block(inner, locals);
+                    }
+                    _ => {}
+                },
+                Stmt::If {
+                    then_block,
+                    elif_clauses,
+                    else_block,
+                    ..
+                } => {
+                    self.build_local_container_types_block(then_block, locals);
+                    for (_, b) in elif_clauses {
+                        self.build_local_container_types_block(b, locals);
+                    }
+                    if let Some(b) = else_block {
+                        self.build_local_container_types_block(b, locals);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    self.build_local_container_types_block(body, locals)
+                }
+                Stmt::TryCatch {
+                    try_block,
+                    catch_block,
+                    ..
+                } => {
+                    self.build_local_container_types_block(try_block, locals);
+                    self.build_local_container_types_block(catch_block, locals);
+                }
+                Stmt::Expr {
+                    expr: Expr::Block { block: inner, .. },
+                    ..
+                } => {
+                    self.build_local_container_types_block(inner, locals);
                 }
                 _ => {}
             }
@@ -2794,6 +2954,205 @@ impl CapabilityChecker {
         }
     }
 
+    /// See `fn_return_container_lits`'s doc. Purely structural (no
+    /// capability dependency) — computed once, alongside `hot_params`.
+    /// Restricted to ZERO-PARAMETER functions specifically to avoid
+    /// splicing a literal whose field values reference the FACTORY
+    /// function's OWN parameters into a CALLER's `local_container_lits` map
+    /// (those names would then be resolved against the CALLER's scope, not
+    /// the factory's — wrong; a parameterized factory falls through to the
+    /// type-based fail-closed fallback instead, same as any other
+    /// unresolvable construction). `None`/absent for anything else (a
+    /// function with params, multiple disagreeing return literals, a
+    /// non-literal return, a return built through further indirection,
+    /// ...) — callers must treat a miss as "unknown", never as "empty".
+    fn compute_fn_return_container_lits(decls: &[Decl]) -> HashMap<String, Expr> {
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
+        Self::collect_functions(decls, &mut fns);
+        Self::collect_actor_handler_bodies(decls, &mut fns);
+        let mut result = HashMap::new();
+        for (name, _annotated, body, params) in &fns {
+            if !params.is_empty() {
+                continue;
+            }
+            // Deliberately NO splicing here (empty map): single-hop only,
+            // to keep this computation non-self-referential/bounded — see
+            // this function's own doc.
+            let local_lits = Self::build_local_container_lits(body, &HashMap::new());
+            let mut return_exprs: Vec<&Expr> = Vec::new();
+            Self::collect_return_exprs(body, &mut return_exprs);
+            if return_exprs.is_empty() {
+                continue;
+            }
+            let mut agreed: Option<Expr> = None;
+            let mut ok = true;
+            for r in &return_exprs {
+                let resolved = match r {
+                    Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                        Some((*r).clone())
+                    }
+                    Expr::Identifier { name: local_name, .. } => local_lits.get(local_name).cloned(),
+                    _ => None,
+                };
+                let Some(resolved) = resolved else {
+                    ok = false;
+                    break;
+                };
+                match &agreed {
+                    None => agreed = Some(resolved),
+                    Some(existing) if *existing == resolved => {}
+                    Some(_) => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                if let Some(lit) = agreed {
+                    // The return literal's own field/element values may
+                    // still reference `body`'s OWN plain (non-container)
+                    // locals (`let r = make_secret_reader(path); return
+                    // Registry { reader: r }`) -- those names mean nothing
+                    // once spliced into a CALLER's `local_container_lits`,
+                    // so a bare `Identifier` reference is inlined with a
+                    // clone of ITS OWN bound expression here (a small,
+                    // bounded-depth local substitution — NOT full constant
+                    // propagation), so a downstream resolver sees the real
+                    // expression (e.g. `make_secret_reader(path)`, a
+                    // NAME-KEYED call resolvable via `fn_return_closure_caps`
+                    // regardless of scope) instead of an unresolvable bare
+                    // name. Without this, only a field value that is
+                    // ITSELF a literal or a bare named-function reference
+                    // resolves precisely; anything routed through an
+                    // intermediate local falls back to the coarser `all`
+                    // charge at the call site — sound, but a needless
+                    // false-rejection on otherwise-benign code of that
+                    // narrower shape (measured live, see LEDGER item 1).
+                    let flat_lets = Self::collect_flat_let_bindings(body);
+                    let substituted = Self::substitute_container_lit_identifiers(&lit, &flat_lets, 0);
+                    result.insert(name.clone(), substituted);
+                }
+            }
+        }
+        result
+    }
+
+    /// Flat (last-`let`-wins, same non-lexical-scope-precise model used
+    /// throughout this file), UNFILTERED map of every `let name = expr`
+    /// binding's RAW initializer expression within `block` — unlike
+    /// `build_local_container_lits`, this keeps EVERY binding regardless of
+    /// shape (a call, a literal, an arithmetic expression, ...), since it
+    /// feeds `substitute_container_lit_identifiers`'s local-inlining, not
+    /// container-path resolution.
+    fn collect_flat_let_bindings(block: &kryos_ast::Block) -> HashMap<String, Expr> {
+        let mut out = HashMap::new();
+        Self::collect_flat_let_bindings_block(block, &mut out);
+        out
+    }
+
+    fn collect_flat_let_bindings_block(block: &kryos_ast::Block, out: &mut HashMap<String, Expr>) {
+        for stmt in &block.stmts {
+            match stmt {
+                Stmt::Let {
+                    name, value: Some(v), ..
+                } => {
+                    out.insert(name.clone(), v.clone());
+                    if let Expr::Block { block: inner, .. } = v {
+                        Self::collect_flat_let_bindings_block(inner, out);
+                    }
+                }
+                Stmt::If {
+                    then_block,
+                    elif_clauses,
+                    else_block,
+                    ..
+                } => {
+                    Self::collect_flat_let_bindings_block(then_block, out);
+                    for (_, b) in elif_clauses {
+                        Self::collect_flat_let_bindings_block(b, out);
+                    }
+                    if let Some(b) = else_block {
+                        Self::collect_flat_let_bindings_block(b, out);
+                    }
+                }
+                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                    Self::collect_flat_let_bindings_block(body, out)
+                }
+                Stmt::TryCatch {
+                    try_block,
+                    catch_block,
+                    ..
+                } => {
+                    Self::collect_flat_let_bindings_block(try_block, out);
+                    Self::collect_flat_let_bindings_block(catch_block, out);
+                }
+                Stmt::Expr {
+                    expr: Expr::Block { block: inner, .. },
+                    ..
+                } => {
+                    Self::collect_flat_let_bindings_block(inner, out);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Recursively inline a bare `Identifier` reference to one of
+    /// `bindings`' own names with a clone of its bound expression, within a
+    /// struct/array/map LITERAL's field/element values (never at the top
+    /// level — a top-level `Identifier` is handled by the caller). Bounded
+    /// depth (4 hops) guards against a pathological alias chain; ordinary
+    /// code never chains this deep. See
+    /// `compute_fn_return_container_lits`'s call site for why this exists.
+    fn substitute_container_lit_identifiers(
+        expr: &Expr,
+        bindings: &HashMap<String, Expr>,
+        depth: u32,
+    ) -> Expr {
+        if depth > 4 {
+            return expr.clone();
+        }
+        match expr {
+            Expr::StructLiteral { name, fields, span } => Expr::StructLiteral {
+                name: name.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(n, v)| {
+                        (
+                            n.clone(),
+                            Self::substitute_container_lit_identifiers(v, bindings, depth + 1),
+                        )
+                    })
+                    .collect(),
+                span: *span,
+            },
+            Expr::ArrayLiteral { elements, span } => Expr::ArrayLiteral {
+                elements: elements
+                    .iter()
+                    .map(|e| Self::substitute_container_lit_identifiers(e, bindings, depth + 1))
+                    .collect(),
+                span: *span,
+            },
+            Expr::MapLiteral { entries, span } => Expr::MapLiteral {
+                entries: entries
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            Self::substitute_container_lit_identifiers(v, bindings, depth + 1),
+                        )
+                    })
+                    .collect(),
+                span: *span,
+            },
+            Expr::Identifier { name, .. } => match bindings.get(name) {
+                Some(bound) => Self::substitute_container_lit_identifiers(bound, bindings, depth + 1),
+                None => expr.clone(),
+            },
+            _ => expr.clone(),
+        }
+    }
+
     /// Compute, for every function whose DECLARED return type is
     /// `fn(...) -> ...`, the statically-resolved authority of the closure it
     /// returns (see `ClosureCapsResult`). A monotone fixed point (mutual
@@ -2820,7 +3179,8 @@ impl CapabilityChecker {
                     .filter(|p| Self::is_fn_typed(&p.ty))
                     .map(|p| p.name.clone())
                     .collect();
-                let local_container_lits = Self::build_local_container_lits(body);
+                let local_container_lits =
+                    Self::build_local_container_lits(body, &self.fn_return_container_lits);
                 let local_caps = self.build_local_closure_caps(body, working, &result, &own_params, &local_container_lits);
                 let mut return_exprs: Vec<&Expr> = Vec::new();
                 Self::collect_return_exprs(body, &mut return_exprs);
@@ -3199,12 +3559,26 @@ impl CapabilityChecker {
     /// The sibling of `resolve_direct_invoke_caps` for the `obj.method(...)`
     /// SYNTACTIC shape when `method` is actually a function-typed STRUCT
     /// FIELD being read and invoked (`reg.reader()`), not a genuine
-    /// method/trait dispatch. Only engages when `method` is POSITIVELY
-    /// confirmed to name a field explicitly written in a locally-tracked
-    /// struct literal reachable from `object` — never a blanket guess, so an
-    /// ordinary method call (`p.distance(other)`) is never misclassified as
-    /// an unresolvable field read (which would otherwise force every method
-    /// call in the language to require `all`).
+    /// method/trait dispatch. Engages in either of two ways, both requiring
+    /// `method` to be POSITIVELY confirmed as a real fn-typed field/element
+    /// — never a blanket guess, so an ordinary method call
+    /// (`p.distance(other)`) is never misclassified as an unresolvable
+    /// field read (which would otherwise force every method call in the
+    /// language to require `all`):
+    /// 1. `object`'s root is a locally-tracked struct/array/map LITERAL
+    ///    (`local_container_lits`) that explicitly writes the field — the
+    ///    precise, pre-existing case, which traces the actual value.
+    /// 2. `object`'s root has a STATICALLY KNOWN TYPE (`local_container_types`
+    ///    — see its doc; closes the container-BY-LOCAL-VARIABLE residual,
+    ///    LEDGER item 1's ASSAULT round 3 finding: `let registry =
+    ///    build_registry()` has no literal to trace, since the literal lives
+    ///    inside `build_registry`'s own body) whose shape, walked via
+    ///    `resolve_type_path`, resolves `method` to a genuine `fn(...)->...`
+    ///    field/element. Unlike case 1, the actual runtime value can't be
+    ///    traced from here, so this fails closed to `all` rather than
+    ///    resolving a precise set — the same sound "Unknown must mean all"
+    ///    default used everywhere else in this file, just reached through a
+    ///    type-positive confirmation instead of an unresolvable-root guess.
     ///
     /// **Tried and REVERTED, recorded here so it is not re-attempted the
     /// same way:** an earlier version of this fix, when `object`'s root was
@@ -3222,11 +3596,17 @@ impl CapabilityChecker {
     /// examples broadly (measured live: conf_generics, conf_errors_
     /// concurrency, examples/actors.kry, and 2 type-soundness + 2 inferred-
     /// soundness probes all false-positived under this change — see
-    /// `tools/loop/LEDGER.md`). Reverted in favor of the narrow, precisely-
-    /// scoped `current_actor_state_alias_locals` mechanism below, which
-    /// only tracks LOCALS BOUND DIRECTLY TO A `self.<path>` EXPRESSION
-    /// inside an actor handler — see `resolve_actor_self_field_invoke_caps`
-    /// and `check_actor`'s `build_actor_state_alias_locals` for where that
+    /// `tools/loop/LEDGER.md`). Case 2 above does NOT repeat this mistake:
+    /// it never fires on an unresolvable root alone, only when the root's
+    /// type POSITIVELY confirms `method` is a real fn-typed field/element —
+    /// the same positive-confirmation discipline case 1 already uses, and
+    /// the same `resolve_type_path` mechanism `hot_params`' Seed B already
+    /// uses (and has been measured safe) for a container-typed PARAMETER.
+    /// Reverted in favor of the narrow, precisely- scoped
+    /// `current_actor_state_alias_locals` mechanism below, which only
+    /// tracks LOCALS BOUND DIRECTLY TO A `self.<path>` EXPRESSION inside an
+    /// actor handler — see `resolve_actor_self_field_invoke_caps` and
+    /// `check_actor`'s `build_actor_state_alias_locals` for where that
     /// residual (`let x = self.b; x.f()`) is actually closed.
     #[allow(clippy::too_many_arguments)]
     fn resolve_method_field_invoke_caps(
@@ -3236,41 +3616,58 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         local_caps: &HashMap<String, ClosureCapsResult>,
         local_container_lits: &HashMap<String, Expr>,
+        local_container_types: &HashMap<String, TypeExpr>,
         own_params: &HashSet<String>,
     ) -> CapabilitySet {
         let Some((root, path)) = Self::decompose_container_path(object) else {
             return CapabilitySet::empty();
         };
-        let Some(lit) = local_container_lits.get(root) else {
-            return CapabilitySet::empty();
-        };
-        if !Self::literal_field_exists(lit, &path, method) {
-            return CapabilitySet::empty();
+        if let Some(lit) = local_container_lits.get(root) {
+            if !Self::literal_field_exists(lit, &path, method) {
+                return CapabilitySet::empty();
+            }
+            let mut full_path = path;
+            full_path.push(PathStep::Field(method.to_string()));
+            let root_expr = Expr::Identifier {
+                name: root.to_string(),
+                span: Span::DUMMY,
+            };
+            let result = self.resolve_container_path_caps(
+                &root_expr,
+                &full_path,
+                working,
+                &self.fn_return_closure_caps,
+                local_caps,
+                local_container_lits,
+                own_params,
+            );
+            return match result {
+                ClosureCapsResult::Known(c) => c,
+                ClosureCapsResult::DependsOnParam(pname) => self.deferred_own_param_caps(&pname),
+                ClosureCapsResult::Unknown => {
+                    let mut c = CapabilitySet::empty();
+                    c.insert(Capability::All);
+                    c
+                }
+            };
         }
-        let mut full_path = path;
-        full_path.push(PathStep::Field(method.to_string()));
-        let root_expr = Expr::Identifier {
-            name: root.to_string(),
-            span: Span::DUMMY,
-        };
-        let result = self.resolve_container_path_caps(
-            &root_expr,
-            &full_path,
-            working,
-            &self.fn_return_closure_caps,
-            local_caps,
-            local_container_lits,
-            own_params,
-        );
-        match result {
-            ClosureCapsResult::Known(c) => c,
-            ClosureCapsResult::DependsOnParam(pname) => self.deferred_own_param_caps(&pname),
-            ClosureCapsResult::Unknown => {
+        // Case 2: no literal tracked for `root` (built from a factory
+        // function's return, not a literal in this function's own body) —
+        // but if its STATIC TYPE positively confirms `method` names a real
+        // fn-typed field/element reachable via `path`, this is still a
+        // genuine container-closure invocation whose actual content we just
+        // can't trace from here. Fail closed to `all` rather than silently
+        // charging nothing.
+        if let Some(ty) = local_container_types.get(root) {
+            let mut full_path = path.clone();
+            full_path.push(PathStep::Field(method.to_string()));
+            if matches!(self.resolve_type_path(ty, &full_path), Some(TypeExpr::Function { .. })) {
                 let mut c = CapabilitySet::empty();
                 c.insert(Capability::All);
-                c
+                return c;
             }
         }
+        CapabilitySet::empty()
     }
 
     /// **FAIL-CLOSED default for a call rooted at `self` inside an actor
@@ -3603,7 +4000,9 @@ impl CapabilityChecker {
                     .filter(|p| self.is_fn_bearing_type(&p.ty))
                     .map(|p| p.name.clone())
                     .collect();
-                let local_container_lits = Self::build_local_container_lits(body);
+                let local_container_lits =
+                    Self::build_local_container_lits(body, &self.fn_return_container_lits);
+                let local_container_types = self.build_local_container_types(body);
                 let local_caps = self.build_local_closure_caps(
                     body,
                     &working,
@@ -3617,6 +4016,7 @@ impl CapabilityChecker {
                     &own_params,
                     &local_caps,
                     &local_container_lits,
+                    &local_container_types,
                 );
                 let cur = working
                     .get(name)
@@ -3648,6 +4048,7 @@ impl CapabilityChecker {
     /// here); `local_caps` is that function's `let`-binding closure-authority
     /// map (see `build_local_closure_caps`). Both feed hot-call resolution
     /// (see the `Expr::FnCall` arm of `collect_caps_expr`).
+    #[allow(clippy::too_many_arguments)]
     fn collect_caps_block(
         &self,
         block: &kryos_ast::Block,
@@ -3655,6 +4056,7 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
         local_container_lits: &HashMap<String, Expr>,
+        local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         for stmt in &block.stmts {
@@ -3664,11 +4066,13 @@ impl CapabilityChecker {
                 own_params,
                 local_caps,
                 local_container_lits,
+                local_container_types,
             ));
         }
         acc
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collect_caps_stmt(
         &self,
         stmt: &Stmt,
@@ -3676,6 +4080,7 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
         local_container_lits: &HashMap<String, Expr>,
+        local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         let e = |ex: &Expr, a: &mut CapabilitySet| {
@@ -3685,6 +4090,7 @@ impl CapabilityChecker {
                 own_params,
                 local_caps,
                 local_container_lits,
+                local_container_types,
             ))
         };
         let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
@@ -3694,6 +4100,7 @@ impl CapabilityChecker {
                 own_params,
                 local_caps,
                 local_container_lits,
+                local_container_types,
             ))
         };
         match stmt {
@@ -3761,6 +4168,7 @@ impl CapabilityChecker {
         acc
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn collect_caps_expr(
         &self,
         expr: &Expr,
@@ -3768,6 +4176,7 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
         local_caps: &HashMap<String, ClosureCapsResult>,
         local_container_lits: &HashMap<String, Expr>,
+        local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
         let mut acc = CapabilitySet::empty();
         let e = |ex: &Expr, a: &mut CapabilitySet| {
@@ -3777,6 +4186,7 @@ impl CapabilityChecker {
                 own_params,
                 local_caps,
                 local_container_lits,
+                local_container_types,
             ))
         };
         let b = |bl: &kryos_ast::Block, a: &mut CapabilitySet| {
@@ -3786,6 +4196,7 @@ impl CapabilityChecker {
                 own_params,
                 local_caps,
                 local_container_lits,
+                local_container_types,
             ))
         };
         match expr {
@@ -3905,6 +4316,7 @@ impl CapabilityChecker {
                     working,
                     local_caps,
                     local_container_lits,
+                    local_container_types,
                     own_params,
                 ));
                 e(object, &mut acc);
@@ -4044,6 +4456,9 @@ impl CapabilityChecker {
         self.collect_fn_signatures(&module.declarations);
         self.collect_struct_field_types(&module.declarations);
         self.transparent_accessor_paths = Self::collect_transparent_accessor_paths(&module.declarations);
+        // Purely structural (no capability dependency), like `hot_params` --
+        // see `fn_return_container_lits`'s doc.
+        self.fn_return_container_lits = Self::compute_fn_return_container_lits(&module.declarations);
 
         // Pass 1: seed the propagation map with every ANNOTATED function's
         // declared set (its ceiling).
@@ -4174,7 +4589,11 @@ impl CapabilityChecker {
                     .map(|p| p.name.clone())
                     .collect();
                 self.current_local_container_lits = match body {
-                    Some(b) => Self::build_local_container_lits(b),
+                    Some(b) => Self::build_local_container_lits(b, &self.fn_return_container_lits),
+                    None => HashMap::new(),
+                };
+                self.current_local_container_types = match body {
+                    Some(b) => self.build_local_container_types(b),
                     None => HashMap::new(),
                 };
                 self.current_local_closure_caps = match body {
@@ -4193,6 +4612,7 @@ impl CapabilityChecker {
                 self.current_fn_typed_params.clear();
                 self.current_local_closure_caps.clear();
                 self.current_local_container_lits.clear();
+                self.current_local_container_types.clear();
             }
             Decl::Actor {
                 name,
@@ -4401,7 +4821,9 @@ impl CapabilityChecker {
                 .filter(|p| self.is_fn_bearing_type(&p.ty))
                 .map(|p| p.name.clone())
                 .collect();
-            self.current_local_container_lits = Self::build_local_container_lits(&handler.body);
+            self.current_local_container_lits =
+                Self::build_local_container_lits(&handler.body, &self.fn_return_container_lits);
+            self.current_local_container_types = self.build_local_container_types(&handler.body);
             self.current_actor_state_alias_locals = Self::build_actor_state_alias_locals(&handler.body);
             self.current_local_closure_caps = self.build_local_closure_caps(
                 &handler.body,
@@ -4415,6 +4837,7 @@ impl CapabilityChecker {
             self.current_fn_typed_params.clear();
             self.current_local_closure_caps.clear();
             self.current_local_container_lits.clear();
+            self.current_local_container_types.clear();
             self.current_actor_state_alias_locals.clear();
         }
         self.current_actor_fn_state_fields = saved_actor_fn_fields;
@@ -4645,6 +5068,7 @@ impl CapabilityChecker {
                     &self.fn_capabilities,
                     &self.current_local_closure_caps,
                     &self.current_local_container_lits,
+                    &self.current_local_container_types,
                     &self.current_fn_typed_params,
                 ));
                 // FAIL-CLOSED: `self.<field>()` invoking one of the current

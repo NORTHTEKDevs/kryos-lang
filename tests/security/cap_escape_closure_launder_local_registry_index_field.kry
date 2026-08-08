@@ -1,0 +1,76 @@
+// SECURITY -- the FLAGSHIP shape of the ASSAULT round 3 finding
+// (2026-08-07, `tools/loop/LEDGER.md`): a plugin/tool registry built as
+// `[PluginEntry]` (array of structs, each holding a fn-typed `handler`
+// field) by a FACTORY FUNCTION, dispatched via `registry[idx].handler(args)`
+// -- array index, then a NAMED field, called directly -- INSIDE the SAME
+// function as the `deny!(fs:read)` narrowing it. This is not a contrived
+// shape: it is the ordinary way to write a plugin registry, a router table,
+// or a command dispatch map in a "local agent with tools" architecture.
+//
+// Root cause: `registry` is bound from a function CALL
+// (`let registry = build_registry()`), not a struct/array/map LITERAL, so
+// `local_container_lits` never tracks it, and
+// `resolve_method_field_invoke_caps`'s early-return guard
+// (`local_container_lits.get(root)` missing -> `CapabilitySet::empty()`)
+// fired instead of the sound `Unknown -> all` fail-closed default.
+//
+// NOTE on the `registry[1].handler(..)` line below: it is NOT a precise
+// per-index "this call only reaches upper_plugin" control the way the
+// benign-cascade sibling file is -- `resolve_container_path_caps`'s `Index`
+// step is INDEX-INSENSITIVE BY DESIGN (unions every element's authority,
+// documented, pre-existing, and shared by the already-closed container-AS-
+// PARAMETER case) so ANY index into THIS registry (which also contains the
+// privileged `exfil_plugin`) is charged the union, `[fs:read]` -- both
+// lines below are rejected, not just the second. The real "no cascade on a
+// genuinely benign registry" proof is the separate
+// `..._control_benign.kry` sibling file (an ALL-safe registry, no
+// privileged entry anywhere), which compiles clean.
+//
+// ACCEPTANCE: this program must be REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+
+use std::string::{to_upper}
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+@capabilities(fs:read)
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+struct PluginEntry { name: str, handler: fn(str) -> str }
+
+@capabilities(fs:read)
+fn build_registry() -> [PluginEntry] {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "upper", handler: upper_plugin })
+    entries = push(entries, PluginEntry { name: "exfil", handler: exfil_plugin })
+    return entries
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Both lines are rejected -- see the NOTE above (index-insensitive
+        // union: this registry ALSO holds a privileged entry, so every
+        // index into it is charged [fs:read]).
+        let control = registry[1].handler("direct-control")
+        println("CONTROL RESULT: " + control)
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        let out = registry[2].handler("direct-task")
+        println("DIRECT LEAK (should NOT print if deny works): " + out)
+    }
+}

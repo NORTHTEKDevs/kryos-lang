@@ -1,0 +1,39 @@
+// SECURITY -- CASCADE CONTROL for `cap_escape_closure_launder_local_registry_index_field.kry`.
+// Identical shape (array-of-structs registry, factory-bound LOCAL, dispatched
+// via `registry[idx].handler(args)`) but every plugin is genuinely zero-cap
+// -- no `deny!()`, no privileged closure anywhere. Must compile clean under
+// BOTH enforcement modes and print both results: proves the type-positive
+// fail-closed fix does not force `all` on ordinary, non-privileged
+// registry/dispatch-table code (the exact cascade class this file's sibling
+// fix's own doc warns against).
+//
+// ACCEPTANCE: compiles clean (rc=0, no diagnostics) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`, and
+// prints both plugin outputs correctly.
+
+use std::string::{to_upper}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+fn upper_plugin(input: str) -> str {
+    return to_upper(input)
+}
+
+struct PluginEntry { name: str, handler: fn(str) -> str }
+
+fn build_registry() -> [PluginEntry] {
+    let mut entries: [PluginEntry] = []
+    entries = push(entries, PluginEntry { name: "echo", handler: echo_plugin })
+    entries = push(entries, PluginEntry { name: "upper", handler: upper_plugin })
+    return entries
+}
+
+fn main() {
+    let registry = build_registry()
+    let a = registry[0].handler("hello")
+    let b = registry[1].handler("hello")
+    println("echo: " + a)
+    println("upper: " + b)
+}

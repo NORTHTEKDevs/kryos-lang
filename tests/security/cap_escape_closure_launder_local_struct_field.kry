@@ -1,0 +1,39 @@
+// SECURITY -- LOCAL-VARIABLE sibling of `cap_escape_closure_launder_container.kry`.
+// That fix closed the container-as-PARAMETER shape (a container is passed
+// INTO a zero-cap helper function, tracked via the parameter's own declared
+// type). This is the narrower residual named in the ASSAULT round 3 finding
+// (2026-08-07, `tools/loop/LEDGER.md`): a container built by a FACTORY
+// FUNCTION (`let registry = build_registry()`, not a struct/array/map
+// LITERAL) and read+invoked DIRECTLY, in the SAME function as the
+// `deny!(fs:read)` narrowing it -- the ordinary way to write a plugin
+// registry / router table / command dispatch map. Because `registry` is
+// bound from a function CALL, not a literal, `local_container_lits` (which
+// only snapshots `let x = <literal>` bindings) never tracks it, and
+// `resolve_method_field_invoke_caps` fell through to `CapabilitySet::empty()`
+// instead of the sound `Unknown -> all` fail-closed default every other
+// unresolvable shape in this file uses.
+//
+// ACCEPTANCE: this program must be REJECTED (E0507) under both
+// `--capabilities-mode=inferred` (default) and `--strict-capabilities`.
+
+struct Registry { reader: fn() -> str }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_registry() -> Registry {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    return Registry { reader: r }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        println("local-struct-field launder (was NOT CLOSED): " + registry.reader())
+    }
+}

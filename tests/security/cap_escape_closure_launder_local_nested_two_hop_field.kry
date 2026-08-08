@@ -1,0 +1,32 @@
+// SECURITY -- nested-container probe: a TWO-HOP field chain (a struct field
+// holding ANOTHER struct, which itself holds the fn-typed field), the outer
+// container LOCAL bound via a FACTORY FUNCTION (not a literal), invoked via
+// `registry.inner.reader()` INSIDE the same function as `deny!(fs:read)`.
+// Exercises `resolve_type_path`'s chained `Field` resolution beyond a
+// single hop for the type-based (non-literal) case.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+struct Inner { reader: fn() -> str }
+struct Registry { inner: Inner }
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_registry() -> Registry {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    return Registry { inner: Inner { reader: r } }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix: does this compile clean and print the secret?
+        println("local-nested-two-hop-field launder: " + registry.inner.reader())
+    }
+}

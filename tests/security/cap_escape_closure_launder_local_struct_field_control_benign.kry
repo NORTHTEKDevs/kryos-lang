@@ -1,0 +1,23 @@
+// SECURITY -- benign-cascade probe for `cap_escape_closure_launder_local_struct_field.kry`'s
+// shape (struct field, factory-bound via an intermediate LOCAL variable
+// inside the factory, not a bare named-function reference). Used to measure
+// whether the splice-precision residual documented in
+// `compute_fn_return_container_lits`'s doc (a field value bound through an
+// intermediate LOCAL rather than a literal/named-function reference falls
+// back to the coarser `all` charge) causes a real false-rejection on
+// otherwise-benign code of this exact shape.
+fn make_echo_reader(msg: str) -> fn() -> str {
+    return || msg
+}
+
+struct Registry { reader: fn() -> str }
+
+fn build_registry() -> Registry {
+    let r = make_echo_reader("hello")
+    return Registry { reader: r }
+}
+
+fn main() {
+    let registry = build_registry()
+    println(registry.reader())
+}

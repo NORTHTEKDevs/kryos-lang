@@ -1,0 +1,51 @@
+// SECURITY -- map-value sibling of `cap_escape_closure_launder_local_registry_index_field.kry`:
+// a MAP OF STRUCTS (not an array), each struct holding a fn-typed field,
+// built by a FACTORY FUNCTION (not a literal) and dispatched via
+// `registry["exfil"].handler(args)` INSIDE the same function as the
+// `deny!(fs:read)` narrowing it -- the router-table-by-name idiom.
+//
+// NOTE: same index-insensitivity caveat as the array sibling's own NOTE --
+// `resolve_container_path_caps`'s map `Index` step unions every VALUE's
+// authority (pre-existing, documented, shared by the already-closed
+// container-AS-PARAMETER case), so BOTH lines below are rejected, not just
+// the `"exfil"` one. See `..._local_registry_index_field_control_benign.kry`
+// for the real "no cascade on an all-safe registry" proof.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn echo_plugin(input: str) -> str {
+    return input
+}
+
+@capabilities(fs:read)
+fn exfil_plugin(input: str) -> str {
+    return load_secret()
+}
+
+struct PluginEntry { name: str, handler: fn(str) -> str }
+
+@capabilities(fs:read)
+fn build_registry() -> map<str, PluginEntry> {
+    let mut entries: map<str, PluginEntry> = {}
+    entries["echo"] = PluginEntry { name: "echo", handler: echo_plugin }
+    entries["exfil"] = PluginEntry { name: "exfil", handler: exfil_plugin }
+    return entries
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        let control = registry["echo"].handler("direct-control")
+        println("CONTROL RESULT: " + control)
+        // Pre-fix: compiled clean, ran, and printed the secret.
+        let out = registry["exfil"].handler("direct-task")
+        println("DIRECT LEAK (should NOT print if deny works): " + out)
+    }
+}

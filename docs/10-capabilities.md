@@ -373,6 +373,64 @@ and still does under the new one, for the same reason. See
 [`tools/loop/LEDGER.md`](../tools/loop/LEDGER.md)
 for the full history of all fixes.
 
+**Narrowed residual, found by the ASSAULT round 3 real-program sweep
+(2026-08-07) and CLOSED (2026-08-08): a closure stored in a container BOUND
+FROM A FACTORY FUNCTION'S RETURN, not a struct/array/map LITERAL, then read
+back out and invoked DIRECTLY in the SAME function as the `deny!()`
+narrowing it** — `let registry = build_registry()` followed by
+`registry[idx].handler(args)` inside `deny!(fs:read) { .. }`, the ordinary
+way to write a plugin registry / router table / command dispatch map.
+Distinct from the container-as-PARAMETER shapes above (tracked via the
+parameter's own DECLARED type, which doesn't care whether the caller's
+container came from a literal or a factory call): this is a purely LOCAL-
+variable shape, and `resolve_method_field_invoke_caps` (the resolver for
+`obj.method(...)` when `method` is actually a fn-typed struct FIELD) only
+ever recognized a root tracked as a LITERAL by `local_container_lits`
+— when the root was bound from any other expression, it returned
+`CapabilitySet::empty()` (charges nothing) instead of the sound
+`Unknown -> all` default every other unresolvable shape in this file uses.
+
+Closed two ways, layered:
+1. **Precise, for the common case:** `fn_return_container_lits` traces a
+   ZERO-PARAMETER factory function's own return statement(s) back to a
+   struct/array/map literal built inside its body (including one built
+   incrementally via `push`/index-assignment, and one referencing the
+   factory's own local variables — a small, bounded-depth local-inlining
+   substitution resolves those too), then splices that literal into the
+   CALLER's `local_container_lits` as if the caller had bound it directly.
+   This resolves the REAL, PRECISE capability of whatever the factory
+   actually built (e.g. `[fs:read]`, not a blunt `all`) and is why a
+   registry containing ONLY pure closures still needs no annotation at all
+   — no cascade.
+2. **Fail-closed fallback, for what can't be traced:** when the factory
+   function has parameters, or its construction can't be resolved to a
+   literal this way, `resolve_method_field_invoke_caps` falls back to a
+   STATIC-TYPE check (`local_container_types`, resolved from an explicit
+   `let` annotation or the called function's declared return type) — if the
+   type positively confirms `method` names a genuine `fn(...)->...`
+   field/element, the call requires `all` rather than nothing.
+
+**Known, documented precision gap, NOT a soundness gap:**
+`resolve_container_path_caps`'s `Index` step is INDEX-INSENSITIVE BY DESIGN
+(it unions every element/value's authority rather than tracking which
+concrete index is read) — this is pre-existing and shared by the already-
+closed container-AS-PARAMETER case, not introduced by this fix. A registry
+that mixes pure and privileged entries in the SAME array/map therefore
+charges the union to EVERY index into it, not just the privileged one —
+sound (never permits an escape) but imprecise (over-rejects a benign index
+into an otherwise-mixed registry). An ALL-SAFE registry (no privileged entry
+anywhere) is unaffected and still compiles clean. See
+`tests/security/cap_escape_closure_launder_local_registry_index_field.kry`'s
+own header comment for a live-verified example of this trade-off.
+
+See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,
+`..._local_registry_index_field.kry` (the array-of-struct-field flagship
+shape), `..._local_map_of_struct_field.kry`, `..._local_array_direct.kry`,
+`..._local_map_direct.kry`, `..._local_nested_field_array.kry`, and
+`..._local_nested_two_hop_field.kry` for the seven repros (all REJECTED,
+both enforcement modes), and the two `..._control_benign.kry` siblings for
+the no-cascade proof — all nine gated in `tests/security_gate.sh`.
+
 Under strict mode, a pure function like this is fine -- it calls no capability-gated builtins:
 
 ```

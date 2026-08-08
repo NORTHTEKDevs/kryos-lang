@@ -1,0 +1,36 @@
+// SECURITY -- probe: array element holding a closure DIRECTLY (no struct
+// wrapping), the container LOCAL bound via a FACTORY FUNCTION (not a
+// literal), invoked via a bare index-call `readers[0]()` INSIDE the same
+// function as `deny!(fs:read)`. Unlike the `.field(args)` shapes (MethodCall
+// syntax, resolved via `resolve_method_field_invoke_caps`), a bare
+// `arr[i]()` is a `FnCall` whose callee is an `IndexAccess` -- resolved via
+// `resolve_direct_invoke_caps` -> `resolve_container_path_caps`, whose
+// `Identifier` root case ALREADY falls through to the sound `Unknown ->
+// all` default when the root isn't a tracked literal (own_params miss too).
+// Kept as a same-batch CONTROL/regression probe alongside the
+// `.field(args)`-shaped repros in this file's siblings, to confirm (not
+// assume) that shape was already sound before this session's fix, and stays
+// sound after it.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_readers() -> [fn() -> str] {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    return [r]
+}
+
+@capabilities(fs:read)
+fn main() {
+    let readers = build_readers()
+    deny!(fs:read) {
+        // Pre-fix: does this compile clean and print the secret?
+        println("local-array-direct launder: " + readers[0]())
+    }
+}

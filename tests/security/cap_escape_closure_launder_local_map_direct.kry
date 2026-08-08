@@ -1,0 +1,32 @@
+// SECURITY -- probe: map value holding a closure DIRECTLY (no struct
+// wrapping), the container LOCAL bound via a FACTORY FUNCTION (not a
+// literal), invoked via a bare index-call `handlers["x"]()` INSIDE the same
+// function as `deny!(fs:read)`. Same rationale as
+// `cap_escape_closure_launder_local_array_direct.kry` -- a bare `m[k]()` is
+// `FnCall{callee: IndexAccess}`, resolved via `resolve_direct_invoke_caps`,
+// not `resolve_method_field_invoke_caps`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_handlers() -> map<str, fn() -> str> {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, fn() -> str> = {}
+    m["x"] = r
+    return m
+}
+
+@capabilities(fs:read)
+fn main() {
+    let handlers = build_handlers()
+    deny!(fs:read) {
+        // Pre-fix: does this compile clean and print the secret?
+        println("local-map-direct launder: " + handlers["x"]())
+    }
+}
