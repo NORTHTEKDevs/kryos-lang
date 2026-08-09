@@ -102,6 +102,28 @@ pub struct InferenceEngine {
     /// handling of `substitutions`). See
     /// `docs/capability-effects-spec.md` §2.3.
     cap_substitutions: HashMap<CapVarId, CapRow>,
+    /// Memo for `resolve_cap_row_inner`, keyed by the var being chased.
+    ///
+    /// WHY THIS EXISTS (LEDGER item 39): the chase is a walk of a DAG, and
+    /// the cycle guard is PATH-scoped (`seen` is un-inserted on the way back
+    /// out, which it must be, or a var legitimately reachable twice by two
+    /// different paths would be truncated the second time). Without a memo,
+    /// a var reachable by `k` distinct paths is re-expanded `k` times and a
+    /// shared sub-DAG is re-walked exponentially. On the self-host compiler
+    /// this took whole-program `kryos check` from 47s to non-terminating.
+    ///
+    /// SOUNDNESS: an entry is only stored when resolving that var completed
+    /// WITHOUT the cycle guard firing anywhere beneath it. A truncated
+    /// result is context-dependent (it depends on which vars were already
+    /// on the path above it), so caching one would let an unrelated later
+    /// path read a row that was cut short for a reason that does not apply
+    /// to it. Truncation-free results depend only on `cap_substitutions`,
+    /// which is exactly what the cache is invalidated on.
+    cap_resolve_cache: std::cell::RefCell<HashMap<CapVarId, CapRow>>,
+    /// Cycle-participant set for the current substitution-map epoch; see
+    /// `cap_cycle_nodes`. `Rc` so a resolution can hold it without cloning
+    /// the set or keeping the `RefCell` borrowed across the walk.
+    cap_cycle_cache: std::cell::RefCell<Option<std::rc::Rc<std::collections::HashSet<CapVarId>>>>,
 }
 
 impl Default for InferenceEngine {
@@ -119,6 +141,8 @@ impl InferenceEngine {
             var_bounds: HashMap::new(),
             next_cap_var: 0,
             cap_substitutions: HashMap::new(),
+            cap_resolve_cache: std::cell::RefCell::new(HashMap::new()),
+            cap_cycle_cache: std::cell::RefCell::new(None),
         }
     }
 
@@ -144,6 +168,14 @@ impl InferenceEngine {
             None => row,
         };
         self.cap_substitutions.insert(id, merged);
+        // The memo is a pure function of `cap_substitutions`; this is the
+        // ONLY site that mutates that map, so clearing here is the whole of
+        // cache invalidation. Binds are rare relative to resolutions (a bind
+        // happens once per inferred row, a resolution happens at every use
+        // of every fn-typed value), so the memo still pays for itself many
+        // times over between binds.
+        self.cap_resolve_cache.borrow_mut().clear();
+        *self.cap_cycle_cache.borrow_mut() = None;
     }
 
     /// Resolve a `CapRow`, recursively chasing every var in it through
@@ -154,27 +186,178 @@ impl InferenceEngine {
     /// than guessed at, matching this codebase's fail-closed-by-leaving-
     /// unresolved discipline elsewhere).
     pub fn resolve_cap_row(&self, row: &CapRow) -> CapRow {
-        let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
-        self.resolve_cap_row_inner(row, &mut seen)
+        let (concrete, vars) = match row {
+            CapRow::Unknown => return CapRow::unknown(),
+            CapRow::Resolved { concrete, vars } => (*concrete, vars),
+        };
+        if vars.is_empty() {
+            return row.clone();
+        }
+        let mut out = CapRow::closed(concrete);
+        for &v in vars {
+            out = out.union(&self.resolve_cap_var(v));
+        }
+        out
     }
 
-    fn resolve_cap_row_inner(
-        &self,
-        row: &CapRow,
-        seen: &mut std::collections::HashSet<CapVarId>,
-    ) -> CapRow {
-        row.with_vars_replaced(|v| {
-            if !seen.insert(v) {
-                // Cycle guard: already expanding this var higher up the
-                // chase -- stop here rather than recursing forever; leave
-                // it open (still a var), never silently drop it.
-                return None;
+    /// Fully resolve ONE capability-row variable, as if it were the root of
+    /// its own chase. Memoized; see `cap_resolve_cache`.
+    ///
+    /// This is a linear reachability walk, NOT the recursive expansion it
+    /// replaces (LEDGER item 39). The two agree exactly, and the equivalence
+    /// is worth stating because it is the whole correctness argument:
+    ///
+    /// - BITS. The recursive form unioned the concrete bits of every node it
+    ///   expanded. A node cut short by the cycle guard had already
+    ///   contributed its bits at the ancestor occurrence that cut it. So the
+    ///   total is the union over every node REACHABLE from `v` — which is
+    ///   what the worklist below computes directly.
+    /// - OPEN VARS. The recursive form left a var open in exactly two cases:
+    ///   it was unbound (nothing to chase), or it was already on the ancestor
+    ///   path (the cycle guard). The second case is precisely "this var lies
+    ///   on a cycle", because the recursion explored every path, so any node
+    ///   on a reachable cycle was eventually re-entered as its own ancestor.
+    ///   So open = (unbound reachable) ∪ (cycle-participating reachable),
+    ///   which is what `cap_cycle_nodes` supplies.
+    /// - UNKNOWN. `CapRow::union` makes `Unknown` poison its whole row, and
+    ///   `with_vars_replaced` returns `Unknown` for an `Unknown` input, so a
+    ///   single reachable `Unknown` made the entire recursive result
+    ///   `Unknown`. The early return below is the same rule.
+    ///
+    /// Sibling vars of one row never truncated each other (the guard was
+    /// un-inserted on the way back out), so resolving each independently and
+    /// unioning — what `resolve_cap_row` does — is also unchanged behavior.
+    fn resolve_cap_var(&self, v: CapVarId) -> CapRow {
+        if let Some(hit) = self.cap_resolve_cache.borrow().get(&v) {
+            return hit.clone();
+        }
+        let mut bits = crate::ty::CapBits::EMPTY;
+        let mut open: Vec<CapVarId> = Vec::new();
+        let mut visited: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        let mut stack: Vec<CapVarId> = vec![v];
+        let mut unknown = false;
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur) {
+                continue;
             }
-            let next = self.cap_substitutions.get(&v).cloned();
-            let resolved = next.map(|r| self.resolve_cap_row_inner(&r, seen));
-            seen.remove(&v);
-            resolved
-        })
+            match self.cap_substitutions.get(&cur) {
+                None => open.push(cur),
+                Some(CapRow::Unknown) => {
+                    unknown = true;
+                    break;
+                }
+                Some(CapRow::Resolved { concrete, vars }) => {
+                    bits = bits.union(*concrete);
+                    for &w in vars {
+                        stack.push(w);
+                    }
+                }
+            }
+        }
+        let result = if unknown {
+            CapRow::unknown()
+        } else {
+            let cycles = self.cap_cycle_nodes();
+            for &c in cycles.iter() {
+                if visited.contains(&c) {
+                    open.push(c);
+                }
+            }
+            open.sort_unstable();
+            open.dedup();
+            CapRow::Resolved {
+                concrete: bits,
+                vars: open,
+            }
+        };
+        self.cap_resolve_cache
+            .borrow_mut()
+            .insert(v, result.clone());
+        result
+    }
+
+    /// Every capability-row var that lies on a cycle in the substitution
+    /// graph (an SCC of size > 1, or a self-edge). Computed once per
+    /// substitution-map epoch and invalidated by `bind_cap_var` alongside
+    /// the resolution memo.
+    ///
+    /// Iterative Tarjan — the graph is built from inferred rows and can be
+    /// deep, so a recursive formulation would risk the stack on exactly the
+    /// large inputs this whole change exists to make tractable.
+    fn cap_cycle_nodes(&self) -> std::rc::Rc<std::collections::HashSet<CapVarId>> {
+        if let Some(hit) = self.cap_cycle_cache.borrow().as_ref() {
+            return hit.clone();
+        }
+        let mut index: HashMap<CapVarId, u32> = HashMap::new();
+        let mut low: HashMap<CapVarId, u32> = HashMap::new();
+        let mut on_stack: std::collections::HashSet<CapVarId> = Default::default();
+        let mut scc_stack: Vec<CapVarId> = Vec::new();
+        let mut next_index: u32 = 0;
+        let mut out: std::collections::HashSet<CapVarId> = Default::default();
+
+        let succs = |n: CapVarId| -> &[CapVarId] {
+            match self.cap_substitutions.get(&n) {
+                Some(CapRow::Resolved { vars, .. }) => vars,
+                _ => &[],
+            }
+        };
+
+        for &root in self.cap_substitutions.keys() {
+            if index.contains_key(&root) {
+                continue;
+            }
+            index.insert(root, next_index);
+            low.insert(root, next_index);
+            next_index += 1;
+            scc_stack.push(root);
+            on_stack.insert(root);
+            let mut frames: Vec<(CapVarId, usize)> = vec![(root, 0)];
+            while let Some((n, ci)) = frames.pop() {
+                let ns = succs(n);
+                if ci < ns.len() {
+                    let w = ns[ci];
+                    frames.push((n, ci + 1));
+                    if !index.contains_key(&w) {
+                        index.insert(w, next_index);
+                        low.insert(w, next_index);
+                        next_index += 1;
+                        scc_stack.push(w);
+                        on_stack.insert(w);
+                        frames.push((w, 0));
+                    } else if on_stack.contains(&w) {
+                        let cand = index[&w];
+                        let cur = low[&n];
+                        low.insert(n, cur.min(cand));
+                    }
+                } else {
+                    if low[&n] == index[&n] {
+                        let mut comp: Vec<CapVarId> = Vec::new();
+                        while let Some(w) = scc_stack.pop() {
+                            on_stack.remove(&w);
+                            comp.push(w);
+                            if w == n {
+                                break;
+                            }
+                        }
+                        if comp.len() > 1 {
+                            for w in comp {
+                                out.insert(w);
+                            }
+                        } else if succs(n).contains(&n) {
+                            out.insert(n);
+                        }
+                    }
+                    if let Some(&(parent, _)) = frames.last() {
+                        let cand = low[&n];
+                        let cur = low[&parent];
+                        low.insert(parent, cur.min(cand));
+                    }
+                }
+            }
+        }
+        let rc = std::rc::Rc::new(out);
+        *self.cap_cycle_cache.borrow_mut() = Some(rc.clone());
+        rc
     }
 
     /// Remap `row` through `cap_var_map`, then freshen ONLY whatever is

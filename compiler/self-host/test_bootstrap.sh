@@ -36,6 +36,10 @@ STAGE0=target/release/kryos.exe
 # KRYOS_NO_ASLR=1 keeps the VA layout deterministic across stage-1
 # invocations, removing one source of bootstrap heap-state flake.
 echo "Building stage-1 from self-host/main.kry ..."
+# `target/` is gitignored, so on a clean tree this directory does not exist
+# and the stage-1 build dies with a bare "failed to write temp object file
+# ... (os error 3)" that reads like a compiler bug.
+mkdir -p target/bootstrap
 KRYOS_NO_ASLR=1 "$STAGE0" build self-host/main.kry -o target/bootstrap/kryos-stage1 --skip-ownership 2>&1 | grep -iE "^error" | head -3
 [ ! -f target/bootstrap/kryos-stage1 ] && { echo "FAIL: stage-1 build failed"; exit 1; }
 cp target/bootstrap/kryos-stage1 target/bootstrap/kryos-stage1.exe 2>/dev/null

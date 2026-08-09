@@ -869,6 +869,8 @@ fn env_function_lookup() {
         generic_var_ids: vec![],
         params: vec![("a".to_string(), Type::I32), ("b".to_string(), Type::I32)],
         ret: Type::I32,
+        generic_cap_var_ids: vec![],
+        own_cap_var: 0,
     });
 
     let sig = env.lookup_function("add").unwrap();

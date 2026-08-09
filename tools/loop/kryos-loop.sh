@@ -185,6 +185,12 @@ cmd_gates() {
     run "strict_caps"         bash tests/strict_caps_examples.sh
     run "examples_e2e"        bash tests/run_examples_e2e.sh
     run "ir_signatures"       bash tests/ir_signature_gate.sh
+    # Whole-program check of the self-host compiler under a time ceiling.
+    # Tier 2 rather than tier 1: it costs ~50s, and it is a behaviour gate
+    # (does the front end still SCALE), not a fast correctness one. See the
+    # script's header + LEDGER item 39 -- this is the only gate that would
+    # have caught a superlinear front-end change before it broke bootstrap.
+    run "selfhost_wholeprogram" bash tests/selfhost_wholeprogram_gate.sh
     [ "$tier" -lt 3 ] && { [ $fail -eq 0 ] && grn "tier2 GREEN" || red "tier2 RED"; return $fail; }
 
     echo "== tier 3: bootstrap (ALONE -- never beside other gates) =="
