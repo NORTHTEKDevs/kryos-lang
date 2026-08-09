@@ -42,17 +42,55 @@ The spawned block runs in its own child environment. It can read variables from 
 
 **Sharing is now safe, not just possible.** If the shared closure mutates one of its own captured scalars or structs, every call to that closure VALUE (from any thread, through any path) is serialized under a lock scoped to that closure's own environment allocation -- a plain blocking mutex around the ENTIRE call, not a CAS retry, so no side effect in the closure body (e.g. a `println`) can ever be duplicated. Calling the SAME shared closure concurrently from many `spawn`ed threads now converges on the mathematically correct result every time (`tests/known_failures/spawn_closure_shared_env_race.kry` -- despite the directory name, this file now asserts and PASSES the correct total; it was a genuine, reproducible cross-thread data race with silent lost updates before this fix, at ~100% failure rate on Cranelift/JIT and ~65-70% on LLVM/AOT under sustained contention). The lock only applies to closures with a mutated capture (an ordinary read-only closure shared via `spawn` has no lock and no overhead); it serializes the WHOLE call, not just the load/store, so this is correctness over throughput -- for a HOT shared counter across many threads, `std::sync::atomic_int()` is still the faster, purpose-built choice. Two closures capturing the SAME outer variable but constructed as SEPARATE closure literals do NOT share persisted state with each other (each closure literal owns an independent copy of a mutated scalar capture, by design -- see the "outer variable stays frozen" note in CLAUDE.md's closure gotchas); the lock only serializes concurrent calls to the identical closure VALUE.
 
+**A mutating closure must not call itself, directly or indirectly, on the same thread (self-reentrancy is a clean runtime error, not a hang).** The serialization lock above applies to ANY closure with a mutated capture, not only ones shared via `spawn` -- so it is reachable with zero threads at all. If a mutating closure gets a live handle to itself (e.g. stashed in a map or struct field it also reads) and its body calls that handle again before the outer call returns, the SAME thread would be trying to re-acquire a lock it already holds. This is now detected and reported as a clean, immediate panic (`kryos panic: reentrant call into a mutating shared closure: ...`, exit 98) instead of spinning forever. Silently ALLOWING the reentrant call through (making the lock plainly reentrant) was tried and rejected: the closure's mutated capture persists via a boxed heap cell that is read once at each call's entry and written back only right before that call's own return, so a reentrant nested call would read a STALE value from before the outer call's own mutation -- a silent wrong answer, which is worse than a loud error. If you need a closure to call itself, restructure it as a named recursive function (`fn fact(n: i64) -> i64 { .. }`, fully supported and unaffected by any of this) or keep the recursive state outside the closure's own captures.
+
 ### Error handling in spawned blocks
 
-If a spawned block **throws** a (recoverable) exception, the error is captured and reported (`kryos: uncaught exception in spawned thread: ...`) and it does **not** crash the parent thread -- the spawned thread dies, the process lives on.
+If a spawned task's top-level function **throws** and nothing inside that task catches it, Kryos reports the exception (`kryos: uncaught exception in spawned thread: ...`) to stderr and then **terminates the whole process** (exit 101 -- the same contract an uncaught `throw` on the main thread already has). This is deliberate and, as of this revision, matches the severity an uncaught **panic** inside a spawned block already had (see below): both are fatal to the entire program, not just the throwing thread.
 
-**This isolation covers `throw` only.** An unrecoverable **panic** -- integer division by zero, array index out of bounds, and other exit-98 runtime faults -- inside a spawned block terminates the **whole process** (exit 98); it is not isolated to the spawned thread, and any not-yet-flushed work on the main thread is lost. This is because a panic routes through `kryos_panic` (a process-wide `exit(98)`) and cannot unwind through the generated `extern "C"` frames (on Windows the JIT cannot unwind at all). If a spawned task might hit an unrecoverable fault (an untrusted divisor, an index that could be out of range), **guard it explicitly** (check the divisor/bounds, or use `throw` for a recoverable failure you want isolated). Both backends behave identically here.
+**Why this is fatal, not isolated to the thread (revised; was "thread dies, process lives" before this revision).** Kryos exceptions are a thread-local FLAG checked after every call site with a synthesized early-return -- there is no native stack unwinding and no `finally`/unwind hook. So an uncaught `throw` reaching the end of a spawned task means every statement written AFTER the throw point in that task's OWN body was silently skipped, including, commonly, a paired "I'm done" signal (`wg_done(wg)`, `send(ch, ..)`, an actor notification) that a `WaitGroup`/channel consumer elsewhere in the program is blocked waiting for. The old "isolate to the thread, process continues" behavior left the rest of the program with no way to know that signal would never arrive, so any `wg_wait()`/`recv()` depending on it hung **forever**, with no diagnostic connecting the printed stderr line to the silent hang that followed it -- a single malformed record, timeout, or validation failure in ONE worker of a `spawn` + `WaitGroup` fan-out/fan-in batch job could hang the entire batch permanently. Treating the throw as fatal converts that silent permanent hang into an immediate, attributable, non-zero exit with the same message you'd already see on stderr.
+
+**If you want per-task failure isolation** (one item failing should not stop the batch), wrap the task body in its own `try`/`catch` and call the "I'm done" signal from BOTH the normal path and the `catch` arm, so `wg_wait()`/`recv()` is guaranteed to be released regardless of whether the task's own work succeeded:
+
+```
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+fn risky_work(n: i64) -> i64 {
+    if n == 3 { throw "boom" }
+    return n * 2
+}
+
+fn main() {
+    let mut wg = new_wait_group()
+    let mut i = 0
+    while i < 8 {
+        wg = wg_add(wg, 1)
+        let idx = i
+        let wgc = wg
+        spawn {
+            try {
+                let r = risky_work(idx)
+                println("worker " + to_string(idx) + " result=" + to_string(r))
+            } catch e {
+                println("worker " + to_string(idx) + " failed: " + e)
+            }
+            wg_done(wgc)   // runs on BOTH the success and the catch path
+        }
+        i = i + 1
+    }
+    wg_wait(wg)   // now guaranteed to return even if a worker throws
+    println("main: all workers done")
+}
+```
+
+An UNCAUGHT throw (nothing catches it inside the task) is the only case that is now fatal to the whole process -- a `throw` caught by the task's own `try`/`catch` behaves exactly like `try`/`catch` anywhere else and never reaches this path.
+
+**Unrecoverable panics were, and still are, fatal to the whole process too.** An unrecoverable **panic** -- integer division by zero, array index out of bounds, and other exit-98 runtime faults -- inside a spawned block terminates the **whole process** (exit 98); it is not isolated to the spawned thread, and any not-yet-flushed work on the main thread is lost. This is because a panic routes through `kryos_panic` (a process-wide `exit(98)`) and cannot unwind through the generated `extern "C"` frames (on Windows the JIT cannot unwind at all). If a spawned task might hit an unrecoverable fault (an untrusted divisor, an index that could be out of range), **guard it explicitly** (check the divisor/bounds) -- panics are not catchable by `try`/`catch` at all, in a spawned task or anywhere else. Both backends behave identically for both the throw and the panic case.
 
 ```
 spawn {
-    let x = 1 / 0  // division by zero
+    let x = 1 / 0  // division by zero -- terminates the WHOLE process (exit 98)
 }
-// Parent continues running -- the error is logged, not propagated
 ```
 
 A `return` statement inside a `spawn` block exits the spawned thread, not the enclosing function.

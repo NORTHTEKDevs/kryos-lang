@@ -1124,6 +1124,16 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_mutex_lock(i64)");
         self.emit_line("declare void @kryos_mutex_unlock(i64)");
         self.emit_line("declare void @kryos_mutex_drop(i64)");
+        // Self-reentry-detecting wrapper used ONLY by the closure-call
+        // serialization lock this backend's thunk emitter inserts (LEDGER
+        // item 7b / item 11(a) reentrancy fix) -- see
+        // kryos-stdlib-native/src/sync_prims.rs. Fails loudly via
+        // kryos_panic on same-thread self-reentry instead of spinning
+        // forever. Deliberately separate from kryos_mutex_lock/unlock
+        // above, which keep their normal non-reentrant (silently
+        // deadlocks on purpose) contract for user-facing std::sync::Mutex.
+        self.emit_line("declare void @kryos_closure_lock_acquire(i64)");
+        self.emit_line("declare void @kryos_closure_lock_release(i64)");
         self.emit_line("; Low-level FFI helpers (v2.3.4) — pointers carried as i64 in IR.");
         self.emit_line("declare i64 @kryos_str_to_ptr(i64)");
         self.emit_line("declare i64 @kryos_arr_to_ptr(i64)");
@@ -1708,12 +1718,17 @@ impl LlvmCodegen {
             ));
             self.emit_line("entry:");
 
-            // LEDGER item 7b: acquire the closure's lock word (env slot
-            // `cap_types.len()`, i.e. offset `(cap_types.len()+1)*8`) BEFORE
-            // touching any capture, so the entire underlying-function call
-            // below -- including its own Deref-at-entry / StoreDeref-before-
-            // return persistence writeback -- runs under the lock. See
-            // `closure_needs_lock`'s doc comment.
+            // LEDGER item 7b (+ item 11(a) reentrancy fix): acquire the
+            // closure's lock word (env slot `cap_types.len()`, i.e. offset
+            // `(cap_types.len()+1)*8`) BEFORE touching any capture, so the
+            // entire underlying-function call below -- including its own
+            // Deref-at-entry / StoreDeref-before-return persistence
+            // writeback -- runs under the lock. See `closure_needs_lock`'s
+            // doc comment. Uses `kryos_closure_lock_acquire` (detects
+            // same-thread self-reentry and panics loudly instead of
+            // deadlocking), NOT the plain `kryos_mutex_lock` -- a closure
+            // that reaches itself through its own stored value (map/struct
+            // self-reference) must not silently hang.
             let lock_slot: Option<u32> = if self.closure_needs_lock.contains(func_name.as_str()) {
                 Some(cap_types.len() as u32)
             } else {
@@ -1727,7 +1742,7 @@ impl LlvmCodegen {
                 ));
                 let lock_i64 = self.next_temp();
                 self.emit_line(&format!("  {lock_i64} = ptrtoint ptr {lock_ptr} to i64"));
-                self.emit_line(&format!("  call void @kryos_mutex_lock(i64 {lock_i64})"));
+                self.emit_line(&format!("  call void @kryos_closure_lock_acquire(i64 {lock_i64})"));
             }
 
             // Load each capture from env[i+1] (i64-typed slots).
@@ -2028,7 +2043,7 @@ impl LlvmCodegen {
             ));
             let lock_i64 = self.next_temp();
             self.emit_line(&format!("  {lock_i64} = ptrtoint ptr {lock_ptr} to i64"));
-            self.emit_line(&format!("  call void @kryos_mutex_unlock(i64 {lock_i64})"));
+            self.emit_line(&format!("  call void @kryos_closure_lock_release(i64 {lock_i64})"));
         }
         self.emit_line(&format!("  ret i64 {val}"));
     }

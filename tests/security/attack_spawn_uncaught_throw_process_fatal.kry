@@ -1,0 +1,39 @@
+// Regression (step 231 / code-review finding; semantics REVISED by the
+// spawn-throw-and-reentrancy task, LEDGER item 16): a `throw` that unwinds
+// out of a spawned thread's entry function must not vanish silently. The
+// runtime reports "kryos: uncaught exception in spawned thread: <msg>" to
+// stderr -- and, as of this revision, the WHOLE PROCESS then terminates
+// (exit 101, the same contract an uncaught `throw` on the main thread
+// already has), so this program now exits 101 and "main alive" is NOT
+// printed. This is a deliberate change from the original "thread dies,
+// process lives" isolation: Kryos exceptions are a thread-local flag
+// checked after every call site with a synthesized early-return, not
+// native stack unwinding, so "thread dies" meant every statement written
+// AFTER the throw point in that task's own body was silently skipped --
+// including, commonly, a paired `wg_done`/`chan_send`/actor-notify signal
+// a `WaitGroup`/channel consumer elsewhere was blocked waiting for, which
+// hung forever with no diagnostic connecting the two
+// (`attack_spawn_uncaught_throw_waitgroup_hang.kry`). Treating an uncaught
+// spawn-task `throw` as fatal to the whole process converts that silent
+// permanent hang into an immediate, attributable, non-zero exit. See
+// docs/09-concurrency.md's "Error handling in spawned blocks" section.
+// Moved out of tests/smoke/ into tests/security/ (was
+// tests/smoke/test_spawn_throw_reports.kry): the parity runner
+// (tests/parity/run_parity.sh) treats ANY non-zero exit as FAIL_RUN and
+// only tests/smoke/ programs are expected to exit 0, so a test whose
+// CORRECT behavior is now a deliberate non-zero exit does not belong
+// there anymore. Both backends must still agree it's exit 101 -- verified
+// manually both ways as part of the spawn-throw-and-reentrancy fix rather
+// than via the parity harness.
+
+fn worker() {
+    throw "thread exploded"
+}
+
+fn main() {
+    spawn {
+        worker()
+    }
+    sleep_ms(200)
+    println("main alive")
+}

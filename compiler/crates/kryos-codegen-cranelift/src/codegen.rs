@@ -1733,11 +1733,26 @@ pub fn compile_module_with_options(
         }
     }
 
-    // LEDGER item 7b: declare the native mutex primitives once, up front,
-    // if ANY closure in this module needs a lock. Reused inside the
-    // thunk-body loop below to serialize concurrent calls to a shared
-    // (spawn-retained, not snapshotted) closure env -- see
-    // `closure_info`'s 5th field and `MirAttributes::needs_capture_lock`.
+    // LEDGER item 7b (+ item 11(a) reentrancy fix): declare the closure-call
+    // serialization lock primitives once, up front, if ANY closure in this
+    // module needs a lock. Reused inside the thunk-body loop below to
+    // serialize concurrent calls to a shared (spawn-retained, not
+    // snapshotted) closure env -- see `closure_info`'s 5th field and
+    // `MirAttributes::needs_capture_lock`. `kryos_closure_lock_acquire`/
+    // `_release` (kryos-stdlib-native/src/sync_prims.rs) wrap the same
+    // underlying CAS lock `kryos_mutex_lock`/`unlock` uses but DETECT same-
+    // thread self-reentry (a closure that reaches itself through its own
+    // stored value, e.g. a map/struct self-reference) and fail loudly via
+    // `kryos_panic` instead of spinning forever against a lock the current
+    // thread already holds (was a permanent hang, LEDGER item 11(a)/
+    // attack_closure_lock_reentrant_deadlock.kry). Silently ALLOWING the
+    // reentrant call was tried and rejected -- see sync_prims.rs's module
+    // doc comment: the boxed mutated-capture's store-on-return timing makes
+    // a reentrant nested call read a stale value, a silent wrong answer,
+    // not just a data race. Deliberately a SEPARATE symbol from
+    // `kryos_mutex_lock`/`unlock` -- the user-facing `std::sync::Mutex`
+    // keeps its normal, non-reentrant contract; only this compiler-
+    // inserted, invisible lock gets this detection.
     let mutex_lock_unlock_ids: Option<(FuncId, FuncId)> = if closure_info
         .values()
         .any(|(_, _, _, _, needs_lock)| *needs_lock)
@@ -1753,11 +1768,15 @@ pub fn compile_module_with_options(
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64));
         sig.returns.push(AbiParam::new(types::I64));
-        let lock_id = object_module.declare_function("kryos_mutex_lock", Linkage::Import, &sig)?;
-        let unlock_id =
-            object_module.declare_function("kryos_mutex_unlock", Linkage::Import, &sig)?;
-        func_ids.insert("kryos_mutex_lock".to_string(), lock_id);
-        func_ids.insert("kryos_mutex_unlock".to_string(), unlock_id);
+        let lock_id =
+            object_module.declare_function("kryos_closure_lock_acquire", Linkage::Import, &sig)?;
+        let unlock_id = object_module.declare_function(
+            "kryos_closure_lock_release",
+            Linkage::Import,
+            &sig,
+        )?;
+        func_ids.insert("kryos_closure_lock_acquire".to_string(), lock_id);
+        func_ids.insert("kryos_closure_lock_release".to_string(), unlock_id);
         Some((lock_id, unlock_id))
     } else {
         None

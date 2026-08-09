@@ -38,9 +38,17 @@ pub extern "C" fn kryos_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count: i64)
     let handle = std::thread::spawn(move || {
         invoke_task(fn_ptr as usize, &args);
         // A `throw` that unwound out of the thread's entry function would
-        // otherwise vanish with the thread-local state. Report it like a
-        // Rust thread panic: message to stderr, thread dies, process lives.
-        crate::exception::kryos_exception_report_thread_if_pending();
+        // otherwise vanish with the thread-local state, silently skipping
+        // every statement written after the throw point in the task body --
+        // including a paired `wg_done`/`chan_send`/actor-notify a
+        // WaitGroup or channel consumer elsewhere is blocked waiting on,
+        // which used to hang forever with no diagnostic (LEDGER item 16).
+        // Report it AND terminate the whole process (exit 101, same
+        // contract an uncaught `throw` on the main thread already has) --
+        // see `kryos_exception_report_thread_fatal_if_pending`'s doc
+        // comment and docs/09-concurrency.md's "Error handling in spawned
+        // blocks" section for the full rationale.
+        crate::exception::kryos_exception_report_thread_fatal_if_pending();
     });
 
     let mut handles = match get_handles().lock() {

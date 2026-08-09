@@ -105,6 +105,55 @@ pub extern "C" fn kryos_exception_report_thread_if_pending() -> i64 {
     1
 }
 
+/// If an exception is pending in THIS thread, print it to stderr (same
+/// wording as `kryos_exception_report_thread_if_pending`) and then
+/// terminate the WHOLE PROCESS with the same exit code an uncaught `throw`
+/// on the main thread already uses (101, `UNCAUGHT_EXCEPTION_EXIT_CODE`).
+///
+/// Used at the exit of a `spawn`ed thread's entry closure instead of the
+/// report-only variant above. Kryos exceptions are a thread-local FLAG
+/// checked after every call site with a synthesized early-return -- there
+/// is no native stack unwinding and no `finally`/unwind hook -- so an
+/// exception reaching here means every Kryos statement written AFTER the
+/// throw point in that task's own body was silently skipped, including
+/// (commonly) a paired `wg_done`/`chan_send`/actor-notify "I'm done"
+/// signal a `WaitGroup`/channel consumer elsewhere is blocked waiting for.
+/// Reporting-and-continuing (the old behavior) left the rest of the
+/// program with no way to know that signal will never arrive, so any
+/// `wg_wait()`/`recv()` depending on it hung forever with no diagnostic
+/// connecting the two (LEDGER item 16). Treating an uncaught spawn-task
+/// `throw` as fatal to the whole process matches the severity an
+/// uncaught PANIC inside a spawned block already has (also process-wide,
+/// exit 98 -- see docs/09-concurrency.md), and converts a silent
+/// permanent hang into an immediate, attributable, non-zero exit with the
+/// same message a caller would already see on stderr.
+#[no_mangle]
+pub extern "C" fn kryos_exception_report_thread_fatal_if_pending() -> i64 {
+    if !HAS_EXCEPTION.with(|h| h.get()) {
+        return 0;
+    }
+    let value = kryos_exception_take();
+    let mut printed = false;
+    if value != 0 {
+        let s = value as *const crate::string::KryosString;
+        unsafe {
+            let len = (*s).len as usize;
+            let data = (*s).data;
+            if !data.is_null() {
+                let slice = std::slice::from_raw_parts(data, len);
+                if let Ok(text) = std::str::from_utf8(slice) {
+                    eprintln!("kryos: uncaught exception in spawned thread: {text}");
+                    printed = true;
+                }
+            }
+        }
+    }
+    if !printed {
+        eprintln!("kryos: uncaught exception in spawned thread (value: {value})");
+    }
+    std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
+}
+
 /// Report an exception caught by an actor's mailbox-dispatch loop after a
 /// handler call (see `generate_actor_dispatch` in kryos-mir, which places
 /// an explicit `kryos_exception_check`/`kryos_exception_take` pair right

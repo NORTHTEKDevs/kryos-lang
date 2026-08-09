@@ -1207,6 +1207,14 @@ impl JitCompiler {
             "kryos_mutex_drop",
             kryos_stdlib_native::sync_prims::kryos_mutex_drop as *const u8,
         );
+        jit_builder.symbol(
+            "kryos_closure_lock_acquire",
+            kryos_stdlib_native::sync_prims::kryos_closure_lock_acquire as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_closure_lock_release",
+            kryos_stdlib_native::sync_prims::kryos_closure_lock_release as *const u8,
+        );
 
         // FFI/pointer-helper builtins (str_to_ptr, alloc, buf_to_str, ...).
         // These were registered only on the AOT path, so the in-process JIT
@@ -1727,21 +1735,33 @@ impl JitCompiler {
             })?;
         }
 
-        // LEDGER item 7b: `kryos_mutex_lock`/`kryos_mutex_unlock` are
-        // already unconditionally declared (I64 params/return, matching
-        // `ensure_func_ref_with_args`'s generic convention) by
-        // `declare_runtime_builtins` above -- re-declaring them here with a
-        // different signature (e.g. the Rust-accurate I32 return) is a hard
-        // Cranelift module error ("signature ... is incompatible with
-        // previous declaration") the moment a program also uses
-        // `std::sync::Mutex`/`wait_group`/any other sync primitive that
-        // routes through the same symbol via the generic extern-call path.
-        // Just reuse the existing FuncIds.
+        // LEDGER item 7b (+ item 11(a) reentrancy fix): `kryos_closure_lock_
+        // acquire`/`kryos_closure_lock_release` are already unconditionally
+        // declared (I64 params/return, matching `ensure_func_ref_with_args`'s
+        // generic convention) by `declare_runtime_builtins` above -- just
+        // reuse the existing FuncIds. These wrap the same underlying CAS lock
+        // `kryos_mutex_lock`/`unlock` use, but DETECT same-thread self-
+        // reentry (a closure that reaches itself through its own stored
+        // value, e.g. a map/struct self-reference) and fail loudly via
+        // `kryos_panic` instead of spinning forever against a lock the
+        // current thread already holds (was a permanent hang, LEDGER item
+        // 11(a) / attack_closure_lock_reentrant_deadlock.kry). Silently
+        // ALLOWING the reentrant call was tried and rejected -- see
+        // sync_prims.rs's module doc comment: the boxed mutated-capture's
+        // store-on-return timing makes a reentrant nested call read a
+        // stale value, a silent wrong answer, not just a data race.
+        // Deliberately separate from `kryos_mutex_lock`/`unlock` -- the
+        // user-facing `std::sync::Mutex` keeps its normal, non-reentrant
+        // contract; only this compiler-inserted, invisible lock gets this
+        // detection.
         let mutex_lock_unlock_ids: Option<(FuncId, FuncId)> = if closure_info
             .values()
             .any(|(_, _, needs_lock)| *needs_lock)
         {
-            Some((func_ids["kryos_mutex_lock"], func_ids["kryos_mutex_unlock"]))
+            Some((
+                func_ids["kryos_closure_lock_acquire"],
+                func_ids["kryos_closure_lock_release"],
+            ))
         } else {
             None
         };
@@ -2312,6 +2332,19 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_mutex_lock", "kryos_mutex_lock", sig(1));
     decl!("kryos_mutex_unlock", "kryos_mutex_unlock", sig(1));
     decl!("kryos_mutex_drop", "kryos_mutex_drop", sig(1));
+    // Reentrant wrapper used ONLY by the closure-call serialization lock
+    // (LEDGER item 7b / item 11(a) reentrancy fix) -- see
+    // kryos-stdlib-native/src/sync_prims.rs.
+    decl!(
+        "kryos_closure_lock_acquire",
+        "kryos_closure_lock_acquire",
+        sig(1)
+    );
+    decl!(
+        "kryos_closure_lock_release",
+        "kryos_closure_lock_release",
+        sig(1)
+    );
 
     // --- Mutable globals ---
     decl!("kryos_global_get", "kryos_global_get", sig(1));
