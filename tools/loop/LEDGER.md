@@ -757,6 +757,59 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+### 39. SELF-HOST BOOTSTRAP BROKEN — `891c406` (capability-typed fn values, stage 1) turned whole-program type-check of the self-host compiler from 47 SECONDS into non-terminating; `test_bootstrap.sh` can no longer complete (found 2026-08-09) — NOT FIXED
+
+**This breaks the headline "Kryos compiles itself" claim on current master, and no
+gate or CI job covers it** (`kryos-loop.sh gates 2` tier1+tier2 and
+`tests/security_gate.sh` are all GREEN at HEAD `d5fdc02` — they never compile
+`self-host/main.kry`; `.github/workflows` has no bootstrap job).
+
+Bisected to ONE commit, both sides built from scratch and measured live:
+
+```
+95238c9 (parent, 2026-08-06)  kryos check self-host/main.kry  ->  46.9s, rc=0
+891c406 (2026-08-06)          kryos check self-host/main.kry  ->  timeout, rc=124 (240s cap)
+891c406  same, re-run with a 900s cap                        ->  timeout, rc=124 (>=19x the
+                                                                  parent's 46.9s; likely
+                                                                  non-terminating, not merely slow)
+d5fdc02 (HEAD,   2026-08-09)  kryos check self-host/main.kry  ->  timeout, rc=124 (180s cap)
+d5fdc02 (HEAD)   same, --capabilities-mode=permissive         ->  timeout, rc=124 (150s cap)
+d5fdc02 (HEAD)   self-host/test_bootstrap.sh                  ->  killed at 52m44s, still
+                                                                  on "Building stage-1",
+                                                                  target/bootstrap/ never created
+```
+
+Characterization while stalled (PID sampled with PowerShell `Get-Process`):
+100% of one core sustained, working set FLAT at ~26 MB, **zero** ReadOperationCount
+and zero WriteOperationCount deltas over 12s, 2 threads. That is a pure in-memory
+compute loop, not I/O, not allocation growth, and not a deadlock (a deadlock idles
+at 0% CPU). `KRYOS_CG_TRACE=1` emits NOTHING in 150s, and plain `check` (no codegen)
+reproduces it, so the stall is in the FRONT-END (resolve/type-check/capability
+inference), before MIR lowering — not in codegen.
+
+NOT the machine and NOT Defender, contrary to the standing assumption that has
+blocked this test for several sessions: `C:\Users\Krist\projects\active\kryos-lang`
+AND `...\compiler\target` are both already on the Defender exclusion list
+(`Get-MpPreference`), and MsMpEng measured 4.1% of one core while the stall ran.
+Every prior "bootstrap did not complete, Defender/CPU contention" note in this
+LEDGER and in the 2026-08-08 workflow's six waves is a MISATTRIBUTION of this
+regression. A single self-host module still checks fine and fast (`lexer.kry`,
+2.7s), so it is the whole-program/union path that blows up.
+
+NOT caused by `d71ac33` (this session's spawn/closure-lock fixes): that commit
+touches only kryos-rt, kryos-stdlib-native and the two codegen backends, none of
+which run during `check`, and the regression reproduces at `891c406`, three days
+earlier.
+
+NEXT STEP for whoever picks this up: the suspect is the fn-value capability-row
+representation/inference added in `891c406` (`kryos-types`) — most likely a
+row/union or subtyping fixpoint that does not converge, or converges only
+superlinearly, once the input has as many distinct fn-typed values as the
+self-host compiler does. Reproduce with the 47s-vs-hang pair above (cheapest
+possible oracle), and add `test_bootstrap.sh` — or at minimum a timed
+`kryos check self-host/main.kry` — to the gate suite so this class cannot
+regress silently again.
+
 ### 38. LIVE CAPABILITY ESCAPE — a `for`-loop-bound TUPLE ELEMENT's index-call (`for x in items { x.0() }`) defeats `deny!()`, on BOTH enforcement modes (assault round 2, historical-regression lens, found 2026-08-07) — NOT FIXED
 
 Repro: `tests/security/attack_r2_tuple_forloop_index_call.kry`. Verified live
