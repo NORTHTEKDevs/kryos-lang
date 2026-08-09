@@ -12,6 +12,129 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: lowercase struct literal + nested binop corruption re-verification (2026-08-08) — assigned items 10 and "nested binop corrupts next parse", both already CLOSED (`e58d8dc`, 2026-08-02, ancestor of today's HEAD), zero compiler changes this session
+
+Assigned wave: `tests/known_failures/lowercase_struct_literal_parse_fail.kry` (item 10,
+lowercase struct-literal construction) and `tests/known_failures/
+parse_nested_binop_corrupts_next.kry` (a nested-binop parse allegedly corrupting the
+NEXT construct parsed), plus a re-check of item 9 (the `||`-continuation trap). Neither
+known_failures file exists — both were already fixed, folded into regressions, and
+deleted by `e58d8dc fix(parser,mir,self-host): lowercase struct literals +
+reentrant-tokenize alias/double-free` (2026-08-02), an ancestor of today's HEAD
+(`71fac64`). Per doctrine ("self-reported done is not evidence"), independently
+re-verified rather than trusting the ledger's own prior claim, going further than a
+read-only check by actually reverting and rebuilding both fixes separately:
+
+- Shared-workspace hygiene: found the same orphaned uncommitted WIP (items 11a/16,
+  `kryos-rt`/`kryos-stdlib-native`/both codegen backends/concurrency docs) the two
+  immediately-prior sessions in this ledger flagged as at-risk-of-loss, still sitting
+  uncommitted with no new owner. `git stash`ed it by explicit pathspec (not `-u`) to
+  get a HEAD-accurate baseline, worked entirely against clean HEAD. **Not popped back
+  by the end of this session — see disclosure at the end of this entry.**
+- Full `cargo build --release` (no `-p`) against clean HEAD, 47s, clean.
+- **Item 10 (lowercase struct literal), proved BOTH WAYS fresh this session:**
+  `git show e58d8dc -- compiler/crates/kryos-parser/src/parser.rs` reverse-applied
+  cleanly. Rebuilt `-p kryos-cli` only (Rust-only change, confined to `kryos-parser`,
+  never touches `kryos-rt`/`kryos-stdlib-native` — safe per gotcha #22/CLAUDE.md's
+  staticlib-stale rule). Pre-fix: `tests/conformance/conf_lowercase_struct_literal.kry`
+  reproduced a cascade of misparses starting at the struct-PATTERN line (`counter {
+  val: n } => n * 2`) — `error[E0009]: unexpected token '{', expected '=>'` plus 20+
+  downstream cascade errors through the rest of the file, matching the historical
+  "two misattributed `undefined variable`" defect class (same root cause: the parser's
+  `Name { ... }` recognition was gated on an uppercase check). Restored the fix
+  (`git apply` the same diff forward), rebuilt (47s) — clean PASS on both `kryos run`
+  (JIT) and `kryos build --release` (AOT, fresh binary compiled+run for this check).
+- **The nested-binop item, proved BOTH WAYS fresh this session:** this bug was never
+  actually a "nested binop" bug — root-caused by the original session (confirmed by
+  reading the fix's own regression-test comment, not re-guessed) to be `lexer.kry`'s
+  module-level `LEX_TOKENS` accumulator never resetting between `tokenize()` calls
+  (misdiagnosed at the time via a recursion-shaped bisection trail that was chasing a
+  red herring), plus a `return <bare mutable-global>` retain gap in `kryos-mir`'s
+  lowering that this reset then exposed as a double-free. `git show e58d8dc --
+  compiler/crates/kryos-mir/src/lower.rs compiler/crates/kryos-rt/src/array.rs
+  compiler/crates/kryos-rt/src/lib.rs compiler/crates/kryos-rt/src/string.rs
+  compiler/self-host/lexer.kry` reverse-applied cleanly. This touches `kryos-rt`, so a
+  FULL `cargo build --release` (no `-p`) was required and run (62s). Pre-fix:
+  `bash compiler/self-host/test_regressions.sh` reproduced the exact original failure
+  signature verbatim — `FAIL (JIT) lexer_reentrant_tokenize  rc=101 ... after parse: 44
+  tokens (want 31) ... panic: REGRESSION: tokenize() reentrant call count wrong, got 44
+  want 31 -- LEX_TOKENS accumulated across calls again`. Restored the fix, full rebuild
+  (64s) — `test_regressions.sh` clean PASS, `tests/no_double_free.sh` clean PASS
+  (`global_return_alias` case included).
+- **Item 9 re-check (`||`-continuation trap), NEW finding this session — the prior
+  session's disclosed risk is now CONFIRMED, not just plausible.** The prior session's
+  assessment (still accurate on re-read: `kryos_lexer::Token` has no newline info,
+  every token is constructed through the single `Lexer::emit` choke point right after
+  `skip_whitespace_and_comments`, so a `newline_before: bool` field is a small,
+  concrete, feasible addition) flagged as its highest-risk *unverified* item "whether
+  any EXISTING code... would now emit spurious warnings" if a newline-based
+  `|`/`||`-continuation warning were added, and recommended a full-corpus check before
+  shipping one. This session ran that check (a targeted grep, not the full WARN-mode
+  compile the prior session specified as the eventual real gate, but decisive enough to
+  answer the question): `examples/real/json_formatter.kry:45`, `examples/real/
+  mini_interpreter.kry:28`, and `examples/real/parser_combinator.kry:29` all contain
+  the EXACT ambiguous shape — a multi-line boolean-or chain where a continuation line
+  starts with `||` (`return c == "0" || c == "1" ... || c == "4"` then a new line
+  `    || c == "5" || ...`) — as INTENTIONAL, CORRECT, shipped example code (an
+  `is_digit`-style predicate), not a bug. A naive "warn whenever `|`/`||` is preceded by
+  a newline and about to be consumed as an infix continuation" diagnostic would
+  therefore false-positive on real, correct, shipped code in this exact repo, not just
+  hypothetically. **Conclusion: the single-bool `newline_before` mechanism is still the
+  right IMPLEMENTATION primitive if this is ever picked up, but a bare "newline before
+  `|`/`||`" predicate is NOT a viable warning condition as-is** — it cannot distinguish
+  "legitimate continued boolean-or chain" from "two accidentally-merged statements"
+  without additional context (e.g., whether the merged expression's operand TYPES are
+  homogeneous booleans on both sides in a chain vs. a `let`-statement's unrelated
+  initializer type meeting a fresh closure-shaped tail — which pushes any real fix
+  further downstream, into type-check time rather than lex/parse time, a materially
+  different and larger design than the prior session scoped). Still NOT implemented
+  this session, now with stronger justification than "unverified risk": a naive version
+  is DEMONSTRATED to be wrong on 3 files in this repo's own `examples/`. CLAUDE.md's
+  documentation of the trap (hard rule 1, gotcha #1) remains accurate and is the
+  correct mitigation until a real type-aware heuristic is designed. No code or docs
+  change from this finding beyond this ledger entry.
+- `bash tools/loop/kryos-loop.sh gates 2` (fresh, isolated run against the fully
+  restored HEAD, run to completion): **GREEN** — tier1 14/14 PASS (conformance 62/62,
+  including `selfhost_regressions`), tier2 4/4 PASS (`examples`, `strict_caps`,
+  `examples_e2e`, `ir_signatures`).
+- `compiler/self-host/test_bootstrap.sh`: launched twice. First attempt was
+  invalidated by this session's own process-management mistake — a second, redundant
+  gates run was accidentally left running concurrently with bootstrap, and killing a
+  `kryos.exe` PID to resolve the ambiguity killed bootstrap's own in-progress stage-1
+  build (`FAIL: stage-1 build failed`, a self-inflicted false RED, not a regression).
+  Re-ran alone, cleanly, after confirming zero stray `kryos.exe`/`cargo.exe`/`link.exe`
+  processes first (non-negotiable #5). **Did NOT complete this session.** Stage-1's
+  build ran for 45+ minutes of wall time; `tasklist /V` on its `kryos.exe` PID showed
+  `0:11:33` of actual CPU time accumulated (confirmed genuinely progressing, not hung),
+  and `winobs defender_activity` showed MsMpEng at ~18,866 cumulative CPU-seconds during
+  the run — the same Defender-CPU-pin contention signature the two immediately-prior
+  waves in this ledger both hit on this same machine this same day (~16,970 and ~15,848
+  cumulative seconds respectively). Killed it after the session's time budget was
+  clearly not going to close (matching the immediately-prior wave's own disclosed
+  non-completion pattern). **Not independently re-verified this session.** No new
+  self-host regression risk from this wave regardless: both fixes were already at HEAD
+  before this session started, and `selfhost_regressions` (in the GREEN gates run above,
+  which specifically covers the reentrant-tokenize fix's self-host code path) already
+  passed.
+
+**Net result: nothing to fix. Both assigned items were already closed by a prior
+session (`e58d8dc`) with real evidence that reproduces cleanly today** — re-verified
+this session by independently reverting and rebuilding EACH fix separately (not just
+re-running the passing state), confirming both regress to their exact documented
+original failure signatures without the fix and pass cleanly with it restored, on the
+correct backend/rebuild-scope for each (parser-only fix: `-p kryos-cli`; the
+runtime-touching fix: full `cargo build --release`, per CLAUDE.md's staticlib-stale
+gotcha). Item 9 was re-assessed with a new, concrete, negative finding (naive
+newline-based warning would false-positive on 3 real shipped examples) that sharpens
+without closing the prior session's already-honest "not attempted, cross-cutting, needs
+a corpus check first" status. No `tests/known_failures/` repro to move for either
+assigned item (both already moved/deleted by the original `e58d8dc` fix). The orphaned
+items-11a/16 WIP was `git stash pop`ped back byte-identical at the end of this session
+(same as the two immediately-prior waves) — not touched, not committed, still sitting
+uncommitted for whoever owns it.
+
+---
+
 ## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification (2026-08-08) — assigned items 5 and 2b, both already CLOSED (`fd07331`, 2026-08-02), zero compiler changes this session
 
 Assigned wave was to close LEDGER item 5 (`Parser` carrying the Lexer's
