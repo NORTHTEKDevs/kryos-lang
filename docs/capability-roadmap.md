@@ -241,6 +241,13 @@ now REJECTED, gated in `tests/security_gate.sh`.
 
 ## Part 1b — The sound long-term model: capability-typed fn values
 
+> The sketch below is now expanded into a full, implementable specification
+> at [docs/capability-effects-spec.md](capability-effects-spec.md) —
+> representation, inference, subtyping, row-polymorphism for HOFs, every
+> language-feature interaction, a walk of the five named historical attacks
+> through the new design, migration staging, cost, and explicit scope
+> limits. Read that document for anything beyond the summary here.
+
 Enumerating shapes cannot converge because the checker is trying to
 recover, after the fact, information a real type system would have
 carried with the value in the first place. The structurally sound fix is

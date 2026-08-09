@@ -1,333 +1,302 @@
-# Kryos Launch Readiness — Final Synthesis
+# Kryos Launch Readiness — Re-Adjudication (2026-08-07, post capability-typed-fn-value Stage 1)
 
-**Date:** 2026-08-05
-**HEAD reviewed:** `d29ac99` (CI green 9/9, re-confirmed live via `gh run list`)
-**Inputs:** four independent reviewer passes (production-certifier, production-realism,
-devil's-advocate, completeness-critic) over one hardening campaign (invariant analyses x4,
-red-team x3 rounds, differential fuzzing), plus direct re-execution of the disputed claims
-against the existing `compiler/target/release/kryos.exe` (read-only, no rebuild) during this
-synthesis.
+**Date:** 2026-08-07
+**HEAD reviewed:** `feb1991` (local `master`, matches the commit this session started from; CI for this
+exact commit was **`in_progress` for 2h25m+** at review time — see §5, this is a disclosed data point,
+not treated as a pass or a fail).
+**Prior synthesis reviewed and superseded:** the 2026-08-06 document at HEAD `0d6b426` (preserved in
+git history and in `tools/loop/LEDGER.md`; its VERDICT — LAUNCH-AS-BETA, "capability-safe" blocked — is
+independently reconfirmed below, not merely carried forward on trust).
 
-This document adjudicates disagreement rather than averaging it. Where reviewers disagreed
-on a fact (not a judgment call), the fact was re-executed live and the result is stated below
-with its exact command and output.
+**What changed since 2026-08-06:** a real structural campaign landed (`891c406` "feat(types):
+capability-typed fn values, stage 1 (representation + inference)") — the effect-type redesign this
+document's own §2/§6 called "the most actionable structural fix." **This stage changed zero
+enforcement.** It is representation + inference only, sitting beside the existing, unmodified
+`kryos-capabilities` checker. Five more security commits landed after it (`4b2afc4`, `136b8e7`,
+`6f13ccb`, `0e2aaec`, `feb1991`), each finding a **new live bypass** of the still-enforcing old
+checker. Net effect on the actual accept/reject behavior users get today: **unchanged in kind, worse
+in count** — the open live-bypass list grew from 4 items (2026-08-06) to at least 7 distinct open
+"LIVE CAPABILITY ESCAPE" ledger entries (items 30/35-conditional-expr, 32, 33, 34, 35-static-method,
+36, 37) plus a newly-confirmed forward-looking gap in the NOT-YET-ENFORCING new type system (§2a).
+
+Everything in this section was executed live this session against the existing
+`compiler/target/release/kryos.exe` (read-only, no rebuild), with `KRYOS_STDLIB_DIR` set per the
+repo's own operational rule, stray `kryos.exe` processes killed first.
 
 ---
 
-## 0. A finding about the evidence itself, verified before anything else
+## 1. VERDICT: **LAUNCH-AS-BETA, unchanged.** The claim "capability-safe" does NOT clear and stays blocked.
 
-The campaign's own upward-reported summary ("CAMPAIGN EVIDENCE") disagreed with
-`tools/loop/LEDGER.md` — the authoritative live document — **in both directions**, on
-trust-model-adjacent items, in the same session:
+Independently reproduced this session, fresh, with actual command output (not trusted from any
+report), all **`rc=0` with the secret printed**, in **both** `kryos run` (inferred mode) and
+`kryos check --strict-capabilities`:
 
-| Claim in the campaign summary | LEDGER.md status | Re-verified live this session |
+| Attack file | Shape | Result |
 |---|---|---|
-| `container-element-alias-backend-divergence`: **CONFIRMED FIXED** | Item 15: **ROOT-CAUSED, DESIGN NOTE, NOT FIXED (2026-08-05)** | **LEDGER is correct.** `kryos run` on `tests/security/attack_container_element_alias_refcount.kry` prints `x19999!\|x19999!\|x19999!\|x19999!\|5`; `kryos build --release` on the same file prints `x19999!\|x19999\|x19999\|x19999\|5`. The mutation is visible through every alias on JIT and only through the first alias on AOT — a live, reproducible backend divergence, exactly as LEDGER states. The evidence pack's "CONFIRMED FIXED" claim is **false**. |
-| `actor-state-stored-closure-cap-escape`: **NOT CONFIRMED** | LEDGER CLOSED table, item 18: **FIXED**, `security_gate.sh` 46/46 incl. 2 new checks | **LEDGER is correct.** `kryos run tests/security/attack_actor_state_stored_closure.kry` now exits 1 with `error[E0507]: call to \`reader\` requires capabilities [all] not granted to caller`, both default and `--strict-capabilities` modes. The evidence pack's "NOT CONFIRMED" claim is **false** — this one is actually closed. |
-| Item 10 (`cap_escape_closure_wraps_closure`, the wrapper-closure escape) — **absent from the campaign summary entirely** | Item 10: **NOT FIXED, HIGHEST PRIORITY (breaks the trust model)** | **Confirmed live, this is real and current.** See §1 below. This is the single most consequential fact in the whole campaign and it did not appear anywhere in the summary handed to the reviewers. |
+| `attack_container_param_alias_defeats_hotparam.kry` | `let c = b; c.f()` — param-container alias | LEAK, rc=0, both modes |
+| `attack_actor_state_forloop_alias.kry` | `for x in [self.b] { x.f() }` — actor-state loop alias | LEAK, rc=0, both modes |
+| `attack_deny_pipe_bare_ident_call.kry` | `0 \|> reader` inside `deny!()` — pipe operator | LEAK, rc=0, both modes |
+| `attack_deref_borrow_param_defeats_field_resolver.kry` | `(*b).f()` via `&`/`*` indirection | LEAK, rc=0, both modes, **AOT binary also leaks** |
+| `attack_reassign_local_defeats_hotparam.kry` | `let mut g = ...; g = caller_arg; g()` | LEAK, rc=0, both modes |
+| `attack_deny_bare_closure_reassign_escape.kry` | reassigned bare closure local inside `deny!()` | LEAK, rc=0, both modes |
 
-**Why this matters more than any individual bug:** three of the four reviewers built their
-verdict partly from the summary, not from LEDGER.md directly. Reviewer 2 (production-realism)
-and reviewer 4 (completeness-critic) caught the discrepancy by reading LEDGER.md directly, as
-instructed. Reviewer 1 (production-certifier) caught item 10 by independently re-running the
-repro rather than trusting either document. Reviewer 3 (devil's-advocate) inherited the
-summary's framing and consequently argued about the *wrong* closed/open item (it treated the
-actor-state escape as the live one; the actual live one is the wrapper-closure escape). The
-process lesson, not just the code lesson: **a status summary must be diffed against the
-authoritative ledger before it is reported upward, every time** — this campaign's own
-non-negotiable #1 ("a self-reported 'fixed' is not evidence") applies to campaign-summary
-generation itself, not just to individual bug fixes.
+Their `_control.kry` counterparts (the same program, direct call instead of the attack indirection)
+were also re-run and correctly **REJECTED** (`E0507`, rc=1) — confirming these are real, specific
+dispatch gaps, not a broken test harness or a systemic false-negative.
 
----
+`tests/security_gate.sh` (the CI-wired regression corpus, does **not** yet include any of the six
+files above or items 30/32-37) — re-run this session, **PASS**, all checks green. This is exactly the
+"test exists, gate silent" gap the 2026-08-06 document flagged: the gate is honestly green on what it
+covers and covers less than what is known-broken.
 
-> **UPDATE (2026-08-05, structural-completeness wave):** LEDGER item 10 — the specific
-> blocker this document's condition names in §1 and §3.1 — is **CLOSED**, re-verified live:
-> `kryos check`/`kryos check --strict-capabilities tests/security/
-> cap_escape_closure_wraps_closure.kry` now both exit 1 with `E0507`, both directions proven
-> (leaks on the pre-fix binary, rejects on the post-fix binary). Two further live escapes in
-> the SAME closure-provenance family were found and closed the same wave (a one-hop-deeper
-> variant of the already-closed item 18, and its aliased-local sibling) — see
-> `tools/loop/LEDGER.md`'s structural-completeness-wave entry and
-> `docs/capability-soundness.md`'s top update note for full evidence. **This clears the
-> specific condition in §1** ("blocked from all launch copy until LEDGER item 10 is closed and
-> re-verified live"). It does NOT by itself upgrade the overall verdict below beyond that one
-> named condition — blockers #2-8 in §3 (evidence-pack process discipline, item 15's backend
-> divergence, the spawn-hang/parser-DoS/monomorphization/supply-chain/any-erasure items) are
-> unrelated to the capability-provenance closure family this wave addressed and were not
-> re-examined this session; a full re-adjudication of the launch verdict needs a fresh
-> synthesis pass over all of §3, not just this one blocker.
+`tests/ecosystem_check.sh` and `python tools/docs-examples/check.py` — re-run this session, **PASS**
+(74/74 doc examples, ecosystem check clean exit).
 
-## 1. VERDICT: **LAUNCH-AS-BETA** — conditional, with one marketing claim hard-blocked
+Not DO-NOT-LAUNCH: the repository is already public; the non-capability language surface is not
+re-litigated here (see the 2026-08-06 document's own §5, carried forward unchanged, nothing new
+examined this session outside the capability boundary).
 
-Not LAUNCH: the language cannot be presented as "production ready" or "capability-safe" (a
-completed guarantee) while a live, unfixed, trivially-reachable trust-model bypass exists,
-independently reproduced by two reviewers and by this synthesis.
-
-Not DO-NOT-LAUNCH (full stop): the repository is already public. Most of the language —
-type system, ownership/ARC, generics, concurrency primitives, both native backends,
-self-hosting — is genuinely solid, heavily tested, and gated green (conformance, CI,
-bootstrap all independently re-verified live, not trusted from self-report). Withholding
-an honest beta label does not make the existing public code any safer; it only means the
-gap goes undisclosed. Disclosure is the higher-value move available right now.
-
-**The condition:** Kryos may launch as an explicitly-labeled, pre-1.0 beta with a disclosed
-limitations section (§4). The specific claim **"capability-safe"** — used as a completed,
-load-bearing guarantee (not as "capability-*aware*, hardening in progress") — is blocked from
-all launch copy until LEDGER item 10 is closed and re-verified live. This is a narrower,
-more precise gate than a blanket ship/no-ship: it says exactly which sentence cannot be
-written yet, not that nothing can ship.
-
-This adjudicates the four reviewers as follows: production-certifier (NO-SHIP) and
-production-realism (BLOCK) are right about every fact and right that "production ready" +
-"capability-safe" cannot be claimed today — but their verdicts are calibrated to a
-zero-tolerance production SLA (payment/auth-adjacent web services), a harsher bar than a
-disclosed pre-1.0 language beta needs. Devil's-advocate's PROCEED-WITH-CHANGES is the closest
-to correct in shape (beta + gate the specific claim) but was reasoning from the wrong open
-item (see §0) — its prescription is retained, its factual premise is corrected here.
-Completeness-critic's four new gaps (§5) are real and are added to the disclosed-limitations
-list and the ledger; none of them independently changes the verdict, because item 10 alone
-already caps it at LAUNCH-AS-BETA.
+**The condition is unchanged in substance from 2026-08-06, restated against the current open set:**
+Kryos may launch as an explicitly-labeled pre-1.0 beta with the disclosure paragraph in §4. The claim
+"capability-safe" is blocked from all launch copy until (a) every open "LIVE CAPABILITY ESCAPE" ledger
+item is closed and re-verified live, AND (b) the method-level argument from the 2026-08-06 document's
+§3-item-5 is satisfied — either single-point-of-enforcement over the closed value-producing grammar,
+or the capability-typed-fn-value system is actually wired to enforcement (not merely inferred
+alongside it) with the gap in (§2a below) closed first.
 
 ---
 
-## 2. The soundness question, answered directly
+## 2. The soundness question, answered directly, three-way split, no padding
 
-The task asked for the capability model to be "provably sound." Here is the honest
-three-way split, with no hedging:
+### (a) PROVEN
 
-### (a) What is PROVEN
+Unchanged from 2026-08-06: the exhaustive, no-wildcard `Expr` match inside `resolve_closure_caps`/
+`resolve_container_path_caps` is real (independently re-confirmed present in `checker.rs` this
+session) and still buys exactly what the prior document said — protection against a *new AST variant*
+silently falling through an enumeration, for the two functions that are the common resolution path for
+most (not all) invariants. It does not extend to dispatch-layer gaps that never reach those two
+functions (items 32, 36, 37 are exactly that: a segment-count gate, a pipe-operator call-site, and a
+`decompose_container_path` root that has no `Deref`/`Borrow` arm, respectively — none of the three
+routes through the exhaustive match at all).
 
-**Nothing.** There is no stated theorem with mechanically checked invariants, and no gate
-that cannot pass while the property is violated. `docs/capability-soundness.md` states an
-informal theorem and audits 22 invariants against the checker's source — this is a serious,
-well-executed code audit, but it is not a proof: it is prose reasoning about code, checked
-by a human (this session) reading the same code, not by a proof assistant or an exhaustive
-symbolic check. The clearest evidence that it is not a proof: the theorem is currently
-**false** — item 10 is a live counterexample in the exact baseline the document audits, and
-both `kryos check` (default mode) and `kryos check --strict-capabilities` — the two
-mechanical gates that exist — pass on the counterexample program. A gate that can pass while
-the property it names is violated is not evidence of that property; it is evidence the gate
-doesn't cover that shape.
+**New this session — a real, verified limit on what the capability-typed-fn-value Stage-1 work buys,
+found by construction rather than assumed:** I wrote and ran a fresh probe (not in `tests/security/`
+before this session) — a `dyn Trait` method that *returns* a capability-carrying closure:
 
-### (b) What is EMPIRICALLY UNBROKEN
+```kryos
+trait Provider { fn get(self: Self) -> fn() -> str }
+impl Provider for RealProvider {
+    fn get(self: RealProvider) -> fn() -> str { return make_secret_reader(path) }  // @capabilities(fs:read)
+}
+fn main() {
+    let d: dyn Provider = RealProvider {}
+    let f = d.get()
+    let out = f()
+}
+```
 
-The capability model survived real, executed attacks across several **distinct** classes,
-across 6 red-team rounds plus this campaign's invariant analysis (2 new attack programs).
-Attack classes that were tried and did **not** succeed (verified fail-closed, live, this
-baseline):
-- Closure-laundering through a **container or HOF call site** (the original round-5 class —
-  a struct field, array element, map value, or generic-HOF argument holding a closure) — fixed
-  and now actively rejected (`resolve_closure_caps`/`resolve_container_path_caps`).
-- **impl-method wrap** (`tests/security/attack_wrap_closure_impl_method.kry`) — ruled out,
-  rejects correctly.
-- **Actor-handler wrap** (`tests/security/attack_wrap_closure_actor.kry`) — ruled out, rejects
-  correctly.
-- **Raw-memory / unsafe pointer arithmetic** as a capability bypass — found real once, fixed,
-  now gated.
-- **Generic identity function round-trip** and **raw tuple payload (not Option/Result)** —
-  ruled out, do not defeat inference.
-- **FFI/extern surface** (E0506) — gated; declaring an extern is free, calling one that backs
-  a `kryos_*` builtin charges the builtin's capability.
-- **Actor state field storing a privileged closure**, read back and invoked from a different
-  handler (item 18) — found real, now fixed and gated (`security_gate.sh` 46/46, re-verified
-  live this session: rc=1 both modes).
+`kryos run`/`check --strict-capabilities` **both still reject** this program (`E0507` at `d.get()`,
+then again at `f()` — the OLD checker's own `Unknown -> all` fires twice, independently, so there is
+**no live security regression today**; `kryos-capabilities/checker.rs` is byte-for-byte unmodified
+this stage). But `KRYOS_DUMP_FN_EFFECTS=1 kryos check` on the same file shows the **new** inference's
+own row for `main` as `{?C3}` — an unresolved, never-bound capability variable, not `{fs:read}` (what
+a sound derivation would produce) and not `{all}` (what a safe fail-closed default would produce for
+an unresolved position). **This independently confirms the exact gap flagged in this task's own
+briefing**: a fn-value routed through a `dyn Trait` method call loses its row in the new type-level
+system. It is currently inert (nothing consults `main`'s inferred row for enforcement), but per the
+roadmap's own stated Stage-2/3 intent to make this system the enforcement mechanism, wiring it up
+*before* fixing dyn-dispatch row propagation and adding an explicit "unresolved-at-generalization
+means `Capability::All`, never silently drop" fallback would reproduce invariant 22's exact violation
+class the whole redesign exists to eliminate. Two more novel probes this session (`Result::Ok`
+payload extracted via `?` inside `deny!()`; a `while let Some(f) = ...` array-derived `Option`
+destructure inside `deny!()`) both **correctly rejected**, `[all]` required, both modes — not every
+new shape is a hole; these two were not.
 
-That is a genuinely wide, genuinely adversarial sweep, and most of it holds. It is evidence
-of "hardened against a broad attack surface," which is a real and valuable property. It is
-not evidence of soundness — a sweep, however wide, proves only that the specific things tried
-did not work; it says nothing about the next shape not yet tried, which is exactly what item
-10 was (a wrapper closure that never invokes its argument inside its OWN body at its OWN call
-site — the checker's fail-closed default triggers only through mechanisms tied to a
-*call site*, and this shape has none).
+**Confirmed this session: the old shape-matching heuristic (`find_companion_container_arg`) is
+genuinely deleted, not dormant.** Grepped `kryos-capabilities/src/`: zero live references, only two
+comments citing its removal for context. The sole companion-resolution path is `hot_param_companions`,
+call-site-shape-blind by construction — this claim from the 2026-08-05/06 documents holds under
+re-inspection.
 
-### (c) What is ASSUMED or UNTESTED
+### (b) EMPIRICALLY UNBROKEN
 
-- The full sub-capability lattice's `Capability::satisfies` implementation was matched
-  against its call sites and CLAUDE.md's documented table, not read line-by-line this
-  campaign (explicitly flagged by the capability reviewer as out of scope this pass).
-- Generic monomorphization is flagged by this campaign's own analysis as "carried 3 of the 4
-  historical capability bugs" and "the highest-suspicion surface" — and has still not had a
-  dedicated adversarial fuzzing pass combining capabilities with deep generic instantiation.
-- `spawn` mutating-closure reentrancy and throw-during-unwind interaction with capability
-  checking: untested, explicitly out of scope every round so far.
-- Any chain of 2+ wrapper closures combined with generics and/or containers together: item 10
-  is the 1-level case; the combinatorial space beyond it (generic wrapper returning a wrapper
-  returning a wrapper, each parametrized differently) has not been swept.
+`tests/security_gate.sh`'s 84-check corpus and the wrapper-closure/nested-actor-state repros from
+2026-08-05 — re-run live this session, **PASS**, all green, consistent with every prior session.
+Docs-examples (74/74) and ecosystem_check — **PASS**. This is real evidence the checker is hardened
+against a wide, specific, and growing attack surface. It is **not** evidence of soundness — see (c)
+and §1's table: **the red team has still not reached dry.** Assault rounds continued past this
+document's own baseline (round 5 → item 36, round 6 → item 37, both dated 2026-08-06/07, i.e. within
+the last ~24h of repository time) and each found something new. State plainly, again: **more bugs are
+expected.** Two of my own three novel probes this session found nothing — a genuinely negative result,
+reported honestly rather than omitted — but that is two data points, not a proof the surface is
+covered; the task brief's own dyn-Trait forward-looking gap (found via a *third* novel probe) shows
+the pattern is not exhausted even in the parts of the system that don't enforce anything yet.
 
-### What "provably sound" would actually require, and the cost
+### (c) ASSUMED / UNTESTED, this session
 
-A real proof needs two layers, not one:
-1. **A mechanized soundness proof** (progress + preservation style) over a small core
-   calculus capturing closures, capability sets, and `deny!` narrowing — done in a proof
-   assistant (Coq/Lean/Isabelle) or as a fully explicit hand proof with a precise typing
-   judgment and closure-provenance model. This is PL-research-scoped work: realistically
-   2-6 months for someone with type-theory background, more if starting the calculus from
-   scratch. It would prove the *design* sound.
-2. **A refinement argument (or, more practically, exhaustive fuzz-based cross-checking) that
-   the actual Rust implementation (`checker.rs`) matches the calculus.** This matters because
-   item 10 is exactly the kind of gap a calculus proof does NOT catch by itself — it is an
-   *implementation* gap ("the returned lambda's own body is attributed an empty capability set
-   instead of the fail-closed default"), not a flaw in the informal theorem's shape. A proof
-   about an idealized calculus does not, by itself, prove the compiler that compiles real
-   `.kry` files is correct.
+- `bash tools/loop/kryos-loop.sh gates 2` and `compiler/self-host/test_bootstrap.sh` (alone) — **NOT
+  run this session.** Both are known-expensive in this shared workspace (bootstrap alone took ~20 min
+  in the 2026-08-06/07 wave per its own LEDGER entry; `gates 2` has a documented history of stalling
+  under concurrent-agent contention). Skipping these is a real, disclosed gap in this session's
+  coverage, not a silent one — do not read §1's PASS list as covering them. Neither is a
+  capability-soundness signal specifically (both test general conformance/self-hosting), so this does
+  not change the VERDICT, but it means "gates before commit" per this repo's own operational rule is
+  **not fully satisfied by this session alone** and must be run before any commit that changes
+  enforcement code.
+- CI on HEAD `feb1991`: checked via `gh run list` — **`in_progress`, 2h25m+ elapsed** at review time
+  (abnormally long; the prior four pushes on this branch show cancelled/cancelled/failure/cancelled,
+  not a clean green streak). This is a genuine, disclosed yellow flag on repository health separate
+  from the capability question — not itself capability-model evidence, but relevant to "is CI on HEAD
+  green" which the task asked to check honestly.
+- Items 33 (actor-to-actor forwarding), 34 (two-hop actor-state alias), 35-static-method, and item
+  30's original accessor-call shape — **not independently re-run this session** (time-budgeted this
+  session's live-fire evidence toward the six items in §1's table plus the three novel probes); their
+  LEDGER entries carry their own executed evidence from the sessions that found them and are trusted
+  on that basis, consistent with how the 2026-08-06 document itself trusted items outside its own
+  session's direct re-run list. Flagged here explicitly rather than silently folded into "confirmed."
+- Full `cargo build --release` (workspace) — not run (no rebuild performed or authorized this
+  session, per the repo's own shared-workspace rule).
+- FFI/extern surface combined with any of the newly-found bugs, raw-memory builtins as a bypass
+  vector, and the wasm32 backend — out of scope this session, same as every prior session; not
+  re-examined.
 
-**The more immediately actionable path**, already identified in this codebase's own design
-notes and not yet built: implement **capability-typed function values**
-(`fn() -> str @ {fs:read}`), so provenance is carried in the *type* rather than re-inferred
-per call site by a checker that must enumerate every shape a value can arrive through. This
-closes item 10's entire bug *class* structurally (a wrapper closure's return type would
-correctly propagate `@{fs:read}` through ordinary type-checking, with no new call-site
-pattern-matching needed) rather than patching case-by-case. Estimated at a few weeks of
-focused compiler work per the existing design note — not a formal proof, but the highest-
-leverage step toward one, and the step that would have prevented item 10 by construction.
+### What "provably sound" would require (unchanged, still true, now with a sharper edge)
+
+A mechanized proof over a small core calculus PLUS a refinement argument that `checker.rs` implements
+it — unchanged from 2026-08-05/06. **The sharper edge this session adds:** even the eventual
+structural fix (capability-typed fn values) is not a free win — it inherits its own new dispatch
+surface (dyn Trait, generic trait-bound methods) that needs the SAME "does every value-producing form
+reach one point of resolution" argument the old checker never had, or it will reproduce the identical
+failure class in a new codebase. The type-level redesign is still the right direction (it converts an
+open-ended enumeration into a closed one, by design), but "the redesign exists" and "the redesign is
+finished" are different claims, and Stage 1's own LEDGER entry already disclosed dyn-dispatch and
+generic-trait-bound coverage as future work — this session's probe turns that disclosed gap from
+theoretical into demonstrated (still inert, not yet a live bug, because nothing enforces off it yet).
 
 ---
 
-## 3. Blockers, ranked
+## 3. Blockers ranked, each with what must be true to clear it
 
-Each entry: what must be true to clear it.
-
-1. **LEDGER item 10 — live capability escape (wrapper closure defeats `deny!()`, both modes).
-   CLOSED 2026-08-05 (structural-completeness wave).** `tests/security/
-   cap_escape_closure_wraps_closure.kry` now exits 1 (`E0507`) under both `kryos check` and
-   `kryos check --strict-capabilities`, re-verified live, proven both directions (pre-fix
-   binary reproduces the leak; post-fix binary rejects). Wired into `security_gate.sh` checks
-   #47-50 alongside two further live escapes in the same family found and closed the same
-   wave. See `tools/loop/LEDGER.md`'s structural-completeness-wave CLOSED entry and
-   `docs/capability-soundness.md` invariants 23-24 for the fix and full evidence. **Was
-   blocking:** any "capability-safe" claim in launch copy — that specific condition is now
-   cleared.
-2. **Evidence-pack accuracy (§0).** Two false claims (one over-claim, one under-claim) reached
-   this synthesis from the campaign's own summary. **Blocks:** trusting any future
-   "CONFIRMED FIXED" / "NOT CONFIRMED" claim about a capability/trust-model item without an
-   independent re-run. **Clears when:** a process step is added — diff any capability/security
-   status claim against `tools/loop/LEDGER.md` before it is reported upward — not a code fix,
-   a discipline fix.
-3. **LEDGER item 15 — backend semantic divergence (array-of-struct element alias).**
-   Re-verified live this session: JIT and AOT disagree on whether a mutation through one alias
-   is visible through a second alias of the same read. Now accurately disclosed in CLAUDE.md
-   (already says "NOT FIXED" as of 2026-08-05) and in this document. **Blocks:** any
-   "both backends agree" / "deterministic across backends" claim. **Clears when:** either
-   backend's representation is unified (documented as sharing the same architectural root as
-   item 3, the struct-argument leak — a representation/ABI change, not a point fix) or the
-   divergence is permanently and prominently disclosed (already true; does not itself block a
-   disclosed beta, only blocks the "backends agree" claim specifically).
-4. **LEDGER item 16 — uncaught `throw` inside `spawn` permanently hangs every `wg_wait()`.**
-   Ordinary worker-pool idiom, no diagnostic, no timeout. **Clears when:** the failure
-   propagates to the WaitGroup (poison it, or run pending waiters with an error state) or an
-   enforced timeout exists; until then, `docs/09-concurrency.md` must carry an explicit
-   warning on this exact combination.
-5. **LEDGER items 14 + 22 (new, below) — parser resource-DoS, two distinct mechanisms.** Item
-   14: unguarded stray-`;` recursion stack-overflows the compiler (crash, exit 253). Item 22:
-   the EXISTING `MAX_NESTING_DEPTH`/`MAX_RECURSION_DEPTH` guards bound stack depth correctly
-   but not total WORK — 9 independent grammar constructs hang indefinitely just below the
-   documented ceiling. **Clears when:** both get a bound with a clean diagnostic, mirroring
-   the parser's own existing guard pattern (per the certifier's note, item 14 is a one-function
-   fix); item 22 additionally needs the guard's *purpose* extended from stack-safety to
-   work-boundedness.
-6. **LEDGER item 19 + item 23 (new, below) — unbounded monomorphization, two distinct
-   mechanisms.** Item 19: mangled-name generation is O(2^depth) for a type-doubling generic
-   chain. Item 23 (new): a self-recursive, type-*growing* generic instantiation is completely
-   unbounded (3.2GB+ in 15s on an 8-line program, still climbing). **Clears when:** either a
-   depth/size cap with diagnostic (matching the parser's pattern) or a content-addressed/
-   interned mangled-name scheme lands for both.
-7. **LEDGER items 12, 13, 17 — `kryos pkg`/`kryos audit` supply-chain integrity gaps** (lockfile
-   never consulted and silently overwritten; `git =` manifest source ignored; `audit` reports
-   clean on code that will not compile). **Clears when:** fixed, or `kryos pkg`/`kryos audit`
-   are explicitly labeled "not yet a trust boundary — pin and vendor manually" in user-facing
-   docs before any beta recommends using them beyond a toy project.
-8. **LEDGER item 24 (new, below) — `bool` into `any`.** Fails the AOT build outright and
-   silently misrenders on JIT (`1` instead of `true`) — a crash+silent-wrong-answer combination
-   for a completely ordinary shape (`fn log_event(args: [any])`). **Clears when:** fixed, or
-   folded explicitly into the existing `any`-erasure warning in CLAUDE.md/docs with this exact
-   failure mode named (today's docs mention render mis-formatting for `any`, not an outright
-   AOT build failure).
-
-None of these require the struct-ABI change that items 3 (struct-arg leak) and `any` erasure
-need — all are scoped, single-mechanism fixes, consistent with how the ~60 prior defects in
-LEDGER's CLOSED table were closed.
+1. **All seven+ open "LIVE CAPABILITY ESCAPE" ledger items (30/35-conditional-expr, 32, 33, 34,
+   35-static-method, 36, 37)** — the single largest blocker by count and the only one that gates the
+   literal word "capability-safe." Clears when each is fixed at its stated root cause (see each
+   item's own LEDGER writeup — every one already names its fix direction), `security_gate.sh` gains a
+   wired check for each (closing the "test exists, gate silent" gap named in both this and the prior
+   document), and every fix is proven both ways (revert, rebuild, confirm the leak returns; restore,
+   rebuild, confirm reject) per this repo's own `CLAUDE.md` rule 6.
+2. **The method-level argument, still not made.** Per 2026-08-06 §3 item 5, unchanged: a fifth (now
+   an eighth-plus) round finding something new is the expected outcome, not a surprise, until either
+   (a) a mechanical argument shows every value-producing `Expr` form passes through ONE enforcement
+   point, or (b) the capability-typed-fn-value system replaces the shape-matching checker as the
+   actual enforcement mechanism. Given this session's dyn-Trait finding, (b) is not yet safe to ship
+   even when ready — the dyn-dispatch row-propagation gap (§2a) must close FIRST, with an explicit,
+   tested policy for "a capability row still unresolved at end-of-check" (hard error or `All`, never
+   silent drop), before any enforcement authority moves to the new system.
+3. **CI health on HEAD.** Not itself a security blocker, but "ready to ship" requires knowing CI is
+   green, and it currently is not observably so (`in_progress` 2h25m+, prior runs
+   cancelled/cancelled/failure/cancelled). Clears when a CI run on the relevant HEAD completes and
+   passes, or the stall is diagnosed as infrastructure (as the 2026-08-06 document found for its own
+   HEAD) rather than a real regression.
+4. **This session's own two skipped gates** (`gates 2`, bootstrap alone) — clears by running them
+   before the next commit that touches enforcement code, per this repo's stated commit discipline.
+5. Items carried forward unchanged from 2026-08-06 §3 item 6 (supply chain items 12/13/17, backend
+   divergence item 15, resource-DoS items 14/25, Mutex-no-reassign hang item 31, untested surfaces
+   26-29, `any` type erasure item 6, struct-argument leak item 3) — none gate "capability-safe"
+   specifically, all gate "production ready" generally. Not re-examined this session; still accurate.
 
 ---
 
 ## 4. Minimum honest launch posture
 
-**Version label:** `v0.9.0` (unchanged — this is already the repo's own accurate pre-1.0
-label; do not round up to "1.0" or drop "beta"). Existing badge/README status text is correct
-on this point and was not changed.
+**Version label:** `v0.9.0`, unchanged. Do not round up to 1.0, do not drop "beta."
 
-**The exact wording a user must see before adopting the capability model as a security
-boundary** (place in README's Status section — already added this session — and in
-`docs/10-capabilities.md`'s introduction):
+**Exact wording required in README's Status section and `docs/10-capabilities.md`'s introduction**
+(supersedes the 2026-08-06 wording — that paragraph named four items; the honest count today is
+higher and the new type-level system, while real progress, is not itself a fix yet):
 
 > **Capability-model status: hardening in progress, not yet a completed security guarantee.**
-> Kryos's deny-by-default capability system has survived a wide adversarial sweep — closure
-> laundering through containers and higher-order functions, actor-state storage, impl-method
-> and actor-handler wrapping, raw-memory paths, and the FFI/extern surface are all fail-closed
-> and gated in CI (`tests/security_gate.sh`). **One live bypass is currently open and
-> unfixed:** a closure returned by an ordinary zero-capability wrapper function defeats
-> `deny!()` under every enforcement mode, including `--strict-capabilities`
-> (`tools/loop/LEDGER.md` item 10). Do not depend on `deny!()` to contain an untrusted or
-> partially-trusted code path that might use this exact shape (a decorator, logger, retry
-> wrapper, or middleware pattern that returns a closure without calling it inside its own
-> body) until this item is closed and independently re-verified. Track status in
-> `tools/loop/LEDGER.md` and `docs/LAUNCH-READINESS.md`.
+> Kryos's deny-by-default capability system has survived a wide adversarial sweep across 8+ red-team
+> rounds and is independently re-verified against a live corpus (`tests/security_gate.sh`, 84 checks,
+> plus `tests/ecosystem_check.sh` and `python tools/docs-examples/check.py`, all green as of HEAD
+> `feb1991`). **At least seven distinct live bypasses of `deny!()` are currently open and unfixed**
+> (`tools/loop/LEDGER.md` OPEN items 30, 32, 33, 34, 35 (two distinct bugs share this number — a
+> tracking bug in its own right), 36, 37): an accessor-call or conditional-expression method receiver,
+> a tuple-indexed fn value, actor-to-actor closure-parameter forwarding, a two-hop local alias of
+> actor state, a hot parameter at index 0 of a static method, the pipe operator (`\|>`), and a
+> `&`/`*` (borrow/deref) receiver indirection. **Do not depend on `deny!()` to contain an untrusted or
+> partially-trusted code path** until these are closed and independently re-verified. A structural
+> redesign (capability-typed function values, `kryos-types`) has landed as representation + inference
+> only — it changes NOTHING about which programs are accepted or rejected today, and is not yet safe
+> to wire to enforcement: it has its own currently-inert gap (a `dyn Trait` method return does not yet
+> carry its capability row through the new inference). Track status in `tools/loop/LEDGER.md` and
+> `docs/LAUNCH-READINESS.md`. **Across 8+ hardening rounds, every round that closed its own findings
+> was followed by a round that found a new bypass shape.** Treat this as a standing property of the
+> current design, not a bug count trending to zero.
 
-A security claim this project cannot fully defend must not appear in launch copy: do not use
-"capability-safe" as a completed adjective (e.g. "Kryos is a capability-safe language") in any
-external announcement, landing page, or marketing description until item 10 closes. "Capability-
-aware," "deny-by-default, hardening in progress," or the disclosure paragraph above are the
-accurate framings today.
-
----
-
-## 5. Additional gaps found this synthesis (completeness-critic's findings, verified and
-   carried forward — not launch-blocking individually, but must be disclosed)
-
-- **CLI dev-tooling surface has zero test coverage.** Verified: grepping `tests/` for any of
-  `lsp, dap, repl, bench, profile, coverage, watch, workspace, trace, diff, changelog, cheat,
-  tree, lint, doc_serve, bindgen, pack, eval, config, manifest` returns 0 hits for every one,
-  across ~20 subcommands checked. `kryos lsp`/`kryos dap` parse untrusted editor/debugger
-  protocol input — a distinct, unaudited attack surface from anything fuzzed this campaign
-  (which scoped entirely to the `.kry` source-language grammar). See LEDGER item 26.
-- **wasm32 backend is effectively unaudited.** 11 hand-written smoke probes plus a CI
-  smoke job exist; it was explicitly excluded from this campaign's new differential fuzzer,
-  `security_gate.sh`, and all leak/race testing, despite being documented in CLAUDE.md as a
-  first-class target alongside the two native backends. See LEDGER item 27.
-- **The campaign's own new security/fuzz corpus runs on Linux CI only.** Verified directly in
-  `.github/workflows/ci.yml`: `security_gate.sh` and `fuzz_gate_grammar.sh` appear only in the
-  `ubuntu-latest` job (line 159, line 226); the `macos-14` job (line 515) and `windows-latest`
-  job run a different, smaller smoke set. See LEDGER item 28.
-- **`compiler/stdlib/smtp.kry` and `compiler/stdlib/term.kry` have never been compiled by
-  anything.** Verified: 0 references to `std::smtp`/`std::term` anywhere in `tests/`,
-  `ecosystem/`, or `examples/`. `docs/stdlib/term.md`'s 19 fenced code examples are also never
-  executed — `tools/docs-examples/check.py`'s glob (verified directly) excludes
-  `docs/stdlib/*.md`. See LEDGER item 29.
+Do not use "capability-safe" as a completed adjective in any external announcement, landing page, or
+marketing description until every item in §3 clears. "Capability-aware," "deny-by-default, hardening
+in progress," or the disclosure paragraph above are the accurate framings today — unchanged guidance
+from every prior synthesis, because the underlying fact has not changed: the checker still has known,
+open, live holes.
 
 ---
 
-## 6. What to do next, in order
+## 5. CI status, checked honestly (new this session, task explicitly required it)
 
-1. Wire `tests/security/cap_escape_closure_wraps_closure.kry` into `security_gate.sh` as a
-   known-failing (must-stay-red-until-fixed) check — hours of work, prevents the gap from
-   silently widening while item 10 is being fixed.
-2. Fix LEDGER item 10 (or land the capability-typed-fn-value design, which closes it and its
-   whole class at once) — this is the single blocker on the "capability-safe" claim.
-3. Add the process step from §0/blocker 2: any future capability/security status report must
-   be diffed against `tools/loop/LEDGER.md` before being reported upward.
-4. Fix items 14 and 22 together (same guard family, parser resource bounds) — the certifier's
-   own read is that item 14 is a one-function mirror of an existing pattern.
-5. Fix items 19 and 23 together (same guard family, monomorphization resource bounds).
-6. Fix item 16 (spawn/throw/WaitGroup hang) or ship the documented warning immediately if the
-   fix is not ready by beta launch.
-7. Fix or clearly gate items 12, 13, 17 (`kryos pkg`/`kryos audit` supply-chain gaps) before
-   recommending `kryos pkg` for anything beyond a toy project.
-8. Fix item 24 (`bool` into `any`) or fold its exact failure mode into the existing `any`-
-   erasure documentation.
-9. Land at least a reduced-iteration `security_gate.sh` + `fuzz_gate_grammar.sh` pass on the
-   macOS and Windows CI jobs (item 28), and a minimal `kryos check`/compile smoke test for
-   `smtp`/`term` (item 29), before claiming "CI green on all platforms" in any launch copy.
-10. Once items 10, 14, 16, 19, 22, 23 are closed and re-verified live (not self-reported), and
-    items 12/13/17/24/26/27/28/29 are either fixed or accurately disclosed, re-run this same
-    synthesis process (four independent reviewers + live re-execution of every disputed claim)
-    before removing the "capability-model hardening in progress" language and using
-    "capability-safe" as a completed claim.
+`gh run list --limit 5` against HEAD `feb1991` and its four predecessors:
+
+| Commit (message prefix) | Status | Duration |
+|---|---|---|
+| `feb1991` "PipeExpr call-site bypasses..." | **in_progress** | 2h25m+ (abnormal — typical runs are 15m-6h with clear completion) |
+| `136b8e7` "repro item 30's decompose_container_path gap..." | completed, **cancelled** | 6h0m |
+| `4b2afc4` "deny-narrowing round 2..." | completed, **cancelled** | 3h0m |
+| `0d6b426` "add repro for kryos test/repl..." | completed, **failure** | 15m52s |
+| `bfe5c57` "add repro for match-arm-bound fn-field..." | completed, **cancelled** | 14m7s |
+
+Not one clean green completion in the last five pushes. The 2026-08-06 document's own precedent
+(a `failure` that was infrastructure, not a real regression) means this is not automatically alarming,
+but it also cannot be waved away without checking the actual failure — this session did not have
+budget to dig into the `0d6b426` failure's logs or wait out the `feb1991` in-progress run. **Disclosed
+as an open item (§3.3), not silently omitted and not assumed benign.**
+
+---
+
+## 6. Next steps, in order
+
+1. Fix the seven-plus open capability-escape ledger items, in the order their own entries suggest
+   (each names its root cause and fix direction already — this is not a research problem, it's an
+   implementation backlog at this point).
+2. Wire each fix's repro into `security_gate.sh` as it closes — stop the "test exists, gate silent"
+   pattern from recurring an eighth time.
+3. Before touching enforcement wiring for the new capability-typed-fn-value system: add `dyn Trait`
+   and generic-trait-bound dispatch to that system's own test corpus, and implement an explicit,
+   tested policy for an unresolved-at-end-of-check capability row (hard error, never silent `All`
+   substitution done implicitly-and-untested, never a silent empty set).
+4. Resolve the CI status on HEAD — either confirm infrastructure-only (as before) or fix a real
+   regression; do not proceed to a launch decision with unconfirmed CI.
+5. Run the two gates this session skipped (`kryos-loop.sh gates 2`, bootstrap alone) before the next
+   commit that touches `kryos-capabilities` or `kryos-types`.
+6. Once 1-5 are done: re-run this same live re-adjudication fresh (not a trust of this document)
+   before writing "capability-safe" in any launch copy — this has now been true, and re-verified true,
+   across three consecutive sessions (2026-08-05, -06, -07); expect a fourth to be necessary too.
+
+---
+
+## 7. Prior syntheses — retained for history, nothing lost
+
+- **2026-08-06** (HEAD `0d6b426`): full text preserved in git history and in this file's prior
+  version; superseded above. Its VERDICT (LAUNCH-AS-BETA) and its §2(a) PROVEN/§2(b)
+  EMPIRICALLY-UNBROKEN framing are reconfirmed, not overturned, by this session.
+- **2026-08-05** (HEAD `d29ac99`): full text preserved in git history and in
+  `tools/loop/LEDGER.md`'s "FINAL LAUNCH SYNTHESIS (2026-08-05)" section. Its central methodological
+  finding — a repro file without a ledger entry is not tracked, regardless of who wrote it — held
+  again in the 2026-08-06 session and was not contradicted this session either (all six attack files
+  in this session's §1 table already had LEDGER entries; the discipline is holding).
+
+**The pattern across three sessions is itself the strongest single piece of evidence in this
+document:** each session finds and closes nothing on its own initiative (this session fixed zero
+bugs, by design — verification-only), independently re-confirms the open count is real, and finds at
+least one thing the prior session's document did not fully cover (this session: the dyn-Trait
+inference gap, CI health). Overstating "capability-safe" at this HEAD would be the single most
+expensive error available in this repository's current state — the evidence says NOT YET, plainly,
+for the third consecutive session.
