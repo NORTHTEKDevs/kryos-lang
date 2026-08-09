@@ -12,6 +12,95 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification (2026-08-08) — assigned items 5 and 2b, both already CLOSED (`fd07331`, 2026-08-02), zero compiler changes this session
+
+Assigned wave was to close LEDGER item 5 (`Parser` carrying the Lexer's
+array-in-a-rebuilt-struct O(n^2) pattern) and item 2b (global array
+reassignment corrupting the header, `kryos_array_push: corrupt array header
+... cap=0, data=0x0`). Both were already fixed and merged before this session
+started (`fd07331 fix(mir,self-host): close global-reassign corruption and
+Parser's O(n^2) rebuild`, 2026-08-02, an ancestor of today's HEAD `de2bda4`)
+with proof-both-ways evidence already recorded in the CLOSED table below (see
+"LEDGER item 5" / "LEDGER item 2b" entries). Per doctrine ("self-reported done
+is not evidence"), independently re-verified rather than trusting the
+ledger's own prior claim, going further than a read-only re-check for item 2b
+by actually reverting and rebuilding:
+
+- Shared-workspace hygiene: found the same ~2-day-stale uncommitted WIP
+  (items 11a/16, `kryos-rt`/`kryos-stdlib-native`/both codegen backends) the
+  immediately-prior session in this ledger flagged as at-risk-of-loss.
+  `git stash`ed it (by explicit pathspec, not `-u`, so the untracked fuzz
+  corpus in this workspace was left alone) to get a HEAD-accurate baseline,
+  worked entirely against clean HEAD, then `git stash pop`ped it back
+  byte-identical at the end — not touched, not committed, still sitting
+  uncommitted for whoever owns it.
+- Full `cargo build --release` (no `-p`) against clean HEAD, 44s, clean.
+- **Item 2b, proved BOTH WAYS fresh this session** (not just re-running the
+  passing state): `git show fd07331 -- compiler/crates/kryos-mir/src/lower.rs`
+  reverse-applied cleanly despite 20+ intervening commits touching that file;
+  rebuilt with `cargo build --release -p kryos-cli` (safe here — the fix is
+  Rust-only in `kryos-mir`, never touches `kryos-rt`/`kryos-stdlib-native`, so
+  no full rebuild needed per gotcha #2). Pre-fix: `tests/conformance/
+  conf_global_reassign_cross_fn.kry` on `kryos run` reproduced the EXACT
+  original panic, `kryos panic: kryos_array_push: corrupt array header @
+  0x1e099f685d0 (len=0, cap=0, elem_size=8, ref_count=1, data=0x0)`, stack
+  trace `add_one() -> main()`, exit 98. Restored the fix (`git checkout --`),
+  rebuilt (47s) — clean PASS on both `kryos run` (JIT) and `kryos build
+  --release` (AOT, fresh binary compiled+run for this check), exit 0 both.
+- **Item 5**: confirmed the fix is present at HEAD (`PARSER_TOKENS` module
+  global in `compiler/self-host/parser.kry`, mirroring `LEX_TOKENS` exactly,
+  read via `PARSER_TOKENS[idx]` everywhere `p.tokens[idx]` used to be). Also
+  reverse-applied item 5's own diff (`git show fd07331 -- compiler/self-host/
+  parser.kry`, applies cleanly) to attempt a fresh before/after peak-memory
+  remeasurement on `lower.kry` matching the original methodology — did NOT
+  complete: building stage-1 from the reverted self-host source (a step that
+  does not itself exercise the buggy self-hosted Parser, since stage-0 is the
+  normal Rust-compiled binary compiling Kryos source as data) ran for 50+
+  minutes of accumulated CPU time with no sign of finishing, confirmed via
+  `winobs`/`Get-Process` as genuine progress under contention, not a hang;
+  `winobs defender_activity` showed MsMpEng at ~16,970 cumulative CPU-seconds
+  during the run, up ~1,100s over the course of this session alone — the same
+  Defender-CPU-pin contention signature the immediately-prior wave in this
+  ledger hit on the SAME machine THIS SAME DAY. Killed it after the time
+  budget was clearly not going to close, reverted the revert (`git checkout
+  --`), and did not re-attempt. **The performance claim for item 5 is
+  therefore NOT independently re-measured this session** — relying on the
+  existing CLOSED-table record (peak working set 435.5 MB -> 101.7 MB, 4.3x,
+  measured via the same Start-Process/PeakWorkingSet64 methodology, `test_
+  bootstrap.sh` 16/16 stable across 2 runs post-fix) as the historical
+  evidence, disclosed as historical rather than restated as a fresh personal
+  measurement.
+- `bash tools/loop/kryos-loop.sh gates 2`: **GREEN** — tier1 14/14 PASS
+  (conformance 62/62, including `selfhost_regressions` which specifically
+  covers the reentrant-tokenize regression these two fixes made safe to ship),
+  tier2 4/4 PASS (`examples`, `strict_caps`, `examples_e2e` — no stray-process
+  false-RED this run, `ir_signatures`).
+- `compiler/self-host/test_bootstrap.sh`: did **NOT** complete this session.
+  Stage-1's build (from the restored, fixed self-host source, run separately
+  after the item-5 revert attempt above) ran 50+ minutes of accumulated CPU
+  time, confirmed actively progressing (CPU climbing under `Get-Process`) not
+  hung, before the session's time budget ran out — same Defender-contention
+  signature as above and as the immediately-prior wave's own disclosed
+  bootstrap non-completion. Not independently re-verified this session; no
+  code change lands from this wave (both fixes were already at HEAD before
+  this session started) so there is no new self-host regression risk beyond
+  what `selfhost_regressions` (in the GREEN gate run above) already covers.
+
+**Net result: nothing to fix. Both assigned items were already closed by a
+prior session (`fd07331`) with real evidence that reproduces cleanly today.**
+Item 2b's fix was independently reverted and rebuilt this session, reproducing
+the exact original corruption, then restored and reconfirmed clean on both
+backends — the strongest form of re-verification available. Item 5's fix was
+confirmed present and structurally correct by source read and by
+`selfhost_regressions`/gates passing, but its specific peak-memory
+before/after claim was not independently re-measured due to sustained
+machine-wide Defender/CPU contention that also prevented `test_bootstrap.sh`
+from completing — disclosed, not assumed away. No `tests/known_failures/`
+repro to move for either item (both already moved/deleted by the original
+`fd07331` fix).
+
+---
+
 ## Wave: closures/spawn re-verification (2026-08-08) — assigned items 7 and 7b, both already CLOSED, zero compiler changes this session
 
 Assigned to close LEDGER items 7 (mutated-SCALAR-capture N>=2 generalization) and 7b
