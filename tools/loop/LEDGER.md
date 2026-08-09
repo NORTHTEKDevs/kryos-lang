@@ -247,6 +247,18 @@ claim:
   then popped back exactly as found). Flagged for whoever owns items 11a/16: that work
   looks complete per its own file diff but was never committed, so it is currently at
   risk of loss.
+  RESOLVED 2026-08-09: that orphaned WIP is now committed as `d71ac33`
+  (`fix(concurrency): two permanent-hang hazards -- spawn uncaught throw, closure lock
+  self-reentry`) after being re-proven from scratch against a full release build of the
+  tree it lives in -- item 16 repro exits 101 with its message (not a 124 timeout), item
+  11(a) repro exits 98 with the reentrancy panic, `concurrency_smoke.sh` PASS including
+  both new `fails_fast` checks, `kryos-loop.sh gates 2` tier1 (conformance 62/62 + 13
+  checks incl. `selfhost_regressions`) and tier2 both GREEN at exit 0, and
+  `tests/security_gate.sh` PASS. NOTE for the record: the "gates only pass with this WIP
+  stashed out" concern raised during that verification did NOT reproduce -- the full
+  suite is green WITH these changes in the tree; the earlier red was a stale-binary
+  artifact (`cargo build` run from the repo root instead of `compiler/` silently does
+  nothing -- it prints "could not find Cargo.toml" and still exits 0 through a pipe).
 - Full `cargo build --release` (no `-p`, required for kryos-rt/kryos-stdlib-native)
   against clean HEAD, 47s, clean.
 - Item 7: `tests/conformance/conf_functions.kry` (the fold-in target -- `two_mutated_
