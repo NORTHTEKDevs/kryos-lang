@@ -757,6 +757,48 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ## OPEN — ranked
 
+> **READ THIS BEFORE TRUSTING ANY STATUS BELOW.** Run
+> `bash tools/loop/escape_status.sh` -- it re-runs every named capability-escape
+> repro under both enforcement modes and prints the real count. On 2026-08-10
+> this section and the README were BOTH wrong in both directions at once: item
+> 10 was ranked the highest-priority OPEN escape but had actually been fixed,
+> while twelve others were open and the README claimed a single residual. As of
+> 2026-08-10 the true count is **11 escaping, 6 rejected**.
+>
+> **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
+> pattern-matching the SHAPE of the call expression, and every unmatched shape
+> falls into a `_ => None` / early-`return CapabilitySet::empty()` that callers
+> read as "needs no authority". It is a fail-OPEN default in a codebase that is
+> fail-CLOSED everywhere else (`CapRow::Unknown` erases to `CapBits::ALL`).
+> Adding shapes to the match does NOT converge -- rounds 1-3 each added shapes
+> and each just moved the escape to the next dress. The fix is to make the
+> unresolvable case return an explicit Unresolvable that callers MUST treat as
+> requiring `all`.
+>
+> MAP OF THE ROOT, so the next attempt does not re-derive it (all verified live
+> 2026-08-10):
+> - `decompose_container_path` (~971) understands ONLY Identifier / FieldAccess
+>   / IndexAccess. Everything else -> `None`.
+> - `check_callee_capabilities` (~5271) HAS a fail-closed direct-invoke path,
+>   but it is gated on `segments.len() <= 1`, and `resolve_path` returns
+>   `["pair","1"]` for a field chain -- so the fail-closed path is SKIPPED for
+>   every field/index chain. The guard's comment claims a multi-segment path is
+>   "always a qualified stdlib call"; that assumption is false.
+> - `resolve_method_field_invoke_caps` (~3647) returns `CapabilitySet::empty()`
+>   -- i.e. ungated -- when the object does not decompose, and again when
+>   `literal_field_exists` says no.
+> - TWO DISPROVEN HYPOTHESES, do not repeat: (1) adding Borrow/Deref passthrough
+>   to `decompose_container_path` does NOT close item 37 (measured: still
+>   escaping), so that shape never reaches the decomposer; (2) adding
+>   TupleLiteral to `literal_field_exists` does NOT close item 32/38 (measured:
+>   still escaping), so the tuple shape is blocked earlier than the literal
+>   resolver. Instrument where the call actually routes BEFORE editing again.
+> - WHEN FLIPPING TO FAIL-CLOSED, the over-rejection you will hit first is the
+>   partial-application pipe (`5 |> padd(10)`): "cannot resolve" and "different
+>   shape entirely" are not the same thing. `ir_signatures` is the gate that
+>   catches it; `security_gate.sh` check 66 pins it.
+
+
 ### 38. LIVE CAPABILITY ESCAPE — a `for`-loop-bound TUPLE ELEMENT's index-call (`for x in items { x.0() }`) defeats `deny!()`, on BOTH enforcement modes (assault round 2, historical-regression lens, found 2026-08-07) — NOT FIXED
 
 Repro: `tests/security/attack_r2_tuple_forloop_index_call.kry`. Verified live
