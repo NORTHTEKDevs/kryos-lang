@@ -981,6 +981,31 @@ impl CapabilityChecker {
                 path.push(PathStep::Index);
                 Some((root, path))
             }
+            // `&x` / `*x` name the SAME storage as `x` -- they are transparent
+            // indirections, not new roots -- so they must not interrupt the
+            // path. Omitting them meant `(&holder).f()` / `(*holder).f()` fell
+            // into the `_ => None` arm below and was therefore never gated at
+            // all, while the identical call without the `&`/`*` was (LEDGER
+            // item 37). Nothing else about the access chain changes, so the
+            // path is passed straight through.
+            Expr::Borrow { inner, .. } | Expr::Deref { inner, .. } => {
+                Self::decompose_container_path(inner)
+            }
+            // NOTE (LEDGER items 30/32/33/34/35/36/38): this `None` is
+            // load-bearing and currently WRONG in direction. It conflates two
+            // very different answers -- "this expression provably needs no
+            // authority" and "I cannot tell what this invokes" -- and every
+            // caller reads it as the former. That is the single root behind
+            // the remaining capability escapes: any callee shape not listed
+            // above (a tuple-index call, a pipe, an `if`/`match` receiver, an
+            // accessor-call receiver, an actor message parameter) resolves to
+            // `None` and is silently ungated. Fixing it means returning an
+            // explicit "unresolvable" that callers must treat as requiring
+            // `all`, the same fail-closed stance `CapRow::Unknown` already
+            // takes on the inference side. Do NOT paper over individual shapes
+            // here without flipping that direction -- the last several rounds
+            // did exactly that and each one just moved the escape to the next
+            // syntactic dress.
             _ => None,
         }
     }
