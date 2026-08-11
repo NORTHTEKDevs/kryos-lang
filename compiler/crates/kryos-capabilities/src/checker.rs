@@ -5204,9 +5204,40 @@ impl CapabilityChecker {
                     }
                 }
             }
-            Expr::PipeExpr { left, right, .. } => {
+            Expr::PipeExpr { left, right, span } => {
+                // `a |> f` INVOKES `f` with `a`. This arm used to recurse into
+                // both sides and nothing else, which never treated `right` as a
+                // CALLEE -- so the pipe spelling of a call was not gated at all
+                // while the identical `f(a)` was fully gated (LEDGER item 36:
+                // it defeated `deny!()` under both enforcement modes). Route it
+                // through the same call gate as `Expr::FnCall`, with `left` as
+                // the single argument, so hot-param attribution and the
+                // fail-closed direct-invoke path both see it.
+                // Only the BARE form `a |> f` needs this: there, `right` IS the
+                // function value being invoked and nothing else gated it. The
+                // partial-application forms (`a |> f(b)`, `a |> obj.m(b)`,
+                // `a |> T::m(b)`) are a different shape -- the real callee is
+                // the inner `f`/`m`, which the recursion below already gates by
+                // name. Treating those as a direct fn-value invocation made
+                // `5 |> padd(10)` demand `all` and falsely rejected
+                // conf_functions.kry, so they are deliberately excluded here.
+                if !matches!(
+                    right.as_ref(),
+                    Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. }
+                ) {
+                    self.check_callee_capabilities(
+                        right,
+                        std::slice::from_ref(left.as_ref()),
+                        *span,
+                    );
+                    self.check_escalation(right, *span);
+                }
                 self.check_expr(left);
-                self.check_expr(right);
+                // Same reason as the FnCall arm: a bare-name callee is already
+                // enforced above, and recursing would double-report it.
+                if !matches!(right.as_ref(), Expr::Identifier { .. }) {
+                    self.check_expr(right);
+                }
             }
             Expr::Borrow { inner, .. }
             | Expr::Deref { inner, .. }

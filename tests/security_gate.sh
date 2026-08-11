@@ -645,5 +645,43 @@ else
     tail -5 "$TMP/localres_nc2" | sed 's/^/    /'; fail=1
 fi
 
+# 62-65. LEDGER item 36: the PIPE operator. `a |> f` INVOKES `f`, but the
+#        enforcement walk's PipeExpr arm only recursed into both sides and
+#        never treated `right` as a CALLEE -- so the pipe spelling of a call
+#        was not gated at all while the identical `f(a)` was fully gated. It
+#        defeated `deny!()` under BOTH enforcement modes. The escape and its
+#        control (same program, `reader(0)` instead of `0 |> reader`) must
+#        BOTH be rejected: the control exists to prove the bypass was
+#        specific to the PipeExpr shape, not a property of invoking a bare
+#        fn-typed local, so if it ever starts COMPILING the general
+#        bare-local enforcement has regressed.
+for pshape in attack_deny_pipe_bare_ident_call attack_deny_pipe_bare_ident_call_control; do
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "tests/security/$pshape.kry" >"$TMP/pipe_${pshape}_$mode_flag" 2>&1; then
+            echo "  FAIL: pipe-callee [$pshape] COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/pipe_${pshape}_$mode_flag"; then
+            echo "  ok   pipe-callee [$pshape] rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: pipe-callee rejected but NOT for the capability reason [$pshape, $mode_flag]:"
+            tail -3 "$TMP/pipe_${pshape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 66. No-cascade complement to #62-65: the PARTIAL-APPLICATION pipe forms
+#     (`5 |> padd(10)`, chained `3 |> padd(4) |> padd(100)`) are a DIFFERENT
+#     shape -- the real callee is the inner named fn, already gated by name.
+#     Treating them as a direct fn-value invocation made them demand `all`
+#     and falsely rejected this file, which is how the over-rejection was
+#     caught. It must keep compiling clean.
+if "$K" check tests/conformance/conf_functions.kry >"$TMP/pipe_nocascade" 2>&1; then
+    echo "  ok   partial-application pipes (a |> f(b)) still compile clean (no cascade)"
+else
+    echo "  FAIL: the pipe fix cascaded into partial-application pipes:"
+    tail -5 "$TMP/pipe_nocascade" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
