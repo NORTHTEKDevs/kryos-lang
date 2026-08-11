@@ -84,3 +84,9 @@ scratchpad/
 
 # overstory build artifacts (never commit these)
 .overstory/
+
+# Completion-loop derived state: written ONLY by verify runs, keyed to a commit.
+# Deliberately NOT tracked -- a committed status file is the exact failure mode
+# this system exists to prevent (a claim nobody re-ran). Re-derive with:
+#   bash tools/loop/graph-run.sh status
+tools/loop/STATE.json

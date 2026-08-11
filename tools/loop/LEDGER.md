@@ -763,7 +763,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-10 the true count is **11 escaping, 6 rejected**.
+> 2026-08-11 the true count is **11 escaping, 6 rejected**.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -927,85 +927,6 @@ throughout). Same fix direction as items 30/31: make the `None`-from-
 instead of `empty()`, or extend `decompose_container_path` to recurse
 through `Borrow`/`Deref`/`SharedExpr` (unwrap to the inner path, same as
 `walk_container_calls_expr` already does for its OWN unrelated recursion).
-
----
-
-### 36. LIVE CAPABILITY ESCAPE — the PIPE operator (`a |> f`) bypasses capability enforcement ENTIRELY for the callee, on BOTH backends and BOTH enforcement modes (assault round 5, deny-narrowing lens, found 2026-08-06/07) — NOT FIXED
-
-Repros: `tests/security/attack_deny_pipe_bare_ident_call.kry` (attack) and
-`tests/security/attack_deny_pipe_bare_ident_call_control.kry` (control,
-identical program with `reader(0)` instead of `0 |> reader` — proves the
-gap is specific to pipe syntax, not "invoking a bare fn-typed local inside
-`deny!`" in general, which is already covered and enforced). Verified live
-this session against the existing `compiler/target/release/kryos.exe`, no
-compiler changes:
-
-```
-$ kryos run tests/security/attack_deny_pipe_bare_ident_call.kry
-PIPE-BARE-IDENT-DENY LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-RC=0
-$ kryos check --strict-capabilities tests/security/attack_deny_pipe_bare_ident_call.kry
-RC=0   (zero diagnostics)
-$ kryos build --release tests/security/attack_deny_pipe_bare_ident_call.kry -o /tmp/pipe_attack.exe
-RC=0   (compiles clean)
-$ /tmp/pipe_attack.exe
-PIPE-BARE-IDENT-DENY LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-RC=0   (AOT binary also leaks)
-```
-
-Control, same program with `reader(0)` in place of `0 |> reader`, proving
-`deny!(fs:read)` DOES correctly enforce this exact closure/scope otherwise:
-
-```
-$ kryos run tests/security/attack_deny_pipe_bare_ident_call_control.kry
-error[E0507]: call through a function value requires capabilities [fs:read] not granted to caller
-RC=1
-```
-
-Root cause, confirmed by direct source read: `desugar_pipe`
-(`kryos-mir/src/lower.rs:7174-7196`) rewrites `a |> f` into `Expr::FnCall {
-callee: f, args: [a, ...] }` — but this desugaring is a MIR-LOWERING-time
-transform, which runs strictly AFTER capability checking. `kryos-
-capabilities` never desugars pipe: it walks the raw, still-`Expr::PipeExpr`
-node. Both tree-walkers that matter for enforcement —
-`checker.rs::check_expr` (the real-time enforcement walk, `Expr::PipeExpr`
-arm ~line 4758) and `checker.rs::collect_caps_expr` (the closure-provenance
-inference walk, `Expr::PipeExpr` arm ~line 3981) — have an arm that does
-ONLY `self.check_expr(left); self.check_expr(right);`, i.e. treats `right`
-as an independent VALUE expression exactly like a bare reference. Neither
-walker ever calls `check_callee_capabilities`/`enforce_callee_name` for a
-`PipeExpr` — the ENTIRE call-site enforcement path (the `Expr::FnCall` arm,
-checker.rs:4595-4611, which is what actually charges a callee's capability)
-is never reached for this AST shape. A bare Identifier reference only gets
-a capability charge via `check_builtin_value_ref`, which is keyed to raw
-BUILTIN names (e.g. a bare `file_read` reference) — it does not fire for an
-ordinary local variable bound to a privileged closure, which is exactly
-what `reader` is in the repro. Net effect: `left |> callee` — which MIR
-lowering turns into, and the runtime executes as, a real call to `callee`
-— receives ZERO capability enforcement at check time, `deny!` active or
-not, in either enforcement mode, on either backend.
-
-This is a DIFFERENT dispatch-routing gap from item 32 (tuple-index call):
-item 32's `pair.1()` still reaches `check_callee_capabilities` and falls
-through a segment-count gate inside it; a `PipeExpr`-shaped call never
-reaches `check_callee_capabilities`/`check_expr`'s `FnCall` arm AT ALL —
-one level further outside the enforcement path than item 32, and (like
-item 32) outside `resolve_closure_caps`/`resolve_container_path_caps`
-entirely, so their exhaustive no-wildcard `Expr` match buys nothing here
-either (that match is only ever consulted from within functions this call
-shape never reaches).
-
-Not chased further (no compiler changes this session, per task
-instructions — shared workspace, existing binary used read-only
-throughout). Suggested fix: give `check_expr` and `collect_caps_expr` a
-real `Expr::PipeExpr` arm that desugars identically to
-`kryos-mir::desugar_pipe` (recognize whether `right` is itself an
-`Expr::FnCall`/`MethodCall`/`StaticMethodCall` and prepend `left` to its
-args, vs. treating `right` as `callee` with `args: [left]` otherwise) and
-routes the result through the SAME `check_callee_capabilities`/
-`enforce_callee_name` call the `Expr::FnCall` arm uses — rather than
-reimplementing enforcement logic a second time, extract a shared helper
-both arms call so the two can never re-diverge.
 
 ---
 
@@ -3038,6 +2959,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **item 36: LIVE CAPABILITY ESCAPE -- the PIPE operator (`a |> f`) bypassed capability enforcement entirely for the callee, on BOTH modes -- FIXED** | Fixed in `649d5e3` (2026-08-11). `check_expr`'s `PipeExpr` arm recursed into `left` and `right` and nothing else, so `right` was never treated as a CALLEE -- the pipe spelling of a call was ungated while the identical `f(a)` was fully gated. Now routed through `check_callee_capabilities` with `left` as the single argument, so hot-param attribution and the fail-closed direct-invoke path both see it. SCOPED DELIBERATELY to the BARE form: the partial-application forms (`a |> f(b)`, `a |> obj.m(b)`, `a |> T::m(b)`) are a different shape whose real callee is the inner named fn, already gated by name. The first version did NOT exclude them, which made `5 |> padd(10)` demand `all` and falsely rejected `conf_functions.kry` -- **caught by the `ir_signatures` gate going RED, not by reasoning**, which is the whole reason that gate exists and is the trap waiting for the full fail-closed flip: 'cannot resolve' and 'different shape entirely' are not the same thing. Measured 12 escaping -> 11 with `tools/loop/escape_status.sh`. Pinned by `security_gate.sh` checks 62-65 (escape AND its control rejected under both modes) plus check 66 (partial-application pipes still compile clean). Gates: security_gate PASS, ir_signatures PASS (62 files), gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **item 16: uncaught `throw` in a `spawn` task skipped the rest of the task (incl. a paired `wg_done`), hanging every `wg_wait()` forever -- FIXED** | Fixed and pushed in `d71ac33` (2026-08-09). An uncaught `throw` reaching the end of a spawned task's entry function now terminates the WHOLE PROCESS (exit 101, the contract an uncaught main-thread throw already had), reported to stderr first, instead of silently killing just that thread and stranding every consumer blocked on a signal the task will now never send. `kryos_exception_report_thread_fatal_if_pending` (kryos-rt/src/exception.rs), called by `kryos_spawn` (kryos-rt/src/spawn.rs). Evidence re-run fresh before commit: the repro exits 101 with its message (was a 124 timeout); `tests/concurrency_smoke.sh` PASS including a new `fails_fast` check; gates 2 tier1 (62/62 + 13 checks) and tier2 GREEN; security_gate PASS. This entry sat in OPEN for days after the fix existed in the working tree -- see the item 39 note on orphaned WIP. |
 | **item 10: LIVE CAPABILITY ESCAPE -- a closure returned by a zero-cap wrapper function defeated `deny!()` on both enforcement modes -- FIXED** | Verified closed by re-running all five committed repros on 2026-08-10 against the current binary: `attack_wrap_closure_actor`, `attack_wrap_closure_generic`, `attack_wrap_closure_impl_method`, `attack_wrap_closure_inference_bypass` and `cap_escape_closure_wraps_closure` are each REJECTED (`kryos check` rc=1) under BOTH the default-inferred mode and `--strict-capabilities`. Closed by the fn-value/container capability-laundering work (`a262d88` .. `e94a697`). NOTE: this item was still sitting in OPEN, and the README still named it the single highest-priority open escape, days after it was actually fixed -- while twelve OTHER escapes were open and unmentioned. The ledger's OPEN section is only worth what its last re-run says; re-run the repros before quoting it. |
 | **item 11(a): a mutating closure reaching itself through its own stored value self-deadlocked on the item-7b serialization lock -- FIXED** | Fixed and pushed in `d71ac33` (2026-08-09). The item-7b lock is a plain non-reentrant CAS spinlock with no owner tracking, and it wraps ANY closure with a mutated capture (not only spawn-shared ones), so a closure that reached itself -- e.g. through a map or struct field it also reads -- spun forever against a lock its own thread held, with zero threads involved. Now detected and reported as a clean `kryos panic: reentrant call into a mutating shared closure` (exit 98). Making the lock silently reentrant was TRIED AND REJECTED with a measurement, not an argument: the boxed capture is written back only just before its call returns, so a reentrant nested call reads the stale pre-mutation value -- `f(3)` printed 1, not 3. A silent wrong answer is worse than the hang it would replace. New `kryos_closure_lock_acquire`/`_release` (kryos-stdlib-native/src/sync_prims.rs), used only by the codegen-inserted lock on both backends; `std::sync::Mutex` keeps its normal non-reentrant contract. Regression: `tests/concurrency_smoke.sh`. |
