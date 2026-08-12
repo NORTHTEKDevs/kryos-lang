@@ -763,7 +763,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-12 the true count is **3 escaping, 14 rejected**.
+> 2026-08-12 the true count is **2 escaping, 15 rejected**.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -839,153 +839,6 @@ cased exemption for actor handlers appears to be simply wrong given the
 parser's actual behavior, not a deliberate design choice with a caveat;
 verify against `parse_actor_decl` directly (already done, cited above)
 before changing, and re-run `security_gate.sh` plus this repro both ways.
-
----
-
-### 35. LIVE CAPABILITY ESCAPE — a hot fn-typed parameter at index 0 of a STATIC method (`Type::method(f)`, no `self`) is silently dropped by the same `has_self_offset` mechanism that item 33 found wrongly FALSE for actor handlers — here it is wrongly TRUE, on BOTH enforcement modes (infer-wrong lens, found 2026-08-06) — NOT FIXED
-
-Repro: `tests/security/attack_static_method_hotparam_offset.kry`. Verified
-live this session against the existing `compiler/target/release/
-kryos.exe`, no compiler changes:
-
-```
-$ kryos check tests/security/attack_static_method_hotparam_offset.kry
-$ echo $?
-0
-$ kryos run tests/security/attack_static_method_hotparam_offset.kry
-STATIC-METHOD OFFSET LEAK: TOPSECRET-STATIC-OFFSET-7a6b5c
-$ echo $?
-0
-$ kryos check --strict-capabilities tests/security/attack_static_method_hotparam_offset.kry
-$ echo $?
-0
-```
-
-Shape: `impl Invoker { fn run(f: fn()->str) -> str { return f() } }` (a
-STATIC method — no `self` parameter), called as `Invoker::run(reader)`
-inside `deny!(fs:read)` in `main`.
-
-Root cause, confirmed by direct source read: `accumulate_hot_extra_caps`
-(checker.rs ~2864-2891) computes `has_self_offset = is_method_or_static &&
-!actor_handler_names.contains(callee_name)`, and its TWO call sites
-(`Expr::MethodCall`, checker.rs ~3889, and `Expr::StaticMethodCall`,
-checker.rs ~3919) both pass a literal `true` for `is_method_or_static` —
-there is no branch distinguishing a real receiver-bearing method call from
-a static one. `compute_hot_params`'s Seed A indexes a static method's own
-`params.iter().enumerate()` with NO offset at declaration time (correct —
-`kryos-parser/src/parser.rs` ~2586-2599 confirms `Type::method(args)`
-parses as `Expr::StaticMethodCall`, and `parse_param_list()` for a static
-`impl` method never inserts an implicit `self` at `params[0]`), so
-`hot_params["run"] = {0: {[]}}`. But at the CALL site,
-`accumulate_hot_extra_caps` unconditionally computes `arg_idx =
-i.checked_sub(1)` whenever `has_self_offset` is true; for `i == 0` this is
-`None`, and the entry is `continue`d past under the comment "hot index 0
-is `self` for a method — never a caller-supplied arg" — false for a static
-call, where index 0 IS the first real argument. The closure's authority is
-dropped entirely: not charged to `Invoker::run`'s own inferred set, not
-deferred to any caller either (the `FnCall`-shaped deferral machinery never
-engages, since this call is parsed as `StaticMethodCall`, not `FnCall`).
-
-Same root mechanism as item 33 (actor-handler `has_self_offset` wrongly
-FALSE), opposite direction (static-method `has_self_offset` wrongly TRUE) —
-confirms the mechanism needs a real THREE-way classification (bare
-function / receiver-bearing method / static method), not the current
-boolean.
-
-**Positive control, same session**:
-`tests/security/attack_static_method_hotparam_offset_control.kry` — the
-IDENTICAL shape as an INSTANCE method (`inv.run(reader)`, `MethodCall` not
-`StaticMethodCall`) is correctly REJECTED (`E0507: call to \`run\` requires
-capabilities [fs:read] not granted to caller`, exit 1, both `kryos check`
-and `kryos run`) — confirming the static-vs-instance call shape, not
-something generic about a struct-hosted hot fn-typed parameter, is what
-defeats the guard.
-
-Not chased further (no compiler changes this session, per task
-instructions). Suggested fix: give `accumulate_hot_extra_caps` a real
-3-state `ReceiverKind { None, Instance, ActorHandler }` (or pass
-`is_static: bool` separately from `is_method`) instead of collapsing
-method-vs-static into one `is_method_or_static: bool`, so a static call's
-own index-0 argument is never treated as an implicit receiver; re-run
-`security_gate.sh` plus this repro and item 33's both ways before changing.
-
----
-
-### 35. LIVE CAPABILITY ESCAPE — item 30's root cause is NOT specific to accessor-CALL receivers: `decompose_container_path`'s `_ => None` catch-all fails closed to `CapabilitySet::empty()` (not `all`) for ANY non-Identifier/FieldAccess/IndexAccess receiver, and an ordinary `if`/`else` OR `match` conditional expression used directly as a `.field()` call's receiver is just as effective a bypass as an accessor call — no function call, actor, or container/HOF machinery involved at all (assault round 4, strip-the-effect lens, found 2026-08-06) — NOT FIXED
-
-Repros: `tests/security/attack_ifexpr_receiver_field_call.kry` (`if`/`else`
-receiver) and `tests/security/attack_matchexpr_receiver_field_call.kry`
-(`match` receiver). Both verified LIVE against the existing
-`compiler/target/release/kryos.exe`, HEAD `4b2afc4`, no compiler changes:
-
-```
-$ kryos run tests/security/attack_ifexpr_receiver_field_call.kry
-IFEXPR-RECEIVER LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-DONE_RC=0
-$ kryos check --strict-capabilities tests/security/attack_ifexpr_receiver_field_call.kry
-DONE_RC=0   (no diagnostics at all)
-
-$ kryos run tests/security/attack_matchexpr_receiver_field_call.kry
-MATCHEXPR-RECEIVER LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-DONE_RC=0
-$ kryos check --strict-capabilities tests/security/attack_matchexpr_receiver_field_call.kry
-DONE_RC=0   (no diagnostics at all)
-```
-
-**Positive control, same session** (`tests/security/attack_ifexpr_receiver_
-field_call_control.kry`): the identical scenario with a plain direct
-receiver (`a.f()`, no `if`/`match` indirection) inside the same
-`deny!(fs:read)` block is correctly REJECTED under DEFAULT inferred mode
-(no `--strict-capabilities` needed): `error[E0507]: call to \`f\` requires
-capabilities [fs:read] not granted to caller`, `DONE_RC=1` — confirming the
-conditional-expression receiver, not something generic about the struct
-shape or scenario, is what defeats the guard.
-
-Root cause, confirmed by direct source read of `checker.rs`: exactly item
-30's mechanism, generalized. `decompose_container_path` (~line 932) has
-arms only for `Expr::Identifier`, `Expr::FieldAccess`, `Expr::IndexAccess`;
-`_ => None` for every other `Expr` variant. `resolve_method_field_invoke_
-caps` (~line 3241) and `resolve_actor_self_field_invoke_caps` (~line 3320)
-both do `let Some((root, path)) = decompose_container_path(object) else {
-return CapabilitySet::empty() }` — a bare empty set, not `docs/capability-
-soundness.md` invariant 22's mandated `Capability::All` fallback for an
-unresolvable receiver. In the `MethodCall` branch of `check_expr` (~line
-4636), `extra` is built by unioning `compute_hot_extra_caps(method, ...)`
-(empty — `f` is a struct field name, not a tracked hot parameter/function)
-with the two resolvers above (also empty, decompose failed) and passed to
-`enforce_callee_name("f", ..., &extra)`; since `f` is not in
-`fn_capabilities` either (it is a field, not a declared function), the
-union is empty and the call passes with **zero enforcement of any kind** —
-not even a diagnostic under `--strict-capabilities`.
-
-Item 30's own writeup already names an `IfExpr`/`MatchExpr`-style catch-all
-gap in its "suggested direction" section as a hypothetical generalization,
-but its OWN executed repros only covered a call-expression (`FnCall`)
-receiver. This item is the first LIVE, EXECUTED confirmation that the same
-`_ => None` catch-all is reachable through the language's two ordinary
-conditional-VALUE forms (`if`/`else` used as an expression, `match` used as
-an expression — both are everyday Kryos idioms per gotcha #3, not exotic
-constructs), independent of item 30's accessor-function angle. Any future
-`Expr` variant reaching a `.field()` receiver position through this same
-catch-all (a parenthesized `Block` value, a `ComptimeBlock`, a `Borrow`/
-`Deref`/`SharedExpr`-wrapped otherwise-decomposable path, `Await`, ...) is
-presumptively exploitable the same way and was NOT individually tested this
-round (scope: two concrete repros proving the class, not an exhaustive
-sweep of every remaining `Expr` variant).
-
-Not chased further (no compiler changes this round, per task instructions).
-The fix is the SAME one item 30 already proposes and is not duplicated
-here: make the `None`-from-`decompose_container_path` case in both
-resolvers return `all()` instead of `empty()` (matching every other
-unresolvable-provenance shape in this file), OR extend
-`decompose_container_path` itself to recurse into `IfExpr`/`MatchExpr`
-(unioning both/all branches' resolved paths, same index-insensitive
-philosophy `PathStep::Index` already uses for array/map literals) for a
-precise, non-over-rejecting fix. Fixing item 30's `FnCall` case alone,
-without addressing the shared `_ => None` catch-all, would NOT close this
-item — confirmed by reading the fix suggested in item 30 against this
-item's control, which exercises the identical code path via a different
-`Expr` variant.
 
 ---
 
@@ -2640,6 +2493,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **item 35: LIVE CAPABILITY ESCAPE -- a privileged closure passed to a STATIC impl method (`Invoker::run(reader)`) cost zero -- FIXED** | Closed in `c29b15b` (2026-08-12). Impl method bodies were checked with NO capability-accumulator frame at all, unlike plain functions and actor handlers which both push one -- so an impl method's `own_cap_var` was never bound, stayed permanently unresolved, and every call site resolved it to nothing. MEASURED: `main` accumulated `{?C2}` and there was NO row line for the method at all, because nothing ever computed one. Both impl-method body paths now push a frame; the signature-bearing path binds the result to `sig.own_cap_var`, the fallback path gets a frame purely so the body's authority cannot leak into an unrelated enclosing accumulator. ALSO fixed the same silent ordering bug the instance-dispatch site had: the static path charged the callee's row BEFORE unifying arguments, so a row-polymorphic static method resolved a still-open row and charged nothing. Escapes 3 -> 2. Gates: security_gate PASS (84 checks; 83-84 pin the shape both modes), ir_signatures PASS, gates 2 tier1 62/62 + tier2 GREEN. |
 | **item 34: LIVE CAPABILITY ESCAPE -- a two-hop `let` alias of an actor's fn-bearing state field defeated `deny!()` -- FIXED** | Closed in `848a9d4` (2026-08-12). The method-call site that resolves impl methods AND actor handlers (both go through `lookup_method`) computed a `cap_var_map` and then bound it to `_` and discarded it -- it never charged the callee's own row. MEASURED: an actor handler whose body calls `file_read` accumulated `{fs:read}` correctly while the `main` invoking it accumulated `{}`, so ANY authority behind a handler call was invisible to enforcement regardless of what the handler did -- a whole dispatch surface, not an edge case. **ORDER MATTERS AND GETTING IT WRONG IS SILENT**: the first version charged the row right after `instantiate_sig`, BEFORE argument unification. A handler that is row-polymorphic in a fn-typed param (`fn receive(self, f: fn() -> str)`) has a row mentioning that param's own var, and that var only binds when the argument is unified against the param -- charging first resolves a still-open row and charges nothing. Moved after the arg loop. Escapes 4 -> 3. Gates: security_gate PASS (82 checks; 81-82 pin the shape under both modes), ir_signatures PASS, gates 2 tier1+tier2 GREEN. |
 | **items 30 (all four shapes) + 37: LIVE CAPABILITY ESCAPES via accessor-call / if-expr / match-expr receivers and a `&`/`*` indirection -- FIXED BY STAGE 2** | Closed in `0a5dbbd` (2026-08-12) by capability-ROW enforcement in `kryos-types/src/check.rs`, NOT by the shape matcher. Stage 1 (`891c406`) already computed a correct row for every fn value and then threw it away -- `dump_fn_effects_report` has no caller anywhere in the tree, and `Stmt::DenyBlock` was treated by the type checker as an ordinary scoped block. A deny! block now pushes its own row accumulator and checks the result against its denied set, lattice-aware via `Capability::satisfies_required` (a raw `CapBits` test would let coarse `io` slip past denied `fs:read` -- that method's own doc warns about it). WHY IT WORKS WHERE SHAPE MATCHING COULD NOT: the row is charged from the CALLEE'S OWN TYPE at every call site, so an accessor-call receiver, an if/match receiver, a `&`/`*` indirection and a struct field are all charged identically to a direct call -- there is no expression shape to enumerate and therefore none to miss. MEASURED FIRST: a row probe showed 5 of the 9 open escapes already had `main` accumulating `{fs:read}` while the shape matcher let them through, and those are exactly the 5 that closed. **Item 37 had survived THREE mechanical fix attempts** (Borrow/Deref passthrough, TupleLiteral in literal_field_exists, param type seeding) and fell out of this for free. NO `all` CASCADE: conf_stdlib_wave14 passes, std::http and std::agent untouched, no dispatcher needs `all` -- a handler param's row stays an OPEN VARIABLE that binds per call site, which is the whole reason rows were the right answer. Escapes 9 -> 4. Gates: security_gate PASS (80 checks; 71-80 pin all five shapes under both modes), ir_signatures PASS 62 files, gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **items 32 + 38: LIVE CAPABILITY ESCAPE -- a field chain into a local, invoked as a callee (`pair.1()`, for-bound `x.0()`), was never capability-checked under either mode -- FIXED (direct forms)** | Fixed in `74b829e` (2026-08-11), fail-open SITE 1 of the 4 mapped in `tools/loop/ESCAPE-ROUTING.md`. The fail-closed direct-invoke path already existed; it was gated on `segments.len() <= 1`, whose comment asserted a multi-segment path is "always a qualified stdlib call". False for a field chain into a local: `pair.1` resolves to `["pair","1"]`, so the whole path was skipped. Now keyed on the ROOT (a local/param = a first-class value being invoked) instead of the segment count, which widens enforcement by exactly the value-chain case. MEASURED first, not assumed: both items traced to `callee=FieldAccess, named=false, seglen=2 -> failclosed_entered=false` under `KRYOS_CAP_TRACE=1`. Escapes 11 -> 9. NOTE the ACTOR-STATE tuple form (`attack_verify_tuple_in_state`) still escapes and is tracked under item 32's remaining entry -- the routing table assigns it to site 3 (`has_lit=false` non-literal fallback), a different line. Over-rejection: ir_signatures PASS 62 files, strict_caps PASS, examples PASS, gates 2 tier1 62/62 + tier2 GREEN; pinned by security_gate checks 67-70. |
