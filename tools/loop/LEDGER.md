@@ -763,7 +763,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-12 the true count is **4 escaping, 13 rejected**.
+> 2026-08-12 the true count is **3 escaping, 14 rejected**.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -839,46 +839,6 @@ cased exemption for actor handlers appears to be simply wrong given the
 parser's actual behavior, not a deliberate design choice with a caveat;
 verify against `parse_actor_decl` directly (already done, cited above)
 before changing, and re-run `security_gate.sh` plus this repro both ways.
-
----
-
-### 34. LIVE CAPABILITY ESCAPE — a `let`-alias of a `let`-alias (two local hops) of an actor-state fn-bearing field defeats `deny!()`, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED, disclosed residual of item 18/24's one-hop fix
-
-Repro: `tests/security/attack_verify_double_alias.kry`. Verified live this
-session against the existing `compiler/target/release/kryos.exe`, no
-compiler changes:
-
-```
-$ kryos run tests/security/attack_verify_double_alias.kry
-DOUBLE-ALIAS LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-$ echo $?
-0
-```
-
-Shape: `let x = self.b; let y = x; y.f()` inside `deny!(fs:read)`, `b` a
-struct field holding a privileged closure. The ONE-hop case (`let x =
-self.b; x.f()`) is already fixed and gated in `security_gate.sh` — this is
-the two-hop case, previously disclosed as an untested residual by the
-wave that closed the one-hop shape, now independently reproduced live.
-
-Root cause, confirmed by direct source read: `build_actor_state_alias_
-locals` only records a `let name = self.<path>` binding whose RHS root is
-LITERALLY the `self` identifier. `let y = x` has RHS root `x` (an ordinary
-local), which is never recorded, so `resolve_actor_self_field_invoke_caps`
-falls through to `CapabilitySet::empty()` for `y.f()` instead of tracing
-`y` back to `x` back to `self.b`.
-
-Not chased further (no compiler changes this session, per task
-instructions). Suggested fix: `build_actor_state_alias_locals` needs to
-resolve its RHS root TRANSITIVELY through the SAME locals map it is
-building (a fixed-point pass over the block, or a first pass collecting
-all `let name = <ident>` aliases before resolving self-paths) instead of
-requiring the RHS to be `self` literally — this is the general form of the
-bug LEDGER item 30 also exhibits in miniature (an indirection one hop past
-what the resolver's syntactic pattern anticipates defeats it); an N-hop
-alias chain of any length should be expected to keep failing until the
-resolution is made recursive/fixed-point rather than pattern-matched to a
-fixed hop count.
 
 ---
 
@@ -2680,6 +2640,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **item 34: LIVE CAPABILITY ESCAPE -- a two-hop `let` alias of an actor's fn-bearing state field defeated `deny!()` -- FIXED** | Closed in `848a9d4` (2026-08-12). The method-call site that resolves impl methods AND actor handlers (both go through `lookup_method`) computed a `cap_var_map` and then bound it to `_` and discarded it -- it never charged the callee's own row. MEASURED: an actor handler whose body calls `file_read` accumulated `{fs:read}` correctly while the `main` invoking it accumulated `{}`, so ANY authority behind a handler call was invisible to enforcement regardless of what the handler did -- a whole dispatch surface, not an edge case. **ORDER MATTERS AND GETTING IT WRONG IS SILENT**: the first version charged the row right after `instantiate_sig`, BEFORE argument unification. A handler that is row-polymorphic in a fn-typed param (`fn receive(self, f: fn() -> str)`) has a row mentioning that param's own var, and that var only binds when the argument is unified against the param -- charging first resolves a still-open row and charges nothing. Moved after the arg loop. Escapes 4 -> 3. Gates: security_gate PASS (82 checks; 81-82 pin the shape under both modes), ir_signatures PASS, gates 2 tier1+tier2 GREEN. |
 | **items 30 (all four shapes) + 37: LIVE CAPABILITY ESCAPES via accessor-call / if-expr / match-expr receivers and a `&`/`*` indirection -- FIXED BY STAGE 2** | Closed in `0a5dbbd` (2026-08-12) by capability-ROW enforcement in `kryos-types/src/check.rs`, NOT by the shape matcher. Stage 1 (`891c406`) already computed a correct row for every fn value and then threw it away -- `dump_fn_effects_report` has no caller anywhere in the tree, and `Stmt::DenyBlock` was treated by the type checker as an ordinary scoped block. A deny! block now pushes its own row accumulator and checks the result against its denied set, lattice-aware via `Capability::satisfies_required` (a raw `CapBits` test would let coarse `io` slip past denied `fs:read` -- that method's own doc warns about it). WHY IT WORKS WHERE SHAPE MATCHING COULD NOT: the row is charged from the CALLEE'S OWN TYPE at every call site, so an accessor-call receiver, an if/match receiver, a `&`/`*` indirection and a struct field are all charged identically to a direct call -- there is no expression shape to enumerate and therefore none to miss. MEASURED FIRST: a row probe showed 5 of the 9 open escapes already had `main` accumulating `{fs:read}` while the shape matcher let them through, and those are exactly the 5 that closed. **Item 37 had survived THREE mechanical fix attempts** (Borrow/Deref passthrough, TupleLiteral in literal_field_exists, param type seeding) and fell out of this for free. NO `all` CASCADE: conf_stdlib_wave14 passes, std::http and std::agent untouched, no dispatcher needs `all` -- a handler param's row stays an OPEN VARIABLE that binds per call site, which is the whole reason rows were the right answer. Escapes 9 -> 4. Gates: security_gate PASS (80 checks; 71-80 pin all five shapes under both modes), ir_signatures PASS 62 files, gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **items 32 + 38: LIVE CAPABILITY ESCAPE -- a field chain into a local, invoked as a callee (`pair.1()`, for-bound `x.0()`), was never capability-checked under either mode -- FIXED (direct forms)** | Fixed in `74b829e` (2026-08-11), fail-open SITE 1 of the 4 mapped in `tools/loop/ESCAPE-ROUTING.md`. The fail-closed direct-invoke path already existed; it was gated on `segments.len() <= 1`, whose comment asserted a multi-segment path is "always a qualified stdlib call". False for a field chain into a local: `pair.1` resolves to `["pair","1"]`, so the whole path was skipped. Now keyed on the ROOT (a local/param = a first-class value being invoked) instead of the segment count, which widens enforcement by exactly the value-chain case. MEASURED first, not assumed: both items traced to `callee=FieldAccess, named=false, seglen=2 -> failclosed_entered=false` under `KRYOS_CAP_TRACE=1`. Escapes 11 -> 9. NOTE the ACTOR-STATE tuple form (`attack_verify_tuple_in_state`) still escapes and is tracked under item 32's remaining entry -- the routing table assigns it to site 3 (`has_lit=false` non-literal fallback), a different line. Over-rejection: ir_signatures PASS 62 files, strict_caps PASS, examples PASS, gates 2 tier1 62/62 + tier2 GREEN; pinned by security_gate checks 67-70. |
 | **item 36: LIVE CAPABILITY ESCAPE -- the PIPE operator (`a |> f`) bypassed capability enforcement entirely for the callee, on BOTH modes -- FIXED** | Fixed in `649d5e3` (2026-08-11). `check_expr`'s `PipeExpr` arm recursed into `left` and `right` and nothing else, so `right` was never treated as a CALLEE -- the pipe spelling of a call was ungated while the identical `f(a)` was fully gated. Now routed through `check_callee_capabilities` with `left` as the single argument, so hot-param attribution and the fail-closed direct-invoke path both see it. SCOPED DELIBERATELY to the BARE form: the partial-application forms (`a |> f(b)`, `a |> obj.m(b)`, `a |> T::m(b)`) are a different shape whose real callee is the inner named fn, already gated by name. The first version did NOT exclude them, which made `5 |> padd(10)` demand `all` and falsely rejected `conf_functions.kry` -- **caught by the `ir_signatures` gate going RED, not by reasoning**, which is the whole reason that gate exists and is the trap waiting for the full fail-closed flip: 'cannot resolve' and 'different shape entirely' are not the same thing. Measured 12 escaping -> 11 with `tools/loop/escape_status.sh`. Pinned by `security_gate.sh` checks 62-65 (escape AND its control rejected under both modes) plus check 66 (partial-application pipes still compile clean). Gates: security_gate PASS, ir_signatures PASS (62 files), gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
