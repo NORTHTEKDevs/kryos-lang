@@ -763,7 +763,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-11 the true count is **11 escaping, 6 rejected**.
+> 2026-08-11 the true count is **9 escaping, 8 rejected**.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -798,80 +798,6 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   shape entirely" are not the same thing. `ir_signatures` is the gate that
 >   catches it; `security_gate.sh` check 66 pins it.
 
-
-### 38. LIVE CAPABILITY ESCAPE — a `for`-loop-bound TUPLE ELEMENT's index-call (`for x in items { x.0() }`) defeats `deny!()`, on BOTH enforcement modes (assault round 2, historical-regression lens, found 2026-08-07) — NOT FIXED
-
-Repro: `tests/security/attack_r2_tuple_forloop_index_call.kry`. Verified live
-against the existing `compiler/target/release/kryos.exe`, no compiler changes:
-
-```
-$ kryos run tests/security/attack_r2_tuple_forloop_index_call.kry
-TUPLE-FORLOOP-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-RC=0
-$ kryos check --strict-capabilities tests/security/attack_r2_tuple_forloop_index_call.kry
-RC=0   (no diagnostics at all)
-```
-
-Shape: `let items: [(fn()->str, str)] = [(reader, "tag")]`, then inside
-`deny!(fs:read)`, `for x in items { out = x.0() }` — the loop-bound variable
-`x` (a `Stmt::For` pattern binding, never a `Stmt::Let`) is a TUPLE, and the
-call is a tuple-index call (`x.0()`) on that binding, in one expression, no
-extra `let` anywhere.
-
-Root cause (by combination, not independently re-read this session — matches
-two already-documented mechanisms composing): item 32's tuple-index gap
-(`Tuple.elements[N]` invoked directly is untracked by the closure/hot-param
-resolvers, LEDGER item 32) already establishes that a tuple element's own
-provenance is not traced through index access. Separately, the for-loop-alias
-class (items covering `attack_actor_state_forloop_alias.kry` /
-`attack_plain_forloop_container_alias.kry`, both citing `Stmt::For`'s builder
-arms only recursing INTO the loop body, never recording the loop variable
-itself) already establishes that a for-loop's own bound variable is invisible
-to `build_local_container_lits`/`build_local_closure_caps`/(for actor state)
-`build_actor_state_alias_locals_block`. This repro is the first LIVE
-confirmation that the two compose: even a program that never triggers either
-gap in isolation (a `let`-bound tuple local's `.0()` is item 32's own
-territory; a for-loop-bound STRUCT's `.field()` is the other class's) leaks
-through the combination, and — same as every other item in this class map —
-resolves to a silent EMPTY charge, not the documented `Unknown -> all`
-fallback (invariant 22 violated again, in a new syntax).
-
-Not chased further (no compiler changes this session, per task
-instructions — shared workspace, existing binary used read-only throughout).
-Same fix direction as item 32 combined with the for-loop-alias items: either
-teach `decompose_container_path`/`build_local_container_lits` to record a
-`Stmt::For` pattern binding as a tracked local (closing the general for-loop
-gap once, benefiting every shape in this family including this one), or make
-the tuple-index-call resolver's `None`/unrecognized-root case fail CLOSED
-(`all()`) instead of `empty()`.
-
-**Ruled out, same session, same batch (two fresh probes, both correctly
-REJECTED, not new escapes):**
-- `attack_r2_if_expr_direct_call_receiver.kry` — a bare DIRECT call on an
-  inline if-expression receiver (`(if c { reader } else { decoy })()`, no
-  field/method access) is correctly rejected under both modes (`E0507
-  requires capabilities [all]`, rc=1). This is a different code path from
-  the already-open if/match-as-FIELD-ACCESS-receiver leak
-  (`attack_ifexpr_receiver_field_call.kry` / `attack_matchexpr_receiver_
-  field_call.kry`, item 30's generalization, which DOES leak via
-  `decompose_container_path`'s missing `Expr::If`/`Expr::MatchExpr` arms) —
-  a bare direct call on an unresolvable receiver expression correctly falls
-  through to the generic `resolve_direct_invoke_caps` `Unknown -> all` path
-  instead. Confirms the gap is specific to the field/method resolver, not
-  callee-expression resolution generally. (Nearly identical in shape to the
-  pre-existing, apparently never-executed `attack_round1_conditional_expr_
-  receiver.kry` — this run is also the first live confirmation of THAT
-  file's expected result.)
-- `attack_r2_dynamic_map_insert_read.kry` — a map built empty then
-  populated via `m[computed_key] = reader` inside a `while` loop (function-
-  computed keys, not literals) and read back with a separately-recomputed
-  key (`m[k]()`) inside `deny!()` is correctly rejected, and PRECISELY
-  charged (`E0507 requires capabilities [fs:read]`, not the fail-closed
-  `[all]`), both modes, rc=1. `apply_container_assign`'s map-insert tracking
-  (which already closed the literal-vs-`push`-mutated array case, see the
-  CLOSED `PUSHED-CONTAINER` entry) extends correctly to computed map keys.
-
----
 
 ### 37. LIVE CAPABILITY ESCAPE — a `&`/`*` (Borrow/Deref) receiver indirection on a fn-bearing struct field defeats `deny!()`, on BOTH enforcement modes and BOTH backends (assault round 6, classic-regression lens, found 2026-08-07) — NOT FIXED
 
@@ -927,74 +853,6 @@ throughout). Same fix direction as items 30/31: make the `None`-from-
 instead of `empty()`, or extend `decompose_container_path` to recurse
 through `Borrow`/`Deref`/`SharedExpr` (unwrap to the inner path, same as
 `walk_container_calls_expr` already does for its OWN unrelated recursion).
-
----
-
-### 32. LIVE CAPABILITY ESCAPE, MOST SEVERE OF ALL OPEN ITEMS — a tuple-index call (`pair.1()`) bypasses ALL capability enforcement for ANY fn value stored as a tuple element, anywhere in the language, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
-
-Repros: `tests/security/attack_verify_tuple_call_general.kry` (plain local
-tuple) and `tests/security/attack_verify_tuple_in_state.kry` (tuple stored
-as an actor-state field). Both re-verified live this session against the
-existing `compiler/target/release/kryos.exe`, no compiler changes:
-
-```
-$ kryos run tests/security/attack_verify_tuple_call_general.kry
-GENERAL TUPLE-CALL LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-$ echo $?
-0
-$ kryos check --strict-capabilities tests/security/attack_verify_tuple_call_general.kry
-$ echo $?
-0
-```
-
-Root cause, confirmed by direct source read (not just behavior): `compiler/
-crates/kryos-parser/src/parser.rs` lines 2094-2104. The postfix `.` loop's
-tuple-index branch (triggered when the field token is an integer literal,
-e.g. `.1`) unconditionally builds `Expr::FieldAccess` and `continue`s —
-unlike the NAMED-field branch 30 lines below (line 2136), which explicitly
-checks for a trailing `(` and builds `Expr::MethodCall` when present. So
-`pair.1()` parses as `Expr::FnCall{ callee: FieldAccess(pair, "1"), args:
-[] }`, NEVER `Expr::MethodCall`. Downstream in `checker.rs::
-check_callee_capabilities` (~line 3822 onward), `resolve_path(callee)`
-returns a 2-segment path (`["pair","1"]`, or similar) for this
-`FieldAccess` chain. BOTH enforcement branches are gated on segment count:
-the named-callee branch requires `segments.len() == 1` (false here), and —
-this is the actually dangerous part — the FAIL-CLOSED DIRECT-INVOKE
-DEFAULT (the mechanism `docs/capability-soundness.md` names as the backstop
-for "callee shape `resolve_path` cannot even see") is ALSO gated
-`segments.len() <= 1` (line 3865, and identically at line 4875 in the
-sibling actor-self-field-invoke resolver). A 2-segment path fails BOTH
-gates and receives ZERO enforcement — not even the documented
-`Capability::All` fallback for an unresolvable callee. This is a dispatch-
-routing hole that sits OUTSIDE `resolve_closure_caps`/
-`resolve_container_path_caps` entirely: neither function is ever invoked
-for this shape, so their exhaustive (no-wildcard) `Expr` match — real and
-verified for the shapes that DO reach it — buys nothing here.
-
-Reproduces identically for a tuple actor-state field
-(`self.pair.1()`, `attack_verify_tuple_in_state.kry`) — not actor-specific,
-not container-specific: this is a general parser/checker-integration gap
-for tuple-typed values anywhere a fn value can be an element.
-
-Not chased further (no compiler changes this session, per task
-instructions — shared workspace, existing binary used read-only
-throughout). Suggested fix: make the tuple-index branch (line ~2094)
-mirror the named-field branch's trailing-`(` check and emit
-`Expr::MethodCall` (or a dedicated `Expr::TupleIndexCall`) instead of
-`Expr::FnCall{ callee: FieldAccess }`; independently, `check_callee_
-capabilities`'s fail-closed default at both `segments.len() <= 1` gates
-(line 3865, line 4875) should not exempt a multi-segment `FieldAccess`-only
-path (as opposed to a genuine qualified stdlib call) — the qualified-path
-comment's own reasoning ("an ordinary `obj.field(...)` chain is parsed as
-MethodCall, not multi-segment FieldAccess") is exactly the invariant the
-parser bug above violates, so the two fixes are complementary defense in
-depth, not alternatives.
-
-Ranked above item 30 because it requires no actor, no accessor function,
-and no container/HOF machinery at all — the minimal reproducing program is
-a two-line tuple literal and a call — and because it demonstrates the
-checker's enforcement dispatch itself (not just its closure-provenance
-resolvers) has an un-swept gap.
 
 ---
 
@@ -2959,6 +2817,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **items 32 + 38: LIVE CAPABILITY ESCAPE -- a field chain into a local, invoked as a callee (`pair.1()`, for-bound `x.0()`), was never capability-checked under either mode -- FIXED (direct forms)** | Fixed in `74b829e` (2026-08-11), fail-open SITE 1 of the 4 mapped in `tools/loop/ESCAPE-ROUTING.md`. The fail-closed direct-invoke path already existed; it was gated on `segments.len() <= 1`, whose comment asserted a multi-segment path is "always a qualified stdlib call". False for a field chain into a local: `pair.1` resolves to `["pair","1"]`, so the whole path was skipped. Now keyed on the ROOT (a local/param = a first-class value being invoked) instead of the segment count, which widens enforcement by exactly the value-chain case. MEASURED first, not assumed: both items traced to `callee=FieldAccess, named=false, seglen=2 -> failclosed_entered=false` under `KRYOS_CAP_TRACE=1`. Escapes 11 -> 9. NOTE the ACTOR-STATE tuple form (`attack_verify_tuple_in_state`) still escapes and is tracked under item 32's remaining entry -- the routing table assigns it to site 3 (`has_lit=false` non-literal fallback), a different line. Over-rejection: ir_signatures PASS 62 files, strict_caps PASS, examples PASS, gates 2 tier1 62/62 + tier2 GREEN; pinned by security_gate checks 67-70. |
 | **item 36: LIVE CAPABILITY ESCAPE -- the PIPE operator (`a |> f`) bypassed capability enforcement entirely for the callee, on BOTH modes -- FIXED** | Fixed in `649d5e3` (2026-08-11). `check_expr`'s `PipeExpr` arm recursed into `left` and `right` and nothing else, so `right` was never treated as a CALLEE -- the pipe spelling of a call was ungated while the identical `f(a)` was fully gated. Now routed through `check_callee_capabilities` with `left` as the single argument, so hot-param attribution and the fail-closed direct-invoke path both see it. SCOPED DELIBERATELY to the BARE form: the partial-application forms (`a |> f(b)`, `a |> obj.m(b)`, `a |> T::m(b)`) are a different shape whose real callee is the inner named fn, already gated by name. The first version did NOT exclude them, which made `5 |> padd(10)` demand `all` and falsely rejected `conf_functions.kry` -- **caught by the `ir_signatures` gate going RED, not by reasoning**, which is the whole reason that gate exists and is the trap waiting for the full fail-closed flip: 'cannot resolve' and 'different shape entirely' are not the same thing. Measured 12 escaping -> 11 with `tools/loop/escape_status.sh`. Pinned by `security_gate.sh` checks 62-65 (escape AND its control rejected under both modes) plus check 66 (partial-application pipes still compile clean). Gates: security_gate PASS, ir_signatures PASS (62 files), gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **item 16: uncaught `throw` in a `spawn` task skipped the rest of the task (incl. a paired `wg_done`), hanging every `wg_wait()` forever -- FIXED** | Fixed and pushed in `d71ac33` (2026-08-09). An uncaught `throw` reaching the end of a spawned task's entry function now terminates the WHOLE PROCESS (exit 101, the contract an uncaught main-thread throw already had), reported to stderr first, instead of silently killing just that thread and stranding every consumer blocked on a signal the task will now never send. `kryos_exception_report_thread_fatal_if_pending` (kryos-rt/src/exception.rs), called by `kryos_spawn` (kryos-rt/src/spawn.rs). Evidence re-run fresh before commit: the repro exits 101 with its message (was a 124 timeout); `tests/concurrency_smoke.sh` PASS including a new `fails_fast` check; gates 2 tier1 (62/62 + 13 checks) and tier2 GREEN; security_gate PASS. This entry sat in OPEN for days after the fix existed in the working tree -- see the item 39 note on orphaned WIP. |
 | **item 10: LIVE CAPABILITY ESCAPE -- a closure returned by a zero-cap wrapper function defeated `deny!()` on both enforcement modes -- FIXED** | Verified closed by re-running all five committed repros on 2026-08-10 against the current binary: `attack_wrap_closure_actor`, `attack_wrap_closure_generic`, `attack_wrap_closure_impl_method`, `attack_wrap_closure_inference_bypass` and `cap_escape_closure_wraps_closure` are each REJECTED (`kryos check` rc=1) under BOTH the default-inferred mode and `--strict-capabilities`. Closed by the fn-value/container capability-laundering work (`a262d88` .. `e94a697`). NOTE: this item was still sitting in OPEN, and the README still named it the single highest-priority open escape, days after it was actually fixed -- while twelve OTHER escapes were open and unmentioned. The ledger's OPEN section is only worth what its last re-run says; re-run the repros before quoting it. |
