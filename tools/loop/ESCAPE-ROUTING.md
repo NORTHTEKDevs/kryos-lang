@@ -74,3 +74,27 @@ the decomposer more shapes.
 *resolvable but different* must not be swept in. `ir_signatures` is the canary
 (it caught `5 |> padd(10)` demanding `all`), and `strict_caps` + `examples` cover
 the 91-example surface.
+
+## Site 3 — attempt log (item 37), so the next attempt does not repeat it
+
+Site 3's Case 2 in `resolve_method_field_invoke_caps` ALREADY fails closed
+correctly: if `local_container_types.get(root)` yields a type and
+`resolve_type_path(ty, path + method)` is a `TypeExpr::Function`, it returns `all`.
+The gap is that the root has no type entry. Two halves were tried:
+
+| attempt | rationale | result |
+| --- | --- | --- |
+| `Borrow`/`Deref` passthrough in `decompose_container_path` (shipped in `183087c`) | `(*b).f()` returned `None` and early-returned before Case 2 | necessary, **not sufficient** |
+| seed function PARAMS into `current_local_container_types` | item 37's root `b` is a param, so Case 2 had no type to consult | **still escapes with both applied** |
+
+So decomposition reaching Case 2 and a param type entry are BOTH present and item 37
+is still ungated. The remaining blocker is inside Case 2 itself — either
+`resolve_type_path` does not walk the param's declared type to the fn-typed field,
+or the param's `ty` is not the shape Case 2 expects. **Measure that specific call
+before editing again**: probe `resolve_type_path`'s input and return in Case 2 for
+`root=b method=f`. Do not attempt a third blind fix on this shape; three have now
+failed (Borrow/Deref alone, TupleLiteral, param seeding).
+
+The param-seeding change was REVERTED rather than shipped: it is plausibly correct
+but changes capability behaviour, and an unproven behavioural change to the security
+checker is not worth carrying on the branch.
