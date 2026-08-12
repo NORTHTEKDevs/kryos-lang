@@ -98,3 +98,38 @@ failed (Borrow/Deref alone, TupleLiteral, param seeding).
 The param-seeding change was REVERTED rather than shipped: it is plausibly correct
 but changes capability behaviour, and an unproven behavioural change to the security
 checker is not worth carrying on the branch.
+
+## Item 37 SOLVED, and what it costs (measured 2026-08-11)
+
+The probe recommended above was run and answered it immediately. `resolve_type_path`
+received `Reference { inner: Simple("Box") }` -- the param is declared `b: &Box` --
+and returned `None`, because it has a transparent-unwrap arm for `Optional` but
+**none for `Reference`**. Case 2 therefore never saw the fn-typed field.
+
+Two changes close item 37 (verified: repro goes rc=0 -> rc=1):
+
+1. a `Reference` unwrap arm in `resolve_type_path_inner`, next to the existing
+   `Optional` one -- `&T` has exactly `T`'s fields; this is the type-side mirror of
+   the `Borrow`/`Deref` passthrough already in `decompose_container_path`;
+2. seeding function PARAMS into `current_local_container_types`, excluding directly
+   fn-typed params (a `handler: fn(Request) -> Response` is the fn-value itself, not
+   a container; its authority is already tracked by `own_params` /
+   `DependsOnParam`, and seeding it made every call to such a param demand `all`).
+
+**BUT the change is NOT shipped, because it surfaced a real design cost, not a bug.**
+With `Reference` unwrapping correctly, `conf_stdlib_wave14` fails: the stdlib's own
+HTTP router does `resp = route.handler(req)` (`compiler/stdlib/http.kry:682`) --
+invoking a closure stored in a struct field, read out of an array. Under fail-closed
+semantics that provenance genuinely IS untraceable, so requiring `all` is the
+CORRECT answer, not a false positive.
+
+So the fail-closed flip has a price, and this is it: **a dispatcher that invokes
+user-supplied handlers must either declare `@capabilities(all)` or the language needs
+a way to express "this call's authority flows from the handler argument".** That is a
+language-design decision (and the honest reading is that a router really does carry
+whatever authority its handlers carry), not something to settle by patching the
+checker. It applies to every remaining site, so decide it BEFORE flipping sites 2-4.
+
+The change was reverted to keep the branch at a proven-green state. Re-apply with:
+`resolve_type_path_inner` + `Reference` arm, and param seeding with the
+`TypeExpr::Function` exclusion.
