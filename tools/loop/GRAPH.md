@@ -39,8 +39,13 @@ deps: -
 why: Two fixes on 2026-08-10 (Borrow/Deref passthrough, TupleLiteral in literal_field_exists) were reasoned, plausible, and did not close their targets, because nobody first measured where those calls actually route. Instrument before editing.
 accept: test -f tools/loop/ESCAPE-ROUTING.md && bash tools/loop/check-routing-complete.sh
 
-### escape-root
+### stage2-rows
 deps: escape-instrument
+why: The remaining escapes cannot be closed by the shape-matcher (four failed attempts, logged in ESCAPE-ROUTING.md) and must not be closed by annotating dispatchers `all` (measured 2026-08-12: `all` cascades to every consumer of std::http/std::agent, nullifying the capability system for its flagship use case). Type-directed row enforcement is the answer and stage 1 already exists. Plan: tools/loop/STAGE2-PLAN.md.
+accept: bash tools/loop/escape_status.sh | grep -q "STILL ESCAPING: 0" && bash tests/ir_signature_gate.sh >/dev/null && "$PWD/compiler/target/release/kryos.exe" check tests/conformance/conf_stdlib_wave14.kry >/dev/null
+
+### escape-root
+deps: stage2-rows
 why: The remaining escapes are one root in many syntactic dresses -- enforcement resolves a callee by pattern-matching expression SHAPE, and every unmatched shape falls into a fail-OPEN default. Adding shapes one at a time has not converged across three rounds.
 accept: bash tools/loop/escape_status.sh | grep -q "STILL ESCAPING: 0" && bash tests/security_gate.sh >/dev/null && bash tests/ir_signature_gate.sh >/dev/null
 
@@ -60,6 +65,6 @@ why: Published numbers must describe the compiler that actually ships, measured 
 accept: bash tools/loop/check-bench-current.sh
 
 ### release-ready
-deps: docs-truth, escape-instrument, escape-root, threat-model, gates-full, bench
+deps: docs-truth, escape-instrument, stage2-rows, escape-root, threat-model, gates-full, bench
 why: The terminating condition. Every node green in one pass at one commit is a state that can be entered, observed and defended -- unlike "no more bugs findable".
 accept: bash tools/loop/graph-run.sh verify-all --except release-ready
