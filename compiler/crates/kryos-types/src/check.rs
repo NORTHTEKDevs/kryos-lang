@@ -3110,9 +3110,57 @@ impl TypeChecker {
             Stmt::Break { .. } | Stmt::Continue { .. } | Stmt::Select { .. } => {}
             // deny!(...) { body } is a compile-time capability-narrowing wrapper;
             // for type-checking it is just a scoped block of statements.
-            Stmt::DenyBlock { body, .. } => {
+            Stmt::DenyBlock { denied, body, span } => {
+                // STAGE 2 ENFORCEMENT. `deny!(fs:read) { .. }` narrows authority
+                // for its body, and until now the type checker treated it as an
+                // ordinary scoped block -- rows were INFERRED for the body and
+                // then thrown away, because stage 1 computed and reported but
+                // never emitted a diagnostic (`dump_fn_effects_report` has no
+                // caller anywhere in the tree).
+                //
+                // Checking it HERE, on the accumulated row, is what the
+                // shape-directed checker in `kryos-capabilities` could never do:
+                // the row is charged from the CALLEE'S OWN TYPE at every call
+                // site, so a callee reached through a tuple element, an
+                // accessor-call receiver, an `if`/`match` receiver, a `&`/`*`
+                // indirection or a struct field is charged identically to a
+                // direct call. There is no expression shape to enumerate and
+                // therefore no shape to miss.
                 self.env.push_scope();
+                self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
+                let body_caps = self
+                    .cap_accum_stack
+                    .pop()
+                    .unwrap_or_else(crate::ty::CapRow::empty);
+                let resolved = self.engine.resolve_cap_row(&body_caps);
+
+                // Lattice-aware, per `CapBits::contains_bits`' own warning: a
+                // raw bit test would let a declared coarse `io` slip past a
+                // denied `fs:read`. Route both sides through `Capability`.
+                let mut used = kryos_capabilities::model::CapabilitySet::empty();
+                for name in resolved.concrete_bits().names() {
+                    if let Some(c) = kryos_capabilities::model::Capability::from_str(name) {
+                        used.insert(c);
+                    }
+                }
+                for d in denied {
+                    let Some(dcap) = kryos_capabilities::model::Capability::from_str(d) else {
+                        continue;
+                    };
+                    if used.satisfies_required(&dcap) {
+                        self.error(
+                            format!(
+                                "capability `{d}` is denied in this block, but the block uses it"
+                            ),
+                            *span,
+                        );
+                    }
+                }
+
+                // The body's authority still HAPPENED -- propagate it outward so
+                // an enclosing function's own row stays honest.
+                self.accumulate_caps(&body_caps);
                 self.env.pop_scope();
             }
         }

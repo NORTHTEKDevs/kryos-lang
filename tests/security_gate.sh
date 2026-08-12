@@ -705,5 +705,25 @@ for tshape in attack_verify_tuple_call_general attack_r2_tuple_forloop_index_cal
     done
 done
 
+# 71-80. STAGE 2 (capability-row enforcement, kryos-types/check.rs). A deny!
+#        block's accumulated capability ROW is now checked against its denied
+#        set. The row is charged from the CALLEE'S OWN TYPE at every call
+#        site, so a callee reached through an accessor-call receiver, an
+#        if/match receiver, a &/* indirection or a struct field is charged
+#        identically to a direct call -- there is no expression shape to
+#        enumerate and therefore none to miss. These five shapes defeated the
+#        shape-directed checker in kryos-capabilities for weeks; item 37 in
+#        particular survived three separate mechanical fix attempts.
+for rshape in attack_container_via_accessor_fn_call               attack_container_via_accessor_method_call               attack_ifexpr_receiver_field_call               attack_matchexpr_receiver_field_call               attack_deref_borrow_param_defeats_field_resolver; do
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "tests/security/$rshape.kry" >"$TMP/row_${rshape}_$mode_flag" 2>&1; then
+            echo "  FAIL: row-enforced escape [$rshape] COMPILED [$mode_flag]"
+            fail=1
+        else
+            echo "  ok   row-enforced escape [$rshape] rejected [$mode_flag]"
+        fi
+    done
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
