@@ -740,5 +740,19 @@ for mode_flag in "" "--strict-capabilities"; do
     fi
 done
 
+# 83-84. Item 35: a privileged closure passed to a STATIC impl method
+#        (`Invoker::run(reader)`). Impl method bodies were checked with no
+#        capability-accumulator frame at all -- unlike plain functions and
+#        actor handlers -- so an impl method's `own_cap_var` stayed
+#        permanently unbound and every call site resolved it to nothing.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_static_method_hotparam_offset.kry >"$TMP/stat_$mode_flag" 2>&1; then
+        echo "  FAIL: static-method hot-param escape COMPILED [$mode_flag]"
+        fail=1
+    else
+        echo "  ok   static-method hot-param escape rejected [$mode_flag]"
+    fi
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

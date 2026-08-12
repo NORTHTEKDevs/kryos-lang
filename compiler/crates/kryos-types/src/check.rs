@@ -2508,7 +2508,20 @@ impl TypeChecker {
                             let prev_fn = self.current_function_name.take();
                             self.current_function_name = Some(mname.clone());
                             self.seed_tail_lambda_expected(body);
+                            // An impl method's OWN row was never computed: this
+                            // site had no accumulator frame at all, unlike plain
+                            // functions and actor handlers. So `own_cap_var` stayed
+                            // permanently unbound, every call site resolved it to
+                            // nothing, and a privileged closure handed to an impl
+                            // method (`Invoker::run(reader)`) cost zero -- LEDGER
+                            // item 35. Mirrors the Decl::Function pattern exactly.
+                            self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
+                            let method_caps = self
+                                .cap_accum_stack
+                                .pop()
+                                .unwrap_or_else(crate::ty::CapRow::empty);
+                            self.engine.bind_cap_var(sig.own_cap_var, method_caps);
                             self.current_function_name = prev_fn;
                             self.current_return_type = prev_ret;
                         } else {
@@ -2529,7 +2542,12 @@ impl TypeChecker {
                             let prev_fn = self.current_function_name.take();
                             self.current_function_name = Some(mname.clone());
                             self.seed_tail_lambda_expected(body);
+                            // No signature to bind, but still give the body its own
+                            // frame so its authority cannot leak into an unrelated
+                            // enclosing accumulator.
+                            self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
+                            let _ = self.cap_accum_stack.pop();
                             self.current_function_name = prev_fn;
                             self.current_return_type = prev_ret;
                         }
@@ -5371,13 +5389,6 @@ impl TypeChecker {
                             self.engine.set_var_bounds(*new_id, bounds);
                         }
                     }
-                    {
-                        let own_row = self
-                            .engine
-                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
-                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
-                        self.accumulate_caps(&ref_caps);
-                    }
                     // Static call — skip 'self' parameter.
                     let expected_params: Vec<Type> =
                         if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
@@ -5401,6 +5412,23 @@ impl TypeChecker {
                                 self.diagnostics.push(diag);
                             }
                         }
+                    }
+                    // Charge the callee's own row AFTER the arguments are
+                    // unified, for the same reason as instance dispatch: a
+                    // static method that is row-polymorphic in a fn-typed
+                    // parameter (`Type::run(f)`) carries a row mentioning that
+                    // parameter's var, and the var only binds when the argument
+                    // is unified against it. Charging first -- which is what this
+                    // site used to do -- resolves a still-open row and charges
+                    // nothing, so a privileged closure handed to a static method
+                    // was never accounted for (LEDGER item 35). The failure is
+                    // SILENT: the call is checked, it simply costs zero.
+                    {
+                        let own_row = self
+                            .engine
+                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                        self.accumulate_caps(&ref_caps);
                     }
                     self.engine.resolve(&inst_ret)
                 } else if self.env.lookup_struct(type_name).is_none()
