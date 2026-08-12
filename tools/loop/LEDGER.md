@@ -763,7 +763,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-11 the true count is **9 escaping, 8 rejected**.
+> 2026-08-12 the true count is **4 escaping, 13 rejected**.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -798,63 +798,6 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   shape entirely" are not the same thing. `ir_signatures` is the gate that
 >   catches it; `security_gate.sh` check 66 pins it.
 
-
-### 37. LIVE CAPABILITY ESCAPE — a `&`/`*` (Borrow/Deref) receiver indirection on a fn-bearing struct field defeats `deny!()`, on BOTH enforcement modes and BOTH backends (assault round 6, classic-regression lens, found 2026-08-07) — NOT FIXED
-
-Repro: `tests/security/attack_deref_borrow_param_defeats_field_resolver.kry`
-(attack) + `..._control.kry` (control, identical program calling `b.f()`
-directly with no `&`/`*` — correctly rejected `E0507`). Verified live
-against the existing `compiler/target/release/kryos.exe`, no compiler
-changes, 3/3 repeated runs plus AOT:
-
-```
-$ kryos run tests/security/attack_deref_borrow_param_defeats_field_resolver.kry
-DEREF-BORROW LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-RC=0            (x3, stable)
-$ kryos check --strict-capabilities tests/security/attack_deref_borrow_param_defeats_field_resolver.kry
-RC=0             (zero diagnostics)
-$ kryos build --release tests/security/attack_deref_borrow_param_defeats_field_resolver.kry -o /tmp/deref_attack.exe
-RC=0             (compiles clean)
-$ /tmp/deref_attack.exe
-DEREF-BORROW LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-RC=0             (AOT binary also leaks)
-$ kryos run tests/security/attack_deref_borrow_param_defeats_field_resolver_control.kry
-error[E0507]: call to `invoke_direct` requires capabilities [fs:read] not granted to caller
-RC=1
-```
-
-Shape: `fn invoke_via_deref(b: &Box) -> str { return (*b).f() }`, called as
-`invoke_via_deref(&b)` inside `deny!(fs:read)` in `main`, where `Box.f` holds
-an `fs:read` closure. Ordinary `&T`/`*T`/`&x`/`*x` surface syntax
-(`parser.rs:2400-2423`, `:3614-3625`) — not gated behind `unsafe`.
-
-Root cause: this is the SAME catch-all items 30/31 already diagnosed and
-explicitly flagged as untested for this exact shape (`docs/capability-
-soundness.md` update / LEDGER's own item-30 writeup: "a `Borrow`/`Deref`/
-`SharedExpr`-wrapped otherwise-decomposable path... is presumptively
-exploitable the same way and was NOT individually tested this round"). This
-item is that live execution. `decompose_container_path` (checker.rs:932-947)
-has arms only for `Identifier`/`FieldAccess`/`IndexAccess`; `Expr::Deref`/
-`Expr::Borrow` fall to `_ => None`. Both `resolve_method_field_invoke_caps`
-(checker.rs:3241-3246, `let Some((root,path)) = decompose_container_path(..)
-else { return CapabilitySet::empty() }`) and `compute_hot_params`'s
-structural walk (`walk_container_calls_expr`, checker.rs:1212, which calls
-`decompose_container_path` directly on the `MethodCall`'s `object` before
-separately recursing into `Deref`'s `inner`) fail open on this shape:
-neither the call site (`invoke_via_deref(&b)`) nor the callee body
-(`(*b).f()`) is charged anything, so total required capability for the
-whole chain is empty and the call passes inside `deny!(fs:read)` even though
-it invokes an `fs:read` closure at runtime.
-
-Not chased further (no compiler changes this session, per task
-instructions — shared workspace, existing binary used read-only
-throughout). Same fix direction as items 30/31: make the `None`-from-
-`decompose_container_path` case in both call sites fail CLOSED (`all()`)
-instead of `empty()`, or extend `decompose_container_path` to recurse
-through `Borrow`/`Deref`/`SharedExpr` (unwrap to the inner path, same as
-`walk_container_calls_expr` already does for its OWN unrelated recursion).
-
----
 
 ### 33. LIVE CAPABILITY ESCAPE — closure parameter forwarded actor-to-actor through a message send escapes capability tracking entirely, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
 
@@ -1005,86 +948,6 @@ instructions). Suggested fix: give `accumulate_hot_extra_caps` a real
 method-vs-static into one `is_method_or_static: bool`, so a static call's
 own index-0 argument is never treated as an implicit receiver; re-run
 `security_gate.sh` plus this repro and item 33's both ways before changing.
-
----
-
-### 30. LIVE CAPABILITY ESCAPE — a fn-bearing struct field reached through an ACCESSOR CALL (`get_box(h).f()` / `h.get_box().f()`) instead of a direct field-access chain defeats `deny!()` on BOTH enforcement modes (RED TEAM round 7, cap-escape lens, found 2026-08-06) — NOT FIXED. Superseded as "highest priority" by item 32 (2026-08-06 re-adjudication): item 32 requires no actor/accessor machinery at all and is structurally more general. Both are open; fixing one does not fix the other.
-
-Repros: `tests/security/attack_container_via_accessor_fn_call.kry` (free
-function accessor) and `tests/security/attack_container_via_accessor_method_call.kry`
-(impl method accessor). Both verified LIVE at HEAD, no compiler changes,
-against the existing `compiler/target/release/kryos.exe`:
-
-```
-$ kryos run tests/security/attack_container_via_accessor_fn_call.kry
-ACCESSOR-FN-CALL CONTAINER LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-$ echo $?
-0
-$ kryos check --strict-capabilities tests/security/attack_container_via_accessor_fn_call.kry
-$ echo $?
-0
-```
-Same result (rc=0, secret printed, both modes) for the `impl`-method variant.
-**Positive control, same session**: the equivalent DIRECT field access
-(`h.b.f()`, no accessor indirection) inside the identical `deny!(fs:read)`
-block is correctly REJECTED (`E0507: call to \`f\` requires capabilities
-[fs:read] not granted to caller`) — confirming the accessor indirection,
-not something generic about the scenario, is what defeats the guard.
-
-Root cause (read, not yet independently re-verified by execution beyond the
-behavior above): `resolve_method_field_invoke_caps` and
-`resolve_actor_self_field_invoke_caps` (`kryos-capabilities/src/checker.rs`)
-are the two resolvers responsible for `X.f()` where `f` is a function-typed
-struct FIELD rather than a genuine method/trait dispatch. Both require
-`decompose_container_path(object)` to succeed to identify what `X` is.
-`decompose_container_path` only has arms for `Expr::Identifier`,
-`Expr::FieldAccess`, and `Expr::IndexAccess` — NOT `Expr::FnCall`,
-`Expr::MethodCall`, or `Expr::StaticMethodCall`. When the receiver of
-`.f()` is itself a call expression (`get_box(h)`, `h.get_box()`), decomposition
-returns `None` and BOTH resolvers bail out via `return CapabilitySet::empty()`
-— NOT the fail-closed `Capability::All` that invariant 22
-(`docs/capability-soundness.md`) requires for every other unresolvable-
-provenance shape in this file. Since `f` is not a builtin/hot-param name,
-`enforce_callee_name` then has nothing to charge and the call passes free.
-
-This is DISTINCT from item 20 below (which is `holder.get()()` — calling
-the RETURN VALUE of an accessor as a function directly, an `Expr::FnCall`
-whose callee is a `MethodCall`, handled by `resolve_closure_caps`'s FnCall
-arm, and which fails closed to `all` — a false-reject, not a leak). This
-finding is `Expr::MethodCall{ object: <FnCall/MethodCall>, method: "f" }` —
-invoking a fn-typed FIELD on the accessor's return value — a different
-code path (`resolve_method_field_invoke_caps`/`resolve_actor_self_field_
-invoke_caps`) that empty-defaults instead of all-defaulting. Also distinct
-from item 10 (wrapper-closure, closed) and item 18/24 (nested/aliased
-actor-state field access, closed for direct-field and one-hop `let`-alias
-shapes only) — no `let` binding is involved here at all, and the container
-in the free-function variant is not actor state.
-
-An attempted actor-handler variant (`self.get_box()` called from inside
-another handler on the SAME actor, expecting to reach `self.b`) does NOT
-reproduce this way — actor handlers are async fire-and-forget sends with
-no synchronous return channel, so `fn get_box(self) -> Box` inside an
-`actor` block is itself rejected at compile time (E0110, unrelated to
-capabilities) before this shape could even be attempted through an actor.
-The free-function and impl-method (non-actor struct) variants above are
-therefore the confirmed reproductions; an actor-owned equivalent (e.g. a
-non-handler helper method inside the same `impl` block reading actor state,
-if that is even legal syntax) was not attempted this round — ruled OUT
-only for the direct actor-handler-as-accessor shape, not for every
-actor-adjacent variant.
-
-Not chased further (no compiler changes this round, per task instructions).
-Suggested direction if picked up: extend `decompose_container_path` (or add
-a parallel resolver) to recognize a call expression whose callee positively
-resolves (via `transparent_accessor_paths`-style tracing, already built for
-the `List.get()`/`Dict.get()` stdlib-wrapper case per the CLOSED table) to
-a pure `return self.<path>` accessor, and splice its self-relative path
-onto the existing chain — OR, simpler and safe by construction: make BOTH
-resolvers' `None`-from-decompose case return `all()` instead of `empty()`
-whenever `method`/`f` is positively known to be a fn-bearing field name
-somewhere in the type graph (accepting some over-rejection of legitimate
-accessor chains, matching this file's own stated fail-closed default,
-until the precise trace exists).
 
 ---
 
@@ -2817,6 +2680,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **items 30 (all four shapes) + 37: LIVE CAPABILITY ESCAPES via accessor-call / if-expr / match-expr receivers and a `&`/`*` indirection -- FIXED BY STAGE 2** | Closed in `0a5dbbd` (2026-08-12) by capability-ROW enforcement in `kryos-types/src/check.rs`, NOT by the shape matcher. Stage 1 (`891c406`) already computed a correct row for every fn value and then threw it away -- `dump_fn_effects_report` has no caller anywhere in the tree, and `Stmt::DenyBlock` was treated by the type checker as an ordinary scoped block. A deny! block now pushes its own row accumulator and checks the result against its denied set, lattice-aware via `Capability::satisfies_required` (a raw `CapBits` test would let coarse `io` slip past denied `fs:read` -- that method's own doc warns about it). WHY IT WORKS WHERE SHAPE MATCHING COULD NOT: the row is charged from the CALLEE'S OWN TYPE at every call site, so an accessor-call receiver, an if/match receiver, a `&`/`*` indirection and a struct field are all charged identically to a direct call -- there is no expression shape to enumerate and therefore none to miss. MEASURED FIRST: a row probe showed 5 of the 9 open escapes already had `main` accumulating `{fs:read}` while the shape matcher let them through, and those are exactly the 5 that closed. **Item 37 had survived THREE mechanical fix attempts** (Borrow/Deref passthrough, TupleLiteral in literal_field_exists, param type seeding) and fell out of this for free. NO `all` CASCADE: conf_stdlib_wave14 passes, std::http and std::agent untouched, no dispatcher needs `all` -- a handler param's row stays an OPEN VARIABLE that binds per call site, which is the whole reason rows were the right answer. Escapes 9 -> 4. Gates: security_gate PASS (80 checks; 71-80 pin all five shapes under both modes), ir_signatures PASS 62 files, gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **items 32 + 38: LIVE CAPABILITY ESCAPE -- a field chain into a local, invoked as a callee (`pair.1()`, for-bound `x.0()`), was never capability-checked under either mode -- FIXED (direct forms)** | Fixed in `74b829e` (2026-08-11), fail-open SITE 1 of the 4 mapped in `tools/loop/ESCAPE-ROUTING.md`. The fail-closed direct-invoke path already existed; it was gated on `segments.len() <= 1`, whose comment asserted a multi-segment path is "always a qualified stdlib call". False for a field chain into a local: `pair.1` resolves to `["pair","1"]`, so the whole path was skipped. Now keyed on the ROOT (a local/param = a first-class value being invoked) instead of the segment count, which widens enforcement by exactly the value-chain case. MEASURED first, not assumed: both items traced to `callee=FieldAccess, named=false, seglen=2 -> failclosed_entered=false` under `KRYOS_CAP_TRACE=1`. Escapes 11 -> 9. NOTE the ACTOR-STATE tuple form (`attack_verify_tuple_in_state`) still escapes and is tracked under item 32's remaining entry -- the routing table assigns it to site 3 (`has_lit=false` non-literal fallback), a different line. Over-rejection: ir_signatures PASS 62 files, strict_caps PASS, examples PASS, gates 2 tier1 62/62 + tier2 GREEN; pinned by security_gate checks 67-70. |
 | **item 36: LIVE CAPABILITY ESCAPE -- the PIPE operator (`a |> f`) bypassed capability enforcement entirely for the callee, on BOTH modes -- FIXED** | Fixed in `649d5e3` (2026-08-11). `check_expr`'s `PipeExpr` arm recursed into `left` and `right` and nothing else, so `right` was never treated as a CALLEE -- the pipe spelling of a call was ungated while the identical `f(a)` was fully gated. Now routed through `check_callee_capabilities` with `left` as the single argument, so hot-param attribution and the fail-closed direct-invoke path both see it. SCOPED DELIBERATELY to the BARE form: the partial-application forms (`a |> f(b)`, `a |> obj.m(b)`, `a |> T::m(b)`) are a different shape whose real callee is the inner named fn, already gated by name. The first version did NOT exclude them, which made `5 |> padd(10)` demand `all` and falsely rejected `conf_functions.kry` -- **caught by the `ir_signatures` gate going RED, not by reasoning**, which is the whole reason that gate exists and is the trap waiting for the full fail-closed flip: 'cannot resolve' and 'different shape entirely' are not the same thing. Measured 12 escaping -> 11 with `tools/loop/escape_status.sh`. Pinned by `security_gate.sh` checks 62-65 (escape AND its control rejected under both modes) plus check 66 (partial-application pipes still compile clean). Gates: security_gate PASS, ir_signatures PASS (62 files), gates 2 tier1 62/62 + 13 checks and tier2 GREEN. |
 | **item 16: uncaught `throw` in a `spawn` task skipped the rest of the task (incl. a paired `wg_done`), hanging every `wg_wait()` forever -- FIXED** | Fixed and pushed in `d71ac33` (2026-08-09). An uncaught `throw` reaching the end of a spawned task's entry function now terminates the WHOLE PROCESS (exit 101, the contract an uncaught main-thread throw already had), reported to stderr first, instead of silently killing just that thread and stranding every consumer blocked on a signal the task will now never send. `kryos_exception_report_thread_fatal_if_pending` (kryos-rt/src/exception.rs), called by `kryos_spawn` (kryos-rt/src/spawn.rs). Evidence re-run fresh before commit: the repro exits 101 with its message (was a 124 timeout); `tests/concurrency_smoke.sh` PASS including a new `fails_fast` check; gates 2 tier1 (62/62 + 13 checks) and tier2 GREEN; security_gate PASS. This entry sat in OPEN for days after the fix existed in the working tree -- see the item 39 note on orphaned WIP. |
