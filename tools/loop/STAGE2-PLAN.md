@@ -90,3 +90,62 @@ Stage 1 computes and reports. **It never emits a diagnostic.** That is the gap.
 - Item 37 has a real, re-appliable mechanical fix (a `Reference` arm in
   `resolve_type_path_inner`, plus param seeding excluding `TypeExpr::Function`).
   Land it WITH stage 2 — alone it triggers the cascade.
+
+## Progress log — stage 2 as actually built (2026-08-12)
+
+Escapes **12 -> 2** this session. Three fixes, each the same shape: a dispatch
+surface that computed a capability row and then dropped it. None were subtle logic
+errors; all were wiring stage 1 left unfinished, and all were invisible because the
+failure is SILENT (enforcement runs, finds an empty row, passes).
+
+| commit | what was dropped | closed |
+| --- | --- | --- |
+| `0a5dbbd` | `deny!` blocks inferred a row and discarded it; `dump_fn_effects_report` had no caller anywhere | items 30a-d, 37 |
+| `848a9d4` | method/handler dispatch computed `cap_var_map` and bound it to `_` | item 34 |
+| `c29b15b` | impl method bodies had no accumulator frame at all, so `own_cap_var` never bound | item 35 |
+
+**ORDER IS LOAD-BEARING AND FAILS SILENTLY.** The callee's row must be charged AFTER
+argument unification. A callee that is row-polymorphic in a fn-typed parameter carries
+a row mentioning that parameter's var, and the var only binds when the argument is
+unified against it. Charging first resolves a still-open row and charges nothing —
+the call is checked and costs zero. Both dispatch sites had this bug.
+
+## The last two (items 32, 33) — why they are qualitatively harder
+
+Measured minimally. A struct field in actor state **works**
+(`main = {fs:read}`); a TUPLE field in actor state does not (`main = {?C10}`).
+
+The difference is where the binding lands:
+
+- **struct field**: `Box`'s field row var is DECLARATION-GLOBAL, so `Box { f: r }` in
+  `main` binds it directly to a concrete row. Field-insensitive, but it resolves.
+- **tuple in actor state**: `self.pair = (0, f)` builds a NEW tuple type from the
+  handler's own parameter, so unification binds the field var to `stash`'s ORIGINAL
+  param var. At the call site `instantiate_sig` FRESHENS that var, so the concrete
+  argument binds the fresh copy and the original — the one the state field points at
+  — is never bound to anything concrete.
+
+**Do NOT "fix" this by also binding the original param var.** That is the cascade in
+a new costume: passing one privileged closure to `std::iter::map` would bind `map`'s
+declaration-global param var, and then EVERY `map` call in every program charges that
+authority. This is the same failure that killed the annotate-dispatchers approach on
+2026-08-12, and `conf_stdlib_wave14` would catch it.
+
+The sound answer is the one the capabilities crate already takes for
+`self.<field>()` (`resolve_actor_self_field_invoke_caps`): **a fn-bearing ACTOR STATE
+field is genuinely untraceable** — any handler may write it at any prior dispatch —
+so reading one should yield `CapRow::Unknown` (which erases to `ALL`), not the
+declaration's var. `Type::with_caps_erased_to_unknown()` already exists and is used
+for `dyn`/trait dispatch.
+
+Blocker for implementing it: **`kryos-types/src/check.rs` has no actor context at
+all** — no `current_actor`, no state-field set. That has to be added (recorded around
+the `Decl::Actor` handler loop, cleared after) before the stamp can be applied at a
+`self.<field>` read. Item 33 (a closure passed actor-to-actor as a message parameter)
+is a DIFFERENT shape again — not a state read — and needs cross-actor parameter row
+flow, so it is not covered by the same stamp.
+
+Expect over-rejection when the stamp lands: an actor storing a PURE closure in state
+would start requiring `all`. That is the fail-closed stance the design has already
+chosen elsewhere, but it should be measured against `examples`/`strict_caps` before
+being called done.
