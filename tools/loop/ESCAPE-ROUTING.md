@@ -44,9 +44,33 @@ while the resolver grew to 15.3M calls).
 
 ## Routing table
 
+Measured 2026-08-11 with `KRYOS_CAP_TRACE=1` (temporary env-gated probes in
+`check_expr`, `check_callee_capabilities`, and `resolve_method_field_invoke_caps`;
+instrumentation removed after the run).
+
 | item | repro | reaches | fail-open line | notes |
 | --- | --- | --- | --- | --- |
+| 32 | `attack_verify_tuple_call_general` | `check_callee_capabilities`, `callee=FieldAccess segments=["pair","1"]` | the `segments.len() <= 1` guard on the fail-closed direct-invoke block | `named=false seglen=2` so `failclosed_entered=false`. The guard's comment claims a multi-segment path "is always a qualified stdlib call" — false for any field chain. |
+| 38 | `attack_r2_tuple_forloop_index_call` | `check_callee_capabilities`, `callee=FieldAccess segments=["x","0"]` | same `segments.len() <= 1` guard | Identical mechanism to item 32; the `for`-binding is irrelevant. |
+| 30 | `attack_container_via_accessor_fn_call` / `_method_call` / `attack_ifexpr_receiver_field_call` / `attack_matchexpr_receiver_field_call` | `resolve_method_field_invoke_caps` | `decompose_container_path` returns `None` | Measured receivers: `object=FnCall`, `object=MethodCall`, `object=IfExpr`, `object=MatchExpr`. The `_method_call` shape ALSO hits `literal_field_exists(false) lit=StructLiteral` on a second path. |
+| 33 | `attack_verify_actor_to_actor_message` | `resolve_method_field_invoke_caps`, `root=target method=receive` | non-literal fallback with `has_lit=false` returns empty | Root is an actor/param, not a tracked container literal, so the literal branch is skipped and the type-based fallback yields nothing. |
+| 34 | `attack_verify_double_alias` | `resolve_method_field_invoke_caps`, `root=y method=f` | non-literal fallback with `has_lit=false` returns empty | Two `let` hops from the actor-state field; the alias chain is not tracked, so `y` has no literal. |
+| 37 | `attack_deref_borrow_param_defeats_field_resolver` | `check_expr` MethodCall arm, `method=f object=Deref`; `resolve_method_field_invoke_caps root=b method=f` | non-literal fallback with `has_lit=false` returns empty | **This is why the `Borrow`/`Deref` passthrough failed to fix it**: decomposition is not the blocker, the missing non-literal provenance is. |
+| 35 | `attack_static_method_hotparam_offset` | `check_expr` **StaticMethodCall** arm, `method=run` | never reaches `resolve_method_field_invoke_caps` at all | The StaticMethodCall arm has no fn-value/hot-param resolution for a fn-typed argument at index 0. Distinct site from every other item. |
 
-_Empty on purpose._ Nothing has been measured per-item yet, so `escape-instrument`
-is red and `escape-root` stays blocked behind it. That is the system working: the
-fix is gated on the measurement, not on confidence.
+## Conclusion — four sites, one conflation
+
+1. **`segments.len() <= 1`** disables the existing fail-closed path for every field/index chain → items 32, 38.
+2. **`decompose_container_path` → `None`** for non-path receivers (`FnCall`, `MethodCall`, `IfExpr`, `MatchExpr`) → item 30 family.
+3. **`has_lit=false` non-literal fallback returns `CapabilitySet::empty()`** for params, alias chains and actor state → items 33, 34, 37.
+4. **The `StaticMethodCall` arm** performs no fn-value resolution → item 35.
+
+All four are the same mistake: *"I could not resolve this"* returns the same value as
+*"this needs no authority."* The fix is to make unresolvable provenance return an
+explicit fail-closed answer (require `all`) at each of these four sites, not to teach
+the decomposer more shapes.
+
+**Expected over-rejection when flipping**, based on the pipe fix: shapes that are
+*resolvable but different* must not be swept in. `ir_signatures` is the canary
+(it caught `5 |> padd(10)` demanding `all`), and `strict_caps` + `examples` cover
+the 91-example surface.
