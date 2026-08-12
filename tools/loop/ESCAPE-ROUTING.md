@@ -133,3 +133,42 @@ checker. It applies to every remaining site, so decide it BEFORE flipping sites 
 The change was reverted to keep the branch at a proven-green state. Re-apply with:
 `resolve_type_path_inner` + `Reference` arm, and param seeding with the
 `TypeExpr::Function` exclusion.
+
+## THE DESIGN QUESTION IS NOW SETTLED BY MEASUREMENT (2026-08-12)
+
+The fail-closed flip forces a choice, and both branches were tried on real code
+rather than argued about:
+
+**Option A -- annotate dispatchers `@capabilities(all)`. MEASURABLY WRONG.**
+Applied to `std::http::http_serve` (`route.handler(req)`) and
+`std::agent::use_tool` (`self.tools[i].handler(input)`). Both are the same shape:
+a closure registered by the caller, stored in a struct field, read back out of an
+array, invoked. Annotating them did NOT fix `conf_stdlib_wave14` -- it moved the
+error outward:
+
+    error[E0507]: call to `use_tool` requires capabilities [all] not granted to caller
+
+**`all` cascades to every consumer.** Any program that uses `std::http` or
+`std::agent` at all would have to declare `@capabilities(all)`, which nullifies the
+capability system for precisely the programs it exists to protect (an agent host
+running third-party tools is the flagship use case). A capability system whose own
+stdlib forces `all` is worse than no claim at all.
+
+**Option B -- authority flows from the handler ARGUMENT. This is the answer.**
+`use_tool` does not need `all`; it needs "whatever the tool I was handed carries".
+That is row-polymorphic effect typing, and **stage 1 already exists in this repo**:
+`891c406` built the `CapRow` representation and inference (`kryos-types/src/ty.rs`,
+`infer.rs`), including `generic_cap_var_ids` / `own_cap_var` on every `FunctionSig`.
+What is missing is stage 2: ENFORCEMENT reading those rows at the call site instead
+of the shape-directed resolution in `kryos-capabilities`.
+
+So the remaining escapes (sites 2, 3, 4) should NOT be closed by extending the
+shape-matcher or by annotating stdlib. They should be closed by finishing the
+capability-row work that is already half-built. That also retires the whole
+`decompose_container_path` / `literal_field_exists` / `hot_params` apparatus, which
+is where every one of these escapes has come from.
+
+Item 37's mechanical fix is real and re-appliable (Reference unwrap in
+`resolve_type_path_inner` + param seeding excluding `TypeExpr::Function`), but it
+should land WITH stage 2, not before it -- on its own it just triggers the cascade
+above.
