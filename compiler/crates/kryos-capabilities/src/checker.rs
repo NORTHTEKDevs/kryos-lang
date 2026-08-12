@@ -5348,11 +5348,28 @@ impl CapabilityChecker {
         // regardless of what it carries. Resolve it directly and require
         // whatever it actually needs; an unresolvable provenance requires
         // `all` rather than silently requiring nothing. See
-        // `resolve_direct_invoke_caps`. Gated on `segments.len() <= 1` for
-        // the same reason as the inference-side twin in `collect_caps_expr`:
-        // a multi-segment path is always a qualified stdlib call, already
-        // fully handled above.
-        if !callee_is_named && segments.len() <= 1 && (self.strict_mode() || self.has_annotated_scope()) {
+        // `resolve_direct_invoke_caps`.
+        //
+        // THE MULTI-SEGMENT GUARD (LEDGER items 32 and 38). This used to be
+        // gated on `segments.len() <= 1`, whose comment asserted that "a
+        // multi-segment path is always a qualified stdlib call, already fully
+        // handled above". That is false for a FIELD CHAIN INTO A LOCAL VALUE:
+        // `pair.1()` and `x.0()` resolve to `["pair","1"]` / `["x","0"]`, so
+        // the whole fail-closed path was skipped and the call went ungated
+        // under BOTH enforcement modes (measured, with the exact trace, in
+        // tools/loop/ESCAPE-ROUTING.md).
+        //
+        // The correct discriminator is not the segment COUNT but the ROOT: a
+        // chain rooted at a local/param is a first-class value being invoked
+        // and must be resolved; a chain rooted at a module name is a qualified
+        // path and is handled above. Anything else keeps the old behaviour, so
+        // this widens enforcement by exactly the value-chain case.
+        let roots_at_local = Self::decompose_container_path(callee)
+            .is_some_and(|(root, path)| !path.is_empty() && self.current_locals.contains(root));
+        if !callee_is_named
+            && (segments.len() <= 1 || roots_at_local)
+            && (self.strict_mode() || self.has_annotated_scope())
+        {
             let extra = self.resolve_direct_invoke_caps(
                 callee,
                 &self.fn_capabilities,

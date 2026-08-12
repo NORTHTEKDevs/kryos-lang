@@ -683,5 +683,27 @@ else
     tail -5 "$TMP/pipe_nocascade" | sed 's/^/    /'; fail=1
 fi
 
+# 67-70. LEDGER items 32/38: a FIELD CHAIN INTO A LOCAL invoked as a callee
+#        (`pair.1()`, or a for-bound `x.0()`). The fail-closed direct-invoke
+#        path existed but was gated on `segments.len() <= 1`, and a field
+#        chain resolves to ["pair","1"] -- so it was skipped entirely and the
+#        call went ungated under BOTH modes. The guard now keys on the ROOT
+#        (a local/param = a first-class value being invoked) rather than the
+#        segment count.
+for tshape in attack_verify_tuple_call_general attack_r2_tuple_forloop_index_call; do
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "tests/security/$tshape.kry" >"$TMP/tup_${tshape}_$mode_flag" 2>&1; then
+            echo "  FAIL: field-chain-callee [$tshape] COMPILED [$mode_flag]"
+            fail=1
+        elif grep -q "E0507" "$TMP/tup_${tshape}_$mode_flag"; then
+            echo "  ok   field-chain-callee [$tshape] rejected (E0507) [$mode_flag]"
+        else
+            echo "  FAIL: rejected but NOT for the capability reason [$tshape, $mode_flag]:"
+            tail -3 "$TMP/tup_${tshape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
