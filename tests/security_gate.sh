@@ -725,5 +725,20 @@ for rshape in attack_container_via_accessor_fn_call               attack_contain
     done
 done
 
+# 81-82. Item 34: a two-hop `let` alias of an actor's fn-bearing state field
+#        (`let x = self.b; let y = x; y.f()`). Closed by charging the callee's
+#        own capability row at the method/handler dispatch site -- previously
+#        an actor handler that called `file_read` accumulated {fs:read}
+#        correctly while the `main` invoking it accumulated {}, so anything
+#        behind a handler call was invisible to enforcement.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_verify_double_alias.kry >"$TMP/dbl_$mode_flag" 2>&1; then
+        echo "  FAIL: actor-state double-alias escape COMPILED [$mode_flag]"
+        fail=1
+    else
+        echo "  ok   actor-state double-alias escape rejected [$mode_flag]"
+    fi
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

@@ -2119,6 +2119,9 @@ impl TypeChecker {
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
                 let fn_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
+                if std::env::var("KRYOS_ROW_TRACE").is_ok() {
+                    eprintln!("[row] fn {} = {}", name, self.engine.resolve_cap_row(&fn_caps).display());
+                }
                 if let Some(own_var) = sig.as_ref().map(|s| s.own_cap_var) {
                     self.engine.bind_cap_var(own_var, fn_caps.clone());
                     self.log_fn_effect(name.clone(), *span, crate::ty::CapRow::var(own_var));
@@ -2208,6 +2211,10 @@ impl TypeChecker {
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
                     let handler_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
+                    if std::env::var("KRYOS_ROW_TRACE").is_ok() {
+                        eprintln!("[row] handler {}::{} = {}", name, h.name,
+                            self.engine.resolve_cap_row(&handler_caps).display());
+                    }
                     if let Some(own_var) = self
                         .env
                         .lookup_method(name, &h.name)
@@ -5073,7 +5080,7 @@ impl TypeChecker {
                         //   2. Erasure -- `to_string(box_f64.get())` reported the
                         //      i64 slot and printed raw bits; the self-unify now
                         //      resolves the return to the real f64.
-                        let (inst_params, inst_ret, var_map, _cap_var_map) =
+                        let (inst_params, inst_ret, var_map, cap_var_map) =
                             self.engine.instantiate_sig(&sig);
                         for (old_id, new_id) in &var_map {
                             if let Some(bounds) = self.generic_var_bounds.get(old_id).cloned() {
@@ -5125,6 +5132,30 @@ impl TypeChecker {
                                     self.diagnostics.push(diag);
                                 }
                             }
+                        }
+                        // Charge the callee's OWN row at this call site. This site
+                        // resolves BOTH impl methods and ACTOR HANDLERS (an actor
+                        // registers handlers through the same `lookup_method`), and
+                        // it was the only major dispatch path that dropped the row --
+                        // the `cap_var_map` it already computed was bound to `_` and
+                        // discarded. Measured: an actor handler calling `file_read`
+                        // accumulated `{fs:read}` while the `main` invoking it
+                        // accumulated `{}`, so any leak behind a handler call was
+                        // invisible to enforcement.
+                        //
+                        // ORDER MATTERS, and getting it wrong is silent: this must
+                        // run AFTER the argument unification above. A handler that is
+                        // row-POLYMORPHIC in a fn-typed parameter (`fn receive(self,
+                        // f: fn() -> str)`) has a row that mentions that parameter's
+                        // own var, and that var only binds when the argument is
+                        // unified against the parameter. Charging first resolves the
+                        // row while it is still open and charges nothing at all.
+                        {
+                            let own_row = self
+                                .engine
+                                .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                            let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                            self.accumulate_caps(&ref_caps);
                         }
                         return self.engine.resolve(&inst_ret);
                     }
