@@ -147,6 +147,19 @@ pub struct TypeChecker {
     /// `caps`/required bits into `.last_mut()`. Popped and used to
     /// finalize that body's own inferred row when the body finishes.
     cap_accum_stack: Vec<crate::ty::CapRow>,
+    /// State-field names of the actor whose handler body is currently being
+    /// checked, restricted to fields whose type CONTAINS a function anywhere.
+    /// Empty outside an actor handler.
+    ///
+    /// Reading one of these fields yields `CapRow::Unknown`, never the
+    /// declaration's row var. An actor's state is mutable storage that ANY
+    /// handler may write at ANY prior dispatch, so the closure sitting in a
+    /// fn-bearing state field at a given call site is genuinely not knowable
+    /// statically -- exactly the condition `CapRow::Unknown` exists for. The
+    /// capability checker already takes this stance for `self.<field>()` (see
+    /// `resolve_actor_self_field_invoke_caps`); this is the same rule applied
+    /// to the row.
+    current_actor_fn_state_fields: std::collections::HashSet<String>,
     /// `KRYOS_DUMP_FN_EFFECTS=1` debug dump, read once at construction.
     /// When set, every declared function and lambda literal's FINAL
     /// (fully `resolve_cap_row`-resolved) capability row is recorded here
@@ -209,6 +222,7 @@ impl TypeChecker {
             dyn_container_reject_params: std::collections::HashSet::new(),
             pending_cap_var_ids: Vec::new(),
             cap_accum_stack: Vec::new(),
+            current_actor_fn_state_fields: std::collections::HashSet::new(),
             dump_fn_effects: std::env::var("KRYOS_DUMP_FN_EFFECTS")
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
             cap_effects_log: Vec::new(),
@@ -224,6 +238,26 @@ impl TypeChecker {
     /// this is the ONE place authority a value carries gets folded into
     /// its caller's own requirement, driven entirely by the callee's
     /// TYPE -- never by re-deriving provenance from the call's syntax.
+    /// True if `ty` contains a function type anywhere reachable inside it
+    /// (directly, or nested in a tuple / option / array / map / reference).
+    /// Used to decide whether an actor state field is fn-BEARING; a tuple
+    /// element counts, which is exactly the shape that leaked (LEDGER item 32:
+    /// `pair: (i64, fn() -> str)`).
+    fn type_contains_function(ty: &Type) -> bool {
+        match ty {
+            Type::Function { .. } => true,
+            Type::Tuple { elements } => elements.iter().any(Self::type_contains_function),
+            Type::Array { element, .. } => Self::type_contains_function(element),
+            Type::Option { inner } | Type::Reference { inner, .. } => {
+                Self::type_contains_function(inner)
+            }
+            Type::Map { key, value } => {
+                Self::type_contains_function(key) || Self::type_contains_function(value)
+            }
+            _ => false,
+        }
+    }
+
     fn accumulate_caps(&mut self, row: &crate::ty::CapRow) {
         if let Some(top) = self.cap_accum_stack.last_mut() {
             *top = top.union(row);
@@ -1873,6 +1907,10 @@ impl TypeChecker {
                 let method_sigs: Vec<FunctionSig> = handlers
                     .iter()
                     .map(|h| {
+                        // Resolving a fn-typed param mints a fresh capability-row
+                        // var into `pending_cap_var_ids`. Clear first so this
+                        // handler's signature drains ONLY its own.
+                        self.pending_cap_var_ids.clear();
                         let params: Vec<(String, Type)> = h
                             .params
                             .iter()
@@ -1909,7 +1947,19 @@ impl TypeChecker {
                             name: h.name.clone(),
                             generic_params: vec![],
                             generic_var_ids: vec![],
-                            generic_cap_var_ids: vec![],
+                            // A handler's fn-typed PARAMETER row vars belong to
+                            // this signature and must be freshened per call site,
+                            // exactly as `register_decl` does for a plain function
+                            // (line ~1243). Hardcoding this to `vec![]` meant a
+                            // handler that is row-polymorphic in a closure param
+                            // never had that var freshened, so the concrete
+                            // argument bound a different var and the row charged
+                            // at the call site stayed permanently open -- a
+                            // closure passed actor-to-actor cost zero
+                            // (LEDGER item 33).
+                            generic_cap_var_ids: std::mem::take(
+                                &mut self.pending_cap_var_ids,
+                            ),
                             // Bound for real once the handler BODY is walked
                             // -- see the `Decl::Actor` arm of `check_decl`,
                             // which looks this same var back up via
@@ -2170,6 +2220,13 @@ impl TypeChecker {
                 };
                 let prev_self = self.current_self_type.take();
                 self.current_self_type = Some(actor_ty.clone());
+                let prev_fn_state = std::mem::take(&mut self.current_actor_fn_state_fields);
+                for f in state_fields.iter() {
+                    let fty = self.resolve_type_expr(&f.ty);
+                    if Self::type_contains_function(&fty) {
+                        self.current_actor_fn_state_fields.insert(f.name.clone());
+                    }
+                }
                 for h in handlers {
                     self.env.push_scope();
                     // Actor state fields are accessible (and mutable) by BARE
@@ -2232,6 +2289,7 @@ impl TypeChecker {
                     self.env.pop_scope();
                 }
                 self.current_self_type = prev_self;
+                self.current_actor_fn_state_fields = prev_fn_state;
             }
             Decl::Impl {
                 target,
@@ -4225,11 +4283,34 @@ impl TypeChecker {
             } => {
                 let obj_ty = self.infer_expr(object);
                 let obj_ty = self.engine.resolve(&obj_ty);
+                // FAIL-CLOSED for fn-bearing ACTOR STATE (LEDGER item 32).
+                // An actor's state is mutable storage that any handler may write
+                // at any prior dispatch, so which closure sits in a fn-bearing
+                // state field at a given read is genuinely not knowable
+                // statically. Yield `Unknown` (which erases to `ALL`) rather than
+                // the declaration's row var, which would otherwise stay forever
+                // unbound and charge nothing. This is the same stance the
+                // capability checker already takes for `self.<field>()` in
+                // `resolve_actor_self_field_invoke_caps`, applied to the row.
+                //
+                // Scoped deliberately to `self` inside a handler AND to fields
+                // whose type actually contains a function -- an actor's ordinary
+                // data state is untouched.
+                let is_actor_fn_state = matches!(
+                    object.as_ref(),
+                    Expr::Identifier { name, .. } if name == "self"
+                ) && self.current_actor_fn_state_fields.contains(field);
+
                 match &obj_ty {
                     Type::Struct { name, generics } => {
                         if let Some(fty) = self.env.lookup_field(name, field) {
                             let fty = fty.clone();
-                            self.substitute_struct_generics(name, generics, &fty)
+                            let out = self.substitute_struct_generics(name, generics, &fty);
+                            if is_actor_fn_state {
+                                out.with_caps_erased_to_unknown()
+                            } else {
+                                out
+                            }
                         } else {
                             self.error_with_code(
                                 format!("no field `{field}` on type `{name}`"),

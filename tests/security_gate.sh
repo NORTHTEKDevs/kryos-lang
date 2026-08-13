@@ -754,5 +754,22 @@ for mode_flag in "" "--strict-capabilities"; do
     fi
 done
 
+# 85-86. Item 32: a closure stashed in a TUPLE inside actor state
+#        (`pair: (i64, fn() -> str)`), then invoked via `self.pair.1()`.
+#        Reading a fn-BEARING actor state field now yields CapRow::Unknown --
+#        actor state is mutable storage any handler may write at any prior
+#        dispatch, so which closure is in it at a given read is genuinely not
+#        statically knowable. Scoped to `self` inside a handler AND to fields
+#        whose type actually contains a function, so ordinary data state is
+#        untouched.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_verify_tuple_in_state.kry >"$TMP/tstate_$mode_flag" 2>&1; then
+        echo "  FAIL: actor-state tuple escape COMPILED [$mode_flag]"
+        fail=1
+    else
+        echo "  ok   actor-state tuple escape rejected [$mode_flag]"
+    fi
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
