@@ -1,38 +1,27 @@
 #!/usr/bin/env bash
-# RED TEAM round 1 (toolchain-supply lens, 2026-08-04): `kryos pkg install`
-# NEVER reads an existing `kryos.lock` -- it always re-resolves live against
-# the manifest's version requirement and silently OVERWRITES the lock with
-# whatever it finds, even when kryos.lock is present and pins a different
-# version. This defeats the documented supply-chain protection: CLAUDE.md
-# says "pinning a specific version still depends on committing kryos.lock",
-# but committing it provides ZERO enforcement -- grep the CLI source and
-# `LockFile::from_file` is called only by `kryos pkg outdated`, never by
-# `install()` (compiler/crates/kryos-cli/src/commands/pkg.rs).
+# LEDGER item 12 -- REGRESSION PIN (was a RED-TEAM repro; the bug it found is
+# now FIXED, see tools/loop/LEDGER.md CLOSED table). This now asserts the
+# FIXED behavior instead of the bug.
 #
-# The checksum verification added for LEDGER item 1b (kryos-package/src/
-# fetch.rs::verify_package_checksum) only protects against a package's
-# content being tampered with AFTER a specific version is resolved -- it
-# does nothing to stop `install()` from silently resolving to a DIFFERENT
-# (newer, possibly compromised or maliciously re-published) version than
-# the one a team previously locked and committed. There is no warning, no
-# diff, no prompt: the tool prints the same "installed 1 package" success
-# banner whether or not the resolved version matches the lock.
+# The bug (historical): `kryos pkg install` never opened `kryos.lock` at
+# all. It always re-resolved live against the manifest and silently
+# OVERWROTE the lock with whatever it found, even when kryos.lock was
+# present and pinned a different version -- defeating the documented
+# supply-chain protection (CLAUDE.md said "pinning a specific version still
+# depends on committing kryos.lock", which provided zero enforcement).
+#
+# The fix: `install()` now reads an existing `kryos.lock` first. If it
+# already covers every dependency the manifest declares, the install is
+# PINNED -- it fetches exactly what the lock says (checksum-verified, per
+# LEDGER item 1b) and does NOT touch the registry or rewrite the lock at
+# all, matching `npm ci` / `cargo install --locked` semantics. `kryos pkg
+# update` remains the explicit, deliberate re-resolve operation.
 #
 # This repro uses an offline PATH dependency (no network required) to
-# demonstrate the mechanism deterministically: kryos.lock pins v1.0.0,
-# the dependency is bumped to v2.0.0 on disk with no manifest/version-req
-# change, and a second `kryos pkg install` run (lock file present and
-# untouched) silently re-locks to v2.0.0 with no diagnostic of any kind.
-# The exact same code path (`resolve()` called fresh from the manifest,
-# `fetch_resolved` fetching+verifying whatever `resolve()` picked) is used
-# for Remote/registry dependencies, where "v2.0.0" would be a newly
-# published (or force-pushed) index entry instead of a hand-edited local
-# kryos.toml -- i.e. this is the exact shape of a supply-chain version-drift
-# attack that a committed lock file is supposed to prevent and does not.
-#
-# Classify by the printed `kryos.lock` CONTENT (the observable a real
-# consumer would rely on), not by exit code -- `kryos pkg install` exits 0
-# in both the honest and the drifted case.
+# demonstrate the mechanism deterministically -- the exact same pinned-vs-
+# fresh code path is used for Remote/registry dependencies, where "v2.0.0"
+# would be a newly published (or force-pushed) index entry instead of a
+# hand-edited local kryos.toml.
 
 set -uo pipefail
 
@@ -74,6 +63,8 @@ fn main() {
 }
 EOF
 
+FAIL=0
+
 ( cd "$PROJ" && "$KRYOS" pkg install > install1.log 2>&1 )
 LOCKED_V1="$(grep -A2 'name = "dep"' "$PROJ/kryos.lock" | grep version || true)"
 if ! echo "$LOCKED_V1" | grep -q '1\.0\.0'; then
@@ -105,18 +96,44 @@ echo
 echo "=== kryos.lock after 2nd install (lock file was present, dep drifted) ==="
 cat "$PROJ/kryos.lock"
 echo
-echo "=== install #2 output (no warning/diff printed about the version drift) ==="
+echo "=== install #2 output ==="
 cat "$PROJ/install2.log"
 echo
 
 if echo "$LOCKED_V2" | grep -q '2\.0\.0'; then
-    echo
-    echo "CONFIRMED: kryos pkg install silently overwrote a committed kryos.lock"
-    echo "(v1.0.0 -> v2.0.0) with NO warning, diff, or prompt of any kind."
-    echo "The lock file provides no enforcement -- LEDGER item 12."
-    exit 0
+    echo "FAIL: kryos pkg install silently overwrote a committed kryos.lock" >&2
+    echo "(v1.0.0 -> v2.0.0) -- item 12 is NOT fixed (or regressed)." >&2
+    FAIL=1
+elif ! echo "$LOCKED_V2" | grep -q '1\.0\.0'; then
+    echo "FAIL: kryos.lock no longer pins v1.0.0 but also doesn't show v2.0.0 --" >&2
+    echo "unexpected state, inspect kryos.lock/install2.log above." >&2
+    FAIL=1
+elif ! grep -qi 'pinned' "$PROJ/install2.log"; then
+    echo "FAIL: kryos.lock correctly still pins v1.0.0, but install2.log never" >&2
+    echo "says anything about a pinned install -- the RIGHT answer for the WRONG" >&2
+    echo "reason is not proof; inspect install2.log." >&2
+    FAIL=1
 else
-    echo "NOT REPRODUCED: lock still pins v1.0.0 after the dependency drifted"
-    echo "(got: $LOCKED_V2) -- this would mean the bug is already fixed."
-    exit 1
+    echo "OK: kryos pkg install kept kryos.lock pinned at v1.0.0 across the drift" \
+         "and reported the pinned install explicitly (not silent)."
 fi
+
+# The escape hatch: a DELIBERATE `kryos pkg update` must still pick up the
+# new version -- the fix must not brick legitimate, reviewed version bumps,
+# only the SILENT/automatic ones.
+( cd "$PROJ" && "$KRYOS" pkg update > update.log 2>&1 )
+( cd "$PROJ" && "$KRYOS" pkg install > install3.log 2>&1 )
+LOCKED_V3="$(grep -A2 'name = "dep"' "$PROJ/kryos.lock" | grep version || true)"
+echo
+echo "=== kryos.lock after explicit 'kryos pkg update' + install ==="
+cat "$PROJ/kryos.lock"
+if echo "$LOCKED_V3" | grep -q '2\.0\.0'; then
+    echo "OK: an EXPLICIT 'kryos pkg update' still deliberately moves the lock to" \
+         "v2.0.0 -- the fix blocks silent drift, not legitimate re-resolution."
+else
+    echo "FAIL: 'kryos pkg update' did not move the lock to v2.0.0 as expected --" >&2
+    echo "inspect update.log/install3.log above." >&2
+    FAIL=1
+fi
+
+exit $FAIL

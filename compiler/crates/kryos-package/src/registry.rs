@@ -281,8 +281,20 @@ impl RegistryClient {
         if index_dir.exists() {
             // Pull latest.
             let output = std::process::Command::new("git")
-                .args(["pull", "--ff-only"])
+                .args([
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "core.askpass=",
+                    "pull",
+                    "--ff-only",
+                ])
                 .current_dir(&index_dir)
+                // Fail fast instead of hanging on an interactive/GUI
+                // credential prompt if the registry remote becomes
+                // unreachable/private -- see fetch::clone_and_guard's comment
+                // for why all three flags together are required.
+                .env("GIT_TERMINAL_PROMPT", "0")
                 .output()
                 .map_err(|e| format!("git pull failed: {e}"))?;
             if !output.status.success() {
@@ -292,8 +304,22 @@ impl RegistryClient {
         } else {
             // Clone fresh.
             let output = std::process::Command::new("git")
-                .args(["clone", "--depth", "1", &self.config.url])
+                .args([
+                    "-c",
+                    "credential.helper=",
+                    "-c",
+                    "core.askpass=",
+                    "clone",
+                    "--depth",
+                    "1",
+                    &self.config.url,
+                ])
                 .arg(&index_dir)
+                // Fail fast instead of hanging on an interactive/GUI
+                // credential prompt if the registry remote becomes
+                // unreachable/private -- see fetch::clone_and_guard's comment
+                // for why all three flags together are required.
+                .env("GIT_TERMINAL_PROMPT", "0")
                 .output()
                 .map_err(|e| format!("git clone failed: {e}"))?;
             if !output.status.success() {

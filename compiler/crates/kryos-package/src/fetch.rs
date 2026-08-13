@@ -3,10 +3,13 @@
 //! For MVP, supports `github:org/repo` sources by cloning repositories
 //! to `~/.kryos/packages/<name>-<version>/`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::manifest::{DepSpec, Manifest};
 use crate::resolve::{PackageSource, ResolvedGraph};
+use crate::semver::{Version, VersionReq};
 
 /// Get the Kryos package cache directory.
 pub fn cache_dir() -> PathBuf {
@@ -114,6 +117,177 @@ pub fn verify_package_checksum(
     Ok(())
 }
 
+/// Result of fetching a dependency from an EXPLICIT manifest source -- a
+/// `git = "..."` table key, or the `github:org/repo@ver` CLI form -- i.e. a
+/// source that is NOT looked up in the registry index at all (LEDGER item
+/// 17).
+#[derive(Debug)]
+pub struct ExplicitFetch {
+    /// The version discovered by reading the fetched content's own
+    /// `kryos.toml` -- there is no registry index entry to read it from
+    /// ahead of time, unlike a registry dependency.
+    pub version: Version,
+    /// Canonical cache location (`<cache>/<local_name>-<version>/`), same
+    /// convention as a registry fetch, so everything downstream (dep
+    /// redirects, `fetch_resolved`'s cache-hit check) works unchanged.
+    pub dest: PathBuf,
+    /// Content checksum computed over the freshly fetched directory. There
+    /// is no registry-published checksum to compare an explicit source
+    /// against, so this value is TRUSTED ON FIRST FETCH (the same trust
+    /// model a `cargo` git dependency without a `rev` pin uses) -- the
+    /// caller must record it into `kryos.lock` so a subsequent install
+    /// re-verifies this exact content instead of re-trusting the source
+    /// blindly every time (see LEDGER item 12's pinned-install path, which
+    /// is what actually enforces this going forward).
+    pub checksum: String,
+    /// The fetched package's own declared dependencies, so the caller can
+    /// thread them into the resolver the same way a registry entry's
+    /// `dependencies` map is threaded in.
+    pub dependencies: HashMap<String, DepSpec>,
+}
+
+/// Fetch a dependency directly from the EXPLICIT source a manifest (a
+/// `git = "..."` table key) or `kryos pkg add github:org/repo@ver` declared,
+/// bypassing the registry index entirely.
+///
+/// LEDGER item 17: previously `install()`/`update()` destructured
+/// `DepSpec::Remote { .. }` with a wildcard, discarding `source` and
+/// `version_req` completely, and did a pure by-NAME lookup against the
+/// hardcoded official registry instead -- so a project declaring an
+/// explicit source (to pin a private fork, a security-patched mirror, or
+/// any code not published to the official registry) silently got whatever
+/// the official registry happened to publish under the same NAME, with no
+/// warning. This function is the fix: it clones/reads `source` itself,
+/// never the registry, so the manifest's declared source is what actually
+/// gets installed.
+///
+/// There is no registry index backing an explicit source, so there is no
+/// pre-published checksum to verify the first fetch against (unlike a
+/// registry package, LEDGER item 1b) -- trust is established the same way
+/// a `cargo` git dependency with no `rev` pin, or SSH's `known_hosts`,
+/// establishes it: on first fetch. The returned checksum MUST be recorded
+/// into `kryos.lock` by the caller so a later install re-verifies this
+/// exact content (LEDGER item 12) instead of re-trusting the source blindly
+/// on every run.
+pub fn fetch_explicit_source(
+    local_name: &str,
+    source: &str,
+    version_req: &VersionReq,
+) -> Result<ExplicitFetch, String> {
+    // Clone into a scratch temp dir first: the canonical cache path is
+    // keyed by `<local_name>-<version>`, and the version is only knowable
+    // AFTER reading the fetched content's own kryos.toml.
+    let tmp = std::env::temp_dir().join(format!(
+        "kryos-explicit-fetch-{}-{}",
+        local_name,
+        std::process::id()
+    ));
+    if tmp.exists() {
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // `fetch_github` already understands `github:org/repo`, a bare
+    // `https://`/`http://` URL, and (defense-in-depth, unused by this
+    // caller) `github_subdir:` -- and its whole-repo clone path is already
+    // symlink-guarded (LEDGER item 1b's follow-up hardening), so an
+    // explicit source gets the exact same protection a registry fetch does.
+    if let Err(e) = fetch_github(source, &tmp) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!("failed to fetch explicit source `{source}`: {e}"));
+    }
+
+    finish_explicit_fetch(local_name, source, version_req, tmp)
+}
+
+/// Everything `fetch_explicit_source` does AFTER the clone: read the
+/// fetched content's own version, check it against `version_req`, compute
+/// its checksum, and move it into the canonical cache location. Split out
+/// so it is directly testable against a REAL local git clone (via
+/// `clone_and_guard`, exactly like the symlink-guard tests below) without
+/// needing a live github.com/https:// network fetch in a unit test --
+/// `fetch_github`/`clone_and_guard`'s own clone-and-symlink-guard behavior
+/// is already covered by the tests above this one; this function is 100%
+/// of what LEDGER item 17 actually adds.
+fn finish_explicit_fetch(
+    local_name: &str,
+    source: &str,
+    version_req: &VersionReq,
+    tmp: PathBuf,
+) -> Result<ExplicitFetch, String> {
+    let cache = cache_dir();
+    std::fs::create_dir_all(&cache).map_err(|e| format!("failed to create cache dir: {e}"))?;
+
+    let manifest = match Manifest::from_file(&tmp.join("kryos.toml")) {
+        Ok(m) => m,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "explicit source `{source}` for `{local_name}` does not contain a valid \
+                 kryos.toml at its root: {e}"
+            ));
+        }
+    };
+
+    let version: Version = match manifest.package.version.parse() {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(format!(
+                "explicit source `{source}` for `{local_name}` has an invalid version \
+                 `{}`: {e}",
+                manifest.package.version
+            ));
+        }
+    };
+
+    if !version_req.matches(&version) {
+        let _ = std::fs::remove_dir_all(&tmp);
+        return Err(format!(
+            "explicit source `{source}` for `{local_name}` resolved to v{version}, which does \
+             not satisfy the declared requirement `{version_req}`"
+        ));
+    }
+
+    let checksum = match crate::registry::content_checksum(&tmp) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&tmp);
+            return Err(e);
+        }
+    };
+
+    let dest = cache.join(format!("{local_name}-{version}"));
+    if dest.exists() {
+        // Always re-trust the CURRENT fetch over a stale cache entry --
+        // there is no version-indexed cache identity for an explicit
+        // source the way there is for a registry package (the "version" is
+        // whatever the source's HEAD currently declares, which can change
+        // between runs even under the same local_name-version cache key).
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::rename(&tmp, &dest).is_err() {
+        // `rename` can fail across filesystem/volume boundaries (e.g. a
+        // temp dir on a different drive than the cache) -- fall back to a
+        // guarded copy, which also re-checks for symlinks defensively.
+        if let Err(e) = copy_dir_all(&tmp, &dest) {
+            let _ = std::fs::remove_dir_all(&tmp);
+            let _ = std::fs::remove_dir_all(&dest);
+            return Err(format!("failed to install fetched package `{local_name}`: {e}"));
+        }
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    Ok(ExplicitFetch {
+        version,
+        dest,
+        checksum,
+        dependencies: manifest.dependencies,
+    })
+}
+
 /// Clone a GitHub repository to a local directory.
 ///
 /// Accepts sources like:
@@ -166,8 +340,31 @@ fn clone_and_guard(url: &str, dest: &Path) -> Result<(), String> {
     // guard sees the real artifact a POSIX default (`core.symlinks=true`)
     // checkout would produce, on every platform.
     let output = Command::new("git")
-        .args(["-c", "core.symlinks=true", "clone", "--depth", "1", url])
+        .args([
+            "-c",
+            "core.symlinks=true",
+            // A nonexistent/private/misconfigured repo can make git fall back
+            // to an INTERACTIVE credential prompt or a GUI askpass/credential-
+            // manager helper instead of erroring -- confirmed live on this
+            // machine (LEDGER item 17 made a nonexistent-repo clone reachable
+            // for the first time): `GIT_TERMINAL_PROMPT=0` ALONE was not
+            // enough -- git still spawned a GUI `git-askpass` helper and hung
+            // indefinitely with no terminal prompt ever printed. All THREE of
+            // GIT_TERMINAL_PROMPT=0 + credential.helper= + core.askpass= are
+            // required together to force a fast, honest failure instead of an
+            // unkillable-by-this-process hang. This tool has no user to
+            // authenticate as -- an inaccessible source must fail fast.
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askpass=",
+            "clone",
+            "--depth",
+            "1",
+            url,
+        ])
         .arg(dest)
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("failed to run git clone: {e}"))?;
 
@@ -250,8 +447,23 @@ fn fetch_github_subdir(spec: &str, dest: &Path) -> Result<(), String> {
     // see `clone_and_guard`'s comment. `copy_dir_all` below only sees a
     // real symlink to reject if the checkout actually produced one.
     let output = Command::new("git")
-        .args(["-c", "core.symlinks=true", "clone", "--depth", "1", &url])
+        .args([
+            "-c",
+            "core.symlinks=true",
+            "-c",
+            "credential.helper=",
+            "-c",
+            "core.askpass=",
+            "clone",
+            "--depth",
+            "1",
+            &url,
+        ])
         .arg(&tmp)
+        // See clone_and_guard's comment: all three flags together are
+        // required to fail fast instead of hanging on a GUI credential/
+        // askpass prompt.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .output()
         .map_err(|e| format!("failed to run git clone: {e}"))?;
     if !output.status.success() {
@@ -565,6 +777,183 @@ mod tests {
             !dest.exists(),
             "a rejected whole-repo clone must not be left in the cache -- found {}",
             dest.display()
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    // ─── LEDGER item 17: explicit-source fetch ────────────────────────────
+
+    /// Build a real local git repo at `repo` containing a `kryos.toml`
+    /// (name/version as given) and a trivial `src/main.kry`, committed.
+    /// Returns `false` (caller should skip) if git/identity isn't usable in
+    /// this environment, matching the existing tests' skip convention.
+    fn make_versioned_repo(repo: &Path, name: &str, version: &str) -> bool {
+        std::fs::create_dir_all(repo.join("src")).unwrap();
+        std::fs::write(
+            repo.join("kryos.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\n"),
+        )
+        .unwrap();
+        std::fs::write(
+            repo.join("src").join("main.kry"),
+            "fn main() {\n    println(\"hi\")\n}\n",
+        )
+        .unwrap();
+
+        let git = |args: &[&str]| -> std::process::Output {
+            Command::new("git")
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .expect("git must be on PATH for this test")
+        };
+        if !git(&["init", "-q"]).status.success() {
+            return false;
+        }
+        if !git(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "add",
+            "-A",
+        ])
+        .status
+        .success()
+        {
+            return false;
+        }
+        git(&[
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=test",
+            "commit",
+            "-q",
+            "-m",
+            "initial",
+        ])
+        .status
+        .success()
+    }
+
+    #[test]
+    fn finish_explicit_fetch_honors_declared_source_and_computes_a_checksum() {
+        // LEDGER item 17: an explicit source's OWN version (read from its
+        // own kryos.toml, not a registry index) must be what gets recorded
+        // -- and, since there is no registry checksum to compare against,
+        // the content checksum computed here must be genuinely derived
+        // from the fetched bytes (not a placeholder), matching what
+        // `registry::content_checksum` would independently compute over
+        // the same directory.
+        let base = std::env::temp_dir().join(format!(
+            "kryos-finish-explicit-ok-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        if !make_versioned_repo(&repo, "explicit-dep", "1.2.0") {
+            eprintln!("skipping: git init/commit unusable in this environment");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let tmp = base.join("clone");
+        let repo_url = repo.to_string_lossy().to_string();
+        clone_and_guard(&repo_url, &tmp).expect("local clone must succeed");
+
+        let req: VersionReq = "^1.0.0".parse().unwrap();
+        let result = finish_explicit_fetch("explicit-dep", &repo_url, &req, tmp.clone());
+        let fetched = result.expect("a version satisfying the requirement must be accepted");
+
+        assert_eq!(fetched.version, Version::new(1, 2, 0));
+        assert!(
+            fetched.dest.join("kryos.toml").exists(),
+            "the fetched package must land at the canonical cache dest"
+        );
+        assert!(
+            !tmp.exists(),
+            "the scratch temp clone must be moved, not left behind, at {}",
+            tmp.display()
+        );
+        let recomputed = crate::registry::content_checksum(&fetched.dest).unwrap();
+        assert_eq!(
+            fetched.checksum, recomputed,
+            "the returned checksum must match an independent recomputation over the same \
+             fetched directory"
+        );
+        assert!(fetched.checksum.starts_with("sha256:"));
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn finish_explicit_fetch_rejects_a_version_not_satisfying_the_requirement() {
+        // The manifest declared `^2.0.0`; the explicit source's own
+        // kryos.toml says 1.0.0 -- this must be refused, not silently
+        // accepted (an explicit source is not exempt from the version
+        // requirement the manifest itself wrote down).
+        let base = std::env::temp_dir().join(format!(
+            "kryos-finish-explicit-mismatch-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+
+        if !make_versioned_repo(&repo, "explicit-dep", "1.0.0") {
+            eprintln!("skipping: git init/commit unusable in this environment");
+            let _ = std::fs::remove_dir_all(&base);
+            return;
+        }
+
+        let tmp = base.join("clone");
+        let repo_url = repo.to_string_lossy().to_string();
+        clone_and_guard(&repo_url, &tmp).expect("local clone must succeed");
+
+        let req: VersionReq = "^2.0.0".parse().unwrap();
+        let result = finish_explicit_fetch("explicit-dep", &repo_url, &req, tmp.clone());
+        let err = result.expect_err("a version outside the requirement must be rejected");
+        assert!(
+            err.contains("does not satisfy"),
+            "expected a version-requirement rejection message, got: {err}"
+        );
+        assert!(
+            !tmp.exists(),
+            "a rejected fetch must not leave the scratch temp clone behind"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn finish_explicit_fetch_rejects_a_source_with_no_kryos_toml() {
+        // An explicit source that isn't actually a Kryos package at its
+        // root (no kryos.toml) must be refused with a clear message, not
+        // treated as version 0.0.0 or silently accepted.
+        let base = std::env::temp_dir().join(format!(
+            "kryos-finish-explicit-nomanifest-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let tmp = base.join("clone");
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("README.md"), "not a kryos package\n").unwrap();
+
+        let req: VersionReq = "*".parse().unwrap();
+        let result = finish_explicit_fetch(
+            "explicit-dep",
+            "https://example.invalid/not-really-cloned",
+            &req,
+            tmp.clone(),
+        );
+        let err = result.expect_err("a source with no kryos.toml must be rejected");
+        assert!(
+            err.contains("does not contain a valid kryos.toml"),
+            "expected a missing-manifest rejection message, got: {err}"
         );
 
         let _ = std::fs::remove_dir_all(&base);
