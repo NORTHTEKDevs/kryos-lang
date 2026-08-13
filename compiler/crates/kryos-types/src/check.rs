@@ -1102,6 +1102,35 @@ impl TypeChecker {
                 }
             }
         }
+        // Pre-pass: bind every actor handler's OWN capability row before any
+        // body that may call it is checked.
+        //
+        // A handler's row is only known once its body has been walked, so a
+        // caller declared EARLIER in the module (`actor Sender` before `actor
+        // Receiver`) walks its own body while the callee's `own_cap_var` is
+        // still unbound. The dispatch site then snapshots that bare var and
+        // applies the callee's instantiation map to it -- but the map is keyed
+        // on the callee's `generic_cap_var_ids`, and a bare unbound var is not
+        // one of them, so the remap is a no-op and the row never gets expressed
+        // in terms of anything the CALLER can bind. The chain terminates on a
+        // var no call site will ever touch, and the call costs zero authority.
+        // This is LEDGER item 33, and it is SILENT: enforcement runs, resolves
+        // an open row, and passes.
+        //
+        // Measured: the identical program with `Receiver` declared FIRST is
+        // correctly rejected -- only declaration order differed.
+        //
+        // Safe to run twice because `bind_cap_var` UNIONS rather than
+        // overwrites (rows only widen), and diagnostics from this pass are
+        // discarded so the real pass below is the only one that reports.
+        let diag_mark = self.diagnostics.len();
+        for decl in &module.declarations {
+            if matches!(decl, Decl::Actor { .. }) {
+                self.check_decl(decl);
+            }
+        }
+        self.diagnostics.truncate(diag_mark);
+
         // Second pass: check function bodies and expressions.
         for decl in &module.declarations {
             self.check_decl(decl);
@@ -2235,14 +2264,37 @@ impl TypeChecker {
                         let ft = self.resolve_type_expr(&sf.ty);
                         self.env.define_var_mut(sf.name.clone(), ft);
                     }
+                    // Bind params from the REGISTERED signature, not by
+                    // re-resolving `p.ty` here. `register_decl` already resolved
+                    // the same `TypeExpr` to build the handler's `FunctionSig`,
+                    // minting the capability-row var that lands in
+                    // `generic_cap_var_ids` -- the only var a CALL SITE can remap
+                    // through `instantiate_row`. Re-resolving mints a SECOND,
+                    // unrelated row var: the body then charges that one while
+                    // callers remap the registered one, so the handler's own row
+                    // resolves to a var nothing will ever bind and the call costs
+                    // zero (LEDGER item 33). The impl-method path below already
+                    // binds from `sig.params` for this reason; actor handlers were
+                    // the odd one out. The failure is SILENT -- enforcement runs,
+                    // finds an open row, and passes.
+                    let h_sig = self.env.lookup_method(name, &h.name).cloned();
                     for p in &h.params {
                         let pty = if p.name == "self" {
                             actor_ty.clone()
                         } else {
-                            p.ty
-                                .as_ref()
-                                .map(|t| self.resolve_type_expr(t))
-                                .unwrap_or_else(|| self.engine.fresh_var())
+                            let from_sig = h_sig.as_ref().and_then(|sig| {
+                                sig.params
+                                    .iter()
+                                    .find(|(pn, _)| pn == &p.name)
+                                    .map(|(_, t)| t.clone())
+                            });
+                            match from_sig {
+                                Some(t) => t,
+                                None => match p.ty.as_ref() {
+                                    Some(t) => self.resolve_type_expr(t),
+                                    None => self.engine.fresh_var(),
+                                },
+                            }
                         };
                         self.env.define_var(p.name.clone(), pty);
                     }
@@ -5254,6 +5306,17 @@ impl TypeChecker {
                                 .engine
                                 .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
                             let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                            if std::env::var("KRYOS_ROW_TRACE").is_ok() {
+                                eprintln!(
+                                    "[row] dispatch {}::{} own={} inst={} genvars={:?} map={:?}",
+                                    tname,
+                                    method,
+                                    own_row.display(),
+                                    self.engine.resolve_cap_row(&ref_caps).display(),
+                                    sig.generic_cap_var_ids,
+                                    cap_var_map
+                                );
+                            }
                             self.accumulate_caps(&ref_caps);
                         }
                         return self.engine.resolve(&inst_ret);

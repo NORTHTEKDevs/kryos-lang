@@ -813,5 +813,97 @@ else
     tail -5 "$TMP/newres_nc1" | sed 's/^/    /'; fail=1
 fi
 
+# 91-92. LEDGER item 33: a closure forwarded actor-to-actor as a MESSAGE
+#        PARAMETER (never stored in state -- just passed through a handler
+#        param and invoked by the receiving actor). Two defects compounded:
+#        (a) the handler body bound its params by RE-RESOLVING the param
+#        TypeExpr, minting a second capability-row var unrelated to the one
+#        registered in the signature's `generic_cap_var_ids` -- so the body
+#        charged a var no caller could remap; (b) a caller declared EARLIER
+#        than its callee (`actor Sender` before `actor Receiver`) walked its
+#        body while the callee's `own_cap_var` was still unbound, snapshotting
+#        a bare var its instantiation map could not touch. Both are SILENT:
+#        enforcement runs, resolves an open row, and charges zero.
+for mode_flag in "" "--strict-capabilities"; do
+    if "$K" check $mode_flag tests/security/attack_verify_actor_to_actor_message.kry \
+        >"$TMP/a2a_$mode_flag" 2>&1; then
+        echo "  FAIL: actor-to-actor message-param escape COMPILED [$mode_flag]"
+        fail=1
+    elif grep -qE "E0507|E0110" "$TMP/a2a_$mode_flag"; then
+        echo "  ok   actor-to-actor message-param escape rejected [$mode_flag]"
+    else
+        echo "  FAIL: escape rejected, but NOT for the capability reason [$mode_flag]:"
+        tail -3 "$TMP/a2a_$mode_flag" | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# 93. DECLARATION-ORDER INDEPENDENCE for #91-92. The original defect was
+#     order-sensitive: the identical program with `Receiver` declared FIRST
+#     was already caught, while `Sender` first escaped. Pin BOTH orders so a
+#     future regression cannot hide behind source ordering.
+cat > "$TMP/a2a_receiver_first.kry" <<'KRY'
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+actor Receiver {
+    fn receive(self, f: fn() -> str) {
+        let leaked = f()
+        println("LEAK: " + leaked)
+    }
+}
+actor Sender {
+    fn relay(self, target: Receiver, f: fn() -> str) {
+        target.receive(f)
+    }
+}
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let s = Sender()
+    let r = Receiver()
+    deny!(fs:read) {
+        s.relay(r, reader)
+    }
+}
+KRY
+if "$K" check "$TMP/a2a_receiver_first.kry" >"$TMP/a2a_rf" 2>&1; then
+    echo "  FAIL: actor-to-actor escape COMPILED with callee declared first"
+    fail=1
+else
+    echo "  ok   actor-to-actor escape rejected in BOTH declaration orders"
+fi
+
+# 94. No-cascade complement to #91-92: the identical actor-to-actor message
+#     forwarding shape carrying a PURE closure -- the legitimate
+#     supervisor/worker message-passing pattern this residual matters for --
+#     must still compile with NO annotation. If this goes red, the handler
+#     param-binding change is over-charging ordinary actor messages.
+cat > "$TMP/a2a_nocascade.kry" <<'KRY'
+fn pure_reader() -> str { return "no secrets here" }
+actor Worker {
+    fn handle(self, f: fn() -> str) {
+        println(f())
+    }
+}
+actor Supervisor {
+    fn dispatch(self, target: Worker, f: fn() -> str) {
+        target.handle(f)
+    }
+}
+fn main() {
+    let sup = Supervisor()
+    let w = Worker()
+    sup.dispatch(w, pure_reader)
+}
+KRY
+if "$K" check --strict-capabilities "$TMP/a2a_nocascade.kry" >"$TMP/a2a_nc" 2>&1; then
+    echo "  ok   actor-to-actor forwarding of a pure closure needs no annotation (no cascade)"
+else
+    echo "  FAIL: the item-33 fix cascaded into pure actor message passing:"
+    tail -5 "$TMP/a2a_nc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

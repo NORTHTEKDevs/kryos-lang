@@ -1305,7 +1305,12 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-12 the true count is **1 escaping, 16 rejected**.
+> 2026-08-13 the true count is **0 escaping, 17 rejected**.
+>
+> **0 KNOWN escapes is not 0 escapes.** The corpus is 17 adversarial shapes
+> found by directed search. Every one is now rejected under both enforcement
+> modes; that is a floor, not a soundness proof. The next shape nobody has
+> thought of is the one that matters.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -1340,49 +1345,6 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   shape entirely" are not the same thing. `ir_signatures` is the gate that
 >   catches it; `security_gate.sh` check 66 pins it.
 
-
-### 33. LIVE CAPABILITY ESCAPE — closure parameter forwarded actor-to-actor through a message send escapes capability tracking entirely, on BOTH enforcement modes (re-adjudication session, closed-value-producing-form lens, found 2026-08-06) — NOT FIXED
-
-Repro: `tests/security/attack_verify_actor_to_actor_message.kry`. Verified
-live this session against the existing `compiler/target/release/
-kryos.exe`, no compiler changes:
-
-```
-$ kryos run tests/security/attack_verify_actor_to_actor_message.kry
-ACTOR-TO-ACTOR MESSAGE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
-$ echo $?
-0
-```
-
-Shape: `actor Sender { fn relay(self, target: Receiver, f: fn()->str) {
-target.receive(f) } }`, `actor Receiver { fn receive(self, f: fn()->str) {
-f() } }`, called as `s.relay(r, reader)` inside `deny!(fs:read)` in `main`.
-
-Root cause, confirmed by direct source read: `checker.rs`'s
-`accumulate_hot_extra_caps`/`compute_hot_params` propagation loop sets
-`has_self_offset = is_method && !actor_handler_names.contains(callee)` —
-i.e. it assumes offset 0 (no receiver slot) for any call to a name that is
-an actor-handler, on the stated rationale "an actor handler has no
-receiver slot in its own params." This is false: `kryos-parser/src/
-parser.rs`'s `parse_actor_decl` (~lines 965-999) uses the plain
-`parse_param_list()` for actor handlers, identically to an ordinary `impl`
-method, so a handler declared `fn receive(self, f: fn()->str)` stores
-`self` literally at `params[0]` and `f` at `params[1]`. `hot_params
-["receive"]` is therefore recorded at key 1, but the call-site lookup
-(under the false offset-0 assumption) looks up key 0 and misses the entry
-— so `target.receive(f)`'s real `fs:read` requirement is never attributed
-to `relay`, and `relay`'s caller (`main`, under `deny!`) is charged
-nothing.
-
-Not chased further (no compiler changes this session, per task
-instructions). Suggested fix: `has_self_offset` for an actor-handler callee
-should match the general `is_method` case (offset 1, not 0) — the special-
-cased exemption for actor handlers appears to be simply wrong given the
-parser's actual behavior, not a deliberate design choice with a caveat;
-verify against `parse_actor_decl` directly (already done, cited above)
-before changing, and re-run `security_gate.sh` plus this repro both ways.
-
----
 
 ### 17. SUPPLY CHAIN: a dependency's explicit `git = "..."` / `github:org/repo@ver` source in `kryos.toml` is NEVER consulted by `kryos pkg install`/`update` — silently replaced by a pure by-name lookup against the single hardcoded official registry, or a flat failure, either way ignoring what the manifest says (RED TEAM round 3, toolchain-supply lens, found 2026-08-04) — NOT FIXED
 
@@ -3035,6 +2997,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **item 33: LIVE CAPABILITY ESCAPE -- a closure forwarded actor-to-actor as a MESSAGE PARAMETER escaped tracking on BOTH modes; the LAST known live escape -- FIXED. Escapes 1 -> 0** | Closed 2026-08-13 in `kryos-types/src/check.rs`. **The recorded root cause was WRONG and the measurement disproved it.** The OPEN entry blamed `has_self_offset` in `kryos-capabilities`' `checker.rs` (a confident direct-source-read diagnosis, cited against `parse_actor_decl`); the actual mechanism is two compounding defects in the TYPES checker, neither in that file. Found with `KRYOS_ROW_TRACE=1`, which already existed at the two row-BINDING sites; a third trace was added at the method/handler DISPATCH site to see the remap. **(a) The handler body bound its params by RE-RESOLVING `p.ty`** (`resolve_type_expr` on the param's `TypeExpr`), minting a SECOND capability-row var for `f: fn() -> str` unrelated to the one `register_decl` had already minted and registered in the signature's `generic_cap_var_ids`. Measured: `handler Receiver::receive = {?C12}` while `genvars=[7]` -- the body charged 12, callers could only remap 7, so `instantiate_row` was a no-op and the chain terminated on a var nothing binds. The impl-METHOD path never had this bug because it binds from `sig.params` (which is exactly why items 34/35 were fixable and this was not); actor handlers were the only dispatch surface re-resolving. Fixed by binding handler params from the registered signature, falling back to `resolve_type_expr` only when no sig exists. **(b) A declaration-order FORWARD REFERENCE.** With `actor Sender` declared before `actor Receiver`, `relay`'s body is walked while `receive`'s `own_cap_var` is still unbound, so the dispatch site snapshots a bare var (`own={?C8} inst={?C8}`) and its instantiation map has nothing to act on. **DECISIVE CONTROL, and the measurement that made this unambiguous: the byte-identical program with `Receiver` declared FIRST was already correctly REJECTED** (`own={?C4} inst={?C7}` -> `main={fs:read}` -> E0110, rc=1) -- same source, same types, only order differed. Fixed with a pre-pass over `Decl::Actor` that binds every handler's own row before the real pass; safe to run twice because `bind_cap_var` UNIONS rather than overwrites (rows only widen), and the pre-pass's diagnostics are truncated so only the real pass reports. NOTE the earlier "defer deny! enforcement" attempt recorded under this item was disproved for the right reason but the wrong target -- deferring ENFORCEMENT does not help; binding the callee's ROW earlier does. EVIDENCE, all fresh this session, same binary lineage: BEFORE `kryos check` rc=0, `--strict-capabilities` rc=0, `kryos run` printed `ACTOR-TO-ACTOR MESSAGE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a` rc=0; AFTER rc=1 / rc=1 / rc=1 with no leak line. `tools/loop/escape_status.sh`: **STILL ESCAPING: 0, now-rejected: 17** (was 1/16, and 16/17 of the others were re-measured unchanged, so no regression). NO CASCADE -- the failure mode that killed four prior attempts: `ir_signature_gate` PASS, `strict_caps_examples` PASS, `inferred_soundness` PASS, `conf_stdlib_wave14` (the `std::agent` dispatcher cascade detector) rc=0, `type_soundness` PASS, `security_gate` PASS. Pinned by security_gate checks 91-92 (both enforcement modes), 93 (**declaration-order independence -- both orders, since the original defect was order-sensitive and a regression could otherwise hide behind source ordering**), and 94 (no-cascade complement: a supervisor/worker actor pair forwarding a PURE closure must still compile unannotated). Residual, stated rather than hidden: the pre-pass is a SINGLE pass, which closes the measured depth-2 forward reference; a reverse-declared chain of 3+ mutually-calling actors is not proven and was not tested. |
 | **item 32: LIVE CAPABILITY ESCAPE -- a closure stashed in a TUPLE inside actor state (`pair: (i64, fn() -> str)`), invoked via `self.pair.1()` -- FIXED** | Closed in `773ef05` (2026-08-12). Reading an actor state field whose type CONTAINS a function now yields `CapRow::Unknown` (erases to ALL) instead of the declaration's row var. Unknown is the CORRECT answer here, not a cop-out: actor state is mutable storage any handler may write at any prior dispatch, so which closure sits in a fn-bearing field at a given read is genuinely not statically knowable -- the same stance `resolve_actor_self_field_invoke_caps` already takes for `self.<field>()`, applied to the row. MEASURED: a STRUCT field in actor state already worked (main={fs:read}, because a struct field's row var is declaration-global so building the literal in main binds it), while a TUPLE field did not (main={?C10}) -- `self.pair = (0, f)` builds a new tuple type inside the handler from the handler's own param, so the field var binds to the ORIGINAL param var, which instantiation freshens per call site and therefore never binds concretely. The tempting fix (also binding the original param var) was REJECTED without attempting: it is the `all` cascade in a new costume -- one privileged closure passed to `std::iter::map` would bind map's declaration-global param var and every map call everywhere would charge it. Scoped to `self` inside a handler AND to fields whose type transitively contains a function, so ordinary data state is untouched. NO over-rejection: ir_signatures PASS 62 files, strict_caps + examples PASS. Escapes 2 -> 1. Pinned by security_gate checks 85-86. |
 | **item 35: LIVE CAPABILITY ESCAPE -- a privileged closure passed to a STATIC impl method (`Invoker::run(reader)`) cost zero -- FIXED** | Closed in `c29b15b` (2026-08-12). Impl method bodies were checked with NO capability-accumulator frame at all, unlike plain functions and actor handlers which both push one -- so an impl method's `own_cap_var` was never bound, stayed permanently unresolved, and every call site resolved it to nothing. MEASURED: `main` accumulated `{?C2}` and there was NO row line for the method at all, because nothing ever computed one. Both impl-method body paths now push a frame; the signature-bearing path binds the result to `sig.own_cap_var`, the fallback path gets a frame purely so the body's authority cannot leak into an unrelated enclosing accumulator. ALSO fixed the same silent ordering bug the instance-dispatch site had: the static path charged the callee's row BEFORE unifying arguments, so a row-polymorphic static method resolved a still-open row and charged nothing. Escapes 3 -> 2. Gates: security_gate PASS (84 checks; 83-84 pin the shape both modes), ir_signatures PASS, gates 2 tier1 62/62 + tier2 GREEN. |
 | **item 34: LIVE CAPABILITY ESCAPE -- a two-hop `let` alias of an actor's fn-bearing state field defeated `deny!()` -- FIXED** | Closed in `848a9d4` (2026-08-12). The method-call site that resolves impl methods AND actor handlers (both go through `lookup_method`) computed a `cap_var_map` and then bound it to `_` and discarded it -- it never charged the callee's own row. MEASURED: an actor handler whose body calls `file_read` accumulated `{fs:read}` correctly while the `main` invoking it accumulated `{}`, so ANY authority behind a handler call was invisible to enforcement regardless of what the handler did -- a whole dispatch surface, not an edge case. **ORDER MATTERS AND GETTING IT WRONG IS SILENT**: the first version charged the row right after `instantiate_sig`, BEFORE argument unification. A handler that is row-polymorphic in a fn-typed param (`fn receive(self, f: fn() -> str)`) has a row mentioning that param's own var, and that var only binds when the argument is unified against the param -- charging first resolves a still-open row and charges nothing. Moved after the arg loop. Escapes 4 -> 3. Gates: security_gate PASS (82 checks; 81-82 pin the shape under both modes), ir_signatures PASS, gates 2 tier1+tier2 GREEN. |
