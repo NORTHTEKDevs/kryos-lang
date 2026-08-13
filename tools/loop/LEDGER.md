@@ -12,6 +12,77 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification #2 (2026-08-13) -- assigned LEDGER items 5 and 2b, found ALREADY CLOSED (`fd07331`, re-verified once already on 2026-08-08), zero compiler changes this session -- item 5's performance claim FRESHLY MEASURED this time (the 08-08 session's own attempt was blocked by Defender contention and explicitly disclosed as not re-measured)
+
+Assigned wave was to close LEDGER item 5 (`Parser` array-in-a-rebuilt-struct
+O(n^2)) and item 2b (global array reassignment corruption,
+`kryos_array_push: corrupt array header ... cap=0, data=0x0`). Both were
+already fixed and merged (`fd07331`, 2026-08-02) and already independently
+re-verified once (2026-08-08, this ledger, "Wave: Parser array-in-rebuilt-struct
++ global array reassign re-verification"). Per doctrine, re-verified again
+independently against TODAY's HEAD (`226abf6`, 5 commits / 1 day past the
+last check) rather than trusting either prior claim, and this time completed
+the ONE thing the 08-08 session explicitly could not:
+
+- Clean HEAD baseline: `git status` on all tracked dirs clean, no stray WIP
+  this time. `compiler/target/release/kryos.exe` (built 2026-08-12 21:46,
+  after the last compiler-touching commit) confirmed current -- the one
+  intervening commit (`226abf6`) was LEDGER-only, zero source changes.
+- Killed stray `kryos.exe` first (none found) per non-negotiable #5.
+- `bash tools/loop/kryos-loop.sh gates 2`: **GREEN** -- tier1 14/14 (conformance
+  62/62 incl. `conf_global_reassign_cross_fn` OK both backends, `selfhost_regressions`
+  PASS), tier2 5/5 (`examples`, `strict_caps`, `examples_e2e`, `ir_signatures`,
+  `selfhost_wholeprogram`). NOTE for whoever runs this next: the first attempt
+  hung for 20+ min with a `| tail -N` piped output redirect and had to be killed
+  and re-run writing straight to a file -- `tail -N` on a live pipe buffers until
+  EOF, so it LOOKS hung even when the underlying run is progressing; this
+  machine's subprocess-spawn overhead is genuinely high right now (~6s/conformance-test,
+  not itself a regression) but is NOT the same failure mode as a true hang --
+  don't conflate the two, verify via `winobs`/CPU-delta before killing.
+- `compiler/self-host/test_bootstrap.sh`: **16/16**, ~3 min, no contention this
+  session (Defender `cpu_s=0` at the time, confirmed via `winobs defender_activity`)
+  -- unlike 08-08's 50+ min stall, today's machine state allowed it to complete
+  cleanly, which is exactly what made the item-5 remeasurement below possible.
+- **Item 2b, proved BOTH WAYS fresh, live, this session** (not just re-running
+  green): `git show fd07331 -- compiler/crates/kryos-mir/src/lower.rs` reverse-applied
+  cleanly. `cargo build --release -p kryos-cli` (48s, kryos-mir only, no
+  kryos-rt/kryos-stdlib-native touch, safe per gotcha #2). Pre-fix:
+  `kryos.exe run tests/conformance/conf_global_reassign_cross_fn.kry` reproduced
+  the EXACT original panic -- `kryos panic: kryos_array_push: corrupt array
+  header @ 0x1d523e62f00 (len=0, cap=0, elem_size=8, ref_count=1, data=0x0)`,
+  stack trace `add_one() -> main()`, exit 98. `git checkout --` restored the fix,
+  rebuilt (48s) -- clean PASS on both `kryos run` (JIT, exit 0) and `kryos build
+  --release` (AOT, fresh binary compiled+run, exit 0).
+- **Item 5, freshly remeasured end to end** (the 08-08 session's explicit gap):
+  `git show fd07331 -- compiler/self-host/parser.kry` reverse-applied cleanly.
+  Built a REVERTED stage-1 (`kryos.exe build self-host/main.kry -o
+  kryos-stage1-reverted --skip-ownership`, stage-0 unchanged) alongside the
+  already-current FIXED stage-1 (from the bootstrap run above). Measured both
+  compiling `self-host/lower.kry` (127,836 bytes, matches the documented 128KB
+  file) via the identical `obj` path (`KRYOS_SKIP_TYPES=1`), same methodology as
+  the original (`Start-Process`/`PeakWorkingSet64` polling every 20ms for peak
+  memory; bash `time` for wall clock; stage-0 unchanged across both runs):
+  **peak working set 458,543,104 bytes (437.3 MB) reverted -> 107,188,224 bytes
+  (102.2 MB) fixed, a 4.28x reduction** -- independently confirms the original
+  session's 435.5 MB -> 101.7 MB / 4.3x claim to within measurement noise, on a
+  DIFFERENT day, DIFFERENT machine load. Wall time: 1.564s reverted -> 1.567s
+  fixed, flat (both runs' absolute numbers are higher than the original
+  session's 396/402ms -- today's machine is generally slower per the gates-hang
+  note above -- but the RELATIVE finding, flat wall time despite an O(n^2) vs
+  O(n) algorithmic difference, reproduces exactly). Restored the fix
+  (`git checkout --`), rebuilt, re-ran `test_bootstrap.sh` once more clean
+  (16/16) to confirm the working tree was left exactly as found. Deleted the
+  scratch `kryos-stage1-reverted(.exe)` binaries and all `/tmp` scratch output
+  after the comparison.
+
+**Net result: nothing to fix, both items remain closed, and item 5's
+performance claim is now independently re-measured (not just historically
+cited) for the first time since the original 2026-08-02 fix.** No
+`tests/known_failures/` repro to move for either item (both already
+moved/deleted by the original `fd07331` fix).
+
+---
+
 ## Wave: spawn-closure race + mutated-scalar-capture re-verification #2 (2026-08-12) -- assigned LEDGER items 7 and 7b, found ALREADY CLOSED (`a39b776`, `00b3cf7`, both re-verified once already on 2026-08-08), zero compiler changes this session
 
 Assigned to close item 7 (mutated-SCALAR-capture N>=2 generalization) and item 7b
