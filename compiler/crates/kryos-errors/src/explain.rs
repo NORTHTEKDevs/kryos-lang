@@ -23,6 +23,7 @@ pub fn explain(code: &str) -> Option<&'static str> {
         "E0004" => Some(E0004),
         "E0009" => Some(E0009),
         "E0010" => Some(E0010),
+        "W0001" => Some(W0001),
         "E0200" => Some(E0200),
         "E0201" => Some(E0201),
         "E0202" => Some(E0202),
@@ -75,6 +76,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0004", "expected type"),
         ("E0009", "syntax error"),
         ("E0010", "program nesting too deep"),
+        ("W0001", "ambiguous newline-led `||`/`|` continuation"),
         ("E0200", "module path could not be resolved"),
         ("E0201", "qualified call resolves to a different module than named"),
         ("E0202", "qualified call names a symbol that was never imported"),
@@ -879,6 +881,49 @@ pass the field by reference:
         let n = inspect(&p.a)   // borrow instead of move
         print(to_string(n))
     }
+"#;
+
+// ----- W0001 ----------------------------------------------------------------
+
+const W0001: &str = r#"W0001: ambiguous newline-led `||`/`|` continuation
+
+The parser has no newline awareness -- tokens carry only byte-offset spans,
+not line numbers. `||` and `|` are both a binary operator (boolean-or /
+bitwise-or) AND a closure-literal opener (`|| ...` / `|x| ...`). When a
+fresh line begins with `||`/`|` and the previous line already parsed as a
+complete-looking expression, the parser has no way to tell whether you meant
+to CONTINUE that expression (an intentional multi-line boolean-or chain) or
+START a new statement (most often a closure literal) -- it always chooses
+CONTINUE, silently, with no diagnostic before this warning existed.
+
+Example that triggers the warning -- a SILENT WRONG VALUE, not a crash:
+
+    fn main() {
+        let a: bool = false
+        let b: bool = true
+        let c: bool = a
+        || b
+        println(to_string(c))   // prints "true": `c` became `a || b`,
+    }                           // not a plain copy of `a` followed by a
+                                // discarded closure-literal statement
+
+This warning fires only on the FIRST `||`/`|` encountered while building an
+expression -- an established chain (the operator already appeared earlier
+on the SAME line, e.g. `is_digit`-style predicates spanning several lines)
+is common, intentional, and does not warn:
+
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+Fixes:
+  - If you meant a NEW statement, restructure it so its first token is not
+    `|`/`||` -- e.g. bind a closure via its own `let name = || ...`.
+  - If you meant to CONTINUE the previous expression, move the operator to
+    the END of the previous line instead (`a ||`) so the intent is visible
+    without relying on this warning.
+
+This is a warning, not an error: the program still compiles and runs with
+the merged-continuation reading, exactly as before this diagnostic existed.
 "#;
 
 // ----- W0300 ----------------------------------------------------------------

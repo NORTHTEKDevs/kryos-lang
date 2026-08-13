@@ -2028,6 +2028,11 @@ impl Parser {
         // loop only exits via `break`, so the accounting can't drift).
         let mut spine: usize = 0;
 
+        // Tracks whether this frame has already consumed a `||`/`|`
+        // (boolean-or / bitwise-or) infix operator -- see the W0001
+        // warning below, right before the generic infix consume.
+        let mut seen_pipe_or_chain = false;
+
         loop {
             if self.at_end() {
                 break;
@@ -2338,6 +2343,52 @@ impl Parser {
                         span: start.merge(end),
                     };
                     continue;
+                }
+
+                // Ambiguous continuation trap (CLAUDE.md hard rule 1): the
+                // parser has no newline awareness, so a `||` right after a
+                // newline is indistinguishable from an intentional multi-line
+                // boolean-or chain UNLESS this is the FIRST `||` encountered
+                // while building this expression -- an established chain (the
+                // operator already appeared earlier in this same expression)
+                // is unambiguous and common in real code (`is_digit`-style
+                // predicates spanning several lines). Warn only on the
+                // dangerous first-occurrence case, where a fresh-looking
+                // operand is silently annexed by a `||` a human is far more
+                // likely to have meant as a NEW statement (an empty-param
+                // closure literal). Deliberately `||`-ONLY, not single `|`:
+                // an empirical corpus sweep (examples/, tests/conformance/,
+                // self-host/, stdlib/) found the identical "first occurrence,
+                // newline-led" shape is a COMMON, LEGITIMATE pattern for
+                // single-`|` bitwise-or bit-packing (`examples/cdp_bot.kry`,
+                // `examples/websocket_client.kry`: `plen = (a << 24)` then
+                // `| (b << 16)` / `| (c << 8)` / `| d`, one byte per line,
+                // operator leading from the very first continuation) -- the
+                // "first occurrence in statement" heuristic that cleanly
+                // separates true bug from real usage for `||` does NOT hold
+                // for single `|`, so warning there would false-positive on
+                // real shipped code. `||`'s empty-/single-param-closure
+                // ambiguity has no equivalently common bitwise-continuation
+                // counter-pattern in this corpus, hence the asymmetry.
+                let is_pipe_pipe = kind == TokenKind::PipePipe;
+                if is_pipe_pipe && !seen_pipe_or_chain && self.peek().newline_before {
+                    let span = self.peek().span;
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            "this line starts with `||`, which silently continues the PREVIOUS statement's expression as a boolean-or -- if you meant to start a NEW statement (e.g. a closure literal), this merge produces a wrong value with no error"
+                        )
+                        .with_code(kryos_errors::codes::W0001)
+                        .with_label(
+                            span,
+                            "ambiguous: continues the previous line instead of starting fresh",
+                        )
+                        .with_note(
+                            "move the operator to the END of the previous line instead (`a ||`), or restructure so this statement's first token isn't `||`",
+                        ),
+                    );
+                }
+                if is_pipe_pipe {
+                    seen_pipe_or_chain = true;
                 }
 
                 self.advance();

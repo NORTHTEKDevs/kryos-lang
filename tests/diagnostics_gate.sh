@@ -193,6 +193,80 @@ else
     echo "  skip stray-comma-hang check (no 'timeout' command available)"
 fi
 
+# 7. LEDGER item 9 (the `||`-continuation trap, CLAUDE.md hard rule 1): the
+#    parser has no newline awareness, so a fresh line starting with `||`
+#    silently continues the PREVIOUS statement's expression as boolean-or
+#    instead of starting a new statement (e.g. an empty-param closure
+#    literal) -- a SILENT WRONG VALUE with no diagnostic. W0001 now detects
+#    the dangerous shape (first `||` in the expression, right after a
+#    newline) without changing the merge behavior itself (backward compat:
+#    the value stays whatever the merge produces). Three shapes, all real:
+#    (a) the true bug MUST warn, (b) an established multi-line boolean-or
+#    CHAIN (`is_digit`-style, `||` already used earlier in the SAME
+#    statement) must NOT warn -- shipped in this repo's own
+#    examples/real/*.kry, (c) a multi-line bitwise-or BIT-PACKING chain
+#    (single `|`, not `||`) must NOT warn -- shipped in
+#    examples/cdp_bot.kry and examples/websocket_client.kry; single `|` is
+#    deliberately OUT of scope for W0001 (see the parser's own comment at
+#    the warning site) because that exact "first occurrence, newline-led"
+#    shape is common and legitimate for bit-packing, unlike `||`.
+cat > "$TMP/pipe_pipe_trap.kry" <<'KRY'
+fn main() {
+    let a: bool = false
+    let b: bool = true
+    let c: bool = a
+    || b
+    println(to_string(c))
+}
+KRY
+out="$("$K" run "$TMP/pipe_pipe_trap.kry" 2>&1)"
+if grep -q "warning\[W0001\]" <<<"$out" && grep -q "^true$" <<<"$out"; then
+    echo "  ok   newline-led first-occurrence \`||\` warns (W0001) AND the documented merge behavior (c=true) is unchanged"
+else
+    echo "  FAIL: expected a W0001 warning plus unchanged merge output 'true':"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/pipe_pipe_chain_ok.kry" <<'KRY'
+fn is_digit(c: str) -> bool {
+    return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
+        || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+}
+fn main() {
+    println(to_string(is_digit("5")))
+}
+KRY
+out="$("$K" check "$TMP/pipe_pipe_chain_ok.kry" 2>&1)"
+if ! grep -q "W0001" <<<"$out"; then
+    echo "  ok   an established multi-line \`||\` chain (is_digit-style) does not false-positive"
+else
+    echo "  FAIL: legitimate multi-line boolean-or chain triggered W0001:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/pipe_bitpack_ok.kry" <<'KRY'
+fn pack(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    let v = (a << 24)
+        | (b << 16)
+        | (c << 8)
+        | d
+    return v
+}
+fn main() {
+    println(to_string(pack(1, 2, 3, 4)))
+}
+KRY
+out="$("$K" check "$TMP/pipe_bitpack_ok.kry" 2>&1)"
+if ! grep -q "W0001" <<<"$out"; then
+    echo "  ok   a multi-line single-\`|\` bitwise-or bit-packing chain does not false-positive"
+else
+    echo "  FAIL: legitimate multi-line bitwise-or chain triggered W0001:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+if "$K" explain W0001 2>&1 | grep -q "^W0001:"; then
+    echo "  ok   kryos explain W0001 resolves"
+else
+    echo "  FAIL: kryos explain W0001 did not resolve"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else

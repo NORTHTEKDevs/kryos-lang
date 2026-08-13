@@ -12,6 +12,173 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: lowercase struct literal + nested binop corruption re-verification #2, plus a REAL fix for item 9 (2026-08-13) -- assigned items 10 and "nested binop corrupts next parse" (found ALREADY CLOSED, `e58d8dc`, ancestor of HEAD `657adf2`, re-verified fresh this session with real regression runs, no compiler changes needed) AND the item-9 `||`-continuation trap re-check -- THIS one got a real fix: a new W0001 parser warning, empirically validated against a real corpus, zero compiler regressions
+
+Assigned wave: items 10 (lowercase struct literal) and the nested-binop-corrupts-
+next-parse bug, plus a mandated re-check of item 9 (the `||`-continuation
+silent-merge trap). Per doctrine ("REPRODUCE before theorizing", "self-reported
+done is not evidence") did not trust the ledger's own prior two closures --
+independently re-verified before touching anything:
+
+- `tests/known_failures/lowercase_struct_literal_parse_fail.kry` and
+  `tests/known_failures/parse_nested_binop_corrupts_next.kry` both confirmed
+  ABSENT (already folded/deleted). `git merge-base --is-ancestor e58d8dc HEAD`
+  confirms the original fix (`e58d8dc`, 2026-08-02) is an ancestor of today's
+  HEAD (`657adf2`) -- this is the THIRD session assigned this exact pair
+  (previously closed 2026-08-02, re-verified with full revert/rebuild proof
+  both ways on 2026-08-08). Rather than repeat a third full revert cycle for
+  zero marginal signal (the fix commit cannot un-happen), ran the regression
+  tests fresh against a clean rebuild instead: `tests/conformance/
+  conf_lowercase_struct_literal.kry` PASS on both `kryos run` (JIT) and a
+  fresh `kryos build --release` (AOT); `bash compiler/self-host/
+  test_regressions.sh` PASS (`lexer_reentrant_tokenize`, the actual root
+  cause behind the "nested binop" misdiagnosis per the 2026-08-08 session's
+  own writeup). Both clean against the FINAL build below (which also
+  contains this session's own new parser change), so this doubles as a
+  regression check that the new W0001 work doesn't interact with either
+  fix. **Both remain closed; nothing to fix.**
+- **Item 9, actually advanced this session (not just re-assessed).** The
+  2026-08-08 re-verification concluded a naive "warn on any newline-led
+  `||`/`|`" diagnostic was DEMONSTRATED wrong (false-positives on 3 real
+  shipped `is_digit`-style files) and pushed a real fix out of scope ("needs
+  type info, larger design"). Found a narrower, purely SYNTACTIC heuristic
+  that does not need type info: warn only when the newline-led `||` is the
+  FIRST `||` encountered while building the current expression (an
+  established chain -- the operator already appeared earlier in the SAME
+  statement, exactly the `is_digit` shape -- does not warn). Implemented and
+  empirically validated, not just theorized:
+  - Added `Token.newline_before: bool` (`kryos-lexer`), computed once at the
+    lexer's single `emit()` choke point by scanning bytes between the
+    previous token's end and this token's start for a newline -- covers plain
+    whitespace gaps AND newlines swallowed inside a comment, with no changes
+    to `skip_whitespace_and_comments`'s internals. `Token::new`/`Token::dummy`
+    default it to `false` (only the lexer's real tokens carry a real value),
+    so this is additive with zero blast radius to the ~20 other `Token`
+    construction sites.
+  - `kryos-parser`'s Pratt infix loop (`parse_expr_bp_inner`) tracks a
+    loop-local `seen_pipe_or_chain: bool`; on a `PipePipe` (`||`) infix
+    consume with `newline_before` true and `!seen_pipe_or_chain`, pushes a
+    new `W0001` warning (`kryos-errors`: new `codes::W0001`, full
+    `kryos explain W0001` article, matching the existing `W0300` pattern).
+    Deliberately `PipePipe`-only, NOT single `Pipe` -- see the next bullet.
+  - **Found a REAL false positive during validation, before shipping the
+    fix broadly, and narrowed scope in response** (this is the part
+    non-negotiable #3 exists for): an initial version also covered single
+    `|` (bitwise-or, since it shares the same closure-vs-infix grammar
+    collision per CLAUDE.md hard rule 1). A repo-wide sweep (grep for a
+    line starting with `|`/`||` across every `.kry` file, then `kryos check`
+    on every hit) found `examples/cdp_bot.kry` and `examples/websocket_client.kry`
+    both contain a genuine, common, LEGITIMATE multi-line bitwise-or
+    bit-packing pattern (`plen = (a << 24)` then `| (b << 16)` / `| (c << 8)`
+    / `| d`, one byte per line, operator leading from the very FIRST
+    continuation -- no prior same-statement `|` to make it "established")
+    that the first-occurrence heuristic cannot distinguish from the true bug
+    shape. Dropped single `Pipe` from the warning entirely rather than ship
+    a known false positive; `||` alone validated CLEAN (0 false positives)
+    across every `.kry` file in the repo containing a leading `||`/`|`
+    continuation (`examples/`, `tests/conformance/`, `compiler/self-host/`,
+    `stdlib/`, `ecosystem/`, `tests/known_failures/`, `scratchpad/` -- 9
+    candidate files total, checked individually): the true bug repro warns,
+    2 more independent deliberately-constructed ASI-trap demo files
+    (`scratchpad/rt3/fmt_semantics.kry`, `tests/known_failures/
+    rt3_fmt_audit_crash/fmt_launders_asi_trap.kry` -- same repro shape as the
+    known bug, so a warning there is a correct positive, not noise) warn,
+    and the 3 `is_digit`-style chains plus 2 unrelated `||`-using files stay
+    silent.
+  - **Fixed a separate, PRE-EXISTING bug this uncovered**: `kryos_parser::
+    parse()`'s `Ok` branch silently discarded every non-error diagnostic
+    (including the new warning) -- confirmed by reading `kryos-parser/src/
+    lib.rs`: `if diagnostics.iter().any(is_error) { Err(diagnostics) } else
+    { Ok(module) }` drops `diagnostics` entirely on the `Ok` path. This
+    meant NO parser-level warning could ever have reached a real `kryos
+    run`/`build`/`check` invocation, before or after this session's change,
+    making the new W0001 warning silently dead on arrival if left
+    unaddressed. Added `parse_with_diagnostics(tokens) -> (Option<Module>,
+    Vec<Diagnostic>)` alongside (not replacing) `parse()`, and wired it into
+    ONLY the two driver entry points that matter for the 3 primary user
+    commands -- `compile_file_impl` (`kryos run`/`kryos build`, via
+    `compile_file_with_backend`) and `check_file_with_options_full` (`kryos
+    check`, confirmed the only caller `check.rs` actually uses) -- via
+    `kryos-driver/src/pipeline.rs`. Deliberately did NOT touch `parse()`
+    itself or its ~20 other call sites (LSP diagnostics/completion/hover/
+    goto-def, `kryos-fmt`, `kryos lint`/`audit`/`doc`/`coverage`/`manifest`/
+    `diff`, `caps_badge`) to keep blast radius to the paths that were
+    actually in scope -- **residual, explicitly not done**: `kryos-lsp`'s
+    live editor diagnostics and `compile_source`/`check_source` (string-based
+    entry points, likely `kryos repl`) still silently drop a parser warning
+    on success; a future session extending `parse_with_diagnostics` to those
+    paths is a small, separate, well-scoped follow-up, not blocked on
+    anything here.
+  - Verified end to end, not just at the diagnostic-emission unit level:
+    `kryos run tests/known_failures/closure_pipe_continuation_silent_wrong.kry`
+    (before it was deleted, see below) printed the W0001 warning AND still
+    printed `true` (the merge behavior is genuinely unchanged, by design --
+    this is a detectability fix, not a grammar fix; the parser still has no
+    newline awareness).
+  - **Regression test added, PROVEN BOTH WAYS live this session** (not a
+    formality): extended `tests/diagnostics_gate.sh` (already wired into
+    tier-1 gates as `diagnostics`) with section 7 -- 4 checks: (a) the true
+    bug shape warns AND the merge output is unchanged (`true`), (b) the
+    `is_digit`-style established chain does not false-positive, (c) the
+    bitwise-or bit-packing chain does not false-positive (pins the
+    `Pipe`-exclusion decision), (d) `kryos explain W0001` resolves. Reverted
+    ALL of this session's source changes via `git stash` (7 tracked files:
+    kryos-lexer token.rs/lexer.rs, kryos-parser lib.rs/parser.rs,
+    kryos-errors codes.rs/explain.rs, kryos-driver pipeline.rs -- confirmed
+    via `git status` these were the only touched tracked source files),
+    rebuilt `-p kryos-cli` (safe: parser/lexer/errors/driver only, never
+    touches kryos-rt/kryos-stdlib-native, per CLAUDE.md's staticlib-stale
+    gotcha), re-ran the gate: **2 of the 4 new checks FAIL exactly as
+    expected** -- the true-bug-must-warn check fails (`FAIL: expected a
+    W0001 warning plus unchanged merge output 'true': true` -- confirms the
+    underlying bug is still silently present pre-fix, exactly the documented
+    defect) and `kryos explain W0001` fails to resolve (code doesn't exist
+    pre-fix); the 2 non-regression checks trivially hold (nothing to
+    false-positive on without the code existing at all). `git stash pop`
+    restored the fix byte-identical, rebuilt again, re-ran the gate: **all 4
+    PASS**, `diagnostics-gate: PASS`.
+  - Also folded the now-stale `tests/known_failures/
+    closure_pipe_continuation_silent_wrong.kry` per non-negotiable #9 --
+    deleted the file (its content is now redundant with the gate's own
+    heredoc-embedded repro, matching this suite's existing convention of
+    self-contained diagnostic fixtures rather than external `.kry` files),
+    removed its row from `tests/known_failures/README.md`'s table, and added
+    a "DETECTED (not eliminated)" entry to the README's FIXED section
+    explaining the distinction (the grammar ambiguity is a documented,
+    accepted, unchanged limitation per CLAUDE.md hard rule 1 -- only its
+    SILENCE was fixed). Updated CLAUDE.md's hard rule 1 prose itself with
+    the same distinction inline.
+- `bash tools/loop/kryos-loop.sh gates 2` (fresh, full run against the final
+  restored state): **GREEN** -- tier1 14/14 PASS (conformance 62/62,
+  including the new `diagnostics` checks and `selfhost_regressions`), tier2
+  5/5 PASS (`examples`, `strict_caps`, `examples_e2e`, `ir_signatures`,
+  `selfhost_wholeprogram`). No stray `kryos.exe`/`cargo.exe`/`link.exe`
+  confirmed before either the gates run or bootstrap (non-negotiable #5).
+- `compiler/self-host/test_bootstrap.sh`: **16/16 PASS**, run ALONE (no
+  concurrent gates), no contention this session.
+- Full `cargo build --release` (no `-p`) confirmed a no-op (0.41s, already
+  up to date) after the `-p kryos-cli` builds used for iteration -- the
+  authoritative closing build matches source exactly; this change never
+  touches `kryos-rt`/`kryos-stdlib-native` so the staticlib-stale gotcha
+  does not apply, but the full build was still run before the final gate
+  pass per non-negotiable #2's letter, not just its intent.
+
+**Net result: items 10 and nested-binop remain closed (re-verified, zero
+compiler changes needed there). Item 9 went from "documented limitation,
+correctly assessed as not-yet-fixable" to "detected" -- a new W0001 warning,
+proven both ways, empirically validated (not theorized) against every
+matching real `.kry` file in the repo, with the false-positive risk on
+single-`|` found and excluded BEFORE shipping rather than after. All gates
+GREEN, bootstrap 16/16. Explicitly NOT done: the underlying grammar merge
+itself is unchanged (by design -- see CLAUDE.md hard rule 1, still the
+correct mitigation for `-`/`(`/`[` and now also single `|`, none of which
+this session's diagnostic covers); `kryos-lsp` and the string-based
+`compile_source`/`check_source` paths still silently drop a parser warning
+on success (parser-level warnings only reach `kryos run`/`build`/`check`
+today) -- both are small, separate, well-scoped follow-ups.**
+
+---
+
 ## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification #2 (2026-08-13) -- assigned LEDGER items 5 and 2b, found ALREADY CLOSED (`fd07331`, re-verified once already on 2026-08-08), zero compiler changes this session -- item 5's performance claim FRESHLY MEASURED this time (the 08-08 session's own attempt was blocked by Defender contention and explicitly disclosed as not re-measured)
 
 Assigned wave was to close LEDGER item 5 (`Parser` array-in-a-rebuilt-struct

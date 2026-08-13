@@ -9,6 +9,11 @@ pub struct Lexer<'src> {
     pos: usize,
     tokens: Vec<Token>,
     diagnostics: Vec<Diagnostic>,
+    /// Byte offset just past the end of the last emitted token. `emit`
+    /// scans `bytes[last_token_end..start]` for a `\n` to compute the next
+    /// token's `newline_before` -- this single choke point covers plain
+    /// whitespace gaps AND newlines swallowed inside a skipped comment.
+    last_token_end: usize,
 }
 
 impl<'src> Lexer<'src> {
@@ -20,6 +25,7 @@ impl<'src> Lexer<'src> {
             pos: 0,
             tokens: Vec::new(),
             diagnostics: Vec::new(),
+            last_token_end: 0,
         }
     }
 
@@ -139,11 +145,15 @@ impl<'src> Lexer<'src> {
     }
 
     fn emit(&mut self, kind: TokenKind, start: usize, end: usize, text: String) {
+        let newline_before = self.bytes[self.last_token_end..start.max(self.last_token_end)]
+            .contains(&b'\n');
         self.tokens.push(Token {
             kind,
             span: Span::new(self.file_id, start as u32, end as u32),
             text,
+            newline_before,
         });
+        self.last_token_end = end;
     }
 
     fn skip_whitespace_and_comments(&mut self) {

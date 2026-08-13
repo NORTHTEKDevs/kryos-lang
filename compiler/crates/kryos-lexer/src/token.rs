@@ -318,6 +318,17 @@ pub struct Token {
     pub kind: TokenKind,
     pub span: Span,
     pub text: String,
+    /// True when at least one newline byte appears anywhere in the source
+    /// between the end of the PREVIOUS token and the start of this one
+    /// (whitespace or inside a skipped comment). The parser has no other
+    /// newline awareness (spans are byte offsets only) -- this is the one
+    /// deliberate exception, added specifically so the ambiguous `||`/`|`
+    /// continuation trap (a fresh line starting with the empty-/single-param
+    /// closure opener, which is ALSO the boolean-or/bitwise-or infix
+    /// operator) can be detected and warned on instead of silently resolved.
+    /// Always `false` for a token built via `Token::new`/`Token::dummy` --
+    /// only `kryos-lexer`'s own `emit` computes a real value.
+    pub newline_before: bool,
 }
 
 impl Token {
@@ -326,6 +337,7 @@ impl Token {
             kind,
             span,
             text: text.into(),
+            newline_before: false,
         }
     }
 
@@ -334,6 +346,7 @@ impl Token {
             kind,
             span: Span::DUMMY,
             text: String::new(),
+            newline_before: false,
         }
     }
 }

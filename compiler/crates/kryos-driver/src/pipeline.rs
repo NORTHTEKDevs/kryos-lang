@@ -12,7 +12,7 @@ use kryos_errors::{Diagnostic, SourceMap};
 use kryos_lexer::Lexer;
 use kryos_mir::MirModule;
 use kryos_ownership::analyze_ownership;
-use kryos_parser::parse;
+use kryos_parser::{parse, parse_with_diagnostics};
 use kryos_types::type_check;
 
 use crate::build_cache::{self, CacheContext, CacheKey};
@@ -375,10 +375,11 @@ fn compile_file_impl(
     }
 
     // 4. Parse
-    let mut module = match parse(tokens) {
-        Ok(module) => module,
-        Err(parse_errors) => {
-            diagnostics.extend(parse_errors);
+    let (parsed_module, parse_diags) = parse_with_diagnostics(tokens);
+    diagnostics.extend(parse_diags);
+    let mut module = match parsed_module {
+        Some(module) => module,
+        None => {
             return CompileResult {
                 diagnostics,
                 source_map,
@@ -1327,9 +1328,11 @@ pub fn check_file_with_options_full(
     }
 
     // Parse
-    let mut module = match parse(tokens) {
-        Ok(module) => module,
-        Err(parse_errors) => return (parse_errors, source_map),
+    let (parsed_module, parse_diags) = parse_with_diagnostics(tokens);
+    diagnostics.extend(parse_diags);
+    let mut module = match parsed_module {
+        Some(module) => module,
+        None => return (diagnostics, source_map),
     };
 
     // Resolve imports
