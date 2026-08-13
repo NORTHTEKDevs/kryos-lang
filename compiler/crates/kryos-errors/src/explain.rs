@@ -76,7 +76,7 @@ pub fn list() -> Vec<(&'static str, &'static str)> {
         ("E0004", "expected type"),
         ("E0009", "syntax error"),
         ("E0010", "program nesting too deep"),
-        ("W0001", "ambiguous newline-led `||`/`|` continuation"),
+        ("W0001", "ambiguous newline-led `||` continuation"),
         ("E0200", "module path could not be resolved"),
         ("E0201", "qualified call resolves to a different module than named"),
         ("E0202", "qualified call names a symbol that was never imported"),
@@ -885,12 +885,12 @@ pass the field by reference:
 
 // ----- W0001 ----------------------------------------------------------------
 
-const W0001: &str = r#"W0001: ambiguous newline-led `||`/`|` continuation
+const W0001: &str = r#"W0001: ambiguous newline-led `||` continuation
 
 The parser has no newline awareness -- tokens carry only byte-offset spans,
-not line numbers. `||` and `|` are both a binary operator (boolean-or /
-bitwise-or) AND a closure-literal opener (`|| ...` / `|x| ...`). When a
-fresh line begins with `||`/`|` and the previous line already parsed as a
+not line numbers. `||` is both a binary operator (boolean-or) AND the
+empty-param closure-literal opener (`|| ...`). When a
+fresh line begins with `||` and the previous line already parsed as a
 complete-looking expression, the parser has no way to tell whether you meant
 to CONTINUE that expression (an intentional multi-line boolean-or chain) or
 START a new statement (most often a closure literal) -- it always chooses
@@ -907,13 +907,29 @@ Example that triggers the warning -- a SILENT WRONG VALUE, not a crash:
     }                           // not a plain copy of `a` followed by a
                                 // discarded closure-literal statement
 
-This warning fires only on the FIRST `||`/`|` encountered while building an
+This warning fires only on the FIRST `||` encountered while building an
 expression -- an established chain (the operator already appeared earlier
-on the SAME line, e.g. `is_digit`-style predicates spanning several lines)
-is common, intentional, and does not warn:
+in the SAME statement, e.g. `is_digit`-style predicates spanning several
+lines) is common, intentional, and does not warn:
 
     return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
         || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
+
+SINGLE `|` IS DELIBERATELY NOT COVERED. It has the same silent-merge
+hazard (it is also a closure opener, `|x| ...`), but an empirical sweep of
+this repo's own corpus found newline-led single-`|` bitwise-or bit-packing
+is a common, legitimate shipped pattern -- one byte per line, operator
+leading from the very first continuation:
+
+    plen = (a << 24)
+        | (b << 16)
+        | (c << 8)
+        | d
+
+The "first occurrence in statement" heuristic that cleanly separates bug
+from intent for `||` does not hold for `|`, so warning there would
+false-positive on real code. `-`, `(` and `[` are likewise uncovered. This
+warning is a partial net, not a complete one -- see CLAUDE.md hard rule 1.
 
 Fixes:
   - If you meant a NEW statement, restructure it so its first token is not

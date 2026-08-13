@@ -34,12 +34,23 @@ else
     echo "      FAIL"; tail -4 /tmp/acc_sec.log | sed 's/^/        /'; fail=1
 fi
 
-echo "[3/4] self-host nested-binop corruption"
-out="$(cd compiler/self-host && timeout 200 ../target/release/kryos.exe run known_failure_nested_binop.kry 2>&1 | tail -1)"
-if echo "$out" | grep -q "after parse: 31 tokens"; then
+# This step used to run `known_failure_nested_binop.kry` -- a fixture that
+# e58d8dc (the commit that FIXED the bug) deleted when it folded the repro
+# into the self-host regression suite. The reference was never updated, so
+# this step failed with "file not found" and its `fail=1` was a permanent
+# false RED from e58d8dc (2026-08-02) until 2026-08-13: an acceptance check
+# that could not pass, and therefore checked nothing.
+#
+# The bug was never really "nested binop" anyway -- root-caused to
+# lexer.kry's module-level LEX_TOKENS accumulator not resetting between
+# tokenize() calls, plus a `return <bare mutable-global>` retain gap in
+# kryos-mir's lowering. Its live pin is the self-host regression suite's
+# `lexer_reentrant_tokenize` case, so run that instead of a deleted file.
+echo "[3/4] self-host reentrant-tokenize corruption (ex nested-binop)"
+if (cd compiler/self-host && timeout 300 bash test_regressions.sh) >/tmp/acc_reg.log 2>&1; then
     echo "      PASS"
 else
-    echo "      FAIL -- $out"; fail=1
+    echo "      FAIL"; tail -6 /tmp/acc_reg.log | sed 's/^/        /'; fail=1
 fi
 
 # The nested-binop repro passing is necessary but NOT sufficient: the full
