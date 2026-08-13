@@ -1,0 +1,36 @@
+// SECURITY -- new independent probe (2026-08-12), variant of LEDGER item 1's
+// closure-container-launder-by-local-variable residual (closed `e94a697`,
+// checks #53-59 in tests/security_gate.sh). The existing seven shapes cover
+// at most TWO levels of container nesting (struct-of-array,
+// struct-then-struct two-hop, array-of-struct). This probe goes THREE
+// levels deep: an ARRAY of `Wrapper` structs, each `Wrapper` holding an
+// INNER `Box` struct, whose field is the fn-typed closure --
+// `registry.boxes[0].inner.f()`. Built by a FACTORY FUNCTION, dispatched
+// INSIDE the same function as `deny!(fs:read)`.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+struct Wrapper { inner: Box }
+struct Registry { boxes: [Wrapper] }
+
+@capabilities(fs:read)
+fn build_registry() -> Registry {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    return Registry { boxes: [Wrapper { inner: Box { f: r } }] }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix mechanism: compiles clean, runs, prints the secret.
+        println("TRIPLE-NESTED LEAK: " + registry.boxes[0].inner.f())
+    }
+}

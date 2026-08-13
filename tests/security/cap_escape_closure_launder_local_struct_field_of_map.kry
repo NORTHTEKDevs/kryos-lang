@@ -1,0 +1,36 @@
+// SECURITY -- new independent probe (2026-08-12), variant of LEDGER item 1's
+// closure-container-launder-by-local-variable residual (closed `e94a697`,
+// checks #53-59 in tests/security_gate.sh): a struct FIELD whose type is
+// itself a MAP of closures (`map<str, fn() -> str>`), not an array and not
+// a bare fn-typed field -- a genuinely distinct combination from the seven
+// shapes already gated (struct field / array-of-struct-field / map-of-
+// struct-field / array direct / map direct / struct-field-holding-array /
+// two-hop field). Built by a FACTORY FUNCTION (not a literal in `main`),
+// dispatched via `registry.handlers["exfil"]()` INSIDE the same function as
+// the `deny!(fs:read)` narrowing it.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn load_secret() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Registry { handlers: map<str, fn() -> str> }
+
+@capabilities(fs:read)
+fn build_registry() -> Registry {
+    let mut m: map<str, fn() -> str> = {}
+    m["exfil"] = load_secret
+    return Registry { handlers: m }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix mechanism: compiles clean, runs, prints the secret.
+        println("STRUCT-FIELD-MAP-OF-CLOSURES LEAK: " + registry.handlers["exfil"]())
+    }
+}

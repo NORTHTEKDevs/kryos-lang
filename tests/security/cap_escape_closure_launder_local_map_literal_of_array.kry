@@ -1,0 +1,37 @@
+// SECURITY -- new independent probe (2026-08-12), variant of LEDGER item 1's
+// closure-container-launder-by-local-variable residual (closed `e94a697`,
+// checks #53-59 in tests/security_gate.sh). `cap_escape_closure_launder_
+// map_of_arrays.kry` already covers a MAP-OF-ARRAYS-of-closures, but built
+// by MUTATING a literal directly inside `main` (push + index-assign) --
+// that is the `apply_container_assign` local-mutation-tracking path, a
+// DIFFERENT mechanism than the factory-function-return-literal-splicing
+// path (`fn_return_container_lits`) items 53-59 close. This probe is the
+// map-of-arrays shape returned WHOLESALE as a LITERAL from a zero-arg
+// factory function's own `return`, exercising the literal-splicing path
+// instead of the local-mutation-tracking path for a two-level (map then
+// array) container.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn build_registry() -> map<str, [fn() -> str]> {
+    let r = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, [fn() -> str]> = {}
+    m["k"] = [r]
+    return m
+}
+
+@capabilities(fs:read)
+fn main() {
+    let registry = build_registry()
+    deny!(fs:read) {
+        // Pre-fix mechanism: compiles clean, runs, prints the secret.
+        println("MAP-LITERAL-OF-ARRAY-OF-CLOSURES LEAK: " + registry["k"][0]())
+    }
+}

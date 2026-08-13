@@ -771,5 +771,47 @@ for mode_flag in "" "--strict-capabilities"; do
     fi
 done
 
+# 87-89. Independent re-probe of LEDGER item 1's closure-container-launder
+#        residual (2026-08-12 close-out wave): three container combinations
+#        NOT covered by checks #53-59 -- a struct field typed as a MAP of
+#        closures (not array, not a bare fn field); a MAP-OF-ARRAYS-of-
+#        closures returned WHOLESALE as a literal from a factory function
+#        (exercising the literal-splicing path, distinct from
+#        cap_escape_closure_launder_map_of_arrays.kry's local-mutation-
+#        tracking path); and a THREE-level nesting (array of struct-of-
+#        struct holding the closure field), deeper than any existing shape.
+#        Each escape must be REJECTED (E0110 and/or E0507, depending on
+#        which fail-closed mechanism fires first -- the deny! block's own
+#        row check can reject before the call-site resolver even runs) under
+#        both enforcement modes.
+for shape in local_struct_field_of_map local_map_literal_of_array local_triple_nested; do
+    f="tests/security/cap_escape_closure_launder_$shape.kry"
+    for mode_flag in "" "--strict-capabilities"; do
+        if "$K" check $mode_flag "$f" >"$TMP/newres_${shape}_$mode_flag" 2>&1; then
+            echo "  FAIL: container-launder [$shape] escape COMPILED [$mode_flag]"
+            fail=1
+        elif grep -qE "E0507|E0110" "$TMP/newres_${shape}_$mode_flag"; then
+            echo "  ok   container-launder [$shape] escape rejected [$mode_flag]"
+        else
+            echo "  FAIL: escape rejected, but NOT for the capability reason [$shape, $mode_flag]:"
+            tail -3 "$TMP/newres_${shape}_$mode_flag" | sed 's/^/    /'
+            fail=1
+        fi
+    done
+done
+
+# 90. No-cascade complement to #87-89: the identical three-level container
+#     shape (array-of-struct-of-struct holding a fn-typed field), factory-
+#     built, but with NO privileged closure anywhere -- an UNANNOTATED main
+#     must compile clean.
+if "$K" check --strict-capabilities \
+    tests/security/cap_escape_closure_launder_local_triple_nested_control_benign.kry \
+    >"$TMP/newres_nc1" 2>&1; then
+    echo "  ok   factory-built triple-nested registry of pure closures needs no annotation (no cascade)"
+else
+    echo "  FAIL: the container-launder fix cascaded into a pure-closure triple-nested factory registry:"
+    tail -5 "$TMP/newres_nc1" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

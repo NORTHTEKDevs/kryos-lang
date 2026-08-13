@@ -1,0 +1,25 @@
+// No-cascade control for cap_escape_closure_launder_local_triple_nested.kry:
+// the identical three-level container shape (array-of-struct-of-struct
+// holding a fn-typed field), factory-built, but with NO privileged closure
+// anywhere in the registry -- every entry is a zero-capability closure. An
+// UNANNOTATED `main` must compile clean with no `@capabilities` at all.
+
+fn make_pure_reader(tag: str) -> fn() -> str {
+    return || "pure:" + tag
+}
+
+struct Box { f: fn() -> str }
+struct Wrapper { inner: Box }
+struct Registry { boxes: [Wrapper] }
+
+fn build_registry() -> Registry {
+    let a = make_pure_reader("a")
+    let b = make_pure_reader("b")
+    return Registry { boxes: [Wrapper { inner: Box { f: a } }, Wrapper { inner: Box { f: b } }] }
+}
+
+fn main() {
+    let registry = build_registry()
+    println(registry.boxes[0].inner.f())
+    println(registry.boxes[1].inner.f())
+}
