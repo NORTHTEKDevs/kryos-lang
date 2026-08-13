@@ -12,6 +12,61 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: spawn-closure race + mutated-scalar-capture re-verification #2 (2026-08-12) -- assigned LEDGER items 7 and 7b, found ALREADY CLOSED (`a39b776`, `00b3cf7`, both re-verified once already on 2026-08-08), zero compiler changes this session
+
+Assigned to close item 7 (mutated-SCALAR-capture N>=2 generalization) and item 7b
+(spawn-shared closure data race) via their `tests/known_failures/closure_mutated_
+capture_scalar_gaps.kry` / `spawn_closure_shared_env_race.kry` repros. Per doctrine
+("REPRODUCE before theorizing", "self-reported done is not evidence") did not trust
+the prior 2026-08-08 re-verification wave's own claim -- ran a fresh, independent
+verification against today's HEAD:
+
+- Both repro files confirmed absent from `tests/known_failures/` (already folded/
+  deleted by the original fixes). `git merge-base --is-ancestor` confirms both
+  `a39b776` (item 7 fix) and `00b3cf7` (item 7b fix) are ancestors of current HEAD
+  (`4971ba4`, 4 days and ~15 waves after the last re-verification).
+- Full `cargo build --release` (no `-p`, required per non-negotiable #2) -- already
+  up to date (0.39s), confirms the binary matches current source exactly.
+- Item 7: `tests/conformance/conf_functions.kry` (the fold-in regression --
+  `two_mutated_scalar_captures`, `mixed_scalar_and_struct_mutated_captures`,
+  `stateful_factory_mutated_scalar`) run fresh -- PASS on both `kryos run` (JIT) and
+  a fresh `kryos build --release` (AOT).
+- Item 7b: `tests/conformance/conf_spawn_closure_capture_lock.kry` (30 threads x
+  1000 calls, exact-value assert, no flake tolerance) run 25x on JIT + 25x on AOT
+  fresh this session -- **50/50 clean, zero lost updates**, matching the original
+  and the 2026-08-08 re-verification's evidence.
+- The documented interaction hazard (`spawn` sharing a struct handle, which broke
+  `conf_spinlock_mutex` under a naive ownership-model attempt at this same bug
+  class) re-checked: `conf_spinlock_mutex.kry` 10x JIT + 10x AOT -- **20/20 clean**.
+- `bash tools/loop/kryos-loop.sh gates 2`: tier1 **14/14 PASS** (conformance
+  62/62), tier2 **5/5 PASS** (`examples`, `strict_caps`, `examples_e2e`,
+  `ir_signatures`, `selfhost_wholeprogram`) -- exit 0, full clean run, no source
+  changes so nothing else could have regressed.
+- `compiler/self-host/test_bootstrap.sh`: **16/16 PASS** (71s), all 16 self-host
+  modules (`token.kry` through `main.kry`) OK.
+- Machine note: this is a heavily loaded shared workspace (4 concurrent `claude.exe`
+  processes, ~67 leaked `node.exe`, ~19 stale `bash.exe` observed via `winobs`) --
+  hit the documented bash-tool subprocess-fork stall (confirmed NOT Defender:
+  `defender_activity` showed 0 cumulative CPU-seconds) partway through the first
+  gates attempt; the stalled bash background job (PID 39068) was confirmed hung
+  (flat CPU over 90s, no live child process tree) and killed, and the run was
+  redone cleanly end-to-end via the documented `ghost_shell` fallback. One
+  now-orphaned duplicate gates attempt (spawned when the first `ghost_shell` op=run
+  call was itself killed by its own client-side timeout, leaving a detached bash
+  process tree) was found and killed before the final clean run, to avoid the
+  documented leftover-process false-RED contention trap (non-negotiable #5) --
+  the gates and bootstrap numbers above are from the single clean run, with zero
+  stray `kryos.exe` confirmed before and after.
+
+**Net result: nothing to fix. Both items remain genuinely closed** -- independently
+re-verified fresh against today's HEAD (not re-citing either the original evidence
+or the 2026-08-08 re-verification's own claim), with a fresh build, 50/50 race-free
+runs on item 7b across both backends, the documented interaction hazard clean, and
+both gates green. No `tests/known_failures/` repro to move; both were already
+deleted by the original fixes and confirmed absent again this session.
+
+---
+
 ## Wave: closure-in-container capability escape re-verification + 3 new shapes (2026-08-12) -- assigned "capability escape residual: closure stored in a container", found ALREADY CLOSED (`e94a697`, 2026-08-08, hardened further by stage-2 `0a5dbbd`), zero compiler changes this session
 
 Assigned wave: close the container-storage residual of the closure/fn-value capability
