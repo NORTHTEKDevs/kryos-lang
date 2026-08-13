@@ -12,6 +12,67 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: curried generic AOT crash + dyn E0100 residual + assert shadow re-verification (2026-08-13) -- assigned LEDGER items 8, 4, 2c, found ALREADY CLOSED (`aeb88f8`, 2026-08-02, ancestor of HEAD `df5efc6`), zero compiler changes this session
+
+Assigned to fix a curried (2-level) generic closure AOT crash (item 8), a
+misleading E0100 alongside E0110 for `[dyn Handler]` at a call site (item 4),
+and `std::test::assert`'s 2-arg form being permanently uncatchable (item 2c).
+Per doctrine ("self-reported done is not evidence", verify subagents
+independently) did not trust the LEDGER's own CLOSED-table claim for `aeb88f8`
+-- confirmed it live against today's HEAD before treating anything as done:
+
+- `git merge-base --is-ancestor aeb88f8 HEAD` -- YES, already on `master`, nothing to redo.
+- Item 8: `kryos run tests/conformance/conf_curried_generic_closure.kry` -> `PASS`;
+  `kryos build --release` the same file and ran the AOT binary -> `PASS`. Both
+  backends agree, prints `6`.
+- Item 4: `bash tests/type_soundness.sh` -> `type-soundness: all probes correct
+  (unsound rejected, correct accepted)` (covers `dyn_array_callsite_heterogeneous`
+  + the `unrelated_array_mismatch_not_suppressed` negative control).
+- Item 2c: `kryos run tests/conformance/conf_assert_shadow_catchable.kry` -> `PASS`;
+  `kryos run tests/conformance/conf_assert_eq_unwind_immediate.kry` (the recovered
+  repro for the dangling `assert_eq_shadow_unwind_skip.kry` reference) -> `PASS`;
+  `bash tests/assert_shadow_gate.sh` -> all 4 checks `ok` (both directions, both
+  backends).
+- Loose end from the task brief, checked against the historical record rather
+  than re-investigated from scratch: `git log -S` for the filename
+  `assert_eq_shadow_unwind_skip.kry` across full history returns zero hits --
+  confirmed a slip (the underlying fix from `e7b1599` was real and shipped;
+  only its named regression file was never committed), not an unfiled bug.
+  Already recovered as `tests/conformance/conf_assert_eq_unwind_immediate.kry`
+  in `aeb88f8`, independently re-run above.
+- Full fresh gate sweep, kryos.exe confirmed absent before starting (non-negotiable
+  #5): full `cargo build --release` (compiler/, no `-p`) -- already up to date,
+  0.40s, confirming no drift since `aeb88f8`; `bash tools/loop/kryos-loop.sh gates 2`
+  -- tier1 14/14 PASS (conformance **62/62**), tier2 3/4 PASS with `examples_e2e`
+  RED (`web_server` layer 3: 8/12 response-body assertions) on the first run.
+  Matches this repo's own documented parallel-gate-contention pattern exactly
+  (non-negotiable #5's "leftover process caused a false RED (examples_e2e 10/12)")
+  -- re-ran `tests/run_examples_e2e.sh` ALONE with no stray `kryos.exe`: **12/12
+  PASS**, confirmed contention, not a regression. `bash compiler/self-host/
+  test_bootstrap.sh` run ALONE: **16/16 PASS**.
+- Final pass over `tools/loop/LEDGER.md` + `docs/BUGS.md` per the task brief:
+  extracted every `tests/...` path referenced in the OPEN section (1239-2972)
+  and confirmed each exists, except two (`closure_pipe_continuation_silent_wrong.kry`,
+  `spawn_closure_shared_env_race.kry`) which the ledger's own CLOSED-table entries
+  document as deliberately deleted-after-fold -- not stale references. All 16
+  genuinely-OPEN numbered items (33, 17, 15, 14, 24, 25, 20, 12, 13, 21, 31, 3, 6,
+  plus the audit-gap items 26-29) still carry live repro paths; items 19/22/23's
+  OPEN-table headers are intentionally kept with a bold "see CLOSED table" pointer,
+  consistent with the rest of the document's own convention, not drift. `docs/
+  BUGS.md`'s three "Resolved" entries for items 8/4/2c match the CLOSED table and
+  current code exactly; `README.md`'s capability-escape count ("1 known,
+  reproducible capability escape") matches LEDGER item 33's live OPEN state;
+  `CLAUDE.md` gotcha #17 (currying) and gotcha #22 (dyn Trait) carry no residual
+  "not fixed" language for any of these three items. `tests/known_failures/`
+  directory contents match its own `README.md` table exactly (3 files, 3 rows).
+  No drift found; no doc changes needed.
+- Nothing fixed because nothing was broken. No source changes this session --
+  this is purely a verification wave, recorded per this file's own "update in
+  the same commit as the work" rule (the work here being the fresh, independent
+  proof, not a code change).
+
+---
+
 ## Wave: lowercase struct literal + nested binop corruption re-verification #2, plus a REAL fix for item 9 (2026-08-13) -- assigned items 10 and "nested binop corrupts next parse" (found ALREADY CLOSED, `e58d8dc`, ancestor of HEAD `657adf2`, re-verified fresh this session with real regression runs, no compiler changes needed) AND the item-9 `||`-continuation trap re-check -- THIS one got a real fix: a new W0001 parser warning, empirically validated against a real corpus, zero compiler regressions
 
 Assigned wave: items 10 (lowercase struct literal) and the nested-binop-corrupts-
