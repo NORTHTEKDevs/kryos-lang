@@ -12,6 +12,87 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: pkg install checksum verification re-verification (2026-08-12) -- assigned LEDGER item 1b, already CLOSED (`fbd1e5b` + 2 follow-up hardening sessions), zero compiler changes this session
+
+Assigned wave was LEDGER item 1b ("pkg install verifies no checksum, TRUST-MODEL BREAK"). Read
+the CLOSED table entry and its two follow-ups first: the original fix (`fbd1e5b`) introduced
+`content_checksum`/`verify_package_checksum` and a `copy_dir_all` symlink guard; a follow-up
+found the shipped symlink test was VACUOUS on Windows (`fs::copy` on a dir reparse point fails
+with `PermissionDenied` regardless of the guard) and hardened it with a file-symlink case plus an
+error-signature assertion; a second follow-up found the whole-repo (`github:`/`https://`) clone
+path bypassed `copy_dir_all` entirely and added a parallel `clone_and_guard`/`reject_symlinks`
+guard plus `-c core.symlinks=true` to force real symlink materialization during tests on a
+`core.symlinks=false` machine. Per doctrine ("self-reported done is not evidence") and this
+ledger's own established pattern for re-verification waves, re-checked live rather than trusting
+the prior claim:
+
+- Read `fetch.rs`/`registry.rs` directly: `content_checksum` hashes `kryos.toml` + every `.kry`
+  under `src/`/`stdlib/` in deterministic sorted, length-prefixed order; `verify_package_checksum`
+  fails closed on both a missing/empty checksum and a mismatch; `fetch_resolved` calls it on
+  EVERY `Remote` package unconditionally, including a cache hit, and wipes the cache dir on
+  rejection. Confirmed this is the real call path, not dead code.
+- `cargo test -p kryos-package --release` fresh this session: 66/66 GREEN (42 lib + 5
+  `checksum_verification.rs` + 19 `package.rs`), matching the closed-table's prior count.
+- PROVE BOTH WAYS, fresh, live (not re-citing prior evidence): temporarily neutered
+  `verify_package_checksum` to `return Ok(())` as its first line (simulating the exact pre-fix
+  "no comparison of any kind" behavior), rebuilt `-p kryos-package`, reran
+  `checksum_verification.rs` -- 4/5 tests went RED (`verify_package_checksum_rejects_missing_checksum`,
+  `verify_package_checksum_rejects_tampered_content`, `fetch_resolved_rejects_a_tampered_cache_entry_and_wipes_it`,
+  `fetch_resolved_rejects_a_package_with_no_recorded_checksum`), each panicking with the exact
+  "must be refused, not installed" / `unwrap_err() on an Ok value` message -- confirming the suite
+  is not vacuous. Restored the exact original text (`git diff --stat` on the file: empty, byte-
+  identical to HEAD), rebuilt, reran -- 66/66 GREEN again.
+- Live end-to-end against the REAL `NORTHTEKDevs/kryos-registry` (not mocked), using a freshly
+  built `kryos.exe` from a full `cargo build --release` (no `-p`, 46.65s clean) run this session:
+  `kryos pkg add http-router && kryos pkg install` from a scratch project -- exit 0, `kryos.lock`
+  recorded the real `sha256:ec03da9283102b939b7d64bf7a61a3f6154243f979319baac9b354cad9dc044d`
+  checksum matching the value already on record. Appended `// MALICIOUS_INJECTED_CONTENT` to the
+  cached `~/.kryos/packages/http-router-0.1.0/src/lib.kry`, reran `kryos pkg install` in the same
+  project -- exit 1, `error: checksum mismatch for \`http-router\` v0.1.0: expected
+  sha256:ec03da92..., got sha256:2ef34ce4...`, and the tainted cache directory was gone afterward
+  (`Test-Path` false). This is the exact live repro the assigned brief specified, run fresh this
+  session against production infrastructure, not a re-read of the ledger's own prior claim.
+- Zip-slip/symlink path re-checked by reading the code directly: `copy_dir_all` (feeds the
+  `github_subdir:` path `kryos pkg install` actually uses) and `clone_and_guard`/`reject_symlinks`
+  (the whole-repo `github:`/`https://` path, currently unreachable from the CLI per OPEN item 17
+  but fixed defense-in-depth) both reject any `DirEntry::file_type().is_symlink()` before
+  recursing or copying, in both the directory-symlink and file-symlink shapes -- confirmed both
+  guard tests are present and passing in the 66/66 run above. No tar-format extraction exists
+  anywhere in this path (a plain directory walk via `read_dir`, whose entries cannot carry
+  path-separator-bearing names), so a literal `../`-entry zip-slip does not apply to this
+  transport; this matches the closed-table's own prior finding, independently re-confirmed by
+  reading `copy_dir_all`/`fetch_github_subdir` end to end rather than assumed.
+- Gates: `bash tools/loop/kryos-loop.sh gates 2` GREEN fresh this session -- tier1 14/14 PASS
+  (conformance 62/62, `selfhost_regressions` included), tier2 5/5 PASS (`examples`, `strict_caps`,
+  `examples_e2e`, `ir_signatures`, `selfhost_wholeprogram`).
+- `compiler/self-host/test_bootstrap.sh`: 16/16 PASS, completed in 81s. This is the FIRST time
+  this exact gate has completed cleanly since item 1b's fix landed -- the prior three sessions
+  touching this item (the original fix and both follow-ups) were each blocked by Windows Defender
+  CPU contention on this same stage-1 self-host build and had to report NOT COMPLETED. Checked
+  `winobs defender_activity` immediately before this run: `MsMpEng` at 0 cumulative CPU-seconds,
+  no recent scan events -- contention was genuinely absent this session, not worked around.
+- Process hygiene: one leftover `kryos.exe` (PID 18340, from the gates run) found via
+  `winobs orphan_scan` and killed before starting bootstrap, per non-negotiable #5. Zero stray
+  `kryos.exe`/`cargo.exe`/`link.exe` processes confirmed before and after every build/test/gate
+  step in this wave.
+- Scratch cleanup: the live-repro project directory and the tampered `~/.kryos/packages/http-router-*`
+  cache entry were removed after the check; no residue left in the user's package cache.
+
+**Net result: nothing to fix. LEDGER item 1b's checksum verification and both its follow-up
+symlink hardenings are genuinely load-bearing** -- independently proven both ways fresh this
+session (not re-citing the prior sessions' evidence), live against the real registry, with a
+freshly rebuilt binary, and with the one gate (`test_bootstrap.sh`) the prior sessions could not
+complete now GREEN. `security_gate.sh` was NOT rerun standalone this wave -- no capability-checker
+change occurred, matching the same reasoning the item-1b-follow-up session used for the identical
+scope. **Not in scope, left open on purpose:** LEDGER item 12 (`kryos pkg install` never reads
+`kryos.lock`, so a compromised/force-pushed newer registry version is silently adopted and the
+lock is silently re-signed to match) is a distinct, already-filed gap in the resolution/pinning
+layer -- it is NOT the checksum-verification layer this wave re-checked, and checksum verification
+alone cannot close it (a legitimately-signed newer malicious version passes its own checksum
+check). Left for its own wave.
+
+---
+
 ## Wave: lowercase struct literal + nested binop corruption re-verification (2026-08-08) — assigned items 10 and "nested binop corrupts next parse", both already CLOSED (`e58d8dc`, 2026-08-02, ancestor of today's HEAD), zero compiler changes this session
 
 Assigned wave: `tests/known_failures/lowercase_struct_literal_parse_fail.kry` (item 10,
