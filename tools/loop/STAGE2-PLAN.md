@@ -149,3 +149,36 @@ Expect over-rejection when the stamp lands: an actor storing a PURE closure in s
 would start requiring `all`. That is the fail-closed stance the design has already
 chosen elsewhere, but it should be measured against `examples`/`strict_caps` before
 being called done.
+
+## The last escape (item 33) — measured to its exact mechanism, 2026-08-12
+
+`attack_verify_actor_to_actor_message`: a closure passed actor-to-actor as a
+message parameter. Probe output at the dispatch site is the whole story:
+
+    dispatch Receiver::receive own={?C8} inst={?C8} genvars=[7] map={7: 11}
+
+The handler's OWN row is var 8, its registered generic var is 7, so the
+instantiation map `{7:11}` does not touch it and `inst` comes back unchanged and
+open. `main` ends up holding an unresolved var and the deny! block charges nothing.
+
+Two things were tried and are recorded so they are not retried blind:
+
+1. **Registering handler param cap vars** into `generic_cap_var_ids` (they were
+   hardcoded `vec![]` while param resolution minted them). Correct on its own
+   terms and SHIPPED in `773ef05`, but it does not close item 33.
+2. **Deferring deny! enforcement to the end of the module**, on the theory that
+   this is a forward-reference problem (`Sender` is declared before `Receiver`,
+   so relay's body is walked before receive's own row binds). Built, and then
+   **disproved by a vacuity check**: a plain forward-reference deny case
+   (`caller_first()` -> `declared_later()` -> `file_read`) is already caught
+   WITHOUT the deferral, rc=1 either way. Reverted rather than shipped unproven.
+
+**The real mechanism** is that a function's own row, once bound, can reference
+FRESH vars minted at its own inner call sites. Those vars are not in that
+function's `generic_cap_var_ids`, so an outer `instantiate_row` cannot remap them,
+and the chain terminates on a var that no call site will ever bind. The fix is to
+CANONICALISE a function's own row when binding it — resolve it through to the
+function's own generic vars (or to closed bits) before `bind_cap_var`, so what is
+stored is always expressed in terms of things a caller can instantiate. That is a
+change to how `own_cap_var` is bound, in all four places that bind one, and it
+needs its own vacuity check per binding site.
