@@ -34,11 +34,13 @@ if [ "$actual" -eq 0 ]; then
     echo "  ok   README carries no live-escape claim (count is 0)"
   fi
 else
-  if grep -qE "\*\*$actual known, reproducible capability escapes\*\*" README.md; then
-    echo "  ok   README states $actual known escapes"
+  # Accept singular OR plural -- "1 capability escape" is correct English and
+  # the doc should not be forced ungrammatical to satisfy a grep.
+  if grep -qE "\*\*$actual known, reproducible capability escapes?\*\*" README.md; then
+    echo "  ok   README states $actual known escape(s)"
   else
     echo "  FAIL: README does not state the measured count ($actual)."
-    echo "        Expected the exact phrase: **$actual known, reproducible capability escapes**"
+    echo "        Expected: **$actual known, reproducible capability escape(s)**"
     grep -noiE ".{0,40}known, reproducible capability escapes.{0,10}" README.md | head -3 | sed 's/^/        got: /'
     fail=1
   fi
