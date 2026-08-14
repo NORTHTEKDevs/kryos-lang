@@ -2863,6 +2863,37 @@ impl TypeChecker {
                 }
                 let inferred_ty = value.as_ref().map(|v| self.infer_expr(v));
 
+                // LEDGER item 24: `any` erases to a bare i64 at codegen with
+                // NO runtime type tag (item 6, ABI-blocked design note --
+                // fixing this generally needs a tagged-value ABI change).
+                // `bool` (i1) and `f64`/`f32` (double/float) have a NATIVE
+                // LLVM representation that differs from i64, so storing one
+                // directly into an explicit `any` slot either fails the LLVM
+                // AOT build ("defined with type 'i1'/'double' but expected
+                // 'i64'") or silently misrenders on the Cranelift JIT (prints
+                // the raw bit pattern instead of the value) -- reproduced
+                // live both ways. `i64`/`str`/array/map/struct values are
+                // already i64-shaped (value or pointer) and are unaffected.
+                // Reject at check time with a clear diagnostic instead of
+                // letting either backend discover it downstream as a build
+                // failure or a silent wrong answer.
+                if let Some(TypeExpr::Simple { name: tn, .. }) = ty.as_ref() {
+                    if tn == "any" || tn == "Any" {
+                        if let Some(ref inferred) = inferred_ty {
+                            let resolved = self.engine.resolve(inferred);
+                            if matches!(resolved, Type::Bool | Type::F64 | Type::F32) {
+                                self.error_with_code(
+                                    format!(
+                                        "cannot store a `{resolved}` value in an `any`-typed binding -- `any` is erased to a bare i64 at runtime with no type tag, and `{resolved}`'s native representation is not i64-compatible, so this either fails to build on the AOT backend or silently prints the wrong value on the JIT backend. Keep the value in its concrete type (`let x: {resolved} = ..`) instead of erasing it to `any`, or convert it to its final form (e.g. `to_string(..)`) before storing it"
+                                    ),
+                                    *span,
+                                    kryos_errors::codes::E0110,
+                                );
+                            }
+                        }
+                    }
+                }
+
                 let final_ty = match (declared_ty, inferred_ty) {
                     (Some(decl), Some(mut inferred)) => {
                         // A bare FLOAT LITERAL adapts to a narrower declared

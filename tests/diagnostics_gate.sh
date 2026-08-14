@@ -267,6 +267,65 @@ else
     echo "  FAIL: kryos explain W0001 did not resolve"; fail=1
 fi
 
+# 8. LEDGER item 24: `let x: any = <bool>` used to fail the LLVM AOT build
+#    outright ("%_0 defined with type 'i1' but expected 'i64'") while the
+#    identical source silently misrendered on the Cranelift JIT (printed
+#    `1`, not `true`) -- a crash on one backend paired with a silent wrong
+#    answer on the other, for the SAME program. `any` has no runtime type
+#    tag (item 6, ABI-blocked design note) and a `bool` (i1) or `f64`
+#    (double) value's native representation is not i64-shaped like the
+#    erased slot expects, so this is now a clean compile-time rejection
+#    (E0110) instead of letting either backend discover it downstream. Pin
+#    BOTH shapes and BOTH backends so a regression cannot silently reopen
+#    either half of the divergence.
+cat > "$TMP/any_bool_direct.kry" <<'KRY'
+fn main() {
+    let x: any = true
+    println(to_string(x))
+}
+KRY
+check_out="$("$K" check "$TMP/any_bool_direct.kry" 2>&1)"
+run_out="$("$K" run "$TMP/any_bool_direct.kry" 2>&1)"
+build_out="$("$K" build --release "$TMP/any_bool_direct.kry" -o "$TMP/any_bool_direct.exe" 2>&1)"
+if grep -q "E0110" <<<"$check_out" && grep -q "E0110" <<<"$run_out" && grep -q "E0110" <<<"$build_out"; then
+    echo "  ok   \`let x: any = true\` is rejected with E0110 on check/run/build, not a silent-wrong/crash split"
+else
+    echo "  FAIL: expected E0110 from check+run+build, got:"
+    echo "$check_out" | sed 's/^/    check: /'
+    echo "$run_out" | sed 's/^/    run:   /'
+    echo "$build_out" | sed 's/^/    build: /'
+    fail=1
+fi
+
+cat > "$TMP/any_f64_direct.kry" <<'KRY'
+fn main() {
+    let x: any = 3.14
+    println(to_string(x))
+}
+KRY
+check_out="$("$K" check "$TMP/any_f64_direct.kry" 2>&1)"
+if grep -q "E0110" <<<"$check_out"; then
+    echo "  ok   \`let x: any = 3.14\` (same class -- f64 also isn't i64-shaped) is rejected with E0110"
+else
+    echo "  FAIL: expected E0110, got:"; echo "$check_out" | sed 's/^/    /'; fail=1
+fi
+
+# No over-rejection: an i64/str value (already i64-shaped: a plain value or
+# a pointer) into an `any` slot must keep compiling and running clean.
+cat > "$TMP/any_i64_str_ok.kry" <<'KRY'
+fn main() {
+    let a: any = 42
+    let b: any = "hello"
+    println(to_string(a))
+}
+KRY
+check_out="$("$K" check "$TMP/any_i64_str_ok.kry" 2>&1)"
+if [ -z "$check_out" ]; then
+    echo "  ok   \`let x: any = <i64|str>\` still compiles clean (no over-rejection)"
+else
+    echo "  FAIL: legitimate i64/str-into-any rejected:"; echo "$check_out" | sed 's/^/    /'; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else
