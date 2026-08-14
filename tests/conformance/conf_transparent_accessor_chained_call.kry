@@ -1,0 +1,89 @@
+// Conformance: a closure retrieved through a generic passthrough ACCESSOR
+// method's chained return call (`holder.get()()`, where `get` just does
+// `return self.val`) must NOT force the enclosing function to require
+// `@capabilities(all)`.
+//
+// LEDGER item 20. Found by the same combined-category grammar fuzzer
+// (tests/fuzz/gen_grammar.py, mega_combo scenario) that found and closed
+// the sibling bare-block-scope false-rejects (see
+// conf_closure_block_scope_caps.kry) -- a THIRD, DEEPER instance of the
+// same bug CLASS (over-rejection of a provably-safe closure call), but a
+// DIFFERENT root cause: this reproduces at the top level with zero block
+// nesting and even through an intermediate local, so it needed tracing a
+// generic method's own body, not a scope-recursion fix.
+//
+// ROOT CAUSE (kryos-capabilities/src/checker.rs): `resolve_direct_invoke_caps`
+// resolves the callee of a chained call (`holder.get()()`) via
+// `decompose_container_path`, which returns `None` for a `MethodCall`
+// callee (`holder.get()` is not a field/index chain) -- falling back to
+// `resolve_closure_caps`, whose `Expr::MethodCall` arm had NO real resolver
+// and fell to the fail-closed `Unknown` default (-> `Capability::All`),
+// even though `get`'s entire body is a transparent `return self.val`
+// passthrough that carries whatever `val` itself carries -- provably
+// nothing, for a pure closure.
+//
+// FIX: a new `transparent_accessor_call_path` traces `object`'s own
+// container path (`decompose_container_path`) to its locally-tracked
+// struct-literal type, looks up `method` in `transparent_accessor_paths`
+// (the SAME registry `resolve_type_path` already uses to let
+// `list.get(i)()` resolve on a container-typed PARAMETER), and -- when
+// found -- resolves the FULL combined field path via
+// `resolve_container_path_caps`, exactly as a direct `holder.val` read
+// already did. Not a capability ESCAPE (the safe direction): before the
+// fix, the checker over-rejected; after, it resolves the REAL capability,
+// which can still be non-empty (see the negative-control evidence in
+// tools/loop/LEDGER.md's CLOSED-table entry for this item -- a privileged
+// closure behind the identical accessor chain still correctly requires
+// its real capability and is rejected without it).
+//
+// PROOF BOTH WAYS: `git stash` this fix + `cargo build --release -p
+// kryos-cli` -- every case below fails `kryos check` with E0507 ("call
+// through a function value requires capabilities [all]"); restored, all
+// pass and this file runs clean printing PASS on both backends.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+struct GBox<T> { val: T }
+impl<T> GBox<T> {
+    fn get(self: GBox<T>) -> T { return self.val }
+}
+
+fn helper_with_accessor_call() -> i64 {
+    // Exercises propagation into an unannotated (non-main) caller too.
+    let reader = || 7 + 1
+    let holder: GBox<fn() -> i64> = GBox { val: reader }
+    return holder.get()()
+}
+
+fn main() {
+    // 1. Minimal repro: LEDGER item 20's exact shape.
+    let reader = || 5 + 1
+    let holder: GBox<fn() -> i64> = GBox { val: reader }
+    let v1 = holder.get()()
+    expect(v1 == 6, "chained accessor-method call on a generic struct")
+
+    // 2. Through an intermediate local (`let g = holder.get()  let v = g()`)
+    // -- the ledger's own isolation step proving this is NOT a scope-
+    // recursion gap; the accessor-call resolver must fire the same way
+    // whether the second call is chained directly or via a local.
+    let g = holder.get()
+    let v2 = g()
+    expect(v2 == 6, "accessor call result bound to a local before invoking")
+
+    // 3. A curried closure behind the same accessor.
+    let make = |n: i64| |x: i64| x * n + 1
+    let holder2: GBox<fn(i64) -> fn(i64) -> i64> = GBox { val: make }
+    let mul3 = holder2.get()(3)
+    let v3 = mul3(5)
+    expect(v3 == 16, "curried closure retrieved through a chained accessor call")
+
+    // 4. Propagation through a plain (unannotated) helper function.
+    expect(helper_with_accessor_call() == 8, "propagation through an unannotated helper fn")
+
+    println("conformance transparent-accessor chained-call capability inference: PASS")
+}

@@ -1776,6 +1776,7 @@ impl CapabilityChecker {
         working: &HashMap<String, CapabilitySet>,
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         local_caps: &HashMap<String, ClosureCapsResult>,
+        local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) -> ClosureCapsResult {
         match expr {
@@ -1995,7 +1996,7 @@ impl CapabilityChecker {
                                 };
                                 match args.get(idx) {
                                     Some(arg) => self.resolve_closure_caps(
-                                        arg, working, fn_return_caps, local_caps, own_params,
+                                        arg, working, fn_return_caps, local_caps, local_container_lits, own_params,
                                     ),
                                     None => ClosureCapsResult::Unknown,
                                 }
@@ -2014,7 +2015,7 @@ impl CapabilityChecker {
                     // step, so each further application can safely reuse the
                     // same resolved value rather than needing its own.
                     Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
-                        self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, own_params)
+                        self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, local_container_lits, own_params)
                     }
                     // Exhaustive over `Expr` — every OTHER shape a call's
                     // callee sub-expression could syntactically be
@@ -2077,6 +2078,39 @@ impl CapabilityChecker {
             // even though the RUNTIME behavior would be identical today;
             // the whole point is the compile-time forcing function for
             // whoever adds the next variant.
+            // LEDGER item 20: `object.method` where `method` is a registered
+            // TRANSPARENT PASSTHROUGH ACCESSOR (`transparent_accessor_paths`
+            // -- the same mechanism `resolve_type_path` already uses for
+            // `list.get(i)()` on a container-typed PARAMETER) on `object`'s
+            // real, locally-tracked struct type resolves the SAME way a
+            // direct field read through the accessor's own self-relative
+            // path would. This is what lets `holder.get()()`, a value bound
+            // to a local first (`let g = holder.get()  g()`), and a curried
+            // chain (`holder.get()(x)`) all resolve to the closure's REAL
+            // authority instead of the fail-closed `Unknown` default below
+            // -- which every other MethodCall shape (an unresolvable root,
+            // no matching registered accessor, an ordinary non-passthrough
+            // method) still correctly falls through to.
+            Expr::MethodCall { object, method, .. } => {
+                match self.transparent_accessor_call_path(object, method, local_container_lits) {
+                    Some((root, full_path)) => {
+                        let root_expr = Expr::Identifier {
+                            name: root.to_string(),
+                            span: Span::DUMMY,
+                        };
+                        self.resolve_container_path_caps(
+                            &root_expr,
+                            &full_path,
+                            working,
+                            fn_return_caps,
+                            local_caps,
+                            local_container_lits,
+                            own_params,
+                        )
+                    }
+                    None => ClosureCapsResult::Unknown,
+                }
+            }
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
@@ -2088,7 +2122,6 @@ impl CapabilityChecker {
             | Expr::IndexAccess { .. }
             | Expr::BinaryOp { .. }
             | Expr::UnaryOp { .. }
-            | Expr::MethodCall { .. }
             | Expr::StaticMethodCall { .. }
             | Expr::ArrayLiteral { .. }
             | Expr::TupleLiteral { .. }
@@ -2151,7 +2184,7 @@ impl CapabilityChecker {
         own_params: &HashSet<String>,
     ) -> ClosureCapsResult {
         let Some((head, rest)) = path.split_first() else {
-            return self.resolve_closure_caps(expr, working, fn_return_caps, local_caps, own_params);
+            return self.resolve_closure_caps(expr, working, fn_return_caps, local_caps, local_container_lits, own_params);
         };
         // STRUCTURAL GUARANTEE (see docs/capability-soundness.md §3 "the
         // structural guarantee"): exhaustive over `Expr`, no wildcard arm —
@@ -2379,7 +2412,7 @@ impl CapabilityChecker {
                                 own_params,
                             )
                         }
-                        _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, own_params),
+                        _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, local_container_lits, own_params),
                     };
                     locals.insert(name.clone(), r);
                 }
@@ -3214,7 +3247,7 @@ impl CapabilityChecker {
                 }
                 let mut combined: Option<ClosureCapsResult> = None;
                 for e in &return_exprs {
-                    let r = self.resolve_closure_caps(e, working, &result, &local_caps, &own_params);
+                    let r = self.resolve_closure_caps(e, working, &result, &local_caps, &local_container_lits, &own_params);
                     combined = Some(match combined {
                         None => r,
                         Some(prev) => Self::merge_closure_caps(prev, r),
@@ -3522,6 +3555,71 @@ impl CapabilityChecker {
         }
     }
 
+    /// LEDGER item 20: when `object` decomposes to a container path
+    /// (`decompose_container_path`) rooted at a LOCALLY-TRACKED struct
+    /// literal, and `method` is a registered TRANSPARENT PASSTHROUGH
+    /// ACCESSOR (`transparent_accessor_paths` -- the exact mechanism
+    /// `resolve_type_path` already uses to let `list.get(i)()` on a
+    /// container-typed PARAMETER resolve like a direct field read) on that
+    /// literal's real struct type, return the FULL field/index chain from
+    /// the root through `object`'s own path and then through the accessor's
+    /// own self-relative path -- i.e. exactly the path a direct field read
+    /// standing in for the accessor call would use. `None` for anything
+    /// this can't positively confirm (an unresolvable/non-literal root, a
+    /// struct type with no matching registered accessor, an ordinary
+    /// non-passthrough method) -- the caller falls back to the pre-existing
+    /// `resolve_closure_caps` handling unchanged, so this only ever ADDS
+    /// resolving power, never removes it.
+    fn transparent_accessor_call_path<'e>(
+        &self,
+        object: &'e Expr,
+        method: &str,
+        local_container_lits: &HashMap<String, Expr>,
+    ) -> Option<(&'e str, Vec<PathStep>)> {
+        let (root, path) = Self::decompose_container_path(object)?;
+        let struct_name = Self::struct_name_at_path(root, &path, local_container_lits)?;
+        let accessor_path = self
+            .transparent_accessor_paths
+            .get(&(struct_name, method.to_string()))?;
+        let mut full_path = path;
+        full_path.extend(accessor_path.iter().cloned());
+        Some((root, full_path))
+    }
+
+    /// Walk `path` from the literal bound to `root` in `local_container_lits`
+    /// and return the STRUCT TYPE NAME of the value reached, when it is a
+    /// `StructLiteral`. Deliberately narrower than `resolve_container_path_caps`'s
+    /// own traversal (no `ArrayLiteral`/`MapLiteral` `Index` descent): a
+    /// passthrough accessor method is invoked on ONE concrete struct
+    /// instance, never on an array/map element position directly, so there
+    /// is no "index-insensitive union" question to answer here -- an
+    /// `Index` step simply fails closed to `None` (falls back to the
+    /// existing behavior, not a new hole).
+    fn struct_name_at_path(
+        root: &str,
+        path: &[PathStep],
+        local_container_lits: &HashMap<String, Expr>,
+    ) -> Option<String> {
+        Self::struct_name_at_path_expr(local_container_lits.get(root)?, path)
+    }
+
+    fn struct_name_at_path_expr(expr: &Expr, path: &[PathStep]) -> Option<String> {
+        match path.split_first() {
+            None => match expr {
+                Expr::StructLiteral { name, .. } => Some(name.clone()),
+                _ => None,
+            },
+            Some((PathStep::Field(fname), rest)) => match expr {
+                Expr::StructLiteral { fields, .. } => {
+                    let (_, fexpr) = fields.iter().find(|(n, _)| n == fname)?;
+                    Self::struct_name_at_path_expr(fexpr, rest)
+                }
+                _ => None,
+            },
+            Some((PathStep::Index, _)) => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn resolve_direct_invoke_caps(
         &self,
@@ -3533,15 +3631,18 @@ impl CapabilityChecker {
     ) -> CapabilitySet {
         let Some((root, path)) = Self::decompose_container_path(callee) else {
             // A call/method-call/other compound expression used directly as
-            // ITS OWN callee (`mk()()`, `pick_reader(cond)()`, ...) — resolve
+            // ITS OWN callee (`mk()()`, `pick_reader(cond)()`, ...) -- resolve
             // through the general closure-value resolver, which already
-            // understands a call to a known `fn_return_closure_caps` entry
-            // and falls back to `Unknown` for anything else it cannot prove.
+            // understands a call to a known `fn_return_closure_caps` entry,
+            // a registered transparent-accessor method call (LEDGER item 20
+            // -- `resolve_closure_caps`'s own `Expr::MethodCall` arm), and
+            // falls back to `Unknown` for anything else it cannot prove.
             return match self.resolve_closure_caps(
                 callee,
                 working,
                 &self.fn_return_closure_caps,
                 local_caps,
+                local_container_lits,
                 own_params,
             ) {
                 ClosureCapsResult::Known(c) => c,
@@ -3554,7 +3655,7 @@ impl CapabilityChecker {
             };
         };
         let result = if path.is_empty() {
-            self.resolve_closure_caps(callee, working, &self.fn_return_closure_caps, local_caps, own_params)
+            self.resolve_closure_caps(callee, working, &self.fn_return_closure_caps, local_caps, local_container_lits, own_params)
         } else {
             let root_expr = Expr::Identifier {
                 name: root.to_string(),
