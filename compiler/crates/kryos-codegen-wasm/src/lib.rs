@@ -102,7 +102,38 @@ pub struct WasmOptions {}
 pub fn emit_module(module: &MirModule, options: &WasmOptions) -> Result<Vec<u8>, WasmCodegenError> {
     let mut cg = WasmCodegen::new(options.clone());
     cg.emit(module)?;
-    Ok(cg.finish())
+    let bytes = cg.finish();
+
+    // VALIDATE BEFORE DECLARING SUCCESS.
+    //
+    // `docs/wasm-contract.md` promises the backend is an explicit SUBSET and
+    // that anything outside it "fails at compile time with a clear error --
+    // never a miscompile". That promise was being broken in the worst possible
+    // direction: `kryos build --backend wasm` exited 0 and wrote a .wasm that
+    // could not instantiate AT ALL. Measured 2026-08-14 on
+    // `tests/harden-probes/probe_23_string_ops.kry` (which the contract itself
+    // lists as a known out-of-subset gap, so it should have been REFUSED):
+    //
+    //     $ kryos build --backend wasm probe_23_string_ops.kry -o p23.wasm
+    //     $ echo $?
+    //     0
+    //     $ node tools/wasm-host/run.mjs p23.wasm
+    //     CompileError: Compiling function #46 failed:
+    //         expected 1 elements on the stack for return, found 0
+    //
+    // A user would have shipped that artifact and discovered it in a browser.
+    // A build that says OK must not produce something that cannot load, so the
+    // structural check moves to compile time where the contract says it lives.
+    // This does NOT make the failing construct work -- it converts a broken
+    // artifact into an honest compile error, which is exactly what the
+    // contract already claims happens.
+    if let Err(e) = wasmparser::Validator::new().validate_all(&bytes) {
+        return Err(WasmCodegenError::new(format!(
+            "internal: the WASM backend produced a structurally INVALID module and refused to write it ({e}). This is a codegen bug, not a problem with your program -- please report it with a minimal reproducer. Build with --backend cranelift or --backend llvm in the meantime."
+        )));
+    }
+
+    Ok(bytes)
 }
 
 // ---------------------------------------------------------------------------

@@ -181,6 +181,7 @@ cmd_gates() {
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
 
     echo "== tier 2: behaviour, not just compilation =="
+    run "wasm_differential"   bash tests/wasm_differential_gate.sh
     # These exist because "it compiles" was the whole bar and three real
     # defects shipped through a gate that only compiled the examples.
     run "examples"            bash tests/run_examples_gate.sh

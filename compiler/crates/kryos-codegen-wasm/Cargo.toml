@@ -10,3 +10,6 @@ description = "WebAssembly codegen backend for the Kryos compiler"
 kryos-mir = { workspace = true }
 kryos-driver = { workspace = true }
 wasm-encoder = "0.221"
+# Validator companion to wasm-encoder, same version line. Used ONLY to refuse
+# emitting a structurally invalid module -- see `emit_module` (LEDGER item 27).
+wasmparser = "0.221"
