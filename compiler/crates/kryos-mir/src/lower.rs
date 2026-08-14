@@ -12863,6 +12863,17 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         });
                     }
                 }
+                // LEDGER item 21: also record this (ptr, value) pair so
+                // codegen can replay the SAME write-back at its own
+                // exception-triggered early-return synthesis site -- a
+                // `throw` mid-body never passes through one of the
+                // Terminator::Return blocks the loop above just wrote into,
+                // so without this the mutation silently reverts on the next
+                // call instead of persisting.
+                mir_func
+                    .attributes
+                    .mutated_scalar_writeback_pairs
+                    .push((ptr_id.0, orig_id.0));
                 boxed_capture_names.insert(cap_name.clone());
                 mutated_scalar_boxed.insert(cap_name.clone());
             }

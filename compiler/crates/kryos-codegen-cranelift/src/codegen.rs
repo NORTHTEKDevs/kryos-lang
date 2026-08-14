@@ -3233,6 +3233,35 @@ fn translate_instruction<M: Module>(
                     // unwind to — report the uncaught exception instead.
                     builder.switch_to_block(exc_return_block);
                     builder.seal_block(exc_return_block);
+                    // LEDGER item 21: this early-return path is synthesized
+                    // here in codegen, never as a MIR `Terminator::Return`
+                    // block, so the normal-return epilogue in
+                    // kryos-mir/src/lower.rs never gets a chance to insert
+                    // its mutated-scalar-capture `StoreDeref` write-backs
+                    // into it. Replay them here so a capture mutated before
+                    // a `throw` mid-body persists into the closure's box
+                    // instead of silently reverting on the closure's next
+                    // call.
+                    let scalar_writeback_pairs = translator
+                        .mir_func
+                        .attributes
+                        .mutated_scalar_writeback_pairs
+                        .clone();
+                    for (ptr_id, value_id) in scalar_writeback_pairs {
+                        let ptr_val = translate_operand(
+                            &Operand::Local(LocalId(ptr_id)),
+                            builder,
+                            translator,
+                            module,
+                        )?;
+                        let val = translate_operand(
+                            &Operand::Local(LocalId(value_id)),
+                            builder,
+                            translator,
+                            module,
+                        )?;
+                        builder.ins().store(MemFlags::new(), val, ptr_val, 0);
+                    }
                     emit_report_uncaught_if_main(builder, translator, module)?;
                     emit_exception_cleanup_drops(builder, translator, module)?;
                     emit_trace_exit(builder, translator, module)?;

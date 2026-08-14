@@ -286,6 +286,22 @@ pub struct MirAttributes {
     /// duplicated. False for ordinary (non-mutating) closures and all
     /// non-closure functions -- adds no overhead there.
     pub needs_capture_lock: bool,
+    /// (ptr_local, value_local) pairs for mutated-SCALAR captures needing a
+    /// `StoreDeref` write-back before EVERY exit from this function, not
+    /// just the MIR `Terminator::Return` blocks lower.rs's epilogue loop
+    /// inserts them into directly (LEDGER item 21). A `throw` mid-body never
+    /// reaches one of those blocks -- Kryos exceptions are a thread-local
+    /// flag, not native unwinding, so a throwing call is followed by an
+    /// early-return path synthesized entirely in CODEGEN (both backends,
+    /// right after the post-call `kryos_exception_check`), which the MIR
+    /// lowering pass never sees and so cannot insert a `StoreDeref` into.
+    /// Both codegen backends replay these exact pairs (re-emitting the same
+    /// `StoreDeref` store the normal-return epilogue uses) at their own
+    /// exception early-return synthesis site so a mutation made before the
+    /// throw persists into the closure's box instead of silently reverting
+    /// on the NEXT call. Empty for every function that isn't a closure with
+    /// a mutated scalar capture.
+    pub mutated_scalar_writeback_pairs: Vec<(u32, u32)>,
 }
 
 /// A single MIR function.

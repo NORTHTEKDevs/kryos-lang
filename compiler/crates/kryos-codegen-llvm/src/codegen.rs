@@ -10500,6 +10500,35 @@ impl LlvmCodegen {
         self.emit_line(&format!("  {pend} = icmp ne i64 {chk}, 0"));
         self.emit_line(&format!("  br i1 {pend}, label %{exc_lbl}, label %{cont_lbl}"));
         self.emit_line(&format!("{exc_lbl}:"));
+        // LEDGER item 21: this early-return path is synthesized here in
+        // codegen, never as a MIR `Terminator::Return` block, so the
+        // normal-return epilogue in kryos-mir/src/lower.rs never gets a
+        // chance to insert its mutated-scalar-capture `StoreDeref`
+        // write-backs into it. Replay them here (same store shape as the
+        // `Instruction::StoreDeref` case below) so a capture mutated before
+        // a `throw` mid-body persists into the closure's box instead of
+        // silently reverting on the closure's next call.
+        for (ptr_id, value_id) in func.attributes.mutated_scalar_writeback_pairs.clone() {
+            let ptr_op = Operand::Local(LocalId(ptr_id));
+            let val_op = Operand::Local(LocalId(value_id));
+            let ptr_val = self.operand_to_llvm(&ptr_op, func);
+            let ptr_ty = self.operand_type(&ptr_op, func);
+            let val = self.operand_to_llvm(&val_op, func);
+            let val_ty = self.operand_type(&val_op, func);
+            let real_ptr = if ptr_ty == "ptr" || ptr_ty == "void" {
+                ptr_val
+            } else {
+                let tmp = self.next_temp();
+                self.emit_line(&format!("  {tmp} = inttoptr {ptr_ty} {ptr_val} to ptr"));
+                tmp
+            };
+            let (store_val_ty, store_val) = if val_ty == "void" {
+                ("i64".to_string(), "0".to_string())
+            } else {
+                (val_ty, val)
+            };
+            self.emit_line(&format!("  store {store_val_ty} {store_val}, ptr {real_ptr}"));
+        }
         if func.name == "main" {
             self.emit_line("  call void @kryos_exception_report_uncaught_if_pending()");
         }

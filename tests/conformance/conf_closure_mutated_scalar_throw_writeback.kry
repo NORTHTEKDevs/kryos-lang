@@ -1,0 +1,101 @@
+// Conformance: a mutating closure's own mutated-SCALAR-capture write-back
+// must persist even when the call that mutates it THROWS mid-body -- not
+// silently vanish, reverting the closure's persistent state to whatever it
+// held before the mutation.
+//
+// LEDGER item 21. A byproduct of closing item 11(b)/item 7 (the boxed
+// mutated-scalar-capture mechanism): that fix's own repro
+// (tests/security/attack_closure_mutate_then_throw_state.kry) already
+// hypothesized this SECOND, independent mechanism, left unfixed at the
+// time and tracked separately because the fix surface is different
+// (codegen's own exception early-return synthesis, not kryos-mir's
+// lower.rs).
+//
+// ROOT CAUSE (probed live with the pre-fix binary before touching any
+// code, not inferred from source alone): `f`'s body does
+// `counter = counter + n` then calls a helper that throws. Item 7's
+// mechanism boxes every mutated scalar capture behind an ARC-allocated
+// cell and writes the local's current value back through that box via
+// `Instruction::StoreDeref`, but ONLY in MIR blocks whose terminator is
+// `Terminator::Return` (kryos-mir/src/lower.rs). Kryos exceptions are a
+// thread-local flag, not native unwinding -- every user-function CALL
+// site checks the flag right after the call and, if set, takes an early-
+// return path synthesized DIRECTLY IN CODEGEN (both backends,
+// `exc_return_block` / `emit_post_call_exception_check`), entirely
+// separate from any MIR `Terminator::Return` block the lowering pass ever
+// sees. That path ran `emit_exception_cleanup_drops` but never replayed
+// the `StoreDeref` write-back living in a different MIR block, so a
+// mutation made right before the throw was real WITHIN that call (later
+// code in the same call would see it) but never reached the closure's
+// persistent box -- the NEXT call observed the PRE-mutation value, not
+// the incremented one and not an error.
+//
+// FIX: `kryos-mir`'s `MirAttributes` gained a new
+// `mutated_scalar_writeback_pairs: Vec<(u32, u32)>` field recording every
+// (ptr_local, value_local) pair the normal-return epilogue writes back
+// through, populated in lower.rs's Lambda arm alongside the existing
+// per-block insertion. Both codegen backends now replay these exact pairs
+// (the SAME store shape their `Instruction::StoreDeref` case already
+// emits) at their own exception-early-return synthesis site, so a
+// mutation made before a throw persists into the closure's box the same
+// way a normal return already did.
+//
+// PROOF BOTH WAYS: `git stash` this fix + full `cargo build --release`
+// from `compiler/` -- the assertion below fails (`after` observed as `0`,
+// not `5`) on BOTH backends; `git stash pop` + rebuild -- passes clean,
+// printing PASS on both backends.
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn risky(trigger: i64, n: i64) -> i64 {
+    if trigger == 1 {
+        throw "boom"
+    }
+    return n
+}
+
+fn main() {
+    // Baseline: two normal (non-throwing) calls prove the box/writeback
+    // mechanism still works at all (item 7's own guarantee, unaffected by
+    // this fix).
+    let mut counter2: i64 = 0
+    let g = |n: i64| {
+        counter2 = counter2 + n
+        counter2
+    }
+    let g1 = g(5)
+    let g2 = g(5)
+    expect(g1 == 5, "baseline mutated-scalar capture, first call")
+    expect(g2 == 10, "baseline mutated-scalar capture, second call")
+
+    // Attack: call f, which mutates `counter` then throws mid-body.
+    let mut counter: i64 = 0
+    let mut trigger: i64 = 1
+    let f = |n: i64| {
+        counter = counter + n
+        let r = risky(trigger, n)
+        counter + r
+    }
+
+    let mut caught: bool = false
+    try {
+        f(5)
+    } catch e {
+        caught = true
+    }
+    expect(caught, "the throwing call must actually throw (test validity)")
+
+    // Disarm (mutate the OUTER `trigger`, a plain by-reference capture --
+    // stays visible to `f` per gotcha #11) and observe whether the FIRST
+    // call's `counter = counter + 5` survived the throw.
+    trigger = 0
+    let after = f(0)
+    expect(after == 5, "mutated-scalar capture write-back must persist across a mid-body throw")
+
+    println("conformance closure-mutated-scalar-throw-writeback: PASS")
+}
