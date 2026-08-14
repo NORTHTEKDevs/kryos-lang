@@ -440,56 +440,25 @@ fn run_suite(suite: TestSuite) -> TestReport {
 
 /// Run an array of test functions (simple mode, no suites).
 /// Each entry is {"name": str, "body_fn": fn}.
-fn run_tests(tests: [any]) -> TestReport {
-    let suite_start = time_now()
-    let mut results = []
-    let mut passed = 0
-    let mut failed = 0
-    let count = len(tests)
-    let mut i = 0
-    while i < count {
-        let test = tests[i]
-        let name = test.name
-        let body = test.body_fn
-        let start = time_now()
-        let mut status = TestStatus.Passed
-        let mut this_failed = false
-        try {
-            body()
-        } catch (e) {
-            status = TestStatus.Failed(to_string(e))
-            this_failed = true
-        }
-        if this_failed {
-            failed = failed + 1
-        } else {
-            passed = passed + 1
-        }
-        let elapsed = time_now() - start
-        // Build TestResult first, then tally via its (moved) status by
-        // re-reading from the pushed result. Since `result` is moved into
-        // `results`, capture the tally signal before construction via a
-        // small boolean flag set inside the try/catch above.
-        let result = TestResult {
-            name: name,
-            status: status,
-            elapsed_ms: elapsed
-        }
-        push(results, result)
-        // Note: passed/failed counters tallied via inspection of `failed`
-        // increments inside the catch block above (status starts Passed).
-        i = i + 1
-    }
-    let suite_elapsed = time_now() - suite_start
-    return TestReport {
-        suite_name: "tests",
-        results: results,
-        total: count,
-        passed: passed,
-        failed: failed,
-        skipped: 0,
-        total_elapsed_ms: suite_elapsed
-    }
+fn run_tests(tests: [TestCase]) -> TestReport {
+    // Delegates to `run_suite`/`run_test` rather than reimplementing the loop.
+    //
+    // This function was previously a hand-rolled duplicate taking `[any]`, and
+    // it was BROKEN THREE WAYS -- none of which could be caught, because the
+    // `[any]` parameter erased the element type so the body was never really
+    // checked, and nothing in the repo ever compiled this module (LEDGER
+    // item 29):
+    //   1. it read `test.body_fn`, a field that does not exist on `TestCase`
+    //      (the field is `body`). Calling it ICE'd the Cranelift backend with
+    //      "cannot resolve the struct type for field access `.name`".
+    //   2. it ignored `skip`/`skip_reason` entirely and hardcoded
+    //      `skipped: 0`, so a test built with `xit(..)` would RUN instead of
+    //      being skipped -- a silent wrong answer, not just a missing count.
+    //   3. taking `[any]` forced `@capabilities(all)` onto every caller, since
+    //      an erased element's row is Unknown.
+    // Taking `[TestCase]` fixes all three at once and matches the direction
+    // `std::fmt::format` already moved (`[any]` -> `[str]`).
+    return run_suite(describe("tests", tests))
 }
 
 // --- Reporting ---------------------------------------------------------------
@@ -564,7 +533,18 @@ fn failures(report: TestReport) -> [TestResult] {
     while i < count {
         match report.results[i].status {
             TestStatus.Failed(_) => {
-                push(failed, report.results[i])
+                // MUST be reassigned, not a bare `push(..)` statement. `push`
+                // RETURNS the array handle, and a block's last expression is
+                // its value -- so a bare `push(..)` makes this arm evaluate to
+                // `[TestResult]` while the `_ => {}` arm evaluates to `void`,
+                // and the two arms disagree (`E0100: expected [TestResult],
+                // found void`). That made `use std::test::*` fail to compile
+                // at all, which went unnoticed because nothing ever compiled
+                // this module (LEDGER item 29). Annotating `failed` does NOT
+                // help -- the mismatch is between the ARMS, not in the
+                // accumulator. Reassigning is the documented idiom regardless
+                // (CLAUDE.md gotcha #22: always write `arr = push(arr, v)`).
+                failed = push(failed, report.results[i])
             },
             _ => {}
         }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# kryos-loop — the production-hardening driver.
+# kryos-loop - the production-hardening driver.
 #
 # Encodes the traps that actually cost time on this codebase, so a fresh
 # session cannot rediscover them. Every guard below exists because something
@@ -27,7 +27,7 @@ grn()  { printf "\033[32m%s\033[0m\n" "$*"; }
 ylw()  { printf "\033[33m%s\033[0m\n" "$*"; }
 
 # ---------------------------------------------------------------------------
-# preflight — never skip. Two of these cost hours each.
+# preflight - never skip. Two of these cost hours each.
 # ---------------------------------------------------------------------------
 cmd_preflight() {
     local bad=0
@@ -76,7 +76,7 @@ cmd_preflight() {
 }
 
 # ---------------------------------------------------------------------------
-# repro — characterize BEFORE theorizing. This is the discipline that was
+# repro - characterize BEFORE theorizing. This is the discipline that was
 # missing every time an attribution turned out wrong: three in a row this
 # session, each from reasoning about code instead of measuring it.
 # ---------------------------------------------------------------------------
@@ -133,7 +133,7 @@ cmd_repro() {
 }
 
 # ---------------------------------------------------------------------------
-# diff — differential execution. Most real defects here were AOT-only.
+# diff - differential execution. Most real defects here were AOT-only.
 # ---------------------------------------------------------------------------
 cmd_diff() {
     local f="${1:?usage: diff <file.kry>}"
@@ -149,7 +149,7 @@ cmd_diff() {
 }
 
 # ---------------------------------------------------------------------------
-# gates — ORDER MATTERS. Bootstrap runs alone and last: run it beside the
+# gates - ORDER MATTERS. Bootstrap runs alone and last: run it beside the
 # examples/strict-caps sweeps and it fails spuriously on rotating modules.
 # ---------------------------------------------------------------------------
 cmd_gates() {
@@ -175,6 +175,7 @@ cmd_gates() {
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
+    run "stdlib_compile"      bash tests/stdlib_compile_gate.sh
     run "selfhost_regressions" bash compiler/self-host/test_regressions.sh
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
 
@@ -204,7 +205,7 @@ cmd_gates() {
 }
 
 # ---------------------------------------------------------------------------
-# soak — a leak scales with iterations; a fixed shape does not. Always compare
+# soak - a leak scales with iterations; a fixed shape does not. Always compare
 # two scales. A single number proves nothing.
 # ---------------------------------------------------------------------------
 cmd_soak() {
