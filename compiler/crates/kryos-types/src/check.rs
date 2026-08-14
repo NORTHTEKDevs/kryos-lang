@@ -1,4 +1,4 @@
-//! Type checking pass — walks the AST and validates types.
+//! Type checking pass - walks the AST and validates types.
 //!
 //! Resolves `TypeExpr` → `Type`, infers types for unannotated let bindings,
 //! checks function bodies, binary ops, calls, field access, etc.
@@ -20,14 +20,14 @@ pub struct TypeChecker {
     current_return_type: Option<Type>,
     /// The name of the function currently being checked (for better error messages).
     current_function_name: Option<String>,
-    /// Functions marked with @deprecated — emit warnings on call.
+    /// Functions marked with @deprecated - emit warnings on call.
     deprecated_functions: std::collections::HashSet<String>,
     /// Top-level function names already registered this module, for duplicate
     /// detection (local-vs-local and local-vs-imported -- imports are merged
     /// as ordinary decls by the resolver). Builtin shadowing stays allowed
     /// (builtins are not decls).
     seen_fn_names: std::collections::HashSet<String>,
-    /// Functions marked with @pure — cannot call non-pure or do I/O.
+    /// Functions marked with @pure - cannot call non-pure or do I/O.
     pure_functions: std::collections::HashSet<String>,
     /// Names declared as ACTORS. Actors register as struct-like types (so
     /// `self.field` type-checks in handlers), which wrongly let the
@@ -36,7 +36,7 @@ pub struct TypeChecker {
     actor_names: std::collections::HashSet<String>,
     /// Whether we are currently inside a @pure function body.
     in_pure_function: bool,
-    /// The current `Self` type — set when checking trait/impl blocks.
+    /// The current `Self` type - set when checking trait/impl blocks.
     current_self_type: Option<Type>,
     /// Duplicate-binding detection for the pattern currently being bound.
     /// Set to an empty map at each top-level `bind_pattern` entry; every
@@ -432,6 +432,126 @@ impl TypeChecker {
             .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
+    /// LEDGER item 40, the `[any]`-container sibling of item 24.
+    ///
+    /// `any` resolves to `Type::Error` -- the erasure sentinel (item 6, an
+    /// ABI-blocked design note: `any` is a bare i64 with NO runtime type tag).
+    /// `bool` (i1) and `f64`/`f32` are not i64-shaped, so a value of those
+    /// types reaching an `any` slot is reinterpreted, not converted.
+    ///
+    /// Item 24 closed the DIRECT shape (`let x: any = <bool>`) at `Stmt::Let`.
+    /// It cannot see this one: by the time `let b: any = args[0]` runs, the
+    /// element type of an `[any]` PARAMETER was already erased at the
+    /// parameter's own declaration, so no concrete `Bool` survives to inspect.
+    /// The last point a concrete type still exists is the CALL SITE, where a
+    /// `[bool]` argument is unified against an `[any]` parameter -- so the
+    /// check belongs here.
+    ///
+    /// Measured before the fix: `log_event([true])` where `fn log_event(args:
+    /// [any])` builds CLEAN on both backends and prints THREE different values
+    /// for one program -- correct `true`, JIT `1`, AOT `-1`. AOT reached a
+    /// clean build, a clean run, and a wrong number, which is the worst case in
+    /// this repo's ranking doctrine (a silent wrong answer outranks a crash).
+    ///
+    /// Only fires when the ARGUMENT side carries a CONCRETE `Bool`/`F64`/`F32`
+    /// at a position where the PARAMETER side is the `any` sentinel. That
+    /// pairing is what codegen mishandles. A genuine upstream type error
+    /// produces `Type::Error` on the ARGUMENT side, which this never reports
+    /// on, so a broken program does not get extra noise from this check.
+    fn reject_untagged_scalar_into_any(&mut self, param_ty: &Type, arg_ty: &Type, span: Span) {
+        let p = self.engine.resolve(param_ty);
+        let a = self.engine.resolve(arg_ty);
+        // DELIBERATELY NOT CHECKED AT THE TOP LEVEL. A bare `Type::Error`
+        // parameter is ALSO how the polymorphic builtins (`to_string`, `abs`,
+        // `len`) are typed, so checking `(Error, Bool)` directly would reject
+        // `to_string(true)` -- a cascade into ordinary correct code, caught by
+        // `tests/type_soundness.sh`'s `polymorphic_builtins_still_work` probe
+        // before this shipped. Item 24 already covers the direct storage shape
+        // (`let x: any = <bool>`) at `Stmt::Let`. Only CONTAINER positions are
+        // unambiguous: nothing polymorphic is typed `[any]`/`map<_, any>`, so
+        // a concrete `Bool`/`F64` landing inside one is always the item-40 bug.
+        let nested = match (&p, &a) {
+            (Type::Array { element: pe, .. }, Type::Array { element: ae, .. }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Set { element: pe }, Type::Set { element: ae }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Option { inner: pi }, Type::Option { inner: ai }) => {
+                Self::untagged_scalar_into_any(pi, ai)
+            }
+            (Type::Tuple { elements: pv }, Type::Tuple { elements: av }) => pv
+                .iter()
+                .zip(av.iter())
+                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
+            (Type::Map { key: pk, value: pv }, Type::Map { key: ak, value: av }) => {
+                Self::untagged_scalar_into_any(pk, ak)
+                    .or_else(|| Self::untagged_scalar_into_any(pv, av))
+            }
+            (Type::Result { ok: po, err: pe }, Type::Result { ok: ao, err: ae }) => {
+                Self::untagged_scalar_into_any(po, ao)
+                    .or_else(|| Self::untagged_scalar_into_any(pe, ae))
+            }
+            _ => None,
+        };
+        if let Some(bad) = nested {
+            self.error_with_code(
+                format!(
+                    "cannot pass a `{bad}` value through an `any` slot -- `any` is erased to a bare i64 at runtime with no type tag, and `{bad}`'s native representation is not i64-compatible, so the value is reinterpreted rather than converted (measured: the same program prints a different wrong number on each backend, with no diagnostic). Use a concrete element type (e.g. `[{bad}]`) instead of `[any]`, or convert to a final form (e.g. `to_string(..)`) before passing it"
+                ),
+                span,
+                kryos_errors::codes::E0110,
+            );
+        }
+    }
+
+    /// Walk a parameter type and an argument type in parallel, looking for a
+    /// non-i64-shaped scalar on the ARGUMENT side sitting where the PARAMETER
+    /// side is the `any` sentinel. Returns the offending scalar type.
+    fn untagged_scalar_into_any(p: &Type, a: &Type) -> Option<Type> {
+        match (p, a) {
+            (Type::Error, Type::Bool) => Some(Type::Bool),
+            (Type::Error, Type::F64) => Some(Type::F64),
+            (Type::Error, Type::F32) => Some(Type::F32),
+            (Type::Array { element: pe, .. }, Type::Array { element: ae, .. }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Set { element: pe }, Type::Set { element: ae }) => {
+                Self::untagged_scalar_into_any(pe, ae)
+            }
+            (Type::Option { inner: pi }, Type::Option { inner: ai }) => {
+                Self::untagged_scalar_into_any(pi, ai)
+            }
+            (Type::Tuple { elements: pv }, Type::Tuple { elements: av }) => pv
+                .iter()
+                .zip(av.iter())
+                .find_map(|(x, y)| Self::untagged_scalar_into_any(x, y)),
+            (
+                Type::Map {
+                    key: pk,
+                    value: pv,
+                },
+                Type::Map {
+                    key: ak,
+                    value: av,
+                },
+            ) => Self::untagged_scalar_into_any(pk, ak)
+                .or_else(|| Self::untagged_scalar_into_any(pv, av)),
+            (
+                Type::Result {
+                    ok: po,
+                    err: pe,
+                },
+                Type::Result {
+                    ok: ao,
+                    err: ae,
+                },
+            ) => Self::untagged_scalar_into_any(po, ao)
+                .or_else(|| Self::untagged_scalar_into_any(pe, ae)),
+            _ => None,
+        }
+    }
+
     /// `@pure` enforcement for a free-function / builtin callee identified by
     /// name (direct `f(..)` or module-qualified `m::f(..)`). Rejects I/O
     /// builtins and non-`@pure` user functions; a curated set of pure builtins
@@ -692,7 +812,7 @@ impl TypeChecker {
                             Type::Error
                         }
                     }
-                    // chan<T> — channels are opaque i64 handles at runtime.
+                    // chan<T> - channels are opaque i64 handles at runtime.
                     "chan" => Type::I64,
                     "Set" | "set" if self.env.lookup_struct(name).is_none() => {
                         if resolved_args.len() == 1 {
@@ -1207,7 +1327,7 @@ impl TypeChecker {
                 // Temporarily bind generic params so they resolve in param/return types.
                 // Capture the type variable IDs so we can instantiate fresh copies
                 // at each call site (prevents generic pinning bug).
-                // Also register trait bounds keyed by the *sig* var IDs — these
+                // Also register trait bounds keyed by the *sig* var IDs - these
                 // are the IDs that show up in parameter types when the function
                 // body is checked, so MethodCall bound-resolution must see them.
                 let mut generic_var_ids = Vec::new();
@@ -1572,7 +1692,7 @@ impl TypeChecker {
                 //
                 // This avoids polluting the global namespace: a stdlib impl
                 // method named `push` no longer shadows the `push` builtin
-                // for unrelated call sites — including call sites inside
+                // for unrelated call sites - including call sites inside
                 // sibling impl method bodies.
                 let _ = &method_sigs;
 
@@ -1835,7 +1955,7 @@ impl TypeChecker {
                     // garbage value at runtime. Forward-ref guard: a value
                     // calling a function declared LATER in the file infers
                     // Error (with a spurious E0102) because registration is
-                    // sequential — suppress those diagnostics and skip the
+                    // sequential - suppress those diagnostics and skip the
                     // unify, preserving the previously-accepted pattern (the
                     // unannotated branch has the same limitation).
                     let diags_before = self.diagnostics.len();
@@ -2576,7 +2696,7 @@ impl TypeChecker {
                     {
                         // Check the method body inline, binding `self` and
                         // the rest of the params directly from the impl's
-                        // signature — without registering the method as a
+                        // signature - without registering the method as a
                         // global function (which would shadow same-named
                         // builtins inside the body).
                         self.env.push_scope();
@@ -2928,7 +3048,7 @@ impl TypeChecker {
                     (Some(decl), None) => decl,
                     (None, Some(inferred)) => inferred,
                     (None, None) => {
-                        // No type info at all — create a fresh variable.
+                        // No type info at all - create a fresh variable.
                         self.engine.fresh_var()
                     }
                 };
@@ -3027,7 +3147,7 @@ impl TypeChecker {
                 }
                 // Enforce immutability: only `let mut` variables can be
                 // reassigned. This is an ERROR (E0302), matching CLAUDE.md and
-                // `kryos explain E0302` — it was previously only a warning, so
+                // `kryos explain E0302` - it was previously only a warning, so
                 // immutability was silently unenforced (backlog #113).
                 //
                 // NOTE: this checks only a BARE-identifier reassignment
@@ -3343,7 +3463,7 @@ impl TypeChecker {
     /// `outer_mut` is true when the binding site (`let mut (...)` /
     /// match arm under a `mut` binding) declared the whole pattern
     /// mutable.  Per-element `mut` inside the pattern
-    /// (`let (mut a, b) = ...`) is also honored — the binding is
+    /// (`let (mut a, b) = ...`) is also honored - the binding is
     /// mutable if either source says so.
     /// In a MATCH ARM, a bare CAPITALIZED identifier is a variant TAG test
     /// (`Red`, `Some`), not a binding -- Kryos bindings are lowercase by
@@ -3555,7 +3675,7 @@ impl TypeChecker {
                 // Resolve the subject first so type variables don't slip through.
                 let resolved_subject = self.engine.resolve(subject_ty);
                 // Option<T> / Result<T,E> are DISTINCT Type variants from
-                // Type::Enum — derive their payload types directly from the
+                // Type::Enum - derive their payload types directly from the
                 // generic arguments. Without this they fall to the enum-name
                 // lookup below with name "", binding the payload to a fresh
                 // ?Tn (so `Some(u) => u.field` failed to type-check).
@@ -3845,7 +3965,7 @@ impl TypeChecker {
     /// Infer the type of an expression.
     /// If `expr` is an integer literal (or negated literal) and `declared`
     /// resolves to a narrow integer type, reject values outside the type's
-    /// range. Without this, `let x: u8 = 999` silently truncated to 231 —
+    /// range. Without this, `let x: u8 = 999` silently truncated to 231 - 
     /// silent data corruption at the source level. Explicit casts
     /// (`999 as u8`) keep their documented truncation semantics.
     fn check_int_literal_range(&mut self, declared: &Type, expr: &Expr, span: Span) {
@@ -3862,7 +3982,7 @@ impl TypeChecker {
         // Unsigned targets have min == 0; only they may hold values above
         // i64::MAX. A bare integer literal is stored as an i64 bit-pattern
         // (the parser bit-casts u64 values above i64::MAX to a negative i64),
-        // so for an unsigned target reinterpret those bits as unsigned —
+        // so for an unsigned target reinterpret those bits as unsigned - 
         // otherwise u64::MAX reads back as -1 and is wrongly rejected. A
         // NEGATED literal (`-5`) stays negative and is still rejected for
         // unsigned types, as intended.
@@ -4195,7 +4315,7 @@ impl TypeChecker {
                 if let Some(ty) = self.env.lookup_var(name) {
                     ty.clone()
                 } else if let Some(sig) = self.env.lookup_function(name) {
-                    // Function used as a value — return its function type.
+                    // Function used as a value - return its function type.
                     // For generic functions, instantiate fresh type variables so
                     // each call site gets independent type inference (prevents
                     // generic type pinning across call sites).
@@ -4283,7 +4403,7 @@ impl TypeChecker {
                     // constructor path in the FnCall arm (`Cons(1, t)` already
                     // resolves by unambiguous variant name) and the MIR lowering,
                     // which already resolves bare nullary variants via
-                    // `find_enum_variant`. Only NULLARY variants resolve here — a
+                    // `find_enum_variant`. Only NULLARY variants resolve here - a
                     // with-args variant used bare without a call is not a value.
                     // Closes the inconsistency where `Cons(1, Nil)` rejected only
                     // the `Nil`, forcing recursive/tree enums to qualify every leaf.
@@ -4861,6 +4981,8 @@ impl TypeChecker {
                                     }
                                 }
                                 let arg_ty = self.infer_expr(arg);
+                                // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                                self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -5038,6 +5160,8 @@ impl TypeChecker {
                                             args.iter().zip(expected_params.iter())
                                         {
                                             let arg_ty = self.infer_expr(arg);
+                                            // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                                            self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                             if let Err(diag) =
                                                 self.engine.unify(param_ty, &arg_ty, arg.span())
                                             {
@@ -5101,6 +5225,8 @@ impl TypeChecker {
                                 for (arg, (_, param_ty)) in args.iter().zip(expected_params.iter())
                                 {
                                     let arg_ty = self.infer_expr(arg);
+                                    // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                                    self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                     if let Err(diag) =
                                         self.engine.unify(param_ty, &arg_ty, arg.span())
                                     {
@@ -5309,6 +5435,8 @@ impl TypeChecker {
                         } else {
                             for (arg, param_ty) in args.iter().zip(expected_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
+                                // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                                self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -5437,6 +5565,8 @@ impl TypeChecker {
                         } else {
                             for (arg, param_ty) in args.iter().zip(fn_params.iter()) {
                                 let arg_ty = self.infer_expr(arg);
+                                // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                                self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                                 if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span())
                                 {
                                     self.diagnostics.push(diag);
@@ -5564,7 +5694,7 @@ impl TypeChecker {
                             self.engine.set_var_bounds(*new_id, bounds);
                         }
                     }
-                    // Static call — skip 'self' parameter.
+                    // Static call - skip 'self' parameter.
                     let expected_params: Vec<Type> =
                         if sig.params.first().map(|(n, _)| n.as_str()) == Some("self") {
                             inst_params.iter().skip(1).cloned().collect()
@@ -5583,6 +5713,8 @@ impl TypeChecker {
                     } else {
                         for (arg, param_ty) in args.iter().zip(expected_params.iter()) {
                             let arg_ty = self.infer_expr(arg);
+                            // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                            self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -5645,6 +5777,8 @@ impl TypeChecker {
                     } else {
                         for (arg, param_ty) in args.iter().zip(params.iter()) {
                             let arg_ty = self.infer_expr(arg);
+                            // LEDGER item 40: last point a concrete type exists before `any` erasure.
+                            self.reject_untagged_scalar_into_any(param_ty, &arg_ty, arg.span());
                             if let Err(diag) = self.engine.unify(param_ty, &arg_ty, arg.span()) {
                                 self.diagnostics.push(diag);
                             }
@@ -6132,8 +6266,8 @@ impl TypeChecker {
                     let arm_ty = self.infer_expr(&arm.body);
                     // An arm body that diverges (always returns/throws) does
                     // not contribute to the match expression's type.  This
-                    // lets the `?` operator desugar — whose Err arm is
-                    // `{ return Err(e) }` of type Void — coexist with an Ok
+                    // lets the `?` operator desugar - whose Err arm is
+                    // `{ return Err(e) }` of type Void - coexist with an Ok
                     // arm that yields the unwrapped value.
                     let arm_diverges = arm_body_diverges(&arm.body);
                     self.env.pop_scope();
@@ -6382,7 +6516,7 @@ impl TypeChecker {
                 dst
             }
 
-            // Block expression — type is the type of the last expression.
+            // Block expression - type is the type of the last expression.
             Expr::Block { block, .. } => {
                 self.env.push_scope();
                 // The block's type is its tail expression's type, computed
@@ -6442,7 +6576,7 @@ impl TypeChecker {
                 block_ty
             }
 
-            // Comptime block — type is the type of the last expression.
+            // Comptime block - type is the type of the last expression.
             Expr::ComptimeBlock { body, .. } => {
                 self.env.push_scope();
                 let last_idx = body.stmts.len().wrapping_sub(1);
@@ -6460,7 +6594,7 @@ impl TypeChecker {
                 self.env.pop_scope();
                 ty
             }
-            // Quantum blocks — check body, return void for now.
+            // Quantum blocks - check body, return void for now.
             Expr::QuantumBlock { body, .. } => {
                 self.env.push_scope();
                 self.check_block(body);
@@ -6468,7 +6602,7 @@ impl TypeChecker {
                 Type::Void
             }
 
-            // Unsafe block — a plain block whose type is its tail expression's,
+            // Unsafe block - a plain block whose type is its tail expression's,
             // but while it is being checked, raw-pointer dereference is allowed
             // (E0500 is suppressed). Semantically transparent to codegen.
             Expr::UnsafeBlock { body, .. } => {
@@ -6490,7 +6624,7 @@ impl TypeChecker {
                 ty
             }
 
-            // Await expression — for now, just pass through the inner type.
+            // Await expression - for now, just pass through the inner type.
             // A full implementation would unwrap Future<T> → T.
             Expr::Await { value, .. } => self.infer_expr(value),
         }
@@ -6567,7 +6701,7 @@ impl TypeChecker {
                 }
                 let resolved = self.engine.resolve(&left_ty);
                 // Deferred numeric context: both operands are unconstrained
-                // type vars (e.g. `|n| |x| x + n` — neither annotation nor
+                // type vars (e.g. `|n| |x| x + n` - neither annotation nor
                 // literal pins a type). Default to i64; the operands were
                 // unified above so one binding fixes both.
                 if let Type::Var(_) = resolved {
@@ -6682,7 +6816,7 @@ impl TypeChecker {
                     return Type::Error;
                 }
                 let resolved = self.engine.resolve(&left_ty);
-                // Deferred integer context — same Var-defaulting as the
+                // Deferred integer context - same Var-defaulting as the
                 // arithmetic branch (`|n| |x| x & n`).
                 if let Type::Var(_) = resolved {
                     let _ = self.engine.unify(&resolved, &Type::I64, span);
@@ -6708,11 +6842,11 @@ impl TypeChecker {
 
             // Pipe is handled separately in infer_expr.
             BinOp::Pipe => {
-                // Should not reach here — PipeExpr handles pipes.
+                // Should not reach here - PipeExpr handles pipes.
                 self.engine.resolve(&right_ty)
             }
 
-            // Matrix multiply — both sides numeric.
+            // Matrix multiply - both sides numeric.
             BinOp::MatMul => {
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
@@ -6889,7 +7023,7 @@ fn type_check_with_lambda_params_inner(
     let mut checker = TypeChecker::new();
 
     // Register built-in functions that are always available.
-    // println/print/eprintln accept any type — codegen converts non-string
+    // println/print/eprintln accept any type - codegen converts non-string
     // args to strings via kryos_builtin_to_string at call time.
     checker.env.define_function(FunctionSig {
         name: "println".to_string(),
@@ -6952,7 +7086,7 @@ fn type_check_with_lambda_params_inner(
         },
     });
 
-    // len(collection) -> i64 — accepts any collection type (str, array, map).
+    // len(collection) -> i64 - accepts any collection type (str, array, map).
     // Codegen passes the opaque handle to kryos_builtin_len which reads
     // the length field at offset 0 (shared across all collection types).
     checker.env.define_function(FunctionSig {
@@ -6965,7 +7099,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // to_string(value) -> str — accepts any type.
+    // to_string(value) -> str - accepts any type.
     checker.env.define_function(FunctionSig {
         name: "to_string".to_string(),
         generic_params: vec![],
@@ -7012,7 +7146,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // chan_try_recv(ch) -> i64 status (1 data / 0 empty / -1 closed) — non-blocking.
+    // chan_try_recv(ch) -> i64 status (1 data / 0 empty / -1 closed) - non-blocking.
     checker.env.define_function(FunctionSig {
         name: "chan_try_recv".to_string(),
         generic_params: vec![],
@@ -7034,7 +7168,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // file_read(path: str) -> str — read entire file to string
+    // file_read(path: str) -> str - read entire file to string
     checker.env.define_function(FunctionSig {
         name: "file_read".to_string(),
         generic_params: vec![],
@@ -7045,7 +7179,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // file_write(path: str, content: str) -> i64 — write string to file (0=ok, -1=err)
+    // file_write(path: str, content: str) -> i64 - write string to file (0=ok, -1=err)
     checker.env.define_function(FunctionSig {
         name: "file_write".to_string(),
         generic_params: vec![],
@@ -7059,7 +7193,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // file_exists(path: str) -> i64 — 1 if exists, 0 if not
+    // file_exists(path: str) -> i64 - 1 if exists, 0 if not
     checker.env.define_function(FunctionSig {
         name: "file_exists".to_string(),
         generic_params: vec![],
@@ -7070,7 +7204,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // append_file(path: str, content: str) -> i64 — append string to file (0=ok, -1=err)
+    // append_file(path: str, content: str) -> i64 - append string to file (0=ok, -1=err)
     checker.env.define_function(FunctionSig {
         name: "append_file".to_string(),
         generic_params: vec![],
@@ -7084,7 +7218,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // file_size(path: str) -> i64 — byte size of file, -1 on error
+    // file_size(path: str) -> i64 - byte size of file, -1 on error
     checker.env.define_function(FunctionSig {
         name: "file_size".to_string(),
         generic_params: vec![],
@@ -7120,7 +7254,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // create_dir(path: str) -> i64 — create directory recursively
+    // create_dir(path: str) -> i64 - create directory recursively
     checker.env.define_function(FunctionSig {
         name: "create_dir".to_string(),
         generic_params: vec![],
@@ -7131,7 +7265,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // read_line() -> str — read one line from stdin
+    // read_line() -> str - read one line from stdin
     checker.env.define_function(FunctionSig {
         name: "read_line".to_string(),
         generic_params: vec![],
@@ -7190,7 +7324,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Error,
     });
 
-    // env_get(key: str) -> str — get environment variable
+    // env_get(key: str) -> str - get environment variable
     checker.env.define_function(FunctionSig {
         name: "env_get".to_string(),
         generic_params: vec![],
@@ -7201,7 +7335,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // time_now() -> i64 — Unix timestamp in seconds
+    // time_now() -> i64 - Unix timestamp in seconds
     checker.env.define_function(FunctionSig {
         name: "time_now".to_string(),
         generic_params: vec![],
@@ -7212,7 +7346,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // sleep(ms: i64) -> void — block the current task for `ms` milliseconds
+    // sleep(ms: i64) -> void - block the current task for `ms` milliseconds
     checker.env.define_function(FunctionSig {
         name: "sleep".to_string(),
         generic_params: vec![],
@@ -7289,7 +7423,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // close_chan(ch: chan) -> void — close a channel (further sends panic, recvs drain then 0)
+    // close_chan(ch: chan) -> void - close a channel (further sends panic, recvs drain then 0)
     checker.env.define_function(FunctionSig {
         name: "close_chan".to_string(),
         generic_params: vec![],
@@ -7300,7 +7434,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // chan_is_closed(ch: chan) -> i64 — 1 if the channel was closed, else 0.
+    // chan_is_closed(ch: chan) -> i64 - 1 if the channel was closed, else 0.
     // Lets a producer/worker stop when its driving channel is closed.
     checker.env.define_function(FunctionSig {
         name: "chan_is_closed".to_string(),
@@ -7313,13 +7447,13 @@ fn type_check_with_lambda_params_inner(
     });
 
     // ---------------------------------------------------------------------
-    // Low-level FFI helpers — used by stdlib `extern { ... }` blocks that
+    // Low-level FFI helpers - used by stdlib `extern { ... }` blocks that
     // need raw byte access. All take/return i64 (handles or pointers cast
     // to i64) to avoid distinguishing between `ptr` and `i64` in the user
     // surface.
     // ---------------------------------------------------------------------
 
-    // str_to_ptr(s: str) -> i64 — raw data pointer (as i64) of a string.
+    // str_to_ptr(s: str) -> i64 - raw data pointer (as i64) of a string.
     checker.env.define_function(FunctionSig {
         name: "str_to_ptr".to_string(),
         generic_params: vec![],
@@ -7330,7 +7464,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // arr_to_ptr(arr) -> i64 — raw handle pointer (as i64) of an array. The
+    // arr_to_ptr(arr) -> i64 - raw handle pointer (as i64) of an array. The
     // array handle IS its header pointer, so this is the sanctioned FFI shim
     // that replaced the (now-rejected) `arr as i64` cast. Param is opaque
     // (any collection handle), same convention as `len`.
@@ -7344,7 +7478,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // buf_to_str(ptr: i64, len: i64) -> str — copy `len` bytes at `ptr` to a new string.
+    // buf_to_str(ptr: i64, len: i64) -> str - copy `len` bytes at `ptr` to a new string.
     checker.env.define_function(FunctionSig {
         name: "buf_to_str".to_string(),
         generic_params: vec![],
@@ -7358,7 +7492,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // alloc(size: i64) -> i64 — allocate `size` zero-initialized bytes. Returns 0 on failure.
+    // alloc(size: i64) -> i64 - allocate `size` zero-initialized bytes. Returns 0 on failure.
     checker.env.define_function(FunctionSig {
         name: "alloc".to_string(),
         generic_params: vec![],
@@ -7369,7 +7503,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // free_bytes(ptr: i64, size: i64) -> void — release memory from `alloc`.
+    // free_bytes(ptr: i64, size: i64) -> void - release memory from `alloc`.
     checker.env.define_function(FunctionSig {
         name: "free_bytes".to_string(),
         generic_params: vec![],
@@ -7383,7 +7517,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // ptr_byte_at(ptr: i64, i: i64) -> i64 — read byte at offset.
+    // ptr_byte_at(ptr: i64, i: i64) -> i64 - read byte at offset.
     checker.env.define_function(FunctionSig {
         name: "ptr_byte_at".to_string(),
         generic_params: vec![],
@@ -7397,7 +7531,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // ptr_set_byte(ptr: i64, i: i64, b: i64) -> void — write byte at offset.
+    // ptr_set_byte(ptr: i64, i: i64, b: i64) -> void - write byte at offset.
     checker.env.define_function(FunctionSig {
         name: "ptr_set_byte".to_string(),
         generic_params: vec![],
@@ -7412,7 +7546,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // handle_to_str(handle: i64) -> str — reinterpret KryosString handle as typed str.
+    // handle_to_str(handle: i64) -> str - reinterpret KryosString handle as typed str.
     checker.env.define_function(FunctionSig {
         name: "handle_to_str".to_string(),
         generic_params: vec![],
@@ -7423,7 +7557,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // ptr_read_i64(ptr: i64, i: i64) -> i64 — read 8-byte slot at i*8.
+    // ptr_read_i64(ptr: i64, i: i64) -> i64 - read 8-byte slot at i*8.
     checker.env.define_function(FunctionSig {
         name: "ptr_read_i64".to_string(),
         generic_params: vec![],
@@ -7452,7 +7586,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // assert(condition: bool, msg: str) -> void — abort if condition is false
+    // assert(condition: bool, msg: str) -> void - abort if condition is false
     checker.env.define_function(FunctionSig {
         name: "assert".to_string(),
         generic_params: vec![],
@@ -7466,7 +7600,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // assert_eq(left, right) -> void — abort if left != right, printing both
+    // assert_eq(left, right) -> void - abort if left != right, printing both
     // values. Codegen converts each argument to its stringified form via the
     // type-aware `to_string` lowering, so the runtime always sees two strings.
     // Both args use Type::Error to accept any type (matched at codegen).
@@ -7483,7 +7617,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // panic(msg: str) -> void — abort the process with the given message.
+    // panic(msg: str) -> void - abort the process with the given message.
     // Return type is void but the call never actually returns; control
     // flow analysis treats it like a regular call for now.
     checker.env.define_function(FunctionSig {
@@ -7496,7 +7630,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // parse_int(s: str) -> i64 — parse string to integer (0 on failure)
+    // parse_int(s: str) -> i64 - parse string to integer (0 on failure)
     checker.env.define_function(FunctionSig {
         name: "parse_int".to_string(),
         generic_params: vec![],
@@ -7507,7 +7641,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // parse_float(s: str) -> f64 — parse string to float (0.0 on failure)
+    // parse_float(s: str) -> f64 - parse string to float (0.0 on failure)
     checker.env.define_function(FunctionSig {
         name: "parse_float".to_string(),
         generic_params: vec![],
@@ -7547,7 +7681,7 @@ fn type_check_with_lambda_params_inner(
         });
     }
 
-    // type_of(value: any) -> str — returns type name (always "i64" at runtime)
+    // type_of(value: any) -> str - returns type name (always "i64" at runtime)
     checker.env.define_function(FunctionSig {
         name: "type_of".to_string(),
         generic_params: vec![],
@@ -7558,7 +7692,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // char_code(c: str) -> i64 — Unicode code point of first character
+    // char_code(c: str) -> i64 - Unicode code point of first character
     checker.env.define_function(FunctionSig {
         name: "char_code".to_string(),
         generic_params: vec![],
@@ -7569,7 +7703,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // char_from(n: i64) -> str — single-character string from code point
+    // char_from(n: i64) -> str - single-character string from code point
     checker.env.define_function(FunctionSig {
         name: "char_from".to_string(),
         generic_params: vec![],
@@ -7580,7 +7714,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // substr(s: str, start: i64, end: i64) -> str — substring [start..end)
+    // substr(s: str, start: i64, end: i64) -> str - substring [start..end)
     checker.env.define_function(FunctionSig {
         name: "substr".to_string(),
         generic_params: vec![],
@@ -7595,7 +7729,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Str,
     });
 
-    // index_of(s: str, sub: str) -> i64 — first byte offset of `sub` in `s`, or
+    // index_of(s: str, sub: str) -> i64 - first byte offset of `sub` in `s`, or
     // -1. Fully implemented in MIR + runtime (kryos_builtin_index_of) but was
     // never registered here, so `index_of(..)` failed with E0102 despite being
     // a working builtin.
@@ -7612,7 +7746,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // push<T>(arr: [T], val: T) -> [T] — generic so the element type flows:
+    // push<T>(arr: [T], val: T) -> [T] - generic so the element type flows:
     // `let mut a = []; a = push(a, X)` infers `a: [X]`.
     let push_t = {
         let v = checker.engine.fresh_var();
@@ -7634,7 +7768,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Array { element: Box::new(Type::Var(push_t)), size: None },
     });
 
-    // pop<T>(arr: [T]) -> T — remove and return last element
+    // pop<T>(arr: [T]) -> T - remove and return last element
     let pop_t = {
         let v = checker.engine.fresh_var();
         if let Type::Var(id) = v { id } else { unreachable!() }
@@ -7652,7 +7786,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Var(pop_t),
     });
 
-    // sort(arr: any) -> any — in-place ascending sort
+    // sort(arr: any) -> any - in-place ascending sort
     checker.env.define_function(FunctionSig {
         name: "sort".to_string(),
         generic_params: vec![],
@@ -7663,7 +7797,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Error,
     });
 
-    // reverse(arr: any) -> any — in-place reverse
+    // reverse(arr: any) -> any - in-place reverse
     checker.env.define_function(FunctionSig {
         name: "reverse".to_string(),
         generic_params: vec![],
@@ -7674,7 +7808,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Error,
     });
 
-    // int(x: any) -> i64 — convert to integer
+    // int(x: any) -> i64 - convert to integer
     checker.env.define_function(FunctionSig {
         name: "int".to_string(),
         generic_params: vec![],
@@ -7685,7 +7819,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // float(x: any) -> f64 — convert to float
+    // float(x: any) -> f64 - convert to float
     checker.env.define_function(FunctionSig {
         name: "float".to_string(),
         generic_params: vec![],
@@ -7696,7 +7830,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // sqrt(x: f64) -> f64 — square root
+    // sqrt(x: f64) -> f64 - square root
     checker.env.define_function(FunctionSig {
         name: "sqrt".to_string(),
         generic_params: vec![],
@@ -7707,7 +7841,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // floor(x: f64) -> f64 — floor
+    // floor(x: f64) -> f64 - floor
     checker.env.define_function(FunctionSig {
         name: "floor".to_string(),
         generic_params: vec![],
@@ -7718,7 +7852,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // ceil(x: f64) -> f64 — ceiling
+    // ceil(x: f64) -> f64 - ceiling
     checker.env.define_function(FunctionSig {
         name: "ceil".to_string(),
         generic_params: vec![],
@@ -7729,7 +7863,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // round(x: f64) -> f64 — round to nearest integer (ties to even)
+    // round(x: f64) -> f64 - round to nearest integer (ties to even)
     checker.env.define_function(FunctionSig {
         name: "round".to_string(),
         generic_params: vec![],
@@ -7740,7 +7874,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // abs(x: T) -> T — absolute value (polymorphic: i64 or f64)
+    // abs(x: T) -> T - absolute value (polymorphic: i64 or f64)
     {
         let abs_tv = checker.engine.fresh_var();
         let abs_var_id = if let Type::Var(id) = &abs_tv {
@@ -7759,7 +7893,7 @@ fn type_check_with_lambda_params_inner(
         });
     }
 
-    // min(a: T, b: T) -> T — minimum of two values (polymorphic: i64 or f64)
+    // min(a: T, b: T) -> T - minimum of two values (polymorphic: i64 or f64)
     {
         let min_tv = checker.engine.fresh_var();
         let min_var_id = if let Type::Var(id) = &min_tv {
@@ -7781,7 +7915,7 @@ fn type_check_with_lambda_params_inner(
         });
     }
 
-    // max(a: T, b: T) -> T — maximum of two values (polymorphic: i64 or f64)
+    // max(a: T, b: T) -> T - maximum of two values (polymorphic: i64 or f64)
     {
         let max_tv = checker.engine.fresh_var();
         let max_var_id = if let Type::Var(id) = &max_tv {
@@ -7836,7 +7970,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // log(x: f64) -> f64 — natural logarithm
+    // log(x: f64) -> f64 - natural logarithm
     checker.env.define_function(FunctionSig {
         name: "log".to_string(),
         generic_params: vec![],
@@ -7869,7 +8003,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // pow(x: f64, y: f64) -> f64 — x to the power of y
+    // pow(x: f64, y: f64) -> f64 - x to the power of y
     checker.env.define_function(FunctionSig {
         name: "pow".to_string(),
         generic_params: vec![],
@@ -7880,7 +8014,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // abs_f(x: f64) -> f64 — absolute value for floats
+    // abs_f(x: f64) -> f64 - absolute value for floats
     checker.env.define_function(FunctionSig {
         name: "abs_f".to_string(),
         generic_params: vec![],
@@ -7891,7 +8025,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // min_f(a: f64, b: f64) -> f64 — minimum of two floats
+    // min_f(a: f64, b: f64) -> f64 - minimum of two floats
     checker.env.define_function(FunctionSig {
         name: "min_f".to_string(),
         generic_params: vec![],
@@ -7902,7 +8036,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // max_f(a: f64, b: f64) -> f64 — maximum of two floats
+    // max_f(a: f64, b: f64) -> f64 - maximum of two floats
     checker.env.define_function(FunctionSig {
         name: "max_f".to_string(),
         generic_params: vec![],
@@ -7913,7 +8047,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // keys(m: any) -> [str] — get map keys
+    // keys(m: any) -> [str] - get map keys
     checker.env.define_function(FunctionSig {
         name: "keys".to_string(),
         generic_params: vec![],
@@ -7927,7 +8061,7 @@ fn type_check_with_lambda_params_inner(
         },
     });
 
-    // sleep_ms(ms: i64) -> void — sleep for milliseconds
+    // sleep_ms(ms: i64) -> void - sleep for milliseconds
     checker.env.define_function(FunctionSig {
         name: "sleep_ms".to_string(),
         generic_params: vec![],
@@ -8061,7 +8195,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::I64,
     });
 
-    // buf_str(handle: i64) -> str — materialize a growable KryosBuf's contents.
+    // buf_str(handle: i64) -> str - materialize a growable KryosBuf's contents.
     checker.env.define_function(FunctionSig {
         name: "buf_str".to_string(),
         generic_params: vec![],
@@ -8156,7 +8290,7 @@ fn type_check_with_lambda_params_inner(
         ret: Type::Void,
     });
 
-    // args() -> [str] — command-line arguments
+    // args() -> [str] - command-line arguments
     checker.env.define_function(FunctionSig {
         name: "args".to_string(),
         generic_params: vec![],
@@ -8317,7 +8451,7 @@ fn type_check_with_lambda_params_inner(
         },
     });
 
-    // `__builtin_*` thin wrappers — the runtime's user-facing `len`,
+    // `__builtin_*` thin wrappers - the runtime's user-facing `len`,
     // `push`, `pop`, `range`, `map_*` functions delegate to these.
     // They mirror the existing high-level builtins but live under a
     // namespaced name so codegen can dispatch them differently from a
@@ -9133,7 +9267,7 @@ fn type_check_with_lambda_params_inner(
     });
 
     // -----------------------------------------------------------------------
-    // HTTP/2 client (Gap C) — reqwest-backed, ALPN h2 with HTTP/1.1 fallback
+    // HTTP/2 client (Gap C) - reqwest-backed, ALPN h2 with HTTP/1.1 fallback
     // -----------------------------------------------------------------------
     checker.env.define_function(FunctionSig {
         name: "http2_get".to_string(),
@@ -9291,7 +9425,7 @@ fn type_check_with_lambda_params_inner(
 
 // ── Missing return analysis ─────────────────────────────────────────
 
-/// A pattern is "binding" if it introduces any variable binding — an identifier
+/// A pattern is "binding" if it introduces any variable binding - an identifier
 /// pattern, or a compound pattern (tuple/struct/enum/or) containing one. Used to
 /// enforce that or-pattern alternatives are non-binding (CLAUDE.md gotcha #14):
 /// binding alternatives silently produced type confusion or uninitialized reads.
@@ -9497,7 +9631,7 @@ fn pattern_is_binding(p: &kryos_ast::Pattern) -> bool {
 }
 
 /// Returns `true` if the block is guaranteed to return a value on all
-/// control flow paths. This is a conservative check — it may produce
+/// control flow paths. This is a conservative check - it may produce
 /// false negatives (miss some paths) but never false positives.
 fn block_returns(block: &Block) -> bool {
     if let Some(last) = block.stmts.last() {

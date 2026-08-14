@@ -1177,6 +1177,56 @@ fn main() {
     coop_run()
 }'
 
+# LEDGER item 40: a bool/f64 routed through an `[any]` CONTAINER was
+# reinterpreted, not converted -- `any` erases to a bare i64 with no runtime
+# type tag (item 6, ABI-blocked). Measured pre-fix: the SAME program printed
+# three different values for `true` -- correct `true`, JIT `1`, AOT `-1` -- and
+# the AOT path built clean, ran clean, exited 0. A silent wrong answer, which
+# outranks a crash in this repo's ranking doctrine. Item 24 closed the direct
+# `let x: any = <bool>` shape; this is its container sibling, checked at the
+# call site because that is the last point a concrete type still exists.
+want_reject bool_through_any_array '
+fn log_event(args: [any]) {
+    let b: any = args[0]
+    println("logged: " + to_string(b))
+}
+fn main() { log_event([true]) }'
+
+want_reject f64_through_any_array '
+fn log_event(args: [any]) { println(to_string(args[0])) }
+fn main() { log_event([3.5]) }'
+
+want_reject bool_through_any_map_value '
+fn sink(m: map<str, any>) { println(to_string(m["k"])) }
+fn main() { sink({"k": true}) }'
+
+# NO-CASCADE complements for the three above. `[any]` exists to carry
+# i64/str/heap values, which ARE already i64-shaped (value or pointer) and are
+# unaffected by the erasure -- rejecting those would break the feature instead
+# of fixing it. And the check must NOT fire at the TOP level, where a bare
+# `Type::Error` param is also how the polymorphic builtins are typed.
+# Scoped deliberately to bool/f64/f32 -- the REINTERPRETATION cases, where the
+# value itself is corrupted and the two backends disagree (true -> JIT 1, AOT
+# -1). `i64` is genuinely unaffected: it is already the erased representation.
+#
+# `str` is NOT asserted to work here, and that is not an oversight. Measured
+# 2026-08-14: `log_event(["hello"])` prints a raw POINTER (140698792906752),
+# not the string -- the long-documented item-6 / CLAUDE.md gotcha #22 erasure,
+# a rendering bug rather than a corrupting reinterpretation, and the reason
+# std::fmt::format was already migrated from `[any]` to `[str]`. Rejecting it
+# too would cascade into the remaining `[any]` stdlib signatures
+# (test::run_tests, result::to_array, iter::count), so it stays documented
+# rather than blocked. Logged as item 40b.
+want_pass i64_through_any_array_still_works '
+fn log_event(args: [any]) { println(to_string(args[0])) }
+fn main() { log_event([42]) }'
+
+want_pass polymorphic_builtins_with_bool_still_work '
+fn main() {
+    println(to_string(true))
+    println(to_string(1.5))
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
