@@ -1390,8 +1390,25 @@ impl Parser {
                         .with_label(tok.span, "here")
                         .with_note("Kryos does not use semicolons to terminate statements"),
                 );
+                // Nesting guard (LEDGER item 14, RESOURCE-DOS): a flat run of
+                // stray `;` tokens recurses here, one native Rust stack frame
+                // per `;`, with no bound -- the one recursive-descent entry
+                // point in this file that lacked the guard every sibling
+                // (parse_block, parse_expr_bp, parse_pattern, parse_type)
+                // already applies. Mirror that guard exactly: fail closed
+                // with the same E0010 diagnostic instead of exhausting the
+                // native stack uncatchably.
+                if self.nesting_exhausted() {
+                    self.nesting_overflow();
+                    return None;
+                }
+                self.nest_depth += 1;
+                self.rec_depth += 1;
                 // Try to continue parsing the next statement
-                self.parse_statement()
+                let result = self.parse_statement();
+                self.rec_depth -= 1;
+                self.nest_depth -= 1;
+                result
             }
             _ => Some(self.parse_expr_or_assign()),
         }

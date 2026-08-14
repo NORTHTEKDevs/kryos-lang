@@ -41,13 +41,69 @@ pub extern "C" fn kryos_mutex_new() -> *mut u8 {
     Box::into_raw(km) as *mut u8
 }
 
+// ---------------------------------------------------------------------------
+// Self-reentry detection for `std::sync::Mutex` (LEDGER item 31, PERMANENT
+// HANG). `Mutex.lock()`/`.unlock()` (compiler/stdlib/sync.kry) are pure
+// value-return methods (`fn lock(self: Mutex) -> Mutex { ... }`) -- the
+// documented usage reassigns (`mu = mu.lock()`). Nothing enforces that: a
+// bare `mu.lock()` statement compiles clean, silently discards the returned
+// `Mutex{locked:true}`, and genuinely locks the REAL native mutex below.
+// A second `mu.lock()` on that same never-reassigned binding then issues a
+// SECOND real lock against an already-held, plain CAS-spin lock with no
+// owner-thread tracking -- spinning forever, 100% of one core, with no
+// diagnostic distinguishing it from any other hang. Same root shape as the
+// closure-capture lock's self-reentrancy hazard above (LEDGER item 11(a)),
+// so the same fix: track which mutex addresses THIS thread currently holds
+// and refuse re-entry with a loud `kryos_panic` instead of spinning. A
+// DIFFERENT thread genuinely contending for the same address is unaffected
+// -- this table is thread-local, so cross-thread mutual exclusion (spin
+// until the OTHER thread's unlock) is unchanged; only a same-thread
+// double-lock (the only way this hang class occurs) is refused. Deliberately
+// a SEPARATE table from `HELD_CLOSURE_LOCKS`: the two locks are logically
+// unrelated (one is a user-facing stdlib type, the other a codegen-inserted
+// closure-call serializer) even though `kryos_closure_lock_acquire` happens
+// to call through this same `kryos_mutex_lock` primitive -- its own
+// reentrancy check already runs and panics first in that case, so this
+// table is simply populated/cleared alongside it there, a no-op in
+// observable behavior for that path.
+thread_local! {
+    /// Set of mutex addresses this THREAD currently holds via
+    /// `kryos_mutex_lock`. Cleared on a matching `kryos_mutex_unlock` (the
+    /// normal release path) and unconditionally on `kryos_mutex_drop` (so a
+    /// freed-and-reused address, e.g. from a tight `mutex_new()`/`drop()`
+    /// loop, never inherits a stale entry from an unrelated prior mutex).
+    static HELD_MUTEX_LOCKS: RefCell<HashMap<usize, ()>> = RefCell::new(HashMap::new());
+}
+
 /// Locks the mutex, blocking (spin-then-yield) until it is free.
 ///
-/// Returns 0 on success, -1 on a null pointer.
+/// Returns 0 on success, -1 on a null pointer. PANICS instead of spinning if
+/// the CURRENT thread already holds this exact mutex (a same-thread
+/// double-lock with no intervening unlock -- LEDGER item 31: this is the
+/// only way `std::sync::Mutex` could hang forever with zero diagnostic).
 #[no_mangle]
 pub extern "C" fn kryos_mutex_lock(mutex: *mut u8) -> i32 {
     if mutex.is_null() {
         return -1;
+    }
+    let key = mutex as usize;
+    let already_held = HELD_MUTEX_LOCKS.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.contains_key(&key) {
+            true
+        } else {
+            m.insert(key, ());
+            false
+        }
+    });
+    if already_held {
+        let msg = "deadlock: this thread already holds this std::sync::Mutex -- \
+            Mutex.lock() is non-reentrant, so a second lock() on the same handle \
+            without an intervening unlock() would spin forever with no diagnostic. \
+            A common cause: `mu.lock()` called as a bare statement without \
+            reassigning (`mu = mu.lock()`), so `Mutex.unlock()`'s bookkeeping never \
+            runs and the real lock is never released.";
+        kryos_panic(msg.as_ptr(), msg.len());
     }
     let km = unsafe { &*(mutex as *mut KryosMutex) };
     // CAS false -> true. Spin briefly, then yield to the OS scheduler so a
@@ -82,6 +138,10 @@ pub extern "C" fn kryos_mutex_unlock(mutex: *mut u8) -> i32 {
     // swap returns the previous state; releasing an already-free lock is a
     // caller error but harmless (stays free).
     let was_locked = km.locked.swap(false, Ordering::Release);
+    let key = mutex as usize;
+    HELD_MUTEX_LOCKS.with(|m| {
+        m.borrow_mut().remove(&key);
+    });
     if was_locked {
         0
     } else {
@@ -230,6 +290,15 @@ pub extern "C" fn kryos_mutex_drop(mutex: *mut u8) {
     if mutex.is_null() {
         return;
     }
+    // Clear any stale self-held-lock bookkeeping for this address BEFORE
+    // freeing (LEDGER item 31) -- otherwise a freed-and-reused address (a
+    // tight `mutex_new()`/`.drop()` loop can and does reuse the allocator's
+    // last-freed address) could inherit a stale "already held" entry from
+    // an unrelated prior mutex and falsely panic on its very first lock().
+    let key = mutex as usize;
+    HELD_MUTEX_LOCKS.with(|m| {
+        m.borrow_mut().remove(&key);
+    });
     // Reclaim and drop the box; the atomic needs no explicit release.
     let _ = unsafe { Box::from_raw(mutex as *mut KryosMutex) };
 }

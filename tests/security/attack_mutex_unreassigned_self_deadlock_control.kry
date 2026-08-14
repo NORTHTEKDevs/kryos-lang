@@ -1,0 +1,19 @@
+// CONTROL for attack_mutex_unreassigned_self_deadlock.kry: identical shape,
+// but with the CORRECT `mu = mu.lock()` / `mu = mu.unlock()` reassignment
+// pattern std::sync::Mutex's value semantics require. Must complete cleanly
+// (no hang) to prove the sibling attack file's hang is specifically caused
+// by the missing reassignment, not by something else in Mutex generally.
+use std::sync::{mutex_new}
+
+fn main() {
+    let mut mu = mutex_new()
+    mu = mu.lock()
+    println("first lock() call returned (native mutex is now actually locked)")
+    mu = mu.unlock()
+    println("unlocked correctly")
+
+    mu = mu.lock()
+    println("about to call lock() again -- should succeed immediately since properly unlocked")
+    mu = mu.unlock()
+    println("SUCCESS: second lock()/unlock() cycle completed, no hang")
+}

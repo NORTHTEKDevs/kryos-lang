@@ -1,0 +1,46 @@
+// RED TEAM round 2, concurrency lens: std::sync::Mutex's `lock()`/`unlock()`
+// are pure-functional VALUE methods -- `fn lock(self: Mutex) -> Mutex`
+// returns a NEW `Mutex { locked: true, ... }` struct rather than mutating
+// `self` in place (compiler/stdlib/sync.kry). The documented/intended usage
+// is `mu = mu.lock()`, reassigning the binding so `.locked` tracks reality.
+//
+// Nothing in the type system or the checker requires that reassignment --
+// `mu.lock()` compiles and runs fine as a bare statement whose return value
+// is silently discarded, identical to forgetting `arr = push(arr, v)`
+// (an ALREADY-documented footgun for arrays -- CLAUDE.md gotcha #22). The
+// difference here is severity: `push` without reassignment silently drops a
+// value; `Mutex.lock()` without reassignment silently leaves the REAL
+// underlying OS mutex (`self.handle`, native `kryos_mutex_lock`) genuinely
+// locked while the Kryos-level `locked: bool` bookkeeping field on the
+// ORIGINAL `mu` binding stays `false` forever (structs are immutable value
+// types here; only a fresh `let`/reassignment would see the updated field).
+// Any LATER call to `mu.lock()` on that same (never-reassigned) binding
+// reads `self.locked == false` (so no Kryos-level guard fires) and issues a
+// SECOND real `kryos_mutex_lock` against an OS mutex the first call never
+// released -- a genuine, permanent, single-threaded deadlock, no spawn or
+// second thread required, with zero diagnostic (the hang looks identical to
+// any other hang; nothing prints "already locked").
+//
+// This is a different shape than every other concurrency finding in this
+// campaign (closure-capture lock reentrancy/AB-BA, actor mailbox, channel
+// close/drain, spawn+throw+WaitGroup): it is a STDLIB API usage footgun in
+// `std::sync::Mutex` itself, not the compiler-inserted closure-capture lock.
+use std::sync::{mutex_new}
+
+fn main() {
+    let mu = mutex_new()
+    // Forgot: `mu = mu.lock()`. This still genuinely locks the native
+    // mutex -- the return value (a Mutex with locked=true) is silently
+    // discarded.
+    mu.lock()
+    println("first lock() call returned (native mutex is now actually locked)")
+
+    // `mu.locked` is still `false` on this binding (never reassigned), so
+    // the Mutex.lock() wrapper has no reason to think anything is wrong --
+    // it proceeds straight to a SECOND real kryos_mutex_lock() against the
+    // SAME still-locked native handle. If the hypothesis is correct, this
+    // never returns.
+    println("about to call lock() again on the same (never-reassigned) mutex -- hangs forever if the hypothesis holds")
+    mu.lock()
+    println("UNREACHABLE if the hypothesis holds: second lock() returned")
+}

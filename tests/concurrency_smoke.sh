@@ -92,6 +92,29 @@ fails_fast spawn_uncaught_throw_no_hang 101 'uncaught exception in spawned threa
 fails_fast closure_lock_reentrant_no_hang 98 'reentrant call into a mutating shared closure' \
   "$ROOT/tests/security/attack_closure_lock_reentrant_deadlock.kry"
 
+# --- std::sync::Mutex.lock()/.unlock() called as a bare statement without
+# reassigning (`mu = mu.lock()`) used to leave the REAL native mutex locked
+# forever with zero diagnostic: a second lock() on the same never-reassigned
+# binding spun forever, 100% of one core (LEDGER item 31). Now detected as a
+# same-thread double-lock and reported as a clean panic (exit 98) instead of
+# hanging. ---
+fails_fast mutex_unreassigned_lock_no_hang 98 'deadlock: this thread already holds this std::sync::Mutex' \
+  "$ROOT/tests/security/attack_mutex_unreassigned_self_deadlock.kry"
+
+# --- Control: the CORRECT `mu = mu.lock()` / `mu = mu.unlock()` reassignment
+# pattern must still complete cleanly -- proves the fix above did not turn a
+# legitimate lock/unlock/lock/unlock cycle into a false-positive panic. ---
+completes mutex_reassigned_lock_completes 'no hang' \
+'use std::sync::{mutex_new}
+fn main() {
+    let mut mu = mutex_new()
+    mu = mu.lock()
+    mu = mu.unlock()
+    mu = mu.lock()
+    mu = mu.unlock()
+    println("no hang")
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "concurrency-smoke: all programs completed (no deadlock)"
 else

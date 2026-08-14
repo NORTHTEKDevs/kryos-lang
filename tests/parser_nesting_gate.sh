@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # parser_nesting_gate.sh -- regression gate for LEDGER item 22
-# (parser nesting-depth guard: resource-DoS investigation).
+# (parser nesting-depth guard: resource-DoS investigation), extended to
+# also cover LEDGER item 14: a flat run of stray `;` at statement
+# position used to recurse through parse_statement with NO nesting/depth
+# guard at all -- the one recursive-descent entry point item 22's
+# original sweep missed -- stack-overflowing `kryos check` natively,
+# uncatchably, at ~500k semicolons (see the "semicolons" construct below).
 #
 # WHAT THIS GATE PROVES (all with an ACTUAL kill-verified timeout, not a
 # timeout that can silently be outlived by a hung child -- MSYS `timeout`
@@ -136,6 +141,11 @@ gen() {
               for ((i=0; i<depth; i++)); do printf ' }"'; done
               printf '\n println(x)\n}\n'
             } > "$out" ;;
+        semicolons)
+            { printf 'fn main() {\n'
+              for ((i=0; i<depth; i++)); do printf ';'; done
+              printf '\n println("done")\n}\n'
+            } > "$out" ;;
         wideinterp)
             { printf 'fn main() {\n let x: i64 = 1\n let s = "'
               for ((i=0; i<depth; i++)); do printf '{x}'; done
@@ -157,6 +167,7 @@ gen optiontype     400 "$TMP/optiontype.kry";    check_bounded "nested Option<> 
 gen flatchain    10000 "$TMP/flatchain.kry";     check_bounded "long flat operator chain @10000"   "$TMP/flatchain.kry"
 gen stringinterp   550 "$TMP/stringinterp.kry";  check_bounded "nested string interpolation @550"  "$TMP/stringinterp.kry"
 gen wideinterp    8000 "$TMP/wideinterp.kry";    check_bounded "wide string interpolation @8000"   "$TMP/wideinterp.kry"
+gen semicolons    6000 "$TMP/semicolons.kry";    check_bounded "flat semicolon-recovery chain @6000 (LEDGER item 14)" "$TMP/semicolons.kry"
 
 # --- Part 2: no false-positive rejection just under the true ceiling.
 echo "-- part 2: flat chain just under the ceiling must be ACCEPTED --"
