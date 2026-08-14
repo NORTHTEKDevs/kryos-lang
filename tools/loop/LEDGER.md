@@ -12,6 +12,71 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: `kryos audit` blind to capability violations -- FIXED (2026-08-13) -- assigned LEDGER item 13, FIXED this session
+
+Assigned wave: LEDGER item 13, `kryos audit`'s blind spot -- it reported a clean bill of
+health on code `kryos check`/`build` reject outright. Read the item's existing repro
+(`tests/security/audit_blind_to_capability_violations.sh`) and `audit_cmd.rs` before
+touching anything, per this ledger's own PROBE-BEFORE-EDITING rule.
+
+ROOT CAUSE: `audit_cmd.rs`'s `scan_file` only lexed+parsed each file and inventoried
+`@capabilities(...)` annotations that were textually PRESENT -- it never ran (or
+cross-referenced) the same inference/enforcement pass `check`/`run`/`build` use, so a
+program with no annotations calling a capability-gated builtin (`file_write`, requires
+`fs:write`) reported clean (exit 0, "no @capabilities annotations found") while `check`
+rejected the identical file with E0505.
+
+FIX (`compiler/crates/kryos-cli/src/commands/audit_cmd.rs`): `scan_file` now also calls a
+new `check_cap_violations`, which re-runs
+`kryos_driver::check_file_with_options_full(path, true, CapabilityMode::Inferred)` per
+file -- the exact same entry point `kryos check`'s CLI command uses by default -- and
+keeps only the capability/extern-gate diagnostics it produces (E0500-E0508,
+`kryos_errors::codes`). These are surfaced in a new "Capability violations" section
+(pretty and JSON output), rendered with file:line:col + code + message. `audit` now exits
+non-zero when it finds one, so a reviewer (or CI) can no longer get a clean report on code
+the compiler refuses to build. The existing annotation-only "Capability inventory" section
+is kept, relabeled "(declared annotations only)" to make the distinction explicit, plus a
+one-line banner stating `audit` is a report, not a substitute for `check`/`build`.
+
+PROBE-BEFORE-EDITING, not skipped: read `audit_cmd.rs`, `kryos-driver`'s
+`check_file_with_options_full`/`CapabilityMode`, and `kryos_errors::codes` (E0500
+unsafe-outside-unsafe, E0501-E0507 the capability system, E0508 unsupported extern shape)
+before writing the fix -- confirmed `check.rs`'s own CLI entry point uses the identical
+function, so the fix reuses a real, already-tested code path rather than reimplementing
+capability inference inside the report tool.
+
+TEST-VACUITY CHECK, both directions, live: `git stash`'d the fixed `audit_cmd.rs`,
+rebuilt (full `cargo build --release -p kryos-cli`), reran
+`tests/security/audit_blind_to_capability_violations.sh` -- reproduced the exact
+historical bug (CONFIRMED: `check` rejects, `audit` reports clean, exit 0, "no
+@capabilities annotations found"). Restored, rebuilt, reran -- FIXED (audit now names
+E0505/fs:write by name and exits 1, matching `check`'s rejection). Repro script rewritten
+in place as a regression pin asserting the fixed behavior (kept at the same path, so
+nothing else that references it drifts); the `doc_never_shows_capabilities.sh` companion
+(a DIFFERENT, still-open item) re-run unaffected -- `audit`'s annotation-inventory
+rendering (glued `fs:write`) is unchanged.
+
+EVIDENCE, all fresh this session, same binary lineage: full
+`cargo build --release -p kryos-cli` clean; `tests/security/audit_blind_to_capability_violations.sh`
+-- FIXED (regression pin holds); `tools/loop/escape_status.sh` unchanged (STILL ESCAPING:
+0, now-rejected: 17); `security_gate.sh` PASS; `ir_signature_gate.sh` PASS;
+`strict_caps_examples.sh` 91/91; `inferred_soundness.sh` PASS; `type_soundness.sh` PASS;
+`compiler/target/release/kryos.exe check tests/conformance/conf_stdlib_wave14.kry` clean
+(rc=0); `kryos-loop.sh gates 1` -- tier1 GREEN (conformance 62/62 + 13 named checks);
+`selfhost_wholeprogram_gate.sh` PASS (45s, ceiling 200s);
+`compiler/self-host/test_bootstrap.sh` 16/16 PASS; `check-docs-truth.sh` PASS. Machine
+note: this session hit the documented bash-fork-storm pattern (a stray `grep` orphaned
+from an early exploratory command chewed ~80 CPU-minutes through the fuzz corpus, wedging
+every subsequent Bash call) -- diagnosed via `winobs orphan_scan`/`top_procs` rather than
+blamed on Defender, killed the one PID, cleared a stale `bash.exe` batch, and the gates
+completed normally afterward.
+
+No compiler-internals changes (`kryos-types`/`kryos-mir`/`kryos-capabilities` untouched) --
+this is scoped entirely to the audit report command, so the gate sweep above is a
+regression check, not a fix-risk check.
+
+---
+
 ## Wave: explicit-source honored + lock pinning enforced (2026-08-13) -- assigned LEDGER items 17 + 12 (SUPPLY CHAIN, trust model), BOTH FIXED this session, plus a live git-hang bug found and fixed while testing item 17
 
 Assigned wave: the two remaining trust-model holes in the package manager. Read `pkg.rs`/
@@ -2117,7 +2182,7 @@ install`/`npm ci` semantics; `update()` remains the explicit "re-resolve
 and possibly move the lock" operation. Until then, treat `kryos.lock` as
 non-authoritative — it records the last resolution, it does not pin it.
 
-### 13. `kryos audit` is blind to capability violations `kryos check`/`build` reject outright — reports a clean bill of health on code that will not compile (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) — NOT FIXED
+### 13. `kryos audit` is blind to capability violations `kryos check`/`build` reject outright -- reports a clean bill of health on code that will not compile (RED TEAM round 1, toolchain-supply lens, found 2026-08-04) -- **FIXED 2026-08-13. `kryos audit` now re-runs the SAME inferred-mode capability checker `kryos check`/`run`/`build` use, per file, and surfaces the resulting E0500-E0508 diagnostics in a new "Capability violations" section, exiting non-zero when it finds one. This entry's repro (`tests/security/audit_blind_to_capability_violations.sh`) is kept below as the historical record and was rewritten in place as a regression pin asserting the fixed behavior (still proven live both directions). See CLOSED table for the fix and full proof-both-ways evidence.**
 
 `tests/security/audit_blind_to_capability_violations.sh`. `kryos audit`'s
 own description is "Audit capability usage, extern surface, and secret
@@ -3051,6 +3116,7 @@ importing `smtp` to catch at least a compile-time break.
 
 | Item | Evidence |
 | --- | --- |
+| **item 13: `kryos audit` reported a clean bill of health on code `kryos check`/`build` reject outright -- FIXED** | Closed 2026-08-13 in `compiler/crates/kryos-cli/src/commands/audit_cmd.rs`. ROOT CAUSE: `scan_file` only lexed+parsed each file and inventoried `@capabilities(...)` annotations that were textually present -- it never ran or cross-referenced the same inference/enforcement pass `check`/`run`/`build` use, so a program with NO annotations calling a capability-gated builtin (`file_write`, requires `fs:write`) was reported clean (exit 0, "no @capabilities annotations found") while `kryos check` rejected the identical file with E0505. FIX: a new `check_cap_violations` re-runs `kryos_driver::check_file_with_options_full(path, true, CapabilityMode::Inferred)` per file -- the same entry point `kryos check`'s own CLI command uses by default -- and keeps only the capability/extern-gate diagnostics it produces (E0500-E0508, `kryos_errors::codes`). These are surfaced in a new "Capability violations" section (pretty and JSON output) and `audit` now EXITS NON-ZERO when it finds one, so a reviewer or CI can no longer get a clean report on code the compiler refuses to build; the existing annotation-only inventory is kept, relabeled "(declared annotations only)" for clarity, plus a banner stating `audit` is a report, not a substitute for `check`/`build`. TEST-VACUITY CHECK both ways, live: stashed the fix, rebuilt (full `cargo build --release -p kryos-cli`), reran `tests/security/audit_blind_to_capability_violations.sh` -- reproduced the historical bug exactly (RED: audit clean, exit 0, on a file `check` rejects). Restored, rebuilt, reran -- FIXED (audit names E0505/fs:write by name and exits 1, matching `check`). Repro script rewritten in place as a regression pin asserting the fixed behavior (same path, so nothing referencing it drifts); the `doc_never_shows_capabilities.sh` companion (a DIFFERENT, still-open item) re-run unaffected -- audit's annotation-inventory rendering (glued `fs:write`) is unchanged. EVIDENCE, all fresh this session, same binary lineage: full `cargo build --release -p kryos-cli` clean; `tools/loop/escape_status.sh` unchanged (STILL ESCAPING: 0, now-rejected: 17); `security_gate.sh` PASS; `ir_signature_gate.sh` PASS; `strict_caps_examples.sh` 91/91; `inferred_soundness.sh` PASS; `type_soundness.sh` PASS; `compiler/target/release/kryos.exe check tests/conformance/conf_stdlib_wave14.kry` clean (rc=0); `kryos-loop.sh gates 1` -- tier1 GREEN (14/14 named checks, conformance 62/62); `selfhost_wholeprogram_gate.sh` PASS (45s, ceiling 200s); `compiler/self-host/test_bootstrap.sh` 16/16 PASS; `check-docs-truth.sh` PASS. Machine note: this session hit the repo's documented bash-fork-storm pattern (a stray `grep` orphaned from an early exploratory command chewed ~80 CPU-minutes through the fuzz corpus, wedging every subsequent Bash call) -- diagnosed via `winobs orphan_scan`/`top_procs` rather than blamed on Defender, killed the one PID, cleared a stale `bash.exe` batch, and every gate completed normally afterward. Scoped entirely to the CLI report command -- no `kryos-types`/`kryos-mir`/`kryos-capabilities` changes, so this is a report-surface fix, not a capability-semantics change. |
 | **item 33: LIVE CAPABILITY ESCAPE -- a closure forwarded actor-to-actor as a MESSAGE PARAMETER escaped tracking on BOTH modes; the LAST known live escape -- FIXED. Escapes 1 -> 0** | Closed 2026-08-13 in `kryos-types/src/check.rs`. **The recorded root cause was WRONG and the measurement disproved it.** The OPEN entry blamed `has_self_offset` in `kryos-capabilities`' `checker.rs` (a confident direct-source-read diagnosis, cited against `parse_actor_decl`); the actual mechanism is two compounding defects in the TYPES checker, neither in that file. Found with `KRYOS_ROW_TRACE=1`, which already existed at the two row-BINDING sites; a third trace was added at the method/handler DISPATCH site to see the remap. **(a) The handler body bound its params by RE-RESOLVING `p.ty`** (`resolve_type_expr` on the param's `TypeExpr`), minting a SECOND capability-row var for `f: fn() -> str` unrelated to the one `register_decl` had already minted and registered in the signature's `generic_cap_var_ids`. Measured: `handler Receiver::receive = {?C12}` while `genvars=[7]` -- the body charged 12, callers could only remap 7, so `instantiate_row` was a no-op and the chain terminated on a var nothing binds. The impl-METHOD path never had this bug because it binds from `sig.params` (which is exactly why items 34/35 were fixable and this was not); actor handlers were the only dispatch surface re-resolving. Fixed by binding handler params from the registered signature, falling back to `resolve_type_expr` only when no sig exists. **(b) A declaration-order FORWARD REFERENCE.** With `actor Sender` declared before `actor Receiver`, `relay`'s body is walked while `receive`'s `own_cap_var` is still unbound, so the dispatch site snapshots a bare var (`own={?C8} inst={?C8}`) and its instantiation map has nothing to act on. **DECISIVE CONTROL, and the measurement that made this unambiguous: the byte-identical program with `Receiver` declared FIRST was already correctly REJECTED** (`own={?C4} inst={?C7}` -> `main={fs:read}` -> E0110, rc=1) -- same source, same types, only order differed. Fixed with a pre-pass over `Decl::Actor` that binds every handler's own row before the real pass; safe to run twice because `bind_cap_var` UNIONS rather than overwrites (rows only widen), and the pre-pass's diagnostics are truncated so only the real pass reports. NOTE the earlier "defer deny! enforcement" attempt recorded under this item was disproved for the right reason but the wrong target -- deferring ENFORCEMENT does not help; binding the callee's ROW earlier does. EVIDENCE, all fresh this session, same binary lineage: BEFORE `kryos check` rc=0, `--strict-capabilities` rc=0, `kryos run` printed `ACTOR-TO-ACTOR MESSAGE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a` rc=0; AFTER rc=1 / rc=1 / rc=1 with no leak line. `tools/loop/escape_status.sh`: **STILL ESCAPING: 0, now-rejected: 17** (was 1/16, and 16/17 of the others were re-measured unchanged, so no regression). NO CASCADE -- the failure mode that killed four prior attempts: `ir_signature_gate` PASS, `strict_caps_examples` PASS, `inferred_soundness` PASS, `conf_stdlib_wave14` (the `std::agent` dispatcher cascade detector) rc=0, `type_soundness` PASS, `security_gate` PASS. Pinned by security_gate checks 91-92 (both enforcement modes), 93 (**declaration-order independence -- both orders, since the original defect was order-sensitive and a regression could otherwise hide behind source ordering**), and 94 (no-cascade complement: a supervisor/worker actor pair forwarding a PURE closure must still compile unannotated). Residual, stated rather than hidden: the pre-pass is a SINGLE pass, which closes the measured depth-2 forward reference; a reverse-declared chain of 3+ mutually-calling actors is not proven and was not tested. |
 | **item 32: LIVE CAPABILITY ESCAPE -- a closure stashed in a TUPLE inside actor state (`pair: (i64, fn() -> str)`), invoked via `self.pair.1()` -- FIXED** | Closed in `773ef05` (2026-08-12). Reading an actor state field whose type CONTAINS a function now yields `CapRow::Unknown` (erases to ALL) instead of the declaration's row var. Unknown is the CORRECT answer here, not a cop-out: actor state is mutable storage any handler may write at any prior dispatch, so which closure sits in a fn-bearing field at a given read is genuinely not statically knowable -- the same stance `resolve_actor_self_field_invoke_caps` already takes for `self.<field>()`, applied to the row. MEASURED: a STRUCT field in actor state already worked (main={fs:read}, because a struct field's row var is declaration-global so building the literal in main binds it), while a TUPLE field did not (main={?C10}) -- `self.pair = (0, f)` builds a new tuple type inside the handler from the handler's own param, so the field var binds to the ORIGINAL param var, which instantiation freshens per call site and therefore never binds concretely. The tempting fix (also binding the original param var) was REJECTED without attempting: it is the `all` cascade in a new costume -- one privileged closure passed to `std::iter::map` would bind map's declaration-global param var and every map call everywhere would charge it. Scoped to `self` inside a handler AND to fields whose type transitively contains a function, so ordinary data state is untouched. NO over-rejection: ir_signatures PASS 62 files, strict_caps + examples PASS. Escapes 2 -> 1. Pinned by security_gate checks 85-86. |
 | **item 35: LIVE CAPABILITY ESCAPE -- a privileged closure passed to a STATIC impl method (`Invoker::run(reader)`) cost zero -- FIXED** | Closed in `c29b15b` (2026-08-12). Impl method bodies were checked with NO capability-accumulator frame at all, unlike plain functions and actor handlers which both push one -- so an impl method's `own_cap_var` was never bound, stayed permanently unresolved, and every call site resolved it to nothing. MEASURED: `main` accumulated `{?C2}` and there was NO row line for the method at all, because nothing ever computed one. Both impl-method body paths now push a frame; the signature-bearing path binds the result to `sig.own_cap_var`, the fallback path gets a frame purely so the body's authority cannot leak into an unrelated enclosing accumulator. ALSO fixed the same silent ordering bug the instance-dispatch site had: the static path charged the callee's row BEFORE unifying arguments, so a row-polymorphic static method resolved a still-open row and charged nothing. Escapes 3 -> 2. Gates: security_gate PASS (84 checks; 83-84 pin the shape both modes), ir_signatures PASS, gates 2 tier1 62/62 + tier2 GREEN. |

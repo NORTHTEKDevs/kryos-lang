@@ -1,14 +1,30 @@
-//! `kryos audit` — capability + extern + secret usage report.
+//! `kryos audit` -- capability + extern + secret usage report.
 //!
 //! Walks every `.kry` file under the project and produces:
 //!
-//! 1. **Capability inventory** — every function with an `@capabilities(...)`
-//!    annotation, grouped by capability.
-//! 2. **Extern surface** — every `extern "C" { ... }` block and the items it
+//! 1. **Capability violations** -- the SAME inferred-mode capability
+//!    inference/enforcement pass `kryos check`/`run`/`build` use, run
+//!    per-file and filtered to capability/extern-gate diagnostics
+//!    (E0500-E0508). This is what makes `audit` trustworthy: LEDGER item 13
+//!    found that the report below (annotation text only) came back clean on
+//!    code `kryos check` rejects outright. A finding here means the code
+//!    will NOT compile as-is.
+//! 2. **Capability inventory** -- every function with an `@capabilities(...)`
+//!    annotation, grouped by capability. This is a TEXTUAL inventory of what
+//!    is declared, not what is required -- see the violations section above
+//!    for what the code actually needs.
+//! 3. **Extern surface** -- every `extern "C" { ... }` block and the items it
 //!    declares.
-//! 3. **Secret patterns** — string literals matching common credential
+//! 4. **Secret patterns** -- string literals matching common credential
 //!    shapes (API_KEY=..., bearer prefixes, AWS access keys, GitHub tokens,
 //!    private-key markers). Flagged as critical for review.
+//!
+//! `audit` is a report, not a gate: it exits non-zero when it finds a real
+//! capability violation (section 1), so CI can treat it as a genuine check,
+//! but it is not a substitute for actually running `kryos check`/`build` --
+//! it checks each file independently in `--capabilities-mode=inferred` (the
+//! default), so a project relying on `--strict-capabilities` or on
+//! cross-file project resolution should still run the real compiler.
 //!
 //! Output is human-readable by default; `--format=json` emits a single JSON
 //! document on stdout.
@@ -17,6 +33,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use kryos_ast::Decl;
+use kryos_driver::CapabilityMode;
 
 #[derive(Debug, Clone)]
 pub struct AuditOptions {
@@ -32,10 +49,32 @@ impl Default for AuditOptions {
 
 #[derive(Debug, Default)]
 struct AuditReport {
+    cap_violations: Vec<CapViolation>,
     capabilities: std::collections::BTreeMap<String, Vec<String>>,
     extern_blocks: Vec<ExternEntry>,
     secrets: Vec<SecretEntry>,
 }
+
+/// A capability/extern-gate diagnostic (E0500-E0508) that `kryos
+/// check`/`run`/`build` would reject, surfaced by re-running the same
+/// inferred-mode capability checker those commands use. See LEDGER item 13.
+#[derive(Debug)]
+struct CapViolation {
+    file: PathBuf,
+    code: String,
+    message: String,
+    line: u32,
+    col: u32,
+}
+
+/// Capability/extern-gate diagnostic codes (see `kryos_errors::codes`):
+/// E0500 unsafe-outside-unsafe, E0501-E0507 the capability system proper,
+/// E0508 unsupported extern shape. Any other code (type errors, ownership,
+/// parse errors, ...) is out of scope for this report -- `audit` only
+/// speaks to capability/extern trust surface, not general correctness.
+const CAP_VIOLATION_CODES: &[&str] = &[
+    "E0500", "E0501", "E0502", "E0503", "E0504", "E0505", "E0506", "E0507", "E0508",
+];
 
 #[derive(Debug)]
 struct ExternEntry {
@@ -78,6 +117,14 @@ pub fn execute(opts: AuditOptions) -> Result<(), String> {
         _ => emit_pretty(&report, files.len()),
     }
 
+    if !report.cap_violations.is_empty() {
+        return Err(format!(
+            "kryos audit: {} capability violation{} found -- this code would be REJECTED by `kryos check`/`kryos build` (see \"Capability violations\" above). `kryos audit` is a report, not a substitute for `kryos check`.",
+            report.cap_violations.len(),
+            if report.cap_violations.len() == 1 { "" } else { "s" }
+        ));
+    }
+
     Ok(())
 }
 
@@ -115,7 +162,8 @@ fn scan_file(path: &Path, report: &mut AuditReport) {
         }
     }
 
-    // AST-driven capability + extern scan.
+    // AST-driven capability + extern scan (textual inventory of what's
+    // DECLARED -- see check_cap_violations below for what's REQUIRED).
     let tokens = kryos_lexer::Lexer::new(&source, 0).tokenize();
     let Ok(module) = kryos_parser::parse(tokens) else { return };
 
@@ -144,6 +192,43 @@ fn scan_file(path: &Path, report: &mut AuditReport) {
             _ => {}
         }
     }
+
+    // Real capability-inference/enforcement pass -- the fix for LEDGER item
+    // 13. Runs the exact same checker `kryos check`/`run`/`build` use, in
+    // `--capabilities-mode=inferred` (the default), and keeps only the
+    // capability/extern-gate diagnostics (E0500-E0508) it produces. This is
+    // what makes a clean "Capability violations" section mean something --
+    // previously `audit` never ran this pass at all, so it reported a
+    // program `kryos check` rejects outright as clean.
+    check_cap_violations(path, report);
+}
+
+fn check_cap_violations(path: &Path, report: &mut AuditReport) {
+    let (diagnostics, source_map) =
+        kryos_driver::check_file_with_options_full(path, true, CapabilityMode::Inferred);
+    for diag in &diagnostics {
+        if !diag.is_error() {
+            continue;
+        }
+        let Some(code) = diag.code.as_deref() else { continue };
+        if !CAP_VIOLATION_CODES.contains(&code) {
+            continue;
+        }
+        let (line, col) = diag
+            .labels
+            .iter()
+            .find(|l| l.is_primary)
+            .or_else(|| diag.labels.first())
+            .map(|l| source_map.offset_to_line_col(l.span.file_id, l.span.start))
+            .unwrap_or((0, 0));
+        report.cap_violations.push(CapViolation {
+            file: path.to_path_buf(),
+            code: code.to_string(),
+            message: diag.message.clone(),
+            line,
+            col,
+        });
+    }
 }
 
 const SECRET_PATTERNS: &[(&str, &str)] = &[
@@ -165,9 +250,33 @@ const SECRET_PATTERNS: &[(&str, &str)] = &[
 fn emit_pretty(report: &AuditReport, file_count: usize) {
     println!("\x1b[1mkryos audit\x1b[0m");
     println!("scanned {} file{}", file_count, if file_count == 1 { "" } else { "s" });
+    println!("note: audit is a report, not a substitute for `kryos check`/`kryos build`.");
     println!();
 
-    println!("\x1b[1m== Capability inventory ==\x1b[0m");
+    println!("\x1b[1m== Capability violations (kryos check would reject) ==\x1b[0m");
+    if report.cap_violations.is_empty() {
+        println!("  \x1b[32m(none -- every file passes the same inferred-mode capability check `kryos check` runs)\x1b[0m");
+    } else {
+        for v in &report.cap_violations {
+            println!(
+                "  \x1b[31mCRITICAL\x1b[0m {}:{}:{} [{}] {}",
+                v.file.display(),
+                v.line,
+                v.col,
+                v.code,
+                v.message
+            );
+        }
+        println!();
+        println!(
+            "\x1b[31m{} capability violation(s) -- this code will NOT compile with \
+`kryos check`/`kryos build`.\x1b[0m",
+            report.cap_violations.len()
+        );
+    }
+
+    println!();
+    println!("\x1b[1m== Capability inventory (declared annotations only) ==\x1b[0m");
     if report.capabilities.is_empty() {
         println!("  (no @capabilities annotations found)");
     } else {
@@ -186,7 +295,7 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
     } else {
         for ex in &report.extern_blocks {
             println!(
-                "  {}: extern \"{}\" — {} item{}",
+                "  {}: extern \"{}\" -- {} item{}",
                 ex.file.display(),
                 ex.abi,
                 ex.item_count,
@@ -210,12 +319,26 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
             );
         }
         println!();
-        println!("\x1b[31m{} potential secret(s) — review and revoke if real.\x1b[0m", report.secrets.len());
+        println!("\x1b[31m{} potential secret(s) -- review and revoke if real.\x1b[0m", report.secrets.len());
     }
 }
 
 fn emit_json(report: &AuditReport) {
     let mut out = String::from("{");
+
+    out.push_str("\"capability_violations\":[");
+    for (i, v) in report.cap_violations.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        out.push_str(&format!(
+            r#"{{"file":"{}","line":{},"col":{},"code":"{}","message":"{}"}}"#,
+            v.file.display().to_string().replace('\\', "/"),
+            v.line,
+            v.col,
+            v.code,
+            json_escape(&v.message)
+        ));
+    }
+    out.push_str("],");
 
     out.push_str("\"capabilities\":{");
     let mut first = true;
