@@ -8,7 +8,9 @@
 # use still works, so the fix cannot be "reject everything".
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-K="compiler/target/release/kryos.exe"; [ -x "$K" ] || K="compiler/target/release/kryos"
+# Honor KRYOS_BIN like the other gates do, so a caller pointing at a specific
+# binary is not silently ignored (the CI Windows job passes it explicitly).
+K="${KRYOS_BIN:-compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="compiler/target/release/kryos"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 

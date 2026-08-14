@@ -184,7 +184,7 @@ jobs:
       - name: Encoding robustness (BOM/CRLF accepted, UTF-16 diagnosed)
         # Windows Notepad saves UTF-8 with a BOM; PowerShell `>` writes
         # UTF-16. Sources in real-editor encodings must compile or get an
-        # actionable message — a BOM previously produced token soup.
+        # actionable message - a BOM previously produced token soup.
         run: bash tests/encoding_check.sh
 
       - name: Differential fuzz smoke (JIT vs AOT, 60 random programs)
@@ -355,7 +355,7 @@ jobs:
         working-directory: compiler
         run: cargo build --release -j 2
 
-      - name: Stage 1 — kryos check every self-host file
+      - name: Stage 1 - kryos check every self-host file
         shell: bash
         run: |
           set -e
@@ -377,7 +377,7 @@ jobs:
           echo "selfhost-stage1 check: $((total - fail))/$total pass"
           [ "$fail" -eq 0 ]
 
-      - name: Stage 1 — kryos run stage1_mini_parser.kry
+      - name: Stage 1 - kryos run stage1_mini_parser.kry
         shell: bash
         run: |
           set -e
@@ -550,7 +550,7 @@ jobs:
           printf "30\n2\nKryos\n" > expected.txt
           diff expected.txt smoke_output.txt
 
-      - name: Smoke sweep — core language (required)
+      - name: Smoke sweep - core language (required)
         shell: bash
         # The stdlib-native surface (net/db/crypto/fs/io/os/process/re/term/
         # async-http) runs in the dedicated required step below; this step
@@ -574,7 +574,7 @@ jobs:
           echo "smoke-sweep (macos core): $((total - fail))/$total pass"
           [ "$fail" -eq 0 ]
 
-      - name: Smoke sweep — stdlib-native (required)
+      - name: Smoke sweep - stdlib-native (required)
         shell: bash
         # The Darwin native-stdlib port landed (the macOS link now passes
         # -framework Security/CoreFoundation/SystemConfiguration). These
@@ -758,6 +758,34 @@ jobs:
             echo "== showcase/$ex.kry (Cranelift) =="
             ./target/release/kryos.exe run ../examples/showcase/$ex.kry > /dev/null
           done
+
+      - name: Security gate (capability attenuation) -- Windows
+        shell: bash
+        env:
+          KRYOS_BIN: ${{ github.workspace }}/compiler/target/release/kryos.exe
+          KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
+        # LEDGER item 28: security_gate.sh -- the gate that pins the capability
+        # boundary, this language's headline claim -- ran on ubuntu-latest
+        # ONLY, while Windows is the primary development platform. A
+        # Windows-only capability regression would have shipped green. The
+        # checker is shared Rust and platform-independent in principle, but
+        # "in principle" is exactly the assumption this repo keeps disproving
+        # by actually measuring.
+        run: bash tests/security_gate.sh
+
+      - name: Stdlib compiles + CLI smoke -- Windows
+        shell: bash
+        env:
+          KRYOS_BIN: ${{ github.workspace }}/compiler/target/release/kryos.exe
+          KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
+        # LEDGER items 29 and 26. Both gates are new and both found a real
+        # defect on their first run (std::test did not compile; the CLI
+        # surface had never been exercised at all), so both belong on every
+        # platform rather than only the cheapest one.
+        run: |
+          set -e
+          bash tests/stdlib_compile_gate.sh
+          bash tests/cli_smoke_gate.sh
 
       - name: CodeView (.pdb) emission smoke
         working-directory: compiler
