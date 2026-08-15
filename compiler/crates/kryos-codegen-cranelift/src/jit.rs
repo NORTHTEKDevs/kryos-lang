@@ -1507,6 +1507,167 @@ impl JitCompiler {
             jit_builder.symbol(name, ptr);
         }
 
+        // ------------------------------------------------------------------
+        // Runtime symbols the in-process JIT was missing entirely.
+        //
+        // `kryos run` AOT-compiles and links the runtime staticlibs, so it was
+        // unaffected -- but `kryos test` and `kryos repl` use THIS in-process
+        // JIT, and an unregistered symbol is not a diagnostic: cranelift-jit
+        // panics the whole process ("can't resolve symbol X", rc=101).
+        //
+        // Measured 2026-08-14: `kryos test` on a file whose @test body builds a
+        // basic struct literal panicked on `kryos_calloc`. An audit of every
+        // `pub extern "C" fn` in kryos-rt + kryos-stdlib-native against this
+        // list found 141 unregistered symbols, not one -- so the crash surface
+        // was most of the runtime, and any test touching actors, channels,
+        // async, base64, checked arithmetic, etc. would have hit it too.
+        //
+        // Generated from the runtime sources rather than hand-listed, and
+        // pinned by tests/jit_symbols_gate.sh so the gap cannot silently regrow.
+        // ------------------------------------------------------------------
+        jit_builder.symbol("kryos_actor_lock", kryos_rt::actor::kryos_actor_lock as *const u8);
+        jit_builder.symbol("kryos_actor_recv", kryos_rt::actor::kryos_actor_recv as *const u8);
+        jit_builder.symbol("kryos_actor_recv_timeout_i64", kryos_rt::actor::kryos_actor_recv_timeout_i64 as *const u8);
+        jit_builder.symbol("kryos_actor_report_exception", kryos_rt::exception::kryos_actor_report_exception as *const u8);
+        jit_builder.symbol("kryos_actor_send", kryos_rt::actor::kryos_actor_send as *const u8);
+        jit_builder.symbol("kryos_actor_spawn", kryos_rt::actor::kryos_actor_spawn as *const u8);
+        jit_builder.symbol("kryos_actor_unlock", kryos_rt::actor::kryos_actor_unlock as *const u8);
+        jit_builder.symbol("kryos_alloc", kryos_rt::alloc::kryos_alloc as *const u8);
+        jit_builder.symbol("kryos_arc_alloc", kryos_rt::arc::kryos_arc_alloc as *const u8);
+        jit_builder.symbol("kryos_arc_ref_count", kryos_rt::arc::kryos_arc_ref_count as *const u8);
+        jit_builder.symbol("kryos_arc_release", kryos_rt::arc::kryos_arc_release as *const u8);
+        jit_builder.symbol("kryos_arc_retain", kryos_rt::arc::kryos_arc_retain as *const u8);
+        jit_builder.symbol("kryos_arc_set_drop", kryos_rt::arc::kryos_arc_set_drop as *const u8);
+        jit_builder.symbol("kryos_arr_to_ptr", kryos_rt::builtins::kryos_arr_to_ptr as *const u8);
+        jit_builder.symbol("kryos_array_null_panic", kryos_rt::array::kryos_array_null_panic as *const u8);
+        jit_builder.symbol("kryos_async_current_task", kryos_rt::future::kryos_async_current_task as *const u8);
+        jit_builder.symbol("kryos_async_park_current", kryos_rt::future::kryos_async_park_current as *const u8);
+        jit_builder.symbol("kryos_async_run", kryos_rt::future::kryos_async_run as *const u8);
+        jit_builder.symbol("kryos_async_set_result", kryos_rt::future::kryos_async_set_result as *const u8);
+        jit_builder.symbol("kryos_async_spawn", kryos_rt::future::kryos_async_spawn as *const u8);
+        jit_builder.symbol("kryos_async_take_result", kryos_rt::future::kryos_async_take_result as *const u8);
+        jit_builder.symbol("kryos_async_wake", kryos_rt::future::kryos_async_wake as *const u8);
+        jit_builder.symbol("kryos_async_yield_now", kryos_rt::future::kryos_async_yield_now as *const u8);
+        jit_builder.symbol("kryos_base64_decode", kryos_stdlib_native::base64::kryos_base64_decode as *const u8);
+        jit_builder.symbol("kryos_base64_encode", kryos_stdlib_native::base64::kryos_base64_encode as *const u8);
+        jit_builder.symbol("kryos_calloc", kryos_rt::alloc::kryos_calloc as *const u8);
+        jit_builder.symbol("kryos_chan_clone", kryos_rt::channel::kryos_chan_clone as *const u8);
+        jit_builder.symbol("kryos_chan_close", kryos_rt::channel::kryos_chan_close as *const u8);
+        jit_builder.symbol("kryos_chan_drop", kryos_rt::channel::kryos_chan_drop as *const u8);
+        jit_builder.symbol("kryos_chan_drop_i64", kryos_rt::builtins::kryos_chan_drop_i64 as *const u8);
+        jit_builder.symbol("kryos_chan_is_closed", kryos_rt::channel::kryos_chan_is_closed as *const u8);
+        jit_builder.symbol("kryos_chan_new", kryos_rt::channel::kryos_chan_new as *const u8);
+        jit_builder.symbol("kryos_chan_recv", kryos_rt::channel::kryos_chan_recv as *const u8);
+        jit_builder.symbol("kryos_chan_recv_timeout_i64", kryos_rt::channel::kryos_chan_recv_timeout_i64 as *const u8);
+        jit_builder.symbol("kryos_chan_send", kryos_rt::channel::kryos_chan_send as *const u8);
+        jit_builder.symbol("kryos_chan_try_recv", kryos_rt::channel::kryos_chan_try_recv as *const u8);
+        jit_builder.symbol("kryos_check_div_zero_f64", kryos_rt::builtins::kryos_check_div_zero_f64 as *const u8);
+        jit_builder.symbol("kryos_checked_add_i64", kryos_rt::builtins::kryos_checked_add_i64 as *const u8);
+        jit_builder.symbol("kryos_checked_mul_i64", kryos_rt::builtins::kryos_checked_mul_i64 as *const u8);
+        jit_builder.symbol("kryos_checked_sub_i64", kryos_rt::builtins::kryos_checked_sub_i64 as *const u8);
+        jit_builder.symbol("kryos_coop_current", kryos_rt::executor::kryos_coop_current as *const u8);
+        jit_builder.symbol("kryos_coop_io_begin", kryos_rt::executor::kryos_coop_io_begin as *const u8);
+        jit_builder.symbol("kryos_coop_io_end", kryos_rt::executor::kryos_coop_io_end as *const u8);
+        jit_builder.symbol("kryos_dealloc", kryos_rt::alloc::kryos_dealloc as *const u8);
+        jit_builder.symbol("kryos_env_args_count", kryos_stdlib_native::env::kryos_env_args_count as *const u8);
+        jit_builder.symbol("kryos_env_cwd", kryos_stdlib_native::env::kryos_env_cwd as *const u8);
+        jit_builder.symbol("kryos_env_home", kryos_stdlib_native::env::kryos_env_home as *const u8);
+        jit_builder.symbol("kryos_env_platform", kryos_stdlib_native::env::kryos_env_platform as *const u8);
+        jit_builder.symbol("kryos_env_set", kryos_stdlib_native::env::kryos_env_set as *const u8);
+        jit_builder.symbol("kryos_env_unset", kryos_stdlib_native::env::kryos_env_unset as *const u8);
+        jit_builder.symbol("kryos_exception_report_thread_fatal_if_pending", kryos_rt::exception::kryos_exception_report_thread_fatal_if_pending as *const u8);
+        jit_builder.symbol("kryos_exception_report_thread_if_pending", kryos_rt::exception::kryos_exception_report_thread_if_pending as *const u8);
+        jit_builder.symbol("kryos_field_set", kryos_rt::builtins::kryos_field_set as *const u8);
+        jit_builder.symbol("kryos_free", kryos_rt::alloc::kryos_free as *const u8);
+        jit_builder.symbol("kryos_fs_delete", kryos_rt::fs::kryos_fs_delete as *const u8);
+        jit_builder.symbol("kryos_fs_exists", kryos_rt::fs::kryos_fs_exists as *const u8);
+        jit_builder.symbol("kryos_map_free_typed", kryos_rt::map::kryos_map_free_typed as *const u8);
+        jit_builder.symbol("kryos_math_abs_f64", kryos_stdlib_native::math::kryos_math_abs_f64 as *const u8);
+        jit_builder.symbol("kryos_math_abs_i64", kryos_stdlib_native::math::kryos_math_abs_i64 as *const u8);
+        jit_builder.symbol("kryos_math_ceil", kryos_stdlib_native::math::kryos_math_ceil as *const u8);
+        jit_builder.symbol("kryos_math_clamp_f64", kryos_stdlib_native::math::kryos_math_clamp_f64 as *const u8);
+        jit_builder.symbol("kryos_math_cos", kryos_stdlib_native::math::kryos_math_cos as *const u8);
+        jit_builder.symbol("kryos_math_e", kryos_stdlib_native::math::kryos_math_e as *const u8);
+        jit_builder.symbol("kryos_math_floor", kryos_stdlib_native::math::kryos_math_floor as *const u8);
+        jit_builder.symbol("kryos_math_log", kryos_stdlib_native::math::kryos_math_log as *const u8);
+        jit_builder.symbol("kryos_math_log10", kryos_stdlib_native::math::kryos_math_log10 as *const u8);
+        jit_builder.symbol("kryos_math_log2", kryos_stdlib_native::math::kryos_math_log2 as *const u8);
+        jit_builder.symbol("kryos_math_max_f64", kryos_stdlib_native::math::kryos_math_max_f64 as *const u8);
+        jit_builder.symbol("kryos_math_max_i64", kryos_stdlib_native::math::kryos_math_max_i64 as *const u8);
+        jit_builder.symbol("kryos_math_min_f64", kryos_stdlib_native::math::kryos_math_min_f64 as *const u8);
+        jit_builder.symbol("kryos_math_min_i64", kryos_stdlib_native::math::kryos_math_min_i64 as *const u8);
+        jit_builder.symbol("kryos_math_pi", kryos_stdlib_native::math::kryos_math_pi as *const u8);
+        jit_builder.symbol("kryos_math_pow", kryos_stdlib_native::math::kryos_math_pow as *const u8);
+        jit_builder.symbol("kryos_math_round", kryos_stdlib_native::math::kryos_math_round as *const u8);
+        jit_builder.symbol("kryos_math_sin", kryos_stdlib_native::math::kryos_math_sin as *const u8);
+        jit_builder.symbol("kryos_math_sqrt", kryos_stdlib_native::math::kryos_math_sqrt as *const u8);
+        jit_builder.symbol("kryos_math_tan", kryos_stdlib_native::math::kryos_math_tan as *const u8);
+        jit_builder.symbol("kryos_path_absolute", kryos_stdlib_native::path::kryos_path_absolute as *const u8);
+        jit_builder.symbol("kryos_path_basename", kryos_stdlib_native::path::kryos_path_basename as *const u8);
+        jit_builder.symbol("kryos_path_dirname", kryos_stdlib_native::path::kryos_path_dirname as *const u8);
+        jit_builder.symbol("kryos_path_extension", kryos_stdlib_native::path::kryos_path_extension as *const u8);
+        jit_builder.symbol("kryos_path_free", kryos_stdlib_native::path::kryos_path_free as *const u8);
+        jit_builder.symbol("kryos_path_is_dir", kryos_stdlib_native::path::kryos_path_is_dir as *const u8);
+        jit_builder.symbol("kryos_path_is_file", kryos_stdlib_native::path::kryos_path_is_file as *const u8);
+        jit_builder.symbol("kryos_path_join", kryos_stdlib_native::path::kryos_path_join as *const u8);
+        jit_builder.symbol("kryos_poll_readable", kryos_stdlib_native::net::kryos_poll_readable as *const u8);
+        jit_builder.symbol("kryos_print_int", kryos_rt::builtins::kryos_print_int as *const u8);
+        jit_builder.symbol("kryos_println_int", kryos_rt::builtins::kryos_println_int as *const u8);
+        jit_builder.symbol("kryos_rand_bool", kryos_stdlib_native::rand::kryos_rand_bool as *const u8);
+        jit_builder.symbol("kryos_rand_bytes", kryos_stdlib_native::rand::kryos_rand_bytes as *const u8);
+        jit_builder.symbol("kryos_rand_f64", kryos_stdlib_native::rand::kryos_rand_f64 as *const u8);
+        jit_builder.symbol("kryos_rand_i64", kryos_stdlib_native::rand::kryos_rand_i64 as *const u8);
+        jit_builder.symbol("kryos_rand_seed", kryos_stdlib_native::rand::kryos_rand_seed as *const u8);
+        jit_builder.symbol("kryos_realloc", kryos_rt::alloc::kryos_realloc as *const u8);
+        jit_builder.symbol("kryos_regex_capture", kryos_stdlib_native::re::kryos_regex_capture as *const u8);
+        jit_builder.symbol("kryos_regex_capture_at", kryos_stdlib_native::re::kryos_regex_capture_at as *const u8);
+        jit_builder.symbol("kryos_regex_capture_count", kryos_stdlib_native::re::kryos_regex_capture_count as *const u8);
+        jit_builder.symbol("kryos_regex_find", kryos_stdlib_native::re::kryos_regex_find as *const u8);
+        jit_builder.symbol("kryos_regex_find_at", kryos_stdlib_native::re::kryos_regex_find_at as *const u8);
+        jit_builder.symbol("kryos_regex_replace_all", kryos_stdlib_native::re::kryos_regex_replace_all as *const u8);
+        jit_builder.symbol("kryos_rt_init", kryos_rt::stack_guard::kryos_rt_init as *const u8);
+        jit_builder.symbol("kryos_saturating_add_i64", kryos_rt::builtins::kryos_saturating_add_i64 as *const u8);
+        jit_builder.symbol("kryos_saturating_mul_i64", kryos_rt::builtins::kryos_saturating_mul_i64 as *const u8);
+        jit_builder.symbol("kryos_saturating_sub_i64", kryos_rt::builtins::kryos_saturating_sub_i64 as *const u8);
+        jit_builder.symbol("kryos_sha1", kryos_stdlib_native::crypto::kryos_sha1 as *const u8);
+        jit_builder.symbol("kryos_str_concat", kryos_stdlib_native::string::kryos_str_concat as *const u8);
+        jit_builder.symbol("kryos_str_contains", kryos_stdlib_native::string::kryos_str_contains as *const u8);
+        jit_builder.symbol("kryos_str_ends_with", kryos_stdlib_native::string::kryos_str_ends_with as *const u8);
+        jit_builder.symbol("kryos_str_free", kryos_stdlib_native::string::kryos_str_free as *const u8);
+        jit_builder.symbol("kryos_str_len", kryos_stdlib_native::string::kryos_str_len as *const u8);
+        jit_builder.symbol("kryos_str_parse_f64", kryos_stdlib_native::string::kryos_str_parse_f64 as *const u8);
+        jit_builder.symbol("kryos_str_parse_i64", kryos_stdlib_native::string::kryos_str_parse_i64 as *const u8);
+        jit_builder.symbol("kryos_str_repeat", kryos_stdlib_native::string::kryos_str_repeat as *const u8);
+        jit_builder.symbol("kryos_str_replace", kryos_stdlib_native::string::kryos_str_replace as *const u8);
+        jit_builder.symbol("kryos_str_starts_with", kryos_stdlib_native::string::kryos_str_starts_with as *const u8);
+        jit_builder.symbol("kryos_str_to_lower", kryos_stdlib_native::string::kryos_str_to_lower as *const u8);
+        jit_builder.symbol("kryos_str_to_upper", kryos_stdlib_native::string::kryos_str_to_upper as *const u8);
+        jit_builder.symbol("kryos_str_trim", kryos_stdlib_native::string::kryos_str_trim as *const u8);
+        jit_builder.symbol("kryos_struct_release_shared", kryos_rt::alloc::kryos_struct_release_shared as *const u8);
+        jit_builder.symbol("kryos_struct_retain", kryos_rt::alloc::kryos_struct_retain as *const u8);
+        jit_builder.symbol("kryos_time_day_utc", kryos_stdlib_native::datetime::kryos_time_day_utc as *const u8);
+        jit_builder.symbol("kryos_time_format_rfc3339_utc", kryos_stdlib_native::datetime::kryos_time_format_rfc3339_utc as *const u8);
+        jit_builder.symbol("kryos_time_from_ymdhms_utc", kryos_stdlib_native::datetime::kryos_time_from_ymdhms_utc as *const u8);
+        jit_builder.symbol("kryos_time_hour_utc", kryos_stdlib_native::datetime::kryos_time_hour_utc as *const u8);
+        jit_builder.symbol("kryos_time_minute_utc", kryos_stdlib_native::datetime::kryos_time_minute_utc as *const u8);
+        jit_builder.symbol("kryos_time_month_utc", kryos_stdlib_native::datetime::kryos_time_month_utc as *const u8);
+        jit_builder.symbol("kryos_time_now_nanos", kryos_stdlib_native::datetime::kryos_time_now_nanos as *const u8);
+        jit_builder.symbol("kryos_time_second_utc", kryos_stdlib_native::datetime::kryos_time_second_utc as *const u8);
+        jit_builder.symbol("kryos_time_weekday_utc", kryos_stdlib_native::datetime::kryos_time_weekday_utc as *const u8);
+        jit_builder.symbol("kryos_time_year_utc", kryos_stdlib_native::datetime::kryos_time_year_utc as *const u8);
+        jit_builder.symbol("kryos_uds_bind", kryos_stdlib_native::unix_socket::kryos_uds_bind as *const u8);
+        jit_builder.symbol("kryos_uds_connect", kryos_stdlib_native::unix_socket::kryos_uds_connect as *const u8);
+        jit_builder.symbol("kryos_uds_recv", kryos_stdlib_native::unix_socket::kryos_uds_recv as *const u8);
+        jit_builder.symbol("kryos_uds_send", kryos_stdlib_native::unix_socket::kryos_uds_send as *const u8);
+        jit_builder.symbol("kryos_uuid_format", kryos_stdlib_native::uuid::kryos_uuid_format as *const u8);
+        jit_builder.symbol("kryos_uuid_parse", kryos_stdlib_native::uuid::kryos_uuid_parse as *const u8);
+        jit_builder.symbol("kryos_uuid_v4_bytes", kryos_stdlib_native::uuid::kryos_uuid_v4_bytes as *const u8);
+        jit_builder.symbol("kryos_wrapping_add_i64", kryos_rt::builtins::kryos_wrapping_add_i64 as *const u8);
+        jit_builder.symbol("kryos_wrapping_mul_i64", kryos_rt::builtins::kryos_wrapping_mul_i64 as *const u8);
+        jit_builder.symbol("kryos_wrapping_sub_i64", kryos_rt::builtins::kryos_wrapping_sub_i64 as *const u8);
+        jit_builder.symbol("kryos_ws_decode_frame_ks", kryos_stdlib_native::websocket::kryos_ws_decode_frame_ks as *const u8);
+
+
         let module = JITModule::new(jit_builder);
 
         Ok(Self {

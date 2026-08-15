@@ -3323,6 +3323,26 @@ impl TypeChecker {
                 self.env.pop_scope();
             }
             Stmt::Expr { expr, span } => {
+                // LEDGER item 42, second half. A `comptime` block in STATEMENT
+                // position is meaningless and silently so: `comptime` is not a
+                // compile-time evaluator, MIR lowering keeps only the block's
+                // VALUE, and in statement position that value is discarded --
+                // so the whole block evaporates. Measured 2026-08-14:
+                // `comptime { println("INSIDE") }` emits NO println into MIR at
+                // all; only the surrounding code survives. The user sees nothing
+                // and reasonably concludes the block did not run. It did not,
+                // but nothing said so.
+                //
+                // The value form (`let x = comptime { 6 * 7 }`) is the supported
+                // shape and is unaffected; it is what all 9 real uses in this
+                // repo do.
+                if matches!(expr, Expr::ComptimeBlock { .. }) {
+                    self.error_with_code(
+                        "a `comptime` block in statement position does nothing -- `comptime` is not a compile-time evaluator yet, so only its VALUE is kept and here that value is discarded, silently dropping the whole block (measured: a `println` inside one never reaches codegen). Bind it (`let x = comptime { .. }`) or remove the `comptime` keyword to run the body normally",
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                }
                 let ty = self.infer_expr(expr);
                 // must-use lint (W0400): discarding a `Tracked<T>` value as a
                 // statement silently drops its provenance/lineage chain. The
@@ -6588,6 +6608,50 @@ impl TypeChecker {
                             ty = self.infer_expr(expr);
                             continue;
                         }
+                    }
+                    // LEDGER item 42. `comptime` is NOT a compile-time evaluator
+                    // (HANDOFF.md defers that past 1.0). MIR lowering keeps only
+                    // the block's VALUE, so a non-tail statement inside it is
+                    // handled inconsistently and SILENTLY: measured 2026-08-14,
+                    // `println("INSIDE")` never reaches MIR at all and vanishes,
+                    // while `n = 99` survives as `_0 = const 99_i64` and takes
+                    // effect. A debug print disappearing while the mutation
+                    // beside it lands is a silent-wrong-answer-shaped trap: the
+                    // user reasonably concludes the block did not run, and is
+                    // wrong.
+                    //
+                    // Rather than pick one of those two behaviours and pretend
+                    // the keyword means it, reject the shapes that are not
+                    // faithfully supported. Every real use in this repo (9 files:
+                    // examples, the e2e/native test corpus) is
+                    // `let x = comptime { <pure arithmetic> }`, which is the
+                    // value form and stays legal. `let` bindings inside the block
+                    // stay legal too -- they are scoped to the block and cannot
+                    // be observed from outside it.
+                    let offending = match stmt {
+                        Stmt::Let { .. } => None,
+                        Stmt::Assign { span, .. } => Some(("an assignment", *span)),
+                        Stmt::Expr { span, .. } => Some(("a statement call", *span)),
+                        Stmt::Return { span, .. } => Some(("a `return`", *span)),
+                        Stmt::If { span, .. } => Some(("an `if` statement", *span)),
+                        Stmt::For { span, .. } => Some(("a `for` loop", *span)),
+                        Stmt::While { span, .. } => Some(("a `while` loop", *span)),
+                        Stmt::Break { span, .. } => Some(("a `break`", *span)),
+                        Stmt::Continue { span, .. } => Some(("a `continue`", *span)),
+                        Stmt::Spawn { span, .. } => Some(("a `spawn`", *span)),
+                        Stmt::Throw { span, .. } => Some(("a `throw`", *span)),
+                        Stmt::TryCatch { span, .. } => Some(("a `try`/`catch`", *span)),
+                        Stmt::DenyBlock { span, .. } => Some(("a `deny!` block", *span)),
+                        _ => None,
+                    };
+                    if let Some((what, span)) = offending {
+                        self.error_with_code(
+                            format!(
+                                "`comptime` does not support {what} -- it is not a compile-time evaluator yet, so a side-effecting statement here is silently dropped or silently applied depending on its shape (measured: a `println` never reaches codegen, an assignment does). Use `comptime {{ <expression> }}` for a compile-time-shaped VALUE, and move the statement outside the block"
+                            ),
+                            span,
+                            kryos_errors::codes::E0110,
+                        );
                     }
                     self.check_stmt(stmt);
                 }

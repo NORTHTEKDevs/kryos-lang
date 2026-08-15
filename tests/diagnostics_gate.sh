@@ -326,6 +326,46 @@ else
     echo "  FAIL: legitimate i64/str-into-any rejected:"; echo "$check_out" | sed 's/^/    /'; fail=1
 fi
 
+# LEDGER item 42: `comptime` is not a compile-time evaluator (HANDOFF defers
+# that past 1.0), and MIR lowering keeps only the block's VALUE. That made
+# non-value uses fail SILENTLY and inconsistently -- measured 2026-08-14, a
+# `println` inside a comptime block never reached MIR at all and vanished,
+# while an assignment survived as `_0 = const 99_i64` and took effect. A debug
+# print disappearing while the mutation beside it lands is the trap: the user
+# concludes the block did not run, and is wrong.
+cat > "$TMP/comptime_stmt_pos.kry" <<'KRY'
+fn main() {
+    comptime {
+        println("INSIDE")
+    }
+    println("AFTER")
+}
+KRY
+if "$K" check "$TMP/comptime_stmt_pos.kry" >"$TMP/ct1" 2>&1; then
+    echo "  FAIL: a comptime block in statement position still compiles (its body vanishes silently)"; fail=1
+elif grep -q "E0110" "$TMP/ct1"; then
+    echo "  ok   comptime in statement position is rejected (E0110), not silently dropped"
+else
+    echo "  FAIL: rejected, but not with E0110:"; tail -3 "$TMP/ct1" | sed 's/^/    /'; fail=1
+fi
+
+# NO-CASCADE complement: the VALUE form is the supported shape and is what all
+# real uses in this repo do (examples/all_features.kry, fibonacci_showcase,
+# and the e2e/native comptime corpus). It must keep working, and must still
+# produce the right number -- not merely compile.
+cat > "$TMP/comptime_value_ok.kry" <<'KRY'
+fn main() {
+    let x = comptime { 6 * 7 }
+    let y = comptime { (100 + 200) * 3 - 50 }
+    println(to_string(x) + " " + to_string(y))
+}
+KRY
+if out="$("$K" run "$TMP/comptime_value_ok.kry" 2>&1)" && [ "$out" = "42 850" ]; then
+    echo "  ok   comptime VALUE form still compiles AND evaluates correctly (42 850)"
+else
+    echo "  FAIL: the comptime value form regressed: $out"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else

@@ -32,8 +32,23 @@ cat > "$W/h.kry" <<'EOF'
 /// Adds two numbers.
 fn add(a: i64, b: i64) -> i64 { return a + b }
 
+struct P { x: i64, y: i64 }
+
 @test
 fn t_add() { assert(add(1, 2) == 3, "add works") }
+
+// This @test ALLOCATES A STRUCT on purpose. `kryos test` runs on the
+// in-process Cranelift JIT, and an unregistered runtime symbol there panics
+// the process (rc=101) instead of diagnosing. The first version of this gate
+// used only scalar arithmetic and therefore passed while `kryos test` was
+// crashing on any struct literal -- 141 runtime symbols were unregistered.
+// Keep an allocating test here so the smoke gate exercises the JIT's symbol
+// table, not just its argument parsing.
+@test
+fn t_struct_alloc() {
+    let p: P = P { x: 1, y: 2 }
+    assert(p.x + p.y == 3, "struct alloc works")
+}
 
 fn main() { println("hi " + to_string(add(1, 2))) }
 EOF

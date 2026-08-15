@@ -1,6 +1,32 @@
 # Compile-Time Evaluation
 
-> **Implementation Status (accurate as of this commit): `comptime { }` does NOT
+> **UPDATE 2026-08-14 -- READ THIS FIRST, it corrects the status block below.**
+> The block below says a `comptime { }` body is lowered "directly as ordinary
+> runtime code, in place, every time control reaches it -- exactly like a bare
+> `{ }` block", and that `println` inside one "executes at runtime, printing
+> every time". **Both statements are false, and were verified false by
+> measurement, not by reading source:**
+>
+> ```
+> comptime { println("INSIDE") }   -> emits NO println into MIR at all; nothing prints
+> comptime { n = 99 }              -> survives as `_0 = const 99_i64`; the mutation APPLIES
+> ```
+>
+> MIR lowering keeps only the block's VALUE, so a statement inside one is
+> dropped or applied depending on its shape -- a silent, inconsistent split. A
+> debug print vanishing while the assignment beside it lands is a trap: the
+> reader concludes the block did not run, and is wrong.
+>
+> `comptime` is therefore now **expression-only**. `let x = comptime { 6 * 7 }`
+> is the supported shape (and is what every real use in this repo does). A
+> `comptime` block in statement position, or a side-effecting statement inside
+> one, is a clean `E0110` compile error. Real compile-time evaluation remains
+> deferred past 1.0 per `HANDOFF.md`; until it lands the keyword refuses the
+> shapes it cannot honour instead of pretending. See LEDGER item 42; pinned by
+> `tests/diagnostics_gate.sh`.
+
+> **Implementation Status (SUPERSEDED by the update above -- retained as the
+> historical record of what was believed): `comptime { }` does NOT
 > evaluate at compile time.** It is fully parsed (`Expr::ComptimeBlock`) and
 > lowered through MIR (`RValue::Comptime(inner)`), but both the Cranelift and
 > LLVM backends lower the inner expression **directly as ordinary runtime

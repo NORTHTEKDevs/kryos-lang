@@ -2536,6 +2536,17 @@ impl<'a> FnEmitter<'a> {
                     self.emit_operand(left)?;
                     self.emit_operand(right)?;
                     self.emit_binop(*op)?;
+                    // Narrow integer types share the uniform i64 slot (see
+                    // `lower_type`), so arithmetic on them must be WRAPPED back
+                    // to the declared width -- the native backends do, and this
+                    // backend did not. Measured 2026-08-14: i16 arithmetic that
+                    // wraps to -32766 natively produced 32770 here, u32 produced
+                    // 4294967300 against a native 4, i32 produced 2147483650
+                    // against -2147483646. It compiled and ran, so it was a
+                    // SILENT wrong answer on a documented first-class target,
+                    // and directly contradicted docs/wasm-contract.md's promise
+                    // that anything outside the subset fails at compile time.
+                    self.emit_narrow_wrap(&lty, &rty, *op);
                 }
             }
             RValue::StringConcat(parts) => {
@@ -2905,6 +2916,60 @@ impl<'a> FnEmitter<'a> {
             },
         }
         Ok(())
+    }
+
+    /// Wrap the top-of-stack i64 back to a narrow integer's declared width.
+    ///
+    /// Only value-producing ARITHMETIC/bitwise ops need this. Comparisons yield
+    /// 0/1 and must not be masked, and `And`/`Or` here are the BOOLEAN ops
+    /// (`BitAnd`/`BitOr` are the bitwise ones), so they are excluded too.
+    ///
+    /// Signed widths use wasm's native sign-extending ops; unsigned widths mask.
+    /// The result type is taken from whichever operand is narrow -- MIR does not
+    /// carry a result type on `RValue::BinOp`, and for a well-typed program both
+    /// operands of an arithmetic op share the declared width.
+    fn emit_narrow_wrap(&mut self, lty: &MirType, rty: &MirType, op: MirBinOp) {
+        use MirBinOp as B;
+        if !matches!(
+            op,
+            B::Add | B::Sub | B::Mul | B::Div | B::Mod | B::Pow | B::Shl | B::Shr
+                | B::BitAnd | B::BitOr | B::BitXor
+        ) {
+            return;
+        }
+        let narrow = match (lty, rty) {
+            (MirType::I8, _) | (_, MirType::I8) => Some(MirType::I8),
+            (MirType::I16, _) | (_, MirType::I16) => Some(MirType::I16),
+            (MirType::I32, _) | (_, MirType::I32) => Some(MirType::I32),
+            (MirType::U8, _) | (_, MirType::U8) => Some(MirType::U8),
+            (MirType::U16, _) | (_, MirType::U16) => Some(MirType::U16),
+            (MirType::U32, _) | (_, MirType::U32) => Some(MirType::U32),
+            _ => None,
+        };
+        match narrow {
+            Some(MirType::I8) => {
+                self.wfunc.instruction(&W::I64Extend8S);
+            }
+            Some(MirType::I16) => {
+                self.wfunc.instruction(&W::I64Extend16S);
+            }
+            Some(MirType::I32) => {
+                self.wfunc.instruction(&W::I64Extend32S);
+            }
+            Some(MirType::U8) => {
+                self.wfunc.instruction(&W::I64Const(0xFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            Some(MirType::U16) => {
+                self.wfunc.instruction(&W::I64Const(0xFFFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            Some(MirType::U32) => {
+                self.wfunc.instruction(&W::I64Const(0xFFFF_FFFF));
+                self.wfunc.instruction(&W::I64And);
+            }
+            _ => {}
+        }
     }
 
     fn emit_binop(&mut self, op: MirBinOp) -> Result<(), WasmCodegenError> {

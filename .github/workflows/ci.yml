@@ -787,6 +787,7 @@ jobs:
           bash tests/stdlib_compile_gate.sh
           bash tests/cli_smoke_gate.sh
           bash tests/authority_surface_gate.sh
+          bash tests/jit_symbols_gate.sh
 
       - name: CodeView (.pdb) emission smoke
         working-directory: compiler
