@@ -27,6 +27,20 @@
 > fails CI if this prose drifts from the measurement):
 > - `tools/loop/escape_status.sh` - **0 escaping, 17 rejected**, both enforcement modes.
 > - `tests/security_gate.sh` - PASS, ~94 checks, each with a no-cascade complement.
+> - `tests/capability_matrix_gate.sh` - **NEW, bounded EXHAUSTIVE search.** All 17 shapes
+>   in `escape_status.sh` were found BY HAND, so that corpus's weakness is exactly "the
+>   shape nobody thought of". This enumerates SOURCE x CONTAINER x TRANSPORT
+>   combinatorially. Result: **75 shapes, 75/75 attacks rejected, 0 escapes, both
+>   enforcement modes.** A bounded-model result, not a proof, and N is printed so the
+>   bound is never implicit. It also measures the OTHER axis for the first time: **only
+>   34/75 pure-closure CONTROLS compile.** The other 41 are byte-identical to their attack
+>   twin except the closure is pure, and are rejected with `requires capabilities [all]`.
+>   That is the fail-closed `Unknown -> ALL` cost, predicted in the abstract by
+>   `tools/loop/STAGE2-PLAN.md` and never quantified until now: **55% of legitimate
+>   closure-through-container programs in this space need `@capabilities(all)`.** Tracked
+>   as LEDGER item 41. The gate reports precision but does NOT fail on it, deliberately -
+>   making it a failure condition creates pressure to loosen enforcement so a number goes
+>   green, which is the incentive that produced the fail-OPEN default this design replaced.
 > - `tests/authority_surface_gate.sh` - **NEW, and it answers a question this document
 >   never asked**: is the set of primitives that GRANT authority gated at all? Every
 >   invariant below concerns whether authority can be *laundered*; none establish that it

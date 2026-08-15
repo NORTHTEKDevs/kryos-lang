@@ -1465,6 +1465,49 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
+### 41. PRECISION COST, measured for the first time: 41 of 75 enumerated LEGITIMATE pure-closure shapes require `@capabilities(all)` -- a deliberate consequence of the fail-closed `Unknown -> ALL` stance, but larger than anyone had quantified (capability-matrix wave, 2026-08-14) -- NOT FIXED, DELIBERATE
+
+`tests/capability_matrix_gate.sh` enumerates the laundering space
+combinatorially (SOURCE x CONTAINER x TRANSPORT, 75 shapes) rather than
+relying on the 17 hand-found shapes in `escape_status.sh`. Two axes:
+
+- **SOUNDNESS: 75/75 attacks rejected**, both enforcement modes. Zero
+  escapes in the enumerated space. This is the good half and it is real.
+- **PRECISION: only 34/75 pure-closure controls compile.** The other 41 are
+  byte-identical to their attack twin except the closure is PURE
+  (`|| "no secrets here"`), and they are rejected with
+  `E0507: call to ... requires capabilities [all] not granted to caller`.
+
+Mechanism, not a mystery: reading a fn-bearing CONTAINER yields
+`CapRow::Unknown`, which erases to `CapBits::ALL`. So passing even a
+zero-authority closure through a struct field / array / map / tuple / nested
+container into a param, method, or accessor demands `@capabilities(all)`
+from the caller. `tools/loop/STAGE2-PLAN.md` predicted this cost in the
+abstract ("expect over-rejection when the stamp lands ... it should be
+measured against examples/strict_caps before being called done"). It was
+never measured until now. It is 55%.
+
+WHY THIS IS NOT BEING "FIXED" HERE: the obvious narrowing -- resolve a plain
+struct field's row to the declaration-global var instead of Unknown -- is
+explicitly the cascade in a new costume, per STAGE2-PLAN and per the
+2026-08-12 measurement that killed the annotate-dispatchers approach: one
+privileged closure passed to `std::iter::map` would bind map's
+declaration-global param var and every `map` call everywhere would then
+charge that authority. `conf_stdlib_wave14` is the detector. Any attempt
+must be measured against it and against `strict_caps_examples` (91/91) BEFORE
+being called done.
+
+The gate reports precision but does NOT fail on it, deliberately: making it
+a failure condition creates pressure to loosen enforcement so a number goes
+green, which is the exact incentive that produced the fail-OPEN default this
+design replaced.
+
+Ranked below the trust-model items because it is over-rejection, not a leak:
+it makes legitimate programs inconvenient, it does not let authority escape.
+
+---
+
+
 ### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — ROOT-CAUSED, DESIGN NOTE, NOT FIXED (2026-08-05)
 
 `tests/security/attack_container_element_alias_refcount.kry`. CLAUDE.md
