@@ -3459,24 +3459,24 @@ impl CapabilityChecker {
                                         }
                                         ClosureCapsResult::DependsOnParam(_)
                                         | ClosureCapsResult::Unknown => {
-                                            extra.insert(Capability::All)
+                                            self.insert_unresolved_all(extra)
                                         }
                                     },
-                                    None => extra.insert(Capability::All),
+                                    None => self.insert_unresolved_all(extra),
                                 }
                             }
                             // Genuinely unresolvable provenance -- no
                             // approximation, no shape guess: the caller must
                             // hold everything the invoked value could
                             // possibly carry.
-                            None => extra.insert(Capability::All),
+                            None => self.insert_unresolved_all(extra),
                         }
                     }
                     // Genuinely unresolvable provenance: the sound
                     // conservative stance (matching the raw-memory escape's
                     // documented policy) is to require the caller to hold
                     // everything.
-                    ClosureCapsResult::Unknown => extra.insert(Capability::All),
+                    ClosureCapsResult::Unknown => self.insert_unresolved_all(extra),
                 }
             }
         }
@@ -3531,6 +3531,39 @@ impl CapabilityChecker {
     /// deferral is unsound and the full set must be required here instead.
     /// See `current_fn_entry_scope_depth`'s field doc for the full
     /// rationale and the live repro that found this.
+    /// LEDGER item 41 EXPERIMENT SWITCH -- `KRYOS_NO_HOTPARAM_ALL=1`.
+    ///
+    /// The four `extra.insert(Capability::All)` sites below are the shape-based
+    /// resolver's fail-closed fallback for a closure/fn-value ARGUMENT whose
+    /// provenance it cannot resolve. They are also, measurably, the source of
+    /// item 41's over-rejection: `tests/capability_matrix_gate.sh` shows a PURE
+    /// closure read out of a struct/array/map/tuple and passed to a free fn or
+    /// impl method is charged `all`, while the ROW system independently computes
+    /// the correct answer (`fn main = {}`) for the same program.
+    ///
+    /// `kryos-types` depends on `kryos-capabilities`, never the reverse, so this
+    /// resolver CANNOT consult `CapRow` to know rows already got it right.
+    ///
+    /// `tools/loop/STAGE2-PLAN.md` prescribes the decisive experiment: "retire the
+    /// shape-matcher only once every `tests/security/attack_*.kry` repro is
+    /// rejected by the row check alone, proven by disabling the old path and
+    /// re-running `tools/loop/escape_status.sh`". This flag exists to RUN that
+    /// experiment reproducibly rather than by deleting code and guessing.
+    ///
+    /// Default is OFF: fail-closed remains the shipped behaviour until the
+    /// experiment justifies otherwise.
+    fn hotparam_all_disabled(&self) -> bool {
+        std::env::var("KRYOS_NO_HOTPARAM_ALL").is_ok()
+    }
+
+    /// Fail-closed fallback for unresolvable fn-value provenance in argument
+    /// position, honoring the item-41 experiment switch.
+    fn insert_unresolved_all(&self, extra: &mut CapabilitySet) {
+        if !self.hotparam_all_disabled() {
+            extra.insert(Capability::All)
+        }
+    }
+
     fn deferred_own_param_caps(&self, pname: &str) -> CapabilitySet {
         // A lambda's OWN bound parameter, re-encountered while re-checking
         // that SAME lambda's own body -- already fully handled at the

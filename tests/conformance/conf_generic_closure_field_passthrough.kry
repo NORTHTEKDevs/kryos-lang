@@ -1,0 +1,64 @@
+// A generic struct field of type `fn() -> T`, returned by a BARE self-field
+// passthrough method (`return self.f`), must keep its per-instantiation type.
+//
+// It did not. `instance_ret_needs_monomorphization` (kryos-mir/src/lower.rs)
+// decided whether a generic INSTANCE method needs monomorphizing by inspecting
+// its return TypeExpr, and covered `Generic<..>`, `[T]` and `(T, ..)` -- but a
+// FUNCTION-typed return fell into its `_ => false` arm. So the method was never
+// monomorphized per instantiation and `T` stayed erased to i64.
+//
+// At T=f64 that printed `4616752568008179712` -- the raw i64 reinterpretation
+// of the f64 bits of 4.5 -- on BOTH backends. Not a JIT/AOT divergence: a
+// silent wrong VALUE the two backends agreed on, which is the harder kind to
+// notice and outranks a crash in this repo's ranking doctrine.
+//
+// T=str was always correct and is asserted here as the control: a str is
+// already pointer-sized, so the erasure does not corrupt it. Only float
+// payloads reinterpret their bits. Keeping both in one file means a future
+// "fix" that breaks the pointer-sized case cannot pass this test.
+//
+// Was tests/known_failures/generic_struct_closure_field_passthrough_f64.kry.
+
+struct Holder<T> {
+    f: fn() -> T
+}
+
+impl<T> Holder<T> {
+    fn get_closure(self: Holder<T>) -> fn() -> T {
+        return self.f
+    }
+}
+
+fn main() {
+    let mut fail: i64 = 0
+
+    let hf: Holder<f64> = Holder { f: || 4.5 }
+    let cf = hf.get_closure()
+    let got_f: str = to_string(cf())
+    if got_f != "4.5" {
+        println("CONF FAIL: f64 through a generic fn-typed field: expected 4.5, got " + got_f)
+        fail = fail + 1
+    }
+
+    let hs: Holder<str> = Holder { f: || "closure-field-secret" }
+    let cs = hs.get_closure()
+    let got_s: str = cs()
+    if got_s != "closure-field-secret" {
+        println("CONF FAIL: str through a generic fn-typed field: got " + got_s)
+        fail = fail + 1
+    }
+
+    // A generic i64 instantiation must keep working too -- i64 is the erased
+    // representation, so it is the case a wrong fix would leave passing while
+    // breaking the others.
+    let hi: Holder<i64> = Holder { f: || 7 }
+    let ci = hi.get_closure()
+    if ci() != 7 {
+        println("CONF FAIL: i64 through a generic fn-typed field: got " + to_string(ci()))
+        fail = fail + 1
+    }
+
+    if fail == 0 {
+        println("conformance generic_closure_field_passthrough: PASS")
+    }
+}

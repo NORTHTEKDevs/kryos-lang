@@ -174,7 +174,7 @@ pub struct LoweringContext {
     pending_closure_regs: Vec<(String, String, Vec<String>)>,
     /// Actor definitions: actor_name -> ordered list of (handler_name, param_count).
     actor_defs: HashMap<String, Vec<(String, usize)>>,
-    /// The current `Self` type name — set when lowering trait/impl blocks.
+    /// The current `Self` type name - set when lowering trait/impl blocks.
     current_self_type: Option<String>,
     /// Type-parameter names of the `impl<...>` block currently being lowered
     /// (e.g. `["T"]` for `impl<T> Box<T>`). While set, `resolve_type` erases
@@ -209,7 +209,7 @@ pub struct LoweringContext {
     /// (e.g. a `spawn { }` block's captured-variable parameter, or `let c:
     /// Counter = ...`). Without it, `infer_type_name` on a bare identifier
     /// sees only the erased `I64` and a method call on the actor lowers to a
-    /// plain unmangled call instead of the ActorSend/mailbox dispatch — this
+    /// plain unmangled call instead of the ActorSend/mailbox dispatch - this
     /// is exactly what broke calling an actor method on a variable CAPTURED
     /// by a `spawn { }` block (the capture is re-materialized as a typed
     /// param, which goes through `resolve_type`, unlike the outer scope's
@@ -245,7 +245,7 @@ pub struct LoweringContext {
     /// Tracks locals that have already been dropped by an inner scope to prevent
     /// double-free when the outer scope's drop loop runs.
     dropped_locals: HashSet<u32>,
-    /// Locals that are function parameters — must NOT be dropped by the callee
+    /// Locals that are function parameters - must NOT be dropped by the callee
     /// because the caller owns them.
     param_locals: HashSet<u32>,
     /// Name of the function currently being lowered (drop-tag diagnostics).
@@ -256,7 +256,7 @@ pub struct LoweringContext {
     /// Return type of the function currently being lowered.  Used by `throw`
     /// outside a `try` block to emit a properly-typed early return.
     current_ret_ty: MirType,
-    /// Structs annotated with `@copy` — forwarded to `MirModule` for codegen.
+    /// Structs annotated with `@copy` - forwarded to `MirModule` for codegen.
     copy_structs: HashSet<String>,
     /// Locals hidden from name resolution after their enclosing scope exits.
     /// Prevents inner-scope variables from shadowing outer ones after the
@@ -264,7 +264,7 @@ pub struct LoweringContext {
     /// must print 1, not 2).
     hidden_locals: HashSet<u32>,
     /// Locals from which at least one non-copy field has been moved out.
-    /// These must NOT be dropped by scope cleanup — the moved fields already
+    /// These must NOT be dropped by scope cleanup - the moved fields already
     /// own (and will free) their heap data; a full struct drop would double-free.
     partial_moved_locals: HashSet<u32>,
     /// Ref-captured scalar variable name -> every heap box (`RValue::ArcAlloc`
@@ -601,7 +601,7 @@ impl LoweringContext {
         // Compound types must recurse through resolve_type, not fall to the
         // ctx-less lower_type_expr: `[P<str>]` went through lower_type_expr
         // wholesale, whose Generic handling erases to the bare stub `P`
-        // (all-i64 fields) — monomorphized fns then loaded f64 fields as
+        // (all-i64 fields) - monomorphized fns then loaded f64 fields as
         // i64 slots (Cranelift verifier rejected the fadd).
         match ty {
             ast::TypeExpr::Array { element, size, .. } => {
@@ -630,7 +630,7 @@ impl LoweringContext {
                     return MirType::Struct(self_ty.clone());
                 }
             }
-            // Check enum definitions first — enum types must be distinguished
+            // Check enum definitions first - enum types must be distinguished
             // from struct types so that match lowering emits tag extraction.
             if self.enum_defs.contains_key(name.as_str()) {
                 return MirType::Enum(name.clone());
@@ -672,7 +672,7 @@ impl LoweringContext {
         // Inside a try block, every call that can carry a cross-function
         // `throw` is followed IMMEDIATELY by a pending-exception check that
         // routes to the enclosing catch. This covers calls at any nesting
-        // depth (if/for/while/match bodies) — the per-statement checks in
+        // depth (if/for/while/match bodies) - the per-statement checks in
         // lower_try_catch only cover the try body's top level, which let
         // dead code run (and later throws overwrite earlier ones) until
         // control returned to the top level. The codegen backends rely on
@@ -761,7 +761,7 @@ impl LoweringContext {
             closure_locals: std::mem::take(&mut self.closure_locals),
             capture_boxes: std::mem::take(&mut self.capture_boxes),
             // A nested function body (lambda/spawn/monomorphized fn) must
-            // NOT inherit the enclosing function's try context — its blocks
+            // NOT inherit the enclosing function's try context - its blocks
             // and locals live in a different function.
             try_catch_target: self.try_catch_target.take(),
             local_actor_types: std::mem::take(&mut self.local_actor_types),
@@ -1361,7 +1361,7 @@ pub fn lower_module_with_lambda_params(
                     );
                     // Also register a type-erased stub under the bare name so
                     // `Maybe.Some(x)` / `Maybe.None` resolve in variant-construction
-                    // paths. Enum runtime layout is [tag:i64, slot0:i64, ...] —
+                    // paths. Enum runtime layout is [tag:i64, slot0:i64, ...] - 
                     // payload types erased to i64 are ABI-compatible.
                     let stub_defs: Vec<EnumVariantDef> = variants
                         .iter()
@@ -1894,7 +1894,7 @@ pub fn lower_module_with_lambda_params(
                 is_async,
                 ..
             } => {
-                // Skip generic functions — they are lowered on demand via monomorphization.
+                // Skip generic functions - they are lowered on demand via monomorphization.
                 if !generics.is_empty() {
                     continue;
                 }
@@ -1998,7 +1998,7 @@ pub fn lower_module_with_lambda_params(
                                 }
                             }
                         } else {
-                            // Static method — no self param.
+                            // Static method - no self param.
                             all_params.extend_from_slice(params);
                         }
                         let mut func =
@@ -2559,7 +2559,7 @@ pub fn lower_function(
     // Allocate entry block (id = 0).
     let _entry = ctx.alloc_block();
 
-    // Lower return type — use resolve_type to correctly handle enum return types.
+    // Lower return type - use resolve_type to correctly handle enum return types.
     let mir_ret_ty = match ret_ty {
         Some(ty) => ctx.resolve_type(ty),
         None => MirType::Void,
@@ -2579,7 +2579,7 @@ pub fn lower_function(
                     .map(|t| ctx.resolve_type(t))
                     .unwrap_or(MirType::I64);
             let local = ctx.alloc_local(Some(p.name.clone()), ty.clone(), false);
-            // Mark as parameter — callee must NOT drop/free these; the caller owns them.
+            // Mark as parameter - callee must NOT drop/free these; the caller owns them.
             ctx.param_locals.insert(local.0);
             // If the param's declared type names an actor, `resolve_type` just
             // erased `ty` to a bare `I64` handle (actor VALUES are opaque
@@ -2729,7 +2729,7 @@ pub fn lower_function(
             for i in (scope_start..scope_end).rev() {
                 if ctx.locals[i].name.is_some() {
                     let local_id = ctx.locals[i].id;
-                    // Skip function parameters — caller owns them.
+                    // Skip function parameters - caller owns them.
                     if ctx.param_locals.contains(&local_id.0)
                         || ctx.borrowed_locals.contains(&local_id.0)
                     {
@@ -2804,17 +2804,17 @@ pub fn lower_function(
 /// Shared by `lower_block_stmts` (a block used as a plain statement) and the
 /// `Expr::Block`/`Expr::UnsafeBlock` rvalue case (a block used as a VALUE,
 /// e.g. a match-arm body or an if-as-value branch). Before this was
-/// factored out, the rvalue path had NO scope-exit drop of its own at all —
+/// factored out, the rvalue path had NO scope-exit drop of its own at all - 
 /// a named `let` declared inside a match-arm block (e.g. `let r = Ok(..)`
 /// inside `E.B => { let r = ..; match r { .. } }`) was never dropped at the
 /// end of ITS OWN arm. The local stayed un-dropped in `ctx.locals`, so the
 /// NEXT enclosing `lower_block_stmts` call that happened to cover it (e.g.
 /// the `for`-loop body wrapping the whole outer `match`) swept it up
-/// instead — unconditionally, in the loop body's own shared exit block,
+/// instead - unconditionally, in the loop body's own shared exit block,
 /// on EVERY iteration, regardless of which arm of the outer match actually
 /// ran that iteration. On an iteration that took a DIFFERENT arm (one that
 /// never touched `r` this time), that dropped whatever STALE value `r`'s
-/// slot held from a previous iteration (or zero-init on the first) — a
+/// slot held from a previous iteration (or zero-init on the first) - a
 /// null-deref or a double-free of an already-freed prior box. This is the
 /// verified root cause of the F1 struct/loop/nested-match crash (gotcha
 /// #23's "BROAD, HIGH-PRIORITY crash hazard"): dropping `r` correctly at
@@ -2834,7 +2834,7 @@ fn emit_named_scope_drops(ctx: &mut LoweringContext, scope_start: usize) {
     for i in (scope_start..scope_end).rev() {
         if ctx.locals[i].name.is_some() {
             let local_id = ctx.locals[i].id;
-            // Skip function parameters — the caller owns them, not the callee.
+            // Skip function parameters - the caller owns them, not the callee.
             if ctx.param_locals.contains(&local_id.0) || ctx.borrowed_locals.contains(&local_id.0) {
                 continue;
             }
@@ -3004,7 +3004,7 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
                 then_bb,
             );
 
-            // Then branch — recursively handle nested if-as-value.
+            // Then branch - recursively handle nested if-as-value.
             lower_block_as_value(ctx, &then_block.stmts, result_local);
             ctx.finish_block(Terminator::Goto(merge_bb), else_bb);
 
@@ -3051,7 +3051,7 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
             lower_try_catch(ctx, try_block, catch_name, catch_block, Some(result_local));
         }
         // For any other statement kind (let, return, etc.), just lower it
-        // normally — it doesn't produce a value.
+        // normally - it doesn't produce a value.
         other => lower_stmt(ctx, other),
     }
 }
@@ -3249,7 +3249,7 @@ fn is_retained_container_get(instructions: &[Instruction], src: LocalId) -> bool
 /// every use is a provably borrowing operation.
 ///
 /// Conservative by construction:
-/// - Bails when the statement created control flow (SSA dominance) — so
+/// - Bails when the statement created control flow (SSA dominance) - so
 ///   if/while/match/return statements are untouched.
 /// - Bails when the window contains ANY instruction other than
 ///   Assign/Drop/Nop/DebugLine (an instruction shape we don't model could
@@ -3738,7 +3738,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // mis-types `X[i].field` / aggregate elements on AOT.
                 ctx.resolve_type(&te)
             } else if let Some(expr) = value {
-                // No explicit type annotation — infer from the initializer.
+                // No explicit type annotation - infer from the initializer.
                 infer_expr_type(ctx, expr)
             } else {
                 MirType::I64
@@ -4660,7 +4660,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             });
                             if let Some(rf) = retain_container_src {
                                 // Container share: one retain covers every
-                                // source (param or plain local) — skip the
+                                // source (param or plain local) - skip the
                                 // param-only retain below to avoid doubling.
                                 let sink = ctx.alloc_temp(MirType::I64);
                                 ctx.emit(Instruction::Assign {
@@ -4727,7 +4727,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // pointer; it cannot retain because only the
                             // compiler knows whether the slot is a scalar or a
                             // pointer). Without a retain, `let v = f(); m[k] = v`
-                            // dangles when v's local drops — the map read
+                            // dangles when v's local drops - the map read
                             // returned recycled buffers. Keys are already safe
                             // (insert_str deep-copies the key).
                             let val_ty = infer_expr_type(ctx, value);
@@ -4845,7 +4845,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             });
                         } else if let ast::Expr::FieldAccess { object, field, .. } = target {
                             // Field assignment. Nested paths (o.a.v = 99) need
-                            // read-modify-writeback — a plain StoreField on the
+                            // read-modify-writeback - a plain StoreField on the
                             // lowered object would mutate an immutable temp COPY
                             // of the inner struct (JIT only worked by pointer
                             // aliasing; AOT emitted invalid `inttoptr %Agg`).
@@ -4917,7 +4917,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         }
                     }
                     _ => {
-                        // Compound assignment (+=, -=, etc.) — desugar to bin-op + assign.
+                        // Compound assignment (+=, -=, etc.) - desugar to bin-op + assign.
                         if let ast::Expr::Identifier { name, .. } = target {
                             // Mutable module-level global: load, op, store.
                             let is_local = ctx
@@ -5329,7 +5329,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             // their return value is discarded, so assign to a temp.
             // This applies to both direct calls (RValue::Call) and indirect
             // calls through function pointers / closure values
-            // (RValue::CallIndirect) — without the indirect arm, statements
+            // (RValue::CallIndirect) - without the indirect arm, statements
             // like `g()` where g is a void-returning closure local would be
             // silently dropped during stmt lowering.
             match &rvalue {
@@ -5551,7 +5551,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
 
             // === try blocks: call try_recv_status, branch on result ===
             for (i, branch) in branches.iter().enumerate() {
-                // Call try_recv_status — returns 1 (data), 0 (empty), -1 (closed).
+                // Call try_recv_status - returns 1 (data), 0 (empty), -1 (closed).
                 let status_local = ctx.alloc_temp(MirType::I64);
                 ctx.emit(Instruction::Assign {
                     dest: status_local,
@@ -5797,7 +5797,7 @@ fn lower_if(
         } else if ctx.current_block != merge_bb {
             // When the last elif has no else clause, its else-branch target
             // is already merge_bb, so current_block == merge_bb and we must
-            // NOT emit another block — that would create a duplicate block
+            // NOT emit another block - that would create a duplicate block
             // ID and a self-loop.
             ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
         }
@@ -5805,7 +5805,7 @@ fn lower_if(
         lower_block_stmts(ctx, &else_blk.stmts);
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
     } else {
-        // No else branch — else block jumps straight to merge.
+        // No else branch - else block jumps straight to merge.
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
     }
 }
@@ -5869,7 +5869,7 @@ fn lower_for(
     iterable: &ast::Expr,
     body: &ast::Block,
 ) {
-    // Check if the iterable is a `range(start, end)` call — if so, emit a
+    // Check if the iterable is a `range(start, end)` call - if so, emit a
     // simple counter loop instead of the general len-based iteration.
     if let ast::Expr::FnCall { callee, args, .. } = iterable {
         if let ast::Expr::Identifier { name, .. } = callee.as_ref() {
@@ -5983,7 +5983,7 @@ fn lower_for(
     };
     let elem_type_for_destructure = elem_type.clone();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
-    // Loop variable borrows from the array — must NOT be freed on scope exit.
+    // Loop variable borrows from the array - must NOT be freed on scope exit.
     ctx.borrowed_locals.insert(loop_var.0);
     ctx.emit(Instruction::Assign {
         dest: loop_var,
@@ -5992,7 +5992,7 @@ fn lower_for(
             index: Operand::Local(idx_local),
         },
     });
-    // Tuple pattern: `for (a, b) in pairs` — destructure the element into its
+    // Tuple pattern: `for (a, b) in pairs` - destructure the element into its
     // named fields (the checker binds a/b's types; the MIR must extract them,
     // else a/b were undefined temporaries reading 0).
     if let ast::Pattern::Tuple { elements, .. } = pattern {
@@ -6381,8 +6381,8 @@ fn lower_parallel_for(
 /// Lower `spawn expr` into a `Spawn` instruction.
 ///
 /// Two cases:
-/// 1. `spawn some_function(a, b)` — directly emits `Spawn { func, args }`.
-/// 2. `spawn { ... }` (block) — generates a wrapper function `__spawn_N`
+/// 1. `spawn some_function(a, b)` - directly emits `Spawn { func, args }`.
+/// 2. `spawn { ... }` (block) - generates a wrapper function `__spawn_N`
 ///    that takes captured variables as parameters, then emits `Spawn`
 ///    pointing to the wrapper with captures as args.
 fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
@@ -6392,7 +6392,7 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
             let func_name = match callee.as_ref() {
                 ast::Expr::Identifier { name, .. } => name.clone(),
                 _ => {
-                    // Complex callee — evaluate and fall through to block path.
+                    // Complex callee - evaluate and fall through to block path.
                     lower_spawn_block(
                         ctx,
                         &[ast::Stmt::Expr {
@@ -6416,12 +6416,12 @@ fn lower_spawn(ctx: &mut LoweringContext, expr: &ast::Expr) {
             lower_spawn_block(ctx, &block.stmts);
         }
 
-        // Case 3: spawn a lambda — use the lambda's body directly so the
+        // Case 3: spawn a lambda - use the lambda's body directly so the
         // closure actually executes on the spawned thread. Without this,
         // the lambda would be wrapped as a stmt-expr and merely evaluated
         // (creating a closure value) then discarded, never invoking the body.
         ast::Expr::Lambda { body, .. } => {
-            // The lambda body is an Expr — usually a Block, but could be any
+            // The lambda body is an Expr - usually a Block, but could be any
             // expression. Extract its stmts if it's a Block; otherwise wrap
             // the body as a single expression statement.
             match body.as_ref() {
@@ -6531,7 +6531,7 @@ fn lower_spawn_block_prefixed(ctx: &mut LoweringContext, stmts: &[ast::Stmt], pr
     });
 }
 
-/// Lower `coop_spawn(taskExpr)` — register a cooperative task with the async
+/// Lower `coop_spawn(taskExpr)` - register a cooperative task with the async
 /// executor. The task body always runs through a generated `__coopspawn_N`
 /// wrapper so codegen can route the `Spawn` to `kryos_coop_spawn` by name
 /// prefix. Inside the task, `await` / `coop_yield()` hand control to the
@@ -6823,7 +6823,7 @@ fn lower_try_catch(
 
     // Err path: bind error value to catch_name (the up-front zero-init
     // local), execute handler. The thrown value is stringified at the
-    // throw site (see Stmt::Throw), so the binding is a str — matching
+    // throw site (see Stmt::Throw), so the binding is a str - matching
     // its static type in check.rs.
     ctx.emit(Instruction::Assign {
         dest: err_payload,
@@ -8383,7 +8383,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
     let is_enum_match = arms.iter().any(|a| match &a.pattern {
         ast::Pattern::Enum { .. } => true,
         // Or-patterns whose alternatives are enum variants must also trigger
-        // tag extraction — otherwise the raw enum pointer is used as the
+        // tag extraction - otherwise the raw enum pointer is used as the
         // switch value instead of the loaded discriminant, causing a SIGILL
         // when comparing a heap address against small integer constants.
         ast::Pattern::Or { patterns, .. } => {
@@ -8682,7 +8682,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                 },
             });
             if i + 1 < string_targets.len() {
-                // More string patterns to check — allocate a continuation block.
+                // More string patterns to check - allocate a continuation block.
                 let nb = ctx.alloc_block();
                 ctx.finish_block(
                     Terminator::Branch {
@@ -8693,7 +8693,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     nb,
                 );
             } else {
-                // Last string pattern — fall through to default on mismatch.
+                // Last string pattern - fall through to default on mismatch.
                 let first_arm = arm_blocks
                     .first()
                     .map(|(bb, _, _, _)| *bb)
@@ -9321,7 +9321,7 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
     // `push` transfers ownership of its value argument into the array: the
     // array stores the (pointer-sized) value and later drops it when the
     // array itself is dropped. This includes @copy STRUCTS, which despite
-    // being "copy" still own a heap body — if scope cleanup also drops the
+    // being "copy" still own a heap body - if scope cleanup also drops the
     // source local, the body the array points at is freed (use-after-free,
     // observed as non-deterministic garbage in array elements). So for push
     // we consume @copy struct args too, not just non-copy args.
@@ -9375,7 +9375,7 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
             // Drop releases elements. Under the old consume model the
             // element was never retained, so `push(a, s)` inside a loop (or
             // any read of `s` after the owning array dropped) was a
-            // use-after-free on the JIT — and a divergence, because the LLVM
+            // use-after-free on the JIT - and a divergence, because the LLVM
             // backend's Drop does not release elements. Retain restores the
             // balance: JIT array-drop releases what push retained; on AOT
             // the array's reference leaks (memory-safe, consistent with the
@@ -9765,7 +9765,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
-                    // map_keys/keys(m: map<K, V>) -> [K] — the KEY-typed
+                    // map_keys/keys(m: map<K, V>) -> [K] - the KEY-typed
                     // array, not the static [str] table entry. An int-keyed
                     // map's unannotated `let ikeys = map_keys(mi)` typed the
                     // keys [str], so `for k in ikeys { mi[k] }` dispatched the
@@ -9779,7 +9779,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
-                    // pop(arr: [T]) -> T — element-typed result so aggregate/
+                    // pop(arr: [T]) -> T - element-typed result so aggregate/
                     // float elements keep their real type (the i64 table entry
                     // mis-typed `let last = pop(items); last.field` on AOT).
                     // Only fires when the argument is statically an array; the
@@ -9791,11 +9791,11 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                             }
                         }
                     }
-                    // push(arr: [T], v) -> [T] — array-typed result. The i64
+                    // push(arr: [T], v) -> [T] - array-typed result. The i64
                     // table entry mis-typed `let mut out = push(a, x)`: with
                     // `out` typed as a bare handle, `out[i]` on AOT indexed
                     // relative to the array HEADER (reads returned len/cap,
-                    // e.g. "2,4") and element writes vanished — std::heap's
+                    // e.g. "2,4") and element writes vanished - std::heap's
                     // push_min was silently insertion-ordered on release
                     // builds. The self-form `a = push(a, x)` never hit it
                     // because `a` keeps its declared Array type. Same
@@ -9859,7 +9859,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     }
                 }
             }
-            // Check dyn Trait — look up method return type from trait definition.
+            // Check dyn Trait - look up method return type from trait definition.
             let obj_ty = infer_expr_type(ctx, object);
             if let MirType::DynTrait(ref trait_name) = obj_ty {
                 if let Some(methods) = ctx.trait_defs.get(trait_name.as_str()) {
@@ -10370,7 +10370,7 @@ fn lower_nested_field_assign(
         // Array elements are heap-boxed; kryos_array_get returns the box pointer as i64.
         // If we let lower_expr_to_operand infer the struct element type, the LLVM
         // backend allocates a local alloca copy of the struct, does the field store
-        // into the copy, and never writes back — the mutation is lost on AOT.
+        // into the copy, and never writes back - the mutation is lost on AOT.
         // Fix: allocate the temp as Ptr(elem_ty). The LLVM codegen emits
         //   `inttoptr i64 %raw to ptr` (via the Index dest_ty=="ptr" path),
         // giving a `ptr`-typed SSA value. StoreField then inttoptr-bypasses the
@@ -10492,7 +10492,7 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
         ast::Expr::StringLiteral { value, .. } => Operand::Constant(Constant::Str(value.clone())),
         ast::Expr::NoneLiteral { .. } => Operand::Constant(Constant::None),
         ast::Expr::Identifier { name, .. } => {
-            // Built-in `null` constant — lowers to integer 0 (raw pointer/handle sentinel).
+            // Built-in `null` constant - lowers to integer 0 (raw pointer/handle sentinel).
             if name == "null" {
                 return Operand::Constant(Constant::Int(0));
             }
@@ -10581,7 +10581,7 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
             Operand::Local(local)
         }
         _ => {
-            // Complex expression — lower to rvalue, store in temp.
+            // Complex expression - lower to rvalue, store in temp.
             // Infer the type so the temp has the correct MIR type instead
             // of defaulting to I64 for everything.
             let inferred_ty = infer_expr_type(ctx, expr);
@@ -10623,7 +10623,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::NoneLiteral { .. } => RValue::ConstNone,
 
         ast::Expr::Identifier { name, .. } => {
-            // Built-in `null` constant — lowers to integer 0 (raw pointer/handle sentinel).
+            // Built-in `null` constant - lowers to integer 0 (raw pointer/handle sentinel).
             if name == "null" {
                 return RValue::ConstInt(0);
             }
@@ -10662,7 +10662,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // `count + amount`): route to ActorStateLoad, mirroring the
             // `self.field` path. Without this, a bare field name fell through
             // to the fresh-i64 fallback and silently read 0 (docs/09-
-            // concurrency.md uses bare-field state throughout — backlog #25).
+            // concurrency.md uses bare-field state throughout - backlog #25).
             if !is_local {
                 if let Some(aname) = ctx.current_actor.clone() {
                     if let Some(fields) = ctx.actor_state_fields.get(&aname).cloned() {
@@ -10717,7 +10717,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     },
                     then_bb,
                 );
-                // LHS was truthy — evaluate RHS.
+                // LHS was truthy - evaluate RHS.
                 let rhs = lower_expr_to_operand(ctx, right);
                 ctx.emit(Instruction::Assign {
                     dest: result,
@@ -10743,7 +10743,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     },
                     else_bb,
                 );
-                // LHS was falsy — evaluate RHS.
+                // LHS was falsy - evaluate RHS.
                 let rhs = lower_expr_to_operand(ctx, right);
                 ctx.emit(Instruction::Assign {
                     dest: result,
@@ -10898,7 +10898,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Cooperative async executor surface. `coop_spawn(taskExpr)` is a
             // dedicated form (it must NOT eagerly evaluate its argument), so we
             // intercept it before the generic call path. It evaluates to the
-            // task id (0 for now — the wrapper machinery doesn't thread it back).
+            // task id (0 for now - the wrapper machinery doesn't thread it back).
             if func_name == "coop_spawn" && args.len() == 1 {
                 lower_coop_spawn(ctx, &args[0]);
                 return RValue::Use(Operand::Constant(Constant::Int(0)));
@@ -11106,7 +11106,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     }
                     Operand::Local(state_ptr)
                 } else {
-                    // No state fields — pass 0 as state pointer.
+                    // No state fields - pass 0 as state pointer.
                     Operand::Constant(Constant::Int(0))
                 };
 
@@ -11182,7 +11182,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            // Check if this is a call to a generic function — monomorphize.
+            // Check if this is a call to a generic function - monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
                 let mangled = monomorphize(ctx, &func_name, args);
                 // Apply the dyn-Trait coercion here too: a concrete struct arg
@@ -12113,7 +12113,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 };
                 // Borrow-to-own: kryos_map_get* returns the map's OWN entry
                 // handle, not a copy. A container-typed result must be
-                // retained so the receiving slot owns its reference —
+                // retained so the receiving slot owns its reference - 
                 // otherwise the slot's later reassignment-release/drop frees
                 // the map's entry and the next lookup hands out a dangling
                 // pointer (heap corruption once frees became real, fe79f1b).
@@ -12223,7 +12223,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Lower if-expression: both branches assign to a result local.
             //
             // The result local must be sized for the type the branches actually
-            // produce, not unconditionally I64 — otherwise a function whose tail
+            // produce, not unconditionally I64 - otherwise a function whose tail
             // expression is `if c { 0i32 } else { 1i32 }` allocates a 32-bit
             // return slot in the caller while we write 64 bits into it, which
             // silently corrupts the caller's frame and crashes after return.
@@ -12457,7 +12457,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 }
             }
 
-            // Build params BEFORE saving state — save_function_state() takes ctx.locals,
+            // Build params BEFORE saving state - save_function_state() takes ctx.locals,
             // so type lookups must happen while the enclosing scope is still live.
             let mut all_params: Vec<ast::Param> = captures
                 .iter()
@@ -12545,7 +12545,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // statement). When no explicit ret_ty is given and the body is
             // void, emit the body as an expression statement instead of
             // wrapping it in `return body` and defaulting the return type
-            // to i64 — which would silently discard the call and produce a
+            // to i64 - which would silently discard the call and produce a
             // closure that does nothing observable.
             let body_is_void_call = if ret_ty.is_none() {
                 match body.as_ref() {
@@ -12629,7 +12629,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 span: kryos_errors::Span::DUMMY,
             };
 
-            // If no explicit return type, default to i64 — except when the
+            // If no explicit return type, default to i64 - except when the
             // body is a void-returning call, in which case the lambda has
             // no return value and we pass None so `lower_function` treats
             // the function as returning void.
@@ -13062,12 +13062,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::CharLiteral { value, .. } => RValue::ConstInt(*value as i64),
 
         ast::Expr::MoveExpr { inner, .. } => {
-            // Move is an ownership marker — at MIR level, just lower the inner expr.
+            // Move is an ownership marker - at MIR level, just lower the inner expr.
             lower_expr_to_rvalue(ctx, inner)
         }
 
         ast::Expr::WeakExpr { inner, .. } => {
-            // Weak reference — lower inner, ARC alloc is tracked separately.
+            // Weak reference - lower inner, ARC alloc is tracked separately.
             let inner_op = lower_expr_to_operand(ctx, inner);
             RValue::ArcAlloc { inner: inner_op }
         }
@@ -13102,7 +13102,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         }
 
         ast::Expr::QuantumBlock { body, .. } => {
-            // Quantum blocks: lower body normally (placeholder — future quantum backend).
+            // Quantum blocks: lower body normally (placeholder - future quantum backend).
             for (i, stmt) in body.stmts.iter().enumerate() {
                 if i == body.stmts.len() - 1 {
                     if let ast::Stmt::Expr { expr, .. } = stmt {
@@ -13114,7 +13114,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             RValue::ConstNone
         }
 
-        // Await — real cooperative suspension point. Evaluate the awaited
+        // Await - real cooperative suspension point. Evaluate the awaited
         // expression, then hand control to the scheduler via `coop_yield` so
         // other tasks interleave. On a non-coop thread `kryos_coop_yield` is a
         // no-op, so a direct (non-spawned) async call degrades to an ordinary
@@ -13219,7 +13219,7 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             // (matching the typechecker's Type::Error -> I64 fallback and the
             // Cranelift backend, which treats all aggregates as i64 handles).
             // Without this it fell through to Struct("any"), which the LLVM
-            // backend emitted as an undefined `%any` named type — first-class
+            // backend emitted as an undefined `%any` named type - first-class
             // load failure on AOT (e.g. passing `[any]` to a function).
             "any" | "Any" => MirType::I64,
             other => MirType::Struct(other.to_string()),
@@ -13247,7 +13247,7 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             }
         }
         ast::TypeExpr::Optional { inner, .. } => {
-            // Lower Optional<T> as Struct("Option") — codegen decides representation.
+            // Lower Optional<T> as Struct("Option") - codegen decides representation.
             let _ = lower_type_expr(inner);
             MirType::Struct("Option".to_string())
         }
@@ -13256,7 +13256,7 @@ pub fn lower_type_expr(ty: &ast::TypeExpr) -> MirType {
             mutable: *mutable,
         },
         ast::TypeExpr::Weak { inner, .. } => {
-            // Lower Weak as Ptr — codegen adds weak-ref bookkeeping.
+            // Lower Weak as Ptr - codegen adds weak-ref bookkeeping.
             MirType::Ptr(Box::new(lower_type_expr(inner)))
         }
         ast::TypeExpr::DynTrait { trait_name, .. } => MirType::DynTrait(trait_name.clone()),
@@ -13433,7 +13433,7 @@ fn mir_type_to_type_expr(ty: &MirType) -> Option<ast::TypeExpr> {
 
 /// Emit a runtime load of a mutable module-level global named `name`.
 ///
-/// Lowers to `let tmp: <mir_ty> = kryos_global_get("<name>")` — the name is
+/// Lowers to `let tmp: <mir_ty> = kryos_global_get("<name>")` - the name is
 /// passed as a Kryos string handle (the runtime decodes it on the fly).
 ///
 /// For `f64` globals the slot stores the raw i64 bit pattern; callers should
@@ -13458,7 +13458,7 @@ fn emit_global_load(ctx: &mut LoweringContext, name: &str, mir_ty: MirType) -> L
 ///
 /// Lowers to `kryos_global_set("<name>", <value>)`. The set function has a
 /// void return at the ABI level, but MIR call instructions always assign to
-/// a destination — we allocate a throwaway i64 temp and let the JIT discard
+/// a destination - we allocate a throwaway i64 temp and let the JIT discard
 /// the (non-existent) return value. The codegen layer already tolerates
 /// void-return externs called this way (see jit.rs `kryos_global_set_void`).
 fn emit_global_store(ctx: &mut LoweringContext, name: &str, value: Operand) {
@@ -14142,7 +14142,7 @@ fn collect_identifiers(
         | ast::Expr::UnsafeBlock { body, .. } => {
             collect_identifiers_block(&body.stmts, bound, free_vars, seen, ctx);
         }
-        // Leaf literals — no sub-expressions to recurse into.
+        // Leaf literals - no sub-expressions to recurse into.
         ast::Expr::IntLiteral { .. }
         | ast::Expr::FloatLiteral { .. }
         | ast::Expr::StringLiteral { .. }
@@ -14296,12 +14296,12 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
 
     // Parameter: state_ptr (i64).
     let state_local = alloc_local(Some("state"), MirType::I64, false);
-    // Tag variable (mutable — assigned each iteration).
+    // Tag variable (mutable - assigned each iteration).
     let tag_local = alloc_local(Some("__tag"), MirType::I64, true);
     // Comparison result.
     let cmp_local = alloc_local(Some("__cmp"), MirType::Bool, false);
 
-    // Post-handler exception plumbing (reused across every handler block —
+    // Post-handler exception plumbing (reused across every handler block - 
     // see the recovery comment below).
     let exc_flag_local = alloc_local(Some("__exc_flag"), MirType::I64, true);
     let exc_val_local = alloc_local(Some("__exc_val"), MirType::I64, true);
@@ -14385,11 +14385,11 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
     // handler function (kryos-rt exception.rs). Left unchecked, the codegen
     // backends' *automatic* post-call exception check would fire on this
     // call instead (it fires after every user-function call) and return
-    // from THIS dispatch function — silently killing the actor's mailbox
+    // from THIS dispatch function - silently killing the actor's mailbox
     // loop for good, with no diagnostic (the actor thread just exits).
     //
-    // Explicitly checking here — with the check call placed immediately
-    // after the handler call — suppresses the backends' automatic check
+    // Explicitly checking here - with the check call placed immediately
+    // after the handler call - suppresses the backends' automatic check
     // (both backends special-case "next instruction is a call to
     // `kryos_exception_check`", the same signal `emit_exception_check`
     // uses for try/catch) and lets us recover instead: take the exception,
@@ -14815,7 +14815,7 @@ fn substitute_type_expr_to_mir(
             // Substitute the generic ARGS through the map first: a generic
             // fn returning `Boxed<T>` with T=str must monomorphize
             // Boxed<str>, not resolve the raw template (where `T` fell back
-            // to i64 — Boxed<str>.value then printed as a handle).
+            // to i64 - Boxed<str>.value then printed as a handle).
             let concrete: Vec<MirType> = args
                 .iter()
                 .map(|a| substitute_type_expr_to_mir(ctx, a, type_map))
@@ -15409,6 +15409,19 @@ fn instance_ret_needs_monomorphization(
         Some(ast::TypeExpr::Generic { args, .. }) => args.iter().any(mentions),
         Some(ast::TypeExpr::Array { element, .. }) => mentions(element),
         Some(ast::TypeExpr::Tuple { elements, .. }) => elements.iter().any(mentions),
+        // A FUNCTION-typed return (`fn get(self) -> fn() -> T { return self.f }`)
+        // mentions the impl's generic parameter just as much as `[T]` or
+        // `(T, i64)` do, but it fell into the `_ => false` arm below -- so the
+        // method was never monomorphized per instantiation and `T` stayed erased
+        // to i64. Measured at T=f64: the returned closure's result printed
+        // `4616752568008179712`, the raw bit pattern of `3.0`, on BOTH backends.
+        // A silent wrong answer, which outranks a crash in this repo's ranking
+        // doctrine. Params are covered as well as the return, because a callback
+        // parameter (`fn(T) -> i64`) erases by exactly the same mechanism.
+        Some(ast::TypeExpr::Function { params, ret, .. }) => {
+            params.iter().any(mentions) || mentions(ret)
+        }
+        Some(ast::TypeExpr::Optional { inner, .. }) => mentions(inner),
         _ => false,
     }
 }
@@ -15675,7 +15688,7 @@ fn monomorphize_struct(
     let field_list: Vec<(String, MirType)> = fields
         .iter()
         .map(|f| {
-            // Substitute straight to MirType — the AST round-trip
+            // Substitute straight to MirType - the AST round-trip
             // (substitute_type_expr + resolve_type) collapses compound
             // concrete types (Tuple/Array/Function) to "i64" via
             // mir_type_to_name's catch-all, mistyping e.g. Wrap<(i64, str)>.
@@ -15741,7 +15754,7 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
 
     // Insert a placeholder BEFORE substituting variant field types. A
     // self-referential generic enum (e.g. `List<T> { Nil, Cons(T, List<T>) }`)
-    // has a variant field that is itself `List<T>` — substituting it below
+    // has a variant field that is itself `List<T>` - substituting it below
     // calls back into `monomorphize_enum(ctx, "List", [i64])` for the SAME
     // mangled name while this outer call is still running. Without an entry
     // present yet, the "already monomorphized" check above never short-
@@ -15763,7 +15776,7 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
                 .fields
                 .iter()
                 .map(|f| {
-                    // Straight to MirType — see monomorphize_struct: the AST
+                    // Straight to MirType - see monomorphize_struct: the AST
                     // round-trip collapses Tuple/Array/Function payloads to
                     // i64 (Option<(i64, str)> bound its payload as i64).
                     substitute_type_expr_to_mir(ctx, f, &type_map)
@@ -16272,7 +16285,7 @@ fn monomorphize(ctx: &mut LoweringContext, func_name: &str, args: &[ast::Expr]) 
         .as_ref()
         .map(|ty| substitute_type_expr(ty, &type_map));
 
-    // Save the current function state — lower_function will call reset().
+    // Save the current function state - lower_function will call reset().
     let saved = ctx.save_function_state();
     // Expose the concrete type bindings so the body's local `let` annotations
     // (`let x: T` / `let x: Box<T>`) substitute to the instantiation. Saved and
@@ -16495,7 +16508,7 @@ fn monomorphize_impl_fn(
     let prev_impl_generics =
         std::mem::replace(&mut ctx.current_impl_generics, generic_params.clone());
 
-    // Save the current function state — lower_function will call reset().
+    // Save the current function state - lower_function will call reset().
     let saved = ctx.save_function_state();
     // Expose the concrete bindings to the body lowering, exactly like the
     // free-function monomorphize does: a `let d: [T] = []` inside the body
@@ -16531,7 +16544,7 @@ fn monomorphize_impl_fn(
 
 /// Substitute generic type parameters in a TypeExpr based on a type map.
 /// Convert a concrete MirType back into a TypeExpr. Compound types
-/// (Tuple/Array/Function) get REAL compound TypeExprs — `mir_type_to_name`
+/// (Tuple/Array/Function) get REAL compound TypeExprs - `mir_type_to_name`
 /// collapses them to "i64" via its catch-all, which mistyped generic
 /// instantiations with tuple/array/function type args (step 202/209).
 fn mir_type_to_type_expr_spanned(ty: &MirType, span: kryos_errors::Span) -> ast::TypeExpr {
