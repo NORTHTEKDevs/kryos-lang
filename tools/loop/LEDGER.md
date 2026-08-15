@@ -1465,6 +1465,54 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
+### 42. `comptime {}` semantics are UNCHARACTERIZED and contradict both places they are documented -- side effects silently vanish while mutations apply (1.0 decision item, found 2026-08-14) -- NOT FIXED
+
+Measured live, `compiler/target/release/kryos.exe`:
+
+```
+fn main() {                     fn main() {
+    comptime {                      let mut n: i64 = 1
+        println("INSIDE")           comptime {
+    }                                   n = 99
+    println("AFTER")                }
+}                                   println(to_string(n))
+                                }
+-> prints "AFTER" only          -> prints 99
+   ("INSIDE" is SWALLOWED)         (the mutation DID apply)
+```
+
+So a `println` inside the block produces nothing, while an assignment inside
+it takes effect outside. That is neither of the two behaviours currently
+documented, and BOTH docs are wrong in the same direction:
+
+- `docs/11-comptime.md`'s own correction header says the block "does NOT
+  evaluate at compile time ... it is an ordinary `{ }` block with no
+  `comptime` keyword at all". An ordinary block would have printed `INSIDE`.
+- CLAUDE.md's gotcha says `comptime {}` blocks "run at RUNTIME like an
+  ordinary block ... don't rely on them for side-effect suppression".
+  Side effects ARE being suppressed.
+
+NOT characterized further here, deliberately, because the two plausible
+mechanisms need distinguishing by measurement rather than by argument:
+either (a) the block IS const-folded at compile time and a compile-time
+`println` simply has nowhere to write, or (b) output is dropped by some
+unrelated lowering path while the assignment survives. These have very
+different implications and the fix differs accordingly.
+
+WHY THIS MATTERS FOR 1.0: swallowing a `println` while applying a mutation is
+a silent-wrong-answer-shaped trap. A user who puts a debug print in a
+`comptime` block sees nothing, reasonably concludes the block did not run,
+and is wrong -- its mutations did apply. Three options, all acceptable, none
+of them "leave it as is": implement real compile-time evaluation (months,
+explicitly deferred past 1.0 in HANDOFF.md), make `comptime` a hard error
+until it is implemented (hours, and honest), or characterize and document the
+ACTUAL semantics precisely (hours). What is not acceptable at 1.0 is a
+keyword whose two documentation sources both describe behaviour it does not
+have.
+
+---
+
+
 ### 41. PRECISION COST, measured for the first time: 41 of 75 enumerated LEGITIMATE pure-closure shapes require `@capabilities(all)` -- a deliberate consequence of the fail-closed `Unknown -> ALL` stance, but larger than anyone had quantified (capability-matrix wave, 2026-08-14) -- NOT FIXED, DELIBERATE
 
 `tests/capability_matrix_gate.sh` enumerates the laundering space
