@@ -177,6 +177,7 @@ cmd_gates() {
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
     run "stdlib_compile"      bash tests/stdlib_compile_gate.sh
     run "cli_smoke"           bash tests/cli_smoke_gate.sh
+    run "authority_surface"   bash tests/authority_surface_gate.sh
     run "selfhost_regressions" bash compiler/self-host/test_regressions.sh
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
 
