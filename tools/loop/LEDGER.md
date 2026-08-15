@@ -6,7 +6,7 @@ SAME commit as the work. Anything not written here is lost.
 Ranked by SERIOUSNESS FOR THE INTENDED USE CASE, not by which gate is red.
 Kryos is deployed as capability-attenuated infrastructure for agent tooling,
 so: (breaks the capability/trust model) > (silent wrong answer) > (blocks a
-green CI) > (leak) > (papercut). A silent wrong answer outranks a crash — a
+green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
@@ -673,13 +673,13 @@ check). Left for its own wave.
 
 ---
 
-## Wave: lowercase struct literal + nested binop corruption re-verification (2026-08-08) — assigned items 10 and "nested binop corrupts next parse", both already CLOSED (`e58d8dc`, 2026-08-02, ancestor of today's HEAD), zero compiler changes this session
+## Wave: lowercase struct literal + nested binop corruption re-verification (2026-08-08) - assigned items 10 and "nested binop corrupts next parse", both already CLOSED (`e58d8dc`, 2026-08-02, ancestor of today's HEAD), zero compiler changes this session
 
 Assigned wave: `tests/known_failures/lowercase_struct_literal_parse_fail.kry` (item 10,
 lowercase struct-literal construction) and `tests/known_failures/
 parse_nested_binop_corrupts_next.kry` (a nested-binop parse allegedly corrupting the
 NEXT construct parsed), plus a re-check of item 9 (the `||`-continuation trap). Neither
-known_failures file exists — both were already fixed, folded into regressions, and
+known_failures file exists - both were already fixed, folded into regressions, and
 deleted by `e58d8dc fix(parser,mir,self-host): lowercase struct literals +
 reentrant-tokenize alias/double-free` (2026-08-02), an ancestor of today's HEAD
 (`71fac64`). Per doctrine ("self-reported done is not evidence"), independently
@@ -691,22 +691,22 @@ read-only check by actually reverting and rebuilding both fixes separately:
   immediately-prior sessions in this ledger flagged as at-risk-of-loss, still sitting
   uncommitted with no new owner. `git stash`ed it by explicit pathspec (not `-u`) to
   get a HEAD-accurate baseline, worked entirely against clean HEAD. **Not popped back
-  by the end of this session — see disclosure at the end of this entry.**
+  by the end of this session - see disclosure at the end of this entry.**
 - Full `cargo build --release` (no `-p`) against clean HEAD, 47s, clean.
 - **Item 10 (lowercase struct literal), proved BOTH WAYS fresh this session:**
   `git show e58d8dc -- compiler/crates/kryos-parser/src/parser.rs` reverse-applied
   cleanly. Rebuilt `-p kryos-cli` only (Rust-only change, confined to `kryos-parser`,
-  never touches `kryos-rt`/`kryos-stdlib-native` — safe per gotcha #22/CLAUDE.md's
+  never touches `kryos-rt`/`kryos-stdlib-native` - safe per gotcha #22/CLAUDE.md's
   staticlib-stale rule). Pre-fix: `tests/conformance/conf_lowercase_struct_literal.kry`
   reproduced a cascade of misparses starting at the struct-PATTERN line (`counter {
   val: n } => n * 2`) — `error[E0009]: unexpected token '{', expected '=>'` plus 20+
   downstream cascade errors through the rest of the file, matching the historical
   "two misattributed `undefined variable`" defect class (same root cause: the parser's
   `Name { ... }` recognition was gated on an uppercase check). Restored the fix
-  (`git apply` the same diff forward), rebuilt (47s) — clean PASS on both `kryos run`
+  (`git apply` the same diff forward), rebuilt (47s) - clean PASS on both `kryos run`
   (JIT) and `kryos build --release` (AOT, fresh binary compiled+run for this check).
 - **The nested-binop item, proved BOTH WAYS fresh this session:** this bug was never
-  actually a "nested binop" bug — root-caused by the original session (confirmed by
+  actually a "nested binop" bug - root-caused by the original session (confirmed by
   reading the fix's own regression-test comment, not re-guessed) to be `lexer.kry`'s
   module-level `LEX_TOKENS` accumulator never resetting between `tokenize()` calls
   (misdiagnosed at the time via a recursion-shaped bisection trail that was chasing a
@@ -717,12 +717,12 @@ read-only check by actually reverting and rebuilding both fixes separately:
   compiler/self-host/lexer.kry` reverse-applied cleanly. This touches `kryos-rt`, so a
   FULL `cargo build --release` (no `-p`) was required and run (62s). Pre-fix:
   `bash compiler/self-host/test_regressions.sh` reproduced the exact original failure
-  signature verbatim — `FAIL (JIT) lexer_reentrant_tokenize  rc=101 ... after parse: 44
+  signature verbatim - `FAIL (JIT) lexer_reentrant_tokenize  rc=101 ... after parse: 44
   tokens (want 31) ... panic: REGRESSION: tokenize() reentrant call count wrong, got 44
   want 31 -- LEX_TOKENS accumulated across calls again`. Restored the fix, full rebuild
-  (64s) — `test_regressions.sh` clean PASS, `tests/no_double_free.sh` clean PASS
+  (64s) - `test_regressions.sh` clean PASS, `tests/no_double_free.sh` clean PASS
   (`global_return_alias` case included).
-- **Item 9 re-check (`||`-continuation trap), NEW finding this session — the prior
+- **Item 9 re-check (`||`-continuation trap), NEW finding this session - the prior
   session's disclosed risk is now CONFIRMED, not just plausible.** The prior session's
   assessment (still accurate on re-read: `kryos_lexer::Token` has no newline info,
   every token is constructed through the single `Lexer::emit` choke point right after
@@ -734,19 +734,19 @@ read-only check by actually reverting and rebuilding both fixes separately:
   compile the prior session specified as the eventual real gate, but decisive enough to
   answer the question): `examples/real/json_formatter.kry:45`, `examples/real/
   mini_interpreter.kry:28`, and `examples/real/parser_combinator.kry:29` all contain
-  the EXACT ambiguous shape — a multi-line boolean-or chain where a continuation line
+  the EXACT ambiguous shape - a multi-line boolean-or chain where a continuation line
   starts with `||` (`return c == "0" || c == "1" ... || c == "4"` then a new line
-  `    || c == "5" || ...`) — as INTENTIONAL, CORRECT, shipped example code (an
+  `    || c == "5" || ...`) - as INTENTIONAL, CORRECT, shipped example code (an
   `is_digit`-style predicate), not a bug. A naive "warn whenever `|`/`||` is preceded by
   a newline and about to be consumed as an infix continuation" diagnostic would
   therefore false-positive on real, correct, shipped code in this exact repo, not just
   hypothetically. **Conclusion: the single-bool `newline_before` mechanism is still the
   right IMPLEMENTATION primitive if this is ever picked up, but a bare "newline before
-  `|`/`||`" predicate is NOT a viable warning condition as-is** — it cannot distinguish
+  `|`/`||`" predicate is NOT a viable warning condition as-is** - it cannot distinguish
   "legitimate continued boolean-or chain" from "two accidentally-merged statements"
   without additional context (e.g., whether the merged expression's operand TYPES are
   homogeneous booleans on both sides in a chain vs. a `let`-statement's unrelated
-  initializer type meeting a fresh closure-shaped tail — which pushes any real fix
+  initializer type meeting a fresh closure-shaped tail - which pushes any real fix
   further downstream, into type-check time rather than lex/parse time, a materially
   different and larger design than the prior session scoped). Still NOT implemented
   this session, now with stronger justification than "unverified risk": a naive version
@@ -755,11 +755,11 @@ read-only check by actually reverting and rebuilding both fixes separately:
   correct mitigation until a real type-aware heuristic is designed. No code or docs
   change from this finding beyond this ledger entry.
 - `bash tools/loop/kryos-loop.sh gates 2` (fresh, isolated run against the fully
-  restored HEAD, run to completion): **GREEN** — tier1 14/14 PASS (conformance 62/62,
+  restored HEAD, run to completion): **GREEN** - tier1 14/14 PASS (conformance 62/62,
   including `selfhost_regressions`), tier2 4/4 PASS (`examples`, `strict_caps`,
   `examples_e2e`, `ir_signatures`).
 - `compiler/self-host/test_bootstrap.sh`: launched twice. First attempt was
-  invalidated by this session's own process-management mistake — a second, redundant
+  invalidated by this session's own process-management mistake - a second, redundant
   gates run was accidentally left running concurrently with bootstrap, and killing a
   `kryos.exe` PID to resolve the ambiguity killed bootstrap's own in-progress stage-1
   build (`FAIL: stage-1 build failed`, a self-inflicted false RED, not a regression).
@@ -768,7 +768,7 @@ read-only check by actually reverting and rebuilding both fixes separately:
   build ran for 45+ minutes of wall time; `tasklist /V` on its `kryos.exe` PID showed
   `0:11:33` of actual CPU time accumulated (confirmed genuinely progressing, not hung),
   and `winobs defender_activity` showed MsMpEng at ~18,866 cumulative CPU-seconds during
-  the run — the same Defender-CPU-pin contention signature the two immediately-prior
+  the run - the same Defender-CPU-pin contention signature the two immediately-prior
   waves in this ledger both hit on this same machine this same day (~16,970 and ~15,848
   cumulative seconds respectively). Killed it after the session's time budget was
   clearly not going to close (matching the immediately-prior wave's own disclosed
@@ -779,7 +779,7 @@ read-only check by actually reverting and rebuilding both fixes separately:
   passed.
 
 **Net result: nothing to fix. Both assigned items were already closed by a prior
-session (`e58d8dc`) with real evidence that reproduces cleanly today** — re-verified
+session (`e58d8dc`) with real evidence that reproduces cleanly today** - re-verified
 this session by independently reverting and rebuilding EACH fix separately (not just
 re-running the passing state), confirming both regress to their exact documented
 original failure signatures without the fix and pass cleanly with it restored, on the
@@ -791,12 +791,12 @@ without closing the prior session's already-honest "not attempted, cross-cutting
 a corpus check first" status. No `tests/known_failures/` repro to move for either
 assigned item (both already moved/deleted by the original `e58d8dc` fix). The orphaned
 items-11a/16 WIP was `git stash pop`ped back byte-identical at the end of this session
-(same as the two immediately-prior waves) — not touched, not committed, still sitting
+(same as the two immediately-prior waves) - not touched, not committed, still sitting
 uncommitted for whoever owns it.
 
 ---
 
-## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification (2026-08-08) — assigned items 5 and 2b, both already CLOSED (`fd07331`, 2026-08-02), zero compiler changes this session
+## Wave: Parser array-in-rebuilt-struct + global array reassign re-verification (2026-08-08) - assigned items 5 and 2b, both already CLOSED (`fd07331`, 2026-08-02), zero compiler changes this session
 
 Assigned wave was to close LEDGER item 5 (`Parser` carrying the Lexer's
 array-in-a-rebuilt-struct O(n^2) pattern) and item 2b (global array
@@ -816,54 +816,54 @@ by actually reverting and rebuilding:
   `git stash`ed it (by explicit pathspec, not `-u`, so the untracked fuzz
   corpus in this workspace was left alone) to get a HEAD-accurate baseline,
   worked entirely against clean HEAD, then `git stash pop`ped it back
-  byte-identical at the end — not touched, not committed, still sitting
+  byte-identical at the end - not touched, not committed, still sitting
   uncommitted for whoever owns it.
 - Full `cargo build --release` (no `-p`) against clean HEAD, 44s, clean.
 - **Item 2b, proved BOTH WAYS fresh this session** (not just re-running the
   passing state): `git show fd07331 -- compiler/crates/kryos-mir/src/lower.rs`
   reverse-applied cleanly despite 20+ intervening commits touching that file;
-  rebuilt with `cargo build --release -p kryos-cli` (safe here — the fix is
+  rebuilt with `cargo build --release -p kryos-cli` (safe here - the fix is
   Rust-only in `kryos-mir`, never touches `kryos-rt`/`kryos-stdlib-native`, so
   no full rebuild needed per gotcha #2). Pre-fix: `tests/conformance/
   conf_global_reassign_cross_fn.kry` on `kryos run` reproduced the EXACT
   original panic, `kryos panic: kryos_array_push: corrupt array header @
   0x1e099f685d0 (len=0, cap=0, elem_size=8, ref_count=1, data=0x0)`, stack
   trace `add_one() -> main()`, exit 98. Restored the fix (`git checkout --`),
-  rebuilt (47s) — clean PASS on both `kryos run` (JIT) and `kryos build
+  rebuilt (47s) - clean PASS on both `kryos run` (JIT) and `kryos build
   --release` (AOT, fresh binary compiled+run for this check), exit 0 both.
 - **Item 5**: confirmed the fix is present at HEAD (`PARSER_TOKENS` module
   global in `compiler/self-host/parser.kry`, mirroring `LEX_TOKENS` exactly,
   read via `PARSER_TOKENS[idx]` everywhere `p.tokens[idx]` used to be). Also
   reverse-applied item 5's own diff (`git show fd07331 -- compiler/self-host/
   parser.kry`, applies cleanly) to attempt a fresh before/after peak-memory
-  remeasurement on `lower.kry` matching the original methodology — did NOT
+  remeasurement on `lower.kry` matching the original methodology - did NOT
   complete: building stage-1 from the reverted self-host source (a step that
   does not itself exercise the buggy self-hosted Parser, since stage-0 is the
   normal Rust-compiled binary compiling Kryos source as data) ran for 50+
   minutes of accumulated CPU time with no sign of finishing, confirmed via
   `winobs`/`Get-Process` as genuine progress under contention, not a hang;
   `winobs defender_activity` showed MsMpEng at ~16,970 cumulative CPU-seconds
-  during the run, up ~1,100s over the course of this session alone — the same
+  during the run, up ~1,100s over the course of this session alone - the same
   Defender-CPU-pin contention signature the immediately-prior wave in this
   ledger hit on the SAME machine THIS SAME DAY. Killed it after the time
   budget was clearly not going to close, reverted the revert (`git checkout
   --`), and did not re-attempt. **The performance claim for item 5 is
-  therefore NOT independently re-measured this session** — relying on the
+  therefore NOT independently re-measured this session** - relying on the
   existing CLOSED-table record (peak working set 435.5 MB -> 101.7 MB, 4.3x,
   measured via the same Start-Process/PeakWorkingSet64 methodology, `test_
   bootstrap.sh` 16/16 stable across 2 runs post-fix) as the historical
   evidence, disclosed as historical rather than restated as a fresh personal
   measurement.
-- `bash tools/loop/kryos-loop.sh gates 2`: **GREEN** — tier1 14/14 PASS
+- `bash tools/loop/kryos-loop.sh gates 2`: **GREEN** - tier1 14/14 PASS
   (conformance 62/62, including `selfhost_regressions` which specifically
   covers the reentrant-tokenize regression these two fixes made safe to ship),
-  tier2 4/4 PASS (`examples`, `strict_caps`, `examples_e2e` — no stray-process
+  tier2 4/4 PASS (`examples`, `strict_caps`, `examples_e2e` - no stray-process
   false-RED this run, `ir_signatures`).
 - `compiler/self-host/test_bootstrap.sh`: did **NOT** complete this session.
   Stage-1's build (from the restored, fixed self-host source, run separately
   after the item-5 revert attempt above) ran 50+ minutes of accumulated CPU
   time, confirmed actively progressing (CPU climbing under `Get-Process`) not
-  hung, before the session's time budget ran out — same Defender-contention
+  hung, before the session's time budget ran out - same Defender-contention
   signature as above and as the immediately-prior wave's own disclosed
   bootstrap non-completion. Not independently re-verified this session; no
   code change lands from this wave (both fixes were already at HEAD before
@@ -874,18 +874,18 @@ by actually reverting and rebuilding:
 prior session (`fd07331`) with real evidence that reproduces cleanly today.**
 Item 2b's fix was independently reverted and rebuilt this session, reproducing
 the exact original corruption, then restored and reconfirmed clean on both
-backends — the strongest form of re-verification available. Item 5's fix was
+backends - the strongest form of re-verification available. Item 5's fix was
 confirmed present and structurally correct by source read and by
 `selfhost_regressions`/gates passing, but its specific peak-memory
 before/after claim was not independently re-measured due to sustained
 machine-wide Defender/CPU contention that also prevented `test_bootstrap.sh`
-from completing — disclosed, not assumed away. No `tests/known_failures/`
+from completing - disclosed, not assumed away. No `tests/known_failures/`
 repro to move for either item (both already moved/deleted by the original
 `fd07331` fix).
 
 ---
 
-## Wave: closures/spawn re-verification (2026-08-08) — assigned items 7 and 7b, both already CLOSED, zero compiler changes this session
+## Wave: closures/spawn re-verification (2026-08-08) - assigned items 7 and 7b, both already CLOSED, zero compiler changes this session
 
 Assigned to close LEDGER items 7 (mutated-SCALAR-capture N>=2 generalization) and 7b
 (spawn-shared closure data race), per `tests/known_failures/closure_mutated_capture_
@@ -957,7 +957,7 @@ repro to move (both already moved/deleted by the original fixes).
 
 ---
 
-## ASSAULT round 3 (real-program lens, 2026-08-07) — zero compiler changes this session
+## ASSAULT round 3 (real-program lens, 2026-08-07) - zero compiler changes this session
 
 **The NEW LIVE CAPABILITY ESCAPE this section reports (`registry[idx].handler(args)`
 via a factory-function-bound container LOCAL) is FIXED 2026-08-08, closure-container-
@@ -976,10 +976,10 @@ backbone, so each was re-verified isolated: all three reject even their own beni
 CONTROL call, an ergonomics defect consistent with F6/round2's bare-name-conflation
 class, not independently new). The fourth is a genuine new hole:
 
-**NEW, LIVE CAPABILITY ESCAPE — a fn-typed struct FIELD reached via `container[idx]
+**NEW, LIVE CAPABILITY ESCAPE - a fn-typed struct FIELD reached via `container[idx]
 .field(args)` (array index, then a NAMED field, called directly) INSIDE the SAME
 function as the `deny!()` narrowing it, bypasses ALL capability enforcement whenever
-the container is bound from a factory-FUNCTION return rather than a literal — on
+the container is bound from a factory-FUNCTION return rather than a literal - on
 BOTH enforcement modes.** This is the single most ordinary way to build a plugin
 registry (`let registry = build_registry()` then dispatch off it), not a contrived
 shape, and is unrelated to spawn/concurrency despite being first surfaced through a
@@ -1017,37 +1017,37 @@ for exactly this shape (`obj.method(args)` where `method` is actually a fn-typed
 FIELD, not a real trait/impl method). Its receiver-root lookup (line 3244:
 `let Some(lit) = local_container_lits.get(root) else { return
 CapabilitySet::empty() }`) only recognizes a root that is a LOCALLY-TRACKED LITERAL
-binding (`let x = [...]`/`let x = S{...}`) — a deliberate, documented choice (see the
+binding (`let x = [...]`/`let x = S{...}`) - a deliberate, documented choice (see the
 large comment above it explaining an earlier, broader version was reverted for
 over-rejecting ordinary method calls). When the root is instead bound from ANY other
-expression — most commonly a factory-function's return value, exactly how a real
-registry-builder is written — the function returns `CapabilitySet::empty()`, i.e.
+expression - most commonly a factory-function's return value, exactly how a real
+registry-builder is written - the function returns `CapabilitySet::empty()`, i.e.
 "this call needs nothing," rather than falling back to the same `Unknown -> all`
 default every other genuinely-unresolvable fn-value invocation in this file uses
 (confirmed as the general policy at lines 3164-3169, 3191-3196, and 3268-3272 of the
-same file — this is the ONE call site of that pattern that returns `empty()` on the
+same file - this is the ONE call site of that pattern that returns `empty()` on the
 unresolved branch instead of `all`). Because no other check in
 `check_callee_capabilities` covers this AST shape (`resolve_path` collapses
 `registry[idx].handler` to a single bogus segment `["handler"]` since it has no
-`IndexAccess` arm — see item 32's writeup for the same `resolve_path` gap in a
-different shape — but that only matters for the `FnCall`-shaped tuple-index case; here
+`IndexAccess` arm - see item 32's writeup for the same `resolve_path` gap in a
+different shape - but that only matters for the `FnCall`-shaped tuple-index case; here
 the parser correctly emits `Expr::MethodCall`, which is enforced entirely through
 `resolve_method_field_invoke_caps`, so its `empty()` fallback is the ONLY thing that
 would have caught this and doesn't), the call is charged NOTHING and the deny!()
 narrowing is silently defeated. This is the SAME invariant-22 violation
 ("Unknown must mean all, never nothing") the round-3 briefing calls out as the
-crux gap for the NEXT-generation effect-row system — this finding shows the CURRENT
+crux gap for the NEXT-generation effect-row system - this finding shows the CURRENT
 shape-based checker already has a live instance of it, in the one function whose own
 doc comment explicitly discusses (and rejects, for false-positive reasons) the
 sound `all` fallback for this exact unresolved-root case.
 
 Distinct from item 30 (fn-bearing field reached through an ACCESSOR CALL,
-`get_box(h).f()`) — no accessor call anywhere here, just an inline index-then-field
-receiver chain — and from item 32 (tuple `.N()` parsing as `FnCall{FieldAccess}` due
-to a missing `MethodCall` branch for integer field names) — `handler` is a named
+`get_box(h).f()`) - no accessor call anywhere here, just an inline index-then-field
+receiver chain - and from item 32 (tuple `.N()` parsing as `FnCall{FieldAccess}` due
+to a missing `MethodCall` branch for integer field names) - `handler` is a named
 field, so the parser DOES correctly build `Expr::MethodCall`; the gap is entirely in
 `resolve_method_field_invoke_caps`'s enforcement, not in parsing or path resolution.
-**FIXED 2026-08-08 — see CLOSED table: "closure-container-launder-by-local-variable".**
+**FIXED 2026-08-08 - see CLOSED table: "closure-container-launder-by-local-variable".**
 Never added its own OPEN-list number (closed the same session it would have been
 triaged against items 30/32); distinct root-cause function (`resolve_method_field_
 invoke_caps`) and distinct trigger condition (literal-vs-factory-bound container root)
@@ -1055,11 +1055,11 @@ confirmed correct by the fix.
 
 ---
 
-## ASSAULT round 3 (historical-regression lens, 2026-08-07) — zero compiler changes this session
+## ASSAULT round 3 (historical-regression lens, 2026-08-07) - zero compiler changes this session
 
 Re-ran historical bypass classes in fresh syntactic dress per the round-3 brief, targeting
 compositions not yet individually executed. Three new probes, all against the existing
-`compiler/target/release/kryos.exe`, read-only, no rebuild. **No new root cause** — all three
+`compiler/target/release/kryos.exe`, read-only, no rebuild. **No new root cause** - all three
 reproduce items 30 and 32 (already OPEN, both documented above) through syntax those items'
 existing repros did not individually cover; reported for completeness and because one of the
 three ("go different or deeper") surfaced that the for-loop indirection I set out to test was
@@ -1074,14 +1074,14 @@ not actually load-bearing, an important negative result in its own right. Repros
   LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0; `kryos check --strict-capabilities`: rc=0, zero
   diagnostics. Control (`b.f()` direct, no generic-call indirection) correctly rejected both
   modes: `error[E0507]: call to \`f\` requires capabilities [fs:read] not granted to caller`,
-  rc=1. Confirms generic monomorphization does not add any incidental protection — the checker
+  rc=1. Confirms generic monomorphization does not add any incidental protection - the checker
   operates on the pre-monomorphization AST shape, exactly as item 30's root-cause writeup implies
   but had not been separately executed against a generic accessor before this probe.
 
 - **Item 32's tuple-index-call parser bug (`.N()` always parses as
   `Expr::FnCall{callee: FieldAccess}`, never `Expr::MethodCall`, and the checker's fail-closed
   default only covers a `segments.len() <= 1` path) reproduces for a TWO-HOP nested tuple**
-  (`let outer = (pair, "tag"); outer.0.1()`, where `pair = (0, reader)`) — explicitly called out
+  (`let outer = (pair, "tag"); outer.0.1()`, where `pair = (0, reader)`) - explicitly called out
   as untested in the round-3 brief ("tuple-index calls (one and two hop)"), item 32's own repro
   being one-hop only. `kryos run`: `TWOHOP-TUPLE-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`,
   rc=0; `--strict-capabilities`: rc=0. Control (`reader()` direct, no tuple nesting) correctly
@@ -1095,32 +1095,32 @@ not actually load-bearing, an important negative result in its own right. Repros
   `holders: [Holder]`, `Holder.pair: (i64, fn()->str)`) was a genuinely new composition, deeper
   than item 38's for-loop-bound-TUPLE-directly case. It DOES leak (`kryos run`:
   `FORLOOP-STRUCT-TUPLE-INDEX LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0; `--strict-capabilities`:
-  rc=0) — but so does the intended "control" (`h.pair.1()`, same struct/tuple shape, called
+  rc=0) - but so does the intended "control" (`h.pair.1()`, same struct/tuple shape, called
   directly with **no for-loop at all**, still inside the identical `deny!(fs:read)`): rc=0,
   `CONTROL DIRECT LEAK (should not compile): TOPSECRET-CLOSURE-9f8e7d6c5b4a`, both modes. This
   is NOT a valid control (it fails to isolate the variable it was written to isolate) and the
-  for-loop is NOT shown to contribute anything here — the underlying cause is that
+  for-loop is NOT shown to contribute anything here - the underlying cause is that
   `h.pair.1()` alone resolves to a 3-segment path (`["h","pair","1"]`), which fails item 32's
   same `segments.len() <= 1` fail-closed gate on its own, with zero for-loop or container-alias
   machinery involved. Recorded as a generalization of item 32 (a struct-field-then-tuple-index
   chain leaks the same as a bare tuple local, not for-loop-specific), not as a new for-loop
-  finding — reporting the invalid-control result rather than silently discarding it or
+  finding - reporting the invalid-control result rather than silently discarding it or
   overclaiming a for-loop-specific mechanism the evidence does not support.
 
 Not chased to a fix (no compiler changes this session, per task instructions). AOT (`kryos build
 --release`) not independently re-run for any of the three this session (time budget; the leak
 mechanism in all three is a checker/compile-time gap common to both backends per items 30/32's
 existing root-cause writeups, not a backend-specific runtime divergence, so both backends leaking
-identically is expected but not independently re-confirmed here — disclosed, not assumed).
+identically is expected but not independently re-confirmed here - disclosed, not assumed).
 
 Two stray `kryos.exe` processes (PIDs 22404, 21672) were observed running in this shared
 workspace during this session, not started by this session's commands and not killed (per
-"agents share this workspace" — no compiler changes or gating were performed this session, so
+"agents share this workspace" - no compiler changes or gating were performed this session, so
 killing another agent's in-flight process was out of scope and would have been destructive).
 
 ---
 
-## ASSAULT round 2 (real-program lens, 2026-08-07) — zero compiler changes this session
+## ASSAULT round 2 (real-program lens, 2026-08-07) - zero compiler changes this session
 
 Wrote a ~230-line "plugin/tool registry + agent" program exercising FIVE natural
 container/dispatch idioms a real Kryos user would reach for (struct-of-callbacks array,
@@ -1138,11 +1138,11 @@ that reaches the `exfil` plugin, across all five idioms, is rejected at compile 
 (`kryos check` on the combined file: rc=1, 11 errors, 0 warnings; the program never
 runs, so nothing could leak). Consistent with round 1's verdict for this lens.
 
-**F6 — NEW, verified live three independent ways (combined program + two standalone
+**F6 - NEW, verified live three independent ways (combined program + two standalone
 single-vector probes): capability inference for a method call is computed as a UNION
 across every declaration sharing that bare method NAME anywhere in the program, not
 per concrete receiver and not even scoped to one trait.** Minimal
-shape: `trait Plugin { fn run(self: Self, input: str) -> str }` with two impls —
+shape: `trait Plugin { fn run(self: Self, input: str) -> str }` with two impls - 
 `EchoObj.run` (calls nothing gated) and `ExfilObj.run` (calls `load_secret()`, needs
 `fs:read`). Calling `EchoObj{}.run()` through a `dyn Plugin` value obtained from a
 runtime factory (`pick_plugin(false)`) is rejected with the IDENTICAL diagnostic as
@@ -1151,7 +1151,7 @@ calling the real `ExfilObj{}.run()`:
 error[E0507]: call to `run` requires capabilities [fs:read] not granted to caller
   = note: function `run` has @capabilities(fs:read) but caller lacks [fs:read]
 ```
-— even though the concrete receiver is provably the capability-free `EchoObj`, with
+ - even though the concrete receiver is provably the capability-free `EchoObj`, with
 no fn-value/container/actor machinery involved at all (a plain trait-method call).
 Verified live: `tests/security/assault_round2_probe_dyn_factory.kry` (standalone, 2
 errors, rc=1, both the control and real call fail identically) and reproduced again
@@ -1160,7 +1160,7 @@ FALSE-REJECTION (fail-closed, no security hole) but a severe, previously-undocum
 ergonomics defect distinct from F1-F5 (which were about container/spawn/actor
 provenance): it makes ANY `trait` with more than one implementor, where even ONE
 implementor needs a capability, entirely uncallable through `dyn Trait` dispatch for
-EVERY implementor — the plugin-interface pattern documented as the required
+EVERY implementor - the plugin-interface pattern documented as the required
 workaround for "no `dyn Trait` inside a container" (gotcha #22) is itself broken the
 moment the trait has a mixed-privilege implementor set. **Confirmed, follow-up probe, worse than the trait-scoped hypothesis: the conflation
 is keyed by bare method NAME across the WHOLE program, not scoped to the trait at
@@ -1168,29 +1168,29 @@ all.** `tests/security/assault_round2_probe_trait_method_name_conflation.kry`: t
 completely UNRELATED traits (`Loader`/`SecretLoader`, needs `fs:read`; `Formatter`/
 `PlainFormatter`, needs nothing, shares no type/trait/module relationship with the
 first pair) each independently declare a method named `run`. The program calls ONLY
-`PlainFormatter{}.run()` (zero relation to the gated pair) inside `deny!(fs:read)` —
+`PlainFormatter{}.run()` (zero relation to the gated pair) inside `deny!(fs:read)` - 
 still rejected, same diagnostic: `function \`run\` has @capabilities(fs:read) but
 caller lacks [fs:read]`, `kryos check` rc=1, 1 error. This means a single common verb
 method name (`run`, `execute`, `process`, `handle`, ...) used ANYWHERE in a program
 with ANY capability requirement silently poisons EVERY unrelated method sharing that
-bare name, program-wide — not just sibling implementors of one trait. This is
+bare name, program-wide - not just sibling implementors of one trait. This is
 significantly more severe than F1-F5's container/spawn/actor-specific false
 rejections: it is a whole-program name-collision hazard that will fire on ordinary,
 completely unrelated code the moment two types anywhere use the same common method
 name and one of them happens to need a capability.
 
 Idioms A/B/E (array-of-struct registry, tuple-list registry, actor-handler argument)
-all reproduce the SAME already-documented false-rejection class as round 1's F4 —
+all reproduce the SAME already-documented false-rejection class as round 1's F4 - 
 "a container/argument carrying even one privileged fn-value poisons the WHOLE call as
 needing `[all]`, including a simultaneous call to a benign element of the same
-container" — extended here to three container/argument shapes F4 didn't specifically
+container" - extended here to three container/argument shapes F4 didn't specifically
 cover (a plain array of structs, a tuple list, and an actor-handler's fn-bearing
 argument), not independently new but confirms the blast radius is broad, not
 `map<str,fn>`-specific.
 
 Idiom D (accessor method returning `self.entries[idx].handler`, an array-element hop
 combined with LEDGER item 30's accessor shape) does NOT reproduce item 30's silent
-escape in this combination — verified twice (combined program + standalone probe
+escape in this combination - verified twice (combined program + standalone probe
 `assault_round2_probe_registry_accessor.kry`), both control and real calls correctly
 fail-closed to `[all]` via the generic "container element" catch-all, rc=1, no leak.
 Reported as ruled-out for this specific shape, not assumed from item 30's existing
@@ -1198,61 +1198,61 @@ single-field repro.
 
 ---
 
-## ASSAULT round 1 (new campaign, post capability-typed-fn-value Stage 1), real-program lens — zero compiler changes this session
+## ASSAULT round 1 (new campaign, post capability-typed-fn-value Stage 1), real-program lens - zero compiler changes this session
 
 Wrote a real, several-hundred-line "plugin platform" program (pure tool registry, a SecretVault
 actor holding real `fs:read` authority, a `PluginHost` actor running third-party plugins under
 `deny!()`, an `Orchestrator` actor forwarding requests actor-to-actor, a `spawn`+`WaitGroup`
 concurrent worker pool) against the existing `compiler/target/release/kryos.exe`, read-only, no
-rebuild. Result: **no new LIVE CAPABILITY ESCAPE found** — the checker correctly REJECTED the
+rebuild. Result: **no new LIVE CAPABILITY ESCAPE found** - the checker correctly REJECTED the
 compromised-plugin dispatch before it could even run, both `kryos run` (inferred, default) and
 `kryos check --strict-capabilities` (5 and 7 errors respectively). That is a genuinely solid
 result for the attack surface itself. But getting there required the program to be rewritten
 around three separate FALSE-REJECTION/over-approximation defects that make honest, non-malicious
-code un-writable — reported here because "a sound system nobody can write code in does not ship."
+code un-writable - reported here because "a sound system nobody can write code in does not ship."
 Repro: `tests/security/assault_r1_real_program_plugin_platform.kry` (comments mark exactly what
 was removed/reworked and why, each tagged Fn below); minimal isolation probe:
 `tests/security/assault_r1_probe_spawn_literal_container.kry`.
 
-- **F1 — storing a bare fn-typed PARAMETER into an actor state field in one handler, then
+- **F1 - storing a bare fn-typed PARAMETER into an actor state field in one handler, then
   invoking that field from a DIFFERENT handler, is unconditionally rejected even with zero
   attacker involvement.** `SecretVault.init(self, r: fn()->str) { self.reader = r }` /
-  `SecretVault.internal_read(self) { self.reader() }` — `internal_read` is never even CALLED
+  `SecretVault.internal_read(self) { self.reader() }` - `internal_read` is never even CALLED
   anywhere in the program, yet `kryos check --strict-capabilities` rejects it: `call to \`reader\`
   requires capabilities [all] not granted to caller`. Actors are declaration-enforced per-handler
   in both modes (invariant 17), and the field's provenance can't be traced across the handler
   boundary (the hot-param mechanism is per-declaration), so it resolves to `Unknown -> all`, which
-  then fails the actor's own ceiling — for what is the single most natural "vault holds a
+  then fails the actor's own ceiling - for what is the single most natural "vault holds a
   capability-gated accessor closure" shape. Not independently root-caused this session.
-- **F2 — an actor handler `run_callback(cb: fn(str)->str)` that invokes `cb` directly inside a
+- **F2 - an actor handler `run_callback(cb: fn(str)->str)` that invokes `cb` directly inside a
   FULL `deny!()` is unconditionally rejected for EVERY possible `cb`, safe or not.** Per invariant
   12, a `deny!` interposed before invoking a bare fn-typed param forces the charge immediately, to
-  `[all]`, against whatever the (now-empty) narrowed scope holds — which can never be satisfied
+  `[all]`, against whatever the (now-empty) narrowed scope holds - which can never be satisfied
   regardless of what's actually passed. This makes "a sandbox host that executes an opaque plugin
-  callback under narrowed capabilities" — arguably the single most idiomatic way to implement a
-  capability-gated plugin sandbox — completely unwritable, pushing a real developer toward either
+  callback under narrowed capabilities" - arguably the single most idiomatic way to implement a
+  capability-gated plugin sandbox - completely unwritable, pushing a real developer toward either
   removing the `deny!()` (defeating the actual security boundary) or avoiding opaque callbacks
   entirely.
-- **F3 — calling ANY handler on an actor declared `@capabilities(X)` requires the CALLER to hold
+- **F3 - calling ANY handler on an actor declared `@capabilities(X)` requires the CALLER to hold
   X, even when that specific handler's body immediately `deny!()`s X before doing anything.**
   `Orchestrator` (declared with no capabilities) calling `PluginHost.run_named` (whose entire body
   is wrapped in `deny!(fs:read, ...)`) is rejected: `function \`run_named\` has @capabilities(fs:read)
   but caller lacks [fs:read]`. This means a properly-sandboxed actor (the whole point of which is
   to safely narrow authority before touching untrusted code) cannot be called by a legitimately
-  less-privileged component — the caller must hold the callee's full raw ceiling just to send it a
+  less-privileged component - the caller must hold the callee's full raw ceiling just to send it a
   message, undermining the least-privilege value of delegating to a sandboxing actor at all. Fixed
   in the repro by giving `Orchestrator` the same `@capabilities(fs:read)` (the workaround a real
   developer reaches for), which of course also defeats some of the intended privilege separation.
-- **F4 — a tool/plugin registry built by an ordinary factory function
+- **F4 - a tool/plugin registry built by an ordinary factory function
   (`fn build_registry() -> map<str, fn(...)->...> { return {...} }`) and passed as an argument is
   unresolvable (`Unknown -> all`).** This is the ALREADY-DOCUMENTED invariant-4/22 cost
   (`docs/capability-soundness.md` §6), re-confirmed here as genuinely painful in practice: it
   blocked the single most natural way to factor a reusable registry-builder, forcing every
   registry in the repro to be inlined as a literal at its point of use instead. Not a new finding;
   listed for completeness since it fired immediately on ordinary code.
-- **F5 — NEW, freshly verified via a minimal isolated control/probe pair, root-caused by direct
+- **F5 - NEW, freshly verified via a minimal isolated control/probe pair, root-caused by direct
   source read: a `let`-bound closure/container LITERAL defined outside a `spawn {}` block works
-  fine when read and invoked inside the spawn body if it's captured — but a closure/fn-value that
+  fine when read and invoked inside the spawn body if it's captured - but a closure/fn-value that
   is BOTH looked up from a container AND locally re-bound (`let f1 = reg["upper"]`) INSIDE the
   spawn block is unconditionally rejected, even for a zero-capability function under
   `@capabilities()` (explicit empty) on `main`.** Minimal repro
@@ -1260,32 +1260,32 @@ was removed/reworked and why, each tagged Fn below); minimal isolation probe:
   `let f = reg["upper"]; f("x")` sequence compiles clean outside `spawn {}` and is rejected
   (`call through a function value requires capabilities [all]`) inside it, one file, same `reg`,
   same run. Root cause confirmed by direct source read of `kryos-capabilities/src/checker.rs`:
-  `build_local_closure_caps_block` and `build_local_container_lits_block` — the two builders that
-  populate `local_caps`/`local_container_lits` before the real per-call checker consults them —
+  `build_local_closure_caps_block` and `build_local_container_lits_block` - the two builders that
+  populate `local_caps`/`local_container_lits` before the real per-call checker consults them - 
   have an existing, already-fixed arm for the sibling case of a bare `{ }` scoping block
   (`Stmt::Expr { expr: Expr::Block {..} }`, ~2344-2358 and ~2701-2714, whose own code comment
   describes this EXACT failure mode: "a closure let-bound INSIDE a bare block was never added to
   locals... forcing the enclosing function to declare @capabilities(all) for a closure that in
   fact needs nothing") but **no matching arm exists for `Stmt::Spawn`** (grepped the whole file:
-  `Stmt::Spawn` appears only at lines 1157/1364/3742/4561, none inside either builder) — so a
+  `Stmt::Spawn` appears only at lines 1157/1364/3742/4561, none inside either builder) - so a
   `spawn {}` block's own internal `let`s are invisible to both trackers, the unfixed sibling of an
   already-diagnosed-and-fixed bug class. Practical impact: a `spawn`-based concurrent worker pool
-  dispatching from a shared, provably-safe tool registry — exactly the "pool of concurrent
-  workers" shape this round's own brief asked for — is unwritable without either avoiding `spawn`
+  dispatching from a shared, provably-safe tool registry - exactly the "pool of concurrent
+  workers" shape this round's own brief asked for - is unwritable without either avoiding `spawn`
   for such dispatch or over-granting `@capabilities(all)` to the enclosing function, which then
   covers everything else that function does too. This is a false-rejection (fail-closed, not a
   security hole) but a real security-ERODING pressure: it trains developers to reach for `all` to
   unblock ordinary safe concurrency. Not chased to a fix this session (no compiler changes, per
   task instructions).
 
-No new LIVE CAPABILITY ESCAPE found this round — the 7 already-open trust-model items (30, 32,
+No new LIVE CAPABILITY ESCAPE found this round - the 7 already-open trust-model items (30, 32,
 33, 34, 36, 37, plus the earlier wrapper-closure class already closed) remain the current list;
 none were independently re-verified this session (out of scope: real-program lens, not
 re-verification). F1-F5 above are the round's actual yield.
 
 ---
 
-## VERIFICATION SESSION (2026-08-07, HEAD `feb1991`) — independent re-check, zero fixes applied this session
+## VERIFICATION SESSION (2026-08-07, HEAD `feb1991`) - independent re-check, zero fixes applied this session
 
 Verification-only session (task: adjudicate whether the beta gate clears after the capability-typed
 fn-value Stage 1 landed, `891c406`). Full writeup: `docs/LAUNCH-READINESS.md` (rewritten, dated
@@ -1299,9 +1299,9 @@ and output):
   `attack_deref_borrow_param_defeats_field_resolver.kry` (item 37),
   `attack_reassign_local_defeats_hotparam.kry`, `attack_deny_bare_closure_reassign_escape.kry`.
   **All 6 still LEAK, rc=0, secret printed, both `kryos run` and `--strict-capabilities`.** Their
-  `_control.kry` counterparts still correctly reject (`E0507`, rc=1) — confirms these are real,
+  `_control.kry` counterparts still correctly reject (`E0507`, rc=1) - confirms these are real,
   targeted gaps, not a broken harness.
-- **`tests/security_gate.sh` re-run: PASS** (84/84, none of the above 6 files are wired into it —
+- **`tests/security_gate.sh` re-run: PASS** (84/84, none of the above 6 files are wired into it - 
   the "test exists, gate silent" gap flagged in the 2026-08-06 doc is still present).
 - **`tests/ecosystem_check.sh` and `python tools/docs-examples/check.py` re-run: PASS** (74/74 docs).
 - **`find_companion_container_arg` confirmed genuinely deleted** (grepped `kryos-capabilities/src/`,
@@ -1309,55 +1309,55 @@ and output):
 - **NEW finding, this session, via a novel probe (not a pre-existing test file):** a `dyn Trait`
   method that *returns* a capability-carrying closure loses its row in the NEW `kryos-types`
   inference (`KRYOS_DUMP_FN_EFFECTS` shows `main`'s row as an unresolved `{?C3}`, never bound to
-  `{fs:read}`). **No live security regression today** — `kryos-capabilities/checker.rs` is
+  `{fs:read}`). **No live security regression today** - `kryos-capabilities/checker.rs` is
   unmodified this stage and independently rejects the program twice (`E0507` at both the method
   call and the invoke). This is a forward-looking risk: if Stage 2/3 wires this inference to
   enforcement without first fixing dyn-dispatch row propagation, this reproduces the "Unknown must
   mean All, never nothing" violation class. Two other novel probes this session (`Result::Ok` payload
   via `?` inside `deny!()`; `while let Some(f) = ...` Option-destructure inside `deny!()`) found
-  nothing — both correctly rejected, `[all]`, both modes.
+  nothing - both correctly rejected, `[all]`, both modes.
 - **CI on HEAD `feb1991`: `in_progress` 2h25m+ at review time**; the 4 prior pushes show
-  cancelled/cancelled/failure/cancelled — not a clean green streak. Disclosed, not diagnosed further
+  cancelled/cancelled/failure/cancelled - not a clean green streak. Disclosed, not diagnosed further
   this session (no budget to pull failure logs or wait out the in-progress run).
 - **NOT run this session** (disclosed gap, not silent): `tools/loop/kryos-loop.sh gates 2`,
   `compiler/self-host/test_bootstrap.sh` alone. Both are known-expensive/contention-prone in this
   shared workspace; run before the next commit that touches `kryos-capabilities`/`kryos-types`.
-- **VERDICT: unchanged — LAUNCH-AS-BETA, "capability-safe" still blocked.** At least 7 distinct
+- **VERDICT: unchanged - LAUNCH-AS-BETA, "capability-safe" still blocked.** At least 7 distinct
   "LIVE CAPABILITY ESCAPE" items remain open (30, 32, 33, 34, 35 [two distinct bugs share this
-  number in the OPEN section below — itself a small ledger-hygiene defect worth fixing next time
+  number in the OPEN section below - itself a small ledger-hygiene defect worth fixing next time
   numbers are touched], 36, 37). None were fixed this session by design (verification-only mandate).
 
 ---
 
-## RE-ADJUDICATION (2026-08-06) — supersedes the "FINAL LAUNCH SYNTHESIS" section below on current status
+## RE-ADJUDICATION (2026-08-06) - supersedes the "FINAL LAUNCH SYNTHESIS" section below on current status
 
 The section below is dated 2026-08-05 at HEAD `d29ac99` and states item 10 (closed) as the
 sole condition on the "capability-safe" claim. HEAD has since moved to `0d6b426` (10 commits
 ahead) and the trust-model picture has changed materially: **item 10 is still correctly closed**
 (re-verified live this session, exact doctrine repro rejects E0507 both modes), but **four
-further live bypasses are open and unresolved as of this commit** — item 30 (accessor-call,
+further live bypasses are open and unresolved as of this commit** - item 30 (accessor-call,
 found 2026-08-06, already in this ledger) plus items 32/33/34 (tuple-index call, actor-to-actor
-forwarding, double-alias — found this re-adjudication session, added above, previously existed
+forwarding, double-alias - found this re-adjudication session, added above, previously existed
 only as undocumented test files under `tests/security/` with no ledger entry). **The verdict is
 unchanged (LAUNCH-AS-BETA, "capability-safe" still blocked) but the reason has shifted from "one
 named blocker" to "the enumerate-and-patch pattern itself has not terminated across 7+ red-team
 rounds, and the newest finding (item 32) shows the gap is in the checker's dispatch/routing
 layer, not only its closure-provenance resolvers."** See `docs/LAUNCH-READINESS.md` for the full
-current synthesis — that document has been rewritten this session and is now the authoritative
+current synthesis - that document has been rewritten this session and is now the authoritative
 one; the 2026-08-05 section immediately below is retained for history but its verdict-clearing
 claims about "the specific condition in §1" should be read as superseded by the 2026-08-06
 document, not as current status.
 
 ---
 
-## FINAL LAUNCH SYNTHESIS (2026-08-05) — read this before trusting any status summary
+## FINAL LAUNCH SYNTHESIS (2026-08-05) - read this before trusting any status summary
 
 Full verdict, blocker ranking, and the exact disclosed-limitations wording required for any
 launch copy: `docs/LAUNCH-READINESS.md`. VERDICT: **LAUNCH-AS-BETA**, with the specific claim
 "capability-safe" (as a completed guarantee) blocked until item 10 closes.
 
 **Evidence-pack accuracy finding, re-verified live this session (`compiler/target/release/
-kryos.exe`, no rebuild) — this is why a status summary must always be diffed against THIS
+kryos.exe`, no rebuild) - this is why a status summary must always be diffed against THIS
 file, not trusted on its own:**
 - A prior session's upward-reported summary claimed `container-element-alias-backend-
   divergence` (item 15) was **CONFIRMED FIXED**. It is not — re-run live: `kryos run` on
@@ -1366,7 +1366,7 @@ file, not trusted on its own:**
   `x19999!|x19999|x19999|x19999|5`. Item 15's own status line below (NOT FIXED) was correct;
   the summary was wrong.
 - The same summary claimed `actor-state-stored-closure-cap-escape` (item 18, CLOSED table)
-  was **NOT CONFIRMED**. It is actually fixed — re-run live: `kryos run
+  was **NOT CONFIRMED**. It is actually fixed - re-run live: `kryos run
   tests/security/attack_actor_state_stored_closure.kry` now exits 1 with
   `error[E0507]: call to \`reader\` requires capabilities [all] not granted to caller`, both
   default and `--strict-capabilities` modes. The CLOSED table entry was correct; the summary
@@ -1390,8 +1390,8 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 1. **SELECT** the top unblocked item below.
 2. **REPRODUCE** before forming any hypothesis. `kryos-loop.sh repro <file>`.
    *No theory is allowed before a reproduction exists.* Three attributions were
-   wrong this way in one session — the `@copy` arm, a "merge interaction", and
-   the `param_src` branch — each from reading code instead of measuring it.
+   wrong this way in one session - the `@copy` arm, a "merge interaction", and
+   the `param_src` branch - each from reading code instead of measuring it.
 3. **BISECT MECHANICALLY.** Commit-level (`git cherry-pick` onto a worktree) or
    program reduction (cut the input until the symptom vanishes). Never
    hand-edit a hypothesis in and call the result evidence: one such edit
@@ -1402,12 +1402,12 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 6. **GATE** with `kryos-loop.sh gates 3`.
 7. **PUSH IMMEDIATELY.** 12 commits sat unpushed once and a second agent
    independently reimplemented one of the fixes.
-8. **LEDGER** — record the outcome *and everything ruled out*.
+8. **LEDGER** - record the outcome *and everything ruled out*.
 
 ### Non-negotiables
 
 - A self-reported "fixed" is not evidence. Only fresh command output is.
-- Every gate can be green while data is silently wrong — that exact thing
+- Every gate can be green while data is silently wrong - that exact thing
   happened here (an `@copy` corruption passed conformance, no_double_free,
   bootstrap, examples, strict-caps, the e2e gate AND the IR gate). When a fix
   touches ownership, add a **value assertion**, not just a crash check.
@@ -1416,7 +1416,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ---
 
-## OPEN — ranked
+## OPEN - ranked
 
 > **READ THIS BEFORE TRUSTING ANY STATUS BELOW.** Run
 > `bash tools/loop/escape_status.sh` -- it re-runs every named capability-escape
@@ -1505,15 +1505,114 @@ design replaced.
 Ranked below the trust-model items because it is over-rejection, not a leak:
 it makes legitimate programs inconvenient, it does not let authority escape.
 
+**EVIDENCE-GATED DECISION (2026-08-15): KEEP THE FAIL-CLOSED DEFAULT. DO NOT
+FLIP `KRYOS_NO_HOTPARAM_ALL`'S DEFAULT. NOT CLOSED.**
+
+Ran the full gate matrix, both `KRYOS_NO_HOTPARAM_ALL` OFF (shipped) and ON
+(the experiment), plus an exhaustive individual sweep of every
+`tests/security/attack_*.kry` and `cap_escape_*.kry` file (244 files, both
+enforcement modes) -- the literal criterion STAGE2-PLAN prescribes ("retire
+the shape-matcher only once every attack_*.kry repro is rejected by the row
+check alone"). It fails that criterion. Full table:
+
+| Gate | OFF (shipped) | ON (`KRYOS_NO_HOTPARAM_ALL=1`) | Match? |
+| --- | --- | --- | --- |
+| `escape_status.sh` (17 named shapes, pre-existing list) | 0 escaping / 17 rejected | 0 escaping / 17 rejected | yes |
+| `capability_matrix_gate.sh` (75 enumerated shapes) | SOUNDNESS 75/75, PRECISION 34/75 | SOUNDNESS 75/75, PRECISION 66/75 | soundness yes, precision improves (expected) |
+| `ir_signature_gate.sh` | PASS (65 modules) | PASS (65 modules) | yes |
+| `strict_caps_examples.sh` | 91/91 | 91/91 | yes |
+| `conf_stdlib_wave14.kry check` | rc=0 | rc=0 | yes |
+| `authority_surface_gate.sh` | PASS, 0 ungated / 0 ungrantable (82 builtins) | PASS, 0 ungated / 0 ungrantable (82 builtins) | yes |
+| `security_gate.sh` (136 checks) | PASS, 136/136 ok | **FAIL** -- checks #12-19's `hof_forward` shape (both modes) rejects via `E0110` (row-system `deny!` violation) instead of the expected `E0507`; program is still REJECTED (rc=1), so no soundness loss here, but the gate's hardcoded `grep -q E0507` assertion no longer holds | **NO -- diverges** |
+| Full `attack_*`/`cap_escape_*` sweep (244 files, both modes, `check` + `run` leak probe) | (not independently re-run file-by-file; baseline is the above gates) | **2 files compile clean AND leak the secret at runtime that the shipped default correctly rejects** (see below) | **NO -- real escape** |
+| `inferred_soundness.sh`, `run_conformance.sh`, `ecosystem_check.sh` | not run this wave (decision was already conclusive before reaching them -- see below) | not run this wave | disclosed gap |
+
+**THE DECISIVE FINDING**, from the exhaustive sweep (b) of the task: two
+"real-program-shaped" (not minimal-repro) test files flip from correctly
+REJECTED to compiling clean and PRINTING THE SECRET when the switch is ON:
+
+- `tests/security/attack_realprogram_deny_blocks_builtin_exfil.kry` -- a
+  plugin registry (`[PluginTool]`, each holding a `run: fn(str) -> str`
+  field) built via factory functions, dispatched through a generic
+  `dispatch(tools, name, input)` helper that does `tools[i].run(input)`
+  inside a `while` loop, called from inside `deny!(fs:write, fs:read,
+  process)`. OFF: `check` rc=1 both modes (correctly rejected, needs
+  `[all]`). ON: `check` rc=0 both modes, `kryos run` prints `SMUGGLER LEAK
+  (should not compile): TOPSECRET-VAULT-KEY-...`, rc=0.
+- `tests/security/attack_realprogram_tool_registry.kry` -- the same
+  registry/dispatch shape, larger (trusted + untrusted tool lanes, two
+  `spawn`ed workers, one sandboxed in `deny!(fs:write, fs:read, process)`).
+  OFF: `check` rc=1 both modes. ON: `check` rc=0 under **default inferred
+  mode** (the mode `kryos run`/`kryos check`/`kryos build` all use per
+  CLAUDE.md), rc=1 under `--strict-capabilities` only. `kryos run` (default
+  mode) prints `[untrusted worker B] spy -> TOPSECRET-VAULT-KEY-...`, rc=0.
+
+**WHY THE ROW SYSTEM DOES NOT SAVE THIS** (the premise the whole experiment
+rested on): `kryos-types`'s row system currently enforces in exactly ONE
+place -- `Stmt::DenyBlock` in `check.rs` (~3419), which checks whether the
+accumulated row for a `deny!` block's body intersects the denied set.
+`is_subset_of` (the general "callee row vs. declared row at every call
+site" check STAGE2-PLAN's item 2 describes) is defined in `ty.rs` but is
+**never called anywhere in `check.rs`** -- grepped the whole file, zero
+hits outside its own doc comment. So the row system is not a general
+enforcement layer that happens to overlap with the shape matcher; it is a
+narrow, `deny!`-scoped supplement. For the `hof_forward` shape (a factory
+that forwards a hot fn-typed argument BY NAME, not by inline lambda) the
+row system's `deny!` accumulation independently gets the right answer
+(hence the E0110-not-E0507 divergence, still sound). For the
+`dispatch(tools, ...)` while-loop-indexed-container shape above, it does
+NOT -- `main`'s accumulated row inside the `deny!` block comes back clean,
+and with `insert_unresolved_all` disabled there is nothing else to catch
+it. `capability_matrix_gate.sh`'s 75 shapes never exercise this because
+its generator (`tests/gen_capability_matrix.py`) only ever produces a
+single-hop container read at a fixed index/key/field -- never a
+while-loop linear-scan lookup into a factory-built array -- so a clean
+75/75 SOUNDNESS score on that gate does NOT mean the row system subsumes
+the shape matcher; it means the generator's shape space doesn't reach the
+one construction where it doesn't.
+
+**VERDICT: outcome (d).** The four `insert_unresolved_all` call sites are
+not redundant with the row system; for at least one real, non-contrived
+shape they are the only thing rejecting a live secret leak. The default
+stays fail-closed (`KRYOS_NO_HOTPARAM_ALL` unset = shipped behavior). The
+switch itself is left in place for future re-measurement, unchanged.
+**Regression pin added** (`tools/loop/escape_status.sh`, items 41a/41b):
+both files above are now in the tracked list, so a future attempt to flip
+the default (or delete the switch) is caught by the SAME gate that already
+reports "0 escaping" today -- verified both ways: OFF shows `41a/41b ...
+fixed` (`STILL ESCAPING: 0 now-rejected: 19`), ON shows `41a/41b ...
+ESCAPES` (`STILL ESCAPING: 2 now-rejected: 17`).
+
+**COLLATERAL FINDING, out of scope for this item, flagged not fixed:** the
+same 244-file sweep incidentally found **9 pre-existing, switch-INDEPENDENT
+live escapes** (identical leak with `KRYOS_NO_HOTPARAM_ALL` unset --
+i.e. nothing to do with this item) that are not wired into
+`escape_status.sh` or `security_gate.sh` and therefore never show up red:
+`attack_deny_bare_closure_reassign_escape.kry`,
+`attack_deny_double_indirection_wrapper_local.kry`,
+`attack_match_bound_var_field_invoke.kry`,
+`attack_realprogram_registry_foreach.kry`,
+`attack_realprogram_registry_list_wrapper.kry`,
+`attack_realprogram_spy_tool_zerocap_leak.kry`,
+`attack_reassign_local_defeats_hotparam.kry`,
+`attack_round3_trycatch_deny_narrowed_catch.kry`,
+`cap_escape_closure_launder.kry`. At least 3 of these were already
+independently found and recorded in the 2026-08-07 VERIFICATION SESSION
+above ("All 6 still LEAK... none of the above 6 files are wired into
+[`security_gate.sh`]") and are apparently still unfixed and still unwired
+eight days later. Not investigated or fixed here (separate root causes,
+separate wave, would have blown this wave's scope) -- flagged per the
+ranking doctrine (leak) so it is not lost again. Needs its own triage wave.
+
 ---
 
 
-### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT — a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) — ROOT-CAUSED, DESIGN NOTE, NOT FIXED (2026-08-05)
+### 15. SILENT WRONG ANSWER: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT - a genuine backend divergence, contradicting gotcha #23's documented "both backends agree" claim (RED TEAM round 2, memory-unsafety lens, found 2026-08-04) - ROOT-CAUSED, DESIGN NOTE, NOT FIXED (2026-08-05)
 
 `tests/security/attack_container_element_alias_refcount.kry`. CLAUDE.md
 gotcha #23 states: "reading a struct element out of a collection returns a
 SHARED handle to the stored box on both backends: a later in-place mutation
-... IS visible through `a` ... both backends agree — a semantic boundary,
+... IS visible through `a` ... both backends agree - a semantic boundary,
 not a miscompile." This is TRUE for the documented direction (mutate through
 the CONTAINER, read through a previously-taken alias) but FALSE for the
 reverse: mutate through an alias taken via `arr[i]`, then read back through
@@ -1532,14 +1631,14 @@ $ kryos build --release attack_container_element_alias_refcount.kry -o bin && ./
 last=x19999!|x19999|x19999|x19999|5         # a|b|c|arr[0] — only `a` itself sees it
 ```
 
-Both runs exit 0 — no crash, purely a silent value divergence, classified by
+Both runs exit 0 - no crash, purely a silent value divergence, classified by
 the printed VALUE not by grepping. Proven both ways by construction: the
 JIT's own `a` value is identical to AOT's `a` value (`x19999!` in both), so
-the mutation itself is correctly applied in both backends — only its
+the mutation itself is correctly applied in both backends - only its
 VISIBILITY through separately-taken aliases of the same read expression
 diverges. Per the loop's own rule ("backends diverging => read the emitted
 IR, do not guess from source"), the IR was not read this round (attacker-only
-mandate, environment severely contended — see the item 14 session note
+mandate, environment severely contended - see the item 14 session note
 below, which applied equally to this investigation); the working hypothesis,
 NOT verified against MIR/LLVM-IR, is that `let x = arr[i]` on AOT lowers to
 a value-copy (matching AOT's `@copy`-struct-assignment semantics) while the
@@ -1548,11 +1647,11 @@ same expression on Cranelift lowers to a raw pointer load (matching how
 backends may be implementing two DIFFERENT points on the shared/copy
 spectrum for the identical source construct rather than one of them having
 a bug in an otherwise-shared model. This needs an `--emit-mir`/`--emit-llvm`
-read to confirm before attempting a fix — flagging as the next concrete step,
+read to confirm before attempting a fix - flagging as the next concrete step,
 not attempting it (out of scope this round).
 
 Not double-free/UAF: `KRYOS_FREE_DIAG=1` census on both the JIT and AOT run
-is clean (no diagnostic output, exit 0) at 20000 iterations — this is a
+is clean (no diagnostic output, exit 0) at 20000 iterations - this is a
 values-diverge defect, not a corruption defect, despite living in exactly
 the "aliases created by reading out of a container" surface this round's
 brief named as a corruption-suspicion area. Distinct from all four
@@ -1563,19 +1662,19 @@ file).
 
 **Ruled out this round, evidence attached (exit 0, value-correct, clean
 under `KRYOS_FREE_DIAG=1`, both with and without diag):**
-- `tests/security/attack_drop_helper_recursion.kry` — a 200000-deep
+- `tests/security/attack_drop_helper_recursion.kry` - a 200000-deep
   self-referential struct chain (`Node{val, next:[Node]}`) built iteratively
   then dropped (recursive `__kryos_drop_Node` teardown, one native stack
   frame per link): `built len=200000`, exit 0, with and without diag. No
-  stack overflow or corruption at this depth (higher depths not attempted —
+  stack overflow or corruption at this depth (higher depths not attempted - 
   environment cost).
 - (`attack_throw_unwind_heap_locals.kry`, `attack_closure_env_teardown_twice.kry`,
   `attack_spawn_mutating_closure_reentrancy.kry` were independently written
-  and probed by the concurrency-lens agent this same round — `6665c4f` —
+  and probed by the concurrency-lens agent this same round - `6665c4f` - 
   before this agent got to run them; results agree (clean, exit 0, value-
   correct) and are not re-litigated here to avoid duplicate ledger entries.)
 
-**Ruled out, round 3 (memory-unsafety lens, found 2026-08-04) — went deeper on
+**Ruled out, round 3 (memory-unsafety lens, found 2026-08-04) - went deeper on
 this exact surface (aliases created by reading out of a container +
 container element ownership) with a shape nobody had tried: a SLOT
 OVERWRITE while a prior plain (non-closure) alias is still live, not just a
@@ -1583,22 +1682,22 @@ field-mutation-then-read.** Hypothesis: `let a = arr[0]` takes a shared
 handle (documented above); does `arr[0] = NewValue{..}` free the OLD box out
 from under `a` (UAF at `a`'s later read) or double-free it (both the
 overwrite's release AND `a`'s own scope-exit drop try to free the same
-allocation)? Falsified — both backends deep-copy on overwrite, `a` keeps its
+allocation)? Falsified - both backends deep-copy on overwrite, `a` keeps its
 own independent, correctly-owned reference:
-- `tests/security/attack_array_slot_overwrite_alias_uaf.kry` — 20000
+- `tests/security/attack_array_slot_overwrite_alias_uaf.kry` - 20000
   iterations of `let a = arr[0]` then `arr[0] = Item{..}` (brand new box)
   while `a` is still live, then read both. `kryos run`: `last=orig19999|3|
   new19999` (exit 0); `KRYOS_FREE_DIAG=1`: identical, no diagnostic (exit
   0); `kryos build --release`: identical value (exit 0). `a` correctly sees
   the ORIGINAL struct (uncorrupted, right field count) and the slot shows
-  the NEW one — no UAF, no double free, both backends agree.
-- `tests/security/attack_map_key_overwrite_alias_uaf.kry` — the map
+  the NEW one - no UAF, no double free, both backends agree.
+- `tests/security/attack_map_key_overwrite_alias_uaf.kry` - the map
   analogue (`m["k"] = Item{..}` then overwrite the same key while `let a =
   m["k"]` is live), same 20000-iteration/both-backend/FREE_DIAG protocol,
   same clean result (`overwrite_last=orig19999|3|new19999`, exit 0
   everywhere). (The REMOVE-while-aliased variant of this probe, also in the
   brief, is untestable as a language feature: grepped the whole runtime and
-  stdlib — `kryos-rt/src/map.rs` and every `.kry` module — and there is no
+  stdlib - `kryos-rt/src/map.rs` and every `.kry` module - and there is no
   `map<K,V>` key-removal builtin at all; `remove`/`delete` only exist for
   `List<T>` by-index and the raw i64 `std::set`. Flagging the gap itself,
   not inventing a repro for a function that does not exist.)
@@ -1606,21 +1705,21 @@ own independent, correctly-owned reference:
   this round's brief): `Item { tag: "first", other: 1, tag: "second" }` is
   rejected at `kryos check` with a clean `error[E0110]: duplicate field
   \`tag\` in \`Item\` literal -- each field may be set only once` (exit 1,
-  not committed as a repro since it never reaches codegen — no heap value is
+  not committed as a repro since it never reaches codegen - no heap value is
   ever constructed to leak or double-free).
 
 Session note: this round's environment was under the same severe,
 documented contention as prior rounds (concurrent compiler jobs from other
 agents sharing this workspace, per `fc05cce`/`6665c4f`/`a537504` all landing
-the same day) — several individually-fast (`kryos run` a two-line
+the same day) - several individually-fast (`kryos run` a two-line
 `println`) commands queued for multiple minutes and one `kryos run` hit a
 transient `LNK1104 cannot open file` on a temp `.exe` (a file-lock collision
-with a concurrent build, not a language defect — the identical command
+with a concurrent build, not a language defect - the identical command
 succeeded cleanly on retry with no code or file changes). Reported for
 calibration, not as a finding; both repros above were still proven both
 ways (JIT + AOT + FREE_DIAG) despite it.
 
-#### Root-caused 2026-08-05 (assigned to fix this item): confirmed by reading both backends' IR-emission code end to end, not guessed. DESIGN NOTE, NOT FIXED — this is the SAME architectural gap as item 3, not a separate bug.
+#### Root-caused 2026-08-05 (assigned to fix this item): confirmed by reading both backends' IR-emission code end to end, not guessed. DESIGN NOTE, NOT FIXED - this is the SAME architectural gap as item 3, not a separate bug.
 
 Re-reproduced fresh against the committed repro, HEAD at task start, no
 compiler changes before measuring: `kryos run` ->
@@ -1629,7 +1728,7 @@ compiler changes before measuring: `kryos run` ->
 numbers exactly.
 
 The prior round's working hypothesis ("AOT lowers `let x = arr[i]` to a
-value-copy, Cranelift to a raw pointer load — needs an `--emit-mir`/
+value-copy, Cranelift to a raw pointer load - needs an `--emit-mir`/
 `--emit-llvm` read to confirm") is **CONFIRMED**, and the mechanism is more
 precise than "value-copy vs pointer": it is a difference in how the two
 backends represent EVERY struct/enum value, not something special about
@@ -1638,7 +1737,7 @@ the `let`/index-read site.
 - **Cranelift never materializes struct/enum storage at all.** `RValue::Index`
   (`kryos-codegen-cranelift/src/codegen.rs:5638-5737`) calls
   `kryos_array_get` and, for a Struct/Enum element type, returns the raw
-  result UNMODIFIED — the code comment there is explicit: "a plain Index
+  result UNMODIFIED - the code comment there is explicit: "a plain Index
   read is intentionally left as an alias (no copy) ... copying
   unconditionally on every read leaked one struct block per read that was
   never stored anywhere else" (this was tried and reverted before; MIR's
@@ -1646,32 +1745,32 @@ the `let`/index-read site.
   clone here is a guaranteed leak, not a free lunch). Every subsequent
   FieldAccess on that value GEPs directly off the same pointer. `a`, `b`,
   `c`, and a fresh `arr[0]` read are the literal same i64 pointer value,
-  dereferenced live at each use — hence all four see a later mutation.
+  dereferenced live at each use - hence all four see a later mutation.
 - **LLVM materializes struct/enum values as first-class SSA aggregates
   everywhere**, never as a pointer, by construction: `mir_type_to_llvm`
   (`kryos-codegen-llvm/src/codegen.rs:11029-11081`) maps `MirType::Struct(name)`
-  to `"%name"` (an LLVM aggregate TYPE, not `ptr`) unconditionally — there
+  to `"%name"` (an LLVM aggregate TYPE, not `ptr`) unconditionally - there
   is no alternate "boxed" representation to opt into. `RValue::Index`'s
   aggregate branch (`codegen.rs:7234-7371`, specifically the `is_aggregate`
   arm at `7306-7335`) does `p = inttoptr i64 raw to ptr` then
-  `v = load {dest_ty}, ptr p` — a genuine value copy into a fresh SSA
+  `v = load {dest_ty}, ptr p` - a genuine value copy into a fresh SSA
   register, additionally spilled into the local's OWN `alloca %Name` (never
   the source pointer `p`) if the local is later mutated (`mutable_locals`,
   populated for ANY local that is later the target of a field store, not
   just `let mut` bindings). `RValue::Field` (`codegen.rs:7025-7135`) reads a
-  named-struct field via `extractvalue {obj_ty} {obj_val}, {field_idx}` —
+  named-struct field via `extractvalue {obj_ty} {obj_val}, {field_idx}` - 
   operating on the SSA aggregate VALUE, never a GEP off a shared address.
   There is no `obj_ty == "ptr"` fallback in this arm (checked: the only
   `ptr`-object branches in this file are for anonymous tuple/array element
-  types and dyn-trait fat pointers, `codegen.rs:4433,7240,7350,8255` — none
+  types and dyn-trait fat pointers, `codegen.rs:4433,7240,7350,8255` - none
   apply to a named struct). So `let a = arr[0]` / `let b = arr[0]` /
   `arr[0].tag` are THREE INDEPENDENT LLVM value copies of the same box;
   mutating `a`'s copy is invisible to the other two, matching the observed
   `x!|x|x|x`.
 
 **This is not a second bug to fix independently of item 3.** It is the same
-representational fork — "every struct/enum value is a byval SSA aggregate on
-LLVM, a raw heap pointer on Cranelift" — showing up as a value-divergence
+representational fork - "every struct/enum value is a byval SSA aggregate on
+LLVM, a raw heap pointer on Cranelift" - showing up as a value-divergence
 here instead of a leak there. Item 3's own design note already scoped and
 costed the only fix that closes this class for good: **Design A, uniform
 boxing of struct values** (every struct-typed local/param/return becomes a
@@ -1684,20 +1783,20 @@ codegen; a new `kryos_calloc` per struct construction (currently free for
 flat structs); and unmeasured self-host bootstrap memory risk (bootstrap is
 already struct-heavy and running at the edge of survivable memory per item
 3's own bootstrap note). Item 3's Design B (retain-walk at call boundaries,
-no ABI change) does NOT close this item — Design B only fixes ownership at
+no ABI change) does NOT close this item - Design B only fixes ownership at
 call/return boundaries; it does nothing for `RValue::Index`/`RValue::Field`
 materializing independent copies on every array/map struct-element READ,
 which is this item's entire mechanism. **A narrow, LOCAL fix confined to just
 `RValue::Index`/`RValue::Field` (without the ABI change) was evaluated and
 rejected**: making the array-Index-read destination `ptr`-typed instead of
 `%Name`-typed would require `RValue::Field`'s extractvalue path (and every
-other named-struct-aggregate consumer in this file — struct-to-struct
+other named-struct-aggregate consumer in this file - struct-to-struct
 assignment, function-argument passing, comparison, printing) to grow a
 parallel GEP-based code path for a "this local is actually a pointer"
 representation that does not exist today anywhere outside the
 already-narrow `Ptr(elem_ty)` temp used by the FieldAssign chained-target
 case (`kryos-mir/src/lower.rs:10288-10343`, which is a short-lived TEMP
-consumed once, never a general user-visible local) — the same blast radius
+consumed once, never a general user-visible local) - the same blast radius
 as Design A, just approached from the read side instead of the
 call-boundary side.
 
@@ -1706,7 +1805,7 @@ picks up item 3's Design A should verify it also closes this item's repro
 (`tests/security/attack_container_element_alias_refcount.kry`, both
 backends, `last=x19999!|x19999!|x19999!|x19999!|5` on AOT after the fix) as
 part of that change's own proof, rather than re-deriving this analysis.
-Until then this stays a documented, accepted boundary — CLAUDE.md gotcha #23
+Until then this stays a documented, accepted boundary - CLAUDE.md gotcha #23
 corrected (2026-08-05) to state the true boundary: mutating through a
 CHAINED `container[key].field = ...` target and reading through a
 previously-bound alias agrees on both backends (unaffected, already fixed
@@ -1714,12 +1813,12 @@ via the `Ptr(elem_ty)` mechanism above); mutating through an alias `let`
 binding itself and reading through a SECOND alias or the container does
 NOT.
 
-### 19. RESOURCE-DOS: monomorphization mangled-name generation is O(2^depth) for a generic function whose return type PAIRS its own input into a tuple — `kryos check` hangs for minutes on a 24-line source file, no depth/size cap (RED TEAM round 3, resource-dos lens, found 2026-08-04) — **FIXED 2026-08-05, monomorphization-explosion wave. The write-up below's root-cause attribution (kryos-mir's `mono_mangled_name`) was RE-DERIVED and CORRECTED during the fix: `kryos check` never reaches MIR lowering at all, so the real blowup site turned out to be `kryos-types`'s `InferenceEngine::resolve`. See CLOSED table for the corrected root cause and full proof-both-ways evidence. This entry's repro (`tests/security/attack_monomorphization_tuple_doubling_explosion.kry`) is kept below as the historical record and is now wired into `tests/security_gate.sh` (#51).
+### 19. RESOURCE-DOS: monomorphization mangled-name generation is O(2^depth) for a generic function whose return type PAIRS its own input into a tuple - `kryos check` hangs for minutes on a 24-line source file, no depth/size cap (RED TEAM round 3, resource-dos lens, found 2026-08-04) - **FIXED 2026-08-05, monomorphization-explosion wave. The write-up below's root-cause attribution (kryos-mir's `mono_mangled_name`) was RE-DERIVED and CORRECTED during the fix: `kryos check` never reaches MIR lowering at all, so the real blowup site turned out to be `kryos-types`'s `InferenceEngine::resolve`. See CLOSED table for the corrected root cause and full proof-both-ways evidence. This entry's repro (`tests/security/attack_monomorphization_tuple_doubling_explosion.kry`) is kept below as the historical record and is now wired into `tests/security_gate.sh` (#51).
 
 `tests/security/attack_monomorphization_tuple_doubling_explosion.kry`. This
 is the "larger-scale monomorphization-explosion probe" flagged as not
 attempted in round 2's session note above (that round only ruled out a
-LINEAR self-referential-type chain at depth 60) — attempted this round, and
+LINEAR self-referential-type chain at depth 60) - attempted this round, and
 it explodes.
 
 `monomorphize` (`kryos-mir/src/lower.rs:15806`) builds a mangled function
@@ -1728,17 +1827,17 @@ name via `mono_mangled_name` (`kryos-mir/src/lower.rs:14694`), which calls
 for `Tuple` (`kryos-mir/src/ir.rs:134-143`) recurses fully into every
 element with no interning or structural sharing. `fn dup<T>(x: T) -> (T, T)`
 called in a chain (`dup(dup(dup(x)))`) makes each level's return type a
-tuple containing the PREVIOUS level's type TWICE — so the mangled name's
+tuple containing the PREVIOUS level's type TWICE - so the mangled name's
 length (and the cost of building/hashing/caching it) doubles per level of
 nesting: O(2^depth) from a source program that only grows O(depth) (one
 extra `let dN = dup(dN-1)` line per level). Neither `monomorphize` nor
 `mono_mangled_name` has any depth or size cap of its own.
 
 Live, `compiler/target/release/kryos.exe` HEAD `00b3cf7`, no compiler
-changes, `kryos check` (type-check only — codegen is never reached, so this
+changes, `kryos check` (type-check only - codegen is never reached, so this
 is pure monomorphization/type-checking cost), each depth timed back-to-back
 in one script to minimize cross-run noise, cross-checked against a
-freshly-measured baseline (depth-10 `kryos check`: 1.4s wall, ~0.17s user —
+freshly-measured baseline (depth-10 `kryos check`: 1.4s wall, ~0.17s user - 
 the machine was not under heavy load when these numbers were taken):
 
 ```
@@ -1754,26 +1853,26 @@ depth 30           -- did not finish inside 5+ minutes wall clock; killed
 so the "both ways" proof is this contrast):** the same-shape chain using a
 LINEAR wrapper instead of a doubling tuple (`struct Box_<T> { v: T }`,
 `fn boxit<T>(x: T) -> Box_<T> { return Box_{v: x} }`, chained identically)
-stays FLAT at depth 24 AND depth 60 — both complete in ~8s, the same
+stays FLAT at depth 24 AND depth 60 - both complete in ~8s, the same
 few-seconds process-overhead floor every trivial `kryos check` showed this
 session. This isolates the DOUBLING type structure specifically as the
-cause, not "many monomorphizations" in general — matching and going beyond
+cause, not "many monomorphizations" in general - matching and going beyond
 the already-closed linear-chain probe from round 2's session note (that one
 only reached depth 60 on a chain that, per this round's measurement,
 would have stayed flat at any depth, since it never pairs a type with
 itself).
 
-**Blast radius:** this needs no adversarial obfuscation — `fn dup<T>(x: T)
+**Blast radius:** this needs no adversarial obfuscation - `fn dup<T>(x: T)
 -> (T, T)` is an entirely ordinary "pair/duplicate" combinator, and pairing
 a generic result with itself across a handful of pipeline stages is a
 normal thing to write by accident (not even deliberately hostile) in
 data-pipeline or combinator-style code. A 24-line, unremarkable-looking
 source file makes `kryos check`/`run`/`build` hang for over a minute; the
 growth trend (~2x per level) implies depth 30 is on the order of an hour
-and depth 35+ is effectively unbounded — from source that is barely bigger.
+and depth 35+ is effectively unbounded - from source that is barely bigger.
 
-Fix shape (not attempted — attacker-only mandate this round): same class of
-remedy as LEDGER item 14 — cap monomorphization recursion/instantiation
+Fix shape (not attempted - attacker-only mandate this round): same class of
+remedy as LEDGER item 14 - cap monomorphization recursion/instantiation
 depth with a clean diagnostic (mirroring the parser's
 `MAX_NESTING_DEPTH`/`MAX_RECURSION_DEPTH` budgets), or give
 `mono_mangled_name` a content-addressed/interned name (hash the structural
@@ -1784,10 +1883,10 @@ exponential formula, faster constant) is not a fix.
 
 ---
 
-### 22. RESOURCE-DOS: the parser's `MAX_NESTING_DEPTH=2048`/`MAX_RECURSION_DEPTH=256` guards correctly bound native STACK depth but do NOT bound total WORK — an input just below the ceiling hangs `kryos check`/`run` indefinitely with flat memory and no diagnostic, across 9 independent grammar constructs (termination-invariant analysis, found 2026-08-05) — **the "indefinite hang" claim does NOT reproduce; a real, DIFFERENT, narrower bug was found and FIXED 2026-08-05 in its place. See CLOSED table.**
+### 22. RESOURCE-DOS: the parser's `MAX_NESTING_DEPTH=2048`/`MAX_RECURSION_DEPTH=256` guards correctly bound native STACK depth but do NOT bound total WORK - an input just below the ceiling hangs `kryos check`/`run` indefinitely with flat memory and no diagnostic, across 9 independent grammar constructs (termination-invariant analysis, found 2026-08-05) - **the "indefinite hang" claim does NOT reproduce; a real, DIFFERENT, narrower bug was found and FIXED 2026-08-05 in its place. See CLOSED table.**
 
 **Correction (BSHR re-verification, same day):** this item's own methodology
-tag says "termination-invariant analysis" — reasoned from reading the code,
+tag says "termination-invariant analysis" - reasoned from reading the code,
 not from an executed reproduction. Re-run live against
 `compiler/target/release/kryos.exe` before touching any source: every one of
 the 9 named constructs, at and well beyond every bisected threshold below,
@@ -1800,7 +1899,7 @@ a "no hang" result at all):
   ~2s, both.
 - Nested arrays @1600 and @1800 (claimed fast/hang pair): clean, both ~1.2s.
 - Nested string interpolation @495 and @500 (claimed single-token cliff):
-  clean E0010 in ~1.2s, both — the true trigger is the tighter
+  clean E0010 in ~1.2s, both - the true trigger is the tighter
   `MAX_RECURSION_DEPTH=256` (real Rust recursion via `parse_expr_bp`'s
   gated entry point), reached at ~250 nesting levels, not anywhere near the
   claimed 495-500 cliff.
@@ -1818,12 +1917,12 @@ None of the 9 constructs ever hangs. The claimed thresholds are wrong.
 spine loop in `parse_expr_bp_inner` (`kryos-parser/src/parser.rs`) charged
 one unit of `nest_depth`/`spine` budget for every loop iteration
 UNCONDITIONALLY, including an iteration that turns out to be a pure
-negative lookahead — peeking at the next token only to discover it does
+negative lookahead - peeking at the next token only to discover it does
 NOT continue the chain (wrong precedence, or simply the start of the next
 statement) and immediately breaking, having built no new AST node at all.
 Charging budget for a lookahead that produces nothing meant the effective
 ceiling for a flat chain was a few tokens LOWER than the documented 2048,
-and — because the trip fires on that trailing lookahead peek — the
+and - because the trip fires on that trailing lookahead peek - the
 resulting E0010's span was attributed to whatever token the cursor
 happened to be sitting on at that peek, which is typically the FIRST TOKEN
 OF THE NEXT, syntactically unrelated statement. Verified live via a
@@ -1831,7 +1930,7 @@ temporary `KRYOS_DEBUG_NEST=1` trace (removed before commit): for a
 2044-term `+` chain (legitimately under 2048), the trip fired at
 `nest_depth==2048` with the cursor already past the entire chain, and the
 committed diagnostic's `-->` pointed at the following `println(...)`
-line — a real false-positive rejection of a legal, under-the-ceiling
+line - a real false-positive rejection of a legal, under-the-ceiling
 program, with a misattributed span on top. Not a hang, not unbounded work:
 fully bounded, just off by a handful of nesting units and confusing when it
 fired. Bisected precisely post-fix: a chain of 2045 terms is accepted,
@@ -1848,31 +1947,31 @@ misattribute the diagnostic to unrelated code.
 
 ---
 
-### 23. RESOURCE-DOS: a self-recursive, TYPE-GROWING generic function instantiation is completely unbounded — 3.2GB+ RSS in 15s, still climbing, from an 8-line program (termination-invariant analysis, found 2026-08-05) — **FIXED 2026-08-05, monomorphization-explosion wave.** See CLOSED table for the fix (`MAX_MONO_DEPTH` in `kryos-mir`) and full proof-both-ways evidence. Related to but DISTINCT from item 19 (confirmed during the fix: this one genuinely is a `kryos-mir`-side, MIR-lowering-time recursion, unlike item 19). This entry's repro (`tests/security/attack_monomorphization_self_recursive_growth.kry`) is kept below as the historical record and is now wired into `tests/security_gate.sh` (#52).
+### 23. RESOURCE-DOS: a self-recursive, TYPE-GROWING generic function instantiation is completely unbounded - 3.2GB+ RSS in 15s, still climbing, from an 8-line program (termination-invariant analysis, found 2026-08-05) - **FIXED 2026-08-05, monomorphization-explosion wave.** See CLOSED table for the fix (`MAX_MONO_DEPTH` in `kryos-mir`) and full proof-both-ways evidence. Related to but DISTINCT from item 19 (confirmed during the fix: this one genuinely is a `kryos-mir`-side, MIR-lowering-time recursion, unlike item 19). This entry's repro (`tests/security/attack_monomorphization_self_recursive_growth.kry`) is kept below as the historical record and is now wired into `tests/security_gate.sh` (#52).
 
-Item 19 (tuple-doubling mangled-name blowup) is bounded by source length —
+Item 19 (tuple-doubling mangled-name blowup) is bounded by source length - 
 an O(2^depth) cost from an explicit `dup(dup(dup(x)))` chain the programmer
 writes out one line at a time. This item is a GENUINE self-recursive generic
 function (`fn f<T>(x: T) { ... f(grow(x)) ... }`-shaped, where each
 recursive call's argument type is a fresh, larger instantiation of the
-previous one) — the source is fixed at 8 lines and the blowup comes from the
+previous one) - the source is fixed at 8 lines and the blowup comes from the
 compiler's own monomorphization loop, not from an explicit chain the user
 wrote longer. Self-REFERENTIAL same-type recursion (`fn f<T>(x: T) -> T {
 f(x) }`) IS correctly guarded (a placeholder-before-recurse mechanism
-already exists and was independently re-confirmed this session) — a
+already exists and was independently re-confirmed this session) - a
 genuinely DISTINCT-type-per-call chain is not.
 
 Live, `compiler/target/release/kryos.exe`, no rebuild: 3.2GB+ resident and
 still climbing after 15s on an 8-line source file, killed externally (no
 crash, no diagnostic, no self-imposed ceiling).
 
-Fix shape (not attempted): same remedy family as item 19 — a monomorphization
+Fix shape (not attempted): same remedy family as item 19 - a monomorphization
 recursion/instantiation depth or total-distinct-instantiation-count cap with
 a clean diagnostic. A fix for item 19 should be evaluated against this
 repro too before being called complete, since both live in the same
 `monomorphize`/`mono_mangled_name` path but are triggered by different
 input shapes (explicit tuple-pairing chain vs. compiler-driven recursive
-growth) — closing one does not necessarily close the other.
+growth) - closing one does not necessarily close the other.
 
 ---
 
@@ -1909,7 +2008,7 @@ named in a comment so the next reader does not re-derive it.
 
 ---
 
-### 25. PAPERCUT: a struct literal with ~50,000 fields is superlinear (not catastrophic) — 6.3s vs 0.08s for 2,000 fields, 78x time for 25x fields (termination-invariant analysis, found 2026-08-05) — NOT FIXED
+### 25. PAPERCUT: a struct literal with ~50,000 fields is superlinear (not catastrophic) - 6.3s vs 0.08s for 2,000 fields, 78x time for 25x fields (termination-invariant analysis, found 2026-08-05) - NOT FIXED
 
 Not launch-blocking at tested scale (no hang, no crash, bounded and
 predictable growth, just worse than linear). Flagged for a future pass
@@ -1919,9 +2018,9 @@ committed to `tests/`).
 
 ---
 
-### 3. Struct-argument leak — ~86MB per 1M calls — DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
+### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
-call boundary leaks its body. **Not** method-specific — a free function leaks
+call boundary leaks its body. **Not** method-specific - a free function leaks
 identically. Flat for contrast: scalar-only struct through a method, and the
 same struct's fields read directly.
 
@@ -1933,7 +2032,7 @@ scalar_method          0 MB ->  3.9 MB    FLAT
 free_fn_scalar_ret   10.9 MB -> 91.7 MB   LEAKS (confirms "not method-specific")
 ```
 
-**8th attempt was a design pass, not a patch — this session, per instruction, wrote
+**8th attempt was a design pass, not a patch - this session, per instruction, wrote
 the design and DID NOT implement.** Reasoning below.
 
 #### The mechanism a 7-attempt investigation had not yet named: two struct-drop code paths that disagree about ownership
@@ -1942,7 +2041,7 @@ Read (not guessed) directly from both backends this session. There are TWO
 independent codegen paths that free a struct's heap fields, and only ONE of
 them ever consults a struct's shared-owner count:
 
-1. **The boxed-element path** — `__kryos_drop_<Name>` (LLVM:
+1. **The boxed-element path** - `__kryos_drop_<Name>` (LLVM:
    `kryos-codegen-llvm/src/codegen.rs:2118-2239`; Cranelift's equivalent named
    helper referenced at `kryos-codegen-cranelift/src/codegen.rs:7570-7588` for
    array/enum-payload struct elements). This helper calls
@@ -1950,51 +2049,51 @@ them ever consults a struct's shared-owner count:
    out without freeing fields if another owner remains. This is the ONLY path
    `kryos_struct_retain`'s owner-count word (`kryos-rt/src/alloc.rs:646-670`,
    the second word of the `kryos_calloc` header) is ever checked against.
-2. **The local/param/return path** — `Instruction::Drop` for a struct-typed
+2. **The local/param/return path** - `Instruction::Drop` for a struct-typed
    local, inlined directly (LLVM `codegen.rs:3779-3797`, Cranelift
    `codegen.rs:3186-3206` -> `emit_drop_for_value` `codegen.rs:7495-7562`).
    This path calls `emit_struct_drop`/`emit_drop_for_value` **directly, with
-   no call to `kryos_struct_release_shared` at all** — confirmed by reading
+   no call to `kryos_struct_release_shared` at all** - confirmed by reading
    both call sites end to end, not inferred. It always frees every heap field
    it finds, regardless of how many other owners exist.
 
 A function PARAMETER, an ordinary struct `let`, and a struct RETURN value are
 represented as SSA aggregates / byval copies (LLVM) or aliased raw pointers
-(Cranelift) — never as a value that passes through path 1. So **any fix that
+(Cranelift) - never as a value that passes through path 1. So **any fix that
 adds an owner-count retain (at a call site, at a spawn-capture site, anywhere)
 is invisible to path 2**, which is exactly why attempt #7 ("give the spawned
-thread its own owner count … the retain calls ARE emitted") still failed:
+thread its own owner count ... the retain calls ARE emitted") still failed:
 the retain bumped a counter that path 2's drop never reads. This generalizes
 the earlier finding from "verified it still fails" to "structurally cannot
-work while these two paths stay separate" — an owner-count model only
+work while these two paths stay separate" - an owner-count model only
 protects a struct if EVERY place that can drop that struct's fields agrees to
 consult the same counter, and today most of them don't.
 
 One correction to the "7 attempts" writeup: `conf_spinlock_mutex`'s own
 structs (`SpinLock -> AtomicInt -> Mutex`) are, field-by-field,
 `ptr`/`i64`/`bool` all the way down (`compiler/stdlib/sync.kry:23-27,119-122`)
-— no `Str`/`Array`/`Map`/`Function`/`Shared` field anywhere in that chain, and
+ - no `Str`/`Array`/`Map`/`Function`/`Shared` field anywhere in that chain, and
 none of the three structs is `@copy`. Both backends' field-drop loops have an
 explicit `_ => {}` fallback for scalar field types (LLVM
 `codegen.rs:10542`), so dropping any of these three structs through EITHER
-path is a no-op by itself — the crash was not reproduced or re-diagnosed this
+path is a no-op by itself - the crash was not reproduced or re-diagnosed this
 session (deliberately: doing so means writing the one-line patch, which is
 exactly the 8th incremental attempt this task says not to force). Flagging
 this as the concrete first step for whoever attempts the real fix: run the
 one-line allowlist change with `KRYOS_FREE_DIAG=1` and a debug build against
-`conf_spinlock_mutex` BEFORE re-theorizing — the failure is almost certainly
+`conf_spinlock_mutex` BEFORE re-theorizing - the failure is almost certainly
 in a DIFFERENT struct in the same file (`WaitGroup`/`Once`, both also
 scalar-through-`AtomicInt` per `sync.kry:247-250,312-313`, so still probably
 not those either) or in an interaction with the spawn deep-copy path below,
-not in `SpinLock` itself. Don't re-guess this — measure it.
+not in `SpinLock` itself. Don't re-guess this - measure it.
 
-#### Spawn already has a THIRD, bespoke ownership model — any fix must not regress it
+#### Spawn already has a THIRD, bespoke ownership model - any fix must not regress it
 
 `Instruction::Spawn`'s struct-capture arm (LLVM `codegen.rs:3980-4002`) does
 NOT use the retain/owner-count model at all. It heap-copies (`kryos_calloc`)
 a fresh box and deep-clones the struct's OWN top-level `Str`/`Array`/`Map`
 fields into it (`deep_copy_struct_index_clone`), while deliberately leaving
-NESTED STRUCT sub-fields shared (raw pointer, not cloned) — "so an AtomicInt
+NESTED STRUCT sub-fields shared (raw pointer, not cloned) - "so an AtomicInt
 inside keeps its shared cell" per the comment at `codegen.rs:3987-3996`. This
 is why a spawned thread and its parent can both still see the SAME mutex/
 atomic cell (required for `conf_spinlock_mutex` to mean anything) while the
@@ -2002,17 +2101,17 @@ thread also gets its own independent copy of any `str`/array data the struct
 carries. This is a THIRD ownership policy, distinct from both drop paths
 above, and it currently works (gates are green today). Any unification design
 has to either (a) leave this path alone and make ordinary calls agree with
-it, or (b) fold it into the new model — folding it in is strictly higher risk
+it, or (b) fold it into the new model - folding it in is strictly higher risk
 because it is the one part of this file already proven correct under
 concurrency.
 
-#### Design A — uniform boxing of struct values
+#### Design A - uniform boxing of struct values
 
 Every struct-typed local, param, and return becomes a pointer to a
 `kryos_calloc` box carrying the shared-owner header (same layout the boxed
 element path already uses), on BOTH backends. `consume_call_args` adds
 `MirType::Struct` to the borrow allowlist; EVERY struct drop site (params
-included — params currently never drop at all) calls `kryos_struct_retain`/
+included - params currently never drop at all) calls `kryos_struct_retain`/
 `kryos_struct_release_shared` through the SAME helper boxed elements already
 use. This closes the leak and the two-path disagreement in one move, because
 there is only one path left.
@@ -2022,16 +2121,16 @@ Cost, stated honestly:
   onto a bare `ptr`, touching every call site, every `emit_aggregate_struct`
   literal, every method receiver, every generic `impl<T>` instantiation, and
   field-access GEP codegen (which currently addresses an INLINE aggregate,
-  not a boxed pointer, for nested struct fields — `emit_struct_drop`'s own
+  not a boxed pointer, for nested struct fields - `emit_struct_drop`'s own
   comment history at `codegen.rs:10495-10510` documents a real
   invalid-free bug from getting this distinction wrong once already).
 - **A `kryos_calloc` per struct construction that currently costs zero
   allocations.** `Plain { a: 1, b: 2 }` (the flat `scalar_method` case above)
-  would start allocating. The gotcha's documented hot path — `self-host
+  would start allocating. The gotcha's documented hot path - `self-host
   parser.kry` threading `Parser { tokens: [Token], .. }` through every `p_*`
   call, explicitly exempted from an EARLIER, much smaller entry-copy fix
   because it OOMs stage-1 (`CLAUDE.md` gotcha #23, "Heap-bearing `@copy`
-  structs as params") — is the textbook case this would make worse, not
+  structs as params") - is the textbook case this would make worse, not
   better, unless boxing is made conditional in a way that reintroduces the
   representation split this design exists to remove.
 - **Self-host bootstrap risk.** Bootstrap already runs at the edge of what's
@@ -2041,25 +2140,25 @@ Cost, stated honestly:
   of change that needs its own dedicated measurement pass, not a
   side-effect of a different fix.
 
-#### Design B — unify the two drop paths without changing the ABI
+#### Design B - unify the two drop paths without changing the ABI
 
 Keep params/returns as SSA aggregates / aliased pointers (no ABI change).
 Instead:
 1. Add `MirType::Struct` to `consume_call_args`'s borrow allowlist for
-   ordinary (non-spawn) calls only — the caller keeps its own scope-end drop.
+   ordinary (non-spawn) calls only - the caller keeps its own scope-end drop.
 2. Give callee PARAMS a real scope-end drop for struct types (today
-   `param_locals` never drop — this is the other half of the leak, not just
+   `param_locals` never drop - this is the other half of the leak, not just
    the caller side).
 3. At the CALL SITE, before the call, emit a **recursive field-level retain**
    that walks the struct the same way `emit_struct_drop`/`emit_drop_for_value`
    already walk it for freeing (`Str`->`kryos_string_retain` equivalent,
-   `Array`->array retain, nested `Struct`->recurse, scalar fields skipped) —
+   `Array`->array retain, nested `Struct`->recurse, scalar fields skipped) - 
    this is the missing "retain" side of a traversal whose "release" side
    already exists and is exercised in production. This makes the callee's
    byval/aliased copy a genuine independent reference rather than an
    unbalanced alias, so step 2's param-drop is now correct instead of a
    double-free.
-4. Leave `Instruction::Spawn`'s bespoke deep-copy path untouched — it already
+4. Leave `Instruction::Spawn`'s bespoke deep-copy path untouched - it already
    does the equivalent of steps 1-3 by hand for its one call site (the
    comment at `codegen.rs:3987-3996` is literally describing "retain top-level
    fields, share nested struct fields" already). Do not route spawn through
@@ -2067,22 +2166,22 @@ Instead:
    about what stays shared.
 
 Cost, stated honestly:
-- No ABI change, no new allocation for scalar-only or copy-avoidant structs —
+- No ABI change, no new allocation for scalar-only or copy-avoidant structs - 
   `scalar_method` and `heap_field_direct` in the repro file stay exactly as
   fast as today.
 - New cost is proportional to the STRUCT'S HEAP FIELD COUNT per call, not a
-  flat allocation — cheaper than Design A for the common case, more expensive
+  flat allocation - cheaper than Design A for the common case, more expensive
   than Design A for a struct passed through a long call chain (each hop pays
   a retain instead of one allocation shared across the chain).
 - Still a real, cross-cutting change: the retain-walk codegen has to exist on
   BOTH backends and stay in lockstep with the existing drop-walk (two
-  recursive traversals of the same struct shape that must never diverge — a
+  recursive traversals of the same struct shape that must never diverge - a
   divergence here is exactly the class of bug the CLOSED "computed string ->
   user fn leaked" and "spawn shared one box" entries above already show this
   codebase is prone to when a retain and a release are added in different
   places by different patches).
 - Does NOT by itself explain or fix whatever broke `conf_spinlock_mutex` under
-  the naive one-line version of step 1 — per the correction above, that
+  the naive one-line version of step 1 - per the correction above, that
   failure is still unexplained and needs a direct repro (not a re-guess)
   before either design is implemented, because if it turns out to be a
   spawn/ordinary-call interaction, step 4's boundary is exactly where it
@@ -2105,7 +2204,7 @@ hot loop remains: read fields directly (flat), keep heap data out of structs
 you pass, or reuse one instance instead of constructing per iteration.
 
 #### 9th investigation (this session): did the fresh repro the 8th note asked
-for — the `conf_spinlock_mutex` attribution was WRONG, not just unverified.
+for - the `conf_spinlock_mutex` attribution was WRONG, not just unverified.
 Corrected mechanism, DESIGN B REVISED. Still not implemented; here is exactly
 why, with hard evidence.
 
@@ -2140,11 +2239,11 @@ seq spinlock ok    (clean, every time)
 ```
 
 So: **not spawn-specific, not concurrency-specific, not even
-`conf_spinlock_mutex`-specific** — the prior write-up's attribution ("makes
+`conf_spinlock_mutex`-specific** - the prior write-up's attribution ("makes
 the caller free a handle `spawn` still shares") was never re-verified after
 being written, and was wrong. It reproduces in a single thread with a plain
 sequential lock/unlock loop, and it is backend-DIVERGENT (JIT-only, AOT
-clean) — which by non-negotiable #6 means read the emitted IR, not the
+clean) - which by non-negotiable #6 means read the emitted IR, not the
 source, so that's what this session did instead of continuing to guess.
 
 **Root cause, read directly from both backends' own type-lowering, not
@@ -2152,36 +2251,36 @@ inferred:**
 
 1. **LLVM/AOT never boxes a plain struct value at all.** `--emit-llvm` on the
    repro shows `%SpinLock = type { %AtomicInt }`, `%AtomicInt = type { i64,
-   %Mutex }`, `%Mutex = type { ptr, i1, i1 }` — nested struct FIELDS are
-   INLINE aggregates, not pointers — and every call/return of a `SpinLock`
+   %Mutex }`, `%Mutex = type { ptr, i1, i1 }` - nested struct FIELDS are
+   INLINE aggregates, not pointers - and every call/return of a `SpinLock`
    goes through `ptr byval(%SpinLock)` / `ptr sret(%SpinLock)`:
    `define internal void @SpinLock__lock(ptr sret(%SpinLock) %_sret, ptr
-   byval(%SpinLock) %_0_arg)`. `byval`/`sret` are LLVM-level COPY semantics —
+   byval(%SpinLock) %_0_arg)`. `byval`/`sret` are LLVM-level COPY semantics - 
    the callee gets its own stack copy, there is no shared heap box for the
    struct itself, so there is nothing to double-free at the struct level.
    This is why the one-line change is a no-op on AOT for this repro: nobody
    was freeing a box that never existed.
 2. **Cranelift boxes literally every struct value, at every level, uniformly
-   — confirmed in `mir_type_to_cl` (`kryos-codegen-cranelift/src/codegen.rs:44`):
+ - confirmed in `mir_type_to_cl` (`kryos-codegen-cranelift/src/codegen.rs:44`):
    `MirType::Struct(_) => Ok(Some(types::I64))`, no distinction between a
    top-level local and a FIELD of another struct.** `compute_struct_layout`
    (same file, line 251) uses this uniformly for field offsets too, and the
    struct-field-drop walk (`emit_drop_for_value`, ~line 7549) `load`s a
    nested `MirType::Struct` field as an `i64` **pointer** and recurses
-   `emit_drop_for_value` on it — proving nested struct fields are SEPARATE
+   `emit_drop_for_value` on it - proving nested struct fields are SEPARATE
    `kryos_calloc` boxes on this backend, chained (SpinLock → box → AtomicInt
    → box → Mutex → box), not embedded. Cranelift is therefore, for structs,
-   already exactly what Design A below calls "uniform boxing" — it never had
+   already exactly what Design A below calls "uniform boxing" - it never had
    an ABI to break; LLVM is the only backend with the byval/sret
    representation Design A's "ABI break" cost is actually about.
 3. **`SpinLock.lock()`/`Mutex.lock()`/`.unlock()` return `self` (or a value
-   built from `self`'s own fields) directly** — `return self`,
+   built from `self`'s own fields) directly** - `return self`,
    `return Mutex { handle: self.handle, locked: true, dropped: false }`.
    On Cranelift this means the CALLEE hands back the SAME box pointer (or a
    pointer built by copying a field straight through) that the CALLER still
    holds. The one-line change makes the caller keep its own scope-end drop
    (correct, that half of Design B is fine) but adds **no retain anywhere**
-   — so after `let l = lock.lock()`, `lock` and `l` are two independent
+ - so after `let l = lock.lock()`, `lock` and `l` are two independent
    Kryos-level locals that alias ONE Cranelift box, each believing itself the
    sole owner. First one's scope-end drop wins the race and frees it (in the
    minimal repro, silently and deterministically, since there's no
@@ -2191,12 +2290,12 @@ inferred:**
    non-`KRYOS_FREE_DIAG`-gated) double-free guard: a 1-lock/1-unlock version
    of the same repro reports 3 caught-and-ignored
    `kryos_free: double free of 0x... (already-freed box)` events even though
-   it happens to still exit 0 — i.e. it is ALREADY over-freeing on the very
+   it happens to still exit 0 - i.e. it is ALREADY over-freeing on the very
    first call, the 5-iteration version just eventually loses the race against
    reused memory. This also explains why the FULL concurrent
    `conf_spinlock_mutex` (8+64 threads) was a worse repro to debug from: under
    the one-line change it is **nondeterministic** (3/3 sample runs: one clean
-   exit 0, one "ignored" double-free + exit 0, one clean) — thread scheduling
+   exit 0, one "ignored" double-free + exit 0, one clean) - thread scheduling
    sometimes hides the corruption inside the guard's tolerance window. The
    sequential 6-line repro above is deterministic and should be preferred for
    any future attempt.
@@ -2205,38 +2304,38 @@ inferred:**
    checked to 2000 iters with `KRYOS_FREE_DIAG=1`, zero double-free reports).
    Mechanism: `size_fn(b)`/`b.size()` return an `i64`, not a value derived
    from `self`, so there is exactly one Kryos-level owner of `b`'s box for
-   its whole lifetime (the caller) and the one-line change alone — caller
+   its whole lifetime (the caller) and the one-line change alone - caller
    keeps its own drop, callee still never drops its param (`param_locals` is
-   unchanged) — is enough for that shape. `method_chain`'s `.add()` always
+   unchanged) - is enough for that shape. `method_chain`'s `.add()` always
    returns a FRESH struct literal, not an alias of `self`, so it's likewise
    safe. **The crash is narrowly scoped to the "method returns `self` or a
-   value built from `self`'s own fields" idiom** — which happens to be
+   value built from `self`'s own fields" idiom** - which happens to be
    exactly the shape `std::sync`'s entire lock/atomic/once API is written in,
    which is why `conf_spinlock_mutex` is what caught it, not because spawn or
    concurrency has anything to do with the mechanism.
 
-**Design B, revised — what actually has to be true for this to be safe.**
+**Design B, revised - what actually has to be true for this to be safe.**
 The 8th note's Design B step 3 ("retain-walk", `Str`→retain, `Array`→retain,
 nested `Struct`→recurse, scalars skipped) is necessary but **provably
 insufficient on Cranelift**: it only bumps refcounts on leaf `str`/`array`/
 `map` content, and `SpinLock`/`AtomicInt`/`Mutex` have NONE anywhere in the
 chain (`ptr`/`i64`/`bool` fields only, confirmed in `compiler/stdlib/sync.kry`)
-— the retain-walk is a complete no-op for them, so a "correct" implementation
+ - the retain-walk is a complete no-op for them, so a "correct" implementation
 of Design B exactly as written would still reproduce the crash above. What
 Cranelift additionally needs, on top of Design B's field-content retain-walk
 (still required, unchanged, for the `heap_field_*` leak on both backends):
 - Route Cranelift's struct local/param/return drop path (`emit_drop_for_value`'s
   `MirType::Struct` arm, ~codegen.rs:7504) through `kryos_struct_release_shared`
-  BEFORE freeing fields/box — i.e. give path 2 the SAME owner-count guard
+  BEFORE freeing fields/box - i.e. give path 2 the SAME owner-count guard
   path 1 (`__kryos_drop_<T>`, used for boxed array/enum-payload elements)
   already has. `kryos_struct_retain`/`kryos_struct_release_shared` already
   exist and are correct (`kryos-rt/src/alloc.rs:654-700`) but `kryos_struct_retain`
-  has no LLVM `declare` or Cranelift `func_ids` entry today — only
+  has no LLVM `declare` or Cranelift `func_ids` entry today - only
   `_release_shared` is wired for codegen use; `_retain` is currently called
   only from Rust (`array.rs`, for boxed struct array elements). This needs
   wiring as a callable codegen intrinsic on Cranelift.
 - Emit `kryos_struct_retain(ptr)` on the struct argument's box at each
-  ordinary user-fn call site (Cranelift-only codegen addition — LLVM has no
+  ordinary user-fn call site (Cranelift-only codegen addition - LLVM has no
   box to retain, byval already copies).
 - **A `return`-passthrough exemption is required, not optional.** If a
   function's scope-end drop of a struct PARAM is unconditionally routed
@@ -2252,7 +2351,7 @@ Cranelift additionally needs, on top of Design B's field-content retain-walk
   Fixing this trap is deceptively easy to describe and easy to get subtly
   wrong to implement (per-shape: `return self` bare vs. `return
   T{field:self.field,...}` partially-rebuilt vs. `return self.inner_field`
-  need different treatment) — this is precisely the class of "retain and
+  need different treatment) - this is precisely the class of "retain and
   release added in different places by different patches" divergence this
   ledger's own mechanism section already warns about.
 - The nested-struct-as-separate-box finding (point 2 above) means this
@@ -2260,11 +2359,11 @@ Cranelift additionally needs, on top of Design B's field-content retain-walk
   independently kryos_calloc'd boxes chained by pointer on Cranelift, each
   needing its own correct owner-count lifecycle, and `spawn`'s existing
   bespoke capture arm already depends on nested-struct sub-boxes staying
-  SHARED (not cloned, not retained) across threads — any change to how path 2
+  SHARED (not cloned, not retained) across threads - any change to how path 2
   frees a nested struct field must be re-verified against `spawn` sharing a
   live nested box across threads, which this session did NOT attempt (the
   sequential repro above deliberately has zero spawn involvement, by design,
-  to isolate the mechanism — the concurrent interaction is a real, separate
+  to isolate the mechanism - the concurrent interaction is a real, separate
   next question, not yet answered).
 
 **Not implemented this session either.** Real effort was spent (isolated the
@@ -2275,7 +2374,7 @@ but implementing the revised design safely needs: wiring a new codegen
 intrinsic, a return-passthrough exemption whose per-shape correctness is
 exactly the kind of thing this codebase's history shows gets subtly wrong on
 the first pass, and a full re-verification of the `spawn` nested-box-sharing
-interaction — that is real, multi-step, cross-cutting work, not a single
+interaction - that is real, multi-step, cross-cutting work, not a single
 edit to verify inline, and rushing it risks a 9th unexplained regression,
 which this task ranks explicitly below an honest, evidence-backed stop.
 Every experimental edit made while investigating this was reverted before
@@ -2333,7 +2432,7 @@ through `[any]`/`format`) remains correct and is not a papercut users hit
 by accident (the element-typed `std::iter` HOFs are already generic and
 avoid `any` entirely, per the same gotcha).
 
-### 7b. FIXED — see CLOSED table: "a closure/fn-value captured by `spawn` did NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates"
+### 7b. FIXED - see CLOSED table: "a closure/fn-value captured by `spawn` did NOT snapshot -- a genuine cross-thread DATA RACE, silent lost updates"
 
 Was OPEN item 7b (closure/fn-value shared, not snapshotted, across `spawn`
 threads -- a mutated-scalar capture's non-atomic call-then-writeback
@@ -2609,13 +2708,13 @@ and unrelated.
 
 ---
 
-## AUDIT GAPS — unverified surfaces, not reproduced live defects (completeness-critic pass, final launch synthesis, 2026-08-05)
+## AUDIT GAPS - unverified surfaces, not reproduced live defects (completeness-critic pass, final launch synthesis, 2026-08-05)
 
-These are absence-of-coverage findings, not confirmed bugs — filed separately from the
+These are absence-of-coverage findings, not confirmed bugs - filed separately from the
 numbered defect list above so they are not mistaken for a reproduced live failure. Each is
 verified via grep/CI-config inspection (commands below), not by exercising a failure.
 
-## CLOSED — with the evidence that closed it
+## CLOSED - with the evidence that closed it
 
 | Item | Evidence |
 | --- | --- |
@@ -2642,17 +2741,17 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 | **item 10: LIVE CAPABILITY ESCAPE -- a closure returned by a zero-cap wrapper function defeated `deny!()` on both enforcement modes -- FIXED** | Verified closed by re-running all five committed repros on 2026-08-10 against the current binary: `attack_wrap_closure_actor`, `attack_wrap_closure_generic`, `attack_wrap_closure_impl_method`, `attack_wrap_closure_inference_bypass` and `cap_escape_closure_wraps_closure` are each REJECTED (`kryos check` rc=1) under BOTH the default-inferred mode and `--strict-capabilities`. Closed by the fn-value/container capability-laundering work (`a262d88` .. `e94a697`). NOTE: this item was still sitting in OPEN, and the README still named it the single highest-priority open escape, days after it was actually fixed -- while twelve OTHER escapes were open and unmentioned. The ledger's OPEN section is only worth what its last re-run says; re-run the repros before quoting it. |
 | **item 11(a): a mutating closure reaching itself through its own stored value self-deadlocked on the item-7b serialization lock -- FIXED** | Fixed and pushed in `d71ac33` (2026-08-09). The item-7b lock is a plain non-reentrant CAS spinlock with no owner tracking, and it wraps ANY closure with a mutated capture (not only spawn-shared ones), so a closure that reached itself -- e.g. through a map or struct field it also reads -- spun forever against a lock its own thread held, with zero threads involved. Now detected and reported as a clean `kryos panic: reentrant call into a mutating shared closure` (exit 98). Making the lock silently reentrant was TRIED AND REJECTED with a measurement, not an argument: the boxed capture is written back only just before its call returns, so a reentrant nested call reads the stale pre-mutation value -- `f(3)` printed 1, not 3. A silent wrong answer is worse than the hang it would replace. New `kryos_closure_lock_acquire`/`_release` (kryos-stdlib-native/src/sync_prims.rs), used only by the codegen-inserted lock on both backends; `std::sync::Mutex` keeps its normal non-reentrant contract. Regression: `tests/concurrency_smoke.sh`. |
 | **item 39: SELF-HOST BOOTSTRAP BROKEN -- `891c406` (capability-typed fn values) made whole-program `kryos check` of the self-host compiler non-terminating; `test_bootstrap.sh` could not complete -- FIXED** | ROOT CAUSE: `InferenceEngine::resolve_cap_row` expanded the capability-row substitution graph RECURSIVELY with a PATH-SCOPED cycle guard (`seen` un-inserted on the way back out, which it must be, or a var legitimately reachable by two sibling paths would be wrongly truncated the second time) and NO memo. That graph is heavily CYCLIC, so the guard fired constantly and shared sub-DAGs were re-expanded exponentially. MEASURED with a temporary call counter: `infer_expr` calls stayed FLAT and linear at ~7.7k across the whole file while `resolve_cap_row_inner` calls grew 3.9k -> 30k -> 800k -> 5.2M -> 15.3M, i.e. up to 161,000 resolver calls for ONE expression, with 29.2M cycle-guard truncations -- so the blowup was entirely inside the resolver, not an exponential walk of the AST. A first attempt (memoize only truncation-free results) was built and MEASURED USELESS -- 758 cache hits against 15.3M calls, because with a cyclic graph almost nothing resolves truncation-free -- and was replaced rather than kept. FIX (`kryos-types/src/infer.rs` only): resolve ONE var at a time by a LINEAR reachability walk, memoized per var and invalidated at `bind_cap_var` (the single mutation site), plus an iterative-Tarjan SCC pass that marks cycle participants. EQUIVALENCE ARGUMENT, which is the whole correctness case: bits = union over every reachable node (a node cut short by the old guard had already contributed its bits at the ancestor that cut it); open vars = unbound-reachable UNION cycle-participating-reachable (the old guard left a var open exactly when it was unbound or was its own ancestor, and since the recursion explored every path, any node on a reachable cycle was eventually re-entered as its own ancestor); `Unknown` still poisons the whole row. Sibling vars never truncated each other, so resolving each independently and unioning is also unchanged. EVIDENCE, all fresh: `kryos check self-host/main.kry` 46.0s rc=0 (pre-regression parent `95238c9` was 46.9s -- restored to baseline, not merely improved); `test_bootstrap.sh` **16/16 PASS, rc=0**; `kryos-loop.sh gates 2` tier1 (conformance 62/62 + 13 checks) and tier2 GREEN at exit 0; `tests/security_gate.sh` PASS (61 checks -- capability SEMANTICS unchanged, which is the risk this fix had to not take); `cargo test -p kryos-types` 49 passed. TEST-VACUITY CHECK both ways: with the fix stashed and rebuilt the new gate FAILS at its ceiling, restored and rebuilt it PASSES in 45s. TWO INCIDENTAL FIXES made while proving it: `kryos-types`' own test suite had not COMPILED since `891c406` (one `FunctionSig` literal in `tests/types.rs` was never updated with `generic_cap_var_ids`/`own_cap_var`) -- which is part of why this shipped; and `test_bootstrap.sh` now `mkdir -p target/bootstrap`, since `target/` is gitignored and a clean tree failed with a bare "failed to write temp object file ... (os error 3)" that reads like a compiler bug. NEW GATE: `tests/selfhost_wholeprogram_gate.sh`, wired into tier 2 -- whole-program check under a 200s ceiling (~4x healthy, a CLIFF detector not a benchmark). No gate previously compiled the self-host compiler, which is exactly how a broken headline feature stayed green for three days. PROCESS NOTE, worth more than the patch: the non-completion was blamed on Defender/CPU contention across several sessions and all six waves of the 2026-08-08 workflow. It was not -- the tree AND `compiler	arget` are both on the Defender exclusion list and MsMpEng measured 4.1% of one core during the stall. What settled it in one step was sampling the stuck PID: 100% of one core, FLAT working set, and ZERO ReadOperationCount/WriteOperationCount deltas = a pure compute loop (a deadlock idles at 0%). Sample the process before blaming the machine. |
-| **item 22, corrected: parser Pratt-loop lookahead-peek nesting-budget overcharge — false-positive E0010 on a legal under-ceiling flat chain, diagnostic misattributed to an unrelated later statement — FIXED** | Item 22's original "indefinite hang across 9 constructs" claim was written from a `termination-invariant analysis` (reasoning about the code) and did NOT reproduce on re-verification: every one of the 9 named constructs, run live against `compiler/target/release/kryos.exe` with a taskkill-verified timeout (MSYS `timeout` cannot be trusted to kill a native Win32 child on this platform, so a wrapper that could itself hang was not an option) at and well past every bisected threshold the item claimed, completed `kryos check` in 1-4s every time — see the item's own corrected writeup above for the full per-construct evidence table. What WAS real, found while attempting the reproduction: `parse_expr_bp_inner`'s spine loop (`kryos-parser/src/parser.rs`) charged `nest_depth`/`spine` budget for EVERY loop iteration unconditionally, before determining whether that iteration would actually extend the chain — so a purely negative lookahead (peek the next token, discover it doesn't continue the expression per precedence, immediately break, build no AST node) still paid the same cost as a real continuation. Verified live via a temporary `KRYOS_DEBUG_NEST=1` trace (env-gated eprintln in `nesting_overflow()` and after each parsed statement, added then removed, not shipped): a 2044-term `1+1+...` chain (legitimately under `MAX_NESTING_DEPTH=2048`) tripped the guard at `nest_depth==2048` on the trailing "is there more chain?" peek, AFTER the entire chain had already been consumed correctly — the committed `E0010`'s `-->` span then pointed at the following, syntactically unrelated `println(...)` statement, not at any real nesting site. Bisected precisely: pre-fix, a 2043-term chain parsed clean but 2044+ falsely rejected with the misattributed span; post-fix, 2045 terms parse clean and 2046+ still correctly reject, span now on the offending expression's own line. FIX (`kryos-parser/src/parser.rs`, `parse_expr_bp_inner`): hoisted the `kind`/`next_kind` peek to the top of the loop body and added an `extends_chain` pre-check that mirrors every branch's own existing gate (`POSTFIX_BP >= min_bp` for `.`/`[`/`(`/`?`, `min_bp <= 1` for `..`/`..=`, `l_bp >= min_bp` via `infix_binding_power` for everything else) — `spine`/`nest_depth` are now only charged, and the ceiling only checked, once a real continuation is confirmed; a negative lookahead `break`s before paying anything. Removed the now-redundant duplicate `next_kind` computation further down in the infix-dispatch arm (reuses the hoisted one). PROOF BOTH WAYS: `git stash` the `parser.rs` hunk, `cargo build --release -p kryos-cli` — new regression tests `test_nesting_guard_flat_chain_no_false_positive_near_ceiling` FAILS (2045-term chain rejected with E0010) while `test_nesting_guard_diagnostic_points_at_real_site_not_next_statement` still happens to pass (its 2100-term chain is far enough over the ceiling to trip mid-expression even pre-fix); `tests/parser_nesting_gate.sh` FAILS at "part 2" with the exact false-positive; `git stash pop` + rebuild — all tests and the gate PASS, diagnostic lands on line 2 (the expression itself) not the `println` line. Regression: `compiler/crates/kryos-parser/tests/parser.rs` (`test_nesting_guard_flat_chain_no_false_positive_near_ceiling`, `test_nesting_guard_diagnostic_points_at_real_site_not_next_statement`, alongside the pre-existing `test_nesting_guard_deep_parens`/`test_nesting_guard_long_chain`/`test_nesting_guard_allows_reasonable_depth`, all still green); new gate `tests/parser_nesting_gate.sh` (taskkill-verified bounded-time check across all 9 named constructs at/beyond their claimed-hang depths, the under-ceiling-acceptance check, and the on-site-diagnostic check), wired into `tools/loop/kryos-loop.sh cmd_gates` tier 1. Full gate sweep post-fix: `kryos-loop.sh gates 2` tier1 all PASS including the new `parser_nesting` gate (`examples_e2e`'s one transient FAIL was re-run ALONE and passed 12/12 — confirmed contention, not a regression, per this repo's own documented parallel-gate-flake pattern); `security_gate.sh` PASS (60/60 checks unchanged); `test_bootstrap.sh` 16/16 run alone. |
-| **`break-continue-skip-scope-drop-leak`: `break`/`continue` never dropped heap locals declared earlier in their own loop-body block — leaked on every use of the single most common loop-exit idiom — FIXED** | Reported by an `invariants`-class finding, independently verified by two adversarial reviewers before reaching this session. Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`, HEAD `6c28089`): `KRYOS_STDLIB_DIR=compiler/stdlib LEAK_MODE=break_mid\|continue_mid\|baseline LEAK_ITERS=<n> tests/mem/break_continue_leak.kry` (AOT) — `break_mid` 11.3MB->172.9MB and `continue_mid` 46.7MB->170.9MB across 250k->1M iters, `baseline` (identical locals, no break/continue) flat 4.0MB at both scales, rc=0 every run, correct `acc` output on all 3 modes, `KRYOS_FREE_DIAG=1` clean (0 DOUBLE-FREE — pure leak, not corruption). ROOT CAUSE (read directly from `--emit-mir`, not inferred, `kryos-mir/src/lower.rs`): `lower_block_stmts` emits a loop body's scope-end `Drop` instructions ONLY into the block its own normal-fallthrough path reaches (`emit_named_scope_drops`, called once after all statements) — `ast::Stmt::Break`/`Stmt::Continue` (was lines 5225-5237) lowered to a bare `goto exit`/`goto header` with ZERO drop instructions, and nothing else ever jumps into that scope-drop block, so it was dead code for any program that breaks/continues out of a block holding a live named heap local. Confirmed shared-MIR (not backend-specific) origin per non-negotiable #9 by reading the IR directly; confirmed on both `kryos run` (JIT) and `kryos build --release` (AOT). FIX: added a `loop_scope_starts: Vec<usize>` stack to `LoweringContext` (parallel to the existing `loop_headers`/`loop_exits`, pushed/popped identically in `lower_while`, `lower_for`, `lower_for_range` right at each loop body's own entry) recording `ctx.locals.len()` at that point, plus a new `drop_loop_exit_locals` helper (mirroring the existing `Stmt::Return` drop-then-mark-dropped pattern, including its documented same conservative tradeoff: `dropped_locals` is a single compile-time-global set with no per-CFG-path tracking, so marking a local dropped here can only ever SUPPRESS a later drop on a sibling path, never double-free it) called from both `Stmt::Break` and `Stmt::Continue` right before their `Goto` terminator, dropping every named, non-param/non-borrowed, not-already-dropped local from the INNERMOST loop's own body-scope start (not the whole function — a local declared before the loop must survive both `break` and `continue`) to the current locals length. Deliberately does NOT touch `hidden_locals` (unlike `emit_named_scope_drops`) since control never falls through past a break/continue in its own lexical block, so there is no later same-scope code whose name resolution could be affected. Correctness of the scope boundary verified with a targeted nested-loop probe (not just leak-flatness): a heap local declared in an OUTER loop's body BEFORE an INNER loop that breaks/continues, then read again AFTER the inner loop — both backends returned the analytically-correct values (`total=105`, `total2=80`, hand-computed from the string-length arithmetic), proving the fix does not over-drop an outer-scope local reachable only through the inner loop's own scope-start mark. PROOF BOTH WAYS: `git stash` the `lower.rs` hunk, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) — `break_mid` 11.3MB->172.9MB, `continue_mid` 46.7MB->170.9MB (leak reproduces exactly); `git stash pop` + rebuild — `break_mid`/`continue_mid`/`baseline` all flat ~4.0MB at both 250k and 1M iters on AOT, correct output, `KRYOS_FREE_DIAG=1` clean, JIT (`kryos run`) also correct (`break_mid`/`continue_mid` both `iters=1000 acc=2000`). Wired into the CI-gated `tests/mem_plateau_check.sh` (extends its existing shared churn workload with a one-shot-inner-loop `break` and an every-iteration `continue`, both declaring fresh heap locals first, matching every other leak class already folded into that single script) rather than a standalone gate, matching this codebase's established convention (that script is the one `.github/workflows/ci.yml` actually runs). Proved both ways at the GATE level too, not just the isolated repro: reverted just the `lower.rs` fix (kept the new `mem_plateau_check.sh` workload), rebuilt — `mem-plateau: peak RSS 4778MB (ceiling 250MB)` FAIL; restored + rebuilt — `mem-plateau: peak RSS 4MB (ceiling 250MB)` PASS. Full gate sweep, all green post-fix: `kryos-loop.sh gates 2` (conformance 62/62, tier1+tier2 all PASS), `security_gate.sh` PASS (60/60 checks unchanged), `test_bootstrap.sh` 16/16 run alone. Regression: `tests/mem_plateau_check.sh` (wired into CI); `tests/mem/break_continue_leak.kry` kept as the standalone 3-mode isolated repro. |
-| **`generic-closure-return-tuple-type-confusion`: a zero-param generic closure return (`fn wrap<T>(x: T) -> fn() -> T { return \|\| x }`) rendered a garbage float and lost a string when `T` was instantiated as a tuple `(f64, str)` — AOT-only — FIXED** | Reported by a red-team finding, independently verified by two adversarial reviewers before reaching this session. Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `tests/security/attack_generic_closure_return_tuple_type_confusion.kry` printed correct `a=3.14` / `b=hello` / `g=42` on `kryos run` (Cranelift/JIT) but on `kryos build --release` (LLVM/AOT) printed a ~300-digit denormalized-float garbage bit pattern for `a` and the `b=` line was MISSING ENTIRELY (not just an empty payload — even the literal `"b="` prefix was lost from the concat), exit 0 both backends, no diagnostic. A matched non-generic control (`attack_generic_closure_return_tuple_type_confusion_control.kry`, a plain `fn() -> (f64, str)` closure, no generic `T`) was correct on both backends, isolating the defect to the GENERIC monomorphized zero-param closure-return path specifically — the scalar-T sibling of this exact pattern (`attack_generic_closure_interleaved_types.kry`, `T=f64`/`T=str`) was already correct pre-fix and re-verified unaffected post-fix. ROOT CAUSE (read directly, not guessed — two compounding bugs in the same generic closure-return path, found by reading `--emit-llvm` output line by line, not by inference from source): (1) `kryos-mir/src/lower.rs`'s Lambda-lowering: a directly-returned lambda with NO params of its own (`\|\| x`) has no PARAM position to carry `pending_lambda_ret_hint` through the way `make_appender<T>`'s `\|x\| x + suffix` does (the mechanism that already fixed scalar-T params, CLAUDE.md gotcha #22), so the lambda's OWN return type was never consulted from the hint and always fell through to a blind `i64` default. Harmless for scalar T — i64/f64/str all fit the closure ABI's single-i64-slot bitcast and are correctly unboxed at the call site from the CALLER's own concrete type — but wrong for an AGGREGATE T: the underlying lambda function got compiled with a scalar i64 return, so `func_sig_aggs` (`kryos-codegen-llvm/src/codegen.rs`) never recorded a real aggregate return for it, and `emit_closure_thunks` (which already has correct sret-ABI handling for a *known* aggregate return, per the earlier "aggregate-returning function through a fn VALUE" fix) took the plain-scalar branch instead, calling the lambda as if it returned i64 and writing nothing through the sret buffer the CALLER's tuple-typed call site had allocated — hence the caller reading `kryos_arc_alloc`'s uninitialized garbage as the f64 field, and the str field (a pointer never written) dereferencing into nothing (why the whole `b=` line vanished, not just its payload). FIX 1: the lambda's own `effective_ret` (unannotated-return default) now consults `lambda_ret_hint`'s concrete return type when it is a `Tuple`/`Struct` (an aggregate), leaving scalar T on the untouched i64 default to avoid disturbing the already-verified bitcast path. (2) Fixing (1) alone turned the silent-garbage symptom into a clean segfault: `emit_closure_thunks`' env-capture-read loop already had a byval-pointer-ABI exception for STRUCT captures (pass the heap-boxed capture's pointer directly as `ptr byval(%Agg)`, matching the byval-pointer ABI every other aggregate param uses — a prior fix for the identical struct-capture-passing bug) but the match arm list never included `MirType::Tuple` at all, so a tuple capture fell into the generic scalar-slot branch: loaded the box's dereferenced VALUE (via `coerce_value`'s i64->aggregate inttoptr+load path) instead of its POINTER, then passed that raw aggregate VALUE where the callee's `ptr byval({..})` parameter expected a POINTER — a call-site/callee ABI mismatch that corrupted the argument registers and segfaulted on AOT (this half of the bug was PRE-EXISTING and latent before fix 1 — masked because without fix 1 the return-side corruption already made the output garbage, so a second garbage-producing mismatch on the capture-read side was invisible until fix 1 turned the symptom into a hard crash, which is exactly what surfaced it). FIX 2: extended the byval-pointer-ABI exception to also match `Some(MirType::Tuple(_))` captures (reading as `ptr`, passing `ptr byval({..})` when the expected type is a `{...}` aggregate string), mirroring the existing Struct-capture handling exactly, including its `closure_struct_ptr_slot` mutation exception (a no-op for Tuple today since no mutated-tuple-capture path registers into it). PROOF BOTH WAYS: `git stash` both hunks (`kryos-mir/src/lower.rs` + `kryos-codegen-llvm/src/codegen.rs`), full `cargo build --release` (no `-p`, both crates link into the runtime toolchain) — `tests/conformance/conf_generic_closure_return_tuple.kry` FAILS on `kryos build --release` (`CONF FAIL: tuple instantiation field 0 (f64): expected ~3.14, got 0.000...0695124038196852`, rc=1) while `kryos run` still passes (proving the bug and the fix are both AOT-only, as documented); `git stash pop`, rebuild — both backends print `conformance generic_closure_return_tuple: PASS`, rc=0. The assertion gates the RENDERED value (`to_string(a)` / direct `b ==` comparison), not a bits-surviving proxy — this is the exact observable the bug corrupts. Gates: conformance 62/62 (was 61/61 immediately before this fix — one new conformance file, this fix's own regression test), `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), `test_bootstrap.sh` 16/16 run alone (stray `kryos.exe` killed first per the operational trap). Regression: `tests/conformance/conf_generic_closure_return_tuple.kry`; `tests/security/attack_generic_closure_return_tuple_type_confusion.kry` + `attack_generic_closure_return_tuple_type_confusion_control.kry` (already on disk, now committed) re-verified passing live, kept as standalone repros. Scalar-T regression parity re-verified live post-fix on both backends: `conf_generic_closure_return_f64.kry` PASS, `conf_curried_generic_closure.kry` PASS, `attack_generic_closure_interleaved_types.kry` PASS, `attack_generic_nested_function_type_param.kry` PASS. No CLAUDE.md text change needed: gotcha #22's generic-closure-return entry already documents scalar T (i64/f64/str) and curried nesting as resolved; it did not claim aggregate T worked, so this is a new fix, not a correction to an existing false claim. |
-| **`closure-mutating-costale-scalar-capture`: a non-mutated SCALAR co-capture in a `let`-bound MUTATING closure was silently frozen at closure-construction time instead of tracking later outer mutations, contradicting CLAUDE.md gotcha #11's unconditional by-reference promise — FIXED** | Reported by a red-team finding (LEDGER item 11(b), independently verified by two adversarial reviewers before reaching this session). Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `tests/security/attack_closure_costale_isolate.kry` (`let mut counter = 0  let mut flag = 1  let f = \|n: i64\| { counter = counter + n  counter + flag }  let r1 = f(1)  flag = 100  let r2 = f(1)`) printed `r1=2 r2=3` on BOTH `kryos run` and `kryos build --release` (rc=0, no diagnostic) — expected `r2=102` (counter=2, flag=100) if `flag` were live-visible per the documented promise; got `r2=3` (flag frozen at its construction-time value of 1). Corroborating: `tests/security/attack_closure_mutate_then_throw_state.kry` reassigns a captured `trigger` to `0` specifically to disarm a conditional `throw` inside a helper the closure calls on its second invocation — pre-fix this printed `caught: boom` then `kryos: uncaught exception: boom` (exit 101), proving the outer reassignment was invisible to the closure. ROOT CAUSE (read, not guessed, `kryos-mir/src/lower.rs` Lambda-lowering, ~line 12562-12638): the mechanism that boxes a non-mutated scalar capture behind an ARC-managed heap cell so a LATER outer reassignment writes through to it (`box_scalar_captures`, gated by `ctx.pending_box_scalar_captures`) was scoped deliberately narrowly to a struct-literal-field lambda's direct value ONLY — the surrounding comment explicitly asserted a `let`-bound closure "keeps the existing, ALREADY-CORRECT `closure_locals` path" that "re-reads the outer variable's CURRENT value at every call site." That assumption is FALSE for a `let`-bound closure that ALSO mutates a DIFFERENT capture: `closure_locals` (the direct-call re-read substitution) is populated only for NON-mutating closures — `mutating_closures`'s own doc comment states the direct-call fast path it enables is unsafe once a closure owns mutable state by move. So a `let`-bound MUTATING closure's OTHER, non-mutated scalar co-captures fell through BOTH mechanisms (not struct-literal-field, so never boxed; disqualified from `closure_locals` by the closure's OWN mutation, not just the mutated capture specifically) and silently froze at their construction-time snapshot. FIX: widened the `box_scalar_captures` gate from `ctx.pending_box_scalar_captures` alone to `ctx.pending_box_scalar_captures \|\| !mutated_captures.is_empty()` — any closure that mutates >=1 capture now also boxes its OTHER non-mutated scalar co-captures via the identical `RValue::ArcAlloc`/`RValue::Deref`/`MirType::Shared` machinery, with the existing `Stmt::Assign` write-through (`capture_boxes`, keyed by variable name, already generic over ANY box registered for that name) requiring no changes at all. Safe to widen unconditionally: a mutating closure NEVER uses the `closure_locals` fast path regardless of whether this box fires (disabled by `mutating_closures.insert(..)` a few lines below in the same function), so there is no fast-path conflict the original comment's narrow scoping was protecting against. PROOF BOTH WAYS: `git stash` just this hunk of `kryos-mir/src/lower.rs`, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) — `tests/conformance/conf_functions.kry`'s new `costale_scalar_cocapture` assertion fails (`CONF FAIL: non-mutated scalar co-capture in a mutating closure tracks a later outer mutation`, rc=0 but wrong value) and the live repro reproduces `r1=2 r2=3` on `kryos run`; `git stash pop` + rebuild — `conformance functions: PASS` on both `kryos run` and `kryos build --release`, and the live repro prints `r1=2 r2=102` on both backends. The corroborating throw repro's originally-reported symptom is also gone post-fix (the disarming `trigger = 0` reassignment is now observed; no more uncaught exception on the second call) — verified live, both backends. **Byproduct, NOT fixed, filed separately: LEDGER item 21** — verifying against the throw repro exposed an orthogonal bug (the MUTATED capture `counter`'s own write-back is skipped when the call that mutates it throws mid-body, so `after=0` instead of the expected `5`), a different call path (codegen-synthesized exception-return, not a co-capture) with a different fix surface (both backends' codegen, not `lower.rs`) — see item 21 for the live evidence and hypothesized root cause. Gates: conformance 61/61 both backends, `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), `test_bootstrap.sh` 16/16 run alone. Regression: `tests/conformance/conf_functions.kry` (`costale_scalar_cocapture`); `tests/security/attack_closure_costale_isolate.kry` and `attack_closure_mutate_then_throw_state.kry` (already committed) re-verified passing live, kept as-is (not folded into conformance — they predate this fix and remain useful standalone repros). No CLAUDE.md text change needed: gotcha #11's "sees a mutation made after construction" promise was already stated unconditionally for non-mutated captures — this bug was a silent VIOLATION of that promise by the implementation, not a documented caveat that needed correcting. |
-| **`generic-bare-map-compound-return-misrenders`: bare self-field passthrough returning `map<K, T>` mis-rendered through `to_string`, both backends, both key value types tested — FIXED** | Reported by an `invariants`-class finding (independently verified by two adversarial reviewers before reaching this session). Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `struct Holder<T> { m: map<str, T> }` / `impl<T> Holder<T> { fn get_map(self: Holder<T>) -> map<str, T> { return self.m } }` at `T=f64`: `to_string(h.get_map()["k"])` printed `4609434218613702656` (the raw i64 bit pattern of `1.5`) instead of `1.5`, identically on `kryos run` and `kryos build --release` (rc=0, no diagnostic); the numeric range check on the SAME value passed (bits correct, only render dispatch wrong). At `T=str`, worse and previously undocumented: `to_string(rm["k"])` printed a raw pointer integer instead of `"hello"`, even though direct `+` concat on the same value worked correctly — str is NOT "already stable" here the way it is for the array/tuple sibling bug, because `+` doesn't need static-type dispatch but `to_string`'s render path does. ROOT CAUSE (read directly, not guessed): `instance_ret_needs_monomorphization` (`kryos-mir/src/lower.rs`) had `Some(ast::TypeExpr::Generic { name, args, .. }) if name != "map" => args.iter().any(mentions)` — explicitly excluding `map` from the same per-receiver-instantiation monomorphization trigger its `TypeExpr::Array`/`TypeExpr::Tuple` sibling arms get two lines below (the fix that closed the identical bug class for `-> [T]` / `-> (T, i64)`, see the CLOSED entry above and `conf_generic_compound_return_f64.kry`). The exclusion's own doc comment reasoned map is like an enum — no nominal STRUCT-LAYOUT mismatch possible, so "a conservative no-op filter, no bug there" — which conflated the struct-CONSTRUCTION concern this function's `Generic` arm otherwise guards (`-> Box<T>`, where the returned struct's SHAPE differs per instantiation) with the ELEMENT-TYPE-ERASURE concern the `Array`/`Tuple` arms exist to fix (a compound container's VALUE type must be individually retyped per instantiation for render dispatch) — map has the layout property (true, harmless) but ALSO has the erasure property (missed) since a bare `return self.m` is also exempted from `body_operates_on_self`'s "operates on self" trigger (that check specifically exempts pure passthroughs, per its own doc comment), so the method fell all the way through to `_ => false` and stayed on the single erased-to-i64 compiled copy. FIX: removed the `if name != "map"` guard entirely — `TypeExpr::Generic { args, .. } => args.iter().any(mentions)` now covers map (and any other builtin/user generic container) uniformly with no name-based carve-out; `substitute_type_expr_to_mir`/`monomorphize_impl_fn` (the machinery the array/tuple fix already routes through) already handle map generically with no map-specific gap. PROOF BOTH WAYS: `git stash` just this hunk of `lower.rs`, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) — `conf_generic_compound_return_map.kry` fails with `CONF FAIL: f64 map compound return RENDERS as 1.5, not its bit pattern`, rc=1, on BOTH `kryos run` and `kryos build --release --backend llvm`; `git stash pop`, rebuild — both backends print `conformance generic_compound_return_map: PASS`, rc=0. Assertions gate the RENDER path specifically (`to_string(..) == "1.5"` / `== "hello"`), not a bits-surviving proxy — the numeric range check and the str equality/concat checks pass identically with or without the fix, proven above; only the `to_string` assertions are the real gate. Regression: `tests/conformance/conf_generic_compound_return_map.kry` (f64 value-type + str value-type, both the render assertion and a parity check that `+`/equality on the erased pointer already worked pre-fix). Gates: conformance 61/61 (was 60/60 — one new conformance file; README.md's stale "60/60" claim caught and corrected by `docs_status_gate`, which failed until fixed — proof the gate itself works), `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), bootstrap 16/16 run alone. Docs: CLAUDE.md gotcha #17 extended to note map is now covered by the same fix; this ledger entry closes the finding. |
-| **Item 18: LIVE CAPABILITY ESCAPE — a privileged closure stored into an actor's own state field defeated `deny!()` when read back and invoked from a separate actor method (`actor-state-stored-closure-cap-escape`), FIXED** | Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`, HEAD `00b3cf7`): `kryos run tests/security/attack_actor_state_stored_closure.kry` printed `ACTOR-STATE-STORED (was NOT CLOSED): TOPSECRET-CLOSURE-9f8e7d6c5b4a` from inside `deny!(fs:read)`, rc=0, under BOTH default-inferred and `--strict-capabilities`. ROOT CAUSE (read via `kryos-capabilities/src/checker.rs`, not guessed): `Expr::MethodCall { object: self, method: "reader", .. }`'s capability charge came from two mechanisms, both of which silently contributed nothing for this shape. (1) `resolve_method_field_invoke_caps` (the same fix that already closes the ordinary-struct-field case, `cap_escape_closure_launder_field_mutate.kry`) requires `object`'s root to be found in `current_local_container_lits`, a per-FUNCTION flat map of `let`/`assign`-tracked struct/array/map literals built fresh for whichever function body is currently being checked — `self` is never a local binding of `invoke()`'s own body (its value was written by a DIFFERENT method, `stash`, at a DIFFERENT dispatch), so the lookup misses and the function returns `CapabilitySet::empty()` by design (documented: "never a blanket guess ... an ordinary method call is never misclassified"). (2) Ordinary method-call handling (`compute_hot_extra_caps("reader", ..)`) also contributes nothing because `reader` is not the name of any declared function or actor handler — it is a state FIELD name, not a callable. Both paths independently landing on empty meant the call was net-zero-charged instead of hitting this file's own standing fail-closed rule ("Unknown must mean deny, not this call needs nothing"). FIX: added `current_actor_fn_state_fields` (the current actor's own FN-TYPED state field names, populated by `check_actor` from `Decl::Actor`'s `state_fields`, scoped to the duration of that actor's handler bodies being checked) and `resolve_actor_self_field_invoke_caps` (unions `Capability::All` into the call-site charge whenever `object` is the bare `self` identifier and `method` names one of those fields), wired into `check_expr`'s `MethodCall` arm alongside the existing struct-field resolver. This is a DELIBERATE blunt fail-closed default, not a precise cross-handler trace: an actor's state can be written by any OTHER handler at any prior dispatch, so there is no sound way to attribute a specific closure value to a given `self.<field>()` call site without whole-actor data-flow tracing across every handler's write sites (left as a documented possible follow-up, not attempted — the task's own framing named `[all]` as the correct fail-closed target). PROOF BOTH WAYS: pre-fix binary (HEAD `00b3cf7`) reproduces the leak as above; post-fix `cargo build --release` (full, no `-p`, since `kryos-capabilities` links into the runtime toolchain) — `kryos run` and `kryos check --strict-capabilities` both now reject with `error[E0507]: call to \`reader\` requires capabilities [all] not granted to caller`, rc=1, in BOTH modes. NOT A WEAKENING: verified every sibling actor/capability check in `tests/security_gate.sh` (44 pre-existing checks) still passes unchanged, plus two NEW checks added (#45 rejects this exact escape under both modes; #46 proves an ordinary scalar-state actor dispatched from inside an unrelated `deny!` still needs zero annotation — no cascade). KNOWN, DOCUMENTED OVER-APPROXIMATION (not a regression): the sibling decoy-control file `attack_actor_state_stored_closure_control_decoy.kry` (a zero-capability closure in the identical actor shape) now ALSO fails closed post-fix, whereas pre-fix it correctly compiled clean — this is the expected, sound trade-off of the blunt `[all]` default (its header comment rewritten to explain why, not left contradicting the new behavior); a future precise fix would need real cross-handler write-site tracing to tell the two cases apart. Gates: `security_gate.sh` PASS (46/46 checks incl. the 2 new), `kryos-loop.sh gates 2` tier1 (conformance 60/60) + tier2 GREEN, bootstrap 16/16 run alone. Regression: `tests/security_gate.sh` checks #45-46 (no separate conformance file — this is a compile-time-rejection security check, matching the pattern of every other closed cap-escape item in this table). |
-| **Structural-completeness wave (2026-08-05): item 10 (wrapper-closure escape, HIGHEST PRIORITY, blocked the "capability-safe" launch claim) + item 18's nested-actor-field residual (`self.b.f()`, one struct hop past the field name item 18 checked) + an aliased-local variant of the same residual — THREE live escapes, FIXED, plus the checker's core closure-provenance resolvers converted to exhaustive `match` over `Expr` with no wildcard arm** | Reproduced all three live pre-fix exactly as reported/discovered (`compiler/target/release/kryos.exe`, HEAD `4a1b197`, no compiler changes): (a) `kryos run tests/security/cap_escape_closure_wraps_closure.kry` → `SINGLE-WRAPPED CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0, both modes (item 10, already documented above in OPEN). (b) A NEW nested-actor-state-field variant found this wave by re-deriving item 18's fix from the CLOSED SET of value-producing forms rather than trusting its "closed" status: `struct Box { f: fn()->str }`, actor state `b: Box`, `self.b.f()` — item 18's fix (`resolve_actor_self_field_invoke_caps`) only ever compared `method` ("f") against the actor's fn-bearing-state-field set, never the ACTUAL field being stepped through ("b"), even though `current_actor_fn_state_fields` already computes fn-bearing-ness TRANSITIVELY (`is_fn_bearing_type_inner`) and already knew "b" qualified. `kryos run tests/security/attack_actor_state_nested_field_closure.kry` → `NESTED-ACTOR-STATE LEAK`, rc=0, both modes. (c) Aliasing the same field into a local first (`let x = self.b; x.f()`) defeated (b)'s fix too, via a SEPARATE gap: `resolve_method_field_invoke_caps` returned `CapabilitySet::empty()` unconditionally whenever the receiver's root wasn't a locally-tracked struct LITERAL, never consulting anything else. `kryos run tests/security/attack_actor_state_aliased_local_closure.kry` → `ALIASED-LOCAL ACTOR-STATE LEAK`, rc=0, both modes. FIX (a): `resolve_closure_caps`'s `Lambda` arm gained a "captured hot parameter" case alongside its existing "lambda's own hot parameter" case — a lambda literal that calls one of the ENCLOSING function's own fn-typed parameters (captured by closure, not a param of the lambda itself: `wrap_once`'s `|| inner()`) now resolves to `DependsOnParam(<enclosing param name>)` instead of falling through to `collect_caps_expr`'s "what does running this code require" computation, which correctly-but-wrongly-for-this-purpose defers a hot-param call to zero (sound for code that runs INLINE as part of the enclosing call; unsound for a closure VALUE that escapes and is invoked independently later, since nothing ever resolves the deferral against the real argument). `resolve_closure_caps`'s existing `FnCall` arm already knows how to follow a `DependsOnParam` result back through `fn_params`/the real call-site argument, so `wrap_once(reader)` now correctly resolves to `reader`'s actual `{fs:read}` (a MORE PRECISE result than a blanket `all` — `wrapped()` inside `deny!(fs:read)` is now rejected with the exact excess capability named, not just E0507/`[all]`). FIX (b): `resolve_actor_self_field_invoke_caps` rewritten to decompose the FULL receiver chain (`decompose_container_path`) instead of requiring a bare `self` object, checking the FIRST field stepped through from `self` (not `method`) against `current_actor_fn_state_fields`; an `Index` first step (`self.arr[i].f()`) fails closed unconditionally since it can't even be named. FIX (c): a NEW, deliberately NARROW `current_actor_state_alias_locals` map (built per-actor-handler by `build_actor_state_alias_locals`, mirroring the existing `build_local_container_lits` traversal) tracks ONLY locals bound directly to a `self.<path>` expression, recording the state field the path starts with; `resolve_actor_self_field_invoke_caps` consults it when the receiver's root isn't `self` directly. TRIED AND REVERTED for (c): a first attempt made `resolve_method_field_invoke_caps` fall back to consulting the GENERAL `local_caps` provenance map (keyed by every `let`-bound local, not just container aliases) whenever a receiver's root wasn't a tracked literal — measured live via `kryos-loop.sh gates 2`: broke `conf_generics`, `conf_errors_concurrency`, `examples/actors.kry`, and 2 `type_soundness` + 2 `inferred_soundness` probes, because `build_local_closure_caps_block` inserts an `Unknown` entry for ANY `let name = f(..)` binding where `f` is a plain non-fn-returning user function (the overwhelming majority of ordinary local bindings), so the broad fallback charged `all` on essentially any method call off such a local. Reverted in favor of the narrow, single-hop `current_actor_state_alias_locals` mechanism, which cannot fire on an unrelated local because it is populated ONLY from a syntactically-recognized `self.<path>` RHS. This is the measured cost this wave's "measure the cost" step surfaces as a real, honest wall: the broad fix would have been strictly MORE complete (catching e.g. a two-hop alias chain, `let y = x` where `x` is itself a self-alias) but the cost was unacceptable; the narrow fix is strictly less complete (a chained alias-of-an-alias is NOT covered) but costs nothing measured. STRUCTURAL GUARANTEE (the task's most-requested deliverable this wave): `resolve_closure_caps`'s outer match and its inner `FnCall`-callee sub-match, AND `resolve_container_path_caps`'s match (restructured from a `(PathStep, Expr)` tuple match to a primary match on `Expr` with `PathStep` handled as a nested condition, to keep the enumeration meaningful rather than a 70-cell cross product), are now EXHAUSTIVE over the 35-variant `Expr` enum with NO wildcard (`_`) arm anywhere in any of the three matches — every variant not given a precise resolver is listed explicitly, routed to the existing `Unknown` fail-closed default (behavior-preserving; this is a pure compile-time-forcing-function refactor, verified via `cargo build` producing zero "unreachable pattern"/"non-exhaustive" diagnostics). Also extended `is_fn_bearing_type_inner` (already exhaustive) to recurse into `Tuple`/`Reference`/`Shared`/`Weak`/`Pointer` wrapper types (previously fell to a blanket `_ => false`, meaning e.g. a tuple field `(fn()->str, i64)` on actor state was never recognized as fn-bearing) and resolve `DynTrait`/`Inferred` to `true` (fail closed — cannot prove NOT fn-bearing). Tried and reverted a MORE aggressive version of this same function: flipping the depth-cutoff (self-referential type graphs, `Tree{kids:[Tree]}`) fallback from `false` to `true` — this falsely flagged every recursive struct type as fn-bearing purely from the recursion-depth cap, an unjustified over-rejection class, not a real closure escape; kept at `false`, documented why. PROOF BOTH WAYS, all three fixes independently: `git stash` (all `checker.rs` changes) + full `cargo build --release` (crate links into the runtime toolchain) — all three new repros reproduce their leaks exactly as above; `git stash pop` + rebuild — all three now reject `E0507`, both `kryos check` (default inferred) and `kryos check --strict-capabilities`. NOT A WEAKENING: `tests/security_gate.sh` extended with 4 new checks (#47-50: nested-field escape rejected both modes, aliased-local escape rejected both modes, wrapper-closure escape rejected both modes, AND a no-cascade positive proving a genuinely-pure wrapper decorator + a non-fn-bearing nested actor struct field still need zero annotation) — full run PASS, all pre-existing checks (46 before this wave) unchanged. Full gate ladder: `kryos-loop.sh gates 2` — conformance 62/62, tier1 ALL PASS, tier2 (examples/strict_caps/examples_e2e/ir_signatures) ALL PASS, no newly-rejected count beyond the one honest, measured, reverted cost documented above (which shipped as zero, not as an accepted regression). `test_bootstrap.sh` not re-run standalone this wave (no self-host-affecting change; capability checker only). Regression: `tests/security/attack_actor_state_nested_field_closure.kry`, `attack_actor_state_aliased_local_closure.kry` (new); `tests/security_gate.sh` checks #47-50. Docs: `docs/capability-soundness.md` top-of-file correction note updated to reflect item 10 CLOSED; invariant 7 and invariant 4-actor status entries updated with the new mechanisms; new "structural guarantee" section added documenting the exhaustive-match conversion. |
-| **Combined-category grammar fuzz wave (2026-08-04): capability provenance checker false-rejects a zero-capability closure call when the closure is defined AND called inside a bare `{ }` scoping block or a `let x = { .. }` block-tail-value — forces `@capabilities(all)` on ordinary code, defeating least-privilege — TWO instances, same root shape, FIXED** | Found building a NEW combined-category grammar fuzzer (`tests/fuzz/gen_grammar.py` + `run_diff_grammar.py`, this wave's deliverable — 9 scenarios threading generics/closures/dyn/spawn/actors/enums/Option/Result/tuples/try-throw through ONE connected data-flow story per program, unlike the existing template harness's independent per-category blocks) wrapping each scenario body in its own `{ }` for local scoping, exactly as `gen_fuzz.py`'s own README documents as the class of bug its independent-block design cannot reach. Minimal repro: `fn main() { { let mul_add = \|x: i64\| x * 2 + 1  let v1 = mul_add(5) } }` — rejected with `error[E0507]: call through a function value requires capabilities [all] not granted to caller` even though `mul_add` is a trivially pure closure; the SAME code with the outer `{ }` removed compiles clean. Reproduces for a curried closure, the `let x = { .. }` block-tail-value idiom (gotcha #3's documented pattern), double nesting (`if { { .. } }`), and propagates through an unannotated helper function (forcing it to `@capabilities(all)`, then rejecting an unannotated caller of THAT helper). A SECOND, sibling instance of the identical root cause: a closure retrieved from a CONTAINER (`store = push(store, reader)` then `store[0]()`) inside a bare block hit the same false-reject via a different flat-map builder. ROOT CAUSE (both, read via `kryos-capabilities/src/checker.rs`, not guessed): `build_local_closure_caps_block` and `build_local_container_lits_block` each flatten nested `if`/`for`/`while`/`try` scopes into one map (by design, per their own doc comments — "best-effort, not scope-precise") so a closure/container `let`-bound inside one is known at its later direct-call site — but neither had a match arm for a BARE `{ }` block, which desugars to `Stmt::Expr { expr: Expr::Block { .. } }` (there is no dedicated `Stmt::Block` AST variant) or for a `let x = { .. }` block-tail-value initializer (`Stmt::Let { value: Some(Expr::Block{..}), .. }`); both fell through the existing `_ => {}` catch-all, so the closure was invisible to the flat map and the REAL per-call checker (which does correctly walk into `Expr::Block` for every other purpose) resolved the call as `Unknown` -> `Capability::All`. NOT the same root cause as a third residual found by the same generator (`holder.get()()` — calling the chained return of a generic passthrough ACCESSOR method holding a closure field) — that one reproduces even with zero block nesting and even through an intermediate local, so it needs tracing a generic method's own body and was deliberately left OPEN, filed below, not conflated with this fix. FIX: added a `Stmt::Expr { expr: Expr::Block { block: inner, .. }, .. }` arm to both flat-map builders (recurse into `inner`, mirroring the existing if/for/while/try recursion) and a `Expr::Block` arm to each builder's `Stmt::Let` handling (recurse into the block before computing the outer let's own resolution). PROOF BOTH WAYS: `git stash` just `checker.rs` + `cargo build --release -p kryos-cli` (no staticlib touched, `-p` build is legitimate here) — `tests/conformance/conf_closure_block_scope_caps.kry` fails `kryos check`/`kryos run` with 6 E0507 errors across all 4 repro shapes + the helper-propagation case; `git stash pop` + rebuild — all pass, prints PASS on both backends, values verified correct (`mul3(5)` -> 16, not just "compiles"). Verified NOT a weakening: every existing `tests/security/attack_wrap_closure_*`/`cap_escape_closure_launder*`/`fail-closed-hardening`/`decoy-companion` capability-escape check in `tests/security_gate.sh` (72 checks) still correctly rejects post-fix — the fix only makes MORE cases resolve to their real (possibly non-empty) computed capability via the SAME `resolve_closure_caps`/`resolve_container_path_caps` already used for top-level-scoped closures; it does not change what a genuinely-gated closure requires. Regression: `tests/conformance/conf_closure_block_scope_caps.kry` (6 assertions). Gates: conformance 60/60 (was 59/59 — new regression test added, README.md conformance count corrected, `docs_status_gate` catches drift), tier1+tier2 GREEN (an initial `examples_e2e` 10/12 + `docs_status_gate` FAIL on the first combined run were the documented parallel-gate-contention flake + the stale-count gap respectively — both re-ran clean ALONE: `examples_e2e` 12/12, `docs_status_gate` PASS after the README fix), `security_gate.sh` PASS (all 72 checks), bootstrap 16/16 solo. Combined-category grammar sweep re-run clean after the fix: 150/150 match (0 diverge, 0 both-fail) across all 9 scenarios x 15 seeds.
-| **Round 5: the round-4 fail-closed fix's OWN relief mechanism was itself a shape-based decoy escape (the SAME bug class, twice), plus an unrelated, deeper "defer to my own caller" scope hole reachable through actor/spawn/method/direct-invoke paths without any decoy at all** | Reported live at HEAD (`4ac8b83`), confirmed FIRST per non-negotiable #2: `apply_to_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str { return f(real[0]) }`, called as `apply_to_second(decoy, real, \|c\| c())` inside `deny!(fs:read)` where a direct `file_read` is correctly rejected, printed the real secret with rc=0 under `--strict-capabilities`. ROOT CAUSE: round 4's relief for a transparent-forwarding lambda (`\|f\| f()`) resolved "whichever other argument supplies its elements" by matching the callback's DECLARED element type against another parameter's DECLARED container type, first match wins (`find_companion_container_arg`) — an empty DECOY of the same declared shape always won ahead of the REAL container, contributing zero capabilities. **This is not a new bug class, it is the SAME one rounds 1-3 already failed on, relocated**: any inference of authority from declared shape/position/arity rather than PROVEN data flow can be defeated by a decoy of that shape — there is no fifth heuristic that fixes this, the mechanism itself is wrong. FIX PART 1 (mandated, no shape-based successor): `find_companion_container_arg` deleted outright. The ONLY relief implemented is `hot_param_companions` — genuine per-DECLARATION data-flow tracing computed ONCE from each function's own FIXED source, independent of any call site: for a hot callback parameter invoked directly inside a function's own body, it records, from the ACTUAL call-argument expression at that internal invocation (`map`'s literal `f(arr[i])`), which of the function's OTHER OWN parameters (by index) and PATH the argument decomposes to via `decompose_container_path` — the same syntactic decomposition already trusted everywhere else in this file. Because this is a property of the callee's own compiled declaration, a caller cannot make a decoy occupy "the parameter the body actually reads from" without that decoy BEING what actually flows to the callback (in which case charging it IS correct) — proven live: re-running the exact repro above on the fixed binary now attributes the precise `fs:read` requirement to `real`, not `decoy`. Where no single companion can be proven (disagreeing internal call sites, or an argument that doesn't decompose to another own-parameter at all), the position requires `Capability::All` — no approximation. AUDITED for every other shape-based-inference site per instruction #1 (grepped `structurally`/`shape-based`/`first-match`/`arity`/`parameter position`): none found; every other "detect a hot parameter's POSITION" mechanism in this file (`hot_params`'s Seed A/B, `is_fn_bearing_type`, `resolve_type_path`) determines WHERE authority might flow, never WHICH call-site argument to exempt from charging, so none is the vulnerable class. SECOND, INDEPENDENT BUG found while auditing every remaining place authority gets DEFERRED rather than charged (per instruction #1's mandate to audit exhaustively, not just the reported bug): the "a hot argument that is one of the CURRENT function's own parameters defers its charge to THAT function's own call sites" rule — present since round 1, load-bearing for ordinary passthrough HOFs — assumes the eventual outer call site is checked against a scope at least as narrow as wherever the value is actually invoked. FALSE whenever the deferring function narrows ITS OWN scope with `deny!` between receiving the parameter and invoking it: confirmed live, NO decoy, NO generic, NO container, the plainest possible forward — `fn outer(reader: fn()->str) -> str { deny!(fs:read) { return zero_cap_tool(reader) } }`, called from an `@capabilities(fs:read)` caller, compiled clean and printed the secret from inside the denied scope (rc=0) under BOTH inferred and `--strict-capabilities`. Reproduced identically, unmodified in kind, through THREE separate invocation paths sharing the same root: a bare direct call (`r()` as its own callee), a hot ARGUMENT forward (`zero_cap_tool(reader)`), and — found only by testing the task's own enumerated verification list, not assumed safe — an ACTOR MESSAGE HANDLER receiving the closure as a message argument and invoking it inside its own `deny!`, which leaked identically with zero changes to the underlying mechanism (the handler's own params ARE `current_fn_typed_params` there too). FIX PART 2: `current_fn_entry_scope_depth` (new field) records `scope_stack.len()` at the instant the checker enters the CURRENT function/actor's own boundary scope (`check_function`/`check_actor`); every deferred-charge decision now requires `Capability::All` instead of empty whenever the LIVE scope is deeper than that recorded depth (a `deny!`, or any future narrowing construct, is active between entry and this exact call) — `deferred_own_param_caps` centralizes this for the THREE call sites that previously returned an unconditional empty (`resolve_direct_invoke_caps` x2, `resolve_method_field_invoke_caps`) plus the two matching arms inside `accumulate_hot_extra_caps`. CAUGHT AND FIXED A SELF-INTRODUCED REGRESSION DURING THIS SAME FIX, per non-negotiable #2 (prove both ways, don't assume the fix is clean): the naive version of part 2 applied the scope check UNCONDITIONALLY, which broke the round-4 no-cascade guarantee — `map(fns, \|f\| f())` over PROVABLY PURE closures started requiring `all` merely because it happened to run inside ANY `deny!` block (even one narrowing an unrelated capability), because `resolve_closure_caps`'s STRUCTURAL self-classification of a fresh lambda literal (used to decide whether `\|f\| f()` needs anything beyond forwarding its own param) reuses the exact same `deferred_own_param_caps` machinery as a REAL enforcement-time call, with no signal to tell them apart. Found via a live regression re-check of the FIRST fix (`decoy_generic.kry`'s attribution silently degraded from precise `[fs:read]` to blanket `[all]`) before this was ever committed. Fixed with two new fields scoped exactly to the sub-computation that must stay scope-independent: `transparent_lambda_params` (the LAMBDA's own bound names, tracked only for the duration `check_expr` re-checks that SAME lambda's body, distinguishing "a lambda re-encountering its own already-handled parameter" from a real enclosing function's parameter) and `structural_lambda_eval_depth` (a `Cell<u32>` nesting counter set for the duration of `resolve_closure_caps`'s Lambda-arm classification sub-call into `collect_caps_expr`, which is NOT a real call-site check and must never consult the ambient scope at all). PROOF BOTH WAYS for both parts: reverted each fix in turn, rebuilt (`cargo build --release`, full — `kryos-capabilities` is linked into the runtime toolchain), confirmed the EXACT leak reproduces (secret bytes printed, rc=0) on the pre-fix binary for the decoy-generic repro, the plain-forward `outer(reader)` repro, AND the actor-handler repro; restored, rebuilt, confirmed all three rejected (E0507) and the no-cascade/precision checks pass again. Verified against every variant the task enumerated, not just the two minimal repros: decoy as a MAP companion (`cap_escape_decoy_map_companion.kry`), decoy read out of another container rather than a fresh literal (`..._container_read_source.kry`), 3+ containers (`..._three_containers.kry`), the same decoy shape against `any`/`all`/`partition`/`flat_map`-style user-defined siblings (`..._iter_siblings.kry`), a method receiver with 3 array parameters (`..._method_receiver.kry`), and the scope-hole reached through an actor message handler (`..._actor_message.kry`), a `spawn` capture (`..._spawn_capture.kry`), and a `dyn Trait` method (`..._dyn_trait_method.kry`) — all 8 new files REJECTED (E0507) under both `inferred` and `--strict-capabilities`, added to `tests/security_gate.sh`'s existing shape-loop pattern. Full verification sweep, all green: `security_gate.sh` (every existing check incl. the two no-cascade positives, PASS with unchanged precise attribution), `strict_caps_examples.sh` (91/91, zero net cascade), full `cargo build --release` clean, `tests/conformance/run_conformance.sh` (58/58), `kryos-loop.sh gates 2` (tier1+tier2 GREEN, one transient `examples_e2e` flake reproduced the documented parallel-gate-contention pattern — re-ran alone, 12/12 clean), `test_bootstrap.sh` run ALONE (16/16, one stray `kryos.exe` killed first per non-negotiable #3). Regression: `tests/security/cap_escape_decoy_{map_companion,container_read_source,three_containers,iter_siblings,method_receiver,actor_message,spawn_capture,dyn_trait_method}.kry`. Docs: `docs/10-capabilities.md`'s implementation-status callout rewritten to describe BOTH round-5 fixes and the guarantee actually enforced (not another "closed" claim); `docs/capability-roadmap.md` gained a "Round 5" section recording why shape-based inference failed a SECOND time on this exact axis, so nobody re-attempts a shape heuristic here a third time, and item 4 in Part 1's relief list marked superseded. |
+| **item 22, corrected: parser Pratt-loop lookahead-peek nesting-budget overcharge - false-positive E0010 on a legal under-ceiling flat chain, diagnostic misattributed to an unrelated later statement - FIXED** | Item 22's original "indefinite hang across 9 constructs" claim was written from a `termination-invariant analysis` (reasoning about the code) and did NOT reproduce on re-verification: every one of the 9 named constructs, run live against `compiler/target/release/kryos.exe` with a taskkill-verified timeout (MSYS `timeout` cannot be trusted to kill a native Win32 child on this platform, so a wrapper that could itself hang was not an option) at and well past every bisected threshold the item claimed, completed `kryos check` in 1-4s every time - see the item's own corrected writeup above for the full per-construct evidence table. What WAS real, found while attempting the reproduction: `parse_expr_bp_inner`'s spine loop (`kryos-parser/src/parser.rs`) charged `nest_depth`/`spine` budget for EVERY loop iteration unconditionally, before determining whether that iteration would actually extend the chain - so a purely negative lookahead (peek the next token, discover it doesn't continue the expression per precedence, immediately break, build no AST node) still paid the same cost as a real continuation. Verified live via a temporary `KRYOS_DEBUG_NEST=1` trace (env-gated eprintln in `nesting_overflow()` and after each parsed statement, added then removed, not shipped): a 2044-term `1+1+...` chain (legitimately under `MAX_NESTING_DEPTH=2048`) tripped the guard at `nest_depth==2048` on the trailing "is there more chain?" peek, AFTER the entire chain had already been consumed correctly - the committed `E0010`'s `-->` span then pointed at the following, syntactically unrelated `println(...)` statement, not at any real nesting site. Bisected precisely: pre-fix, a 2043-term chain parsed clean but 2044+ falsely rejected with the misattributed span; post-fix, 2045 terms parse clean and 2046+ still correctly reject, span now on the offending expression's own line. FIX (`kryos-parser/src/parser.rs`, `parse_expr_bp_inner`): hoisted the `kind`/`next_kind` peek to the top of the loop body and added an `extends_chain` pre-check that mirrors every branch's own existing gate (`POSTFIX_BP >= min_bp` for `.`/`[`/`(`/`?`, `min_bp <= 1` for `..`/`..=`, `l_bp >= min_bp` via `infix_binding_power` for everything else) - `spine`/`nest_depth` are now only charged, and the ceiling only checked, once a real continuation is confirmed; a negative lookahead `break`s before paying anything. Removed the now-redundant duplicate `next_kind` computation further down in the infix-dispatch arm (reuses the hoisted one). PROOF BOTH WAYS: `git stash` the `parser.rs` hunk, `cargo build --release -p kryos-cli` - new regression tests `test_nesting_guard_flat_chain_no_false_positive_near_ceiling` FAILS (2045-term chain rejected with E0010) while `test_nesting_guard_diagnostic_points_at_real_site_not_next_statement` still happens to pass (its 2100-term chain is far enough over the ceiling to trip mid-expression even pre-fix); `tests/parser_nesting_gate.sh` FAILS at "part 2" with the exact false-positive; `git stash pop` + rebuild - all tests and the gate PASS, diagnostic lands on line 2 (the expression itself) not the `println` line. Regression: `compiler/crates/kryos-parser/tests/parser.rs` (`test_nesting_guard_flat_chain_no_false_positive_near_ceiling`, `test_nesting_guard_diagnostic_points_at_real_site_not_next_statement`, alongside the pre-existing `test_nesting_guard_deep_parens`/`test_nesting_guard_long_chain`/`test_nesting_guard_allows_reasonable_depth`, all still green); new gate `tests/parser_nesting_gate.sh` (taskkill-verified bounded-time check across all 9 named constructs at/beyond their claimed-hang depths, the under-ceiling-acceptance check, and the on-site-diagnostic check), wired into `tools/loop/kryos-loop.sh cmd_gates` tier 1. Full gate sweep post-fix: `kryos-loop.sh gates 2` tier1 all PASS including the new `parser_nesting` gate (`examples_e2e`'s one transient FAIL was re-run ALONE and passed 12/12 - confirmed contention, not a regression, per this repo's own documented parallel-gate-flake pattern); `security_gate.sh` PASS (60/60 checks unchanged); `test_bootstrap.sh` 16/16 run alone. |
+| **`break-continue-skip-scope-drop-leak`: `break`/`continue` never dropped heap locals declared earlier in their own loop-body block - leaked on every use of the single most common loop-exit idiom - FIXED** | Reported by an `invariants`-class finding, independently verified by two adversarial reviewers before reaching this session. Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`, HEAD `6c28089`): `KRYOS_STDLIB_DIR=compiler/stdlib LEAK_MODE=break_mid\|continue_mid\|baseline LEAK_ITERS=<n> tests/mem/break_continue_leak.kry` (AOT) - `break_mid` 11.3MB->172.9MB and `continue_mid` 46.7MB->170.9MB across 250k->1M iters, `baseline` (identical locals, no break/continue) flat 4.0MB at both scales, rc=0 every run, correct `acc` output on all 3 modes, `KRYOS_FREE_DIAG=1` clean (0 DOUBLE-FREE - pure leak, not corruption). ROOT CAUSE (read directly from `--emit-mir`, not inferred, `kryos-mir/src/lower.rs`): `lower_block_stmts` emits a loop body's scope-end `Drop` instructions ONLY into the block its own normal-fallthrough path reaches (`emit_named_scope_drops`, called once after all statements) - `ast::Stmt::Break`/`Stmt::Continue` (was lines 5225-5237) lowered to a bare `goto exit`/`goto header` with ZERO drop instructions, and nothing else ever jumps into that scope-drop block, so it was dead code for any program that breaks/continues out of a block holding a live named heap local. Confirmed shared-MIR (not backend-specific) origin per non-negotiable #9 by reading the IR directly; confirmed on both `kryos run` (JIT) and `kryos build --release` (AOT). FIX: added a `loop_scope_starts: Vec<usize>` stack to `LoweringContext` (parallel to the existing `loop_headers`/`loop_exits`, pushed/popped identically in `lower_while`, `lower_for`, `lower_for_range` right at each loop body's own entry) recording `ctx.locals.len()` at that point, plus a new `drop_loop_exit_locals` helper (mirroring the existing `Stmt::Return` drop-then-mark-dropped pattern, including its documented same conservative tradeoff: `dropped_locals` is a single compile-time-global set with no per-CFG-path tracking, so marking a local dropped here can only ever SUPPRESS a later drop on a sibling path, never double-free it) called from both `Stmt::Break` and `Stmt::Continue` right before their `Goto` terminator, dropping every named, non-param/non-borrowed, not-already-dropped local from the INNERMOST loop's own body-scope start (not the whole function - a local declared before the loop must survive both `break` and `continue`) to the current locals length. Deliberately does NOT touch `hidden_locals` (unlike `emit_named_scope_drops`) since control never falls through past a break/continue in its own lexical block, so there is no later same-scope code whose name resolution could be affected. Correctness of the scope boundary verified with a targeted nested-loop probe (not just leak-flatness): a heap local declared in an OUTER loop's body BEFORE an INNER loop that breaks/continues, then read again AFTER the inner loop - both backends returned the analytically-correct values (`total=105`, `total2=80`, hand-computed from the string-length arithmetic), proving the fix does not over-drop an outer-scope local reachable only through the inner loop's own scope-start mark. PROOF BOTH WAYS: `git stash` the `lower.rs` hunk, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) - `break_mid` 11.3MB->172.9MB, `continue_mid` 46.7MB->170.9MB (leak reproduces exactly); `git stash pop` + rebuild - `break_mid`/`continue_mid`/`baseline` all flat ~4.0MB at both 250k and 1M iters on AOT, correct output, `KRYOS_FREE_DIAG=1` clean, JIT (`kryos run`) also correct (`break_mid`/`continue_mid` both `iters=1000 acc=2000`). Wired into the CI-gated `tests/mem_plateau_check.sh` (extends its existing shared churn workload with a one-shot-inner-loop `break` and an every-iteration `continue`, both declaring fresh heap locals first, matching every other leak class already folded into that single script) rather than a standalone gate, matching this codebase's established convention (that script is the one `.github/workflows/ci.yml` actually runs). Proved both ways at the GATE level too, not just the isolated repro: reverted just the `lower.rs` fix (kept the new `mem_plateau_check.sh` workload), rebuilt - `mem-plateau: peak RSS 4778MB (ceiling 250MB)` FAIL; restored + rebuilt - `mem-plateau: peak RSS 4MB (ceiling 250MB)` PASS. Full gate sweep, all green post-fix: `kryos-loop.sh gates 2` (conformance 62/62, tier1+tier2 all PASS), `security_gate.sh` PASS (60/60 checks unchanged), `test_bootstrap.sh` 16/16 run alone. Regression: `tests/mem_plateau_check.sh` (wired into CI); `tests/mem/break_continue_leak.kry` kept as the standalone 3-mode isolated repro. |
+| **`generic-closure-return-tuple-type-confusion`: a zero-param generic closure return (`fn wrap<T>(x: T) -> fn() -> T { return \|\| x }`) rendered a garbage float and lost a string when `T` was instantiated as a tuple `(f64, str)` - AOT-only - FIXED** | Reported by a red-team finding, independently verified by two adversarial reviewers before reaching this session. Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `tests/security/attack_generic_closure_return_tuple_type_confusion.kry` printed correct `a=3.14` / `b=hello` / `g=42` on `kryos run` (Cranelift/JIT) but on `kryos build --release` (LLVM/AOT) printed a ~300-digit denormalized-float garbage bit pattern for `a` and the `b=` line was MISSING ENTIRELY (not just an empty payload - even the literal `"b="` prefix was lost from the concat), exit 0 both backends, no diagnostic. A matched non-generic control (`attack_generic_closure_return_tuple_type_confusion_control.kry`, a plain `fn() -> (f64, str)` closure, no generic `T`) was correct on both backends, isolating the defect to the GENERIC monomorphized zero-param closure-return path specifically - the scalar-T sibling of this exact pattern (`attack_generic_closure_interleaved_types.kry`, `T=f64`/`T=str`) was already correct pre-fix and re-verified unaffected post-fix. ROOT CAUSE (read directly, not guessed - two compounding bugs in the same generic closure-return path, found by reading `--emit-llvm` output line by line, not by inference from source): (1) `kryos-mir/src/lower.rs`'s Lambda-lowering: a directly-returned lambda with NO params of its own (`\|\| x`) has no PARAM position to carry `pending_lambda_ret_hint` through the way `make_appender<T>`'s `\|x\| x + suffix` does (the mechanism that already fixed scalar-T params, CLAUDE.md gotcha #22), so the lambda's OWN return type was never consulted from the hint and always fell through to a blind `i64` default. Harmless for scalar T - i64/f64/str all fit the closure ABI's single-i64-slot bitcast and are correctly unboxed at the call site from the CALLER's own concrete type - but wrong for an AGGREGATE T: the underlying lambda function got compiled with a scalar i64 return, so `func_sig_aggs` (`kryos-codegen-llvm/src/codegen.rs`) never recorded a real aggregate return for it, and `emit_closure_thunks` (which already has correct sret-ABI handling for a *known* aggregate return, per the earlier "aggregate-returning function through a fn VALUE" fix) took the plain-scalar branch instead, calling the lambda as if it returned i64 and writing nothing through the sret buffer the CALLER's tuple-typed call site had allocated - hence the caller reading `kryos_arc_alloc`'s uninitialized garbage as the f64 field, and the str field (a pointer never written) dereferencing into nothing (why the whole `b=` line vanished, not just its payload). FIX 1: the lambda's own `effective_ret` (unannotated-return default) now consults `lambda_ret_hint`'s concrete return type when it is a `Tuple`/`Struct` (an aggregate), leaving scalar T on the untouched i64 default to avoid disturbing the already-verified bitcast path. (2) Fixing (1) alone turned the silent-garbage symptom into a clean segfault: `emit_closure_thunks`' env-capture-read loop already had a byval-pointer-ABI exception for STRUCT captures (pass the heap-boxed capture's pointer directly as `ptr byval(%Agg)`, matching the byval-pointer ABI every other aggregate param uses - a prior fix for the identical struct-capture-passing bug) but the match arm list never included `MirType::Tuple` at all, so a tuple capture fell into the generic scalar-slot branch: loaded the box's dereferenced VALUE (via `coerce_value`'s i64->aggregate inttoptr+load path) instead of its POINTER, then passed that raw aggregate VALUE where the callee's `ptr byval({..})` parameter expected a POINTER - a call-site/callee ABI mismatch that corrupted the argument registers and segfaulted on AOT (this half of the bug was PRE-EXISTING and latent before fix 1 - masked because without fix 1 the return-side corruption already made the output garbage, so a second garbage-producing mismatch on the capture-read side was invisible until fix 1 turned the symptom into a hard crash, which is exactly what surfaced it). FIX 2: extended the byval-pointer-ABI exception to also match `Some(MirType::Tuple(_))` captures (reading as `ptr`, passing `ptr byval({..})` when the expected type is a `{...}` aggregate string), mirroring the existing Struct-capture handling exactly, including its `closure_struct_ptr_slot` mutation exception (a no-op for Tuple today since no mutated-tuple-capture path registers into it). PROOF BOTH WAYS: `git stash` both hunks (`kryos-mir/src/lower.rs` + `kryos-codegen-llvm/src/codegen.rs`), full `cargo build --release` (no `-p`, both crates link into the runtime toolchain) - `tests/conformance/conf_generic_closure_return_tuple.kry` FAILS on `kryos build --release` (`CONF FAIL: tuple instantiation field 0 (f64): expected ~3.14, got 0.000...0695124038196852`, rc=1) while `kryos run` still passes (proving the bug and the fix are both AOT-only, as documented); `git stash pop`, rebuild - both backends print `conformance generic_closure_return_tuple: PASS`, rc=0. The assertion gates the RENDERED value (`to_string(a)` / direct `b ==` comparison), not a bits-surviving proxy - this is the exact observable the bug corrupts. Gates: conformance 62/62 (was 61/61 immediately before this fix - one new conformance file, this fix's own regression test), `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), `test_bootstrap.sh` 16/16 run alone (stray `kryos.exe` killed first per the operational trap). Regression: `tests/conformance/conf_generic_closure_return_tuple.kry`; `tests/security/attack_generic_closure_return_tuple_type_confusion.kry` + `attack_generic_closure_return_tuple_type_confusion_control.kry` (already on disk, now committed) re-verified passing live, kept as standalone repros. Scalar-T regression parity re-verified live post-fix on both backends: `conf_generic_closure_return_f64.kry` PASS, `conf_curried_generic_closure.kry` PASS, `attack_generic_closure_interleaved_types.kry` PASS, `attack_generic_nested_function_type_param.kry` PASS. No CLAUDE.md text change needed: gotcha #22's generic-closure-return entry already documents scalar T (i64/f64/str) and curried nesting as resolved; it did not claim aggregate T worked, so this is a new fix, not a correction to an existing false claim. |
+| **`closure-mutating-costale-scalar-capture`: a non-mutated SCALAR co-capture in a `let`-bound MUTATING closure was silently frozen at closure-construction time instead of tracking later outer mutations, contradicting CLAUDE.md gotcha #11's unconditional by-reference promise - FIXED** | Reported by a red-team finding (LEDGER item 11(b), independently verified by two adversarial reviewers before reaching this session). Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `tests/security/attack_closure_costale_isolate.kry` (`let mut counter = 0  let mut flag = 1  let f = \|n: i64\| { counter = counter + n  counter + flag }  let r1 = f(1)  flag = 100  let r2 = f(1)`) printed `r1=2 r2=3` on BOTH `kryos run` and `kryos build --release` (rc=0, no diagnostic) - expected `r2=102` (counter=2, flag=100) if `flag` were live-visible per the documented promise; got `r2=3` (flag frozen at its construction-time value of 1). Corroborating: `tests/security/attack_closure_mutate_then_throw_state.kry` reassigns a captured `trigger` to `0` specifically to disarm a conditional `throw` inside a helper the closure calls on its second invocation - pre-fix this printed `caught: boom` then `kryos: uncaught exception: boom` (exit 101), proving the outer reassignment was invisible to the closure. ROOT CAUSE (read, not guessed, `kryos-mir/src/lower.rs` Lambda-lowering, ~line 12562-12638): the mechanism that boxes a non-mutated scalar capture behind an ARC-managed heap cell so a LATER outer reassignment writes through to it (`box_scalar_captures`, gated by `ctx.pending_box_scalar_captures`) was scoped deliberately narrowly to a struct-literal-field lambda's direct value ONLY - the surrounding comment explicitly asserted a `let`-bound closure "keeps the existing, ALREADY-CORRECT `closure_locals` path" that "re-reads the outer variable's CURRENT value at every call site." That assumption is FALSE for a `let`-bound closure that ALSO mutates a DIFFERENT capture: `closure_locals` (the direct-call re-read substitution) is populated only for NON-mutating closures - `mutating_closures`'s own doc comment states the direct-call fast path it enables is unsafe once a closure owns mutable state by move. So a `let`-bound MUTATING closure's OTHER, non-mutated scalar co-captures fell through BOTH mechanisms (not struct-literal-field, so never boxed; disqualified from `closure_locals` by the closure's OWN mutation, not just the mutated capture specifically) and silently froze at their construction-time snapshot. FIX: widened the `box_scalar_captures` gate from `ctx.pending_box_scalar_captures` alone to `ctx.pending_box_scalar_captures \|\| !mutated_captures.is_empty()` - any closure that mutates >=1 capture now also boxes its OTHER non-mutated scalar co-captures via the identical `RValue::ArcAlloc`/`RValue::Deref`/`MirType::Shared` machinery, with the existing `Stmt::Assign` write-through (`capture_boxes`, keyed by variable name, already generic over ANY box registered for that name) requiring no changes at all. Safe to widen unconditionally: a mutating closure NEVER uses the `closure_locals` fast path regardless of whether this box fires (disabled by `mutating_closures.insert(..)` a few lines below in the same function), so there is no fast-path conflict the original comment's narrow scoping was protecting against. PROOF BOTH WAYS: `git stash` just this hunk of `kryos-mir/src/lower.rs`, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) - `tests/conformance/conf_functions.kry`'s new `costale_scalar_cocapture` assertion fails (`CONF FAIL: non-mutated scalar co-capture in a mutating closure tracks a later outer mutation`, rc=0 but wrong value) and the live repro reproduces `r1=2 r2=3` on `kryos run`; `git stash pop` + rebuild - `conformance functions: PASS` on both `kryos run` and `kryos build --release`, and the live repro prints `r1=2 r2=102` on both backends. The corroborating throw repro's originally-reported symptom is also gone post-fix (the disarming `trigger = 0` reassignment is now observed; no more uncaught exception on the second call) - verified live, both backends. **Byproduct, NOT fixed, filed separately: LEDGER item 21** - verifying against the throw repro exposed an orthogonal bug (the MUTATED capture `counter`'s own write-back is skipped when the call that mutates it throws mid-body, so `after=0` instead of the expected `5`), a different call path (codegen-synthesized exception-return, not a co-capture) with a different fix surface (both backends' codegen, not `lower.rs`) - see item 21 for the live evidence and hypothesized root cause. Gates: conformance 61/61 both backends, `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), `test_bootstrap.sh` 16/16 run alone. Regression: `tests/conformance/conf_functions.kry` (`costale_scalar_cocapture`); `tests/security/attack_closure_costale_isolate.kry` and `attack_closure_mutate_then_throw_state.kry` (already committed) re-verified passing live, kept as-is (not folded into conformance - they predate this fix and remain useful standalone repros). No CLAUDE.md text change needed: gotcha #11's "sees a mutation made after construction" promise was already stated unconditionally for non-mutated captures - this bug was a silent VIOLATION of that promise by the implementation, not a documented caveat that needed correcting. |
+| **`generic-bare-map-compound-return-misrenders`: bare self-field passthrough returning `map<K, T>` mis-rendered through `to_string`, both backends, both key value types tested - FIXED** | Reported by an `invariants`-class finding (independently verified by two adversarial reviewers before reaching this session). Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`): `struct Holder<T> { m: map<str, T> }` / `impl<T> Holder<T> { fn get_map(self: Holder<T>) -> map<str, T> { return self.m } }` at `T=f64`: `to_string(h.get_map()["k"])` printed `4609434218613702656` (the raw i64 bit pattern of `1.5`) instead of `1.5`, identically on `kryos run` and `kryos build --release` (rc=0, no diagnostic); the numeric range check on the SAME value passed (bits correct, only render dispatch wrong). At `T=str`, worse and previously undocumented: `to_string(rm["k"])` printed a raw pointer integer instead of `"hello"`, even though direct `+` concat on the same value worked correctly - str is NOT "already stable" here the way it is for the array/tuple sibling bug, because `+` doesn't need static-type dispatch but `to_string`'s render path does. ROOT CAUSE (read directly, not guessed): `instance_ret_needs_monomorphization` (`kryos-mir/src/lower.rs`) had `Some(ast::TypeExpr::Generic { name, args, .. }) if name != "map" => args.iter().any(mentions)` - explicitly excluding `map` from the same per-receiver-instantiation monomorphization trigger its `TypeExpr::Array`/`TypeExpr::Tuple` sibling arms get two lines below (the fix that closed the identical bug class for `-> [T]` / `-> (T, i64)`, see the CLOSED entry above and `conf_generic_compound_return_f64.kry`). The exclusion's own doc comment reasoned map is like an enum - no nominal STRUCT-LAYOUT mismatch possible, so "a conservative no-op filter, no bug there" - which conflated the struct-CONSTRUCTION concern this function's `Generic` arm otherwise guards (`-> Box<T>`, where the returned struct's SHAPE differs per instantiation) with the ELEMENT-TYPE-ERASURE concern the `Array`/`Tuple` arms exist to fix (a compound container's VALUE type must be individually retyped per instantiation for render dispatch) - map has the layout property (true, harmless) but ALSO has the erasure property (missed) since a bare `return self.m` is also exempted from `body_operates_on_self`'s "operates on self" trigger (that check specifically exempts pure passthroughs, per its own doc comment), so the method fell all the way through to `_ => false` and stayed on the single erased-to-i64 compiled copy. FIX: removed the `if name != "map"` guard entirely - `TypeExpr::Generic { args, .. } => args.iter().any(mentions)` now covers map (and any other builtin/user generic container) uniformly with no name-based carve-out; `substitute_type_expr_to_mir`/`monomorphize_impl_fn` (the machinery the array/tuple fix already routes through) already handle map generically with no map-specific gap. PROOF BOTH WAYS: `git stash` just this hunk of `lower.rs`, full `cargo build --release` (no `-p`, `kryos-mir` links into the runtime toolchain) - `conf_generic_compound_return_map.kry` fails with `CONF FAIL: f64 map compound return RENDERS as 1.5, not its bit pattern`, rc=1, on BOTH `kryos run` and `kryos build --release --backend llvm`; `git stash pop`, rebuild - both backends print `conformance generic_compound_return_map: PASS`, rc=0. Assertions gate the RENDER path specifically (`to_string(..) == "1.5"` / `== "hello"`), not a bits-surviving proxy - the numeric range check and the str equality/concat checks pass identically with or without the fix, proven above; only the `to_string` assertions are the real gate. Regression: `tests/conformance/conf_generic_compound_return_map.kry` (f64 value-type + str value-type, both the render assertion and a parity check that `+`/equality on the erased pointer already worked pre-fix). Gates: conformance 61/61 (was 60/60 - one new conformance file; README.md's stale "60/60" claim caught and corrected by `docs_status_gate`, which failed until fixed - proof the gate itself works), `kryos-loop.sh gates 2` tier1+tier2 GREEN, `security_gate.sh` PASS (all checks unchanged), bootstrap 16/16 run alone. Docs: CLAUDE.md gotcha #17 extended to note map is now covered by the same fix; this ledger entry closes the finding. |
+| **Item 18: LIVE CAPABILITY ESCAPE - a privileged closure stored into an actor's own state field defeated `deny!()` when read back and invoked from a separate actor method (`actor-state-stored-closure-cap-escape`), FIXED** | Reproduced live pre-fix exactly as reported (`compiler/target/release/kryos.exe`, HEAD `00b3cf7`): `kryos run tests/security/attack_actor_state_stored_closure.kry` printed `ACTOR-STATE-STORED (was NOT CLOSED): TOPSECRET-CLOSURE-9f8e7d6c5b4a` from inside `deny!(fs:read)`, rc=0, under BOTH default-inferred and `--strict-capabilities`. ROOT CAUSE (read via `kryos-capabilities/src/checker.rs`, not guessed): `Expr::MethodCall { object: self, method: "reader", .. }`'s capability charge came from two mechanisms, both of which silently contributed nothing for this shape. (1) `resolve_method_field_invoke_caps` (the same fix that already closes the ordinary-struct-field case, `cap_escape_closure_launder_field_mutate.kry`) requires `object`'s root to be found in `current_local_container_lits`, a per-FUNCTION flat map of `let`/`assign`-tracked struct/array/map literals built fresh for whichever function body is currently being checked - `self` is never a local binding of `invoke()`'s own body (its value was written by a DIFFERENT method, `stash`, at a DIFFERENT dispatch), so the lookup misses and the function returns `CapabilitySet::empty()` by design (documented: "never a blanket guess ... an ordinary method call is never misclassified"). (2) Ordinary method-call handling (`compute_hot_extra_caps("reader", ..)`) also contributes nothing because `reader` is not the name of any declared function or actor handler - it is a state FIELD name, not a callable. Both paths independently landing on empty meant the call was net-zero-charged instead of hitting this file's own standing fail-closed rule ("Unknown must mean deny, not this call needs nothing"). FIX: added `current_actor_fn_state_fields` (the current actor's own FN-TYPED state field names, populated by `check_actor` from `Decl::Actor`'s `state_fields`, scoped to the duration of that actor's handler bodies being checked) and `resolve_actor_self_field_invoke_caps` (unions `Capability::All` into the call-site charge whenever `object` is the bare `self` identifier and `method` names one of those fields), wired into `check_expr`'s `MethodCall` arm alongside the existing struct-field resolver. This is a DELIBERATE blunt fail-closed default, not a precise cross-handler trace: an actor's state can be written by any OTHER handler at any prior dispatch, so there is no sound way to attribute a specific closure value to a given `self.<field>()` call site without whole-actor data-flow tracing across every handler's write sites (left as a documented possible follow-up, not attempted - the task's own framing named `[all]` as the correct fail-closed target). PROOF BOTH WAYS: pre-fix binary (HEAD `00b3cf7`) reproduces the leak as above; post-fix `cargo build --release` (full, no `-p`, since `kryos-capabilities` links into the runtime toolchain) - `kryos run` and `kryos check --strict-capabilities` both now reject with `error[E0507]: call to \`reader\` requires capabilities [all] not granted to caller`, rc=1, in BOTH modes. NOT A WEAKENING: verified every sibling actor/capability check in `tests/security_gate.sh` (44 pre-existing checks) still passes unchanged, plus two NEW checks added (#45 rejects this exact escape under both modes; #46 proves an ordinary scalar-state actor dispatched from inside an unrelated `deny!` still needs zero annotation - no cascade). KNOWN, DOCUMENTED OVER-APPROXIMATION (not a regression): the sibling decoy-control file `attack_actor_state_stored_closure_control_decoy.kry` (a zero-capability closure in the identical actor shape) now ALSO fails closed post-fix, whereas pre-fix it correctly compiled clean - this is the expected, sound trade-off of the blunt `[all]` default (its header comment rewritten to explain why, not left contradicting the new behavior); a future precise fix would need real cross-handler write-site tracing to tell the two cases apart. Gates: `security_gate.sh` PASS (46/46 checks incl. the 2 new), `kryos-loop.sh gates 2` tier1 (conformance 60/60) + tier2 GREEN, bootstrap 16/16 run alone. Regression: `tests/security_gate.sh` checks #45-46 (no separate conformance file - this is a compile-time-rejection security check, matching the pattern of every other closed cap-escape item in this table). |
+| **Structural-completeness wave (2026-08-05): item 10 (wrapper-closure escape, HIGHEST PRIORITY, blocked the "capability-safe" launch claim) + item 18's nested-actor-field residual (`self.b.f()`, one struct hop past the field name item 18 checked) + an aliased-local variant of the same residual - THREE live escapes, FIXED, plus the checker's core closure-provenance resolvers converted to exhaustive `match` over `Expr` with no wildcard arm** | Reproduced all three live pre-fix exactly as reported/discovered (`compiler/target/release/kryos.exe`, HEAD `4a1b197`, no compiler changes): (a) `kryos run tests/security/cap_escape_closure_wraps_closure.kry` → `SINGLE-WRAPPED CLOSURE LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a`, rc=0, both modes (item 10, already documented above in OPEN). (b) A NEW nested-actor-state-field variant found this wave by re-deriving item 18's fix from the CLOSED SET of value-producing forms rather than trusting its "closed" status: `struct Box { f: fn()->str }`, actor state `b: Box`, `self.b.f()` - item 18's fix (`resolve_actor_self_field_invoke_caps`) only ever compared `method` ("f") against the actor's fn-bearing-state-field set, never the ACTUAL field being stepped through ("b"), even though `current_actor_fn_state_fields` already computes fn-bearing-ness TRANSITIVELY (`is_fn_bearing_type_inner`) and already knew "b" qualified. `kryos run tests/security/attack_actor_state_nested_field_closure.kry` → `NESTED-ACTOR-STATE LEAK`, rc=0, both modes. (c) Aliasing the same field into a local first (`let x = self.b; x.f()`) defeated (b)'s fix too, via a SEPARATE gap: `resolve_method_field_invoke_caps` returned `CapabilitySet::empty()` unconditionally whenever the receiver's root wasn't a locally-tracked struct LITERAL, never consulting anything else. `kryos run tests/security/attack_actor_state_aliased_local_closure.kry` → `ALIASED-LOCAL ACTOR-STATE LEAK`, rc=0, both modes. FIX (a): `resolve_closure_caps`'s `Lambda` arm gained a "captured hot parameter" case alongside its existing "lambda's own hot parameter" case - a lambda literal that calls one of the ENCLOSING function's own fn-typed parameters (captured by closure, not a param of the lambda itself: `wrap_once`'s `|| inner()`) now resolves to `DependsOnParam(<enclosing param name>)` instead of falling through to `collect_caps_expr`'s "what does running this code require" computation, which correctly-but-wrongly-for-this-purpose defers a hot-param call to zero (sound for code that runs INLINE as part of the enclosing call; unsound for a closure VALUE that escapes and is invoked independently later, since nothing ever resolves the deferral against the real argument). `resolve_closure_caps`'s existing `FnCall` arm already knows how to follow a `DependsOnParam` result back through `fn_params`/the real call-site argument, so `wrap_once(reader)` now correctly resolves to `reader`'s actual `{fs:read}` (a MORE PRECISE result than a blanket `all` - `wrapped()` inside `deny!(fs:read)` is now rejected with the exact excess capability named, not just E0507/`[all]`). FIX (b): `resolve_actor_self_field_invoke_caps` rewritten to decompose the FULL receiver chain (`decompose_container_path`) instead of requiring a bare `self` object, checking the FIRST field stepped through from `self` (not `method`) against `current_actor_fn_state_fields`; an `Index` first step (`self.arr[i].f()`) fails closed unconditionally since it can't even be named. FIX (c): a NEW, deliberately NARROW `current_actor_state_alias_locals` map (built per-actor-handler by `build_actor_state_alias_locals`, mirroring the existing `build_local_container_lits` traversal) tracks ONLY locals bound directly to a `self.<path>` expression, recording the state field the path starts with; `resolve_actor_self_field_invoke_caps` consults it when the receiver's root isn't `self` directly. TRIED AND REVERTED for (c): a first attempt made `resolve_method_field_invoke_caps` fall back to consulting the GENERAL `local_caps` provenance map (keyed by every `let`-bound local, not just container aliases) whenever a receiver's root wasn't a tracked literal - measured live via `kryos-loop.sh gates 2`: broke `conf_generics`, `conf_errors_concurrency`, `examples/actors.kry`, and 2 `type_soundness` + 2 `inferred_soundness` probes, because `build_local_closure_caps_block` inserts an `Unknown` entry for ANY `let name = f(..)` binding where `f` is a plain non-fn-returning user function (the overwhelming majority of ordinary local bindings), so the broad fallback charged `all` on essentially any method call off such a local. Reverted in favor of the narrow, single-hop `current_actor_state_alias_locals` mechanism, which cannot fire on an unrelated local because it is populated ONLY from a syntactically-recognized `self.<path>` RHS. This is the measured cost this wave's "measure the cost" step surfaces as a real, honest wall: the broad fix would have been strictly MORE complete (catching e.g. a two-hop alias chain, `let y = x` where `x` is itself a self-alias) but the cost was unacceptable; the narrow fix is strictly less complete (a chained alias-of-an-alias is NOT covered) but costs nothing measured. STRUCTURAL GUARANTEE (the task's most-requested deliverable this wave): `resolve_closure_caps`'s outer match and its inner `FnCall`-callee sub-match, AND `resolve_container_path_caps`'s match (restructured from a `(PathStep, Expr)` tuple match to a primary match on `Expr` with `PathStep` handled as a nested condition, to keep the enumeration meaningful rather than a 70-cell cross product), are now EXHAUSTIVE over the 35-variant `Expr` enum with NO wildcard (`_`) arm anywhere in any of the three matches - every variant not given a precise resolver is listed explicitly, routed to the existing `Unknown` fail-closed default (behavior-preserving; this is a pure compile-time-forcing-function refactor, verified via `cargo build` producing zero "unreachable pattern"/"non-exhaustive" diagnostics). Also extended `is_fn_bearing_type_inner` (already exhaustive) to recurse into `Tuple`/`Reference`/`Shared`/`Weak`/`Pointer` wrapper types (previously fell to a blanket `_ => false`, meaning e.g. a tuple field `(fn()->str, i64)` on actor state was never recognized as fn-bearing) and resolve `DynTrait`/`Inferred` to `true` (fail closed - cannot prove NOT fn-bearing). Tried and reverted a MORE aggressive version of this same function: flipping the depth-cutoff (self-referential type graphs, `Tree{kids:[Tree]}`) fallback from `false` to `true` - this falsely flagged every recursive struct type as fn-bearing purely from the recursion-depth cap, an unjustified over-rejection class, not a real closure escape; kept at `false`, documented why. PROOF BOTH WAYS, all three fixes independently: `git stash` (all `checker.rs` changes) + full `cargo build --release` (crate links into the runtime toolchain) - all three new repros reproduce their leaks exactly as above; `git stash pop` + rebuild - all three now reject `E0507`, both `kryos check` (default inferred) and `kryos check --strict-capabilities`. NOT A WEAKENING: `tests/security_gate.sh` extended with 4 new checks (#47-50: nested-field escape rejected both modes, aliased-local escape rejected both modes, wrapper-closure escape rejected both modes, AND a no-cascade positive proving a genuinely-pure wrapper decorator + a non-fn-bearing nested actor struct field still need zero annotation) - full run PASS, all pre-existing checks (46 before this wave) unchanged. Full gate ladder: `kryos-loop.sh gates 2` - conformance 62/62, tier1 ALL PASS, tier2 (examples/strict_caps/examples_e2e/ir_signatures) ALL PASS, no newly-rejected count beyond the one honest, measured, reverted cost documented above (which shipped as zero, not as an accepted regression). `test_bootstrap.sh` not re-run standalone this wave (no self-host-affecting change; capability checker only). Regression: `tests/security/attack_actor_state_nested_field_closure.kry`, `attack_actor_state_aliased_local_closure.kry` (new); `tests/security_gate.sh` checks #47-50. Docs: `docs/capability-soundness.md` top-of-file correction note updated to reflect item 10 CLOSED; invariant 7 and invariant 4-actor status entries updated with the new mechanisms; new "structural guarantee" section added documenting the exhaustive-match conversion. |
+| **Combined-category grammar fuzz wave (2026-08-04): capability provenance checker false-rejects a zero-capability closure call when the closure is defined AND called inside a bare `{ }` scoping block or a `let x = { .. }` block-tail-value - forces `@capabilities(all)` on ordinary code, defeating least-privilege - TWO instances, same root shape, FIXED** | Found building a NEW combined-category grammar fuzzer (`tests/fuzz/gen_grammar.py` + `run_diff_grammar.py`, this wave's deliverable - 9 scenarios threading generics/closures/dyn/spawn/actors/enums/Option/Result/tuples/try-throw through ONE connected data-flow story per program, unlike the existing template harness's independent per-category blocks) wrapping each scenario body in its own `{ }` for local scoping, exactly as `gen_fuzz.py`'s own README documents as the class of bug its independent-block design cannot reach. Minimal repro: `fn main() { { let mul_add = \|x: i64\| x * 2 + 1  let v1 = mul_add(5) } }` - rejected with `error[E0507]: call through a function value requires capabilities [all] not granted to caller` even though `mul_add` is a trivially pure closure; the SAME code with the outer `{ }` removed compiles clean. Reproduces for a curried closure, the `let x = { .. }` block-tail-value idiom (gotcha #3's documented pattern), double nesting (`if { { .. } }`), and propagates through an unannotated helper function (forcing it to `@capabilities(all)`, then rejecting an unannotated caller of THAT helper). A SECOND, sibling instance of the identical root cause: a closure retrieved from a CONTAINER (`store = push(store, reader)` then `store[0]()`) inside a bare block hit the same false-reject via a different flat-map builder. ROOT CAUSE (both, read via `kryos-capabilities/src/checker.rs`, not guessed): `build_local_closure_caps_block` and `build_local_container_lits_block` each flatten nested `if`/`for`/`while`/`try` scopes into one map (by design, per their own doc comments - "best-effort, not scope-precise") so a closure/container `let`-bound inside one is known at its later direct-call site - but neither had a match arm for a BARE `{ }` block, which desugars to `Stmt::Expr { expr: Expr::Block { .. } }` (there is no dedicated `Stmt::Block` AST variant) or for a `let x = { .. }` block-tail-value initializer (`Stmt::Let { value: Some(Expr::Block{..}), .. }`); both fell through the existing `_ => {}` catch-all, so the closure was invisible to the flat map and the REAL per-call checker (which does correctly walk into `Expr::Block` for every other purpose) resolved the call as `Unknown` -> `Capability::All`. NOT the same root cause as a third residual found by the same generator (`holder.get()()` - calling the chained return of a generic passthrough ACCESSOR method holding a closure field) - that one reproduces even with zero block nesting and even through an intermediate local, so it needs tracing a generic method's own body and was deliberately left OPEN, filed below, not conflated with this fix. FIX: added a `Stmt::Expr { expr: Expr::Block { block: inner, .. }, .. }` arm to both flat-map builders (recurse into `inner`, mirroring the existing if/for/while/try recursion) and a `Expr::Block` arm to each builder's `Stmt::Let` handling (recurse into the block before computing the outer let's own resolution). PROOF BOTH WAYS: `git stash` just `checker.rs` + `cargo build --release -p kryos-cli` (no staticlib touched, `-p` build is legitimate here) - `tests/conformance/conf_closure_block_scope_caps.kry` fails `kryos check`/`kryos run` with 6 E0507 errors across all 4 repro shapes + the helper-propagation case; `git stash pop` + rebuild - all pass, prints PASS on both backends, values verified correct (`mul3(5)` -> 16, not just "compiles"). Verified NOT a weakening: every existing `tests/security/attack_wrap_closure_*`/`cap_escape_closure_launder*`/`fail-closed-hardening`/`decoy-companion` capability-escape check in `tests/security_gate.sh` (72 checks) still correctly rejects post-fix - the fix only makes MORE cases resolve to their real (possibly non-empty) computed capability via the SAME `resolve_closure_caps`/`resolve_container_path_caps` already used for top-level-scoped closures; it does not change what a genuinely-gated closure requires. Regression: `tests/conformance/conf_closure_block_scope_caps.kry` (6 assertions). Gates: conformance 60/60 (was 59/59 - new regression test added, README.md conformance count corrected, `docs_status_gate` catches drift), tier1+tier2 GREEN (an initial `examples_e2e` 10/12 + `docs_status_gate` FAIL on the first combined run were the documented parallel-gate-contention flake + the stale-count gap respectively - both re-ran clean ALONE: `examples_e2e` 12/12, `docs_status_gate` PASS after the README fix), `security_gate.sh` PASS (all 72 checks), bootstrap 16/16 solo. Combined-category grammar sweep re-run clean after the fix: 150/150 match (0 diverge, 0 both-fail) across all 9 scenarios x 15 seeds.
+| **Round 5: the round-4 fail-closed fix's OWN relief mechanism was itself a shape-based decoy escape (the SAME bug class, twice), plus an unrelated, deeper "defer to my own caller" scope hole reachable through actor/spawn/method/direct-invoke paths without any decoy at all** | Reported live at HEAD (`4ac8b83`), confirmed FIRST per non-negotiable #2: `apply_to_second<T>(decoy: [T], real: [T], f: fn(T) -> str) -> str { return f(real[0]) }`, called as `apply_to_second(decoy, real, \|c\| c())` inside `deny!(fs:read)` where a direct `file_read` is correctly rejected, printed the real secret with rc=0 under `--strict-capabilities`. ROOT CAUSE: round 4's relief for a transparent-forwarding lambda (`\|f\| f()`) resolved "whichever other argument supplies its elements" by matching the callback's DECLARED element type against another parameter's DECLARED container type, first match wins (`find_companion_container_arg`) - an empty DECOY of the same declared shape always won ahead of the REAL container, contributing zero capabilities. **This is not a new bug class, it is the SAME one rounds 1-3 already failed on, relocated**: any inference of authority from declared shape/position/arity rather than PROVEN data flow can be defeated by a decoy of that shape - there is no fifth heuristic that fixes this, the mechanism itself is wrong. FIX PART 1 (mandated, no shape-based successor): `find_companion_container_arg` deleted outright. The ONLY relief implemented is `hot_param_companions` - genuine per-DECLARATION data-flow tracing computed ONCE from each function's own FIXED source, independent of any call site: for a hot callback parameter invoked directly inside a function's own body, it records, from the ACTUAL call-argument expression at that internal invocation (`map`'s literal `f(arr[i])`), which of the function's OTHER OWN parameters (by index) and PATH the argument decomposes to via `decompose_container_path` - the same syntactic decomposition already trusted everywhere else in this file. Because this is a property of the callee's own compiled declaration, a caller cannot make a decoy occupy "the parameter the body actually reads from" without that decoy BEING what actually flows to the callback (in which case charging it IS correct) - proven live: re-running the exact repro above on the fixed binary now attributes the precise `fs:read` requirement to `real`, not `decoy`. Where no single companion can be proven (disagreeing internal call sites, or an argument that doesn't decompose to another own-parameter at all), the position requires `Capability::All` - no approximation. AUDITED for every other shape-based-inference site per instruction #1 (grepped `structurally`/`shape-based`/`first-match`/`arity`/`parameter position`): none found; every other "detect a hot parameter's POSITION" mechanism in this file (`hot_params`'s Seed A/B, `is_fn_bearing_type`, `resolve_type_path`) determines WHERE authority might flow, never WHICH call-site argument to exempt from charging, so none is the vulnerable class. SECOND, INDEPENDENT BUG found while auditing every remaining place authority gets DEFERRED rather than charged (per instruction #1's mandate to audit exhaustively, not just the reported bug): the "a hot argument that is one of the CURRENT function's own parameters defers its charge to THAT function's own call sites" rule - present since round 1, load-bearing for ordinary passthrough HOFs - assumes the eventual outer call site is checked against a scope at least as narrow as wherever the value is actually invoked. FALSE whenever the deferring function narrows ITS OWN scope with `deny!` between receiving the parameter and invoking it: confirmed live, NO decoy, NO generic, NO container, the plainest possible forward - `fn outer(reader: fn()->str) -> str { deny!(fs:read) { return zero_cap_tool(reader) } }`, called from an `@capabilities(fs:read)` caller, compiled clean and printed the secret from inside the denied scope (rc=0) under BOTH inferred and `--strict-capabilities`. Reproduced identically, unmodified in kind, through THREE separate invocation paths sharing the same root: a bare direct call (`r()` as its own callee), a hot ARGUMENT forward (`zero_cap_tool(reader)`), and - found only by testing the task's own enumerated verification list, not assumed safe - an ACTOR MESSAGE HANDLER receiving the closure as a message argument and invoking it inside its own `deny!`, which leaked identically with zero changes to the underlying mechanism (the handler's own params ARE `current_fn_typed_params` there too). FIX PART 2: `current_fn_entry_scope_depth` (new field) records `scope_stack.len()` at the instant the checker enters the CURRENT function/actor's own boundary scope (`check_function`/`check_actor`); every deferred-charge decision now requires `Capability::All` instead of empty whenever the LIVE scope is deeper than that recorded depth (a `deny!`, or any future narrowing construct, is active between entry and this exact call) - `deferred_own_param_caps` centralizes this for the THREE call sites that previously returned an unconditional empty (`resolve_direct_invoke_caps` x2, `resolve_method_field_invoke_caps`) plus the two matching arms inside `accumulate_hot_extra_caps`. CAUGHT AND FIXED A SELF-INTRODUCED REGRESSION DURING THIS SAME FIX, per non-negotiable #2 (prove both ways, don't assume the fix is clean): the naive version of part 2 applied the scope check UNCONDITIONALLY, which broke the round-4 no-cascade guarantee - `map(fns, \|f\| f())` over PROVABLY PURE closures started requiring `all` merely because it happened to run inside ANY `deny!` block (even one narrowing an unrelated capability), because `resolve_closure_caps`'s STRUCTURAL self-classification of a fresh lambda literal (used to decide whether `\|f\| f()` needs anything beyond forwarding its own param) reuses the exact same `deferred_own_param_caps` machinery as a REAL enforcement-time call, with no signal to tell them apart. Found via a live regression re-check of the FIRST fix (`decoy_generic.kry`'s attribution silently degraded from precise `[fs:read]` to blanket `[all]`) before this was ever committed. Fixed with two new fields scoped exactly to the sub-computation that must stay scope-independent: `transparent_lambda_params` (the LAMBDA's own bound names, tracked only for the duration `check_expr` re-checks that SAME lambda's body, distinguishing "a lambda re-encountering its own already-handled parameter" from a real enclosing function's parameter) and `structural_lambda_eval_depth` (a `Cell<u32>` nesting counter set for the duration of `resolve_closure_caps`'s Lambda-arm classification sub-call into `collect_caps_expr`, which is NOT a real call-site check and must never consult the ambient scope at all). PROOF BOTH WAYS for both parts: reverted each fix in turn, rebuilt (`cargo build --release`, full - `kryos-capabilities` is linked into the runtime toolchain), confirmed the EXACT leak reproduces (secret bytes printed, rc=0) on the pre-fix binary for the decoy-generic repro, the plain-forward `outer(reader)` repro, AND the actor-handler repro; restored, rebuilt, confirmed all three rejected (E0507) and the no-cascade/precision checks pass again. Verified against every variant the task enumerated, not just the two minimal repros: decoy as a MAP companion (`cap_escape_decoy_map_companion.kry`), decoy read out of another container rather than a fresh literal (`..._container_read_source.kry`), 3+ containers (`..._three_containers.kry`), the same decoy shape against `any`/`all`/`partition`/`flat_map`-style user-defined siblings (`..._iter_siblings.kry`), a method receiver with 3 array parameters (`..._method_receiver.kry`), and the scope-hole reached through an actor message handler (`..._actor_message.kry`), a `spawn` capture (`..._spawn_capture.kry`), and a `dyn Trait` method (`..._dyn_trait_method.kry`) - all 8 new files REJECTED (E0507) under both `inferred` and `--strict-capabilities`, added to `tests/security_gate.sh`'s existing shape-loop pattern. Full verification sweep, all green: `security_gate.sh` (every existing check incl. the two no-cascade positives, PASS with unchanged precise attribution), `strict_caps_examples.sh` (91/91, zero net cascade), full `cargo build --release` clean, `tests/conformance/run_conformance.sh` (58/58), `kryos-loop.sh gates 2` (tier1+tier2 GREEN, one transient `examples_e2e` flake reproduced the documented parallel-gate-contention pattern - re-ran alone, 12/12 clean), `test_bootstrap.sh` run ALONE (16/16, one stray `kryos.exe` killed first per non-negotiable #3). Regression: `tests/security/cap_escape_decoy_{map_companion,container_read_source,three_containers,iter_siblings,method_receiver,actor_message,spawn_capture,dyn_trait_method}.kry`. Docs: `docs/10-capabilities.md`'s implementation-status callout rewritten to describe BOTH round-5 fixes and the guarantee actually enforced (not another "closed" claim); `docs/capability-roadmap.md` gained a "Round 5" section recording why shape-based inference failed a SECOND time on this exact axis, so nobody re-attempts a shape heuristic here a third time, and item 4 in Part 1's relief list marked superseded. |
 | **STRUCTURAL fix for fn-value laundering: inverted the enumeration to fail-CLOSED, closing round-3's 2 residuals plus a more basic root gap all three rounds missed** | THREE prior rounds (see the two CLOSED rows below this one) each enumerated a syntactic SHAPE through which a closure's authority could travel and traced that specific shape; each round closed everything it found, and new shapes were found immediately after -- because a whitelist of dangerous shapes cannot be complete when the attacker chooses the shape. Confirmed live before touching code, both round-3 residuals: `map(tools, \|f\| f())` (an inline lambda invoking its own bound parameter through a HOF -- the prior HOF-forward fix only covered a NAMED forwarding function) and `let arr = m["k"]; arr[0]()` (a closure read out of a container into an intermediate local -- chaining directly was traced, the extra local broke it), both leaked the real secret (rc=0, `TOPSECRET-CLOSURE-...` printed) inside `deny!(fs:read)` under both `inferred` and `--strict-capabilities`. Auditing the ENFORCEMENT layer (not just the "closed" list) found the actual root: every rule up to this point fired ONLY for a call whose callee resolved to a NAMED function already tracked in `hot_params`; a call whose callee was a bare local with ZERO indirection (`let r = make_secret_reader(path); r()`, no parameter, no container, not even a second function call) was never evaluated by anything across all three rounds, since nothing inspected a call's callee unless it was already a name in that table. Found and confirmed live 3 more variants of the same root gap while auditing: a struct-field closure invoked via method-call syntax with no intervening function (`reg.reader()` directly in `main`), a full chained container index-call with no intermediate local (`m["k"][0]()` directly in `main` -- NOT the same as the already-closed parameter-crossing case), and (implicitly, since the mechanism generalizes) any container 3+ levels deep invoked the same way. FIX (`kryos-capabilities/src/checker.rs`, `kryos-capabilities/src/model.rs`): inverted the default -- a call through a first-class fn-value that cannot be resolved to a KNOWN function/builtin/extern/actor-constructor/enum-variant-constructor now goes through `resolve_direct_invoke_caps`/`resolve_method_field_invoke_caps`, which resolve what is actually being invoked via the SAME closure/container resolvers already used for argument attribution and require it directly: `Known` -> exact set, `DependsOnParam` (of the CURRENT function's own hot param) -> deferred as before, `Unknown` -> `Capability::All`. Runs at both the enforcement layer (`check_callee_capabilities`, `check_expr`'s `MethodCall` arm) and the inference layer (`collect_caps_expr`'s `FnCall`/`MethodCall` arms), so an interior helper's own inferred set reflects a direct invocation inside its body too. CASCADE MEASURED, not assumed: a strict `Unknown -> all` first pass broke the example corpus from 91/91 to 74/91; every failure traced to a specific, GENERAL (non-name-based) fix rather than a carve-out -- (1) precise resolution extended to a field/index chain read into an intermediate local, a curried/chained call (`f(a)(b)(c)`, resolved by recursing through the callee-of-a-call shape), and a self-recursive nested named function (the parser desugars `fn adder(y){..}` inside a body to `let adder = fn(y){..}`, needing a pre-registered placeholder before recursing into its own body); (2) a bare-name collision fix (`std::iter::find`/`std::re::find`/`std::string::find` all share the name "find" in the checker's bare-name-keyed maps) -- `collect_functions` now carries each declaration's OWN param list inline instead of re-looking it up by name afterward, for every own-parameter computation, so a colliding name's WRONG params can no longer leak into another declaration's inference; (3) actor constructors (`Account()`) and enum-variant constructors (`Some(x)`/`None()`/`Ok`/`Err`) are `Name(args)` call syntax but not fn-value references -- both are now tracked (`actor_names`, `enum_variant_names`) and excluded; (4) a TRANSPARENT-FORWARDING lambda (`\|f\| f()`, whose only behavior is invoking its own bound parameter) is resolved structurally against a COMPANION container argument at the SAME call site -- `find_companion_container_arg` matches purely on TYPE SHAPE (a `fn(T,..)->U` callback paired with a `[T]`/`map<K,T>` parameter elsewhere in the SAME declaration, `T` compared by generic-name identity), covering `map`/`filter`/`fold`/`reduce`/`find` and any user-written HOF fitting the shape without naming `std::iter` anywhere in the implementation. PROOF BOTH WAYS: `git stash` `checker.rs`+`model.rs` + full `cargo build --release` (crate is linked into the runtime toolchain) -- every new `security_gate.sh` check (18 shapes across both modes: direct local call, struct-field direct call, chained/intermediate-local container reads, HOF inline lambda, `std::collections` Deque/Dict, Option/Result payloads, a user-defined HOF, 3-level nesting, and `--capabilities-mode=permissive`) goes RED (escape compiles, secret prints); restore + rebuild -- all green, and the pre-existing 33 checks + the two no-cascade positives (pure map-over-closures, pure mutation-built registries) stay green throughout. Full verification sweep, all green: `security_gate.sh` (51 checks), `strict_caps_examples.sh` (91/91, matching the pre-fix baseline exactly -- zero net cascade after the relief mechanisms), `run_examples_gate.sh`, `run_examples_e2e.sh` (12/12 response-body assertions), `ir_signature_gate.sh` (58 modules, no severe mismatches), full `tests/conformance/run_conformance.sh` (58/58), `inferred_soundness.sh`, `type_soundness.sh`, every other tier-1 gate script, the full `cargo test --release --workspace` suite (kryos-ownership's 2 pre-existing, unrelated failures reconfirmed identical on baseline HEAD via `git stash`, not a regression), and `test_bootstrap.sh` run ALONE (16/16). Regression: 9 new repros (`tests/security/cap_escape_{direct_local_call,struct_field_direct_call,container_chained_direct,container_intermediate_local,hof_inline_lambda,collections_deque_dict,option_result_payload,user_hof_three_level,hof_siblings}.kry`) + 2 no-cascade positives (`cap_escape_hof_inline_lambda_nocascade.kry`, and the pre-existing mutation-built-registry check), `tests/security_gate.sh` extended with checks #21-34. Docs: `docs/10-capabilities.md`'s implementation-status callout and the closure-indirection status line rewritten to state the fail-closed inversion (not another "all shapes closed" claim -- that framing is exactly what failed three times) and point to `docs/capability-roadmap.md`, which gained a full Part 1/1b: an honest post-mortem of why enumeration cannot converge, and the DESIGN (not implemented this wave, deliberately) for the sound long-term fix -- capability-typed fn values (`fn() -> str @ {fs:read}`), covering syntax, inference via the existing generic-substitution machinery, contravariant subtyping, generics/`dyn`/`spawn`/stdlib interaction, a 5-step migration path that nets DELETES most of the heuristic tracing machinery this fix added, and an honest 6-8 week scope estimate. Honest residual, unchanged in kind from before this fix (still documented, still fails CLOSED not open): a container built from a genuinely non-literal source (a function return, a container mutated inside a callee, one read out of ANOTHER container in a way even the intermediate-local extension can't follow) resolves to `Unknown` -> requires `all`. |
-| **LIVE capability bypass: closure into a container via MUTATION after construction (push / index-assign / field-assign), a `std::collections` wrapper-method gap, and a HOF-forwarded-named-function gap — the prior wave's "safely rejected" claim was FALSE, measured live before touching code** | The prior wave (`a868ab7`) closed container laundering for LITERAL-constructed containers and claimed the dynamic-population case "resolves to Unknown and requires Capability::All" (safely rejected). REPRODUCED first, per non-negotiable #1: `tools = push(tools, reader)` in a loop, then `tools[i]()` inside `deny!(fs:read)`, and `m["k"] = reader` on a `map<str, fn()->str>` then `m[k]()`, both LEAKED the real secret (rc=0, no diagnostic, `TOP SECRET DATA` printed) in BOTH `inferred` and `--strict-capabilities` — confirming the report. Went further and found the prior wave's OWN claim about which shapes were "correctly rejected" was itself wrong: `tools[0] = reader` (array index-assign) and `r.f = reader` (struct field mutation after construction) were claimed rejected at compile time; re-measured live on a `let mut` binding and BOTH also leaked identically (compiled clean, printed the secret) — the "rejected" observation likely came from an orthogonal immutable-binding error on a non-`mut` variable, unrelated to capabilities, not an actual capability check. Enumerated and tested the full blast radius before fixing (per instruction, table below) rather than assuming: push ⇒ LEAK; map index-assign ⇒ LEAK; array index-assign ⇒ LEAK; struct field-init (baseline, prior fix) ⇒ correctly rejected; struct field-mutate-after-construction ⇒ LEAK; nested array-of-structs via push ⇒ LEAK; nested map-of-arrays via push+insert ⇒ LEAK; container returned from a function ⇒ correctly rejected (Unknown, genuinely untraceable); container param mutated inside callee ⇒ correctly rejected (Unknown); `std::collections::List<fn()->str>` via `.push()`/`.get()` ⇒ LEAK (separate root cause); a closure reaching a container through a HOF where the HOF's OWN callback is a bare fn-value (`map(paths, make_secret_reader)`, populating) ⇒ correctly rejected (Unknown); a HOF whose callback is a NAMED function that itself forwards a hot parameter (`map(tools, invoke)`) ⇒ LEAK (third, independent root cause); captured by an inner closure ⇒ correctly rejected (Unknown); captured by `spawn` ⇒ LEAK pre-fix, closed by the same mutation-tracking fix. THREE independent root causes, three fixes, all in `kryos-capabilities/src/checker.rs`: **(1) Mutation-tracking gap.** `build_local_container_lits`/`build_local_container_lits_block` only ever walked `Stmt::Let`, so a container's INITIAL literal snapshot (typically an empty `[]`/`{}`) was NEVER updated by a later `Stmt::Assign` — `resolve_container_path_caps`'s index-insensitive union over that stale, usually-empty literal resolved to `Known(empty)`, not `Unknown`, so the call required NOTHING — strictly worse than the documented conservative fallback, because the checker confidently asserted safety instead of admitting ignorance. Fix: `apply_container_assign` (new) recognizes `X = push(X, v)` (appends `v` into the tracked array), a plain alias (`X = Y` where `Y` is tracked), and a fresh literal reassignment (same rule as `Let`); `apply_container_path_write`/`rebuild_container_write` (new) handle a field/index write reaching into an ALREADY-tracked container through a path (`r.field = v`, `arr[i] = v`, `m[k] = v`, nested combinations), splicing the write in (index writes stay index-insensitive, matching the read side). Any OTHER reassignment shape the tracker can't precisely characterize (an unrelated function call result, a compound `+=`-style assign, a path that doesn't match the literal's actual shape) INVALIDATES (removes) the tracked entry instead of leaving it stale, so it correctly falls through to `Unknown` -> `Capability::All` — the concrete fix for "an unanalyzable fn-value must fail CLOSED, not open." **(2) `std::collections` wrapper opacity.** `decompose_container_path` only understands direct field/index syntax, so `list.get(i)` (a METHOD call) was invisible to the hot-parameter seed pass regardless of fix (1) — `resolve_type_path(List<fn()->str>, [Field("get")])` failed because "get" isn't a real FIELD on `List`. Fix: `transparent_accessor_paths` (new) records, for every method whose receiver is literally `self` and whose every return path decomposes to the SAME self-rooted field/index chain (`List.get`'s `return self.data[index]`), that method's self-relative path — KEYED BY `(struct name, method name)`, not bare name, because `List.get` and `Dict.get` live in the same stdlib file and return DIFFERENT paths (`[data,Index]` vs `[store,Index]`); a bare-name key was tried first and verified LIVE to let Dict's (declared later) clobber List's, breaking detection for the flagship `List<fn()->str>` shape — caught by testing, not assumed. `resolve_type_path` falls back to this map when a `Field` step doesn't name a real field. Also needed: generic instantiation was NEVER threaded through `struct_field_types`/`is_fn_bearing_type` — a generic struct's field type is stored RAW (`List<T>`'s `data: [T]`), so no instantiation was ever recognized as fn-bearing. Added `struct_generic_params` + `struct_fields_for` + `substitute_generic_type` to substitute the ACTUAL type arguments (`fn()->str`) for the struct's declared generic parameter names before checking fn-bearing-ness. Even with the parameter correctly marked hot, `List.new()`/`.push()` build the list via method calls whose struct-literal construction happens INSIDE the method body, invisible to caller-side literal tracking by design — resolves to `Unknown` -> `Capability::All`, the correct fail-closed outcome (this residual is NOT closed further; documented, not silently dropped). **(3) HOF-forwarded-named-function gap.** `resolve_closure_caps`'s `Identifier` arm, for a bare reference to a named function, unconditionally returned that function's own declared/inferred capability set — which says nothing about a HOT parameter it forwards (`fn invoke(f: fn()->str) -> str { return f() }`'s `f` is hot), so handing `invoke` to `map(tools, invoke)` as an unapplied VALUE was attributed `Known(empty)`. Fix: if `name` itself has any hot parameter (`hot_params.get(name)` non-empty), a bare reference falls back to `Unknown` instead. CASCADE MEASURED (not assumed) two ways before shipping: (a) grepped `compiler/stdlib`, `compiler/self-host`, `examples` for a bare-identifier (non-lambda) HOF callback argument — zero real occurrences, every actual callback in this codebase is an inline lambda; (b) confirmed live that the functionally-equivalent lambda-wrapped form (`map(tools, |f| invoke(f))`) was ALREADY conservatively rejected on the PRE-FIX binary (an unrelated, pre-existing restriction on a lambda-bound parameter invoking a hot-forwarding function inline) — so this fix closes an inconsistency (naming the adapter explicitly was silently MORE permissive than the equivalent lambda) rather than restricting previously-working code. PROOF BOTH WAYS for the whole batch: `git stash` just `checker.rs` + `cargo build --release -p kryos-cli` (compiler-internals-only crate, confirmed via `tools/loop/kryos-loop.sh preflight` that no kryos-rt/kryos-stdlib-native source is newer than the staticlibs, so a full rebuild was not required for THIS session's changes) — ALL 16 new `security_gate.sh` checks (8 shapes x 2 modes) go RED (escape compiles), while every PRE-EXISTING check and the new no-cascade positive check stay GREEN; `git stash pop` + rebuild — all 16 go GREEN again. Regression: 8 new committed repros (`tests/security/cap_escape_closure_launder_{push,map_insert,index_assign,field_mutate,nested_push,map_of_arrays,stdlib_collection,hof_forward}.kry`), `tests/security_gate.sh` extended with checks #12-19 (reject, both modes, all 8 shapes) and #20 (a registry of PURE closures built via the SAME mutation shapes needs zero annotation — no cascade). Gates: `security_gate.sh` PASS (33/33), full `cargo build --release` clean, `kryos-loop.sh gates 2` GREEN (conformance 58/58, tier1+tier2 all PASS including `strict_caps`/`examples`/`examples_e2e`), `test_bootstrap.sh` 16/16 (run alone, per non-negotiable #4/#5 — one stray `kryos.exe` killed first). Docs: `docs/10-capabilities.md`'s implementation-status paragraph and "Closure indirection, including containers" section rewritten to correct the FALSE "push in a loop requires Capability::All" claim (it required NOTHING) and document all three new closed shapes plus the one genuinely-remaining residual (a container from a truly non-literal source — function return, mutated parameter, read out of another container — which DOES fail closed, now actually verified rather than assumed). |
+| **LIVE capability bypass: closure into a container via MUTATION after construction (push / index-assign / field-assign), a `std::collections` wrapper-method gap, and a HOF-forwarded-named-function gap - the prior wave's "safely rejected" claim was FALSE, measured live before touching code** | The prior wave (`a868ab7`) closed container laundering for LITERAL-constructed containers and claimed the dynamic-population case "resolves to Unknown and requires Capability::All" (safely rejected). REPRODUCED first, per non-negotiable #1: `tools = push(tools, reader)` in a loop, then `tools[i]()` inside `deny!(fs:read)`, and `m["k"] = reader` on a `map<str, fn()->str>` then `m[k]()`, both LEAKED the real secret (rc=0, no diagnostic, `TOP SECRET DATA` printed) in BOTH `inferred` and `--strict-capabilities` - confirming the report. Went further and found the prior wave's OWN claim about which shapes were "correctly rejected" was itself wrong: `tools[0] = reader` (array index-assign) and `r.f = reader` (struct field mutation after construction) were claimed rejected at compile time; re-measured live on a `let mut` binding and BOTH also leaked identically (compiled clean, printed the secret) - the "rejected" observation likely came from an orthogonal immutable-binding error on a non-`mut` variable, unrelated to capabilities, not an actual capability check. Enumerated and tested the full blast radius before fixing (per instruction, table below) rather than assuming: push ⇒ LEAK; map index-assign ⇒ LEAK; array index-assign ⇒ LEAK; struct field-init (baseline, prior fix) ⇒ correctly rejected; struct field-mutate-after-construction ⇒ LEAK; nested array-of-structs via push ⇒ LEAK; nested map-of-arrays via push+insert ⇒ LEAK; container returned from a function ⇒ correctly rejected (Unknown, genuinely untraceable); container param mutated inside callee ⇒ correctly rejected (Unknown); `std::collections::List<fn()->str>` via `.push()`/`.get()` ⇒ LEAK (separate root cause); a closure reaching a container through a HOF where the HOF's OWN callback is a bare fn-value (`map(paths, make_secret_reader)`, populating) ⇒ correctly rejected (Unknown); a HOF whose callback is a NAMED function that itself forwards a hot parameter (`map(tools, invoke)`) ⇒ LEAK (third, independent root cause); captured by an inner closure ⇒ correctly rejected (Unknown); captured by `spawn` ⇒ LEAK pre-fix, closed by the same mutation-tracking fix. THREE independent root causes, three fixes, all in `kryos-capabilities/src/checker.rs`: **(1) Mutation-tracking gap.** `build_local_container_lits`/`build_local_container_lits_block` only ever walked `Stmt::Let`, so a container's INITIAL literal snapshot (typically an empty `[]`/`{}`) was NEVER updated by a later `Stmt::Assign` - `resolve_container_path_caps`'s index-insensitive union over that stale, usually-empty literal resolved to `Known(empty)`, not `Unknown`, so the call required NOTHING - strictly worse than the documented conservative fallback, because the checker confidently asserted safety instead of admitting ignorance. Fix: `apply_container_assign` (new) recognizes `X = push(X, v)` (appends `v` into the tracked array), a plain alias (`X = Y` where `Y` is tracked), and a fresh literal reassignment (same rule as `Let`); `apply_container_path_write`/`rebuild_container_write` (new) handle a field/index write reaching into an ALREADY-tracked container through a path (`r.field = v`, `arr[i] = v`, `m[k] = v`, nested combinations), splicing the write in (index writes stay index-insensitive, matching the read side). Any OTHER reassignment shape the tracker can't precisely characterize (an unrelated function call result, a compound `+=`-style assign, a path that doesn't match the literal's actual shape) INVALIDATES (removes) the tracked entry instead of leaving it stale, so it correctly falls through to `Unknown` -> `Capability::All` - the concrete fix for "an unanalyzable fn-value must fail CLOSED, not open." **(2) `std::collections` wrapper opacity.** `decompose_container_path` only understands direct field/index syntax, so `list.get(i)` (a METHOD call) was invisible to the hot-parameter seed pass regardless of fix (1) - `resolve_type_path(List<fn()->str>, [Field("get")])` failed because "get" isn't a real FIELD on `List`. Fix: `transparent_accessor_paths` (new) records, for every method whose receiver is literally `self` and whose every return path decomposes to the SAME self-rooted field/index chain (`List.get`'s `return self.data[index]`), that method's self-relative path - KEYED BY `(struct name, method name)`, not bare name, because `List.get` and `Dict.get` live in the same stdlib file and return DIFFERENT paths (`[data,Index]` vs `[store,Index]`); a bare-name key was tried first and verified LIVE to let Dict's (declared later) clobber List's, breaking detection for the flagship `List<fn()->str>` shape - caught by testing, not assumed. `resolve_type_path` falls back to this map when a `Field` step doesn't name a real field. Also needed: generic instantiation was NEVER threaded through `struct_field_types`/`is_fn_bearing_type` - a generic struct's field type is stored RAW (`List<T>`'s `data: [T]`), so no instantiation was ever recognized as fn-bearing. Added `struct_generic_params` + `struct_fields_for` + `substitute_generic_type` to substitute the ACTUAL type arguments (`fn()->str`) for the struct's declared generic parameter names before checking fn-bearing-ness. Even with the parameter correctly marked hot, `List.new()`/`.push()` build the list via method calls whose struct-literal construction happens INSIDE the method body, invisible to caller-side literal tracking by design - resolves to `Unknown` -> `Capability::All`, the correct fail-closed outcome (this residual is NOT closed further; documented, not silently dropped). **(3) HOF-forwarded-named-function gap.** `resolve_closure_caps`'s `Identifier` arm, for a bare reference to a named function, unconditionally returned that function's own declared/inferred capability set - which says nothing about a HOT parameter it forwards (`fn invoke(f: fn()->str) -> str { return f() }`'s `f` is hot), so handing `invoke` to `map(tools, invoke)` as an unapplied VALUE was attributed `Known(empty)`. Fix: if `name` itself has any hot parameter (`hot_params.get(name)` non-empty), a bare reference falls back to `Unknown` instead. CASCADE MEASURED (not assumed) two ways before shipping: (a) grepped `compiler/stdlib`, `compiler/self-host`, `examples` for a bare-identifier (non-lambda) HOF callback argument - zero real occurrences, every actual callback in this codebase is an inline lambda; (b) confirmed live that the functionally-equivalent lambda-wrapped form (`map(tools, |f| invoke(f))`) was ALREADY conservatively rejected on the PRE-FIX binary (an unrelated, pre-existing restriction on a lambda-bound parameter invoking a hot-forwarding function inline) - so this fix closes an inconsistency (naming the adapter explicitly was silently MORE permissive than the equivalent lambda) rather than restricting previously-working code. PROOF BOTH WAYS for the whole batch: `git stash` just `checker.rs` + `cargo build --release -p kryos-cli` (compiler-internals-only crate, confirmed via `tools/loop/kryos-loop.sh preflight` that no kryos-rt/kryos-stdlib-native source is newer than the staticlibs, so a full rebuild was not required for THIS session's changes) - ALL 16 new `security_gate.sh` checks (8 shapes x 2 modes) go RED (escape compiles), while every PRE-EXISTING check and the new no-cascade positive check stay GREEN; `git stash pop` + rebuild - all 16 go GREEN again. Regression: 8 new committed repros (`tests/security/cap_escape_closure_launder_{push,map_insert,index_assign,field_mutate,nested_push,map_of_arrays,stdlib_collection,hof_forward}.kry`), `tests/security_gate.sh` extended with checks #12-19 (reject, both modes, all 8 shapes) and #20 (a registry of PURE closures built via the SAME mutation shapes needs zero annotation - no cascade). Gates: `security_gate.sh` PASS (33/33), full `cargo build --release` clean, `kryos-loop.sh gates 2` GREEN (conformance 58/58, tier1+tier2 all PASS including `strict_caps`/`examples`/`examples_e2e`), `test_bootstrap.sh` 16/16 (run alone, per non-negotiable #4/#5 - one stray `kryos.exe` killed first). Docs: `docs/10-capabilities.md`'s implementation-status paragraph and "Closure indirection, including containers" section rewritten to correct the FALSE "push in a loop requires Capability::All" claim (it required NOTHING) and document all three new closed shapes plus the one genuinely-remaining residual (a container from a truly non-literal source - function return, mutated parameter, read out of another container - which DOES fail closed, now actually verified rather than assumed). |
 | **Items 19 + 23: generic-monomorphization resource-DoS -- unbounded compile-time growth from two INDEPENDENT mechanisms, both FIXED, with a mid-fix root-cause correction on item 19** | LEDGER items 19 (tuple-doubling mangled-name blowup) and 23 (self-recursive type-growing generic) both filed a compile-time DoS: a few lines of ordinary-looking generic code make `kryos check`/`run`/`build` hang or exhaust memory with no diagnostic. **Item 19's write-up attributed the blowup to `kryos-mir`'s `mono_mangled_name` (`format!("{t}")` on an exponentially-doubling `MirType::Tuple`) -- RE-VERIFIED FALSE this session before trusting it, per the task's own "first plausible explanation is often wrong" warning.** `kryos check` (`kryos-driver::check_file_with_options_full`) never calls `kryos_mir::lower_module*` at all -- it stops after type-check/ownership/capabilities -- so the ~65s-at-depth-24 hang documented for item 19 cannot be MIR-lowering cost. Read `kryos-types`'s `InferenceEngine::resolve` (`kryos-types/src/infer.rs`) directly: it is the ACTUAL site -- a fully recursive, non-memoized, non-interned rebuild of a type's ENTIRE tree on every call, and `unify` calls `resolve` on both operands at the START of every single unification, so a `Type::Var` bound to a doubling `Type::Tuple` (from `fn dup<T>(x: T) -> (T, T)` chained, e.g. `dup(dup(dup(x)))`) pays its O(2^depth) cost repeatedly, not once. Item 23 (`fn f<T>(x: T) { f(wrap(x)) }`, each recursive call instantiating a strictly larger concrete type) IS a genuine `kryos-mir`-side bug as originally filed -- the type checker checks a generic function's body ONCE, polymorphically (self-recursive calls resolve via the function's own already-registered signature, no per-instantiation re-check), so there is no type-checker-side blowup for this shape; the real recursion is the Rust compiler's OWN call stack through `monomorphize` (`kryos-mir/src/lower.rs`) re-entering itself once per level while lowering `f<T>`'s body, since each level's mangled name is a NEW, never-cached name (unlike ordinary same-type self-recursion, e.g. `fn f<T>(x: T) -> T { f(x) }`, which an EXISTING per-mangled-name cache already bounds correctly -- independently re-confirmed live this session, no false positive). FIX (two independent bounds, one per real site, no ABI change): (1) `kryos-types/src/infer.rs`: `InferenceEngine::resolve` now delegates to `resolve_bounded`, a budget-tracked walker (`MAX_RESOLVE_NODES = 4096`) that decrements a shared counter per node visited and bails out (returns `None`, aborting the WHOLE walk via `?`-propagation) the instant the budget hits zero -- crucially BEFORE descending into further children, so detecting a pathological type costs at most 4096 node visits, never the type's true (possibly exponential) size; on exhaustion, `resolve` panics with `kryos_errors::ResourceLimitExceeded`. (2) `kryos-mir/src/lower.rs`: `monomorphize`/`monomorphize_impl_fn` gained `enter_mono_frame`/`exit_mono_frame`, tracking a `ctx.mono_depth` counter (`MAX_MONO_DEPTH = 300`) and a `ctx.mono_chain` name stack across NEW (not cache-hit) instantiations only -- exceeding the depth panics naming the offending generic and a truncated instantiation chain; `ctx.monomorphized.len() >= MAX_MONO_TOTAL` (200,000) is a second, breadth-only bound (defense-in-depth, not independently exercised by either filed repro). `mono_mangled_name` (all 4 call sites: free-fn/impl-fn/struct/enum monomorphize) also gained the SAME `MAX_MONO_TYPE_NODES = 4096` budget check via `mir_type_within_node_budget`, mirroring fix (1)'s mechanism -- defense-in-depth for a struct/enum-triggered doubling shape, though the measured item-19 repro is caught earlier by fix (1) since `kryos check` never reaches this code. Both panics carry a NEW shared `kryos_errors::ResourceLimitExceeded { message }` payload type (not two separate ad-hoc types) so both crates' fatal-abort sites share one catching convention. ABI/API DECISION, deliberately NOT a Result-threading refactor: `lower_module`/`lower_module_with_lambda_params` are infallible by signature (`-> MirModule`) with ~50 direct callers across `kryos-mir`'s own test suite (`tests/mir.rs`, 79 tests) and the driver benchmark harness; threading a `Result` through every recursive lowering call this deep was assessed and rejected as a real API-shape change disproportionate to a resource-bound fix. Instead the panic is caught at the ONE real call site (`kryos-driver::pipeline::compile`) via `kryos_errors::ResourceLimitExceeded::catch` (a new helper, not raw `catch_unwind`) and converted to an ordinary `error[E0113]` diagnostic pushed onto the existing `CompileResult.diagnostics` vec; `type_check_with_lambda_params` (renamed original body to `_inner`, thin `catch`-wrapping public function added) does the identical thing INSIDE `kryos-types`, so all 4 of its external callers (the driver's main compile path, `check_file_with_options_full`, `check_source`, and `kryos-lsp`'s diagnostics pass) get the fix with ZERO call-site changes. `ResourceLimitExceeded::catch` ALSO installs a one-time, THREAD-LOCAL-gated panic hook (not a global hook swap -- a `std::sync::Once`-installed shared hook consults a per-thread `Cell<bool>` set only for the duration of `catch`'s own call, so a genuine unrelated panic on another thread during this window still prints normally) so the default Rust "thread '...' panicked at ..." trace is suppressed for exactly this intentional, bounded abort -- verified live: without it, `error[E0113]` printed correctly but was preceded by 3 lines of raw panic-hook noise that reads like an ICE; with it, output is the clean diagnostic alone. Any OTHER panic payload is re-raised via `resume_unwind` unchanged (own hook output intact), never swallowed. New error code `E0113` (`kryos-errors/src/codes.rs` + full `kryos explain E0113` article in `explain.rs`) names both trigger shapes and the fix. LIMITS CHOSEN: `MAX_MONO_DEPTH = 300` mirrors the parser's own `MAX_RECURSION_DEPTH = 256` in spirit with headroom for legitimately deeper generic nesting; `MAX_MONO_TYPE_NODES`/`MAX_RESOLVE_NODES = 4096` are far above any real concrete type's structural size. Checked against the self-host compiler specifically, not just asserted: `test_bootstrap.sh` (16/16, all 16 self-host modules including `types.kry`/`mir.kry`, which are the heaviest generic/collection users -- `List<T>`/`Option<T>`/`Result<T,E>` wrapper chains) passes clean post-fix with no limit anywhere near tripped, and a LEGITIMATE (non-doubling) linear generic chain at depth 60 (`struct Box_<T>{v:T}` chained `boxit(boxit(boxit(x)))`, the exact shape LEDGER's own round-2 session already ruled flat) still compiles and runs correctly post-fix (`built depth 60`, exit 0) -- neither guard false-positives on real generic-heavy code. PROOF BOTH WAYS, LIVE, for BOTH items (not just constructed in the abstract): `git stash` all 7 changed files (`kryos-driver/pipeline.rs`, `kryos-errors/{codes,explain,lib}.rs`, `kryos-mir/lower.rs`, `kryos-types/{check,infer}.rs`) + full `cargo build --release` (no `-p`; `kryos-mir`/`kryos-types` link into the runtime toolchain) -- item 19's repro (`tests/security/attack_monomorphization_tuple_doubling_explosion.kry`, `kryos check`) HUNG past a 25s bound (`timeout 25`, exit 124, no output); item 23's repro (`tests/security/attack_monomorphization_self_recursive_growth.kry`, `kryos run`) reached ~2GB RSS at 10s (`tasklist` polled live) and HUNG past a 20s bound (exit 124) -- both match the originally-documented pre-fix trajectories (65s/depth-24 and 3.2GB+/15s respectively). `git stash pop` + rebuild -- item 19: `kryos check` now fails in 0.62s wall with `error[E0113]` (was: unresponsive past 25s); item 23: `kryos run` now fails in 0.64s wall with `error[E0113]` naming `wrap` and a truncated 301-deep instantiation chain (was: 2GB+ and climbing, killed externally). Both also verified on `kryos build --release` (LLVM/AOT), confirming the fix protects the shared pipeline both backends funnel through, not just `check`/`run`. Gates: `tests/security_gate.sh` PASS (52/52 -- two new checks #51/#52 added, asserting BOTH exit-nonzero-with-E0113 AND wall time <=10s, so a future regression that merely slows the guard back down without fully reverting it still fails the gate); `kryos-loop.sh gates 2` -- tier1 all GREEN (conformance 62/62), tier2 `examples_e2e` showed the ALREADY-DOCUMENTED tier-3-adjacent parallel-gate contention flake (10/12 under load) -- re-ran `run_examples_e2e.sh` alone per the established non-negotiable: clean 12/12 (layer 1 11/11, layer 2 2/2, layer 3 12/12), `strict_caps`/`ir_signatures`/`examples` all PASS; `test_bootstrap.sh` 16/16 run ALONE (stray `kryos.exe` killed first). `cargo test -p kryos-mir -p kryos-types -p kryos-errors -p kryos-driver --release`: 79+51+4+45+9+34 = 222 tests, 0 failed (confirms the `resolve`/`mono_mangled_name` signature changes and the new `type_check_with_lambda_params` wrapper did not regress any existing unit/integration test, including `kryos-mir`'s own 45 direct `lower_module(&module)` call sites in `tests/mir.rs`, left untouched since `lower_module`'s signature was deliberately NOT changed). Regression: `tests/security/attack_monomorphization_tuple_doubling_explosion.kry` (pre-existing, item 19's original repro, now passing) + `tests/security/attack_monomorphization_self_recursive_growth.kry` (new, item 23's repro, written this session since none existed on disk); `tests/security_gate.sh` checks #51-52 (wired into the required pre-commit gate chain, not a standalone/optional script). Docs: `tools/loop/LEDGER.md` items 19 and 23 headers updated from NOT FIXED to FIXED with a pointer here (item 19's also flags the root-cause correction explicitly, so a future reader doesn't re-trust the original mis-attribution). |
 | **Item 8: a curried (2-level) generic closure return failed to BUILD on AOT while JIT accepted it -- JIT/AOT divergence** | Reproduced live before touching code: `tests/known_failures/closure_curried_generic_aot_crash.kry` printed `6` on `kryos run` but `kryos build --release` failed LLVM codegen (`error: load operand must be a pointer to a first class type ... load %T, ptr %_1_arg`). `--emit-llvm` showed the raw generic name `%T` unresolved on BOTH `__lambda_0` (outer, `\|b: T\|`) AND `__lambda_1` (inner, `\|c: T\|`) as `ptr byval(%T)` params -- broader than the prior write-up's "only the innermost closure" attribution. ROOT CAUSE (read, not guessed, `kryos-mir/src/lower.rs` Lambda-lowering param loop): `pending_lambda_ret_hint`'s fallback only fires for a closure param with NO explicit type annotation (`p.ty.is_none()`); `\|b: T\|`/`\|c: T\|` both name the generic type EXPLICITLY, so neither ever went through it or ANY substitution -- the raw `TypeExpr::Simple("T")` reached LLVM IR emission unresolved regardless of nesting depth. Cranelift's uniform i64 closure-arg ABI papers over the same erasure (no byval/sret distinction to violate), which is why JIT was always correct. FIX: an explicitly-annotated lambda param is now substituted through the current monomorphization's `active_generic_bindings` (the same `T -> concrete MirType` map already used for the enclosing generic function's OWN param/return types) when building the lambda's param list. `active_generic_bindings` is a plain `ctx` field, not reset by `save_function_state`/`restore_function_state`, so it stays live across a nested lambda-inside-a-lambda lowering -- fixing the outer AND the curried inner closure in ONE change, no recursion needed (the ledger's prior "make the hint propagate recursively" fix shape was therefore not the minimal one). Proof both ways: `git stash` the `kryos-mir` fix + `cargo build --release -p kryos-cli` (compiler-internals-only change, no kryos-rt/kryos-stdlib-native touched) -- `kryos build --release` on the repro fails with the exact original clang error; `git stash pop` + rebuild -- builds clean, runs, prints `6` on both `kryos run` and the AOT binary. Regression: `tests/conformance/conf_curried_generic_closure.kry` (i64 instantiation + a SECOND independent instantiation to rule out cross-instantiation aliasing; was `tests/known_failures/closure_curried_generic_aot_crash.kry`, deleted). CLAUDE.md gotcha #22's curried-generic-closure entry updated from "residual, NOT fixed" to RESOLVED. Also cleaned up in this pass: `tests/known_failures/lowercase_struct_literal_parse_fail.kry` was already fixed (per the CLOSED entry above, commit e58d8dc) but the known_failures file + its README row were never deleted -- removed both (re-verified fixed on both backends before deleting). Gates: conformance (incl. the new test) PASS both backends, `kryos-loop.sh gates 2` GREEN, bootstrap 16/16. |
 | **Item 4: `[dyn Handler]` at a CALL SITE (not a `let`) emitted a confusing `E0100` alongside the correct `E0110`** | Reproduced live before touching code: `fn use_handlers(hs: [dyn Handler]) { .. }` then `use_handlers([A{}, B{}])` emitted BOTH `error[E0110]: \`dyn Handler\` cannot be stored in an array yet` (correct) AND `error[E0100]: type mismatch: expected \`A\`, found \`B\`` (noise) at `kryos check`. The already-fixed `let x: [dyn Trait] = [A{}, B{}]` case (`suppress_array_elem_unify`) could not reach this shape because it keys off the RAW pre-resolution `TypeExpr` at the `Stmt::Let` site specifically; `FunctionSig.params` only stores the ALREADY-RESOLVED `Type::Error` a rejected dyn-in-array collapses to, with no way to tell "this Error came from a rejected dyn array" apart from "this Error came from an unrelated unknown-type-name annotation" at the call-arg check site -- the exact blocker a prior session's investigation named and left unfixed rather than widen the general `Type::Error` unify-anything escape hatch (tried and REJECTED that session: it silently dropped a genuinely useful diagnostic for an unrelated case, proven via A/B rebuild). FIX (`kryos-types/src/check.rs`): sidesteps the blocker instead of solving it -- a new side table, `dyn_container_reject_params: HashSet<(function_name, param_index)>`, is populated once at function-SIGNATURE registration (where the raw `TypeExpr` is still available, before it collapses to `Type::Error`), keyed by the exact param identity rather than by the type itself. The call-argument checker consults this table (not `FunctionSig`) when zipping args against params: if the callee/param-index pair was flagged AND the argument is an array literal, its span is added to the pre-existing `suppress_array_elem_unify` set before inferring it, skipping only that literal's own pairwise element-unify. Narrowly scoped by construction -- a DIFFERENT param that happens to also resolve to `Type::Error` for an unrelated reason is never in the table, so an unrelated genuinely-mismatched array literal keeps both diagnostics (verified by a negative-control probe). Proof both ways: `git stash` the `check.rs` fix + `cargo build --release -p kryos-cli` -- `kryos check` on the repro reports 2 errors (E0110 + E0100); restore + rebuild -- reports exactly 1 (E0110 only). Regression: `tests/type_soundness.sh` gained `dyn_array_callsite_heterogeneous` (via the existing `want_reject_e0110_clean` helper) + a new `want_reject_e0100` helper backing `unrelated_array_mismatch_not_suppressed` (negative control: an ordinary `[HA]` param, no dyn involved, passed a genuinely mismatched `[HA{}, HB{}]` literal, must still report E0100 -- proves the suppression didn't overreach). Gates: `type_soundness.sh` PASS (all probes correct, unsound rejected, correct accepted), `kryos-loop.sh gates 2` GREEN. |
@@ -2666,15 +2765,15 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 | **FINAL SWEEP (item 1b, trust-model break): `kryos pkg install`/`add` never verified a checksum against anything -- the documented "tarballs are pinned by hash" claim was FALSE** | Live repro (real `NORTHTEKDevs/kryos-registry`, real `git clone`, no mocking): `kryos pkg add http-router && kryos pkg install` then `echo MALICIOUS_INJECTED_CONTENT >> ~/.kryos/packages/http-router-0.1.0/src/lib.kry`, then a SECOND project depending on the same name+version ran `kryos pkg install` and silently reused the tampered cache (`installed 1 package`, exit 0, no warning). ROOT CAUSE (three compounding gaps, all closed): (1) `LockFile::checksum` was always written `None` -- `LockFile::from_resolved` never read anything into it; (2) `RegistryEntry.checksum` (a real published `sha256:<hex>`) was never compared against anything -- `pkg info`/`show` was its ONLY consumer, a human-readable display; (3) even if wired up naively, the two sides of the comparison didn't correspond -- `generate_index_entry` hashed a placeholder "tarball" (`pack()`'s `target/package/*.tar.gz`, actually just a text LISTING of file names, not their content) while `fetch_github_subdir` never produces or downloads a tarball at all -- it `git clone`s the registry repo and copies out `packages/<name>/<version>/` as a directory tree, so there were no tarball bytes on the install side to hash even in principle. FIX: introduced a single canonical content-hash function, `content_checksum` (`kryos-package/src/registry.rs`) -- `sha256:<hex>` over `kryos.toml` + every `.kry` file under `src/`/`stdlib/`, hashed in deterministic `/`-normalized sorted-path order (platform-independent). `pack()` now computes this over the exact files it publishes and stores it as `PublishPackage.content_checksum`; `generate_index_entry` emits it VERBATIM (no more tarball-byte hashing). On the install side, `AvailablePackage`/`ResolvedPackage` gained a `checksum: Option<String>` field threaded from the registry-index lookup through `resolve()`; `fetch::fetch_resolved` calls the new `verify_package_checksum(dest, expected, name, version)` on EVERY `Remote` package -- including a CACHE HIT, not just a fresh fetch -- recomputing `content_checksum` over the on-disk directory and comparing against the index-recorded value. A mismatch OR a missing/empty checksum is rejected (fails closed, per the "missing checksum is the same hole with extra steps" directive) and the poisoned cache entry is `remove_dir_all`'d so a later run cannot mistake it for a good install. `LockFile::from_resolved` now threads the VERIFIED checksum into `kryos.lock` instead of always writing `None`. While in the unpack path: `copy_dir_all` (the function that materializes a fetched `github_subdir:` package from the git clone) now rejects any symlink entry via `DirEntry::file_type()` (which does NOT follow symlinks, unlike the `Path::is_dir()` it used before) -- a malicious registry commit could otherwise plant a symlink pointing outside the package (e.g. at another cached package or up the filesystem) and have this function silently copy unrelated files into the local cache; a real tar-based zip-slip (`../`/absolute entry paths) does not apply today since there is no tar-format extraction anywhere in this path, only a directory walk whose entries come from `read_dir` (which cannot yield path-separator-bearing names). Also fixed while in the file: a failed fetch (including a now-rejected symlink) no longer leaves a partial `dest`/tmp-clone lying around to be mistaken for a successful cache entry on a later run; `collect_kry_files`'s prefix was hardcoded to `"src/"` regardless of caller, mislabeling `stdlib/` files in both the publish listing and the new checksum's path space -- now takes an explicit `prefix` argument. Proof both ways, unit level (`tests/checksum_verification.rs`, 5 new tests + `registry::tests::content_checksum_is_deterministic_and_content_sensitive` + `fetch::tests::copy_dir_all_refuses_a_symlink_entry_pointing_outside_the_package`): with `verify_package_checksum` temporarily short-circuited to `Ok(())` (simulating the pre-fix behavior) and with `copy_dir_all`'s symlink guard temporarily removed, 4 of 5 checksum tests and the symlink test all go RED (confirmed via a`build+test` cycle with the guard stripped, then restored); with the real fix, all pass, including a legitimate-content-still-installs case. Proof both ways, LIVE (real registry, real network, no mocking): pre-migration, a legit `kryos pkg add http-router && kryos pkg install` against the (at-the-time still old-scheme) index FAILED with a checksum mismatch -- correctly proving old published checksums were computed under the broken scheme and would need republishing, not that the new verification itself was wrong. Migrated all 13 real package-version JSON entries in `NORTHTEKDevs/kryos-registry` to the new `content_checksum` scheme (computed via `kryos pkg publish` run against each already-published `packages/<name>/<version>/` directory -- the package CONTENT is unchanged, only the recorded checksum is corrected to actually describe it; pushed as `NORTHTEKDevs/kryos-registry@9025d8a`). Post-migration: `kryos pkg add http-router && kryos pkg install` succeeds (exit 0, `kryos.lock` now records a real checksum instead of nothing), and repeating the EXACT ledger repro (tamper the cached `src/lib.kry`, then `kryos pkg install` from a second project depending on the same name+version) now fails closed with `error: checksum mismatch for \`http-router\` v0.1.0: expected sha256:ec03da92... got sha256:9a0086b7...` (exit 1) and the tampered cache directory is removed. Docs corrected to state the real (now true) guarantee instead of the false one: CLAUDE.md's package-registry paragraph, `docs/package-registry.md`'s status callout + `kryos pkg install` section, `README.md`'s Status prose + feature table (both previously named this as one of two most-severe open items; the closure/container capability-laundering gap named at the time is now also CLOSED (see the CLOSED table entry above)). NOT changed: the transport mechanism itself (still `git clone` of a directory tree, not a downloaded/verified tarball -- `docs/package-registry.md`'s BLAKE3/HTTPS-GET design spec remains aspirational, SHA-256/git-clone is what's actually implemented); `pkg add`'s wildcard-version-by-default behavior (`name = "*"`) is unchanged, so pinning a specific version still depends on committing `kryos.lock` -- but the CONTENT behind whatever version is locked is now cryptographically checked on every install. Gates: `kryos-package` unit+integration tests 62/62 (38 lib + 19 `tests/package.rs` + 5 new `tests/checksum_verification.rs`), full workspace `cargo build --release` clean, `kryos-loop.sh gates 2` and bootstrap re-verified GREEN (see below). |
 | **FINAL SWEEP (2026-08-02): a single stray token at block-statement level (a bare `,`, or a `)`/`]`/`}` with no enclosing call/array/struct-literal to absorb it) HUNG the parser forever, zero output -- reachable by a one-character typo** | Found fresh-eyes probing the CLI/wasm surface (started from `map<str, i64>{}`, a plausible mistyped empty-map literal -- correct syntax is bare `{}` per `examples/wasm_maps.kry` -- which bisected down to a minimal 6-token repro with no map/generics involved at all: `fn main() { let x = 5 , }`). Verified live with `timeout`: `kryos check` on that file ran the full 10s/15s timeout with **zero bytes of output** (not a fast crash -- earlier untimed runs looked like a prompt `exit=127` only because something else eventually killed the process; timed runs proved it hangs). ROOT CAUSE (read, not guessed): the diagnostic-cascade fix closed earlier this session (`parse_primary`'s unexpected-token fallback, `kryos-parser/src/parser.rs`) deliberately stopped consuming `RParen`/`RBracket`/`RBrace`/`Comma` on an unexpected token, on the assumption that an ENCLOSING call/array/struct-literal/match-arms loop would consume it during its own recovery -- correct for a token nested inside one of those constructs, but at the OUTERMOST block-statement level there is no such enclosing construct. An expression-statement built entirely from that fallback (e.g. a stray trailing `,`) returns `Some(Stmt::Expr{..})` with the cursor exactly where it started; `parse_block_stmts`'s loop only force-advances when `parse_statement()` returns `None`, so a `Some` that made literally zero progress spins the identical token through the loop forever. `parse_module` (the top-level declaration loop, one level up the grammar) already has the exact right guard for this bug CLASS -- a `self.pos == before` no-progress check with a comment citing a prior fuzzer-found 2-byte hang (`"}:"`) -- but it was never mirrored down to the block-statement loop. FIX: added the same before/after-position guard to `parse_block_stmts` (factored into a shared `recover_stray_block_token` helper used by both the `None` and now-guarded `Some` paths), so any statement parse that consumes zero tokens forces one diagnostic + one token of progress instead of looping. Proof both ways: `git stash` the fix + rebuild -- `fn main() { let x = 5 , }` times out (10s, 0 bytes) on `kryos check`; restore + rebuild -- 2 clean diagnostics (`E0003` + `E0009`), exit 1, `<1s`. Non-regression: the ORIGINAL cascade-fix repro (`let match: i64 = 5` + `to_string(match)`, reserved-keyword-as-value) re-verified still exactly 2 errors, no cascade reintroduced. Regression: `tests/diagnostics_gate.sh` check 6 (bounded with `timeout`, since a `conf_*.kry` conformance file can't assert "must not hang" -- same precedent as `docs_status_gate`/`utf8_invalid_string_gate`). Gates: conformance 53/53, tier1+tier2 GREEN, bootstrap 16/16, security_gate PASS, differential fuzz gate (seeds 1-40) 0 divergences. |
 | **FINAL SWEEP (2026-08-02): a void-returning call's "result" silently type-checked as an argument to any opaque-signature polymorphic builtin (`to_string`, `abs`, `min`, `max`, `sort`, `reverse`, ...) and read back as garbage/zero at runtime -- SILENT WRONG ANSWER, both backends** | Found probing `kryos repl` (fresh-eyes CLI surface sweep): every bare `println(..)` line at the REPL prompt printed a spurious extra `0` -- traced to the REPL's auto-print heuristic wrapping the input as `to_string(println(..))` to "echo" bare-expression results, which is SUPPOSED to fail to compile for a void-returning statement (falling back to a silent run per the REPL's own comment) but instead type-checked clean. Reproduced directly, outside the REPL, on both backends: `fn side_effect() { println("ran") } fn main() { println(to_string(side_effect())) }` prints `ran` then `0` (not a diagnostic) on `kryos run` AND `kryos build --release`; `abs(side_effect())` reproduces identically. The concretely-typed sibling case (`fn take_i64(v: i64) -> i64 {..}` then `take_i64(side_effect())`) already correctly rejects with `E0100: expected i64, found void` -- proving the gap is narrow, not general. ROOT CAUSE: `to_string`/`abs`/`len`/etc. declare their param as the opaque `Type::Error` sentinel (`kryos-types/src/check.rs`) specifically so ONE signature accepts any real value type; `unify`'s "Error unifies with anything" error-recovery escape hatch (`kryos-types/src/infer.rs`, `if a.is_error() || b.is_error() { return Ok(()) }`) was never taught to exclude `Type::Void`, which is not a real value at all, so it silently unified too. FIX: a new check alongside the existing (adjacent, same-shape) `len`-specific struct/enum guard -- whenever a call argument's `param_ty` is the opaque `Type::Error` sentinel AND the argument's resolved type is `Type::Void`, reject with a clear message naming the callee. **First attempt regressed `examples/async_io.kry`**: `coop_spawn(taskExpr)` shares the identical opaque-param shape but its argument is a TASK EXPRESSION handled specially at MIR lowering (`lower_coop_spawn`, mirrors `spawn { .. }`), not a value read at the call site -- a void-returning task function is the correct, intended case there, per the signature's own pre-existing comment ("the argument is a task expression handled specially at lowering"). Caught by running the full gate ladder before declaring done (`examples`/`strict_caps` went RED), not by the new unit repro alone -- exactly the "prove both ways AND run the full gate" discipline this ledger's non-negotiables require. Fixed by excluding `coop_spawn` by name from the new check (mirrors the existing `len`-specific name-gating immediately below it). Proof both ways: `git stash` the checker fix + rebuild -- `tests/type_soundness.sh`'s two new `want_reject` cases both report `HOLE` (unsound program passed check); restore + rebuild -- both correctly rejected, `coop_spawn_void_task_ok` and `polymorphic_builtins_still_work` (ordinary `to_string`/`abs`/`len` usage) both still accepted and run correctly. Regression: `tests/type_soundness.sh` (4 new cases: 2 `want_reject`, 2 `want_pass`). Gates: conformance 53/53, tier1+tier2 GREEN (including `examples`/`strict_caps`, which caught the `coop_spawn` regression), bootstrap 16/16, security_gate PASS, differential fuzz gate 0 divergences. |
-| **FFI/extern surface wave (2026-08-01): "declared but unimplemented" extern shapes now REJECTED at check time (E0508) instead of compiling then failing at link time or segfaulting at runtime** | Verified live, both backends, exactly as CLAUDE.md documented: `extern "C" { fn abs(x: i32) -> i32 }` failed AOT with a type mismatch and "worked" on `kryos run` only via collision with the ambient `abs` builtin; `extern "C" { fn getpid() -> i32 }` failed AOT codegen with `use of undefined value '@getpid'` (confirmed via `--emit-llvm`: codegen never emits a `declare` for a non-`kryos_*`/non-builtin-colliding name); `extern { fn kryos_env_get(key: str) -> str }` compiled clean and SEGFAULTED on BOTH backends (exit 139) -- confirmed via `--emit-llvm` that the call site (`call ptr @kryos_env_get(ptr @.str.0.hdr)`, 1 arg) is emitted from the user's OWN extern declaration while the hardcoded-correct runtime declaration (`declare i64 @kryos_env_get(ptr, i64, ptr, i64)`, 4 args) sits unused in the same module -- the extern's param/symbol info is genuinely never threaded to codegen, exactly as documented. DECISION: (b) reject at check time, not (a) implement real FFI emission -- real arbitrary C-library linking needs `[build] link` support (not implemented), linker-flag passthrough, and per-backend declare-emission changes across both codegen backends; not tractable as a small, reviewable commit, and every extra day of "compiles, might work" is worse for a capability-safety pitch than an honest rejection. FIX: new `error[E0508]` (`kryos-types/src/check.rs::check_extern_item_shape`, called from `register_decl`'s `Decl::Extern` arm, so it fires on `check`/`run`/`build` uniformly, independent of capability mode) rejects (1) any extern name not prefixed `kryos_` (arbitrary C FFI, unconditionally -- including names that "work" via builtin collision, since that was itself part of the trap) and (2) a `kryos_*`-prefixed extern with a str/array/map/struct/tuple/enum/fn -typed param or return, UNLESS the name is in a small explicit allowlist (`kryos_builtin_to_upper`/`to_lower`, `kryos_ffi_dlopen`/`dlsym`/`cstr`/`strlen`/`string_from_ptr`) built from a repo-wide grep of every `kryos_*` extern signature that legitimately uses `str` today (the stdlib's OWN `ffi.kry`/`strext.kry`/`string.kry` — these are compiler-verified-safe because their real native symbol accepts a Kryos str/handle directly, unlike `kryos_env_get`, which expects raw pointer+length pairs per `std::os`'s `_env_or_empty`). Proof both ways: `git stash` the 3-file fix + `cargo build --release`, all 4 repro shapes (abs/getpid/kenv/puts) compile clean with exit 0 (confirmed live); restore + rebuild, all 4 rejected with E0508 naming the exact limitation, `kryos_process_argc` (safe scalar-only `kryos_*` extern) and `env_get()` (builtin route) both still work unchanged. Also caught by the fix and needed updating: 2 already-broken root examples (`examples/ffi_libc.kry`, `examples/ffi_test.kry`) hand-declared `_getpid`/`puts` directly -- rewritten to use the ALREADY-WORKING `kryos_ffi_dlopen`/`dlsym`/`dlcall0` dynamic-loading pattern (matching `examples/ffi_dlopen.kry`), since that's the only way this compiler can genuinely reach a real C library function today. `compiler/crates/kryos-test-runner/tests/e2e/functions/extern_ffi.kry` (previously asserted the now-rejected `puts(s: str)` shape "type-checks + compiles" as a GOOD outcome) rewritten to assert the safe `kryos_process_argc` pattern instead; 2 new `error_cases/extern_*.kry` fixtures gate both E0508 paths in the e2e suite (proven RED pre-fix, GREEN post-fix). Docs: `docs/13-ffi.md` rewritten top to bottom (status note + every worked example now shows the E0508 rejection instead of the old link-failure/silent-wrong-output text); CLAUDE.md gotchas #22's two FFI entries (C-FFI-not-emitted, kryos_* str-signature segfault) rewritten RESOLVED; `STABILITY.md`'s stale "examples gate: root 44/44, showcase 23/23" corrected to the live 45/45 / 24/24 (pre-existing drift, found while re-running the gate, not introduced this session). Gates: `kryos-loop.sh gates 2` GREEN (conformance 53/53, tier1+tier2 all PASS incl. `docs_status_gate`), bootstrap 16/16, `security_gate.sh` PASS, `examples` gate 45/45 root + 16/16 fixtures + 24/24 showcase, `kryos-test-runner` e2e+native suites green. NOT ATTEMPTED (filed, not half-fixed): real arbitrary C-library FFI emission (option (a)) -- would need `[build] link`/`-l` flag support, linker invocation changes, and per-backend typed-declare emission keyed off the extern's OWN declared signature (today codegen only knows the hardcoded runtime symbol list); a genuinely new feature, not a hardening fix, and out of scope for this wave. Also NOT checked: whether a user-declared extern can SHADOW/conflict with another user-declared extern of the same name with a different signature within one program (a narrower, lower-severity redeclaration-consistency gap; not reproduced, not gated). |
+| **FFI/extern surface wave (2026-08-01): "declared but unimplemented" extern shapes now REJECTED at check time (E0508) instead of compiling then failing at link time or segfaulting at runtime** | Verified live, both backends, exactly as CLAUDE.md documented: `extern "C" { fn abs(x: i32) -> i32 }` failed AOT with a type mismatch and "worked" on `kryos run` only via collision with the ambient `abs` builtin; `extern "C" { fn getpid() -> i32 }` failed AOT codegen with `use of undefined value '@getpid'` (confirmed via `--emit-llvm`: codegen never emits a `declare` for a non-`kryos_*`/non-builtin-colliding name); `extern { fn kryos_env_get(key: str) -> str }` compiled clean and SEGFAULTED on BOTH backends (exit 139) -- confirmed via `--emit-llvm` that the call site (`call ptr @kryos_env_get(ptr @.str.0.hdr)`, 1 arg) is emitted from the user's OWN extern declaration while the hardcoded-correct runtime declaration (`declare i64 @kryos_env_get(ptr, i64, ptr, i64)`, 4 args) sits unused in the same module -- the extern's param/symbol info is genuinely never threaded to codegen, exactly as documented. DECISION: (b) reject at check time, not (a) implement real FFI emission -- real arbitrary C-library linking needs `[build] link` support (not implemented), linker-flag passthrough, and per-backend declare-emission changes across both codegen backends; not tractable as a small, reviewable commit, and every extra day of "compiles, might work" is worse for a capability-safety pitch than an honest rejection. FIX: new `error[E0508]` (`kryos-types/src/check.rs::check_extern_item_shape`, called from `register_decl`'s `Decl::Extern` arm, so it fires on `check`/`run`/`build` uniformly, independent of capability mode) rejects (1) any extern name not prefixed `kryos_` (arbitrary C FFI, unconditionally -- including names that "work" via builtin collision, since that was itself part of the trap) and (2) a `kryos_*`-prefixed extern with a str/array/map/struct/tuple/enum/fn -typed param or return, UNLESS the name is in a small explicit allowlist (`kryos_builtin_to_upper`/`to_lower`, `kryos_ffi_dlopen`/`dlsym`/`cstr`/`strlen`/`string_from_ptr`) built from a repo-wide grep of every `kryos_*` extern signature that legitimately uses `str` today (the stdlib's OWN `ffi.kry`/`strext.kry`/`string.kry` - these are compiler-verified-safe because their real native symbol accepts a Kryos str/handle directly, unlike `kryos_env_get`, which expects raw pointer+length pairs per `std::os`'s `_env_or_empty`). Proof both ways: `git stash` the 3-file fix + `cargo build --release`, all 4 repro shapes (abs/getpid/kenv/puts) compile clean with exit 0 (confirmed live); restore + rebuild, all 4 rejected with E0508 naming the exact limitation, `kryos_process_argc` (safe scalar-only `kryos_*` extern) and `env_get()` (builtin route) both still work unchanged. Also caught by the fix and needed updating: 2 already-broken root examples (`examples/ffi_libc.kry`, `examples/ffi_test.kry`) hand-declared `_getpid`/`puts` directly -- rewritten to use the ALREADY-WORKING `kryos_ffi_dlopen`/`dlsym`/`dlcall0` dynamic-loading pattern (matching `examples/ffi_dlopen.kry`), since that's the only way this compiler can genuinely reach a real C library function today. `compiler/crates/kryos-test-runner/tests/e2e/functions/extern_ffi.kry` (previously asserted the now-rejected `puts(s: str)` shape "type-checks + compiles" as a GOOD outcome) rewritten to assert the safe `kryos_process_argc` pattern instead; 2 new `error_cases/extern_*.kry` fixtures gate both E0508 paths in the e2e suite (proven RED pre-fix, GREEN post-fix). Docs: `docs/13-ffi.md` rewritten top to bottom (status note + every worked example now shows the E0508 rejection instead of the old link-failure/silent-wrong-output text); CLAUDE.md gotchas #22's two FFI entries (C-FFI-not-emitted, kryos_* str-signature segfault) rewritten RESOLVED; `STABILITY.md`'s stale "examples gate: root 44/44, showcase 23/23" corrected to the live 45/45 / 24/24 (pre-existing drift, found while re-running the gate, not introduced this session). Gates: `kryos-loop.sh gates 2` GREEN (conformance 53/53, tier1+tier2 all PASS incl. `docs_status_gate`), bootstrap 16/16, `security_gate.sh` PASS, `examples` gate 45/45 root + 16/16 fixtures + 24/24 showcase, `kryos-test-runner` e2e+native suites green. NOT ATTEMPTED (filed, not half-fixed): real arbitrary C-library FFI emission (option (a)) -- would need `[build] link`/`-l` flag support, linker invocation changes, and per-backend typed-declare emission keyed off the extern's OWN declared signature (today codegen only knows the hardcoded runtime symbol list); a genuinely new feature, not a hardening fix, and out of scope for this wave. Also NOT checked: whether a user-declared extern can SHADOW/conflict with another user-declared extern of the same name with a different signature within one program (a narrower, lower-severity redeclaration-consistency gap; not reproduced, not gated). |
 | **Strings/UTF-8/byte-buffer wave (2026-08-01): three real bugs found by direct reproduction, all in-scope for "a substr that splits a multibyte codepoint corrupts or crashes downstream"** | Probed byte_at/char_code/substr/contains/find/split/replace/reverse/to_upper/to_lower/trim/string_builder/interpolation per the assigned wave. Interpolation (braces/escapes/nested quotes), string_builder double-build safety, and `std::string::find`/`starts_with`/`ends_with`/`strext::trim` were all re-verified correct live -- **not** re-litigated as bugs. Three real defects found and fixed: **(1) SILENT DATA LOSS (most severe):** `contains`/`trim`/`to_upper`/`to_lower`/`replace` (Rust-builtin-backed, `kryos-rt/src/string.rs`) and `split`/`join`/`trim_start`/`trim_end` (`kryos-rt/src/builtins.rs`) converted a `KryosString`'s raw bytes to `&str` via `str::from_utf8(..).unwrap_or("")` -- ANY invalid UTF-8 byte (trivially produced by an ordinary `substr()` that splits a multibyte codepoint; substr is byte-indexed and never checks codepoint boundaries) made the WHOLE string act as empty: `trim("café"-substr-truncated-to-4-bytes)` silently returned `""` (discarding the entire original content), and `contains(bad, "caf")` silently returned `false` even though "caf" is a genuine byte-prefix -- no panic, no diagnostic, just wrong data. Live repro (`git stash` the fix, rebuild): `trim(bad) len=0`, `to_upper(bad) len=0`, `to_lower(bad) len=0`, `replace(bad,"x","y") len=0`, `contains(bad,"caf")=false`; fix restored, same calls PANIC with `kryos panic: string operation requires valid UTF-8, but the string contains invalid byte sequences (a substr()/byte_at() call likely split a multibyte character mid-codepoint) -- use std::utf8::is_valid(s) to check first`. FIX: both files' private `bytes_to_str` helper now panics via `crate::panic::kryos_panic` on `Err(_)` instead of `unwrap_or("")`, matching the existing "fail loudly like the other checked builtins" precedent (`file_read`'s missing-file panic, `kryos_string_slice`'s OOB panic) already in the same file. Does NOT affect the byte-buffer model: a `chr()`/`base64_decode()`-built latin-1 buffer is always valid UTF-8 by construction (codepoints 0-255 always encode validly), so invalid content here is ALWAYS a boundary bug upstream, never a legitimate payload -- `find`/`starts_with`/`ends_with` were never affected (already raw-byte comparisons, no UTF-8 decode step). Gate: `tests/utf8_invalid_string_gate.sh` (new, wired into `kryos-loop.sh gates` tier1 AND `.github/workflows/ci.yml`) -- asserts BOTH directions (invalid input panics loudly; ordinary valid multibyte input on the same 5 builtins is unaffected, guarding against over-rejection) since a nonzero-exit assertion can't live in a `conf_*.kry` (conformance requires exit 0). **(2) CRASH:** `std::string`'s codepoint walkers (`chars`, `char_at`, `reverse`, `split(s, "")`) detected a UTF-8 lead byte and unconditionally stepped 2-4 bytes forward with NO bounds check, including at the string's own last byte -- a `substr()`-truncated tail (a lead byte with zero continuation bytes left) computed a slice end past `len(s)` and `kryos_string_slice` panicked (`string slice out of bounds`, exit 98) from ordinary byte-index arithmetic on an ordinary valid multibyte string, not adversarial input. Live repro: `chars(substr("café",0,4))` panicked pre-fix, `git stash`-verified. FIX: new `std::utf8::step_at(s, bytepos) -> i64` clamps the step so `bytepos + step` never exceeds `len(s)`; all four call sites in `string.kry` now call it instead of duplicating the unclamped stepping logic (also fixes a latent 5th duplicate that was never fully consistent -- `reverse`'s stray-continuation-byte fallback vs `chars`'/`split`'s lack of one). **(3) SILENT WRONG ANSWER in `std::bytes`:** `find_byte`/`find_seq`/`compare`/`is_ascii` (module doc: "treating chars as bytes") walked raw UTF-8 byte offsets `0..len(s)` one byte at a time -- but a latin-1 byte-buffer value >= 0x80 needs TWO UTF-8 bytes to encode (UTF-8's 1-byte range is only 0-0x7F), so `len(s)` OVERCOUNTS such a buffer and the byte-offset walk read only the LEAD byte of each 2-byte value: `find_byte(chr(10)+chr(200)+chr(30), 200)` returned `-1` (NOT FOUND) for a buffer that genuinely contained 200, and `find_byte(.., 30)` returned the WRONG index (3, not 2) -- every subsequent index off by one per high byte seen. Live repro verified pre-fix exactly as described. FIX: rewrote all four `std::bytes` functions to be CODEPOINT-indexed via `step_at` (matching `byte_at`'s own documented "CODEPOINT of the i-th CHARACTER" contract) instead of raw-UTF8-byte-indexed; `find_seq` compares by logical byte VALUE (codepoint arrays) rather than raw substr equality, so it is correct regardless of each matched byte's own encoding width. Regression (both crash-class and silent-wrong-answer-class, proven correct AND proven still-correct on plain ASCII, both backends): `tests/conformance/conf_utf8_string_hardening.kry` (JIT + AOT, both green; `git stash` of `bytes.kry`+`string.kry`+`utf8.kry` makes the file fail to even compile -- `step_at` doesn't exist -- proving the fix is load-bearing). Docs: CLAUDE.md gotcha #22 extended with both the `len()`-overcounts-a-high-byte-buffer trap and the substr-boundary/panic-consistency note; README.md + docs/BUGS.md conformance count corrected 52/52 -> 53/53 (`docs_status_gate` caught the drift). Gates: conformance 53/53, tier1+tier2 GREEN, bootstrap 16/16. NOT FIXED / OUT OF SCOPE, filed here rather than half-fixed: `kryos-stdlib-native/src/bindings.rs`'s `handle_to_str` (46 call sites spanning crypto/regex/HTTP2/actor-messaging, including `byte_at` itself) has the IDENTICAL `unwrap_or("")`-on-invalid-UTF8 pattern as bug (1) above, but the blast radius (46 sites across crypto/network primitives) is too large to verify individually in one focused session -- `byte_at()` on an invalid string currently silently returns `-1` for every index (a defensible-if-imperfect "can't read this" answer, not fabricated data, lower severity than the trim/contains data-loss class that WAS fixed). Minimal repro for whoever picks this up: any `handle_to_str`-backed function (`byte_at`, `base64_encode`, `sha256`, `hmac_sha256`, regex functions, ...) called on a `substr()`-truncated invalid-UTF8 string silently treats it as `""`/no-match instead of panicking. `std::bytes` (the fixed module) does NOT depend on `handle_to_str` -- it uses the global `substr`/`char_code` builtins, unaffected. |
-| **AOT-only: mutating a struct field NARROWER than 64 bits (`u8`/`i8`/`u16`/`i16`/`u32`/`i32`/`bool`) silently did nothing, or corrupted a neighboring field, on `build --release` — not overflow-specific, ANY assignment to such a field was affected** | Found probing the numeric/struct-field-overflow wave. Repro: `struct Ctr { v: u8 }` then `let mut c = Ctr{v:5}  c.v = 15  println("{c.v}")` prints `15` on `kryos run` but `5` (the ORIGINAL value, unchanged) on `build --release` — reproduces for plain-literal assignment, assignment from a local, and self-referencing arithmetic (`c.v = c.v + 10`) alike, and for every narrow scalar type (u8/i8/i16/i32/bool), not just overflow. A DIFFERENT shape from the same root CORRUPTS a sibling field instead of no-op'ing: `struct Three{x:u8,y:u8,z:i64}` then `t.y = 42` left `t.z` reading `999936` instead of its untouched `999999`. ROOT CAUSE (read the emitted `--emit-llvm` IR, not guessed): `StoreField` codegen (`kryos-codegen-llvm/src/codegen.rs`) treated EVERY scalar (non-aggregate) struct field as an opaque 8-byte slot and unconditionally emitted `store i64 <value>, ptr <field_ptr>` — correct for i64/ptr/double fields (always genuinely 8 bytes) but wrong for a field whose LLVM type is narrower (`%Ctr = type { i8 }` — the struct type reserves EXACTLY the field's real width, not a padded 8 bytes, unless a WIDER field afterward forces natural alignment padding to absorb the excess). For a struct whose only/last narrow field has nothing wider after it, the 8-byte store overflows the `alloca`'s real size — undefined behavior that LLVM's `-O2`/`-O3` optimizer (implied by `--release`) is free to treat as unreachable and eliminate outright, which is why the mutation vanished with no crash and no diagnostic (confirmed via the emitted IR: `getelementptr %Ctr, ptr %_0.addr, i32 0, i32 0` then `store i64` into a 1-byte alloca). When a narrower field DOES follow (e.g. `y: u8` before `z: i64` with only enough padding to align `z`, not enough to absorb a full 8-byte write starting mid-struct), the same store spills into that neighbor's real bytes instead. `kryos run`/Cranelift was correct throughout — this is a pure LLVM/AOT backend bug, not a shared-MIR defect (the struct LITERAL construction path a few lines earlier in the same function correctly used `insertvalue`/a full-width typed `store %Ctr`, so the mutation path was a distinct, less-tested code path). FIX: `StoreField` now branches on the field's actual LLVM type — `i64`/`ptr`/`double` keep the existing opaque `store i64`; any narrower type (`i8`/`i16`/`i32`/`i1`) truncates the widened value to that exact type first and stores with it (`store i8 ...`/`store i1 ...`), touching only the field's own bytes regardless of what does or doesn't follow it in the struct layout. Proof both ways: `git stash` the fix, `cargo build --release -p kryos-cli`, run `tests/conformance/conf_narrow_struct_field_store.kry` on AOT — fails at the first assertion (`CONF FAIL: single-u8-field struct: plain literal assign persists`, exit 1); `kryos run` on the SAME file passes (isolates it to AOT, not a language-level defect); fix restored, full `cargo build --release`, same file passes on BOTH backends. Regression: `tests/conformance/conf_narrow_struct_field_store.kry` (8 assertions: single-narrow-field struct of each type, self-ref arithmetic with/without overflow, two adjacent narrow fields with no padding between them, and the narrow-field-corrupts-neighboring-i64-field shape). Gates: conformance 52/52 (was 51/51 — `tests/docs_status_gate.sh` caught the drift, README.md/docs/BUGS.md corrected), tier1+tier2 GREEN, bootstrap 16/16, differential fuzz gate (seeds 1-40) 0 divergences. |
+| **AOT-only: mutating a struct field NARROWER than 64 bits (`u8`/`i8`/`u16`/`i16`/`u32`/`i32`/`bool`) silently did nothing, or corrupted a neighboring field, on `build --release` - not overflow-specific, ANY assignment to such a field was affected** | Found probing the numeric/struct-field-overflow wave. Repro: `struct Ctr { v: u8 }` then `let mut c = Ctr{v:5}  c.v = 15  println("{c.v}")` prints `15` on `kryos run` but `5` (the ORIGINAL value, unchanged) on `build --release` - reproduces for plain-literal assignment, assignment from a local, and self-referencing arithmetic (`c.v = c.v + 10`) alike, and for every narrow scalar type (u8/i8/i16/i32/bool), not just overflow. A DIFFERENT shape from the same root CORRUPTS a sibling field instead of no-op'ing: `struct Three{x:u8,y:u8,z:i64}` then `t.y = 42` left `t.z` reading `999936` instead of its untouched `999999`. ROOT CAUSE (read the emitted `--emit-llvm` IR, not guessed): `StoreField` codegen (`kryos-codegen-llvm/src/codegen.rs`) treated EVERY scalar (non-aggregate) struct field as an opaque 8-byte slot and unconditionally emitted `store i64 <value>, ptr <field_ptr>` - correct for i64/ptr/double fields (always genuinely 8 bytes) but wrong for a field whose LLVM type is narrower (`%Ctr = type { i8 }` - the struct type reserves EXACTLY the field's real width, not a padded 8 bytes, unless a WIDER field afterward forces natural alignment padding to absorb the excess). For a struct whose only/last narrow field has nothing wider after it, the 8-byte store overflows the `alloca`'s real size - undefined behavior that LLVM's `-O2`/`-O3` optimizer (implied by `--release`) is free to treat as unreachable and eliminate outright, which is why the mutation vanished with no crash and no diagnostic (confirmed via the emitted IR: `getelementptr %Ctr, ptr %_0.addr, i32 0, i32 0` then `store i64` into a 1-byte alloca). When a narrower field DOES follow (e.g. `y: u8` before `z: i64` with only enough padding to align `z`, not enough to absorb a full 8-byte write starting mid-struct), the same store spills into that neighbor's real bytes instead. `kryos run`/Cranelift was correct throughout - this is a pure LLVM/AOT backend bug, not a shared-MIR defect (the struct LITERAL construction path a few lines earlier in the same function correctly used `insertvalue`/a full-width typed `store %Ctr`, so the mutation path was a distinct, less-tested code path). FIX: `StoreField` now branches on the field's actual LLVM type - `i64`/`ptr`/`double` keep the existing opaque `store i64`; any narrower type (`i8`/`i16`/`i32`/`i1`) truncates the widened value to that exact type first and stores with it (`store i8 ...`/`store i1 ...`), touching only the field's own bytes regardless of what does or doesn't follow it in the struct layout. Proof both ways: `git stash` the fix, `cargo build --release -p kryos-cli`, run `tests/conformance/conf_narrow_struct_field_store.kry` on AOT - fails at the first assertion (`CONF FAIL: single-u8-field struct: plain literal assign persists`, exit 1); `kryos run` on the SAME file passes (isolates it to AOT, not a language-level defect); fix restored, full `cargo build --release`, same file passes on BOTH backends. Regression: `tests/conformance/conf_narrow_struct_field_store.kry` (8 assertions: single-narrow-field struct of each type, self-ref arithmetic with/without overflow, two adjacent narrow fields with no padding between them, and the narrow-field-corrupts-neighboring-i64-field shape). Gates: conformance 52/52 (was 51/51 - `tests/docs_status_gate.sh` caught the drift, README.md/docs/BUGS.md corrected), tier1+tier2 GREEN, bootstrap 16/16, differential fuzz gate (seeds 1-40) 0 divergences. |
 | **`std::fmt::format` took `args: [any]` -- EVERY non-i64 argument silently rendered as its raw pointer/bit pattern instead of its value, and the function's OWN doc-comment usage example was independently broken** | Found in the stdlib correctness sweep wave while probing `fmt` (a module the priority list flagged as "silent wrong number" risk). Repro: `format("Hello, \{0\}! You are \{1\}.", ["Alice", "30"])` printed `"Hello, 140698911633600! You are 140698911633632."` -- large heap-pointer-shaped integers, not the strings -- on every run, both backends, 100% reproducible (not probabilistic). ROOT CAUSE: `any` is erased to a bare i64 with no runtime type tag (the same limitation as OPEN item #6/CLAUDE.md gotcha #22), and `format`'s `args: [any]` parameter routed every argument through that erased slot; `to_string(args[i])` then printed the slot's raw bits reinterpreted as a number -- correct-looking for an i64 argument (bits==value) and silently wrong for `str`/`f64`. A SEPARATE, compounding defect: the doc comment's own example, `format("Hello, {0}! You are {1}.", ["Alice", "30"])`, is unusable as literally written -- Kryos strings interpolate universally, so the bare `{0}`/`{1}` in that DOUBLE-QUOTED SOURCE LITERAL are consumed by the compiler itself (as the expressions `0`/`1`) before `format()` ever runs; the literal call silently becomes `format("Hello, 0! You are 1.", [...])`, which has no `{0}`/`{1}` left to substitute and returns unchanged. Confirmed live: the verbatim doc example prints `"Hello, 0! You are 1."` with zero error, on a function whose entire purpose is template substitution. FIX: changed the signature from `args: [any]` to `args: [str]` (matching `std::string::format`, a sibling function that never had this bug because it was `[str]` all along) -- callers now pre-stringify each argument with `to_string(x)`, eliminating the `any`-erasure path entirely for this function (no ABI change needed, unlike the general `any` limitation in OPEN item #6, because `format`'s signature could simply stop using `any`). Doc comment rewritten to state the interpolation caveat explicitly and show the required escaped-brace invocation (`\{0\}` or `{{0}}`). Proof both ways: `git stash` the fix, rebuild-free rerun (stdlib `.kry` is read from disk, no `cargo build` needed) -- `tests/conformance/conf_stdlib_correctness_sweep.kry` fails at the FIRST assertion (`CONF FAIL: fmt::format substitutes real str values...`, exit 1); fix restored -- same file prints `PASS`, both `kryos run` and `kryos build --release`. No prior call site in the repo used `std::fmt::format` (grep across `tests/`/`examples/` found zero references), so the signature change is a pure fix with no blast radius. Regression: `tests/conformance/conf_stdlib_correctness_sweep.kry` (also covers isqrt/normalize/crc32/datetime/matrix/semver/iter/collections edge cases from the same sweep). Gates: conformance 51/51, tier1+tier2 GREEN, bootstrap 16/16. `README.md`/`docs/BUGS.md`'s "conformance 50/50" claims corrected to 51/51 (`tests/docs_status_gate.sh` caught the drift and failed until corrected). |
 | **generic method bare self-field passthrough returning a COMPOUND shape (`-> [T]`, `-> (T, i64)`) kept the erased i64-slot element for non-pointer `T` -- CLAUDE.md gotcha #17 residual** | Found the fix already drafted (uncommitted) in the working tree at session start; this session's contribution was verification, gating, and doc correction, not the original diagnosis -- recorded here honestly rather than claimed as a from-scratch find. `fn all(self: Holder<T>) -> [T] { return self.items }` at `T=f64`: `Holder<f64>.all()[0]` printed the raw i64 bit pattern of `1.5` (`4609434218613702656`), identically on both backends (shared-MIR, not a divergence) -- confirmed live via `git stash` of the diff + rebuild. ROOT CAUSE: `instance_ret_needs_monomorphization` (`kryos-mir/src/lower.rs`) only recognized a bare-struct-literal-mentioning-`T` return shape as needing per-instantiation monomorphization; a `TypeExpr::Array`/`TypeExpr::Tuple` return that merely MENTIONS `T` fell through to `false`, so a bare self-field passthrough of such a field stayed on the single erased-to-i64 compiled copy (the exemption was designed for a bare `-> T` SCALAR slot, safe to reinterpret anywhere, not a CONTAINER whose elements each need a real type). FIX: extended `instance_ret_needs_monomorphization` with `Array`/`Tuple` arms mirroring the existing `Generic` arm. Proof both ways: `git stash` the fix, rebuild -> `Holder<f64>.all()[0]` prints the bit pattern; fix restored, rebuild -> prints `1.5`, on BOTH `kryos run` and `kryos build --release`. Extended verification this session (not in the original diff): a BARE TUPLE-FIELD passthrough (`fn get_pair(self: PairHolder<T>) -> (T, i64) { return self.pair }`, not a tuple-literal-construction body) also resolves correctly post-fix -- the fix generalizes symmetrically to both container shapes, confirmed via a fresh minimal repro, both backends. Regression WIRED INTO THE GATE this session (was previously only `tests/smoke/test_generic_compound_return.kry`, which is NOT part of any gate -- `tests/smoke/` has no automated runner beyond exit-code, per its own README): added `tests/conformance/conf_generic_compound_return_f64.kry` (value-asserted, `expect()`-style, matching the existing conformance convention), which IS swept by `tests/conformance/run_conformance.sh`'s `conf_*.kry` glob and therefore by `kryos-loop.sh gates`. Gates: conformance 50/50, tier1+tier2 GREEN, bootstrap 16/16. Docs: CLAUDE.md gotcha #17's residual note rewritten from "known gap" to RESOLVED; `README.md`/`docs/BUGS.md`'s "conformance 48/48" claims corrected to 50/50 (2 new conformance files; `tests/docs_status_gate.sh` caught the drift and failed until corrected -- proof the gate itself works, not just a courtesy edit). |
 | **generic function RETURNING a closure at `T=f64` integer-added the float BIT PATTERNS instead of the values -- CLAUDE.md gotcha #22 residual** | Found the fix already drafted (uncommitted) alongside the item above; same honesty note -- this session verified, gated, and documented it. `fn make_appender<T>(suffix: T) -> fn(T) -> T { return \|x\| x + suffix }` at `T=f64`: `make_appender(0.5)(2.0)` printed a ~300-digit garbage integer instead of `~2.5`, identically on both backends -- confirmed live via `git stash` + rebuild (exact garbage value reproduced: `8988465674311580...` truncated). ROOT CAUSE: the type checker's per-lambda-param type table (`lambda_param_types`) is baked from a SINGLE check pass over the unspecialized generic template, where `T` never resolves to a concrete type -- it has nothing to give MIR for a closure LITERAL that is directly `return`ed from a generic function, so the closure's own un-annotated param stayed i64-erased at every instantiation regardless of what `T` resolved to at a given call site. FIX: `pending_lambda_ret_hint` (`kryos-mir/src/lower.rs`) -- `Stmt::Return`, when its value is directly a `Lambda` literal and the ENCLOSING function's already-monomorphized `current_ret_ty` is a concrete `fn(A) -> B` of matching arity, stages that concrete per-instantiation signature; the `Expr::Lambda` codegen arm consumes it as a fallback ONLY when the type checker's own per-param resolution came up empty, so it cannot override a real annotation or a HOF-inferred param. Proof both ways: `git stash` the fix, rebuild -> the f64 instantiation prints the garbage integer (i64 instantiation and str instantiation both still correct, isolating the bug to exactly the erased-float-add path); fix restored, rebuild -> f64 prints `~2.5`, i64 and str instantiations unchanged (no regression from the added fallback), on BOTH backends. Regression WIRED INTO THE GATE this session: added `tests/conformance/conf_generic_closure_return_f64.kry` (was only in ungated `tests/smoke/`) covering all three instantiations (`i64`/`f64`/`str`) in one program so a future change can't silently regress one while "fixing" another. Gates: conformance 50/50, tier1+tier2 GREEN, bootstrap 16/16. CLAUDE.md gotcha #22's mk_appender entry rewritten from "T=f64 has a residual VALUE bug" to RESOLVED. |
 | **generic struct/enum base name ending in `_` (e.g. `Box_<T>`) broke bare-passthrough instance methods -- `unresolved external symbol <method>` on BOTH backends** | Found while building `tests/fuzz`'s own generic-struct template (named `Box_` to dodge a suspected-reserved `Box`). Minimal repro: `struct Box_<T> { val: T }  impl<T> Box_<T> { fn get(self: Box_<T>) -> T { return self.val } }` then `Box_{val:"ab"}.get()` -- `kryos run` fails to LINK (`LNK2001: unresolved external symbol get`), `kryos build --release` fails to CODEGEN (`use of undefined value '@get'`); both backends fail IDENTICALLY (shared MIR, not a backend bug -- confirmed via `--emit-llvm`, not guessed). ROOT CAUSE: 6 call sites in `kryos-mir/src/lower.rs` recovered a monomorphized name's base struct via `name.split("___").next()` to fall back to the erased-fast-path `method_owners`/`impl_method_generic_info` lookup. `Box_<str>` mangles to `Box____str` (base `Box_` + the `___` separator + suffix `str` = 4 consecutive underscores); splitting on the FIRST 3-underscore run consumes one of the base's own trailing underscores, recovering `Box` instead of `Box_` -- every fallback lookup then missed and silently resolved to the BARE unmangled method name. FIX: added `mono_base_name(ctx, name)`, which recovers the base by checking ALL registered struct/enum names for a `base + "___"` PREFIX (longest wins) instead of blindly splitting -- and checks prefix matches BEFORE any exact-name shortcut, because a monomorphized instance is ALSO registered under its own full mangled name (`struct_defs` gets both), so an exact-match-first order returns the mono name as its own base and silently reintroduces the identical bug (caught by re-testing after the first attempt failed identically, not assumed correct the first time). Replaced all 6 identical `.split("___").next()` call sites. Proof both ways: pre-fix, `tests/conformance/conf_generic_underscore_name.kry` fails to even BUILD on both backends (`LNK2001: unresolved external symbol get`+`dbl`, verified via `git stash` of the fix + rebuild); post-fix, both backends print `PASS`. Regression covers a bare passthrough getter, a self-operating method (`v + v`, `str` concat) coexisting on the same base, and a generic ENUM with a trailing-underscore base name. Gates: conformance 48/48, tier1+tier2 GREEN, bootstrap 16/16. Not a differential (JIT vs AOT) bug in the end -- both backends agree by failing identically -- but found via the same minimal-repro/read-the-IR discipline the differential harness (this wave's deliverable) is built on. |
-| **capability escape via closure/fn-value laundering — parameter/local/return/passthrough-chain/actor-message/spawn/generic/dyn-Trait shapes (container storage was the residual, closed in a later session -- see the CLOSED table entry above)** | Root cause: `fn_capabilities` (`kryos-capabilities/src/checker.rs`) was keyed by NAME; calling a value bound to a parameter/local of function type resolved to nothing in that map, so a closure's authority never propagated to the calling scope regardless of what it did at runtime — verified live pre-fix: a `deny!(fs:read)` block did NOT stop a closure constructed before the denial from being invoked (through a zero-capability `zero_cap_tool`) INSIDE it, printing the secret, `check --strict-capabilities` exit=0, no diagnostic. FIX: (1) `hot_params` — a structural, capability-value-independent fixed point over the whole program identifying which fn-typed PARAMETER indices are invoked, directly or by being forwarded as a bare argument into another (transitively) hot position (covers passthrough chains of any depth); (2) `fn_return_closure_caps` — a fixed point resolving what authority a closure-RETURNING function's returned value carries (a lambda literal's own body capability, a named-function reference, or — recursively — another closure-returning function's return, including a simple passthrough that depends on ITS OWN parameter, resolved against the ACTUAL argument at that call); (3) at every call site with a hot argument position, `accumulate_hot_extra_caps` resolves the SPECIFIC argument passed (`resolve_closure_caps`: a lambda literal, a `let`-bound local traced via a per-function `build_local_closure_caps` map, a named function/builtin reference, a call into (2), or — when it is one of the CURRENT function's own fn-typed parameters — deferred via `ClosureCapsResult::DependsOnParam` to that function's OWN call sites, which is what keeps a `std::iter`-HOF-shaped forwarding function requiring nothing extra) and unions that authority into the call's requirement, checked against the CALLING scope exactly like any other gated operation — so a `deny!` block, an actor's declared ceiling, or any other boundary a closure is routed through now sees the real requirement. Unresolvable provenance (a closure whose origin can't be traced at all) requires `Capability::All`, the same conservative default already documented for the raw-memory escape. Verified BOTH directions, both modes (inferred + `--strict-capabilities`): pre-fix binary compiles+runs the `deny!` repro clean and prints the secret from inside the denied scope (5/5 reproduced); post-fix binary rejects it with E0507 citing the closure argument, in both modes, while `std::iter::map/filter/fold` with a PURE closure still needs no annotation (no cascade) and the SAME HOF with a PRIVILEGED closure correctly requires the capability. Blast-radius swept live (not just the parameter case): closures forwarded through 2+ passthrough call layers, actor fire-and-forget message sends (needed a second fix — actor handlers have NO implicit `self` in their own `params`, unlike a struct `impl` method, so the method-call self-offset translation was off-by-one and silently dropped index-0 coverage until corrected), `spawn`, a generic `fn<T>`, and `dyn Trait` method dispatch are ALL closed — each individually reproduced escaping pre-fix and rejected post-fix inside a `deny!(fs:read)` block. The REJECTED naive alternative ("any call through a non-directly-named fn-typed value requires `Capability::All`") was re-verified as unusable by MEASUREMENT, not just re-assumed: 22 genuine callback-taking `std::iter` HOF signatures, ~55 raw call sites to those names across the stdlib/self-host/examples/ecosystem (a few are `std::string::find` name collisions, not the iterator HOF; dozens remain genuine) — every one would need `@capabilities(all)` under the blanket policy, none do under the shipped call-site-sensitive one. NOT closed: a closure/fn-value read back OUT OF A CONTAINER (struct field, array element, map value) — `hot_params` only recognizes a parameter whose OWN type is `fn(...) -> ...`, so `Registry{reader: fn()->str}`/`[fn()->str]`/`map<str,fn()->str>` are invisible to it; reproduced live, NOT gated, closed in a later session (see the CLOSED table entry above for the fix). Also verified: `kryos audit` still never lists `zero_cap_tool` post-fix — determined this is CORRECT, not a residual defect (audit is a pure syntactic `@capabilities(...)` scan with no inference, so it never lists ANY unannotated function, including a legitimately call-site-polymorphic one like a HOF; it was never specifically "blind to closures", it is blind to every unannotated function equally). Gates: `tests/security_gate.sh` (extended, checks #4-6: reject/no-over-reject/no-cascade + positive privileged-HOF check), conformance 47/47, tier1+tier2 GREEN, bootstrap 16/16. Docs corrected: `docs/10-capabilities.md`, `README.md`, `STABILITY.md`, `docs/capability-roadmap.md` all previously claimed NO soundness for any closure indirection; now state the precise (much larger) sound surface and the precise (much narrower) remaining gap |
-| sret fn-value ABI | struct through a fn value returned garbage on `--release`; fixed by consulting `func_sig_aggs`. Guessing from the LLVM type string broke `Result.and_then` — enums are aggregate-shaped but returned directly |
+| **capability escape via closure/fn-value laundering - parameter/local/return/passthrough-chain/actor-message/spawn/generic/dyn-Trait shapes (container storage was the residual, closed in a later session -- see the CLOSED table entry above)** | Root cause: `fn_capabilities` (`kryos-capabilities/src/checker.rs`) was keyed by NAME; calling a value bound to a parameter/local of function type resolved to nothing in that map, so a closure's authority never propagated to the calling scope regardless of what it did at runtime - verified live pre-fix: a `deny!(fs:read)` block did NOT stop a closure constructed before the denial from being invoked (through a zero-capability `zero_cap_tool`) INSIDE it, printing the secret, `check --strict-capabilities` exit=0, no diagnostic. FIX: (1) `hot_params` - a structural, capability-value-independent fixed point over the whole program identifying which fn-typed PARAMETER indices are invoked, directly or by being forwarded as a bare argument into another (transitively) hot position (covers passthrough chains of any depth); (2) `fn_return_closure_caps` - a fixed point resolving what authority a closure-RETURNING function's returned value carries (a lambda literal's own body capability, a named-function reference, or - recursively - another closure-returning function's return, including a simple passthrough that depends on ITS OWN parameter, resolved against the ACTUAL argument at that call); (3) at every call site with a hot argument position, `accumulate_hot_extra_caps` resolves the SPECIFIC argument passed (`resolve_closure_caps`: a lambda literal, a `let`-bound local traced via a per-function `build_local_closure_caps` map, a named function/builtin reference, a call into (2), or - when it is one of the CURRENT function's own fn-typed parameters - deferred via `ClosureCapsResult::DependsOnParam` to that function's OWN call sites, which is what keeps a `std::iter`-HOF-shaped forwarding function requiring nothing extra) and unions that authority into the call's requirement, checked against the CALLING scope exactly like any other gated operation - so a `deny!` block, an actor's declared ceiling, or any other boundary a closure is routed through now sees the real requirement. Unresolvable provenance (a closure whose origin can't be traced at all) requires `Capability::All`, the same conservative default already documented for the raw-memory escape. Verified BOTH directions, both modes (inferred + `--strict-capabilities`): pre-fix binary compiles+runs the `deny!` repro clean and prints the secret from inside the denied scope (5/5 reproduced); post-fix binary rejects it with E0507 citing the closure argument, in both modes, while `std::iter::map/filter/fold` with a PURE closure still needs no annotation (no cascade) and the SAME HOF with a PRIVILEGED closure correctly requires the capability. Blast-radius swept live (not just the parameter case): closures forwarded through 2+ passthrough call layers, actor fire-and-forget message sends (needed a second fix - actor handlers have NO implicit `self` in their own `params`, unlike a struct `impl` method, so the method-call self-offset translation was off-by-one and silently dropped index-0 coverage until corrected), `spawn`, a generic `fn<T>`, and `dyn Trait` method dispatch are ALL closed - each individually reproduced escaping pre-fix and rejected post-fix inside a `deny!(fs:read)` block. The REJECTED naive alternative ("any call through a non-directly-named fn-typed value requires `Capability::All`") was re-verified as unusable by MEASUREMENT, not just re-assumed: 22 genuine callback-taking `std::iter` HOF signatures, ~55 raw call sites to those names across the stdlib/self-host/examples/ecosystem (a few are `std::string::find` name collisions, not the iterator HOF; dozens remain genuine) - every one would need `@capabilities(all)` under the blanket policy, none do under the shipped call-site-sensitive one. NOT closed: a closure/fn-value read back OUT OF A CONTAINER (struct field, array element, map value) - `hot_params` only recognizes a parameter whose OWN type is `fn(...) -> ...`, so `Registry{reader: fn()->str}`/`[fn()->str]`/`map<str,fn()->str>` are invisible to it; reproduced live, NOT gated, closed in a later session (see the CLOSED table entry above for the fix). Also verified: `kryos audit` still never lists `zero_cap_tool` post-fix - determined this is CORRECT, not a residual defect (audit is a pure syntactic `@capabilities(...)` scan with no inference, so it never lists ANY unannotated function, including a legitimately call-site-polymorphic one like a HOF; it was never specifically "blind to closures", it is blind to every unannotated function equally). Gates: `tests/security_gate.sh` (extended, checks #4-6: reject/no-over-reject/no-cascade + positive privileged-HOF check), conformance 47/47, tier1+tier2 GREEN, bootstrap 16/16. Docs corrected: `docs/10-capabilities.md`, `README.md`, `STABILITY.md`, `docs/capability-roadmap.md` all previously claimed NO soundness for any closure indirection; now state the precise (much larger) sound surface and the precise (much narrower) remaining gap |
+| sret fn-value ABI | struct through a fn value returned garbage on `--release`; fixed by consulting `func_sig_aggs`. Guessing from the LLVM type string broke `Result.and_then` - enums are aggregate-shaped but returned directly |
 | `bool` -> builtin ABI | `json_bool(false)` built JSON `true`; `i1` against an `(i64)` declaration left the upper 63 bits undefined |
 | narrow-int args | same class for `char_from`/`char_at`; latent only because 32-bit x86-64 ops zero the upper half |
 | read-only builtin args leaked | 15 builtins missing from the borrow allowlist; the consume mark is path-insensitive so one `to_upper(s)` suppressed the drop on every path. 78MB/800k -> flat |
@@ -2684,7 +2783,7 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 | spawn wrapper `byval` ABI | System V only; closed both concurrency blockers |
 | **Cranelift shared one box for a loop-local enum captured by `spawn`** | `tests/known_failures/spawn_loop_capture.kry` (now folded into `tests/conformance/conf_spawn_agg_capture_abi.kry` section 7) -- JIT printed `30 30 30 30`, AOT printed the four distinct values. Suspected mechanism (hoisted per-iteration box) was WRONG -- `--emit-mir` showed a fresh `Msg::variant#0(_3)` every iteration and `RValue::EnumVariant` codegen `kryos_calloc`s a new box each time, both correct. Real cause: the Cranelift `Instruction::Spawn` arg-store match had clone/dup arms for Str/Array/Map/Function/Shared/Struct but no `MirType::Enum` arm, so an enum capture fell to `_ => val` (raw shared pointer, no clone) while MIR's normal post-spawn `drop(_N)` still fired (spawn's documented contract is that it clones heap args) -- freeing the box while the spawned thread could still read it, and the freed slot was immediately reused by the next iteration's same-size `kryos_calloc`, so a thread that lost the race read whichever iteration's value last occupied that address. LLVM AOT already had a `MirType::Enum` arm in its equivalent path, hence no divergence there. Fix: added the missing arm calling the existing `emit_enum_deep_copy` helper (already used for closure/struct captures), mirroring the `MirType::Struct` arm immediately above it. Proof: pre-fix binary crashes (`rc=132`, illegal instruction) on the new value-assertion section every run (5/5); post-fix binary passes 8/8 JIT + 3/3 AOT, and 15/15 raw JIT runs of the original repro now print `0 10 20 30` (was nondeterministic, dominated by `30 30 30 30`). Gates green: conformance 47/47, tier1+tier2 green, bootstrap 16/16 |
 | **struct `str` field read leaked, 614MB in CI** | `r.name = mk_str(i)` + `len(r.name)` in a loop: 157.7MB/2M before, 3.9MB after; the full CI workload 617.6MB -> 4.5MB. A `str` field read RETAINS and nothing balanced it. Array/map/struct field reads stay borrows -- `push` grows the shared buffer in place, so dropping those temps is the `alloc_node` double-free |
-| **raw-memory capability escape** | a zero-capability program read `TOPSECRET-APIKEY` via `str_to_ptr`+`ptr_byte_at` and dereferenced +4096 without faulting. Closed with a trusted-computing-base split: raw memory requires `ffi` at DIRECT USE in user code and the requirement does not propagate, so the stdlib (which is built on these — `alloc` in 14 modules) stays usable. Guarded by `tests/security_gate.sh`, which asserts BOTH directions plus no-cascade |
+| **raw-memory capability escape** | a zero-capability program read `TOPSECRET-APIKEY` via `str_to_ptr`+`ptr_byte_at` and dereferenced +4096 without faulting. Closed with a trusted-computing-base split: raw memory requires `ffi` at DIRECT USE in user code and the requirement does not propagate, so the stdlib (which is built on these - `alloc` in 14 modules) stays usable. Guarded by `tests/security_gate.sh`, which asserts BOTH directions plus no-cascade |
 | **bootstrap WINDOWS-ONLY exit -1 in tokenize (ex-item #2)** | NOT a fault, not Defender, not the pool allocator, not heap corruption -- confirmed by an `atexit`-hook diagnostic (`KRYOS_EXIT_TRACE=1` in fault.rs) that never fires before the -1 death, proving no `process::exit`/normal `main` return is involved; the OS kills the process directly (memory-pressure dependent). Root cause found by MEASURING MEMORY, not tracing exceptions: `Get-Process` polling showed kryos-stage1.exe peaking at 13-16GB+ (and still climbing) to tokenize a 109KB file. Cause: `Lexer { src, pos, tokens }` was rebuilt via a fresh struct LITERAL on every `lex_advance`/`lex_match_char`/`lex_emit` call (i.e. per CHARACTER, ~110K times for parser.kry, not per token) and `emit_aggregate_struct` in kryos-codegen-llvm clones/dups ANY array-typed struct FIELD unconditionally at every literal construction (elem_kind=4 for a struct-of-Token element additionally RETAINS every element) -- so each of ~110K reconstructions retained up to ~20K already-emitted tokens: O(n^2), order 1e9 atomic retains, matching the CPU hot-path symbols found via `llvm-symbolizer` against a `-g` debug rebuild (`kryos_struct_retain`/`kryos_array_dup`/`kryos_array_new` dominated `KRYOS_WATCHDOG` RVA samples). The EARLIER "Lexer NOT @copy" fix (see struct comment history) assumed a non-@copy struct's array field is merely SHARED (refcount bump) on rebuild; it is not -- `emit_aggregate_struct`'s field-clone is unconditional, not @copy-gated, so that fix never actually delivered the intended O(n) it documented. FIX: pulled `tokens` out of `Lexer` entirely into a module-level `let mut LEX_TOKENS: [Token] = []`, mutated only via `push` (never reassigned after its own initializer -- see item #2b, a SEPARATE newly-found bug where cross-function global reassignment corrupts the array). Proof: peak working set 13-16GB+ -> 286MB (tokenize alone <100MB); dose-response gone -- 8/8 clean on parser.kry (109KB) AND 8/8 clean on lower.kry (128KB, the other historically-failing file) with the OLD binary confirmed still failing 3/6 on lower.kry in the same session (prove-both-ways); `test_bootstrap.sh` 16/16 across 7 consecutive runs (was the documented 14/16 baseline); full `kryos-loop.sh gates 2` GREEN. Item #5 in OPEN is the SAME bug class, unfixed, in `Parser` (lower severity: token-granularity not character-granularity, not yet lethal) |
 | **`assert_eq`-named user/stdlib calls skipped the post-call unwind check, so a caller kept running after its callee threw** | Found writing `examples/showcase/secret_agent.kry`'s value assertions with `std::test::assert_eq` (3-arg: `actual`, `expected`, `msg`). Repro: `fn main() { println("before")  assert_eq(x, y, "diff")  println("after (should NOT print)") }` with `x="AAAA"`, `y="BBBB"` -- printed BOTH `before` AND `after`, THEN the correct `kryos: uncaught exception: assertion failed: diff -- ...` to stderr, exit 101. Bisected mechanically (one variable at a time, not guessed): reproduces for ANY function literally named `assert_eq` regardless of param names/return-type annotation/import-vs-local, and does NOT reproduce under any other name -- pinned it to the name itself. Root cause (read, not guessed): `kryos-mir/src/lower.rs::is_unwind_source` and the equivalent post-call "check the thread-local exception state" filters in BOTH codegen backends (`kryos-codegen-cranelift/src/codegen.rs`'s inline `should_check` match, `kryos-codegen-llvm/src/codegen.rs::post_call_exception_check_applies`) hardcode `"assert_eq"` in their "this call can never throw, skip the check" list -- correct ONLY for the compiler's real 2-arg `assert_eq(left, right)` INTRINSIC (which lowers to `kryos_builtin_assert_eq`, a `process::abort()`-based call that never returns, so genuinely needs no check), but the exclusion didn't gate on arg count, so it ALSO wrongly excluded a 3-arg call resolving to `std::test::assert_eq` (or any user function of that name) -- a REAL function that `throw`s and returns normally. Without the check, the caller's next MIR instruction ran before anything noticed the pending exception; it only surfaced at a LATER checked boundary. Also broke `try`/`catch` routing the same way (a failing 3-arg `assert_eq` inside a `try` was not caught at all -- confirmed before/after). FIX: in all 3 sites, exclude `"assert_eq"` from the "never throws" set ONLY when `args.len() == 2` (matching the intrinsic's own dispatch condition, already present nearby in both backends), so any other arity gets the check. Proof, both ways: pre-fix the minimal repro printed `after` and pre-fix `try`/`catch` did not catch (both shown above); post-fix (`cargo build --release`, both backends) the repro prints only `before` then the exception (JIT AND AOT), the `try`/`catch` variant correctly catches and prints "caught: ...", and a genuinely-passing `assert_eq(4, 2+2, ..)` and the TRUE 2-arg intrinsic (`assert_eq(1, 2)`, no import) both still behave exactly as before (matching-value case doesn't throw; the true intrinsic still aborts immediately, only `before` prints). Gates: conformance 47/47, tier1+tier2 GREEN, bootstrap 16/16 |
 | **`comptime { }` docs sold compile-time isolation/determinism in present tense; it runs at RUNTIME** | `docs/11-comptime.md` rewritten top to bottom: verified live (outer-var read, `println` fires at runtime once PER CALL with no caching, `file_read` works under ordinary capability rules -- all four directly contradicted the old doc) and reframed everything aspirational as explicitly PLANNED, not current. Also fixed the same overselling in `docs/WHY_KRYOS.md`, `README.md`, `docs/appendix/keywords.md` (which also wrongly sold `quantum`/`Qubit`/`Qureg`/`Secret` as working -- verified NOT implemented: `quantum {}` is a runtime passthrough with no quantum semantics, `Qubit`/`Qureg`/`Secret` are not even registered types, E0101). No code change -- docs only |
@@ -2708,15 +2807,15 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 Enumerated all 157 builtins the LLVM codegen maps against the 82 the capability
 model gates, filtered to authority-bearing names, and probed each survivor.
 
-- **Raw memory — REAL ESCAPE, fixed.** See the closed table.
-- `file_append` — looked ungated to a first-pass grep; it is gated, just in a
+- **Raw memory - REAL ESCAPE, fixed.** See the closed table.
+- `file_append` - looked ungated to a first-pass grep; it is gated, just in a
   different match arm than `append_file`. No gap.
-- `buf_get_byte` / `buf_set_byte` — probed for out-of-bounds access. **Safe:**
+- `buf_get_byte` / `buf_set_byte` - probed for out-of-bounds access. **Safe:**
   the runtime bounds-checks and returns `-1`. My first probe appeared to show a
   4096-byte over-read only because it counted the `-1` sentinel as data. Verify
   the VALUES, not just that something came back.
-- `buf_write_*` — write into an owned buffer, no external authority.
-- `read_line`, `time_now_*` — input and clock reads; ambient by design, matching
+- `buf_write_*` - write into an owned buffer, no external authority.
+- `read_line`, `time_now_*` - input and clock reads; ambient by design, matching
   the documented model.
 
 **Minor wart, not security:** `buf_get_byte` returns `-1` out of range while
@@ -2741,7 +2840,7 @@ construction, not by re-running old tests.** `compute_hot_param_companions`/
 `compute_hot_params` run once over the pre-monomorphization AST; every
 gating predicate (`is_fn_typed`, `is_fn_bearing_type`,
 `decompose_container_path`, parameter-name matching) reads the DECLARED
-`TypeExpr` and the callee's own literal call-site argument syntax — no
+`TypeExpr` and the callee's own literal call-site argument syntax - no
 substituted/instantiated type is ever consulted (grepped
 `kryos-capabilities` for `monomorph`/`type_arg`/`instantiat*`: zero hits).
 Two instantiations of the same generic declaration therefore cannot receive
@@ -2751,7 +2850,7 @@ cannot prove a wrong companion from it.
 **One live attack constructed and run this session** (not merely reasoned
 about): a bare unconstrained generic parameter invoked as a function,
 `fn invoke_generic<T>(x: T) -> str { return x() }`, called with a closure
-argument. Result: REJECTED twice, independently — `E0110` (Kryos's type
+argument. Result: REJECTED twice, independently - `E0110` (Kryos's type
 checker refuses to call a value of unconstrained generic type; no trait-
 bound syntax exists to make this legal) AND, separately, the capability
 checker's own inference for the same program computed `invoke_generic` as
@@ -2763,7 +2862,7 @@ current HEAD** (`00b3cf7`, no code changed this session):
 `tests/security/cap_escape_decoy_map_companion.kry` (a generic
 `apply_from_map<T>(decoy: map<str,T>, real: map<str,T>, f: fn(T)->str)` HOF
 companion decoy) run against `compiler/target/release/kryos.exe`, both
-`kryos run` (inferred) and `kryos check --strict-capabilities` — REJECTED
+`kryos run` (inferred) and `kryos check --strict-capabilities` - REJECTED
 (E0507) both modes, correctly attributing the requirement to the closure
 argument, not the decoy.
 
@@ -2832,7 +2931,7 @@ limitation: it cannot see "both backends agree by being equally broken").
 Probed integer/float/cast/overflow semantics per CLAUDE.md gotcha #18/#22
 and `conf_overflow.kry`'s existing coverage. One real bug found and fixed
 (the AOT narrow-struct-field-store miscompile, see CLOSED table above).
-Everything else below was measured and is CORRECT on both backends —
+Everything else below was measured and is CORRECT on both backends - 
 recorded so it isn't re-investigated:
 
 - **Float -> narrow-int cast saturation is genuinely PER-WIDTH, not a
@@ -2840,7 +2939,7 @@ recorded so it isn't re-investigated:
   which is what a truncate-via-i64 path would give since `300.0 as i64` =
   `300`, `300 as u8` = `44`), `-5.0 as u8` -> `0`, `1.0e10 as u32` ->
   `u32::MAX`, `-1.0e10 as i32` -> `i32::MIN`, `1.0e10 as i8` -> `i8::MAX`,
-  `NaN as u8` -> `0` — identical on `kryos run` and `build --release`.
+  `NaN as u8` -> `0` - identical on `kryos run` and `build --release`.
   Gotcha #18 only documents the f64->i64 case explicitly; this confirms it
   generalizes correctly to every narrower integer width too.
 - **Unsigned comparison/division/modulo at the `u64`/`u32` boundary use
@@ -2850,7 +2949,7 @@ recorded so it isn't re-investigated:
   `2000000000000000000`, not a negative-dividend signed-division result),
   `u32(3_000_000_000) / 2` -> `1500000000` (unsigned) while
   `u32(3_000_000_000) as i32` correctly reinterprets the same bits as
-  `-1294967296` (signed) — both backends agree throughout. No sign-compare
+  `-1294967296` (signed) - both backends agree throughout. No sign-compare
   bug at the unsigned boundary.
 - **Hex/binary integer literals parse correctly at their extremes.**
   `0xFF` -> `255`, `0b1010` -> `10`, `0xFFFFFFFFFFFFFFFF as u64 as i64` ->
@@ -2860,11 +2959,11 @@ recorded so it isn't re-investigated:
   instead of crashing** (an improvement since CLAUDE.md gotcha #22 was last
   written). `let a: i128 = 100` and arithmetic between two `i128` locals
   both now give a clean `error[E0110]: \`i128\` is not yet supported by
-  the code generator` at compile time, exit 1, on BOTH backends — no
+  the code generator` at compile time, exit 1, on BOTH backends - no
   Cranelift verifier ICE, no raw LLVM type-mismatch build failure (the
   previously-documented crash mode). CLAUDE.md corrected to reflect this;
   the types still don't work, they just fail predictably now instead of
-  crashing. No silent miscompile either way — this was the specific thing
+  crashing. No silent miscompile either way - this was the specific thing
   this wave was asked to re-check.
 - **Bitwise NOT on a narrow unsigned type masks to the type's own width**,
   not the full 64-bit register: `~(0u8)` -> `255`, `~(0u16)` -> `65535` on
@@ -2876,13 +2975,13 @@ recorded so it isn't re-investigated:
   that stays within representable range after one wrap
   (`120i8+120i8+120i8` -> `104`, correct on both, no further clamping
   needed since 104 fits in `i8` after the mod-256 truncation). The
-  struct-field bug (CLOSED table) did NOT extend to arrays — arrays are
+  struct-field bug (CLOSED table) did NOT extend to arrays - arrays are
   always heap-allocated `KryosArray` buffers addressed by element stride,
   never the fragile stack-`alloca`-plus-i64-slot-store path that broke for
   struct fields.
 - **A narrow field SANDWICHED between wider fields** (`struct Wide{a:i8,
   b:i64, c:i8}`, mutating the trailing `c` with overflow) **was already
-  correct on both backends even before the struct-field fix** — the
+  correct on both backends even before the struct-field fix** - the
   natural alignment padding after `a` (needed to align `b` to 8 bytes) and
   after `c` (needed to round the struct's total size up to its own
   alignment) happened to provide enough slack to absorb the erroneous
@@ -2890,7 +2989,7 @@ recorded so it isn't re-investigated:
   unnoticed for this long: it only manifests for a narrow field with nothing
   wider declared after it in the SAME struct (a single-scalar-field
   struct, or two-or-more consecutive narrow fields with nothing wider
-  trailing) — a less common but far from rare shape (counters, flags,
+  trailing) - a less common but far from rare shape (counters, flags,
   small config/newtype structs).
 - **The struct-field fix verified to hold for HEAP-escaping struct
   instances too**, not just the stack-`alloca` local case the bug was
@@ -2899,14 +2998,14 @@ recorded so it isn't re-investigated:
   function boundary and returned (`fn mutate(c: SU8) -> SU8 { let mut m =
   c  m.v = m.v + 100  return m }`) both wrap correctly post-fix on AOT,
   matching JIT. (These heap/escaping paths were never confirmed broken
-  pre-fix either — plausible that heap struct boxes reserve full 8-byte-
+  pre-fix either - plausible that heap struct boxes reserve full 8-byte-
   per-field slots regardless of declared width, unlike the tightly-packed
   stack `alloca %StructName`, which would mean they were never exposed to
   this bug in the first place; not root-caused further since the fix
   covers both paths identically going forward.)
 - **Float `to_string`/`parse_float` round-trips exactly** for a spread of
   values (`0.1`, `1.0/3.0`, `123456789.123456`, `1e300`, `1e-300`, `-0.0`,
-  `0.0`, `3.14159265358979`) — reparsing the printed string reproduces the
+  `0.0`, `3.14159265358979`) - reparsing the printed string reproduces the
   original value (diff `< 1e-7`) on both backends, no precision loss from
   the formatter.
 - **NaN comparison semantics are correct and backend-consistent**: `nan ==
@@ -3403,7 +3502,7 @@ on `test_nesting_guard_deep_parens`/`_allows_reasonable_depth` noted above
 - **Bootstrap fails spuriously (rc=127, rotating modules) under load.** Run it
   alone; only a solo failure is real.
 - **A control that changes the workload proves nothing.** A server that accepts
-  and sends without READING looked perfectly flat — 3965 of 4000 requests were
+  and sends without READING looked perfectly flat - 3965 of 4000 requests were
   failing with RST.
 - **`KRYOS_FREE_DIAG=1` completing while the program normally crashes means the
   crash IS corruption.** Master's `parse_int: invalid numeric input: '}'` was

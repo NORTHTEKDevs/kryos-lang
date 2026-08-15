@@ -9,6 +9,8 @@ K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 [ -x "$K" ] || K="$ROOT/compiler/target/release/kryos.exe"
 
 files="
+41a|attack_realprogram_deny_blocks_builtin_exfil
+41b|attack_realprogram_tool_registry
 38|attack_r2_tuple_forloop_index_call
 37|attack_deref_borrow_param_defeats_field_resolver
 36|attack_deny_pipe_bare_ident_call
