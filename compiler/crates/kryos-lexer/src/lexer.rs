@@ -442,6 +442,7 @@ impl<'src> Lexer<'src> {
                 // inside a nested string literal are consumed atomically by
                 // scan_token and never seen here, so they don't affect the depth.
                 let mut brace_depth: i32 = 0;
+                let mut interp_lex_error = false;
                 while !self.at_end() {
                     self.skip_whitespace_and_comments();
                     if self.at_end() {
@@ -457,6 +458,39 @@ impl<'src> Lexer<'src> {
                         brace_depth -= 1;
                     }
                     self.scan_token();
+                    // A byte that cannot start ANY valid token (most commonly a
+                    // stray `\` from JSON/set-notation content the author meant to
+                    // keep literal after an unescaped `{`) previously fell through
+                    // silently as a bare `Error` token, and this loop kept chasing
+                    // tokens across whatever came next -- including recursing into
+                    // `scan_token` -> `scan_string` on the following `"`, which can
+                    // consume all the way to an unrelated real string later in the
+                    // file and misattribute the eventual diagnostic there. Stop
+                    // immediately and report the true location instead.
+                    if self.tokens.last().map(|t| t.kind) == Some(TokenKind::Error) {
+                        let bad = self.tokens.last().unwrap();
+                        let bad_span = bad.span;
+                        let bad_text = bad.text.clone();
+                        let diag = Diagnostic::error(format!(
+                            "invalid character {bad_text:?} in string interpolation"
+                        ))
+                        .with_code(kryos_errors::codes::E0009)
+                        .with_label(bad_span, "not a valid start of an expression here")
+                        .with_note("a bare `{` starts string interpolation -- for a literal brace (e.g. JSON) write `{{`, or escape it `\\{`");
+                        self.emit_diag(diag);
+                        interp_lex_error = true;
+                        break;
+                    }
+                }
+                if interp_lex_error {
+                    // Give up on this string literal entirely rather than hunting
+                    // for a "closing" quote that may not belong to it at all.
+                    if has_interpolation {
+                        self.emit(TokenKind::StringPart, start, self.pos, text);
+                    } else {
+                        self.emit(TokenKind::String, start, self.pos, text);
+                    }
+                    return;
                 }
                 if !self.at_end() {
                     let end_start = self.pos;

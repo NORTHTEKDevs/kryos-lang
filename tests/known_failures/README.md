@@ -49,3 +49,20 @@ empirical sweep found single-`|` bitwise-or bit-packing (`examples/cdp_bot.kry`,
 `examples/websocket_client.kry`) hits the identical "first occurrence,
 newline-led" shape as a common, legitimate pattern, so warning there would
 false-positive on real shipped code.
+
+FIXED and folded into `tests/diagnostics_gate.sh` section 9:
+`diag_e0009_misattributed_span_in_loop.kry` -- an unescaped `{` opening a
+string interpolation (CLAUDE.md hard rule 4) whose content was not a valid
+Kryos expression (e.g. a stray `\` from unescaped embedded-JSON quoting) sent
+`kryos check`/`run` to report E0009 "unterminated string literal" on an
+unrelated, correctly-closed string statement 6 lines later, instead of the
+true bad line. Root cause: the lexer's interpolation-tracking sub-loop
+delegated to the general tokenizer with no awareness it was inside `{...}`;
+a byte that could not start any valid token (the stray `\`) fell through as
+a silent, diagnostic-less `Error` token, and the loop kept consuming tokens
+-- including recursing into `scan_string` on the following `"`, which could
+swallow real, unrelated source (here: an entire `while` loop body) until it
+happened to close on the loop's own `}`, corrupting the token stream. Fix:
+the interpolation loop now recognizes an `Error`-kind token immediately and
+reports E0009 at that exact byte, with a note pointing at the real cause (a
+bare `{` starts interpolation; escape it `{{`/`\{` for a literal brace).

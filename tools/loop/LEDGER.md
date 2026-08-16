@@ -12,6 +12,161 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: E0009 interpolation-lexer misattributed span + item 25 struct-literal O(n^2) -- FIXED (2026-08-16) -- assigned the last remaining `tests/known_failures` entry and LEDGER item 25, BOTH FIXED this session
+
+Assigned wave: two low-severity, real defects. (A) the last file in
+`tests/known_failures/`, `diag_e0009_misattributed_span_in_loop.kry`, where
+`kryos check`/`run` on a string that opens interpolation with an unescaped
+`{` (the documented CLAUDE.md hard-rule-4 mistake, common in hand-built JSON)
+reported E0009 "unterminated string literal" on an unrelated, correctly
+closed string 6 lines later instead of the real bad line. (B) LEDGER item 25,
+a struct literal with ~50,000 fields measured superlinear (6.3s vs 0.08s for
+2,000 fields, 78x time for 25x fields).
+
+**(A) ROOT CAUSE, found by instrumenting the lexer** (temporary
+`KRYOS_DEBUG_LEX=1` token-emission trace in `Lexer::emit`, added then
+removed, not shipped) rather than by reading the code first: `scan_string`'s
+interpolation-tracking sub-loop (`kryos-lexer/src/lexer.rs`) delegates each
+token inside `{...}` to the general `scan_token()` with no awareness it is
+lexing an interpolated expression. The repro's mistake is a bare `{` meant
+as a literal brace, so the content right after it (`\"category\":\"...`) is
+not a valid expression -- it starts with a stray `\`. `scan_token`'s
+unrecognized-byte fallback arm already existed and silently emitted a
+diagnostic-less `TokenKind::Error` for exactly this case (true of ANY stray
+`\` outside a string, not new to this bug), and the interpolation loop just
+kept going. The very next byte, an escaped `\"`, was then re-scanned by
+`scan_token` as a **fresh** `"` opening a **recursive** `scan_string` call --
+that phantom string had no idea it was nested inside another string's
+interpolation tracking, so it consumed real, unrelated, syntactically valid
+source (here: the entire rest of the `while` loop body) as string content,
+until it happened to close on the loop's own `}` (mistaken for the
+interpolation's closing brace). This corrupted the token stream well past
+the true bug site, and the eventual "unterminated string" diagnostic landed
+on whatever bare string statement came next after the swallowed loop --
+6 lines later in the filed repro, matching the file's own two independent
+reproductions (`ledger.kry`, 6-line offset onto the same kind of target).
+Rhymes with item 22 (Pratt-loop nesting-budget misattribution) only at the
+pattern level -- "state advanced/committed before validating the step was
+real" -- the mechanism itself is lexer/interpolation-specific, not parser
+spine-loop related.
+
+**FIX** (`kryos-lexer/src/lexer.rs`, `scan_string`'s interpolation
+brace-tracking loop): after each `self.scan_token()` call inside `{...}`,
+check whether the token just emitted is `TokenKind::Error`. If so -- a byte
+that cannot start any valid Kryos token appeared inside an interpolation --
+stop immediately: emit a targeted `E0009` diagnostic AT that exact byte
+("invalid character ... in string interpolation", with the existing
+literal-brace-escaping note), and return early from `scan_string` (emitting
+whatever `StringPart`/`String` token the accumulated text already supports,
+matching the existing graceful-degradation shape the EOF-mid-string path
+already used) instead of letting the interpolation loop keep chasing tokens
+into a runaway recursive-string cascade.
+
+PROOF BOTH WAYS: `git stash` the lexer hunk + `cargo build --release
+-p kryos-cli` -- `tests/diagnostics_gate.sh` section 9 FAILS with the exact
+documented misattribution (`error[E0009]: unterminated string literal -->
+...:11:15`, the trailing `s = s + "]"` line, not the true line 5); `git
+stash pop` + rebuild -- section 9 PASSES, diagnostic lands at the true bad
+byte (`-->` line 5, the stray `\` right after the unescaped `{`) and no
+longer mentions line 11 at all. Non-regression verified live: the identical
+shape with the brace correctly doubled (`{{`/`}}`, the documented fix)
+still compiles AND runs correctly (`kryos run` prints the exact expected
+JSON array); the two pre-existing `tests/known_failures/rt4-scratch/`
+counter-example files (`brace_repro.kry`, `brace_cascade.kry`, already
+correctly attributed before this fix) and a new `brace_cascade2.kry`-shaped
+case (the full while+if repro, previously misattributed) all now point at
+their own true bad line; the existing section-3 `unterminated.kry`
+diagnostics-gate case (same `{\"a\":1}` mistake, single line, no cascade
+opportunity) still carries `E0009` (message text changed, code did not, so
+that pre-existing assertion is unaffected). Regression:
+`tests/diagnostics_gate.sh` section 9 (misattribution repro + escaped-brace
+non-regression, wired into tier-1 diagnostics gate already). `tests/known_failures/diag_e0009_misattributed_span_in_loop.kry` deleted (folded
+per that directory's own convention); `tests/known_failures/README.md`
+updated with a FIXED-and-folded note; `tests/known_failures/` top-level
+`*.kry` glob is now empty.
+
+**Aside, NOT acted on (out of this wave's assigned scope):** the
+`tests/known_failures/README.md` OPEN table still lists three filenames
+(`generic_struct_closure_field_passthrough_f64.kry`,
+`wasm_narrow_int_no_truncation.kry`, `test_repl_jit_missing_rt_symbols.kry`)
+that do not exist on disk and have zero LEDGER/git-log hits under those
+names -- stale doc rows from before the fold-and-delete convention was
+established, not a live defect. Flagged here so it is not lost; left
+untouched to keep this wave's diff scoped to its assigned items.
+
+**(B) LEDGER item 25 -- RE-MEASURED FRESH, then FIXED (was flagged
+"NOT FIXED", no repro file, no root cause identified).** Fresh measurement
+this session (`compiler/target/release/kryos.exe check`, generated
+struct-literal fixtures at 500-100,000 `i64` fields, min-of-N timing against
+a trivial hello-world control to separate fixed process/contention overhead
+from algorithmic cost -- this machine's per-process overhead alone was
+1.8-5.6s under load, swamping the signal below ~8,000 fields): PRE-FIX,
+n=2,000 fields ~1.8s (at the noise floor, no measurable algorithmic cost)
+scaling to n=50,000 fields ~8.2-8.8s (multiple runs) -- confirms the
+superlinearity is real and undiminished (the LEDGER's original 6.3s/0.08s
+figures were themselves likely measured on a less-contended machine; the
+*shape*, not the absolute seconds, is what reproduced). ROOT CAUSE, found by
+reading `Expr::StructLiteral`'s handling in `kryos-types/src/check.rs`
+(the type checker; `kryos check` does not reach MIR lowering at all, per
+`kryos-driver::check_file_with_options_full`, so this is where the measured
+cost lives): two separate O(n) **linear scans repeated once per field**,
+making the whole literal O(n^2) in its field count --
+(1) `def.fields.iter().find(|(n, _)| n == fname)`, run once per LITERAL
+field to find its declared type, scanning the full declared-field list each
+time; (2) `fields.iter().any(|(fn_, _)| fn_ == dn)`, run once per DECLARED
+field in the missing-fields check, scanning the full literal each time.
+Neither the parser nor the lexer contributes to this cost -- confirmed by
+the fact `kryos check` (no codegen) already reproduces the full effect.
+
+FIX (`kryos-types/src/check.rs`, `Expr::StructLiteral` arm): replaced scan
+(1) with a `HashMap<&str, &Type>` built once from `def.fields` (O(n)) and
+looked up per literal field (O(1) amortized); replaced scan (2) with a
+`HashSet<&str>` built once from the literal's own field names (O(n)) and
+checked per declared field (O(1) amortized). Both structures are built from
+borrowed `&str`/`&Type` (no cloning), scoped to this one match arm. Total
+complexity for the arm: O(n) instead of O(n^2).
+
+PROOF BOTH WAYS, min-of-2 timing, same fixtures: `git stash` the check.rs
+hunk + full `cargo build --release` (kryos-types is upstream of kryos-mir/
+kryos-driver/kryos-cli, so a full rebuild was required, not `-p kryos-cli`)
+-- n=2,000 3.7s, n=50,000 8.25s (RED, matches the pre-fix measurement
+above); `git stash pop` + full rebuild -- n=2,000 1.81s, n=50,000 1.99s
+(GREEN, at the process-overhead floor). Pushed further than the original
+50,000-field benchmark to confirm the fix generalizes, not just at the one
+measured point: n=100,000 fields (2x the original repro size) -- 2.2s,
+still at the floor. Correctness non-regression verified live (all four
+diagnostic paths through the touched arm, unchanged behavior): a normal
+literal compiles and runs correctly; a literal missing a declared field
+still reports `error[E0100]: missing field ...`; a literal with an unknown
+field still reports `error[E0110]: no field ... on struct`; a literal with
+a duplicate field still reports `error[E0110]: duplicate field ...` (the
+duplicate-field check itself was untouched -- it already used a `HashSet`
+and was never part of this bug). No repro file existed to fold (the LEDGER
+item said so explicitly); the generated fixtures used for this measurement
+were scratch-only (outside the repo, per this repo's own "no artifacts in
+other projects" / measure-in-scratch discipline) and are not committed --
+the fix itself needs no repro pin since it is a pure complexity
+improvement with identical observable behavior at every field count, and
+the existing `tests/conformance/conf_lowercase_struct_literal.kry` and
+other struct-literal conformance cases already exercise the same code path
+for correctness.
+
+Gates run this session (both fixes combined in one binary): all three
+mandatory canaries PASS (`tests/security_gate.sh`,
+`tests/ir_signature_gate.sh`, `tests/strict_caps_examples.sh` 91/91,
+`tests/inferred_soundness.sh`); `tools/loop/escape_status.sh` STILL
+ESCAPING: 0 (now-rejected: 19 -- pre-existing drift from the doc's stated
+17, reproduced identically with and without this session's changes via
+`git stash`, so NOT caused by this wave, flagged not fixed as out of
+scope); cascade detector (`conf_stdlib_wave14.kry`) rc=0;
+`tests/conformance/run_conformance.sh` 65/65 both backends;
+`tools/loop/check-docs-truth.sh` PASS; `tests/diagnostics_gate.sh` PASS
+(21/21 checks including the 2 new ones); `compiler/self-host/
+test_bootstrap.sh` run alone after `taskkill //F //IM kryos.exe //T`,
+16/16.
+
+---
+
 ## Wave: `kryos audit` blind to capability violations -- FIXED (2026-08-13) -- assigned LEDGER item 13, FIXED this session
 
 Assigned wave: LEDGER item 13, `kryos audit`'s blind spot -- it reported a clean bill of
@@ -1604,16 +1759,6 @@ eight days later. Not investigated or fixed here (separate root causes,
 separate wave, would have blown this wave's scope) -- flagged per the
 ranking doctrine (leak) so it is not lost again. Needs its own triage wave.
 
-### 25. PAPERCUT: a struct literal with ~50,000 fields is superlinear (not catastrophic) - 6.3s vs 0.08s for 2,000 fields, 78x time for 25x fields (termination-invariant analysis, found 2026-08-05) - NOT FIXED
-
-Not launch-blocking at tested scale (no hang, no crash, bounded and
-predictable growth, just worse than linear). Flagged for a future pass
-profiling struct-literal lowering's field-count scaling; no repro file
-filed yet (measured via the termination sweep's own generated fixtures, not
-committed to `tests/`).
-
----
-
 ### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific - a free function leaks
@@ -2205,6 +2350,7 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 
 | Item | Evidence |
 | --- | --- |
+| **item 25: struct literal with ~50,000 fields was superlinear (O(n^2) in field count) -- FIXED** | Closed 2026-08-16. Was flagged PAPERCUT/NOT FIXED with no repro file and no root cause. Re-measured fresh this session before touching anything (generated fixtures, 500-100,000 `i64`-field struct literals, min-of-N timing against a trivial-program control to separate fixed process overhead from algorithmic cost): confirmed still superlinear and undiminished, n=2,000 fields at the ~1.8s process-overhead floor scaling to n=50,000 fields ~8.2-8.8s. ROOT CAUSE (read, not guessed): `Expr::StructLiteral`'s handling in `kryos-types/src/check.rs` (the type checker -- `kryos check` never reaches MIR lowering, per `kryos-driver::check_file_with_options_full`, so this is the only place the measured cost could live) ran TWO separate linear scans once PER FIELD: `def.fields.iter().find(...)` to look up each literal field's declared type (scanning the full declared-field list per literal field), and `fields.iter().any(...)` in the missing-fields check (scanning the full literal per declared field) -- both O(n) work repeated n times, O(n^2) total. FIX: replaced both linear scans with a `HashMap<&str, &Type>` (declared fields, built once) and a `HashSet<&str>` (literal's own field names, built once), each O(n) to build and O(1) amortized per lookup -- the arm is now O(n) instead of O(n^2), no cloning, scoped to the one match arm. PROOF BOTH WAYS, min-of-2 timing, same fixtures: `git stash` the `check.rs` hunk + FULL `cargo build --release` (kryos-types is upstream of kryos-mir/kryos-driver/kryos-cli, `-p kryos-cli` alone is not sufficient) -- n=2,000 3.7s, n=50,000 8.25s (RED, matches the pre-fix re-measurement); `git stash pop` + full rebuild -- n=2,000 1.81s, n=50,000 1.99s (GREEN, at the floor). Pushed past the original benchmark size to confirm the fix generalizes: n=100,000 fields (2x) -- 2.2s, still at the floor. Correctness verified live and unchanged for all four diagnostic paths through the touched arm: normal literal (compiles, runs, correct value), missing declared field (`E0100`), unknown field (`E0110`), duplicate field in the literal (`E0110`, that check was untouched -- it already used a `HashSet` and was never part of this bug). No repro file existed to fold (the item's own text said so); the fix is a pure complexity improvement with identical observable behavior at every field count, so no new pin was added -- existing struct-literal conformance tests already exercise the same code path for correctness. Gates: all 3 mandatory canaries PASS (security/ir-signature/strict-caps 91/91/inferred-soundness), `escape_status.sh` STILL ESCAPING 0, cascade detector rc=0, conformance 65/65 both backends, `check-docs-truth.sh` PASS, `diagnostics_gate.sh` PASS, self-host `test_bootstrap.sh` 16/16 run alone. See the Wave section at the top of this file for the combined-session write-up (this item was fixed alongside the `diag_e0009_misattributed_span_in_loop.kry` known-failures fold in the same session). |
 | **item 15: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT -- DECIDED as a documented, pinned boundary (option b), not point-fixed -- CLOSED** | Closed 2026-08-15. Was ranked OPEN with heading "NOT FIXED" even though the actual resolution work (root-cause, doc correction, regression pin) had already landed on 2026-08-05/06 and was just never reflected in this table -- an item-10-class ledger-hygiene bug (non-negotiable #5) where the OPEN section contradicted its own history. Re-verified everything fresh this session rather than trusting the prior headings: (1) root cause stands -- Cranelift's `RValue::Index` returns the raw box pointer unmodified for a Struct/Enum array element (every alias of `arr[0]` is the literal same pointer), while LLVM materializes struct/enum values as first-class SSA aggregates (`RValue::Index`'s aggregate branch does a genuine `load`, `RValue::Field` reads via `extractvalue`), so `let a = arr[0]` / `let b = arr[0]` are independent copies on AOT only -- the SAME representational fork as item 3 (struct-argument leak), not a separate bug, and item 3's own cost analysis (Design A, uniform struct boxing, an ABI break touching every call site) is the only fix that closes both; too large and too risky to attempt as a point-patch this close to 1.0. (2) CLAUDE.md gotcha #23 and `docs/claude/FULL-REFERENCE.md` were read fresh this session and both now correctly state the divergence (corrected 2026-08-05) instead of the earlier "both backends agree" overclaim the item was originally filed against -- no doc drift found. (3) `tests/backend_divergence_pins.sh` (added `eaebc06`, wired into `kryos-loop.sh` tier 1) re-run fresh this session: `alias-refcount JIT pin holds (last=x19999!|x19999!|x19999!|x19999!|5)`, `alias-refcount AOT pin holds (last=x19999!|x19999|x19999|x19999|5)`, `backend-divergence-pins: PASS` -- the exact documented shape, not a fixed or drifted one. (4) All three standing canaries re-run fresh this session, none touched by this change: `security_gate.sh` PASS, `ir_signature_gate.sh` PASS (65 modules, no severe mismatches), `strict_caps_examples.sh` 91/91, `inferred_soundness.sh` all probes correct. No code changed this session -- this entry closes the LEDGER-BOOKKEEPING gap only; the language-level decision (accept as a documented boundary until item 3's Design A lands) was already made and is unchanged. Regression: `tests/backend_divergence_pins.sh`. Docs: CLAUDE.md gotcha #23 (last bullet) and `docs/claude/FULL-REFERENCE.md` (struct-copy section) both already correct, re-verified not re-written. |
 | **item 9: `\|\|`-continuation parse trap also swallows closure literals silently -- previously undetectable, now DETECTED via a new W0001 warning (the grammar merge itself is an accepted, documented ASI-class trap per CLAUDE.md hard rule 1, not fixed nor being fixed)** | Closed 2026-08-13 (`## Wave: ... plus a REAL fix for item 9` above has the full session log). A 2026-08-08 attempt at a naive "warn on any newline-led `\|\|`/`\|`" diagnostic was DEMONSTRATED wrong first (false positives on 3 real shipped `is_digit`-style chains) and shelved as needing type info. This session found a narrower purely-syntactic heuristic that needs none: warn only when the newline-led `\|\|` is the FIRST `\|\|` encountered while building the current expression (an established same-statement chain, the `is_digit` shape, does not warn). Implemented: `Token.newline_before: bool` (`kryos-lexer`, computed once at the lexer's single `emit()` choke point); `kryos-parser`'s Pratt infix loop tracks `seen_pipe_or_chain` and emits new `codes::W0001` on a first-occurrence newline-led `\|\|`. Deliberately `PipePipe`-only, NOT single `\|` -- a repo-wide sweep found `examples/cdp_bot.kry`/`examples/websocket_client.kry` use a genuine multi-line bitwise-or bit-packing pattern that the first-occurrence heuristic cannot distinguish from the bug shape, so single `\|` was dropped from the warning rather than ship a known false positive. ALSO FIXED a pre-existing bug this uncovered: `kryos_parser::parse()`'s `Ok` branch silently discarded every non-error diagnostic, so no parser warning (old or new) could ever have reached a real `kryos run`/`build`/`check` invocation -- added `parse_with_diagnostics` and wired it into the two driver entry points that matter (`compile_file_impl`, `check_file_with_options_full`); `kryos-lsp` and the string-based `compile_source`/`check_source` paths still silently drop a parser warning on success (explicitly out of scope, named as a follow-up). PROOF BOTH WAYS, live: `git stash` the 7 changed files + rebuild `-p kryos-cli` -- `tests/diagnostics_gate.sh` section 7's true-bug-must-warn check FAILS (`W0001` absent, merge output unchanged) and `kryos explain W0001` fails to resolve; `git stash pop` + rebuild -- all 4 section-7 checks PASS. Validated against every `.kry` file in the repo containing a leading `\|\|`/`\|` continuation (9 candidate files): the true bug repro warns, 2 independent ASI-trap demo files warn (correct positives), the 3 `is_digit`-style chains and 2 unrelated `\|\|`-using files stay silent (0 false positives). RE-VERIFIED this session (2026-08-15), fresh binary, no compiler changes: `bash tests/diagnostics_gate.sh` -- all 4 section-7 checks (`newline-led first-occurrence \|\| warns (W0001) AND merge unchanged`, `is_digit-style chain does not false-positive`, `bitwise-or bit-packing chain does not false-positive`, `kryos explain W0001 resolves`) PASS, gate exits `diagnostics-gate: PASS`. Gates at close time: `kryos-loop.sh gates 2` tier1 14/14 (conformance 62/62), tier2 5/5; `test_bootstrap.sh` 16/16 run alone. Regression: `tests/diagnostics_gate.sh` section 7 (4 checks); `tests/known_failures/closure_pipe_continuation_silent_wrong.kry` folded/deleted, its README row replaced with a "DETECTED (not eliminated)" entry. Docs: CLAUDE.md hard rule 1 updated with the `\|\|`/`\|` mechanism and the detected-not-eliminated distinction. |
 | **item 42 + two defects it uncovered: `comptime` silently dropped side effects; the WASM backend never wrapped narrow ints; 141 runtime symbols were unregistered with the in-process JIT -- ALL FIXED** | Closed 2026-08-14. **(a) comptime (item 42).** Not a compile-time evaluator (HANDOFF defers that past 1.0), and MIR lowering keeps only the block's VALUE -- so non-value uses failed silently AND inconsistently. MEASURED VIA `--emit-mir`, not argued: `comptime { println("INSIDE") }` emits NO println into MIR at all and vanishes, while `comptime { n = 99 }` survives as `_0 = const 99_i64` and takes effect. A debug print disappearing while the mutation beside it lands is the trap -- the reader concludes the block did not run and is wrong. BOTH docs were wrong in the same direction: `docs/11-comptime.md` said it is "an ordinary `{ }` block" (which would have printed) and CLAUDE.md said side effects are NOT suppressed (they are). `comptime` is now EXPRESSION-ONLY: statement position, and side-effecting statements inside a block, are a clean `E0110` naming the limitation. Every one of the 9 real uses in this repo is `let x = comptime { <arith> }` and is unaffected; all three shipped examples still compile; the value form still evaluates correctly (42, 850). Both docs corrected. Pinned by `diagnostics_gate` in both directions. **(b) WASM narrow-int miscompile, found while clearing `known_failures`.** The backend never wrapped `i8/i16/i32/u8/u16/u32` back to declared width after arithmetic -- every value stayed in the uniform i64 slot (`lower_type`). It COMPILED AND RAN, so it was a silent wrong answer on a documented first-class target and directly contradicted `docs/wasm-contract.md`'s promise that out-of-subset code fails at COMPILE time. Measured: native `-32766 / 4 / -2147483646` vs wasm `32770 / 4294967300 / 2147483650`. Fixed by wrapping after arithmetic/bitwise ops -- wasm-native `I64Extend8S/16S/32S` for signed widths, mask-and for unsigned. Post-fix wasm matches native EXACTLY. Repro moved `known_failures/` -> `tests/harden-probes/probe_narrow_int_wrap.kry` so `wasm_differential_gate` covers it permanently: 63 programs, 62/62 agree, 0 miscompiles. **(c) 141 unregistered JIT runtime symbols.** `kryos run` AOT-compiles and links the staticlibs so it never saw this; `kryos test` and `kryos repl` use the IN-PROCESS Cranelift JIT, where an unregistered symbol is not a diagnostic -- cranelift-jit panics the whole process (rc=101). `kryos test` on a `@test` body containing a basic STRUCT LITERAL panicked on `kryos_calloc`. Auditing every `pub extern "C" fn` in kryos-rt + kryos-stdlib-native against `jit.rs` found **141 missing, not one** -- actors, channels, async, base64, checked arithmetic. Two primary subcommands were a minefield, and the only reason it looked fine is that nothing exercised them beyond trivial programs. All 141 registered, GENERATED from the runtime sources rather than hand-listed. New `tests/jit_symbols_gate.sh` compares the two lists at SOURCE level: **396/396**. A runtime check cannot do this job -- it needs a program that happens to touch the missing symbol, which is exactly the sampling problem that let 141 accumulate. ALSO: `cli_smoke_gate`'s `@test` fixture used only scalar arithmetic, which is precisely why it passed while `kryos test` was crashing on every struct; it now allocates a struct on purpose. `known_failures` 3 -> 1. |

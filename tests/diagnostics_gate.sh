@@ -366,6 +366,79 @@ else
     echo "  FAIL: the comptime value form regressed: $out"; fail=1
 fi
 
+# 9. LEDGER known_failures: diag_e0009_misattributed_span_in_loop.kry (folded
+#    here, file deleted). A bare `{` inside a string opens interpolation
+#    (CLAUDE.md hard rule 4); when the author instead meant a literal brace
+#    for embedded JSON (`\"category\":\"`), the content after `{` is not a
+#    valid Kryos expression -- it starts with a stray `\`. The lexer's
+#    interpolation-tracking sub-loop used to swallow that `\` as a silent,
+#    diagnostic-less `Error` token and keep chasing tokens, which let the
+#    very next `\"` recurse into `scan_string` as a FRESH string literal;
+#    that phantom string could consume real, unrelated source (here: an
+#    entire `while` loop body) until it happened to close on the loop's own
+#    `}`, corrupting the token stream and misattributing the eventual
+#    E0009 to an unrelated string 6 lines later (`s = s + \"]\"`) instead of
+#    the true bad line. Fix: the interpolation loop now recognizes an
+#    `Error`-kind token immediately and reports E0009 AT that byte, instead
+#    of letting the runaway recursive-string cascade happen.
+cat > "$TMP/e0009_span.kry" <<'KRY'
+fn build(n: i64) -> str {
+    let mut s: str = "["
+    let mut i: i64 = 0
+    while i < n {
+        s = s + "{\"category\":\"" + "x" + "\",\"amount\":" + to_string(i) + ",\"note\":\"" + "y" + "\"}"
+        if i < n - 1 {
+            s = s + ","
+        }
+        i = i + 1
+    }
+    s = s + "]"
+    return s
+}
+
+fn main() {
+    println(build(3))
+}
+KRY
+out="$("$K" check "$TMP/e0009_span.kry" 2>&1)"
+arrow_line="$(grep -m1 -- "-->" <<<"$out")"
+if grep -q "error\[E0009\]" <<<"$out" && grep -q ":5:" <<<"$arrow_line" && ! grep -q ":11:" <<<"$arrow_line"; then
+    echo "  ok   E0009 for an unescaped-brace JSON string points at the true bad line (5), not the misattributed one (11)"
+else
+    echo "  FAIL: expected E0009 arrow on line 5, not line 11:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+# Non-regression: the CORRECTLY-escaped version of the same shape (doubled
+# braces, the documented fix for the mistake above) must still compile and
+# run clean -- the interpolation-error detection must not over-reject
+# legitimate `{{`/`}}`-escaped JSON building inside a loop.
+cat > "$TMP/e0009_span_fixed.kry" <<'KRY'
+fn build(n: i64) -> str {
+    let mut s: str = "["
+    let mut i: i64 = 0
+    while i < n {
+        s = s + "{{\"category\":\"" + "x" + "\",\"amount\":" + to_string(i) + ",\"note\":\"" + "y" + "\"}}"
+        if i < n - 1 {
+            s = s + ","
+        }
+        i = i + 1
+    }
+    s = s + "]"
+    return s
+}
+
+fn main() {
+    println(build(2))
+}
+KRY
+out="$("$K" run "$TMP/e0009_span_fixed.kry" 2>&1)"
+expected='[{"category":"x","amount":0,"note":"y"},{"category":"x","amount":1,"note":"y"}]'
+if [ "$out" = "$expected" ]; then
+    echo "  ok   the correctly-escaped ({{/}}) version of the same shape still compiles and runs correctly"
+else
+    echo "  FAIL: escaped-brace non-regression case broke: $out"; fail=1
+fi
+
 if [ $fail -eq 0 ]; then
     echo "diagnostics-gate: PASS"
 else

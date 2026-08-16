@@ -5947,9 +5947,17 @@ impl TypeChecker {
                         }
                         fresh_generics.push(fresh);
                     }
+                    // Field lookup used to be an O(fields) linear scan PER
+                    // literal field (`def.fields.iter().find(...)`), making the
+                    // whole literal O(n^2) in its field count -- a ~50,000-field
+                    // struct literal measured ~8.8s vs ~1.8s of fixed process
+                    // overhead (LEDGER item 25, PAPERCUT). Build the name->type
+                    // lookup once, O(n), and reuse it for every literal field.
+                    let field_map: std::collections::HashMap<&str, &Type> =
+                        def.fields.iter().map(|(n, t)| (n.as_str(), t)).collect();
                     for (fname, fexpr) in fields {
                         let expr_ty = self.infer_expr(fexpr);
-                        if let Some((_, expected_ty)) = def.fields.iter().find(|(n, _)| n == fname)
+                        if let Some(expected_ty) = field_map.get(fname.as_str()).copied()
                         {
                             let expected_instantiated = if var_map.is_empty() {
                                 expected_ty.clone()
@@ -5973,11 +5981,15 @@ impl TypeChecker {
                     // and a missing str/array field yielded a null handle.
                     // Reject the omission at check time (mirrors the existing
                     // extra-/unknown-field rejection above).
+                    // Same O(n^2) shape as the lookup above (`fields.iter().any`
+                    // per declared field) -- reuse a single O(n) name set instead.
+                    let literal_field_set: std::collections::HashSet<&str> =
+                        fields.iter().map(|(n, _)| n.as_str()).collect();
                     let missing: Vec<&str> = def
                         .fields
                         .iter()
                         .map(|(n, _)| n.as_str())
-                        .filter(|dn| !fields.iter().any(|(fn_, _)| fn_ == dn))
+                        .filter(|dn| !literal_field_set.contains(dn))
                         .collect();
                     if !missing.is_empty() {
                         let list = missing
