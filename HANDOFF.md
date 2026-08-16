@@ -3,6 +3,16 @@
 Branch: `fix/aggregate-sret-and-box-header`. Everything below is committed.
 Written so a fresh session can pick up without re-deriving anything.
 
+**STATUS NOTE (2026-08-16, HEAD `dbea2da`): this document is 19 days and
+dozens of hardening waves stale.** Items in the "Remaining queue" below are
+marked done inline where verified this session; the rest is superseded by
+`tools/loop/LEDGER.md`, the live authoritative queue. The capability picture
+in particular has moved completely since this document's era: the adversarial
+escape corpus (17 shapes as of 2026-08-13, grown to 19 as of 2026-08-16) is
+now **0 escaping** (`bash tools/loop/escape_status.sh`). Read
+[`docs/LAUNCH-READINESS.md`](docs/LAUNCH-READINESS.md) for the current,
+measured verdict rather than trusting this file's queue as current.
+
 ---
 
 ## What changed on this branch
@@ -103,18 +113,30 @@ path had no such guard, which is exactly why it miscompiled silently.
    `tests/conformance/conf_spawn_agg_capture_abi.kry`, 6 sections, green on both
    backends. The load-bearing shape is an aggregate capture FOLLOWED BY a scalar
    that is used; capturing an aggregate alone cannot detect the slot shift.
-3. **NEW BUG, found by that test.** Cranelift shares ONE box for a loop-local
-   aggregate captured by `spawn`, so every thread reads the last iteration's
-   value (`30 30 30 30` instead of `0 10 20 30`). LLVM AOT is correct. Repro
-   `tests/known_failures/spawn_loop_capture.kry`, details in docs/BUGS.md. This
-   is a silent wrong answer, not a hang. Likely the per-iteration box is
-   hoisted out of the loop in the Cranelift capture-boxing path — start there.
+3. ~~**NEW BUG, found by that test.** Cranelift shares ONE box for a loop-local
+   aggregate captured by `spawn`~~ **done** — real cause was NOT the suspected
+   hoisted-box mechanism (that hypothesis was wrong; measured via `--emit-mir`,
+   a fresh box WAS allocated each iteration). The actual bug: the Cranelift
+   `Instruction::Spawn` arg-store match had no `MirType::Enum` clone/dup arm,
+   so an enum capture fell through to a raw shared-pointer copy while MIR's
+   `drop` still fired after spawn -- freeing the box while the spawned thread
+   could still read it, with the freed slot immediately reused by the next
+   iteration. Fixed by adding the missing `MirType::Enum` arm (mirrors the
+   existing `MirType::Struct` arm). Folded into
+   `tests/conformance/conf_spawn_agg_capture_abi.kry` section 7; see
+   `tools/loop/LEDGER.md` CLOSED table for full evidence (15/15 JIT runs now
+   print `0 10 20 30`, was nondeterministic pre-fix).
 4. Box layout behind one shared helper — 2–3 days.
 5. Receiver representation/ABI change — 2–4 weeks. **Now a performance item**
    (the struct-argument leak, ~86MB/1M -- see the correction below), not a
    1.0 blocker.
-4. Capability-gate the raw-memory builtins — 2–4 days. Currently ungated, which
-   undercuts the central pitch under `--strict-capabilities`.
+4. ~~Capability-gate the raw-memory builtins~~ **done** — `alloc`, `free_bytes`,
+   `ptr_read_i64`, `ptr_write_i64`, `ptr_byte_at`, `ptr_set_byte`, `str_to_ptr`
+   all require `ffi` (`E0505` without it). Both pointer SOURCES (`alloc`,
+   `str_to_ptr`) are gated, so the raw-memory surface is closed at its entry
+   points -- a pointer cannot be obtained without declaring `ffi`. Verified by
+   `tests/authority_surface_gate.sh` (0 ungated / 0 ungrantable across 82
+   capability-classified builtins, re-run 2026-08-16).
 5. Generate the docs' status sections from real test output rather than by hand.
    `docs/BUGS.md` had said `Active: (none currently tracked)` while two tests
    deadlocked, and `STABILITY.md` §5 opened by claiming no architectural

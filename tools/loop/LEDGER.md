@@ -12,6 +12,74 @@ the stack can be sound if the boundary leaks.
 
 ---
 
+## Wave: release surface -- ecosystem gate to completion, full 28-gate ladder, CI validity, docs reconciliation, honest 1.0 verdict -- VERIFICATION + DOCS WAVE (2026-08-16), zero compiler changes this session
+
+Assigned wave: finish the RELEASE surface, not new bug hunting. Four parts, all done.
+
+**1. `tests/ecosystem_check.sh` run to completion for the first time against current HEAD.**
+Three prior sessions' attempts had died to machine contention (documented in this file), not to a
+real failure -- this session redirected to a log and polled across separate calls instead of trusting
+a single 10-minute call. Result: **259/259 clean, 0 failed**, 6 negative fixtures excluded by design,
+~11 minutes wall time under load.
+
+**2. Full 28-gate ladder run one at a time against HEAD `dbea2da`, real output captured for every
+gate** (escape_status, security_gate, ir_signature_gate, strict_caps_examples, inferred_soundness,
+conf_stdlib_wave14, conformance, type_soundness, backend_divergence_pins, diagnostics_gate,
+parser_nesting_gate, concurrency_smoke, no_double_free, match_exhaustiveness, stdlib_compile_gate,
+cli_smoke_gate, wasm_differential_gate, authority_surface_gate, capability_matrix_gate,
+jit_symbols_gate, package_selftests, ecosystem_check, run_examples_gate, selfhost_wholeprogram_gate,
+test_bootstrap, check-docs-truth, docs_status_gate, acceptance). **28/28 GREEN**, including the full
+`tests/acceptance.sh` (4/4: tier-1 ladder, security gate, self-host reentrant-tokenize repro, self-host
+mini-parser end-to-end). `escape_status.sh`: **STILL ESCAPING: 0, now-rejected: 19** (grown from the
+17 named as of the 2026-08-13 item-33 fix; the two new shapes are also rejected). Cross-validated by
+`capability_matrix_gate.sh`'s independent combinatorial enumeration: **SOUNDNESS 75/75**, PRECISION
+34/75 (item 41's documented, deliberate cost -- unchanged, not re-litigated this session).
+
+**3. CI validity verified without running CI** (task explicitly forbade claiming a green run without
+executing it). `.github/workflows/ci.yml` parses as valid YAML (9 jobs). Every one of the 24 distinct
+script paths the workflow references (`bash tests/*.sh`, `python3 tools/*.py`, resolved against each
+step's `working-directory`) **exists** -- zero missing, including the five gates the Windows job now
+runs for the first time (security_gate, stdlib_compile, cli_smoke, authority_surface, jit_symbols).
+None are git-tracked executable (`100644` not `100755`), which does NOT block CI since every
+invocation goes through an explicit interpreter (`bash`/`python3`), never a bare `./script.sh` --
+confirmed by grep across the whole file. Real CI execution status remains **unverified, disclosed as
+such**, not claimed green.
+
+**4. Docs reconciled against measured reality, same commit:** `HANDOFF.md` (2026-07-28, 19 days stale)
+got a status-note pointer to the current verdict plus two "Remaining queue" items marked done inline
+with root cause + evidence (the spawn loop-capture bug -- real cause was a missing `MirType::Enum` arm
+in the Cranelift spawn arg-store match, not the originally-suspected hoisted-box mechanism; and the
+raw-memory capability gate -- both pointer sources require `ffi`, confirmed via `authority_surface_gate`).
+`STABILITY.md`'s conformance count (62/62, dated 2026-08-04) corrected to 65/65 and the date updated.
+`README.md`'s Status section had the single largest drift: it still described **1 live capability
+escape (item 33)** as of 2026-08-10 with a "do not rely on `deny!()`" warning -- that escape closed
+2026-08-13, three days after the paragraph was written, and nobody had gone back to update it. Replaced
+with the current 0-escaping-but-not-a-proof framing plus the item-41 precision-cost disclosure. The
+17-count elsewhere in README updated to 19. `docs/LAUNCH-READINESS.md` fully rewritten (was dated
+2026-08-07, HEAD `feb1991`, verdict LAUNCH-AS-BETA with 7+ open live bypasses) with the full 28-gate
+table, the capability-safety answer in three parts (what closed + how, two independent zero-escape
+methods, the quantified item-41 cost), the CI-validity section, and the honest verdict: **NOT YET
+1.0** -- not because of any defect this session found, but because `VERSIONING.md`'s own standing bar
+("cut only after external users have run real workloads against it") is unmet; one user, unchanged.
+`VERSIONING.md` itself needed no correction -- it was already accurate.
+
+**Tooling gap found and disclosed, not fixed:** `check-docs-truth.sh`'s "no LEDGER item may sit in
+OPEN while its repro is rejected" self-check has never executed -- its sed range
+`/^## OPEN — ranked/,/^## CLOSED/p` uses an em dash while the actual header is `## OPEN - ranked` (plain
+hyphen), so the range never matches and the loop body runs zero iterations. Not fixed this session: a
+naive dash fix would misfire, because escape-corpus item labels `41a`/`41b` (both legitimately `fixed`)
+share a leading number with the unrelated, legitimately-open LEDGER item **41** (precision cost) --
+the existing regex would then report a false-positive FAIL against a correctly-open item. Left as a
+documented gap in `docs/LAUNCH-READINESS.md` §7 rather than shipping an unverified one-line "fix" that
+trades a silent no-op for a silent false alarm.
+
+Gates: all 28 above, re-run after every doc edit (`check-docs-truth.sh` and `docs_status_gate.sh`
+specifically re-verified PASS post-edit, not just pre-edit).
+
+---
+
+---
+
 ## Wave: E0009 interpolation-lexer misattributed span + item 25 struct-literal O(n^2) -- FIXED (2026-08-16) -- assigned the last remaining `tests/known_failures` entry and LEDGER item 25, BOTH FIXED this session
 
 Assigned wave: two low-severity, real defects. (A) the last file in
