@@ -57,14 +57,42 @@ fi
 
 # --- no item may sit in OPEN while its repro is actually rejected ---------
 # This is the item-10 failure exactly: fixed, but still ranked top of OPEN.
+#
+# THIS CHECK WAS INERT FROM THE DAY IT WAS WRITTEN UNTIL 2026-08-16. Its `sed`
+# range said `/^## OPEN - ranked/` with an EM DASH while the LEDGER header is
+# `## OPEN - ranked` with a plain hyphen, so the range matched zero lines, the
+# loop body ran zero times, and the check "passed" every run by doing nothing.
+# Measured: `sed -n '/^## OPEN - ranked/,/^## CLOSED/p' LEDGER.md | wc -l` -> 0.
+# That is why eight stale OPEN headings had to be found and removed BY HAND on
+# 2026-08-13, and five more on 2026-08-15 -- by the exact check that was
+# supposed to prevent it. A verification script that cannot fail is worse than
+# no script: it manufactures confidence.
+#
+# Accept either dash so a future re-sanitisation of the header cannot silently
+# disarm it again.
+#
+# EXEMPTION, and why a naive one-character fix would have been WRONG: the escape
+# corpus labels an item's regression pins with letter suffixes (`32a`, `32b`,
+# and now `41a`, `41b`). The `[a-z]?` below is deliberate -- LEDGER item 32's
+# repros really are named 32a/32b, and it must still be caught if it goes stale.
+# But item 41 is a PRECISION-COST design note, not a defect with a repro; its
+# pins 41a/41b are legitimately `fixed` while item 41 itself is legitimately
+# OPEN. Matching on the bare number alone would report a spurious FAIL against a
+# correctly-open item. So an OPEN heading that declares itself a deliberate
+# non-defect -- "DESIGN NOTE" or "DELIBERATE", this repo's own vocabulary for
+# exactly that -- is exempt. Everything else is still checked.
+open_hdr_re='/^## OPEN [- - ] ranked/,/^## CLOSED/p'
 while IFS= read -r line; do
   item="$(printf '%s' "$line" | sed -n 's/^### \([0-9]\+\)\..*/\1/p')"
   [ -z "$item" ] && continue
+  case "$line" in
+    *"DESIGN NOTE"*|*DELIBERATE*) continue ;;
+  esac
   if printf '%s\n' "$out" | grep -qE "^${item}[a-z]?[[:space:]].*fixed$"; then
     echo "  FAIL: LEDGER item $item is in OPEN but its repro is REJECTED (already fixed)"
     fail=1
   fi
-done < <(sed -n '/^## OPEN — ranked/,/^## CLOSED/p' tools/loop/LEDGER.md | grep -E "^### [0-9]+\.")
+done < <(sed -n "$open_hdr_re" tools/loop/LEDGER.md | grep -E "^### [0-9]+\.")
 
 [ $fail -eq 0 ] && echo "docs-truth: PASS" || echo "docs-truth: FAIL"
 exit $fail
