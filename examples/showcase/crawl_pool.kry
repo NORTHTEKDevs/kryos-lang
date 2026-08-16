@@ -1,0 +1,227 @@
+// crawl_pool.kry -- a bounded worker pool with real coordination.
+//
+// A fixed number of workers pull job indices from a shared `jobs` channel,
+// each job does real deterministic work over a string payload (a rolling
+// checksum plus a character-shift transform), and results are sent back
+// over a `results` channel as packed i64 values. Main collects exactly one
+// result per job, buckets it by job index (arrival order across workers is
+// NOT deterministic -- completion timing races), and only THEN prints a
+// summary walked in fixed job-index order. That ordering choice is what
+// makes the program's stdout identical on every run despite the workers
+// racing underneath it.
+//
+// Graceful shutdown: each worker loops on `recv(jobs)` until it sees a
+// sentinel (-1), one sentinel per worker, enqueued after all real jobs --
+// the same pattern as examples/showcase/worker_pool.kry. `kryos_spawn_wait_all()`
+// (inserted automatically at the end of `main`) then joins every worker
+// thread before the process exits, so there is no manual join bookkeeping.
+//
+// Fault isolation: some payloads are deliberately invalid (empty, or
+// containing a poison marker) and `compute_checksum` rejects them with
+// `throw`. Per docs/09-concurrency.md, an UNCAUGHT throw inside a `spawn`
+// block is fatal to the WHOLE PROCESS, not just the offending thread -- so
+// each worker wraps its per-job work in its own try/catch and reports a
+// failure result on the catch path. That keeps the total result count
+// exactly equal to the job count either way, so the collector's `recv` loop
+// can never hang waiting on a result that will never arrive.
+//
+// Channels in Kryos only carry i64 values (see docs/09-concurrency.md), so
+// results are packed as a single i64 per job: job_index, an ok/fail flag,
+// and the checksum are all folded into one value and unpacked on the main
+// thread with integer div/mod. This avoids interleaving two separate sends
+// per job across a shared multi-producer channel, which would otherwise be
+// a real race (worker A's index could land next to worker B's checksum).
+//
+// NOTE: docs/stdlib/core-builtins.md lists `char_at` as an unconditional
+// core builtin ("available in every .kry program without imports"). It is
+// not -- `kryos check` rejected the bare call with E0102 and pointed at
+// `use std::string`. Documentation bug, recorded for the wave report.
+use std::string::{char_at}
+
+let WORKER_COUNT: i64 = 4
+let CHECKSUM_MOD: i64 = 1000000007
+
+// Deterministic job payloads. Indices 2, 6, and 12 are intentionally
+// invalid (empty / poisoned) to exercise the per-job failure path without
+// losing or hanging the rest of the batch.
+let JOBS: [str] = [
+    "alpha payload one",
+    "bravo transform target",
+    "",
+    "charlie needs a checksum",
+    "delta echo foxtrot golf",
+    "hotel india juliet kilo",
+    "POISON marker payload",
+    "lima mike november oscar",
+    "papa quebec romeo sierra",
+    "tango uniform victor whiskey",
+    "xray yankee zulu alpha",
+    "bravo bravo bravo",
+    "",
+    "final payload for the pool"
+]
+
+fn is_valid_payload(payload: str) -> bool {
+    if len(payload) == 0 {
+        return false
+    }
+    if contains(payload, "POISON") {
+        return false
+    }
+    return true
+}
+
+// Real work #1: a deterministic polynomial rolling checksum over the
+// payload's Unicode code points, folded into [0, CHECKSUM_MOD).
+fn compute_checksum(payload: str) -> i64 {
+    if is_valid_payload(payload) == false {
+        throw "invalid payload: '" + payload + "'"
+    }
+    let mut h: i64 = 0
+    let mut i: i64 = 0
+    let n: i64 = len(payload)
+    while i < n {
+        let code: i64 = char_code(char_at(payload, i))
+        h = h * 131 + code
+        i = i + 1
+    }
+    let m: i64 = h % CHECKSUM_MOD
+    if m < 0 {
+        return m + CHECKSUM_MOD
+    }
+    return m
+}
+
+// Real work #2: a deterministic character-shift transform (Caesar-style,
+// shift +3 over the raw code point) so each job produces a real derived
+// artifact, not just a number.
+fn transform_payload(payload: str) -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    let n: i64 = len(payload)
+    while i < n {
+        let code: i64 = char_code(char_at(payload, i))
+        out = out + char_from(code + 3)
+        i = i + 1
+    }
+    return out
+}
+
+// Pack (job_index, ok, checksum) into one i64 so a single channel send
+// carries the whole result atomically -- see the header note on why two
+// separate sends per job would race on a shared MPMC channel.
+fn pack_result(job_index: i64, ok: bool, checksum: i64) -> i64 {
+    let mut ok_flag: i64 = 0
+    if ok {
+        ok_flag = 1
+    }
+    let outer: i64 = job_index * 2 + ok_flag
+    return outer * CHECKSUM_MOD + checksum
+}
+
+// Inverse of pack_result. Returns (job_index, ok_flag, checksum).
+fn unpack_result(packed: i64) -> (i64, i64, i64) {
+    let checksum: i64 = packed % CHECKSUM_MOD
+    let outer: i64 = packed / CHECKSUM_MOD
+    let ok_flag: i64 = outer % 2
+    let job_index: i64 = outer / 2
+    return (job_index, ok_flag, checksum)
+}
+
+fn main() {
+    println("crawl_pool: " + to_string(WORKER_COUNT) + " workers over " + to_string(len(JOBS)) + " jobs")
+    println("")
+
+    let jobs = chan()
+    let results = chan()
+
+    // Spawn the bounded pool. Each worker pulls job indices until it sees
+    // the shutdown sentinel (-1), doing real per-job work in between and
+    // never letting a per-job throw escape uncaught.
+    let mut w: i64 = 0
+    while w < WORKER_COUNT {
+        spawn {
+            while true {
+                let idx = recv(jobs)
+                if idx < 0 {
+                    return
+                }
+                let payload = JOBS[idx]
+                try {
+                    let csum = compute_checksum(payload)
+                    send(results, pack_result(idx, true, csum))
+                } catch e {
+                    send(results, pack_result(idx, false, 0))
+                }
+            }
+        }
+        w = w + 1
+    }
+
+    let total_jobs: i64 = len(JOBS)
+
+    // Enqueue the real work.
+    let mut i: i64 = 0
+    while i < total_jobs {
+        send(jobs, i)
+        i = i + 1
+    }
+
+    // Enqueue one shutdown sentinel per worker so every worker drains the
+    // queue and exits cleanly -- no worker is left blocked on recv forever.
+    let mut s: i64 = 0
+    while s < WORKER_COUNT {
+        send(jobs, -1)
+        s = s + 1
+    }
+
+    // Pre-size the result buckets so we can place each result at its job
+    // index regardless of which order workers finish in.
+    let mut result_ok: [i64] = []
+    let mut result_checksum: [i64] = []
+    let mut k: i64 = 0
+    while k < total_jobs {
+        push(result_ok, 0)
+        push(result_checksum, 0)
+        k = k + 1
+    }
+
+    // Collect exactly one result per job. The COUNT is deterministic (every
+    // worker reports success or failure, never silence), even though the
+    // ARRIVAL ORDER across workers is not -- that's why we bucket by index
+    // instead of printing as results arrive.
+    let mut got: i64 = 0
+    while got < total_jobs {
+        let packed = recv(results)
+        let (job_index, ok_flag, csum) = unpack_result(packed)
+        result_ok[job_index] = ok_flag
+        result_checksum[job_index] = csum
+        got = got + 1
+    }
+
+    // Aggregate and print in fixed job-index order -- this is the line that
+    // makes the whole program's stdout deterministic across runs.
+    println("--- results (job index order) ---")
+    let mut ok_count: i64 = 0
+    let mut fail_count: i64 = 0
+    let mut checksum_total: i64 = 0
+    let mut j: i64 = 0
+    while j < total_jobs {
+        let payload = JOBS[j]
+        let mut status: str = "FAIL"
+        if result_ok[j] == 1 {
+            status = "OK"
+            ok_count = ok_count + 1
+            checksum_total = checksum_total + result_checksum[j]
+        } else {
+            fail_count = fail_count + 1
+        }
+        let transformed: str = transform_payload(payload)
+        println("job " + to_string(j) + ": " + status + " checksum=" + to_string(result_checksum[j]) + " transformed=\"" + transformed + "\"")
+        j = j + 1
+    }
+
+    println("")
+    println("total=" + to_string(total_jobs) + " ok=" + to_string(ok_count) + " failed=" + to_string(fail_count) + " checksum_total=" + to_string(checksum_total))
+    println("crawl_pool: done")
+}
