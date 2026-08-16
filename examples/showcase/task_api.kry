@@ -1,0 +1,348 @@
+// task_api.kry — A real HTTP JSON task API in Kryos.
+//
+// Endpoints:
+//   GET    /health           -> {"status":"ok","tasks":N}
+//   GET    /tasks            -> {"tasks":[...],"count":N}
+//   POST   /tasks            -> body {"title":"...", "meta":{"priority":N,"tags":[...]}}
+//                                -> 201 created task (400 on malformed JSON / missing title)
+//   GET    /tasks/{id}       -> single task JSON (404 if missing)
+//   DELETE /tasks/{id}       -> 204 No Content (404 if missing)
+//
+// Every task response is a nested JSON object:
+//   {"id":1,"title":"buy milk","done":false,"meta":{"priority":2,"tags":["errand","home"]}}
+//
+// Serves N requests then exits (so it works in CI / scripted testing).
+// Override with --max <N>. Default port 7979, override with --port <N>.
+//
+// Run:
+//   kryos run examples/showcase/task_api.kry
+//   curl http://127.0.0.1:7979/health
+//   curl http://127.0.0.1:7979/tasks
+//   curl -X POST http://127.0.0.1:7979/tasks -d '{"title":"ship v1","meta":{"priority":2,"tags":["work"]}}'
+//   curl http://127.0.0.1:7979/tasks/1
+//   curl -X DELETE http://127.0.0.1:7979/tasks/1
+//
+// Least-privilege capabilities: only `main` and the two helpers that touch
+// raw TCP sockets declare `net:tcp`. Every JSON/routing/store helper below
+// is pure and declares nothing, so `kryos check --strict-capabilities`
+// verifies none of them can reach the network by accident.
+
+use std::json
+use std::http::{Request, Response, parse_request, serialize_response, json_response, text_response}
+use std::string::{split, join}
+
+// --- In-memory store (parallel arrays) --------------------------------------
+
+let mut TASK_IDS: [i64] = []
+let mut TASK_TITLES: [str] = []
+let mut TASK_DONE: [i64] = []       // 0/1
+let mut TASK_PRIORITY: [i64] = []
+let mut TASK_TAGS: [str] = []       // comma-joined; "" means no tags
+let mut NEXT_ID: i64 = 1
+
+fn store_add(title: str, priority: i64, tags_csv: str) -> i64 {
+  let id: i64 = NEXT_ID
+  NEXT_ID = NEXT_ID + 1
+  TASK_IDS = push(TASK_IDS, id)
+  TASK_TITLES = push(TASK_TITLES, title)
+  TASK_DONE = push(TASK_DONE, 0)
+  TASK_PRIORITY = push(TASK_PRIORITY, priority)
+  TASK_TAGS = push(TASK_TAGS, tags_csv)
+  return id
+}
+
+// Returns the live index for `id`, skipping tombstoned (-1) slots, or -1.
+fn store_find(id: i64) -> i64 {
+  let mut i: i64 = 0
+  let n: i64 = len(TASK_IDS)
+  while i < n {
+    if TASK_IDS[i] == id {
+      return i
+    }
+    i = i + 1
+  }
+  return -1
+}
+
+// Remove-by-shift, tombstoning the vacated tail slot with id -1.
+fn store_delete(id: i64) -> i64 {
+  let idx: i64 = store_find(id)
+  if idx < 0 {
+    return 0
+  }
+  let mut j: i64 = idx
+  let last: i64 = len(TASK_IDS) - 1
+  while j < last {
+    TASK_IDS[j] = TASK_IDS[j + 1]
+    TASK_TITLES[j] = TASK_TITLES[j + 1]
+    TASK_DONE[j] = TASK_DONE[j + 1]
+    TASK_PRIORITY[j] = TASK_PRIORITY[j + 1]
+    TASK_TAGS[j] = TASK_TAGS[j + 1]
+    j = j + 1
+  }
+  TASK_IDS[last] = -1
+  return 1
+}
+
+// Live count, skipping tombstoned tail slots.
+fn store_len() -> i64 {
+  let mut n: i64 = len(TASK_IDS)
+  while n > 0 and TASK_IDS[n - 1] == -1 {
+    n = n - 1
+  }
+  return n
+}
+
+// --- JSON <-> task conversions -----------------------------------------------
+
+fn tags_to_json(tags_csv: str) -> JsonValue {
+  if len(tags_csv) == 0 {
+    return json_array([])
+  }
+  let parts: [str] = split(tags_csv, ",")
+  let mut items: [JsonValue] = []
+  for p in parts {
+    items = push(items, json_string(p))
+  }
+  return json_array(items)
+}
+
+// Extract a comma-joined tag string from a JSON array-of-strings value.
+// Throws (caught by the caller) if any element is not a JSON string.
+fn tags_from_json(val: JsonValue) -> str {
+  let elems: [JsonValue] = to_array(val)
+  let mut parts: [str] = []
+  for e in elems {
+    parts = push(parts, to_str(e))
+  }
+  return join(parts, ",")
+}
+
+fn task_to_json(idx: i64) -> JsonValue {
+  let mut done_bool: bool = false
+  if TASK_DONE[idx] == 1 {
+    done_bool = true
+  }
+  let meta: JsonValue = json_object(
+    ["priority", "tags"],
+    [json_number(TASK_PRIORITY[idx] as f64), tags_to_json(TASK_TAGS[idx])]
+  )
+  return json_object(
+    ["id", "title", "done", "meta"],
+    [json_number(TASK_IDS[idx] as f64), json_string(TASK_TITLES[idx]), json_bool(done_bool), meta]
+  )
+}
+
+fn all_tasks_json() -> JsonValue {
+  let mut items: [JsonValue] = []
+  let mut i: i64 = 0
+  let n: i64 = store_len()
+  while i < n {
+    items = push(items, task_to_json(i))
+    i = i + 1
+  }
+  return json_object(["tasks", "count"], [json_array(items), json_number(n as f64)])
+}
+
+fn error_json(msg: str) -> JsonValue {
+  return json_object(["error"], [json_string(msg)])
+}
+
+// --- Request handlers (pure — no capability needed) -------------------------
+
+fn handle_health() -> Response {
+  let body: JsonValue = json_object(["status", "tasks"], [json_string("ok"), json_number(store_len() as f64)])
+  return json_response(200, stringify(body))
+}
+
+fn handle_list() -> Response {
+  return json_response(200, stringify(all_tasks_json()))
+}
+
+fn handle_get(id: i64) -> Response {
+  let idx: i64 = store_find(id)
+  if idx < 0 {
+    return json_response(404, stringify(error_json("task not found")))
+  }
+  return json_response(200, stringify(task_to_json(idx)))
+}
+
+fn handle_delete(id: i64) -> Response {
+  if store_delete(id) == 1 {
+    return text_response(204, "")
+  }
+  return json_response(404, stringify(error_json("task not found")))
+}
+
+fn handle_create(req: Request) -> Response {
+  let mut parsed: JsonValue = json_null()
+  let mut parse_ok: bool = true
+  try {
+    parsed = parse(req.body)
+  } catch e {
+    parse_ok = false
+  }
+  if not parse_ok or not is_object(parsed) {
+    return json_response(400, stringify(error_json("malformed JSON body")))
+  }
+
+  let title_val: JsonValue = get(parsed, "title")
+  if not is_string(title_val) {
+    return json_response(400, stringify(error_json("missing required field: title")))
+  }
+  let title: str = to_str(title_val)
+  if len(title) == 0 {
+    return json_response(400, stringify(error_json("title must not be empty")))
+  }
+
+  let mut priority: i64 = 0
+  let mut tags_csv: str = ""
+  let meta_val: JsonValue = get(parsed, "meta")
+  if is_object(meta_val) {
+    let priority_val: JsonValue = get(meta_val, "priority")
+    if is_number(priority_val) {
+      priority = to_int(priority_val)
+    }
+    let tags_val: JsonValue = get(meta_val, "tags")
+    if is_array(tags_val) {
+      let mut tags_ok: bool = true
+      try {
+        tags_csv = tags_from_json(tags_val)
+      } catch e {
+        tags_ok = false
+      }
+      if not tags_ok {
+        return json_response(400, stringify(error_json("meta.tags must be an array of strings")))
+      }
+    }
+  }
+
+  let id: i64 = store_add(title, priority, tags_csv)
+  let idx: i64 = store_find(id)
+  return json_response(201, stringify(task_to_json(idx)))
+}
+
+// Parse "/tasks/42" -> 42. Returns -1 if the path isn't a numeric task id
+// under the /tasks/ prefix.
+fn parse_task_id(path: str) -> i64 {
+  let prefix: str = "/tasks/"
+  if len(path) <= len(prefix) {
+    return -1
+  }
+  if substr(path, 0, len(prefix)) != prefix {
+    return -1
+  }
+  let rest: str = substr(path, len(prefix), len(path))
+  let mut id: i64 = 0
+  let mut saw_digit: bool = false
+  let mut i: i64 = 0
+  while i < len(rest) {
+    let c: str = substr(rest, i, i + 1)
+    if c >= "0" and c <= "9" {
+      id = id * 10 + (char_code(c) - char_code("0"))
+      saw_digit = true
+    } else {
+      return -1
+    }
+    i = i + 1
+  }
+  if not saw_digit {
+    return -1
+  }
+  return id
+}
+
+// Top-level dispatcher: exact-path routes for /health and /tasks, plus
+// manual numeric-suffix matching for /tasks/{id} (the stdlib router's
+// match_route only matches a route's `path` by exact string equality, so
+// a parameterized "/tasks/:id" style route is not supported there).
+fn route(req: Request) -> Response {
+  let path: str = req.url.path
+  let method: str = req.method
+
+  if method == "GET" and path == "/health" {
+    return handle_health()
+  }
+  if method == "GET" and path == "/tasks" {
+    return handle_list()
+  }
+  if method == "POST" and path == "/tasks" {
+    return handle_create(req)
+  }
+
+  let id: i64 = parse_task_id(path)
+  if id >= 0 {
+    if method == "GET" {
+      return handle_get(id)
+    }
+    if method == "DELETE" {
+      return handle_delete(id)
+    }
+  }
+
+  return json_response(404, stringify(error_json("route not found")))
+}
+
+// --- TCP accept loop (only these two functions touch the network) ----------
+
+@capabilities(net:tcp)
+fn send_response(client: i64, resp: Response) {
+  let raw: str = serialize_response(resp)
+  tcp_send(client, raw)
+}
+
+@capabilities(net:tcp)
+fn main() {
+  // Seed with a couple of tasks so GET /tasks has content immediately.
+  store_add("write kryos", 1, "docs")
+  store_add("ship task_api", 2, "work,urgent")
+
+  let argv: [str] = args()
+  let mut port: i64 = 7979
+  let mut max_requests: i64 = 100
+  let mut i: i64 = 0
+  while i < len(argv) {
+    if argv[i] == "--port" and i + 1 < len(argv) {
+      port = parse_int(argv[i + 1])
+    }
+    if argv[i] == "--max" and i + 1 < len(argv) {
+      max_requests = parse_int(argv[i + 1])
+    }
+    i = i + 1
+  }
+
+  let server: i64 = tcp_listen("127.0.0.1", port)
+  if server <= 0 {
+    print("failed to bind 127.0.0.1:")
+    print(port)
+    print("\n")
+    exit(1)
+  }
+  print("task_api listening on http://127.0.0.1:")
+  print(port)
+  print("\n")
+
+  let mut handled: i64 = 0
+  while handled < max_requests {
+    let client: i64 = tcp_accept(server)
+    if client <= 0 {
+      print("accept failed\n")
+      break
+    }
+    let raw_req: str = tcp_recv(client, 65536)
+    let mut resp: Response = text_response(500, "internal error")
+    try {
+      let req: Request = parse_request(raw_req)
+      resp = route(req)
+    } catch e {
+      resp = json_response(400, stringify(error_json("malformed HTTP request")))
+    }
+    send_response(client, resp)
+    tcp_close(client)
+    handled = handled + 1
+  }
+  tcp_close(server)
+  print("served ")
+  print(handled)
+  print(" request(s); exiting\n")
+}
