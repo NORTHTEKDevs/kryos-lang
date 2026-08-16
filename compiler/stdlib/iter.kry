@@ -259,7 +259,7 @@ fn position<T>(arr: [T], pred: fn(T) -> bool) -> i64 {
 }
 
 /// Count the number of elements in the array.
-fn count(arr: [any]) -> i64 {
+fn count<T>(arr: [T]) -> i64 {
     return len(arr)
 }
 

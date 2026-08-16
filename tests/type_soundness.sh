@@ -1200,23 +1200,24 @@ want_reject bool_through_any_map_value '
 fn sink(m: map<str, any>) { println(to_string(m["k"])) }
 fn main() { sink({"k": true}) }'
 
-# NO-CASCADE complements for the three above. `[any]` exists to carry
-# i64/str/heap values, which ARE already i64-shaped (value or pointer) and are
-# unaffected by the erasure -- rejecting those would break the feature instead
-# of fixing it. And the check must NOT fire at the TOP level, where a bare
-# `Type::Error` param is also how the polymorphic builtins are typed.
-# Scoped deliberately to bool/f64/f32 -- the REINTERPRETATION cases, where the
-# value itself is corrupted and the two backends disagree (true -> JIT 1, AOT
-# -1). `i64` is genuinely unaffected: it is already the erased representation.
-#
-# `str` is NOT asserted to work here, and that is not an oversight. Measured
-# 2026-08-14: `log_event(["hello"])` prints a raw POINTER (140698792906752),
-# not the string -- the long-documented item-6 / CLAUDE.md gotcha #22 erasure,
-# a rendering bug rather than a corrupting reinterpretation, and the reason
-# std::fmt::format was already migrated from `[any]` to `[str]`. Rejecting it
-# too would cascade into the remaining `[any]` stdlib signatures
-# (test::run_tests, result::to_array, iter::count), so it stays documented
-# rather than blocked. Logged as item 40b.
+# LEDGER item 40b, CLOSED 2026-08-15: `str` routed through an `[any]`
+# CONTAINER is a different mechanism from bool/f64 (a `str` handle is already
+# i64-shaped, so it survives the erasure intact and only RENDERS wrong on
+# read-back -- measured pre-fix: `log_event(["hello"])` printed a raw POINTER
+# `140698792906752`, not the string). Blocking it was deliberately deferred
+# because `[any]` still appeared in two live stdlib signatures
+# (`std::iter::count`, `std::result::to_array`); both were migrated to a real
+# generic `<T>` first (see the no-cascade complements below), clearing the
+# blocker, so this can now reject like bool/f64/f32 above.
+want_reject str_through_any_array '
+fn log_event(args: [any]) { println(to_string(args[0])) }
+fn main() { log_event(["hello"]) }'
+
+# NO-CASCADE complements for the four above. `[any]` exists to carry i64
+# values, which ARE already i64-shaped and unaffected by the erasure --
+# rejecting that would break the feature instead of fixing it. And the check
+# must NOT fire at the TOP level, where a bare `Type::Error` param is also
+# how the polymorphic builtins are typed.
 want_pass i64_through_any_array_still_works '
 fn log_event(args: [any]) { println(to_string(args[0])) }
 fn main() { log_event([42]) }'
@@ -1225,6 +1226,26 @@ want_pass polymorphic_builtins_with_bool_still_work '
 fn main() {
     println(to_string(true))
     println(to_string(1.5))
+}'
+
+# The two former `[any]` stdlib signatures, migrated to `<T>` to clear the
+# item-40b blocker, must still work with a concrete `str` element -- proof
+# the migration did not just move the erasure elsewhere.
+want_pass iter_count_generic_still_works '
+use std::iter::{count}
+fn main() {
+    let xs: [str] = ["a", "b", "c"]
+    println(to_string(count(xs)))
+}'
+
+want_pass result_to_array_generic_still_works '
+use std::result::{Result, Ok, to_array}
+fn get() -> Result<str, str> {
+    return Ok("hi-there")
+}
+fn main() {
+    let arr: [str] = to_array(get())
+    println(arr[0])
 }'
 
 if [ "$fail" -eq 0 ]; then

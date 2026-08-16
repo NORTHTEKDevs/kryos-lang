@@ -432,12 +432,15 @@ impl TypeChecker {
             .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
-    /// LEDGER item 40, the `[any]`-container sibling of item 24.
+    /// LEDGER item 40 (+ 40b), the `[any]`-container sibling of item 24.
     ///
     /// `any` resolves to `Type::Error` -- the erasure sentinel (item 6, an
     /// ABI-blocked design note: `any` is a bare i64 with NO runtime type tag).
     /// `bool` (i1) and `f64`/`f32` are not i64-shaped, so a value of those
-    /// types reaching an `any` slot is reinterpreted, not converted.
+    /// types reaching an `any` slot is reinterpreted, not converted. `str`
+    /// (item 40b) IS already i64-shaped (a pointer), so the handle survives
+    /// intact and only the RENDERING on read-back is wrong -- a different
+    /// mechanism, but the same fix (reject at the container boundary).
     ///
     /// Item 24 closed the DIRECT shape (`let x: any = <bool>`) at `Stmt::Let`.
     /// It cannot see this one: by the time `let b: any = args[0]` runs, the
@@ -495,13 +498,23 @@ impl TypeChecker {
             _ => None,
         };
         if let Some(bad) = nested {
-            self.error_with_code(
+            let msg = if bad == Type::Str {
+                // LEDGER item 40b: a `str` is already i64-shaped (a pointer),
+                // so the handle survives the erasure intact -- unlike
+                // Bool/F64/F32 the value is NOT corrupted. The bug is at the
+                // READ side: `to_string`/`std::fmt::format` on an `any` slot
+                // treats it as a bare i64 and prints the raw pointer instead
+                // of dereferencing it as a string (measured: `log_event(["hello"])`
+                // printed `140698792906752`, not `hello`).
+                format!(
+                    "cannot pass a `{bad}` value through an `any` slot -- `any` is erased to a bare i64 at runtime with no type tag, and a `{bad}` handle is itself i64-shaped, so it survives the erasure but renders as a raw pointer when read back (e.g. via `to_string`), not as text. Use a concrete element type (e.g. `[{bad}]`) instead of `[any]`, or convert to a final form (e.g. `to_string(..)`) before passing it"
+                )
+            } else {
                 format!(
                     "cannot pass a `{bad}` value through an `any` slot -- `any` is erased to a bare i64 at runtime with no type tag, and `{bad}`'s native representation is not i64-compatible, so the value is reinterpreted rather than converted (measured: the same program prints a different wrong number on each backend, with no diagnostic). Use a concrete element type (e.g. `[{bad}]`) instead of `[any]`, or convert to a final form (e.g. `to_string(..)`) before passing it"
-                ),
-                span,
-                kryos_errors::codes::E0110,
-            );
+                )
+            };
+            self.error_with_code(msg, span, kryos_errors::codes::E0110);
         }
     }
 
@@ -513,6 +526,12 @@ impl TypeChecker {
             (Type::Error, Type::Bool) => Some(Type::Bool),
             (Type::Error, Type::F64) => Some(Type::F64),
             (Type::Error, Type::F32) => Some(Type::F32),
+            // LEDGER item 40b: closed. Previously deliberately excluded here
+            // because `[any]` still appeared in live stdlib signatures
+            // (`std::iter::count`, `std::result::to_array`) -- both migrated
+            // to a real generic `<T>` (2026-08-15), so the last legitimate
+            // `str`-through-`[any]` shape is gone and this can reject.
+            (Type::Error, Type::Str) => Some(Type::Str),
             (Type::Array { element: pe, .. }, Type::Array { element: ae, .. }) => {
                 Self::untagged_scalar_into_any(pe, ae)
             }

@@ -225,7 +225,7 @@ fn err_to_option(r: Result) -> any {
 }
 
 /// Convert to an array: [value] for Ok, [] for Err.
-fn to_array(r: Result) -> [any] {
+fn to_array<T>(r: Result) -> [T] {
     return match r {
         Result.Ok(v) => [v],
         Result.Err(_) => [],
