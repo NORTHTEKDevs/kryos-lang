@@ -1,0 +1,315 @@
+// log_analyzer.kry -- summarize an application log file from the command
+// line, like a tiny `journalctl --output=summary`.
+//
+// A real person would reach for this after a bad deploy: point it at a log
+// file and get level counts, the busiest error-producing components, and
+// the time span the log covers, without grepping by hand.
+//
+// Log line format (one entry per line):
+//   2026-08-16T10:22:01 LEVEL component message text...
+//
+// Usage:
+//   kryos run log_analyzer.kry <logfile>
+//   kryos build --release log_analyzer.kry -o log_analyzer
+//   ./log_analyzer <logfile>
+//
+// Exit codes:
+//   0 -- ran successfully (a summary was printed, even if some lines were
+//        skipped as malformed)
+//   1 -- usage error, missing file, or unreadable path
+//
+// Run it against the bundled sample:
+//   kryos run log_analyzer.kry examples/showcase/data/app.log
+
+use std::string::{pad_left, pad_right, split_lines, trim}
+use std::datetime::{format_timestamp}
+use std::iter::{sort_by_key}
+use std::collections
+
+struct LogEntry {
+    epoch: i64,
+    level: str,
+    component: str,
+    message: str
+}
+
+// ---------------------------------------------------------------------------
+// Timestamp parsing
+//
+// The stdlib's std::datetime module only converts an epoch timestamp TO
+// calendar fields (`from_timestamp`) -- there is no documented reverse
+// direction (parse a "YYYY-MM-DDTHH:MM:SS" string back into an epoch
+// second count), so this program supplies it by hand.
+// ---------------------------------------------------------------------------
+
+fn is_digit(c: str) -> bool {
+    let code = char_code(c)
+    return code >= 48 && code <= 57
+}
+
+fn digits_at(s: str, start: i64, count: i64) -> bool {
+    let mut i = start
+    let end = start + count
+    while i < end {
+        if not is_digit(substr(s, i, i + 1)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+// Validate the "YYYY-MM-DDTHH:MM:SS" shape (exactly 19 characters) AND that
+// every field is in a semantically sane range -- a timestamp that merely
+// LOOKS right (right length, right separators, all-digit fields) but claims
+// month 13 or hour 25 is still a malformed line, not a real event.
+fn is_valid_timestamp(ts: str) -> bool {
+    if len(ts) != 19 {
+        return false
+    }
+    if substr(ts, 4, 5) != "-" { return false }
+    if substr(ts, 7, 8) != "-" { return false }
+    if substr(ts, 10, 11) != "T" { return false }
+    if substr(ts, 13, 14) != ":" { return false }
+    if substr(ts, 16, 17) != ":" { return false }
+    if not digits_at(ts, 0, 4) { return false }
+    if not digits_at(ts, 5, 2) { return false }
+    if not digits_at(ts, 8, 2) { return false }
+    if not digits_at(ts, 11, 2) { return false }
+    if not digits_at(ts, 14, 2) { return false }
+    if not digits_at(ts, 17, 2) { return false }
+
+    let month = parse_int(substr(ts, 5, 7))
+    let day = parse_int(substr(ts, 8, 10))
+    let hour = parse_int(substr(ts, 11, 13))
+    let minute = parse_int(substr(ts, 14, 16))
+    let second = parse_int(substr(ts, 17, 19))
+    if month < 1 || month > 12 { return false }
+    if day < 1 || day > 31 { return false }
+    if hour < 0 || hour > 23 { return false }
+    if minute < 0 || minute > 59 { return false }
+    if second < 0 || second > 59 { return false }
+    return true
+}
+
+// Howard Hinnant's days-from-civil algorithm (proleptic Gregorian calendar,
+// days relative to 1970-01-01). Only called after is_valid_timestamp has
+// already confirmed sane ranges.
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let mut y = year
+    if month <= 2 {
+        y = y - 1
+    }
+    let era: i64 = if y >= 0 { y / 400 } else { (y - 399) / 400 }
+    let yoe = y - era * 400
+    let mp = (month + 9) % 12
+    let doy = (153 * mp + 2) / 5 + day - 1
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
+    return era * 146097 + doe - 719468
+}
+
+fn timestamp_to_epoch(ts: str) -> i64 {
+    let year = parse_int(substr(ts, 0, 4))
+    let month = parse_int(substr(ts, 5, 7))
+    let day = parse_int(substr(ts, 8, 10))
+    let hour = parse_int(substr(ts, 11, 13))
+    let minute = parse_int(substr(ts, 14, 16))
+    let second = parse_int(substr(ts, 17, 19))
+    let days = days_from_civil(year, month, day)
+    return days * 86400 + hour * 3600 + minute * 60 + second
+}
+
+// ---------------------------------------------------------------------------
+// Line parsing
+// ---------------------------------------------------------------------------
+
+// Parse one log line into a LogEntry. Returns None() for anything that does
+// not match the "<timestamp> LEVEL component message..." shape -- callers
+// count these as skipped instead of letting a single bad line crash the run.
+fn parse_line(line: str) -> Option<LogEntry> {
+    let t = trim(line)
+    if len(t) == 0 {
+        return None()
+    }
+    let parts = split(t, " ")
+    if len(parts) < 4 {
+        return None()
+    }
+
+    let ts = parts[0]
+    if not is_valid_timestamp(ts) {
+        return None()
+    }
+    let level = parts[1]
+    if len(level) == 0 {
+        return None()
+    }
+    let component = parts[2]
+    if len(component) == 0 {
+        return None()
+    }
+
+    // Rebuild the message from whatever follows the first three fields --
+    // it may itself contain spaces, so it can't come from `parts` directly.
+    let prefix_len = len(ts) + 1 + len(level) + 1 + len(component) + 1
+    let message = substr(t, prefix_len, len(t))
+
+    let epoch = timestamp_to_epoch(ts)
+    return Some(LogEntry { epoch: epoch, level: level, component: component, message: message })
+}
+
+// ---------------------------------------------------------------------------
+// Formatting helpers
+// ---------------------------------------------------------------------------
+
+fn format_duration(total_secs: i64) -> str {
+    if total_secs < 0 {
+        return "n/a"
+    }
+    let days = total_secs / 86400
+    let hours = (total_secs % 86400) / 3600
+    let minutes = (total_secs % 3600) / 60
+    let seconds = total_secs % 60
+    let mut out = ""
+    if days > 0 {
+        out = out + to_string(days) + "d "
+    }
+    out = out + pad_left(to_string(hours), 2, "0") + "h "
+        + pad_left(to_string(minutes), 2, "0") + "m "
+        + pad_left(to_string(seconds), 2, "0") + "s"
+    return out
+}
+
+fn print_kv_row(label: str, value: str) {
+    println(pad_right(label, 16, " ") + value)
+}
+
+fn print_count_row(name: str, count: i64) {
+    println("  " + pad_right(name, 12, " ") + pad_left(to_string(count), 6, " "))
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+@capabilities(fs:read)
+fn main() {
+    let argv = args()
+    if len(argv) < 2 {
+        eprintln("usage: log_analyzer <logfile>")
+        eprintln("  summarizes an application log: level counts, top error")
+        eprintln("  components, and the time span the log covers.")
+        exit(1)
+    }
+
+    let path = argv[1]
+    if file_exists(path) == 0 {
+        eprintln("log_analyzer: " + path + ": no such file")
+        exit(1)
+    }
+
+    let raw = file_read(path)
+    let lines = split_lines(raw)
+
+    let mut level_counts: Dict<str, i64> = Dict.new()
+    let mut component_errors: Dict<str, i64> = Dict.new()
+    let mut total_lines: i64 = 0
+    let mut parsed_lines: i64 = 0
+    let mut skipped: i64 = 0
+    let mut first_epoch: i64 = -1
+    let mut last_epoch: i64 = -1
+
+    for line in lines {
+        if len(trim(line)) == 0 {
+            continue
+        }
+        total_lines = total_lines + 1
+
+        match parse_line(line) {
+            Some(entry) => {
+                parsed_lines = parsed_lines + 1
+
+                let cur = level_counts.get_or(entry.level, 0)
+                level_counts = level_counts.set(entry.level, cur + 1)
+
+                if entry.level == "ERROR" {
+                    let ecur = component_errors.get_or(entry.component, 0)
+                    component_errors = component_errors.set(entry.component, ecur + 1)
+                }
+
+                if first_epoch < 0 || entry.epoch < first_epoch {
+                    first_epoch = entry.epoch
+                }
+                if entry.epoch > last_epoch {
+                    last_epoch = entry.epoch
+                }
+            }
+            None() => {
+                skipped = skipped + 1
+            }
+        }
+    }
+
+    println("Log Analyzer -- " + path)
+    println(pad_right("", 42, "="))
+    print_kv_row("total lines:", to_string(total_lines))
+    print_kv_row("parsed:", to_string(parsed_lines))
+    print_kv_row("skipped:", to_string(skipped))
+    println("")
+
+    println("By level:")
+    let canonical_levels: [str] = ["ERROR", "WARN", "INFO", "DEBUG"]
+    for lvl in canonical_levels {
+        if level_counts.has(lvl) {
+            let c: i64 = level_counts.get(lvl)
+            print_count_row(lvl, c)
+        }
+    }
+    // Any level that wasn't one of the four canonical ones still gets
+    // reported -- a real log can carry TRACE, FATAL, or a typo'd level, and
+    // silently dropping it would be worse than an unfamiliar row.
+    for lvl in level_counts.keys() {
+        let mut known = false
+        for cl in canonical_levels {
+            if cl == lvl {
+                known = true
+            }
+        }
+        if not known {
+            let c: i64 = level_counts.get(lvl)
+            print_count_row(lvl, c)
+        }
+    }
+    println("")
+
+    println("Top components by error count:")
+    let err_keys = component_errors.keys()
+    let mut pairs: [(str, i64)] = []
+    for k in err_keys {
+        let v: i64 = component_errors.get(k)
+        pairs = push(pairs, (k, v))
+    }
+    // Sort descending by count: sort_by_key sorts ascending, so negate the
+    // key to flip the order without needing a custom comparator.
+    let sorted = sort_by_key(pairs, fn(p: (str, i64)) -> i64 { return 0 - p.1 })
+    let top_n: i64 = 5
+    let limit: i64 = if len(sorted) < top_n { len(sorted) } else { top_n }
+    let mut i: i64 = 0
+    while i < limit {
+        let p = sorted[i]
+        print_count_row(p.0, p.1)
+        i = i + 1
+    }
+    if len(sorted) == 0 {
+        println("  (no errors)")
+    }
+    println("")
+
+    if first_epoch >= 0 {
+        print_kv_row("first entry:", format_timestamp(first_epoch))
+        print_kv_row("last entry:", format_timestamp(last_epoch))
+        print_kv_row("span:", format_duration(last_epoch - first_epoch))
+    } else {
+        println("no parseable entries -- cannot compute a time span")
+    }
+}

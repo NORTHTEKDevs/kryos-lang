@@ -1,0 +1,327 @@
+2026-08-16T08:00:41 DEBUG db slow query detected
+2026-08-16T08:00:57 DEBUG cache cache hit
+2026-08-16T08:01:41 INFO db query completed in 12ms
+2026-08-16T08:01:43 DEBUG db connection reset by peer
+2026-08-16T08:02:22 INFO auth rate limit hit for client
+2026-08-16T08:03:04 DEBUG network packet loss detected
+2026-08-16T08:03:22 WARN auth user login failed: bad password
+2026-08-16T08:04:07 INFO network connection dropped
+2026-08-16T08:04:21 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T08:04:28 WARN scheduler task dispatched
+2026-08-16T08:04:31 INFO payments webhook delivery failed after 3 retries
+2026-08-16T08:04:37 WARN worker queue backlog growing
+2026-08-16T08:05:01 INFO cache cache hit
+2026-08-16T08:05:44 WARN cache cache hit
+2026-08-16T08:05:59 INFO db deadlock retry succeeded
+2026-08-16T08:06:40 DEBUG scheduler task dispatched
+2026-08-16T08:06:54 INFO worker job started
+2026-08-16T08:07:33 INFO api request handled 404
+2026-08-16T08:07:44 INFO payments refund processed
+2026-08-16T08:07:59 WARN scheduler tick processed
+2026-08-16T08:08:14 WARN auth session expired
+2026-08-16T08:08:32 DEBUG db connection reset by peer
+2026-08-16T08:08:53 INFO cache cache node unreachable
+2026-08-16T08:09:35 DEBUG payments charge declined
+2026-08-16T08:09:51 INFO worker job retried after failure
+2026-08-16T08:10:29 INFO network connection dropped
+2026-08-16T08:11:02 DEBUG payments charge succeeded
+2026-08-16T08:11:10 INFO api request handled 500
+2026-08-16T08:11:38 INFO db connection reset by peer
+2026-08-16T08:12:08 ERROR worker job failed: exception in handler
+2026-08-16T08:12:52 INFO db connection reset by peer
+2026-08-16T08:13:10 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T08:13:21 DEBUG payments webhook delivered
+2026-08-16T08:13:54 INFO api request handled 200 OK
+2026-08-16T08:14:35 WARN worker queue backlog growing
+2026-08-16T08:15:14 DEBUG cache cache miss, fetching from db
+2026-08-16T08:15:49 INFO auth session expired
+2026-08-16T08:15:51 ERROR db deadlock retry succeeded
+2026-08-16T08:16:07 DEBUG auth token validation failed
+2026-08-16T08:16:13 INFO db query completed in 12ms
+2026-08-16T08:16:48 DEBUG api upstream timeout
+2026-08-16T08:17:24 DEBUG api rate limited client
+2026-08-16T08:17:52 ERROR cache cache node unreachable
+2026-08-16T08:18:12 ERROR network TLS handshake failed
+2026-08-16T08:18:36 WARN payments webhook delivery failed after 3 retries
+
+2026-08-16T08:18:44 DEBUG cache cache eviction triggered
+2026-08-16T08:18:46 INFO cache cache hit
+2026-08-16T08:18:51 DEBUG auth user login succeeded
+2026-08-16T08:19:13 INFO db slow query detected
+2026-08-16T08:19:56 DEBUG payments charge declined
+2026-08-16T08:20:33 DEBUG payments webhook delivery failed after 3 retries
+2026-08-16T08:21:00 DEBUG cache cache node unreachable
+2026-08-16T08:21:23 INFO network connection established
+2026-08-16T08:22:07 DEBUG db migration applied
+2026-08-16T08:22:29 DEBUG db connection pool exhausted
+2026-08-16T08:23:04 DEBUG payments charge declined
+2026-08-16T08:23:22 DEBUG payments charge succeeded
+2026-08-16T08:23:51 DEBUG db connection reset by peer
+2026-08-16T08:23:52 ERROR db connection pool exhausted
+2026-08-16T08:24:03 INFO network connection dropped
+2026-08-16T08:24:29 DEBUG auth user login succeeded
+2026-08-16T08:24:54 ERROR worker job failed: exception in handler
+2026-08-16T08:25:13 INFO network packet loss detected
+2026-08-16T08:25:56 DEBUG payments webhook delivered
+2026-08-16T08:26:10 INFO auth token validation failed
+2026-08-16T08:26:14 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T08:26:47 DEBUG api rate limited client
+2026-08-16T08:26:53 DEBUG api request handled 200 OK
+2026-08-16T08:27:37 INFO cache cache warmed successfully
+2026-08-16T08:27:53 INFO auth session expired
+2026-08-16T08:28:36 ERROR scheduler task dispatch failed: no workers available
+2026-08-16T08:29:19 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T08:29:28 INFO worker job started
+2026-08-16T08:29:29 INFO payments refund processed
+2026-08-16T08:29:36 INFO db connection reset by peer
+2026-08-16T08:29:53 ERROR api payload validation failed
+2026-08-16T08:30:09 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T08:30:44 INFO worker queue backlog growing
+2026-08-16T08:30:45 ERROR worker job failed: exception in handler
+2026-08-16T08:30:54 DEBUG worker job started
+2026-08-16T08:31:30 DEBUG api rate limited client
+2026-08-16T08:31:44 DEBUG scheduler task dispatched
+2026-08-16T08:32:17 DEBUG payments charge succeeded
+2026-08-16T08:32:23 WARN network connection established
+2026-08-16T08:32:24 WARN scheduler task dispatched
+2026-08-16T08:32:35 INFO payments webhook delivery failed after 3 retries
+2026-08-16T08:33:11 DEBUG auth rate limit hit for client
+2026-08-16T08:33:21 WARN auth token validation failed
+2026-08-16T08:33:57 INFO api request handled 200 OK
+2026-08-16T08:34:17 WARN scheduler tick processed
+this line has no timestamp at all
+2026-08-16T08:34:40 INFO cache cache hit
+2026-08-16T08:35:03 ERROR network TLS handshake failed
+2026-08-16T08:35:13 WARN cache cache miss, fetching from db
+2026-08-16T08:35:40 DEBUG auth token refreshed
+2026-08-16T08:36:07 DEBUG cache cache hit
+2026-08-16T08:36:32 WARN auth user login failed: bad password
+2026-08-16T08:36:45 INFO payments charge declined
+2026-08-16T08:37:00 INFO auth session expired
+2026-08-16T08:37:22 WARN worker job failed: exception in handler
+2026-08-16T08:37:45 INFO network packet loss detected
+2026-08-16T08:38:07 DEBUG auth token refreshed
+2026-08-16T08:38:19 DEBUG worker queue backlog growing
+2026-08-16T08:38:47 INFO scheduler task dispatched
+2026-08-16T08:39:15 INFO db connection reset by peer
+2026-08-16T08:39:28 DEBUG worker job retried after failure
+2026-08-16T08:39:29 INFO cache cache hit
+2026-08-16T08:40:12 INFO scheduler tick processed
+2026-08-16T08:40:32 INFO worker job failed: exception in handler
+2026-08-16T08:40:58 INFO worker job completed
+2026-08-16T08:41:25 INFO network connection dropped
+2026-08-16T08:42:05 INFO worker job started
+2026-08-16T08:42:25 DEBUG worker queue backlog growing
+2026-08-16T08:43:04 INFO scheduler task dispatch failed: no workers available
+2026-08-16T08:43:48 INFO cache cache miss, fetching from db
+2026-08-16T08:44:31 DEBUG db migration applied
+2026-08-16T08:45:12 DEBUG scheduler missed schedule window
+2026-08-16T08:45:56 DEBUG worker job completed
+2026-08-16T08:46:06 DEBUG auth session expired
+2026-08-16T08:46:46 INFO db migration applied
+2026-08-16T08:47:23 INFO cache cache node unreachable
+2026-08-16T08:47:55 DEBUG network connection established
+2026-08-16T08:48:02 DEBUG network packet loss detected
+2026-08-16T08:48:32 INFO auth user login succeeded
+2026-08-16T08:49:02 WARN api request handled 500
+2026-08-16T08:49:36 ERROR scheduler task dispatch failed: no workers available
+2026-08-16T08:50:16 WARN network packet loss detected
+2026-08-16T08:50:45 INFO api upstream timeout
+2026-08-16T08:51:14 WARN worker job failed: exception in handler
+2026-08-16T08:51:48 INFO payments webhook delivered
+2026-08-16T08:52:17 INFO db connection pool exhausted
+2026-08-16T08:52:35 INFO scheduler tick processed
+2026-08-16T08:52:44 DEBUG api request handled 500
+2026-08-16T08:52:54 DEBUG cache cache node unreachable
+2026-08-16T08:53:16 INFO payments charge declined
+2026-08-16T08:53:43 ERROR network TLS handshake failed
+2026-08-16T09:15:3 WARN db truncated seconds field
+2026-08-16T08:54:28 WARN auth token validation failed
+2026-08-16T08:54:53 DEBUG payments webhook delivered
+2026-08-16T08:55:13 WARN network TLS handshake failed
+2026-08-16T08:55:48 INFO cache cache eviction triggered
+2026-08-16T08:56:16 DEBUG payments webhook delivered
+2026-08-16T08:56:59 INFO network TLS handshake failed
+2026-08-16T08:57:08 ERROR auth user login failed: bad password
+2026-08-16T08:57:14 DEBUG network TLS handshake failed
+2026-08-16T08:57:26 DEBUG auth token refreshed
+2026-08-16T08:57:40 INFO payments webhook delivery failed after 3 retries
+2026-08-16T08:57:58 DEBUG network connection established
+2026-08-16T08:58:29 INFO auth user login succeeded
+2026-08-16T08:58:52 INFO cache cache hit
+2026-08-16T08:58:54 DEBUG cache cache hit
+2026-08-16T08:59:34 DEBUG api upstream timeout
+2026-08-16T09:00:17 INFO db connection pool exhausted
+2026-08-16T09:00:47 WARN worker job completed
+2026-08-16T09:01:26 WARN db connection pool exhausted
+2026-08-16T09:01:46 INFO db slow query detected
+2026-08-16T09:02:23 INFO network connection dropped
+2026-08-16T09:02:28 DEBUG cache cache eviction triggered
+2026-08-16T09:03:12 WARN db connection reset by peer
+2026-08-16T09:03:15 INFO scheduler task dispatched
+2026-08-16T09:03:20 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T09:03:52 INFO db slow query detected
+2026-08-16T09:04:33 INFO payments webhook delivery failed after 3 retries
+2026-08-16T09:04:45 INFO worker queue backlog growing
+2026-08-16T09:05:16 INFO payments refund processed
+2026-08-16T09:05:34 WARN scheduler tick processed
+2026-08-16T09:05:52 DEBUG payments webhook delivery failed after 3 retries
+2026-08-16T09:06:29 INFO network TLS handshake failed
+2026-08-16T09:06:50 INFO api payload validation failed
+2026-08-16T09:07:07 DEBUG scheduler task dispatched
+2026-08-16T09:07:43 INFO auth user login failed: bad password
+2026-08-16T09:07:49 INFO cache cache node unreachable
+2026-08-16T09:08:25 INFO cache cache node unreachable
+2026-08-16T09:08:54 DEBUG auth user login failed: bad password
+2026-08-16T09:09:20 INFO cache cache warmed successfully
+2026-08-16T09:09:44 INFO payments webhook delivered
+2026-08-16T09:10:12 INFO scheduler task dispatch failed: no workers available
+2026-08-16T09:10:30 DEBUG worker job started
+2026-08-16T09:10:43 DEBUG scheduler missed schedule window
+2026-08-16T09:10:56 INFO cache cache eviction triggered
+2026-08-16T09:11:34 ERROR worker job failed: exception in handler
+2026-08-16T09:11:53 INFO cache cache eviction triggered
+2026/08/16T09:20:00 INFO api wrong date separators
+2026-08-16T09:11:54 DEBUG api request handled 200 OK
+2026-08-16T09:12:30 INFO worker job completed
+2026-08-16T09:13:11 DEBUG payments charge succeeded
+2026-08-16T09:13:48 INFO worker job retried after failure
+2026-08-16T09:14:10 ERROR api payload validation failed
+2026-08-16T09:14:41 WARN db deadlock retry succeeded
+2026-08-16T09:15:13 INFO db migration applied
+2026-08-16T09:15:17 DEBUG api rate limited client
+2026-08-16T09:15:37 ERROR db connection pool exhausted
+2026-08-16T09:16:13 INFO network packet loss detected
+2026-08-16T09:16:28 INFO network TLS handshake failed
+2026-08-16T09:16:48 INFO network packet loss detected
+2026-08-16T09:16:52 ERROR db connection pool exhausted
+2026-08-16T09:17:33 DEBUG cache cache hit
+2026-08-16T09:17:44 DEBUG cache cache hit
+2026-08-16T09:17:55 INFO auth rate limit hit for client
+2026-08-16T09:18:34 DEBUG payments charge declined
+2026-08-16T09:18:53 INFO worker job retried after failure
+2026-08-16T09:18:58 ERROR cache cache node unreachable
+2026-08-16T09:19:26 INFO db migration applied
+2026-08-16T09:19:36 WARN worker job started
+2026-08-16T09:19:40 WARN api rate limited client
+2026-08-16T09:20:17 INFO worker job retried after failure
+2026-08-16T09:21:02 INFO worker job failed: exception in handler
+2026-08-16T09:21:35 INFO payments refund processed
+2026-08-16T09:21:38 INFO network packet loss detected
+2026-08-16T09:21:55 DEBUG auth rate limit hit for client
+2026-08-16T09:22:32 ERROR auth token validation failed
+2026-08-16T09:23:09 WARN auth user login failed: bad password
+2026-08-16T09:23:40 ERROR payments charge declined
+2026-08-16T09:24:18 INFO network TLS handshake failed
+2026-08-16T09:24:24 INFO payments webhook delivered
+2026-08-16T09:24:45 WARN db slow query detected
+2026-08-16T09:25:12 DEBUG payments webhook delivery failed after 3 retries
+2026-08-16T09:25:48 INFO auth token refreshed
+2026-08-16T09:26:05 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T09:26:38 INFO auth token validation failed
+2026-08-16T09:27:08 DEBUG network packet loss detected
+2026-08-16T09:27:32 INFO payments charge succeeded
+2026-08-16T09:27:46 INFO worker job failed: exception in handler
+2026-08-16T09:28:15 DEBUG payments refund processed
+2026-08-16T09:28:31 INFO api request handled 200 OK
+2026-08-16T09:29:07 DEBUG network connection established
+2026-08-16T09:29:37 INFO db connection pool exhausted
+2026-08-16T09:30:09 INFO worker job failed: exception in handler
+2026-08-16T09:25:00 ERROR
+2026-08-16T09:30:36 ERROR payments charge declined
+2026-08-16T09:31:06 INFO api rate limited client
+2026-08-16T09:31:39 WARN api payload validation failed
+2026-08-16T09:32:06 ERROR scheduler task dispatch failed: no workers available
+2026-08-16T09:32:07 INFO worker queue backlog growing
+2026-08-16T09:32:45 WARN payments webhook delivery failed after 3 retries
+2026-08-16T09:33:20 INFO payments refund processed
+2026-08-16T09:33:55 INFO network DNS resolution failed
+2026-08-16T09:34:08 INFO cache cache miss, fetching from db
+2026-08-16T09:34:35 INFO auth session expired
+2026-08-16T09:35:00 ERROR network TLS handshake failed
+2026-08-16T09:35:10 ERROR payments charge declined
+2026-08-16T09:35:43 WARN scheduler task dispatch failed: no workers available
+2026-08-16T09:35:50 DEBUG payments charge declined
+2026-08-16T09:36:17 DEBUG api payload validation failed
+2026-08-16T09:36:39 INFO network DNS resolution failed
+2026-08-16T09:37:23 ERROR network TLS handshake failed
+2026-08-16T09:37:55 INFO auth user login failed: bad password
+2026-08-16T09:38:36 ERROR worker job failed: exception in handler
+2026-08-16T09:39:04 WARN db migration applied
+2026-08-16T09:39:11 DEBUG payments webhook delivered
+2026-08-16T09:39:13 INFO auth user login succeeded
+2026-08-16T09:39:32 INFO scheduler missed schedule window
+2026-08-16T09:39:48 INFO network connection dropped
+2026-08-16T09:39:59 DEBUG api upstream timeout
+2026-08-16T09:40:39 INFO cache cache warmed successfully
+2026-08-16T09:40:49 INFO cache cache eviction triggered
+2026-08-16T09:41:19 INFO worker job retried after failure
+2026-08-16T09:41:38 DEBUG api payload validation failed
+2026-08-16T09:42:16 INFO worker job retried after failure
+2026-08-16T09:43:01 INFO worker job failed: exception in handler
+2026-08-16T09:43:14 WARN network connection established
+2026-08-16T09:43:30 INFO network packet loss detected
+2026-08-16T09:43:49 DEBUG worker job retried after failure
+2026-08-16T09:44:07 INFO auth rate limit hit for client
+2026-08-16T09:44:11 WARN payments webhook delivered
+2026-08-16T09:44:26 DEBUG scheduler missed schedule window
+2026-08-16T09:45:06 INFO worker job completed
+2026-08-16T09:45:47 ERROR db connection pool exhausted
+2026-08-16T09:46:07 DEBUG payments webhook delivered
+2026-08-16T09:46:16 ERROR db deadlock retry succeeded
+2026-08-16T09:46:43 DEBUG api rate limited client
+2026-08-16T09:47:07 WARN worker job failed: exception in handler
+2026-08-16T09:47:38 INFO worker job failed: exception in handler
+2026-08-16T09:47:46 ERROR payments charge declined
+   
+2026-08-16T09:48:01 ERROR network TLS handshake failed
+2026-08-16T09:48:25 WARN db query completed in 12ms
+2026-08-16T09:48:42 INFO db migration applied
+2026-08-16T09:49:26 INFO worker job failed: exception in handler
+2026-08-16T09:49:33 INFO cache cache warmed successfully
+2026-08-16T09:50:09 ERROR scheduler task dispatch failed: no workers available
+2026-08-16T09:50:51 INFO db deadlock retry succeeded
+2026-08-16T09:51:36 INFO worker job started
+2026-08-16T09:51:45 ERROR auth token validation failed
+2026-08-16T09:52:17 DEBUG db connection reset by peer
+2026-08-16T09:52:26 INFO network packet loss detected
+2026-08-16T09:52:53 WARN api request handled 500
+2026-08-16T09:53:00 INFO payments webhook delivered
+2026-08-16T09:53:03 DEBUG scheduler task dispatch failed: no workers available
+2026-08-16T09:53:19 DEBUG scheduler task dispatched
+2026-08-16T09:53:54 DEBUG scheduler task dispatched
+2026-08-16T09:54:07 ERROR db deadlock retry succeeded
+2026-08-16T09:54:13 INFO cache cache warmed successfully
+2026-08-16T09:54:15 WARN auth user login failed: bad password
+2026-08-16T09:54:24 DEBUG cache cache warmed successfully
+2026-08-16T09:54:38 WARN cache cache miss, fetching from db
+2026-08-16T09:55:00 WARN api rate limited client
+2026-08-16T09:55:01 WARN worker job completed
+2026-08-16T09:55:10 WARN worker job started
+2026-08-16T09:55:53 DEBUG auth token refreshed
+2026-08-16T09:56:09 DEBUG scheduler task dispatched
+2026-08-16T09:56:13 INFO api rate limited client
+2026-08-16T09:56:21 INFO db slow query detected
+2026-08-16T09:56:54 INFO db connection pool exhausted
+2026-08-16T09:57:34 INFO auth rate limit hit for client
+2026-08-16T09:58:08 INFO worker job started
+2026-08-16T09:58:12 WARN payments webhook delivery failed after 3 retries
+2026-08-16T09:58:56 INFO db deadlock retry succeeded
+2026-08-16T09:59:01 INFO db connection pool exhausted
+2026-08-16T09:59:06 DEBUG api request handled 500
+2026-08-16T09:59:44 INFO scheduler task dispatched
+2026-08-16T10:00:14 DEBUG network connection established
+2026-08-16T10:00:56 INFO cache cache miss, fetching from db
+2026-08-16T10:01:23 WARN scheduler task dispatch failed: no workers available
+2026-08-16T10:01:50 INFO db slow query detected
+2026-08-16T10:02:33 INFO worker job completed
+2026-08-16T10:03:17 DEBUG payments charge succeeded
+2026-08-16T10:03:23 DEBUG network DNS resolution failed
+2026-08-16T10:03:32 INFO auth token validation failed
+2026-08-16T10:04:08 INFO scheduler task dispatch failed: no workers available
+2026-13-40T25:99:99 ERROR worker impossible calendar values but well-formed shape
+2026-08-16T10:04:31 WARN network connection established
+2026-08-16T10:04:50 INFO worker queue backlog growing
+2026-08-16T10:05:23 DEBUG cache cache node unreachable
+2026-08-16T10:05:38 INFO db connection reset by peer
+2026-08-16T10:06:02 WARN db connection reset by peer
