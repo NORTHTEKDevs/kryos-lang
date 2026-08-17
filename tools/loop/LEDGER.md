@@ -2060,78 +2060,141 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: an enum with a heap [Value] payload bound as a closure ARGUMENT through the minilisp interpreter corrupts memory -- JIT segfaults, AOT silently loses an env frame (universal-claim campaign 2026-08-16, minimized 2026-08-17) -- NOT FIXED, top-ranked open defect
+### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT PARTIALLY FIXED with a second, distinct, precisely-diagnosed residual left OPEN
 
-THE MINIMAL REPRO IS TWO LINES OF LISP against the committed interpreter
-(`examples/showcase/minilisp.kry`, file mode). Corpus pinned at
-`tests/minilisp/`:
+MEASURED MECHANISM (instrumented via the pre-existing `KRYOS_BOX_DIAG=1
+KRYOS_FREE_DIAG=1` runtime diagnostics, kryos-rt `alloc.rs`/`map.rs` --
+no new instrumentation needed, it already existed and already gives
+allocation/retain/free events plus a symbolized Kryos-level stack trace per
+event): `RValue::EnumVariant`'s construction, in BOTH
+`kryos-codegen-cranelift/src/codegen.rs` and `kryos-codegen-llvm/src/codegen.rs`,
+stored every payload field as a raw bit-copy (Cranelift: a plain
+`store`; LLVM: chained `insertvalue`) with NO retain, clone, or dup of any
+str/array-typed field -- unlike the parallel `RValue::Struct` (non-@copy)
+construction path just above it in both files, which already deep-dups
+Array fields via `kryos_array_dup` and clones Str fields via
+`kryos_string_clone` specifically to give the new aggregate an independent
+heap reference. So constructing ANY enum variant whose payload includes a
+heap container taken from a shared/borrowed source -- e.g.
+`Value.ListV(args)` in `apply_builtin`'s `"list"` case
+(`examples/showcase/minilisp.kry:654`, called from `(list 7 8 9)`, no
+closure/map/frame binding required) where `args` is a shared `[Value]`
+array parameter -- made the new enum alias the SAME array pointer as its
+source with no compensating reference. A later independent drop of the
+source local (or of `args` at the caller's own scope end) and of the new
+enum's own field then double-freed the same array, and transitively each
+of its enum-boxed elements (`kryos_array_free_typed`'s elem_kind=2/arc-box
+per-element release). Confirmed with a MINIMAL repro needing NEITHER a
+closure NOR a frame map at all: `(car (list 7 8 9))` alone reproduced
+"kryos_struct_release_shared on ALREADY-FREED box (use-after-free)" x3 (the
+three boxed `Value.Int` elements) plus an "array DOUBLE-FREE" -- this
+supersedes the prior "closure argument bound into a `map<str,Value>` frame"
+hypothesis recorded below the original repro table; no map/frame is needed,
+only the raw-bit-copy enum construction. Both backends now deep-dup
+Array-typed payload fields (`kryos_array_dup`, elem_kind extended to cover
+Enum elements via `kryos_struct_retain` -- an enum box carries the exact
+same 16-byte header + refcount layout as a struct box, verified from the
+EnumVariant construction code's own comment: "the enum box carries the
+same 16-byte header as a struct box, because `__kryos_drop_<Enum>` runs
+the identical shared-owner preamble and free path") and clone Str-typed
+payload fields (`kryos_string_clone`) at `EnumVariant` construction time;
+Map-typed fields intentionally stay a raw shared bit-copy, matching the
+struct path's own documented "maps stay shared" policy (needed for the
+interpreter's genuinely-shared `set!`-mutable env frames).
 
-```
-$ kryos run examples/showcase/minilisp.kry tests/minilisp/t9b.lisp
-    (define first (lambda (lst) (car lst)))
-    (first (list 7 8 9))
-JIT:  prints "first", then SEGFAULT (rc=139)
-AOT:  (same interpreter built --release) runs -- this exact case passes there
-```
+TEST-VACUITY, both directions, verified 2026-08-17 (`git stash` the two
+codegen files, full `cargo build --release`, re-test, restore, rebuild,
+re-test):
+  - fix REVERTED: `kryos run examples/showcase/minilisp.kry tests/minilisp/t9b.lisp`
+    -> prints "first", SEGFAULT, rc=139 -- exactly the original repro.
+  - fix RESTORED: same command -> prints "first" then "7", rc=0.
 
-```
-$ ... tests/minilisp/t9.lisp        # add recursion + car/cdr walk
-JIT:  prints "suml", then ILLEGAL INSTRUCTION
-AOT:  prints "suml", then "ERROR: unbound symbol: +"  rc=0   <- SILENT wrong
-      answer: the outermost (builtin) env frame vanishes from the chain
-```
+RESULT, JIT (Cranelift, `kryos run`) -- ALL 10 corpus programs, verified
+with `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1` (zero diagnostic lines on every
+one) AND correct output (each expected value independently derived from
+the program's own Lisp semantics, not copied from any prior run):
+t1=49, t2=49, t3=(1 4 9), t4=5, t5=(3 2 1), t6=14, t7=(3 2 1), t8=(9 4 1),
+t9=10, t9b=7. JIT is FULLY FIXED and pinned by the new
+`tests/minilisp_gate.sh` (wired into `tools/loop/kryos-loop.sh` tier 1).
 
-```
-$ ... tests/minilisp/t3.lisp        # recursive closure taking a closure arg
-JIT:  7x KRYOS-FREE-DIAG double-free + WRONG ANSWER
-      ("*: expected an integer argument, got a list")
-AOT:  "ERROR: unbound symbol: cons"
-```
+RESULT, AOT (LLVM, `kryos build --release`) -- PARTIALLY FIXED, a SECOND,
+DISTINCT residual remains, diagnosed but NOT FIXED this session:
+t1/t2/t4/t5 are genuinely clean (correct output, zero diag lines) -- these
+are exactly the programs that call `apply()` (the interpreter's own
+closure/builtin dispatcher) only ONCE per process. Every corpus program
+that calls `apply()` a SECOND time (t3/t6/t7/t8/t9/t9b -- self-recursion,
+or simply two sequential closure calls) shows a real
+"array DOUBLE-FREE"/"kryos_free on ALREADY-FREED box (use-after-free)"
+diagnostic on AOT, even in t6 and t9b where the plain (non-diag) run's
+PRINTED ANSWER still happens to look correct -- i.e. the interpreter demo
+LOOKS fixed on AOT for those two but is still running on corrupted memory.
+A debug-info AOT build (`kryos build --release -g`) gives a symbolized
+trace for `(first (list 7 8 9))` (t9b): the 3-element array backing that
+list frees once inside `apply()`'s closure-call branch
+(`examples/showcase/minilisp.kry:519`) and again later at the top-level
+statement's own drop after `run_file` prints the result. `apply(fnval:
+Value, args: [Value])`'s `args` parameter is documented (CLAUDE.md gotcha
+#22) as a BORROW the callee must never free -- this trace is consistent
+with an array-of-Enum PARAMETER on AOT still not being correctly
+recognized as borrowed/no-drop, a different code path from the
+EnumVariant-construction fix above (this is a plain local/parameter
+lifetime issue, not a construction-site aliasing issue).
 
-THE PASS/FAIL BOUNDARY, measured one cut at a time (all on JIT, KRYOS_FREE_DIAG=1):
+ONE FIX ATTEMPT for this AOT residual was made and REVERTED: extending
+`kryos-mir::lower.rs`'s `retain_for_ty` (used at 13 call sites: map/array
+`IndexAssign` value retain, local/global/struct-field reassignment,
+param-source retain, ...) to also cover `MirType::Enum(_)` via
+`kryos_struct_retain`, on the theory that ANY of those 13 shared-boundary
+sites could be the missing compensation. Full rebuild + re-test
+IMMEDIATELY regressed the simplest, previously-100%-correct cases: t1 and
+t2 (both single, non-recursive `apply()` calls) started failing with
+`ERROR: unbound symbol: square` / `apply1` on JIT -- proving the real fix
+must be scoped to the SPECIFIC site(s) actually responsible (most likely
+the AOT-only `apply()` args-parameter path traced above), not applied as a
+blanket retain across every `retain_for_ty` call site, several of which
+apparently rely on Enum values NOT being independently retained there
+(likely locations that already have their own, different, compensating
+mechanism -- e.g. the `__kryos_enum_index_clone` deep-clone helper used at
+specific aliased-index-read sites -- that a blind retain would then
+double-count against). Reverted cleanly (confirmed via `git diff` showing
+zero change to `kryos-mir/src/lower.rs` after the revert); JIT re-verified
+clean (10/10) after reverting. Not attempted further this session per the
+"never iterate more than twice, rethink" debugging rule -- the mechanism
+is precisely diagnosed above (traced to `apply()`'s own args-parameter
+handling on AOT specifically) but the fix needs a fresh, narrowly-scoped
+investigation of AOT's array-parameter borrow/drop machinery specifically,
+not a repeat of the generic retain_for_ty approach.
 
-| corpus | shape | result |
-| --- | --- | --- |
-| t1 | define + apply closure, INT arg | OK (49) |
-| t2 | closure passed AS ARG, applied once | OK |
-| t4 | self-recursive closure, int arg | OK (5) |
-| t5 | recursion + cons building a list | OK ((3 2 1)) |
-| t6 | recursion + closure arg, `+` combiner | OK (14) |
-| t7 | recursion + UNUSED closure arg + cons | OK |
-| t8 | recursion + cons of (f n), counter recursion | OK ((9 4 1)) |
-| t9b | **LIST arg bound into a closure frame, car** | **SEGFAULT** |
-| t9 | + recursion via car/cdr | **ILLEGAL INSTRUCTION / AOT frame loss** |
-| t3 | + closure arg too (lisp map) | **double-frees + wrong answer** |
+FIX LOCATIONS (JIT + AOT construction-site fix, DONE): both `RValue::EnumVariant`
+arms in `kryos-codegen-cranelift/src/codegen.rs` and
+`kryos-codegen-llvm/src/codegen.rs`.
+REMAINING (AOT `apply()` args-parameter residual, OPEN): suspect surface is
+AOT's parameter-borrow / no-drop classification for an ARRAY-typed
+parameter whose element type is Enum, in `kryos-codegen-llvm` (Cranelift is
+unaffected -- JIT shows zero diag hits on every corpus case including the
+recursive/multi-`apply()` ones).
 
-So the ONE ingredient that flips t1 -> t9b is the closure argument being
-`Value.ListV([Value])` (heap payload) instead of `Value.Int`. No recursion, no
-cycles, no closure-in-closure needed for the segfault.
+REGRESSION GATE: `tests/minilisp_gate.sh` (new, wired into
+`tools/loop/kryos-loop.sh` tier 1) runs all 10 corpus programs on BOTH
+backends with `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`, fails unconditionally on
+any diagnostic line (so a "looks right but is corrupted" case like AOT
+t9b cannot pass), and pins each program's independently-derived correct
+output. It currently reports JIT 10/10 green and AOT 4/10 green + 6/10
+correctly RED (the residual above) -- an honest, non-vacuous gate rather
+than a green-washed one; closing the AOT residual should be verified
+against this same gate.
 
-FOUR PURE-KRYOS DISTILLATIONS THAT DO **NOT** REPRODUCE IT (all clean on both
-backends -- recorded so the next attempt does not re-derive them):
-  A. map mutated through an `arr[i]` alias (item-15 shape, for maps) -- agrees
-  B. recursive enum V.Clo carrying `[map<str,V>]` in a true reference CYCLE,
-     extended 3 levels, looked up through the closure payload -- clean
-  C. self-recursive cons-list builder over `[V]` payloads, depth 60 -- clean
-  D. V.L([V]) stored into `map<str,V>`, read back through a FUNCTION boundary,
-     payload element extracted -- clean
-So the corruption needs MORE than any one of those shapes; the interpreter's
-combination (args collected into `[Value]`, inserted into a frame map, chain in
-`[map<str,Value>]`, read back, payload re-entering an args array) is currently
-the smallest known trigger. Next investigative step per the repo's probe-first
-rule: instrument kryos-rt retain/release (map insert of enum-with-heap-payload,
-map read, array element read) and diff the refcount ledger between a t1 run and
-a t9b run -- the divergence point IS the bug. Suspect surface: enum payload
-ownership on map insert/read (kryos-rt map.rs + the enum boxing paths in
-kryos-mir lower.rs), same family as gotcha #23's arr[i] alias divergence and
-the item-3 struct-argument leak, but NOT identical (probes A/D pass).
-
-SEVERITY: P0. A segfault is loud, but the AOT half is a SILENT wrong answer
-(exit 0, plausible interpreter error message), and the corrupted-argument case
-(t3) computes wrong values. This is the textbook closures-with-captured-state
-case every language demo uses. The interpreter demos degrade gracefully
-(try/catch), so the SHOWCASE still runs -- but this is the #1 defect standing
-between Kryos and "an interpreter written in it just works".
+SEVERITY (reassessed): the LOUDEST failure mode (JIT segfault/illegal
+instruction, `tests/minilisp_gate.sh`'s JIT half) is FIXED. The SILENT
+failure mode (AOT wrong-answer-with-corruption) is REDUCED (4/10 -> fully
+clean; the demo's actual showcase path, a single closure application, now
+works correctly on both backends) but NOT ELIMINATED -- a program that
+calls into the interpreter's `apply()` more than once per process is still
+running on corrupted memory under `kryos build --release`, even when the
+corruption does not (yet, on this allocator/this input) visibly change the
+printed answer. This is the textbook closures-with-captured-state case
+every language demo uses, so it remains ranked high, now specifically as
+an AOT-only defect.
 
 ---
 

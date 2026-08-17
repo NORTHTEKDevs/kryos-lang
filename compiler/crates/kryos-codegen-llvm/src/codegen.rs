@@ -7542,6 +7542,25 @@ impl LlvmCodegen {
                     ));
                     let mut current = tag_tmp;
 
+                    // Field MIR types for the active variant, to give the new
+                    // enum an INDEPENDENT reference to any heap-typed
+                    // (str/array) payload field -- mirrors
+                    // emit_aggregate_struct's field cloning (see its doc
+                    // comment). Without this, a field value flowed straight
+                    // into the generic ptr->i64 coercion below with no clone,
+                    // leaving the new enum aliasing the SAME buffer as its
+                    // source operand (e.g. `Value.ListV(args)` where `args`
+                    // is a shared/borrowed `[Value]` array parameter); a
+                    // later independent drop of the source local and of this
+                    // enum's own field then double-freed the same buffer --
+                    // LEDGER item 44.
+                    let variant_field_tys: Vec<MirType> = self
+                        .enum_defs
+                        .get(enum_name.as_str())
+                        .and_then(|vs| vs.get(*variant_idx as usize))
+                        .map(|v| v.fields.clone())
+                        .unwrap_or_default();
+
                     for (i, field_op) in fields.iter().enumerate() {
                         let mut val = self.operand_to_llvm(field_op, func);
                         // Prefer the SSA value's tracked actual type over the MIR-
@@ -7552,6 +7571,44 @@ impl LlvmCodegen {
                         let val_ty = self
                             .actual_type(&val)
                             .unwrap_or_else(|| self.operand_type(field_op, func));
+                        // Clone/dup heap-typed payload fields BEFORE the
+                        // generic ptr->i64 coercion below (which just
+                        // reinterprets the pointer bits and would otherwise
+                        // hand out a raw alias of the source's buffer).
+                        // Mirrors emit_aggregate_struct's field cloning;
+                        // elem_kind encoding matches that function's (and
+                        // kryos_array_dup's) existing convention, extended to
+                        // Enum elements (kind=4, same box header layout as
+                        // Struct so kryos_array_dup's kind=4 branch --
+                        // kryos_struct_retain -- applies unchanged).
+                        match variant_field_tys.get(i) {
+                            Some(MirType::Str) if val_ty == "ptr" => {
+                                let cl = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {cl} = call ptr @kryos_string_clone(ptr {val})"
+                                ));
+                                val = cl;
+                            }
+                            Some(MirType::Array(elem_ty, _)) if val_ty == "ptr" => {
+                                let elem_kind: i64 = match elem_ty.as_ref() {
+                                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                                    MirType::Struct(_) | MirType::Enum(_) => 4,
+                                    _ => 0,
+                                };
+                                let cl = self.next_temp();
+                                if elem_kind == 0 {
+                                    self.emit_line(&format!(
+                                        "  {cl} = call ptr @kryos_array_clone(ptr {val})"
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  {cl} = call ptr @kryos_array_dup(ptr {val}, i64 {elem_kind})"
+                                    ));
+                                }
+                                val = cl;
+                            }
+                            _ => {}
+                        }
                         // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
                         // void-typed operands (rare — result of a void-returning
                         // call cached into a local before the throw/catch

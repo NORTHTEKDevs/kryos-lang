@@ -5864,11 +5864,71 @@ fn translate_rvalue<M: Module>(
             let tag = builder.ins().iconst(types::I64, *variant_idx as i64);
             builder.ins().store(MemFlags::trusted(), tag, ptr, 0);
 
+            // Give the new enum box an INDEPENDENT reference to any
+            // heap-typed (str/array) payload field -- mirrors RValue::Struct's
+            // non-@copy field handling above. Without this, a raw bit-copy
+            // store left the new enum aliasing the SAME buffer as its source
+            // operand (e.g. `Value.ListV(args)` where `args` is a
+            // shared/borrowed `[Value]` array parameter) with no
+            // compensating reference; a later independent drop of the
+            // source local and of this enum's own field then double-freed
+            // the same array (and, transitively, each of ITS enum-boxed
+            // elements) -- LEDGER item 44. Array fields are deep-duped
+            // (kryos_array_dup, same elem_kind encoding as the struct path
+            // above, extended to Enum elements which share the struct box's
+            // header layout and so also retain via kryos_struct_retain);
+            // Str fields are cloned. Map-typed fields (and any field type
+            // not covered here) intentionally stay a raw shared bit-copy,
+            // matching the struct path's documented "maps stay shared"
+            // policy.
+            let variant_field_tys: Vec<MirType> = translator
+                .enum_defs
+                .get(enum_name.as_str())
+                .and_then(|vs| vs.get(*variant_idx as usize))
+                .map(|v| v.fields.clone())
+                .unwrap_or_default();
+
             // Store payload fields at offsets 8, 16, 24, ...
             for (i, field_op) in fields.iter().enumerate() {
                 let val = translate_operand(field_op, builder, translator, module)?;
+                let field_ty = variant_field_tys.get(i);
+                let stored_val = match field_ty {
+                    Some(MirType::Array(elem, _)) => {
+                        let elem_kind: i64 = match elem.as_ref() {
+                            MirType::Str => 1,
+                            MirType::Array(_, _) => 2,
+                            MirType::Map { .. } => 3,
+                            MirType::Struct(_) | MirType::Enum(_) => 4,
+                            _ => 0,
+                        };
+                        let dup_ref = ensure_func_ref_with_args(
+                            "kryos_array_dup",
+                            builder,
+                            translator,
+                            module,
+                            2,
+                        )?;
+                        let k = builder.ins().iconst(types::I64, elem_kind);
+                        let c = builder.ins().call(dup_ref, &[val, k]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Str) => {
+                        let clone_ref = ensure_func_ref_with_args(
+                            "kryos_string_clone",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let c = builder.ins().call(clone_ref, &[val]);
+                        builder.inst_results(c)[0]
+                    }
+                    _ => val,
+                };
                 let offset = ((i + 1) * 8) as i32;
-                builder.ins().store(MemFlags::trusted(), val, ptr, offset);
+                builder
+                    .ins()
+                    .store(MemFlags::trusted(), stored_val, ptr, offset);
             }
 
             Ok(Some(ptr))
