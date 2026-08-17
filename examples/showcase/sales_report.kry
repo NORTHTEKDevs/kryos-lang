@@ -1,0 +1,260 @@
+// sales_report.kry — CSV -> statistics pipeline.
+//
+// Reads examples/showcase/data/sales.csv (header row, quoted fields,
+// a date-ish column, a numeric column), groups rows by category, computes
+// count / sum / mean / min / max / median per group plus a percent-of-total
+// column, and prints an aligned report. Malformed rows (wrong field count,
+// non-numeric amount, empty category) are skipped and counted rather than
+// crashing the pipeline. A category with zero valid rows still shows up in
+// the report with zeroed stats instead of dividing by zero.
+//
+// Usage: kryos run examples/showcase/sales_report.kry
+
+use std::csv::{parse}
+use std::fmt::{pad_left, pad_right, float_fixed, percent}
+use std::iter::{sort_by}
+
+struct SaleRow {
+    date: str,
+    category: str,
+    region: str,
+    product: str,
+    amount: f64
+}
+
+struct GroupStats {
+    category: str,
+    count: i64,
+    sum: f64,
+    mean: f64,
+    min: f64,
+    max: f64,
+    median: f64
+}
+
+// A field "looks numeric" if it has at least one digit and is otherwise
+// made up only of digits, a single leading '-', and a single '.'.
+fn looks_numeric(s: str) -> bool {
+    let n = len(s)
+    if n == 0 {
+        return false
+    }
+    let mut i: i64 = 0
+    let mut has_digit: bool = false
+    let mut has_dot: bool = false
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c == 45 and i == 0 {
+            // leading '-' is fine
+        } elif c == 46 and !has_dot {
+            has_dot = true
+        } elif c >= 48 and c <= 57 {
+            has_digit = true
+        } else {
+            return false
+        }
+        i = i + 1
+    }
+    return has_digit
+}
+
+// Sorted ascending [f64] -> median. Empty input returns 0.0.
+fn median_of(sorted: [f64]) -> f64 {
+    let n = len(sorted)
+    if n == 0 {
+        return 0.0
+    }
+    if n % 2 == 1 {
+        return sorted[n / 2]
+    }
+    let lo = sorted[n / 2 - 1]
+    let hi = sorted[n / 2]
+    return (lo + hi) / 2.0
+}
+
+fn stats_for(category: str, group_rows: [SaleRow]) -> GroupStats {
+    let n = len(group_rows)
+    if n == 0 {
+        return GroupStats {
+            category: category,
+            count: 0,
+            sum: 0.0,
+            mean: 0.0,
+            min: 0.0,
+            max: 0.0,
+            median: 0.0
+        }
+    }
+
+    let sorted_rows: [SaleRow] = sort_by(group_rows, |a: SaleRow, b: SaleRow| -> i64 {
+        if a.amount < b.amount {
+            return -1
+        } elif a.amount > b.amount {
+            return 1
+        }
+        return 0
+    })
+
+    let mut amounts: [f64] = []
+    let mut total: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        let amt = sorted_rows[i].amount
+        amounts = push(amounts, amt)
+        total = total + amt
+        i = i + 1
+    }
+
+    return GroupStats {
+        category: category,
+        count: n,
+        sum: total,
+        mean: total / (n as f64),
+        min: amounts[0],
+        max: amounts[n - 1],
+        median: median_of(amounts)
+    }
+}
+
+fn print_row(label: str, count: i64, sum: f64, mean: f64, min_v: f64, max_v: f64, median: f64, pct: str) {
+    let mut line: str = ""
+    line = line + pad_right(label, 13, " ")
+    line = line + pad_left(to_string(count), 6, " ")
+    line = line + pad_left(float_fixed(sum, 2), 11, " ")
+    line = line + pad_left(float_fixed(mean, 2), 9, " ")
+    line = line + pad_left(float_fixed(min_v, 2), 9, " ")
+    line = line + pad_left(float_fixed(max_v, 2), 9, " ")
+    line = line + pad_left(float_fixed(median, 2), 9, " ")
+    line = line + pad_left(pct, 9, " ")
+    println(line)
+}
+
+fn repeat_char(ch: str, n: i64) -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        out = out + ch
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities(fs:read)
+fn main() {
+    // Take the CSV path as an optional argument, defaulting to the bundled
+    // sample. Hardcoding the repo-relative path alone meant the program only
+    // ran from the repository root -- fine for the gate, which does, but it
+    // would fail in a live demo run from anywhere else, and a showcase program
+    // that only works from one directory is a bad advertisement.
+    let argv = args()
+    let mut path: str = "examples/showcase/data/sales.csv"
+    if len(argv) > 1 {
+        path = argv[1]
+    }
+    if file_exists(path) == 0 {
+        println("sales_report: no such file: " + path)
+        println("usage: sales_report [csv-path]   (defaults to the bundled sample)")
+        exit(1)
+    }
+    let raw = file_read(path)
+    // std::csv::parse takes the WHOLE csv text (not one line at a time --
+    // the cookbook's one-line mention "use std::csv::{parse, to_line}" does
+    // not show real usage) and returns [CsvRow], each with a `.fields: [str]`
+    // member. Per-line parse(line) fails to type-check: E0110/E0100 report
+    // the array ELEMENT type as `CsvRow`, not `str`.
+    let csv_rows = parse(raw)
+    if len(csv_rows) == 0 {
+        println("no data")
+        return
+    }
+
+    let header = csv_rows[0].fields
+    let expected_cols = len(header)
+
+    let mut valid_rows: [SaleRow] = []
+    let mut skipped: i64 = 0
+
+    let mut i: i64 = 1
+    while i < len(csv_rows) {
+        let fields = csv_rows[i].fields
+        if len(fields) == 1 and len(fields[0]) == 0 {
+            // blank trailing line
+            i = i + 1
+            continue
+        }
+        if len(fields) != expected_cols {
+            skipped = skipped + 1
+            i = i + 1
+            continue
+        }
+        let category = fields[1]
+        let amount_str = fields[4]
+        if len(category) == 0 or !looks_numeric(amount_str) {
+            skipped = skipped + 1
+            i = i + 1
+            continue
+        }
+        let row = SaleRow {
+            date: fields[0],
+            category: category,
+            region: fields[2],
+            product: fields[3],
+            amount: parse_float(amount_str)
+        }
+        valid_rows = push(valid_rows, row)
+        i = i + 1
+    }
+
+    // Fixed category list -- includes "Grocery", which has zero valid rows
+    // (its only CSV row has a non-numeric amount) to exercise the
+    // empty-group path without a divide-by-zero crash.
+    let categories: [str] = ["Electronics", "Furniture", "Office", "Grocery"]
+
+    let mut grand_total: f64 = 0.0
+    let mut grand_count: i64 = 0
+    let mut group_stats: [GroupStats] = []
+
+    for cat in categories {
+        let mut group_rows: [SaleRow] = []
+        for r in valid_rows {
+            if r.category == cat {
+                group_rows = push(group_rows, r)
+            }
+        }
+        let gs = stats_for(cat, group_rows)
+        group_stats = push(group_stats, gs)
+        grand_total = grand_total + gs.sum
+        grand_count = grand_count + gs.count
+    }
+
+    println("=== Sales Report by Category ===")
+    println("")
+    let mut header_line: str = ""
+    header_line = header_line + pad_right("Category", 13, " ")
+    header_line = header_line + pad_left("Count", 6, " ")
+    header_line = header_line + pad_left("Sum", 11, " ")
+    header_line = header_line + pad_left("Mean", 9, " ")
+    header_line = header_line + pad_left("Min", 9, " ")
+    header_line = header_line + pad_left("Max", 9, " ")
+    header_line = header_line + pad_left("Median", 9, " ")
+    header_line = header_line + pad_left("% Total", 9, " ")
+    println(header_line)
+    println(repeat_char("-", len(header_line)))
+
+    let mut j: i64 = 0
+    while j < len(group_stats) {
+        let gs = group_stats[j]
+        let mut pct_str: str = "0.00%"
+        if grand_total > 0.0 {
+            pct_str = percent(gs.sum / grand_total, 2)
+        }
+        print_row(gs.category, gs.count, gs.sum, gs.mean, gs.min, gs.max, gs.median, pct_str)
+        j = j + 1
+    }
+
+    println(repeat_char("-", len(header_line)))
+    let overall = stats_for("TOTAL", valid_rows)
+    print_row("TOTAL", overall.count, overall.sum, overall.mean, overall.min, overall.max, overall.median, "100.00%")
+    println("")
+    println("Skipped malformed rows: " + to_string(skipped))
+}

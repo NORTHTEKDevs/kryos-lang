@@ -1,0 +1,18 @@
+date,category,region,product,amount
+2026-01-05,Electronics,West,"Widget, Deluxe",129.99
+2026-01-06,Electronics,East,Cable Adapter,15.50
+2026-01-07,Furniture,West,"Desk, Standing",349.00
+2026-01-08,Furniture,East,Chair,89.99
+2026-01-09,Electronics,West,Mouse,25.00
+2026-01-10,Office,East,"Paper, A4",12.75
+2026-01-11,Office,West,Stapler,8.20
+2026-01-12,Furniture,East,Bookshelf,150.00
+2026-01-13,Electronics,East,Keyboard,45.00
+2026-01-14,Grocery,West,Notmalformed,BAD_AMOUNT
+2026-01-15,Furniture,West,Lamp,32.50
+2026-01-16,Electronics,West,Monitor,199.99
+2026-01-17,Office,East,Pens Pack,6.99
+2026-01-18,,East,Unknown Category Row,10.00
+2026-01-19,Furniture,East,"Table, Round",275.00
+2026-01-20,Electronics,East,Webcam,55.25
+2026-01-21,Office,West
