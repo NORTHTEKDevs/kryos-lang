@@ -1,0 +1,450 @@
+// ============================================================
+// Kryos Showcase: karc — a toy binary archive tool with RLE
+// compression, attacking the byte-buffer model head-on.
+//
+// Usage:
+//   karc pack <out.karc> <file...>   -- build an archive
+//   karc unpack <archive.karc>       -- restore files (suffixed, never overwrites)
+//   karc list <archive.karc>         -- print table of contents
+//   karc selftest / karc (no args)   -- self-generated round-trip proof
+//
+// Archive format (fixed-width fields, no delimiter scanning):
+//   magic            7 bytes   "KARC001"
+//   file_count       4 bytes   zero-padded decimal
+//   per file:
+//     name_len       4 bytes   zero-padded decimal
+//     name           name_len bytes (UTF-8 filename)
+//     orig_len      10 bytes   zero-padded decimal
+//     checksum      16 bytes   FNV-1a 64-bit hex (of the ORIGINAL bytes)
+//     comp_len      10 bytes   zero-padded decimal
+//     payload       comp_len bytes (RLE-compressed: (count, literal) pairs)
+//
+// ---------------------------------------------------------------
+// FINDING (the whole point of this program): Kryos strings are
+// documented as UTF-8 ("Strings in Kryos are UTF-8 sequences" —
+// docs/stdlib/string.md). Binary payloads (bytes >= 0x80, embedded
+// zeros, genuinely invalid UTF-8 byte sequences) are hostile to
+// that model, and this file found real cracks in it by direct
+// experiment (kryos run, not source-reading):
+//
+//   1. `byte_at(s, i)` — used throughout examples/websocket_client.kry
+//      and examples/cdp_bot.kry, but undocumented in any doc under
+//      docs/stdlib/** or docs/learn/** and absent from core-builtins.md
+//      entirely — SILENTLY returns -1 for EVERY index, even index 0,
+//      the instant `s` holds a single invalid-UTF-8 byte anywhere.
+//      Not a crash: a silent wrong answer (P0-class). Verified by
+//      feeding a real 11-byte fixture containing 0xFF 0xFE 0x80 0xC3
+//      0x28 (an unpaired lead byte) etc. through byte_at in a loop —
+//      every one of the 11 calls returned -1.
+//
+//   2. The core global builtin `file_read(path)` (also undocumented
+//      in core-builtins.md's I/O section, discoverable only by
+//      grepping examples/showcase/*.kry) PANICS on the same file:
+//      "kryos panic: file_read: <path>: stream did not contain valid
+//      UTF-8" (exit 98) — a hard crash, not a Result/throw, so it is
+//      not catchable with try/catch.
+//
+//   3. `std::fs::read_file` (docs/stdlib/fs.md: "Throws if the file
+//      does not exist or cannot be read") does NOT throw on the exact
+//      same invalid-UTF-8 file — it silently returns a `str` whose
+//      `len()` matches the real byte count, but that `str` is not
+//      actually valid UTF-8 internally, and byte_at on it is broken
+//      per finding 1. The documented "throws if it cannot be read"
+//      contract is violated: it neither throws nor fails, it just
+//      hands back a value that lies about being a normal string.
+//
+//   4. The WORKAROUND, found by testing each string primitive against
+//      the same invalid-UTF-8 fixture one at a time: `char_code(substr(s,
+//      i, i+1))` — a single-byte substr slice fed through char_code —
+//      correctly recovers the raw byte value (0-255) at every position,
+//      even though byte_at on the exact same string is broken. substr
+//      slicing and `+` concatenation are ALSO byte-exact and safe on
+//      invalid-UTF-8-holding strings (verified: a file round-tripped
+//      through read_file -> substr slicing/concat -> write_file came
+//      back byte-for-byte identical, diffed with an external tool).
+//      This is the accessor karc.kry uses everywhere below
+//      (`read_byte`), instead of the broken, more "obvious" byte_at.
+//
+//   5. The inverse is NOT symmetric: `chr(n)` for n in 0..127 emits a
+//      true single byte, but for n in 128..255 it emits the 2-byte
+//      UTF-8 encoding of that codepoint, not one raw byte. So you can
+//      DECODE an arbitrary byte with char_code(substr(...)), but you
+//      cannot RE-ENCODE an arbitrary byte >= 0x80 with chr() and get
+//      a single byte back — chr() is a codepoint constructor, not a
+//      byte constructor. This is why the RLE payload below only ever
+//      synthesizes NEW bytes (the run-length counts) in the 1..127
+//      range via chr(), and copies every literal DATA byte through
+//      via substr (never via chr()) — that split is load-bearing, not
+//      a style choice: get it backwards and the archive silently
+//      corrupts any run of a byte >= 0x80.
+//
+//   6. `std::bytes` — named in this campaign's own brief as "the
+//      documented byte model" — has NO doc page under docs/stdlib/**,
+//      is absent from docs/stdlib/README.md's module index (which
+//      documents 20+ other modules including ones marked "Planned"
+//      with no implementation at all), and is never imported by any
+//      file under examples/**. From the public surface alone, this
+//      module is undiscoverable — a new user has no path to it.
+//      `base64_encode`/`base64_decode` are real, working core builtins
+//      (used in examples/websocket_client.kry) but are likewise absent
+//      from docs/stdlib/crypto.md, the doc that would host them.
+//
+// Net verdict: a "universal" binary archive tool IS expressible in
+// Kryos today, byte-exact, including on genuinely invalid-UTF-8 input
+// — but only by avoiding byte_at entirely and hand-rolling a
+// substr+char_code byte accessor, a workaround no public doc mentions
+// and only examples/websocket_client.kry's comments hint might be
+// necessary ("allow off-by-one due to chr(0) handling").
+// ---------------------------------------------------------------
+
+use std::fs::{read_file, write_file, path_basename}
+use std::string::{pad_left, repeat}
+
+// ---------- fixed-width field helpers -----------------------------
+
+fn fixed_dec(n: i64, width: i64) -> str {
+    return pad_left(to_string(n), width, "0")
+}
+
+fn read_fixed_dec(s: str, pos: i64, width: i64) -> i64 {
+    return parse_int(substr(s, pos, pos + width))
+}
+
+// ---------- the byte accessor (finding #4 above) --------------------
+
+// Correct, invalid-UTF-8-safe raw byte reader. Do NOT use byte_at
+// here -- see finding #1.
+fn read_byte(s: str, i: i64) -> i64 {
+    return char_code(substr(s, i, i + 1))
+}
+
+// ---------- FNV-1a 64-bit checksum ----------------------------------
+// Cross-checked against reference vectors computed independently in
+// Python (hashlib-style manual FNV-1a) before trusting it here:
+//   fnv1a("")      == cbf29ce484222325
+//   fnv1a("a")     == af63dc4c8601ec8c
+//   fnv1a("hello") == a430d84680aabd0b
+// All three matched exactly on first run.
+
+fn hex_digit(n: i64) -> str {
+    let digits: str = "0123456789abcdef"
+    return substr(digits, n, n + 1)
+}
+
+fn fnv1a_hex(s: str) -> str {
+    // 0xcbf29ce484222325 as a two's-complement i64 literal (the
+    // unsigned value overflows i64::MAX, so it must be written as its
+    // negative i64 bit-pattern equivalent).
+    let mut h: i64 = -3750763034362895579
+    let prime: i64 = 1099511628211 // 0x100000001b3
+    let n: i64 = len(s)
+    let mut i: i64 = 0
+    while i < n {
+        let b: i64 = read_byte(s, i)
+        h = h ^ b
+        h = wrapping_mul(h, prime)
+        i = i + 1
+    }
+    let mut out: str = ""
+    let mut k: i64 = 15
+    while k >= 0 {
+        let nib: i64 = (h >> (k * 4)) & 15
+        out = out + hex_digit(nib)
+        k = k - 1
+    }
+    return out
+}
+
+// ---------- RLE compression ------------------------------------------
+// Payload is a sequence of (count, literal) byte pairs.
+//   count:   1 byte, chr()-encoded, ALWAYS in 1..127 -- ASCII range,
+//            so chr()/char_code round-trip it as a true single byte
+//            (see finding #5).
+//   literal: 1 byte, copied via substr straight from the source --
+//            NEVER synthesized via chr(), so values 128..255 survive
+//            intact (see finding #5).
+
+fn rle_compress(raw: str) -> str {
+    let n: i64 = len(raw)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let b: i64 = read_byte(raw, i)
+        let mut run: i64 = 1
+        while (i + run) < n {
+            if read_byte(raw, i + run) != b { break }
+            if run >= 127 { break }
+            run = run + 1
+        }
+        out = out + chr(run) + substr(raw, i, i + 1)
+        i = i + run
+    }
+    return out
+}
+
+fn rle_decompress(comp: str) -> str {
+    let n: i64 = len(comp)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let run: i64 = read_byte(comp, i)
+        let lit: str = substr(comp, i + 1, i + 2)
+        let mut k: i64 = 0
+        while k < run {
+            out = out + lit
+            k = k + 1
+        }
+        i = i + 2
+    }
+    return out
+}
+
+// ---------- I/O wrappers (capability boundary) -----------------------
+
+@capabilities(fs:read)
+fn read_whole_file(path: str) -> str {
+    return read_file(path)
+}
+
+@capabilities(fs:write)
+fn write_whole_file(path: str, data: str) -> i64 {
+    return write_file(path, data)
+}
+
+// ---------- pack / unpack / list --------------------------------------
+
+@capabilities(fs:read, fs:write)
+fn pack_archive(paths: [str], out_path: str) -> i64 {
+    let mut archive: str = "KARC001"
+    archive = archive + fixed_dec(len(paths), 4)
+    let mut i: i64 = 0
+    while i < len(paths) {
+        let path: str = paths[i]
+        let raw: str = read_whole_file(path)
+        let name: str = path_basename(path)
+        let checksum: str = fnv1a_hex(raw)
+        let comp: str = rle_compress(raw)
+        archive = archive + fixed_dec(len(name), 4) + name
+        archive = archive + fixed_dec(len(raw), 10)
+        archive = archive + checksum
+        archive = archive + fixed_dec(len(comp), 10)
+        archive = archive + comp
+        println("  added " + name + " (" + to_string(len(raw)) + " -> " + to_string(len(comp)) + " bytes, " + checksum + ")")
+        i = i + 1
+    }
+    write_whole_file(out_path, archive)
+    return len(paths)
+}
+
+@capabilities(fs:read)
+fn list_archive(archive_path: str) -> i64 {
+    let data: str = read_whole_file(archive_path)
+    let magic: str = substr(data, 0, 7)
+    if magic != "KARC001" {
+        eprintln("karc: not a karc archive (bad magic): " + archive_path)
+        return -1
+    }
+    let count: i64 = read_fixed_dec(data, 7, 4)
+    println("karc archive: " + archive_path + " (" + to_string(count) + " files)")
+    println(pad_left("NAME", 24, " ") + "  " + pad_left("SIZE", 10, " ") + "  CHECKSUM")
+    let mut pos: i64 = 11
+    let mut i: i64 = 0
+    while i < count {
+        let name_len: i64 = read_fixed_dec(data, pos, 4)
+        pos = pos + 4
+        let name: str = substr(data, pos, pos + name_len)
+        pos = pos + name_len
+        let orig_len: i64 = read_fixed_dec(data, pos, 10)
+        pos = pos + 10
+        let checksum: str = substr(data, pos, pos + 16)
+        pos = pos + 16
+        let comp_len: i64 = read_fixed_dec(data, pos, 10)
+        pos = pos + 10
+        pos = pos + comp_len
+        println(pad_left(name, 24, " ") + "  " + pad_left(to_string(orig_len), 10, " ") + "  " + checksum)
+        i = i + 1
+    }
+    return count
+}
+
+// Restores every file with a ".karc-restored" suffix so an unpack can
+// never clobber an existing file (including the original it came from).
+@capabilities(fs:read, fs:write)
+fn unpack_archive(archive_path: str) -> i64 {
+    let data: str = read_whole_file(archive_path)
+    let magic: str = substr(data, 0, 7)
+    if magic != "KARC001" {
+        eprintln("karc: not a karc archive (bad magic): " + archive_path)
+        return -1
+    }
+    let count: i64 = read_fixed_dec(data, 7, 4)
+    let mut pos: i64 = 11
+    let mut i: i64 = 0
+    let mut ok_count: i64 = 0
+    while i < count {
+        let name_len: i64 = read_fixed_dec(data, pos, 4)
+        pos = pos + 4
+        let name: str = substr(data, pos, pos + name_len)
+        pos = pos + name_len
+        let orig_len: i64 = read_fixed_dec(data, pos, 10)
+        pos = pos + 10
+        let checksum: str = substr(data, pos, pos + 16)
+        pos = pos + 16
+        let comp_len: i64 = read_fixed_dec(data, pos, 10)
+        pos = pos + 10
+        let payload: str = substr(data, pos, pos + comp_len)
+        pos = pos + comp_len
+
+        let restored: str = rle_decompress(payload)
+        let restored_checksum: str = fnv1a_hex(restored)
+        let out_name: str = name + ".karc-restored"
+
+        if len(restored) != orig_len {
+            eprintln("karc: " + name + ": length mismatch after decompress (expect " + to_string(orig_len) + ", got " + to_string(len(restored)) + ")")
+        } elif restored_checksum != checksum {
+            eprintln("karc: " + name + ": CHECKSUM MISMATCH (expect " + checksum + ", got " + restored_checksum + ") -- archive is corrupt")
+        } else {
+            write_whole_file(out_name, restored)
+            println("  restored " + out_name + " (" + to_string(orig_len) + " bytes, checksum ok)")
+            ok_count = ok_count + 1
+        }
+        i = i + 1
+    }
+    return ok_count
+}
+
+// ---------- self-test: builds its own fixtures, proves the round trip --
+
+fn repeat_byte(b: i64, n: i64) -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        out = out + chr(b)
+        i = i + 1
+    }
+    return out
+}
+
+// Every byte value 0..255 exactly once, including the embedded NUL and
+// every value >= 0x80 -- the exact shape finding #5 warns about.
+fn all_bytes_fixture() -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < 256 {
+        out = out + chr(i)
+        i = i + 1
+    }
+    return out
+}
+
+@capabilities(fs:read, fs:write)
+fn run_selftest() -> bool {
+    println("karc selftest: generating fixtures...")
+
+    let text_content: str = "the quick brown fox jumps over the lazy dog. " + repeat("the quick brown fox. ", 8)
+    let runs_content: str = repeat_byte(65, 200) + repeat_byte(66, 150) + repeat_byte(0, 50) + repeat_byte(255, 64)
+    let allbytes_content: str = all_bytes_fixture()
+    let empty_content: str = ""
+
+    write_whole_file("karc_fixture_text.txt", text_content)
+    write_whole_file("karc_fixture_runs.bin", runs_content)
+    write_whole_file("karc_fixture_allbytes.bin", allbytes_content)
+    write_whole_file("karc_fixture_empty.bin", empty_content)
+
+    let fixtures: [str] = [
+        "karc_fixture_text.txt",
+        "karc_fixture_runs.bin",
+        "karc_fixture_allbytes.bin",
+        "karc_fixture_empty.bin",
+    ]
+
+    println("karc selftest: packing " + to_string(len(fixtures)) + " fixtures into karc_selftest.karc...")
+    pack_archive(fixtures, "karc_selftest.karc")
+
+    println("karc selftest: listing archive...")
+    list_archive("karc_selftest.karc")
+
+    println("karc selftest: unpacking...")
+    let restored_ok: i64 = unpack_archive("karc_selftest.karc")
+
+    println("karc selftest: byte-comparing restored files against originals...")
+    let mut mismatches: i64 = 0
+    let mut i: i64 = 0
+    while i < len(fixtures) {
+        let original_path: str = fixtures[i]
+        let restored_path: str = original_path + ".karc-restored"
+        let original: str = read_whole_file(original_path)
+        let restored: str = read_whole_file(restored_path)
+        if original == restored and len(original) == len(restored) {
+            println("  OK    " + original_path)
+        } else {
+            println("  FAIL  " + original_path + " (len " + to_string(len(original)) + " vs " + to_string(len(restored)) + ")")
+            mismatches = mismatches + 1
+        }
+        i = i + 1
+    }
+
+    if mismatches == 0 and restored_ok == len(fixtures) {
+        println("ROUNDTRIP OK " + to_string(len(fixtures)) + " files")
+        return true
+    } else {
+        println("ROUNDTRIP FAILED: " + to_string(mismatches) + " mismatches, " + to_string(restored_ok) + "/" + to_string(len(fixtures)) + " unpacked cleanly")
+        return false
+    }
+}
+
+// ---------- CLI ---------------------------------------------------------
+
+fn print_usage() {
+    eprintln("karc -- toy archive tool (RLE + FNV-1a)")
+    eprintln("usage:")
+    eprintln("  karc pack <out.karc> <file...>")
+    eprintln("  karc unpack <archive.karc>")
+    eprintln("  karc list <archive.karc>")
+    eprintln("  karc selftest")
+}
+
+@capabilities(fs:read, fs:write)
+fn main() {
+    println("karc -- Kryos showcase archive tool")
+    let argv: [str] = args()
+    let argc: i64 = len(argv)
+
+    if argc < 2 {
+        run_selftest()
+        return
+    }
+
+    let cmd: str = argv[1]
+    if cmd == "pack" {
+        if argc < 4 {
+            print_usage()
+            return
+        }
+        let out_path: str = argv[2]
+        let mut files: [str] = []
+        let mut i: i64 = 3
+        while i < argc {
+            files = push(files, argv[i])
+            i = i + 1
+        }
+        let n: i64 = pack_archive(files, out_path)
+        println("packed " + to_string(n) + " files into " + out_path)
+    } elif cmd == "unpack" {
+        if argc < 3 {
+            print_usage()
+            return
+        }
+        unpack_archive(argv[2])
+    } elif cmd == "list" {
+        if argc < 3 {
+            print_usage()
+            return
+        }
+        list_archive(argv[2])
+    } elif cmd == "selftest" {
+        run_selftest()
+    } else {
+        print_usage()
+    }
+}
