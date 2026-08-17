@@ -1,11 +1,21 @@
 // snake_game.kry — a real, playable terminal snake game.
 //
 // Two modes:
-//   kryos run snake_game.kry --demo   deterministic: fixed seed, a greedy
+//   kryos run snake_game.kry -- --demo   deterministic: fixed seed, a greedy
 //                                     "chase the food" auto-pilot, N frames
 //                                     to stdout, final score. Byte-identical
 //                                     on both backends -- this is the mode
-//                                     pinned in gates/docs.
+//                                     pinned in gates/docs. NOTE the `--`
+//                                     before `--demo`: `kryos run` is a clap
+//                                     CLI and treats a bare `--demo` as an
+//                                     unrecognized FLAG OF `run` ITSELF
+//                                     ("unexpected argument '--demo' found"),
+//                                     not as an argument for this program --
+//                                     found wiring this file into the e2e
+//                                     gate (docs/01-getting-started.md now
+//                                     documents this). The compiled binary
+//                                     has no such requirement: `./snake_game
+//                                     --demo` (no `--`) works directly.
 //   kryos run snake_game.kry          interactive: std::term raw mode reads
 //                                     wasd keys, real-time frame loop paced
 //                                     with sleep().

@@ -329,6 +329,53 @@ println(key)
 
 ---
 
+## Key Reading
+
+### read_key
+
+`read_key() -> KeyEvent`
+
+Block on stdin and return the next key press as a `KeyEvent`. Requires raw
+mode (call `raw_enable()`/`with_raw_mode` first -- outside raw mode, stdin is
+still line-buffered and this will not return until Enter is pressed).
+Requires the `term` capability.
+
+```kryos
+struct KeyEvent {
+    code: i32,         // ASCII/control code for a plain key; a synthetic
+                        // code >= 1001 for an arrow/navigation key (see below)
+    char: str,          // "a", "3", "up", "enter", "escape", "backspace", "tab", ...
+    is_special: bool    // false for a plain printable character, true otherwise
+}
+```
+
+`is_special` is `false` only for an ordinary printable character (`char` is
+that one-character string, `code` is its byte value). Every other case --
+Enter (`code` 13), Backspace (127 or 8), Tab (9), Escape (27), and the arrow/
+navigation keys decoded from a multi-byte ANSI escape sequence -- sets
+`is_special: true` with a descriptive `char` (`"enter"`, `"backspace"`,
+`"tab"`, `"escape"`, `"up"`, `"down"`, `"left"`, `"right"`, `"home"`, `"end"`,
+`"delete"`, `"pageup"`, `"pagedown"`) and a `code` that is either the real
+control byte (13/127/8/9/27) or a synthetic value >= 1001 for the
+arrow/navigation keys, which have no single ASCII byte of their own.
+
+**Example:**
+```kryos
+use std::term::{with_raw_mode, read_key}
+
+with_raw_mode(fn() -> str {
+    let k = read_key()
+    if k.is_special {
+        println("special key: " + k.char)
+    } else {
+        println("char: " + k.char + " (code " + to_string(k.code) + ")")
+    }
+    return ""
+})
+```
+
+---
+
 ## Complete Example
 
 ```kryos

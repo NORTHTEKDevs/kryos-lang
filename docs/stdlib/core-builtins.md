@@ -423,7 +423,15 @@ println(char_code("0"))   // 48
 fn char_from(n: i64) -> str
 ```
 
-Return the character corresponding to Unicode code point `n`.
+Return the character corresponding to Unicode code point `n`. `chr(n)` is a
+separate global builtin with the same signature and behavior (an alias, not
+documented under its own name elsewhere) -- both are CODEPOINT constructors,
+not byte constructors: `char_from(200)`/`chr(200)` each produce a real 2-byte
+UTF-8 encoding of U+00C8, not a single raw byte with value 200. Binary/
+byte-buffer code (RLE-style compression, checksums, anything indexing raw
+bytes rather than text) that assumes "one call in, one byte out" will get a
+string 2 bytes long for any `n >= 128` and needs to account for that, or stay
+in the `0..127` range where codepoint and byte coincide (1 byte each).
 
 ```kryos
 println(char_from(65))    // A
@@ -431,7 +439,37 @@ println(char_from(97))    // a
 println(char_from(9731))  // snowman character
 ```
 
-**See also:** `char_code`
+**See also:** `char_code`, `byte_at`
+
+---
+
+### byte_at
+
+```
+fn byte_at(s: str, i: i64) -> i64
+```
+
+Return the Unicode CODEPOINT of the `i`-th CHARACTER in `s` -- despite the
+name, this is CHARACTER-indexed, not byte-indexed (`byte_at("é", 0)` is
+`233`, the codepoint of `é`, not one of its two raw UTF-8 bytes; there is no
+raw-byte accessor for a multibyte string). For a latin-1-style byte buffer
+built entirely from codepoints `0..255` (e.g. via `chr`/`char_from`),
+codepoint and byte coincide, so `byte_at` behaves as a byte accessor -- this
+is the intended use for binary/byte-buffer code.
+
+**Invalid UTF-8, silent wrong answer:** if `s` contains even one genuinely
+invalid UTF-8 byte sequence anywhere (not just at index `i`), `byte_at`
+silently returns `-1` for EVERY index, including valid ones before the bad
+byte -- not an error, not a panic, a wrong answer with exit code 0. This is
+easy to hit by accident once a byte buffer is built by reading arbitrary
+binary data (a `.karc`/`.bin` fixture, a network payload) rather than only
+via `chr`/`char_from` (which can only ever produce valid UTF-8). If your
+buffer might contain arbitrary bytes, do not use `byte_at` -- read a byte via
+`char_code(substr(s, i, i + 1))` instead (see `examples/showcase/karc.kry`
+for a full worked byte-buffer archive tool built around this exact trap), or
+validate first with `std::utf8::is_valid(s)`.
+
+**See also:** `char_at`, `char_code`, `substr`
 
 ---
 

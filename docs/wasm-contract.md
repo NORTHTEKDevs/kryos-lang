@@ -42,10 +42,56 @@ running them under `node tools/wasm-host/run.mjs` and diffing against
 `kryos run`. The roadmap items below that claimed to "unblock" them are
 already done.
 
-The single remaining gap:
+The single remaining gap in the probe corpus itself:
 
 - complex control flow / irreducible CFG (1 probe: 23, string-op-heavy loop)
  - correctly REFUSED at compile time.
+
+**Additional gaps found building a real program (`examples/showcase/wordscope.kry`,
+2026-08-16), outside the probe corpus above and not previously listed here --
+all correctly REFUSED at compile time, not silent:**
+
+| Rejected | Notes |
+|---|---|
+| `split(s, sep)` (the GLOBAL builtin, no import) | refused (`does not yet support: call to split`) -- **`use std::string::{split}` (the stdlib-level wrapper) DOES work on wasm**; only the unimported global builtin is refused. Tokenize by hand with `char_code`/`substr` if you need the global form's exact semantics, or `use` the stdlib one. |
+| `to_lower(s)` (`std::string`) | refused (`kryos_builtin_to_lower`) -- lowercase ASCII by hand via a literal lookup table + `char_code`/`substr`. |
+| `char_from(n)` / `chr(n)` | refused -- these two names alias the same codepoint constructor (see `core-builtins.md`), and wasm does not implement either. |
+| `round(f: f64)` | refused -- no float-rounding builtin on this backend yet. |
+| `arr[i] = v` (array INDEX ASSIGNMENT) | refused (`kryos_array_set`) -- note the asymmetry: array LITERALS, `arr[i]` READ, `push`, and `len` are all in the "Verified working" table above; only the WRITE form is unsupported. |
+
+**A compile-time ICE found the same session, distinct from the gaps above --
+short-circuit `&&`/`||` inside a loop, reassigning a `mut str` local in both
+if/else arms:** `examples/showcase/wordscope.kry`'s WASM leg (added to
+`tests/run_examples_e2e.sh` this session) does not build --
+`kryos build --backend wasm` refuses to WRITE the module at all (the
+validator catches it, exactly as designed -- this is the "clean refusal"
+case, not a miscompile) with `type mismatch: expected i64 but nothing on
+stack`. Isolated to a minimal repro at
+`tests/known_failures/wasm_shortcircuit_loop_strcat.kry`: all three of (a
+short-circuit `&&`/`||` condition, an `if`/`else` inside a `while` loop, a
+`mut str` local reassigned by concatenation in BOTH arms) are required --
+removing any one compiles clean. Not fixed this session (a genuinely deep
+codegen investigation, out of scope for a docs-and-showcase wave); tracked
+as an OPEN item in `tools/loop/LEDGER.md`. Workaround: nest two single-
+condition `if`s instead of one `&&`, or accumulate into an `[i64]` buffer
+and build the string once outside the loop.
+
+**Semantic-correctness caveat on the "never a miscompile" guarantee below:**
+the `wasmparser` structural-validity check (next paragraph) proves the emitted
+module is a well-formed wasm binary -- it cannot and does not prove the
+module computes the right ANSWER. A real semantic miscompile was found and
+fixed this same session, invisible to that validator: the `==` operator on
+`str` compiled cleanly and ran, but compared the packed `(offset, len)`
+HANDLE rather than the string's content, so a heap-built string (concat,
+substr, a function return) never equalled an equal-content literal even
+though the bytes matched -- silently `false`, exit code 0, a structurally
+valid module the whole way. Fixed by routing `str == str` / `str != str`
+through a new `kryos_string_eq` host import that compares actual bytes
+(`kryos-codegen-wasm/src/lib.rs`, `tools/wasm-host/run.mjs`) instead of a
+bare `I64Eq` on the packed value. If you are auditing this backend for a new
+gap, do not stop at "it validates" -- diff the OUTPUT against `kryos run`/
+`kryos build --release` on the same source, which is exactly what
+`tests/wasm_differential_gate.sh` automates.
 
 > **How the "never a miscompile" guarantee is actually enforced.** It is not a
 > convention; `emit_module` runs the emitted bytes through `wasmparser`'s

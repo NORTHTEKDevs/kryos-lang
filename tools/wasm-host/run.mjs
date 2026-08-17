@@ -116,6 +116,11 @@ const env = {
   kryos_string_contains: (hay, needle) => {
     return readPacked(hay).includes(readPacked(needle)) ? 1n : 0n;
   },
+  // Content equality, NOT packed-handle (offset,len) equality -- two
+  // independently-built strings with the same bytes can live at different
+  // offsets (only source-identical literals happen to intern to the same
+  // offset), so a raw I64Eq on the packed value is a P0 silent-wrong-answer.
+  kryos_string_eq: (a, b) => (readPacked(a) === readPacked(b) ? 1n : 0n),
   kryos_string_to_upper: (off, len) => writeStr(readStr(off, len).toUpperCase()),
   kryos_string_to_lower: (off, len) => writeStr(readStr(off, len).toLowerCase()),
   kryos_string_trim: (off, len) => writeStr(readStr(off, len).trim()),

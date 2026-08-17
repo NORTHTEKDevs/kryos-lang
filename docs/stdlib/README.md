@@ -22,6 +22,7 @@ The Kryos standard library ships with every installation. Core builtins are avai
 | [std.regex](regex.md) | **Implemented** | Regular expressions (`std::re`): `compile`, `is_match`, `find`, `find_all`, `replace`, `replace_all`, `split` |
 | [std.datetime](datetime.md) | **Implemented** | Date/time: `now`, `now_utc`, `now_iso`, `timestamp`, `timestamp_millis`, `format_timestamp`, `sleep` |
 | [std.term](term.md) | **Implemented** (FFI-backed) | Terminal: `clear`, `cursor_move`, `size`, `color`, `read_key`, `raw_enable`/`raw_disable`, `draw_box` |
+| [std.bytes](bytes.md) | **Implemented** (Pure Kryos) | Codepoint-indexed byte-buffer scanning: `find_byte`, `find_seq`, `compare`, `is_ascii` -- for latin-1-model binary payloads (see `byte_at`) |
 | std.tensor | **Implemented** (FFI-backed) | N-dimensional tensors: creation, math, reductions, linear algebra, ML ops. See [AI Runtime](../14-ai-runtime.md). |
 | std.stream | **Implemented** (Pure Kryos) | Reactive streams: `map`, `filter`, `take`, `skip`, `reduce`, `collect`. See [AI Runtime](../14-ai-runtime.md). |
 | std.probable | **Implemented** (Pure Kryos) | Confidence-aware values, ensemble methods. See [AI Runtime](../14-ai-runtime.md). |

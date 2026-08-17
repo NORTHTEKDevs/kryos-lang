@@ -37,6 +37,19 @@ if x { ... } elif y { ... }       //  OK
 
 It's `elif`, not `else if`. The grammar diverges from Rust here on purpose — saves a token, no scope ambiguity.
 
+### "unexpected token identifier" on a top-level `const`
+
+<!-- docs-example: skip -->
+```kryos
+const MAX_SPEED: i64 = 100   //  ERROR (E0001)
+let MAX_SPEED: i64 = 100     //  OK — a top-level `let` IS the constant
+```
+
+**`const` is not a Kryos keyword.** A module-level constant is written as a
+top-level `let NAME: TYPE = value` (immutable) or `let mut NAME` (a real
+mutable global). Coming from Rust/JS/Go, reaching for `const` first is the
+single most common thing to trip on here.
+
 ## Strings
 
 ### `E0009: unterminated string literal` when hand-building JSON

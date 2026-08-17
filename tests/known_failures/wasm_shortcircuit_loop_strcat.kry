@@ -1,0 +1,91 @@
+// KNOWN FAILURE (wasm backend only): a short-circuit boolean condition
+// (`&&` or `||`) used as an if/else condition INSIDE A LOOP, where BOTH
+// branches reassign a `str`-typed mutable local via concatenation, makes
+// `kryos build --backend wasm` emit a structurally INVALID wasm module.
+// The compiler's own post-codegen `wasmparser` validator catches this and
+// REFUSES to write the file (a compile-time ICE, not a silent miscompile --
+// see docs/wasm-contract.md's "never a miscompile" note for why that
+// distinction matters and what it does/doesn't guarantee):
+//
+//   error: codegen (wasm) failed: wasm codegen: internal: the WASM backend
+//   produced a structurally INVALID module and refused to write it (type
+//   mismatch: expected i64 but nothing on stack (at offset 0x...))
+//
+// Found 2026-08-17 while wiring examples/showcase/wordscope.kry's WASM leg
+// into tests/run_examples_e2e.sh -- wordscope.kry's `to_lower_ascii` helper
+// has exactly this shape (`if c >= 65 && c <= 90 { out = out + tbl[..] }
+// else { out = out + substr(..) }` inside a `while` loop) and fails to
+// build for wasm as a direct result. Isolated by bisection down to this
+// minimal repro (no string-processing builtins needed at all -- `&&`/`||`
+// alone, on plain integers, is enough):
+//
+//   fn f(n: i64) -> str {
+//       let mut out: str = ""
+//       let mut i: i64 = 0
+//       while i < n {
+//           if i >= 1 && i <= 3 {       // `||` reproduces identically
+//               out = out + "Z"
+//           } else {
+//               out = out + "Y"
+//           }
+//           i = i + 1
+//       }
+//       return out
+//   }
+//
+// Measured NOT required for the crash (each removed independently, repro
+// still fires until BOTH the loop and the `&&`/`||` are removed together):
+//   - array indexing in either branch (removing it still crashes)
+//   - `char_code(substr(..))` as the operand (a plain `i64` param triggers
+//     it identically)
+//   - asymmetric branches (both branches being a plain string literal still
+//     crashes; the FUNCTION VALUES concatenated don't matter, only that a
+//     `mut str` local is reassigned in both arms of the if/else)
+// Measured REQUIRED (removing any one of these three makes it compile
+// clean): (1) the condition is a short-circuit `&&` or `||` compound
+// boolean (a single comparison alone does not trigger it), (2) the
+// if/else sits inside a `while` loop (the identical if/else outside any
+// loop compiles fine), (3) `out = out + <expr>` reassigns a `mut str`
+// local declared OUTSIDE the loop in BOTH branches (a loop with the same
+// `&&` condition but only `println(..)` in each branch, no str reassign,
+// compiles fine).
+//
+// Likely mechanism (not confirmed by reading the codegen, stated as a
+// hypothesis for whoever picks this up): `&&`/`||` short-circuit lowering
+// emits a different number of wasm stack values on its "short-circuited"
+// path vs its "fully evaluated" path; outside a loop this is invisible,
+// but the loop's back-edge requires the SAME stack depth on every
+// iteration, and something in the if/else-producing-a-value (the str
+// reassignment merge point) interacts badly with that.
+//
+// This is DISTINCT from the P0 `str == str` packed-handle-vs-content bug
+// fixed the same session (kryos_string_eq) -- that was a SILENT wrong
+// answer with a clean compile; this is a compile-time ICE, correctly
+// caught by the validator, never producing a bad artifact.
+//
+// Workaround: avoid a short-circuit `&&`/`||` condition around a `mut str`
+// reassignment inside a loop on `--backend wasm` -- nest two `if`s instead
+// of `&&` (each single-condition `if` compiles fine), or accumulate into
+// an `[i64]` byte buffer instead of `str` concatenation and build the
+// final string once outside the loop.
+//
+// kryos run tests/known_failures/wasm_shortcircuit_loop_strcat.kry   -- OK, native
+// kryos build --backend wasm tests/known_failures/wasm_shortcircuit_loop_strcat.kry -- FAILS
+
+fn f(n: i64) -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        if i >= 1 && i <= 3 {
+            out = out + "Z"
+        } else {
+            out = out + "Y"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn main() {
+    println(f(5))
+}

@@ -5731,6 +5731,37 @@ fn translate_rvalue<M: Module>(
                                 builder.ins().call(retain_ref, &[raw_result]);
                                 raw_result
                             }
+                            MirType::Map { .. } => {
+                                // Map elements ARE ARC-refcounted (like Array/Str),
+                                // unlike the malloc'd/free()'d struct-or-enum case
+                                // this match's catch-all below is written for. This
+                                // arm was missing entirely: a [map<K,V>] element read
+                                // via Index fell through to the struct/enum
+                                // alias-only `_` arm, so MIR's drop-insertion (which
+                                // uniformly emits `drop(tmp)` = `kryos_map_release`
+                                // for every heap-typed Index-read temp) decremented
+                                // the map's real refcount with NO matching retain.
+                                // One erroneous decrement per read; the Nth read
+                                // after construction hit refcount 0 and freed the
+                                // map out from under the array, so the NEXT read
+                                // dereferenced freed memory -- a use-after-free
+                                // segfault under repeated calls (`kryos run` only;
+                                // LLVM/AOT's own field-read retain for Map already
+                                // existed at RValue::Field, this Index path just
+                                // never got the same treatment). Mirrors the
+                                // existing `kryos_map_retain` call this file already
+                                // uses for a struct FIELD read of Map type, a few
+                                // hundred lines below.
+                                let retain_ref = ensure_func_ref_with_args(
+                                    "kryos_map_retain",
+                                    builder,
+                                    translator,
+                                    module,
+                                    1,
+                                )?;
+                                builder.ins().call(retain_ref, &[raw_result]);
+                                raw_result
+                            }
                             MirType::Function { .. } | MirType::Shared(_) => {
                                 let retain_ref = ensure_func_ref_with_args(
                                     "kryos_arc_retain",

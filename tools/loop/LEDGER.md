@@ -10,6 +10,207 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: universal-claim closeout -- triage the 5 real-program build waves (interpreter, interactive-terminal, numeric, binary-data, wasm), fix P0/P1, close the docs loop, wire gates, re-judge the universal claim (2026-08-17)
+
+Assigned wave: triage every finding from the 5 preceding real-program build
+waves that stress-tested the shapes the FIRST dogfood campaign's five
+programs never touched -- `minilisp.kry` (language interpreter),
+`snake_game.kry` (interactive terminal), `orbit_sim.kry` (numeric
+simulation), `karc.kry` (binary data), `wordscope.kry` (WebAssembly target)
+-- fix what is safely fixable strictly by P0-first doctrine, close the
+public-docs loop for every P2, wire all 5 into the permanent regression
+gates, and re-answer the campaign's real question with evidence: does a
+"universal general-purpose language" claim hold across these five domains,
+or are there named walls?
+
+**Findings collected from the 5 waves (their own commits' headers/comments
+are the primary source -- no insider doc was needed to collect them, they
+were already written up in full by the waves that found them), triaged:**
+
+| # | Wave | Sev | Subsystem | Finding | Status | Public doc that should have covered it (P2s) |
+|---|---|---|---|---|---|---|
+| 1 | minilisp (`8af65a5`) | P0 (backend divergence: crash on JIT, clean on AOT) | Cranelift codegen, ARC | `chain[i][name]`/`contains(chain[i], k)` on a `[map<str, Value>]` param, index-expression evaluated 2+ times across calls, segfaults under `kryos run` while `kryos build --release` completes the identical source | **FIXED this session** -- see below | n/a |
+| 2 | minilisp (`8af65a5`) | P0 (backend divergence: different WRONG answers per backend) | Cranelift + LLVM codegen, ARC | A 3-4-level env-chain of `map<str, Value>` frames shared across closures corrupts interpreter state differently per backend (Cranelift: double-free diagnostics + wrong answer; LLVM: loses the outermost/builtin frame) even after item 1's fix is applied everywhere | **NOT FIXED** -- deep, out of scope this session (see below); file's own `try`/`catch` wrapping keeps both backends exiting 0 with a caught error instead of propagating corruption | n/a |
+| 3 | snake_game (`ef501a2`) | P2 doc gap | `docs/19-language-reference.md` SS11.2 | `const NAME: TYPE = value` documented as a valid top-level declaration; `const` is not a Kryos keyword at all (`E0001`) -- the real mechanism is a top-level `let` | FIXED (doc) | `docs/19-language-reference.md` (already correct in `docs/learn/cheatsheet.md` -- a second doc contradicting a correct one, same pattern the first closeout wave found for `http.md`) |
+| 4 | snake_game (`ef501a2`) | P2 doc gap | `docs/stdlib/option.md` | Documents `none()`; the real function is `none_value()` (`none` is a reserved keyword, `use std::option::{none}` is a clean compile error) | FIXED (doc) | `docs/stdlib/option.md` |
+| 5 | snake_game (`ef501a2`) | P2 doc gap | `docs/stdlib/term.md` | `std::term::read_key()` named only in the README module-index row; its own reference page never documented it (signature, return type, or the undocumented `KeyEvent{char,code,is_special}` struct shape) | FIXED (doc) | `docs/stdlib/term.md` |
+| 6 | snake_game (`ef501a2`) | P4 doc gap | `docs/19-language-reference.md` SS5.1 | Struct-field mutation through a fn param works without `mut`; reassigning the WHOLE param binding requires shadowing with a `mut` local -- real, but undocumented for parameters specifically | FIXED (doc) | `docs/19-language-reference.md` |
+| 7 | snake_game, found THIS session wiring it into `run_examples_e2e.sh` | P2 CLI tooling gap, undocumented in BOTH public and insider docs | `kryos-cli` (clap) | `kryos run <file> --demo` fails (`error: unexpected argument '--demo' found`) -- any script arg starting with `-`/`--` needs a `--` separator (`kryos run <file> -- --demo`); the compiled AOT binary has no such requirement. `snake_game.kry`'s OWN header comment demonstrated the non-working invocation | FIXED (doc + the file's own header + the e2e gate wiring) | `docs/01-getting-started.md` (CLI Commands table) -- **also missing from CLAUDE.md/FULL-REFERENCE.md before this session; genuinely new**, not merely un-published |
+| 8 | orbit_sim (`1ed41f5`) | -- | -- | No findings -- POSITIVE confirmation: f64 arithmetic byte-identical both backends, `--strict-capabilities` clean with ZERO `@capabilities` needed | n/a | n/a |
+| 9 | karc (`0415450`) | P0 (silent wrong answer) | core builtin `byte_at` | `byte_at(s, i)` silently returns `-1` for EVERY index (including valid ones) the instant `s` contains one invalid-UTF-8 byte anywhere -- not an error, exit 0 | **NOT FIXED (compiler)** -- documented only, see reasoning below | `docs/stdlib/core-builtins.md` (had NO entry for `byte_at` at all before this session, public or insider) |
+| 10 | karc (`0415450`) | P3 (inconsistent, undocumented behavior split) | `std::fs::read_file` vs global `file_read` | `file_read` panics on invalid-UTF-8 content; `read_file`'s doc blanket-claims "throws if the file does not exist or cannot be read" but does NOT throw on invalid-UTF-8 content (no validity check at the read step) -- same input, different contract, undocumented split | FIXED (doc) | `docs/stdlib/fs.md` |
+| 11 | karc (`0415450`) | P4 doc gap | `chr`/`char_from` | `chr(n)` undocumented under its own name anywhere (an alias of `char_from`); neither entry warned that both are CODEPOINT constructors, not byte constructors (2-byte UTF-8 output for `n >= 128`), which matters for byte-buffer/binary code | FIXED (doc) | `docs/stdlib/core-builtins.md` |
+| 12 | karc (`0415450`) | P2 doc gap | `std::bytes` | No public doc page existed; not even listed in `docs/stdlib/README.md`'s module index (not even the "no separate docs" fallback table) -- completely undiscoverable | FIXED (doc: new `docs/stdlib/bytes.md` + README index entry) | `docs/stdlib/README.md`, new `docs/stdlib/bytes.md` |
+| 13 | wordscope (`8dcb574`) | P0 (silent wrong answer, backend divergence, wasm only) | `kryos-codegen-wasm` | `==`/`!=` on `str` compiled a bare `I64Eq` on the packed `(offset, len)` HANDLE, not content -- a heap-built string never equalled an equal-content literal even though the bytes matched; not caught by the 2026-08-14 wasm structural validator (a semantic bug, not a structural one) | **FIXED this session** -- see below | `docs/wasm-contract.md` (now also states the semantic-correctness caveat: structural validity != correctness) |
+| 14 | wordscope (`8dcb574`) | P2 doc gap | `docs/wasm-contract.md` | `split` (global builtin), `to_lower`, `char_from`/`chr`, `round`, and `arr[i] = v` (index ASSIGNMENT, distinct from the already-documented-working READ) are all cleanly refused on wasm but none were listed in the supported-feature tables; also `use std::string::{split}` (the stdlib wrapper) DOES work even though the global builtin doesn't -- a nuance nobody had recorded | FIXED (doc) | `docs/wasm-contract.md` |
+| 15 | Found THIS session wiring wordscope's wasm leg into `run_examples_e2e.sh` (NOT in the original wave's own findings) | P1 (compile-time ICE, cleanly caught by the validator -- NOT a silent miscompile) | `kryos-codegen-wasm` | A short-circuit `&&`/`||` condition inside a `while` loop, where BOTH if/else arms reassign a `mut str` local by concatenation, makes the wasm backend emit a structurally invalid module (`type mismatch: expected i64 but nothing on stack`) -- `wordscope.kry`'s real `to_lower_ascii` helper has exactly this shape and cannot build for wasm as a direct result | **NOT FIXED (compiler)** -- isolated to a clean minimal repro, deep codegen investigation genuinely out of scope this session (see below) | `docs/wasm-contract.md`; repro at `tests/known_failures/wasm_shortcircuit_loop_strcat.kry` |
+
+**Item 40c** (`std::result::to_array<T>` unannotated-binding silent wrong
+pointer) remains OPEN from the FIRST closeout wave (`025a4e0`), untouched
+and unrelated to this wave's 5 programs -- listed here only so this table is
+not mistaken for the full OPEN queue; `tools/loop/LEDGER.md`'s own OPEN
+section is authoritative.
+
+---
+
+### Fixes made this session (P0-first, doctrine-strict)
+
+**Fix 1 (P0, item 1): Cranelift `RValue::Index` was missing a retain for
+`Map`-typed array elements.** `compiler/crates/kryos-codegen-cranelift/src/codegen.rs`'s
+array-index-read codegen retains `Str`/`Array`/`Function`/`Shared` element
+types when read out of an array (so the reader becomes an additional owner,
+matched by MIR's own `drop()` insertion for that temp) but had NO arm for
+`MirType::Map` -- it fell through to the struct/enum catch-all, which is
+deliberately alias-only (correct for malloc'd/`free()`d struct/enum
+elements, wrong for ARC-refcounted Map elements). Every `chain[i]` read
+inserted an unbalanced `kryos_map_release` with no matching `kryos_map_retain`;
+the Nth read after construction hit refcount 0 and freed the map out from
+under the array, so the next read use-after-freed -- segfault, repeatable at
+~200 calls in the minimal repro (matches "evaluated 2+ times across calls").
+FIX: added a `MirType::Map { .. }` arm calling `kryos_map_retain`, mirroring
+the EXISTING (and already-correct) `kryos_map_retain` call this same file
+uses for a struct FIELD read of `Map` type (`RValue::Field`, a few hundred
+lines below) -- the Field path already had this right; only the Index path
+was missing it.
+
+PROOF BOTH WAYS, live: minimal repro (`[map<str, Value>]` param, `contains`
++ `match` indexing the SAME `chain[i]` twice per call, 200 calls in a loop)
+segfaults (`rc=139`, SIGSEGV) on the unmodified binary; `git stash` +
+rebuild + rerun reproduces it FRESH (not carried over from a cached
+process); restore + rebuild + rerun -- `OK 200 iterations, all 42`, clean
+exit 0. Full `examples/showcase/minilisp.kry` (the real program, not the
+minimal repro) also improved: went from a raw SIGSEGV on `kryos run` before
+this fix to completing (`rc=0`) after it -- the fix eliminated the CRASH.
+It did NOT eliminate item 2's deeper corruption (see below); those are
+different mechanisms.
+
+Gates after this fix, run one at a time: `escape_status.sh` STILL ESCAPING
+0 (unchanged); `ir_signature_gate.sh` PASS, 65 modules; `strict_caps_examples.sh`
+101/101; `conf_stdlib_wave14` check rc=0; `run_conformance.sh` 65/65 PASS,
+both backends.
+
+**Fix 2 (P0, item 13): wasm `str == str` / `str != str` compared the packed
+handle, not content.** `compiler/crates/kryos-codegen-wasm/src/lib.rs`'s
+`RValue::BinOp` dispatch special-cased `Str + Str` (concat) and any `F64`
+operand, but fell through to the generic `emit_binop` (a bare `I64Eq`/`I64Ne`
+on the packed `(offset, len)` i64) for every other op including `Eq`/`Neq`
+on two `Str` operands. FIX: added a `MirBinOp::Eq | MirBinOp::Neq` +
+`Str`/`Str` arm that calls a new host import `kryos_string_eq(a, b) -> i64`
+(mirroring the existing `kryos_string_contains` import's pattern exactly --
+same signature shape, same registration site) which decodes both packed
+strings and compares real bytes; `Neq` XORs the result with 1 (both values
+are always exactly 0 or 1, so this is a safe boolean flip without an extra
+i32/i64 dance). Implemented on the host side in `tools/wasm-host/run.mjs`.
+
+PROOF BOTH WAYS, live: a repro building `"hel"` then conditionally
+concatenating `"lo"` at runtime (so the compiler cannot constant-fold it
+into the same interned literal as a separately-written `"hello"` literal --
+the FIRST naive repro attempt using `"hel" + "lo"` on two adjacent literals
+turned out to be silently constant-folded, giving a FALSE PASS on the
+unmodified binary; caught by checking behavior against the native
+reference before trusting the wasm result, not by assuming the repro was
+right) -- unmodified binary prints `NEQ`/`NE_TRUE` (wrong: the strings ARE
+equal); `git stash` + rebuild reproduces this same wrong output fresh;
+restore + rebuild -- prints `EQ`/`NE_FALSE`, matching `kryos run`'s native
+reference exactly.
+
+Gates after this fix: `wasm_differential_gate.sh` PASS, 62/62 compiled
+programs match native (unchanged count -- this fix corrects an existing
+program's semantics, it does not change which programs compile).
+
+### Not fixed this session, with reasoning (honest NOT-DONE)
+
+**Item 2 (minilisp deep-chain corruption, P0):** left open. The shallow
+single-statement double-index shape (item 1) had a clean, provable,
+single-file root cause; this one does not -- it requires closures AND a
+3-4-level env chain AND (per the original wave's own testing) persists even
+when every access follows the item-1 workaround. A confident fix attempt
+here risks exactly the "wrong root cause from source-reading alone" failure
+mode this repo's own doctrine warns about repeatedly, and the file's
+existing `try`/`catch` wrapping already keeps the program from crashing or
+propagating corrupted state -- both backends exit 0 with a caught error
+message. Excluded from the strict byte-identical differential gate (see
+"Gates wired" below) with a clear comment, rather than either hiding the
+gap or leaving a gate permanently red for a known, disclosed reason.
+
+**Item 9 (`byte_at` silent -1 on invalid UTF-8, P0):** left open,
+documented instead. This sits inside the SAME already-acknowledged
+latin-1-vs-UTF-8 design tension `docs/claude/FULL-REFERENCE.md` already
+describes at length for `chr`/`base64_encode`/`std::bytes` (a real,
+deliberate model choice with known edges, not a simple oversight) -- a safe
+fix needs to decide what `byte_at` SHOULD do on invalid UTF-8 (error?
+return the raw byte anyway by falling back to a non-UTF-8-aware scan?) as a
+genuine design decision, not a mechanical patch, and the existing
+workaround (`char_code(substr(s, i, i+1))`) is real, already used
+throughout `karc.kry`, and safe. Documented in full in
+`docs/stdlib/core-builtins.md` instead of risking a rushed fix to a
+UTF-8-decode-loop that eleven other builtins share.
+
+**Item 15 (wasm short-circuit `&&`/`||` in a loop + `mut str` reassign,
+P1):** left open. Isolated via 12 rounds of bisection down to a clean,
+minimal, 10-line repro with no string-processing builtins involved at all
+(plain `i64` comparisons suffice) -- see
+`tests/known_failures/wasm_shortcircuit_loop_strcat.kry` for the full
+isolation trail (what's required vs not, by removing one variable at a
+time). Root-causing WHY the short-circuit lowering's stack shape interacts
+badly with a loop's back-edge requires reading and understanding
+`kryos-codegen-wasm`'s block/branch structure for both short-circuit
+boolean evaluation and if/else-producing-a-value, independently -- a real,
+multi-hour investigation in its own right, not something to rush a fix for
+inside an already-long session that already delivered two proven P0 fixes.
+The bug is a clean COMPILE-TIME refusal (the validator catches it, exactly
+as designed), not a silent miscompile, which lowers its urgency relative to
+the two P0s that were fixed.
+
+---
+
+### Docs closed (every P2 above)
+
+| File | What changed |
+|---|---|
+| `docs/19-language-reference.md` | SS11.2 `const` claim corrected (top-level `let` is the real mechanism); SS5.1 gained the param field-mutation-vs-whole-reassign asymmetry note |
+| `docs/learn/common-errors.md` | New "unexpected token identifier on a top-level `const`" entry |
+| `docs/01-getting-started.md` | New CLI Commands row: `kryos run <file.kry> -- <args>` and the `--` requirement |
+| `docs/stdlib/option.md` | `none()` -> `none_value()` throughout (5 sites); idiomatic-form callout added pointing at `Some(x)`/`None()` |
+| `docs/stdlib/term.md` | New `read_key`/`KeyEvent` section (was completely undocumented) |
+| `docs/stdlib/core-builtins.md` | New `byte_at` entry (invalid-UTF-8 -1 behavior documented); `char_from` entry extended with the `chr` alias + codepoint-vs-byte warning |
+| `docs/stdlib/fs.md` | `read_file` entry corrected: does not throw on invalid-UTF-8 content, contrasted with global `file_read` |
+| `docs/stdlib/bytes.md` | NEW FILE -- full page for `find_byte`/`find_seq`/`compare`/`is_ascii` |
+| `docs/stdlib/README.md` | `std.bytes` added to the module index (was entirely absent) |
+| `docs/wasm-contract.md` | `split`(global)/`to_lower`/`char_from`/`chr`/`round`/`arr[i]=v` added to the rejected-shapes table; the `==` P0 fix documented with a "structural validity != correctness" caveat; the new short-circuit ICE (item 15) documented as an open gap with its repro path |
+| `examples/showcase/snake_game.kry` | Header's own invocation example fixed (`kryos run snake_game.kry -- --demo`) |
+
+### Gates wired (every new program with deterministic output)
+
+`tests/run_examples_e2e.sh`:
+- Layer 1 (differential JIT vs AOT): added `snake_game` (`-- --demo`),
+  `orbit_sim`, `karc`, `wordscope` -- all 4 byte-identical, both backends
+  (verified: `layer 1: 18/18`).
+- `minilisp` DELIBERATELY EXCLUDED from Layer 1, with a comment explaining
+  the known item-2 divergence (not hidden, not silently omitted --
+  documented at the top of the file next to the pre-existing exclusion
+  list).
+- New Layer 1b: `wordscope`'s WASM leg (`kryos build --backend wasm` +
+  `node tools/wasm-host/run.mjs`, diffed against the native JIT reference
+  Layer 1 already captured) -- the item-13 `==` fix is what makes this
+  program's REAL output correct once it builds; the item-15 ICE is what
+  currently stops it from building at all, so this leg is wired as a
+  disclosed, non-fatal SKIP (not a hard failure) pointing at the known-open
+  ICE, per the campaign brief's own "wasm leg too if practical" hedge --
+  it is not currently practical, and the gate says so instead of silently
+  omitting it or blocking the whole suite on an unfixed compiler bug.
+
+`tests/run_examples_gate.sh` (globs `examples/showcase/*.kry`) and
+`tests/strict_caps_examples.sh` (globs the same) needed NO changes -- both
+already auto-discover new showcase files; confirmed live
+(`strict_caps_examples.sh`: 101/101, up from 96/96 at the prior closeout,
+exactly the 5 new files, all pass with zero extra `@capabilities` beyond
+what each file's own author already annotated).
+
+`git ls-files examples/showcase/{minilisp,snake_game,orbit_sim,karc,wordscope}.kry`
+confirms all 5 were already tracked (the prior campaign's "left one
+untracked" mistake did not recur).
+
 ## Wave: dogfooding closeout -- triage the 5 real-program showcase waves, close the docs loop, wire regressions, re-verify -- CLOSEOUT WAVE (2026-08-16)
 
 Assigned wave: triage every finding from the 5 preceding real-program build waves

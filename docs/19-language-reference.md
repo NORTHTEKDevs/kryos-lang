@@ -283,6 +283,17 @@ be explicitly typed. The body is a block expression; if the function
 has a non-unit return type, every control-flow path must produce a
 value via `return`.
 
+**Parameter mutability is asymmetric, and the asymmetry is real (not a
+documentation gap to be "fixed" -- this is current, intended behavior):** a
+parameter is never declared `mut`, yet **mutating a field OF a struct/array/
+map parameter works with no annotation** (`fn f(p: Point) { p.x = 99 }`
+compiles and, per SS7's aliasing rules, the mutation is visible to the
+caller). **Reassigning the WHOLE parameter binding** (`p = Point { .. }`)
+is rejected (`E0302: assignment to immutable variable`, "consider declaring
+with `let mut`") -- a parameter name itself is always immutable. To reassign
+the whole value, shadow it with a local first: `let mut p2 = p` then
+reassign `p2`.
+
 ### 5.2 Structs
 
 ```kryos
@@ -607,7 +618,12 @@ use math.linalg.Matrix
 By default, items are **private to their module**. Mark them `pub` to
 export. Visibility applies to:
 
-- Top-level declarations (`fn`, `struct`, `enum`, `trait`, `type`, `const`).
+- Top-level declarations (`fn`, `struct`, `enum`, `trait`, `type`, and a
+  top-level `let` -- **`const` is not a Kryos keyword**; a module-level
+  constant is written `let NAME: TYPE = value`, per the cheatsheet's
+  "Variables" section. `const NAME: TYPE = value` fails to parse
+  (`E0001: unexpected token identifier`) -- there is no `const` token in
+  the grammar at all.
 - Struct fields and methods (each can be independently `pub` or private).
 
 A `pub` item is reachable from any module that `use`s the containing module.

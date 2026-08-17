@@ -1,4 +1,16 @@
-# Kryos Launch Readiness — Re-Adjudication (2026-08-16, dogfooding closeout addendum)
+# Kryos Launch Readiness — Re-Adjudication (2026-08-16, dogfooding closeout addendum; 2026-08-17 universal-claim addendum)
+
+**Date:** 2026-08-16 (closeout addendum appended same day); **2026-08-17 addendum appended** (Section 0b).
+**HEAD reviewed (0b):** local `master` after the 2026-08-17 universal-claim closeout wave. Unlike the
+2026-08-16 delta below, **this session DID touch compiler source** --
+`compiler/crates/kryos-codegen-cranelift/src/codegen.rs` (a missing ARC retain on `Map`-typed
+array-index reads, LEDGER item 1) and `compiler/crates/kryos-codegen-wasm/src/lib.rs` +
+`tools/wasm-host/run.mjs` (wasm `str == str` compared the packed handle not content, LEDGER item 13) --
+both P0 fixes, both test-vacuity proven (RED before, GREEN after, on a freshly rebuilt binary each
+direction) and gated (see `tools/loop/LEDGER.md`, "Wave: universal-claim closeout"). The rest of this
+delta is `examples/showcase/*.kry` (1 header comment fix), `docs/**.md` (11 files, closing every P2 this
+wave found), 2 new files (`docs/stdlib/bytes.md`, `tests/known_failures/wasm_shortcircuit_loop_strcat.kry`),
+`tests/run_examples_e2e.sh`, and `tools/loop/LEDGER.md`.
 
 **Date:** 2026-08-16 (closeout addendum appended same day)
 **HEAD reviewed:** `2256449` (local `master`) — the 28-gate full-ladder section below (Sections 1-9,
@@ -126,6 +138,93 @@ silently prints a raw pointer instead of the intended value. It has zero real ca
 not surprise anyone using it the documented way (with an annotation) — but calling it out here because
 the whole point of this addendum is not to bury the one silent-wrong-answer this campaign found under a
 pile of green checkmarks.
+
+---
+
+---
+
+## 0b. The "universal general-purpose language" claim, re-adjudicated (2026-08-17)
+
+Section 0 above answered whether a new user can build AGENT TOOLING shapes
+(CLI, HTTP/JSON, worker-pools, capability-governed dispatch) from the public
+docs. Kryos's actual claim is broader than that -- a UNIVERSAL
+general-purpose language -- and that claim has five shapes Section 0 never
+touched: a language interpreter, an interactive terminal program, numeric
+simulation, binary data handling, and the WebAssembly target run against a
+real, complete program rather than a probe corpus. Five programs were built
+against those five shapes across five prior waves; this session triaged
+every finding, fixed what was safely fixable (P0-first), closed the public-
+docs loop for every P2, and wired all five into the permanent gates. Full
+finding-by-finding table: `tools/loop/LEDGER.md`, "Wave: universal-claim
+closeout" (top of file, 2026-08-17).
+
+**Per-domain verdict:**
+
+| Domain | Program | Verdict | Evidence |
+|---|---|---|---|
+| Language interpreter | `minilisp.kry` | **YES, with one named wall.** A real tokenizer + recursive-descent reader + tree-walking Lisp evaluator over a recursive `Value` enum works, including closures, `set!`, and 70-deep recursion, byte-identical on both backends. **Wall:** a 3-4-level env-chain of `map<str, Value>` frames shared across closures corrupts interpreter state DIFFERENTLY per backend (a genuine P0, not fixed this session -- see below). A shallower, single-statement double-index shape that SEGFAULTED under JIT was found and FIXED this session (a missing ARC retain on `Map`-typed array-index reads in the Cranelift backend). |
+| Interactive terminal | `snake_game.kry` | **YES.** A real playable terminal snake game (raw-mode key reads, real-time frame loop, seeded PRNG for food placement) works; its deterministic `--demo` mode is byte-identical on both backends. Cost: 4 doc gaps found and closed (a nonexistent `const` keyword, wrong `Option` constructor names, an undocumented `read_key`/`KeyEvent` return type, and - found wiring the gate, not by the original wave - an undocumented `kryos run` CLI quirk requiring `--` before a script arg that looks like a flag). |
+| Numeric simulation | `orbit_sim.kry` | **YES, no qualification.** An N-body gravity simulation (velocity-Verlet integrator) plus Conway's Game of Life -- pure `f64`/`i64` compute, zero I/O -- is byte-identical on both backends with `--strict-capabilities` clean and ZERO `@capabilities` annotations needed. The one showcase with no findings at all, positive or negative. |
+| Binary data | `karc.kry` | **QUALIFIED YES, one named wall.** A working RLE-compressed archive tool (pack/unpack/list, self-verifying round trip) was built and works. **Wall:** `byte_at(s, i)`, the documented byte-buffer accessor, silently returns `-1` for every index once a string holds one invalid-UTF-8 byte anywhere -- a genuine P0 silent-wrong-answer, not fixed this session (a real design-tension call about what the fallback behavior SHOULD be, not a mechanical patch), but fully documented now (it had zero public OR insider documentation before this session) with a proven-safe workaround (`char_code(substr(s, i, i+1))`, used throughout `karc.kry` itself). |
+| WebAssembly | `wordscope.kry` | **QUALIFIED YES, two named walls, one closed this session.** A real 150+-line text-analysis program (word/sentence counting, frequency table, concordance) runs identically on `kryos run`, the AOT release binary, and the wasm target via the node host -- **after** this session's fix. **Wall 1 (closed):** `==`/`!=` on `str` compared the packed handle, not content -- a P0 silent-wrong-answer, FIXED this session (`kryos_string_eq` host import). **Wall 2 (open):** a short-circuit `&&`/`||` condition inside a loop, reassigning a `mut str` local in both if/else arms, makes the wasm backend refuse to write a structurally invalid module -- found wiring this program's wasm leg into the permanent gate (not by the original wave), isolated to a clean 10-line minimal repro (`tests/known_failures/wasm_shortcircuit_loop_strcat.kry`), NOT fixed this session (a genuine multi-hour codegen investigation). This is why `wordscope.kry` itself, as shipped, still cannot build for wasm today -- its real `to_lower_ascii` helper hits this exact shape. The wasm leg is wired into `tests/run_examples_e2e.sh` as a disclosed, non-fatal SKIP pointing at this open item, not a silent omission and not a false PASS.
+
+**P0/P1 count found by the act of building these five programs (not by
+adversarial search):** 5 total across the two most stressed domains
+(interpreter and wasm) plus one narrow silent-wrong-answer in binary data;
+zero in interactive-terminal or numeric simulation. Of the 5: **2 P0s fixed
+this session** (minilisp's shallow segfault; wordscope's wasm `==`
+miscompile), **2 P0s left open and documented** (minilisp's deep-chain
+divergence; `byte_at`'s invalid-UTF-8 silent `-1`), **1 P1 left open and
+documented** (wordscope's wasm short-circuit-in-a-loop ICE, found this
+session closing the loop, not by the original wave).
+
+**Insider-doc consultation count:** the FIVE ORIGINAL BUILD WAVES did not
+self-report a consultation count in their own commits or file headers the
+way the first campaign's closeout did ("zero, this session") -- this is
+stated honestly as **not reconstructable from the artifacts alone**, not
+assumed to be zero. What IS verifiable: none of the five showcase files'
+own header comments reference `CLAUDE.md`, `FULL-REFERENCE.md`, or any
+other insider path, and every finding each file documents is phrased as
+something discovered by direct compiler probing ("verified by feeding a
+real fixture", "reverse-engineered field-by-field via compile-error
+probing") rather than by reading an insider reference -- consistent with,
+but not proof of, zero consultations. THIS session (the triage/fix/gate
+wave) had full repository access by its own explicit assignment (collecting
+LEDGER entries and updating `docs/LAUNCH-READINESS.md` were both explicit
+requirements incompatible with the public-docs-only constraint that governed
+the five BUILD waves) and does not claim to measure "new user" experience
+itself.
+
+**Direct answer: which domains can the owner confidently showcase in, and
+which have named walls?**
+
+**Confidently showcase, no qualification:** numeric simulation
+(`orbit_sim.kry` -- zero findings, zero capabilities needed) and interactive
+terminal programs (`snake_game.kry` -- works end to end; its 4 findings were
+all doc gaps, now closed, not language defects).
+
+**Showcase with one disclosed wall each:** language interpreters
+(`minilisp.kry` -- the core interpreter works and is fast; the SPECIFIC
+combination of deep closure-capturing env chains is where it breaks, a
+narrower and more specific caveat than "interpreters don't work") and binary
+data handling (`karc.kry` -- the archive tool works and is fully correct;
+`byte_at` specifically is the one builtin to avoid on genuinely untrusted
+binary input, with a proven one-line-different workaround).
+
+**Showcase with a caveat that the wasm target's real-program story is not
+yet fully proven:** WebAssembly. The semantic correctness story materially
+improved this session (the `==` P0 is closed, and the wasm-contract doc's
+"never a miscompile" guarantee now states plainly what it does and does not
+prove). But `wordscope.kry` -- the program built specifically to prove wasm
+end-to-end with a real, non-toy program -- still cannot build today, because
+of a control-flow shape (`&&`/`||` in a loop with a `mut str` reassign) that
+is neither rare nor exotic in ordinary string-processing code. The honest
+claim for wasm today is **"the documented subset works and is now provably
+correct where it compiles; a real ~150-line program still hits a genuine
+compile-time wall this session found and did not close."** This is a
+narrower, more useful claim than either "wasm works" or "wasm doesn't work"
+-- it names exactly where the boundary is, per this campaign's own standard
+that two honest named exceptions beat a vague claim.
 
 ---
 

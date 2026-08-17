@@ -21,6 +21,13 @@ enum Option {
 
 ## Constructors
 
+**The idiomatic form used elsewhere in these docs (cheatsheet.md, the language
+reference) is the capitalized enum-variant form directly:** `Some(x)` /
+`None()`, via `use std::option::{Some, None}`. `some`/`none_value` below are
+lowercase function wrappers around those same variants -- both forms work and
+produce an identical `Option`, but a new user who has already seen `Some(x)`/
+`None()` elsewhere should not expect a matching lowercase `none()` to exist.
+
 ### some
 
 `some<T>(val: T) -> Option<T>`
@@ -29,18 +36,21 @@ Create an `Option` containing `val`.
 
 ---
 
-### none
+### none_value
 
-`none() -> Option`
+`none_value() -> Option`
 
-Create an empty `Option`.
+Create an empty `Option`. **Named `none_value`, not `none`** -- `none` is a
+reserved keyword in Kryos (it backs the `Option::None`/`Result` machinery at
+the language level), so `use std::option::{none}` is a clean compile error
+(`E0009: reserved keyword 'none' cannot be used as a name here`).
 
 **Example:**
 ```kryos
 use std::option
 
 let a = some(42)
-let b = none()
+let b = none_value()
 ```
 
 ---
@@ -103,7 +113,7 @@ use std::option
 let x = some(10)
 println(unwrap_or(x, 0))       // 10
 
-let y = none()
+let y = none_value()
 println(unwrap_or(y, 0))       // 0
 println(unwrap_or_else(y, fn() -> i64 { return 99 }))   // 99
 ```
@@ -139,7 +149,7 @@ If `opt` is `Some(v)`, return `f(v)` (which itself returns an `Option`). If empt
 use std::option
 
 let safe_div = fn(x: i64) -> Option {
-    if x == 0 { return none() }
+    if x == 0 { return none_value() }
     return some(100 / x)
 }
 
@@ -298,7 +308,7 @@ let find_first = fn(items: [i64], target: i64) -> Option {
         if items[i] == target { return some(items[i]) }
         i = i + 1
     }
-    return none()
+    return none_value()
 }
 
 let result = find_first([10, 20, 30, 40], 30)

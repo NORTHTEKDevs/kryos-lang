@@ -2,7 +2,7 @@
 //!
 //! This backend lowers Kryos MIR to a `wasm32-unknown-unknown` module that runs
 //! against the JS host contract (browser or `node tools/wasm-host/run.mjs`).
-//! WASI is NOT a target — linear-memory heap ops import small host helpers.
+//! WASI is NOT a target - linear-memory heap ops import small host helpers.
 //!
 //! ## Supported
 //!
@@ -400,18 +400,20 @@ struct WasmCodegen {
     regex_replace_idx: u32,
     /// `kryos_http_fetch(method_off,method_len, url_off,url_len, body_off,body_len) -> packed`.
     http_fetch_idx: u32,
-    /// `kryos_to_string_i64(v: i64) -> packed_str` — converts i64 to its decimal string.
+    /// `kryos_to_string_i64(v: i64) -> packed_str` - converts i64 to its decimal string.
     to_string_i64_idx: u32,
-    /// `kryos_to_string_f64(v: f64) -> packed_str` — converts f64 to its decimal string.
+    /// `kryos_to_string_f64(v: f64) -> packed_str` - converts f64 to its decimal string.
     to_string_f64_idx: u32,
-    /// `kryos_string_char_at(packed: i64, idx: i64) -> packed_str` — single-char substring.
+    /// `kryos_string_char_at(packed: i64, idx: i64) -> packed_str` - single-char substring.
     string_char_at_idx: u32,
-    /// `kryos_string_retain(packed: i64) -> i64` — ARC retain; no-op in WASM.
+    /// `kryos_string_retain(packed: i64) -> i64` - ARC retain; no-op in WASM.
     string_retain_idx: u32,
-    /// `kryos_string_char_code(packed: i64) -> i64` — byte value of first char.
+    /// `kryos_string_char_code(packed: i64) -> i64` - byte value of first char.
     string_char_code_idx: u32,
-    /// `kryos_string_contains(haystack: i64, needle: i64) -> i64` — 1 if needle in haystack.
+    /// `kryos_string_contains(haystack: i64, needle: i64) -> i64` - 1 if needle in haystack.
     string_contains_idx: u32,
+    /// `kryos_string_eq(a: i64, b: i64) -> i64` - 1 if CONTENT equal (not packed-handle equal).
+    string_eq_idx: u32,
     /// Map host imports (str-keyed, i64-valued; host keeps a JS Map per handle).
     map_new_idx: u32,
     map_insert_str_idx: u32,
@@ -504,6 +506,7 @@ impl WasmCodegen {
             string_retain_idx: 0,
             string_char_code_idx: 0,
             string_contains_idx: 0,
+            string_eq_idx: 0,
             map_new_idx: 0,
             map_insert_str_idx: 0,
             map_insert_idx: 0,
@@ -605,7 +608,7 @@ impl WasmCodegen {
         self.func_count = 2;
         self.type_count = 2;
 
-        // sig 2: (i32, i32) -> () — (offset, len) of a string in linear memory
+        // sig 2: (i32, i32) -> () - (offset, len) of a string in linear memory
         self.types
             .ty()
             .function(vec![ValType::I32, ValType::I32], vec![]);
@@ -615,7 +618,7 @@ impl WasmCodegen {
         self.func_count = 3;
         self.type_count = 3;
 
-        // sig 3: (i32, i32, i32, i32) -> i64  — string concat
+        // sig 3: (i32, i32, i32, i32) -> i64 - string concat
         self.types.ty().function(
             vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
             vec![ValType::I64],
@@ -629,7 +632,7 @@ impl WasmCodegen {
         self.func_count = 4;
         self.type_count = 4;
 
-        // sig 4: (i32) -> i64  — array_new(count) -> packed (offset,count)
+        // sig 4: (i32) -> i64 - array_new(count) -> packed (offset,count)
         self.types
             .ty()
             .function(vec![ValType::I32], vec![ValType::I64]);
@@ -642,7 +645,7 @@ impl WasmCodegen {
         self.func_count = 5;
         self.type_count = 5;
 
-        // sig 5: (i64, i32) -> i64  — array_get(packed, index)
+        // sig 5: (i64, i32) -> i64 - array_get(packed, index)
         self.types
             .ty()
             .function(vec![ValType::I64, ValType::I32], vec![ValType::I64]);
@@ -655,7 +658,7 @@ impl WasmCodegen {
         self.func_count = 6;
         self.type_count = 6;
 
-        // sig 6: (i64, i32, i64) -> ()  — array_set(packed, index, value)
+        // sig 6: (i64, i32, i64) -> () - array_set(packed, index, value)
         self.types
             .ty()
             .function(vec![ValType::I64, ValType::I32, ValType::I64], vec![]);
@@ -672,7 +675,7 @@ impl WasmCodegen {
         // WASM v0.4: browser host imports
         // ====================================================================
 
-        // sig 7: (i32,i32,i32,i32) -> ()  — dom_set_text(id_off,id_len,txt_off,txt_len)
+        // sig 7: (i32,i32,i32,i32) -> () - dom_set_text(id_off,id_len,txt_off,txt_len)
         self.types.ty().function(
             vec![ValType::I32, ValType::I32, ValType::I32, ValType::I32],
             vec![],
@@ -683,7 +686,7 @@ impl WasmCodegen {
         self.func_count = 8;
         self.type_count = 8;
 
-        // sig 8: (i32,i32) -> i64  — dom_get_value(id_off,id_len) -> packed str
+        // sig 8: (i32,i32) -> i64 - dom_get_value(id_off,id_len) -> packed str
         self.types.ty().function(
             vec![ValType::I32, ValType::I32],
             vec![ValType::I64],
@@ -694,7 +697,7 @@ impl WasmCodegen {
         self.func_count = 9;
         self.type_count = 9;
 
-        // sig 9: (i32,i32) -> ()  — alert(off,len)
+        // sig 9: (i32,i32) -> () - alert(off,len)
         self.types.ty().function(
             vec![ValType::I32, ValType::I32],
             vec![],
@@ -721,7 +724,7 @@ impl WasmCodegen {
         self.func_count = 11;
         self.type_count = 11;
 
-        // sig 11: (i32,i32) -> ()  — canvas_clear(id_off,id_len)
+        // sig 11: (i32,i32) -> () - canvas_clear(id_off,id_len)
         self.types.ty().function(
             vec![ValType::I32, ValType::I32],
             vec![],
@@ -732,7 +735,7 @@ impl WasmCodegen {
         self.func_count = 12;
         self.type_count = 12;
 
-        // sig 12: (i32,i32) -> i64  — fetch_text(url_off,url_len) -> packed str
+        // sig 12: (i32,i32) -> i64 - fetch_text(url_off,url_len) -> packed str
         self.types.ty().function(
             vec![ValType::I32, ValType::I32],
             vec![ValType::I64],
@@ -911,46 +914,55 @@ impl WasmCodegen {
         self.http_fetch_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // to_string_i64(v: i64) -> packed_str  — decimal formatting of an i64
+        // to_string_i64(v: i64) -> packed_str - decimal formatting of an i64
         self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_to_string_i64",
             wasm_encoder::EntityType::Function(self.type_count));
         self.to_string_i64_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // to_string_f64(v: f64) -> packed_str  — decimal formatting of an f64
+        // to_string_f64(v: f64) -> packed_str - decimal formatting of an f64
         self.types.ty().function(vec![ValType::F64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_to_string_f64",
             wasm_encoder::EntityType::Function(self.type_count));
         self.to_string_f64_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // string_char_at(packed: i64, idx: i64) -> packed_str  — single-char substring at idx
+        // string_char_at(packed: i64, idx: i64) -> packed_str - single-char substring at idx
         self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_string_char_at",
             wasm_encoder::EntityType::Function(self.type_count));
         self.string_char_at_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // string_retain(packed: i64) -> i64  — ARC retain; no-op in WASM (returns same handle)
+        // string_retain(packed: i64) -> i64 - ARC retain; no-op in WASM (returns same handle)
         self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_string_retain",
             wasm_encoder::EntityType::Function(self.type_count));
         self.string_retain_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // string_char_code(packed: i64) -> i64  — byte value of first char
+        // string_char_code(packed: i64) -> i64 - byte value of first char
         self.types.ty().function(vec![ValType::I64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_string_char_code",
             wasm_encoder::EntityType::Function(self.type_count));
         self.string_char_code_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
-        // string_contains(haystack: i64, needle: i64) -> i64  — 1 if needle found in haystack
+        // string_contains(haystack: i64, needle: i64) -> i64 - 1 if needle found in haystack
         self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
         self.imports.import(env_module, "kryos_string_contains",
             wasm_encoder::EntityType::Function(self.type_count));
         self.string_contains_idx = self.func_count;
+        self.func_count += 1; self.type_count += 1;
+
+        // string_eq(a: i64, b: i64) -> i64 - 1 if CONTENT equal. A bare I64Eq on the
+        // packed (offset,len) handle compares identity/interning, not content -- see
+        // the P0 this closes (LEDGER: wasm `==` on str compared handles).
+        self.types.ty().function(vec![ValType::I64, ValType::I64], vec![ValType::I64]);
+        self.imports.import(env_module, "kryos_string_eq",
+            wasm_encoder::EntityType::Function(self.type_count));
+        self.string_eq_idx = self.func_count;
         self.func_count += 1; self.type_count += 1;
 
         // ---- Maps (host-backed, like arrays). Keys are packed strings, values
@@ -1230,7 +1242,7 @@ impl WasmCodegen {
                 match lower_type(&local.ty) {
                     Ok(t) => t,
                     Err(_) => {
-                        // Unsupported local type — for v0.1 we lower it to i64
+                        // Unsupported local type - for v0.1 we lower it to i64
                         // as a placeholder. Any actual use will fail later,
                         // but unused locals stay harmless.
                         ValType::I64
@@ -1303,10 +1315,10 @@ impl WasmCodegen {
     ///
     /// We support the common shapes the Kryos front-end emits:
     ///
-    /// 1. **Straight-line** — one or more blocks chained via `Goto`/`Return`.
-    /// 2. **If/else (including chained elif)** — nested `Branch` arms that
+    /// 1. **Straight-line** - one or more blocks chained via `Goto`/`Return`.
+    /// 2. **If/else (including chained elif)** - nested `Branch` arms that
     ///    eventually `Goto` a common join block.
-    /// 3. **While loop** — header block ends in `Branch { cond, body, exit }`,
+    /// 3. **While loop** - header block ends in `Branch { cond, body, exit }`,
     ///    body ends in `Goto(header)`.
     ///
     /// More complex CFGs (irreducible loops, multi-entry blocks, exception
@@ -1445,7 +1457,7 @@ impl WasmCodegen {
 }
 
 // ---------------------------------------------------------------------------
-// Per-function emitter — owns a mutable borrow of the codegen state plus the
+// Per-function emitter - owns a mutable borrow of the codegen state plus the
 // wasm-encoder `Function` builder.
 // ---------------------------------------------------------------------------
 
@@ -1453,7 +1465,7 @@ struct FnEmitter<'a> {
     cg: &'a mut WasmCodegen,
     func: &'a MirFunction,
     wfunc: &'a mut Function,
-    /// Number of formal parameters — retained for future use by passes
+    /// Number of formal parameters - retained for future use by passes
     /// that need to distinguish params from locals when emitting wasm
     /// `local.get` / `local.set` indices.
     #[allow(dead_code)]
@@ -1498,7 +1510,7 @@ impl<'a> FnEmitter<'a> {
         // Peek the terminator before emitting instructions so we can detect
         // a while-loop header. For a loop header, the header's *instructions*
         // (which compute the loop condition) must execute inside the wasm
-        // `loop` so they re-run on each iteration — NOT before it.
+        // `loop` so they re-run on each iteration - NOT before it.
         let is_while = if let Terminator::Branch {
             then_block,
             else_block,
@@ -1608,7 +1620,7 @@ impl<'a> FnEmitter<'a> {
         false
     }
 
-    /// Detect: `if exit_cond { return/exit } loop_body_that_Goto_header` — the
+    /// Detect: `if exit_cond { return/exit } loop_body_that_Goto_header` - the
     /// "inverted while" produced by tail-call optimization: the ELSE arm (not the
     /// THEN arm) loops back to the function entry. Example:
     ///   `if n <= 0 { return base } return f(n-1, acc)` where `return f(...)` is
@@ -1800,7 +1812,7 @@ impl<'a> FnEmitter<'a> {
         for inst in &body_block.instructions {
             self.emit_instruction(inst)?;
         }
-        // body should terminate in Goto(header) — that's the loop edge.
+        // body should terminate in Goto(header) - that's the loop edge.
         // Also handle Switch (while-true with inner match, e.g. `while let`).
         match body_block.terminator.clone() {
             Terminator::Goto(b) if b == header => {
@@ -1916,7 +1928,7 @@ impl<'a> FnEmitter<'a> {
             self.emit_instruction(&inst)?;
         }
 
-        // Exit when the condition is true (no negation — contrast with emit_simple_while).
+        // Exit when the condition is true (no negation - contrast with emit_simple_while).
         self.emit_operand(cond)?;
         self.wfunc.instruction(&W::I32WrapI64);
         self.wfunc.instruction(&W::BrIf(1));
@@ -1973,7 +1985,7 @@ impl<'a> FnEmitter<'a> {
     ///       [header instructions already emitted]
     ///       [condition check already emitted]
     ///       [body_bb instructions already emitted]
-    ///       [we are HERE — body terminated in Switch]
+    ///       [we are HERE - body terminated in Switch]
     ///
     /// For each matching arm we emit `if (tag == val) { arm_instrs; br 1 } end`
     /// where inside the if: br 0 exits the if, br 1 continues the loop, br 2 exits.
@@ -2091,7 +2103,7 @@ impl<'a> FnEmitter<'a> {
         Ok(())
     }
 
-    /// Emit `while cond { if inner { A } B; i++ }` — an inner Branch inside a while-loop body.
+    /// Emit `while cond { if inner { A } B; i++ }` - an inner Branch inside a while-loop body.
     ///
     /// We are already inside:
     ///   block(outer)  ; br 1 = exit loop
@@ -2110,7 +2122,7 @@ impl<'a> FnEmitter<'a> {
         else_block: BlockId,
         loop_header: BlockId,
     ) -> Result<(), WasmCodegenError> {
-        // Fast path: diamond join pattern — both arms directly Goto the same non-header block.
+        // Fast path: diamond join pattern - both arms directly Goto the same non-header block.
         // Emits: if { then_exclusive } [else { else_exclusive }] join_chain; br 0
         // This avoids the then-arm swallowing the shared join block and starving the else path.
         let diamond_join: Option<BlockId> = {
@@ -2205,7 +2217,7 @@ impl<'a> FnEmitter<'a> {
         loop {
             let curr_idx = self.block_index(current)?;
             if self.visited[curr_idx] {
-                break; // reached through_arm already visited — fall through
+                break; // reached through_arm already visited - fall through
             }
             self.visited[curr_idx] = true;
             let instrs = self.func.blocks[curr_idx].instructions.clone();
@@ -2319,7 +2331,7 @@ impl<'a> FnEmitter<'a> {
         let terminator = block.terminator.clone();
         match terminator {
             Terminator::Goto(t) if Some(t) == join => {
-                // Fall through — the outer `if` continues at the join.
+                // Fall through - the outer `if` continues at the join.
             }
             Terminator::Return(ref v) => {
                 if let Some(op) = v.as_ref() {
@@ -2504,7 +2516,7 @@ impl<'a> FnEmitter<'a> {
             }
             RValue::ConstString(s) => {
                 // v0.2: push a single packed i64 value with low32 = offset,
-                // high32 = length. This makes strings first-class — they
+                // high32 = length. This makes strings first-class - they
                 // survive in locals, parameters, and returns without a side
                 // table, and `len(s)` is just a shift.
                 let (offset, len) = self.cg.intern_string(s);
@@ -2526,6 +2538,25 @@ impl<'a> FnEmitter<'a> {
                     self.emit_operand(right)?;
                     self.emit_unpack_string();
                     self.wfunc.instruction(&W::Call(self.cg.string_concat_idx));
+                } else if matches!(op, MirBinOp::Eq | MirBinOp::Neq)
+                    && matches!(lty, MirType::Str)
+                    && matches!(rty, MirType::Str)
+                {
+                    // A bare I64Eq on the packed (offset,len) handle (the fallback
+                    // `else` branch below) compares identity/interning, not the
+                    // string's bytes -- two source-identical literals happen to
+                    // intern to the same offset and read "equal" by luck, but a
+                    // heap-built string (concat/substr/return value) never matches
+                    // an equal-content literal. Silent wrong answer, exit 0, not
+                    // caught by the wasm validator. Route through the host's real
+                    // byte-content comparison instead.
+                    self.emit_operand(left)?;
+                    self.emit_operand(right)?;
+                    self.wfunc.instruction(&W::Call(self.cg.string_eq_idx));
+                    if matches!(op, MirBinOp::Neq) {
+                        self.wfunc.instruction(&W::I64Const(1));
+                        self.wfunc.instruction(&W::I64Xor);
+                    }
                 } else if matches!(lty, MirType::F64 | MirType::F32)
                     || matches!(rty, MirType::F64 | MirType::F32)
                 {
@@ -2595,7 +2626,7 @@ impl<'a> FnEmitter<'a> {
                     // 1e19 as i64), whereas native saturates. Unsigned
                     // destinations use the U variant to reach the upper half
                     // of the range (backlog #61/#92). Narrow ints saturate to
-                    // i64 then clamp to range — the old path emitted an
+                    // i64 then clamp to range - the old path emitted an
                     // I64And mask on an f64 stack value (type-invalid, #3).
                     match ty {
                         MirType::I64 => {
@@ -2625,7 +2656,7 @@ impl<'a> FnEmitter<'a> {
                 }
             }
             // -------------------------------------------------------------
-            // WASM v0.3: Array literal — `[a, b, c]`
+            // WASM v0.3: Array literal - `[a, b, c]`
             // Lowers to:  arr = array_new(n); array_set(arr, 0, a); ...; arr
             // -------------------------------------------------------------
             RValue::Array(elems) => {
@@ -2646,7 +2677,7 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::LocalGet(scratch));
             }
             // -------------------------------------------------------------
-            // WASM v0.3: Array indexing — `arr[i]`
+            // WASM v0.3: Array indexing - `arr[i]`
             // -------------------------------------------------------------
             RValue::Index { object, index } => {
                 self.emit_operand(object)?;            // packed i64 array
@@ -2655,7 +2686,7 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
             }
             // -----------------------------------------------------------------
-            // WASM v0.4: Struct literal — `Foo { a: x, b: y }`
+            // WASM v0.4: Struct literal - `Foo { a: x, b: y }`
             // Represent structs as i64 array handles: alloc N slots, fill each.
             // -----------------------------------------------------------------
             RValue::Struct { name, fields } => {
@@ -2688,7 +2719,7 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::LocalGet(scratch));
             }
             // -----------------------------------------------------------------
-            // WASM v0.4: Struct field read — `obj.field`
+            // WASM v0.4: Struct field read - `obj.field`
             // -----------------------------------------------------------------
             RValue::Field { object, field } => {
                 match self.operand_ty(object) {
@@ -2772,7 +2803,7 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::Call(self.cg.array_get_idx));
             }
             // -----------------------------------------------------------------
-            // WASM v2.5: Tuple construction — `(a, b, c)`
+            // WASM v2.5: Tuple construction - `(a, b, c)`
             // Identical to array/struct: allocate N slots, fill each, leave handle.
             // -----------------------------------------------------------------
             RValue::Tuple(elems) => {
@@ -2974,7 +3005,7 @@ impl<'a> FnEmitter<'a> {
 
     fn emit_binop(&mut self, op: MirBinOp) -> Result<(), WasmCodegenError> {
         // For v0.1 we operate on i64 by default. Float ops would need a type
-        // tag we don't have yet at the rvalue level — the MIR doesn't currently
+        // tag we don't have yet at the rvalue level - the MIR doesn't currently
         // distinguish "f64 add" from "i64 add" in the op variant, it relies on
         // the lowering knowing the operand types. We'll improve this later.
         let inst = match op {
@@ -3063,7 +3094,7 @@ impl<'a> FnEmitter<'a> {
         // Stack: [packed:i64]
         // We want: [offset:i32, len:i32]
         // Use a temp local in the wfunc to dup the value. But we don't have
-        // a way to allocate fresh locals here — instead, use the wasm
+        // a way to allocate fresh locals here - instead, use the wasm
         // pattern: dup via local.tee/local.get if a scratch i64 local exists,
         // OR use bit math without dup by computing both halves with one
         // load via i32 wrap and shr+wrap. Simplest: TEE into scratch.
@@ -3281,9 +3312,9 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: len(s/arr) — string or array length
+        // Built-in: len(s/arr) - string or array length
         // Strings: high 32 bits of packed i64 (offset|len encoding).
-        // Arrays: opaque i64 handles — call host kryos_array_length.
+        // Arrays: opaque i64 handles - call host kryos_array_length.
         // -------------------------------------------------------------
         if func == "len" && args.len() == 1 {
             let ty = self.operand_ty(&args[0]).unwrap_or(MirType::Str);
@@ -3307,7 +3338,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: str_concat(a, b) — concatenate two strings
+        // Built-in: str_concat(a, b) - concatenate two strings
         // -------------------------------------------------------------
         if func == "str_concat" && args.len() == 2 {
             // Push (off1, len1, off2, len2) by unpacking each packed i64.
@@ -3321,7 +3352,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: array_new(count) — allocate i64 array of given size
+        // Built-in: array_new(count) - allocate i64 array of given size
         // -------------------------------------------------------------
         if func == "array_new" && args.len() == 1 {
             self.emit_operand(&args[0])?;
@@ -3354,7 +3385,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // WASM v0.4 web builtins — DOM / canvas / fetch / alert
+        // WASM v0.4 web builtins - DOM / canvas / fetch / alert
         //   dom_set_text(id: str, text: str)
         //   dom_get_value(id: str) -> str
         //   alert(msg: str)
@@ -3400,7 +3431,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: to_string(v) — convert i64/bool/f64 to decimal string
+        // Built-in: to_string(v) - convert i64/bool/f64 to decimal string
         // -------------------------------------------------------------
         if func == "to_string" && args.len() == 1 {
             let ty = self.operand_ty(&args[0]).unwrap_or(MirType::I64);
@@ -3438,7 +3469,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: parse_int(s) / parse_float(s) — string -> number
+        // Built-in: parse_int(s) / parse_float(s) - string -> number
         // -------------------------------------------------------------
         if func == "parse_int" && args.len() == 1 {
             self.emit_operand(&args[0])?;
@@ -3452,7 +3483,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: push(arr, value) — append value to array, return new handle
+        // Built-in: push(arr, value) - append value to array, return new handle
         // -------------------------------------------------------------
         if func == "push" && args.len() == 2 {
             self.emit_operand(&args[0])?; // array handle
@@ -3469,7 +3500,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: substr(s, start, end) — byte-indexed substring
+        // Built-in: substr(s, start, end) - byte-indexed substring
         // Lowered to kryos_string_slice(packed, start_i32, end_i32).
         // -------------------------------------------------------------
         if func == "substr" && args.len() == 3 {
@@ -3483,7 +3514,7 @@ impl<'a> FnEmitter<'a> {
         }
 
         // -------------------------------------------------------------
-        // Built-in: char_code(s) -> i64 — byte value of first character
+        // Built-in: char_code(s) -> i64 - byte value of first character
         // -------------------------------------------------------------
         if func == "char_code" && args.len() == 1 {
             self.emit_operand(&args[0])?; // packed str i64
@@ -3517,7 +3548,7 @@ impl<'a> FnEmitter<'a> {
         // Runtime ARC: *_retain_opt(handle) -> handle. Emitted by the
         // share-retain lowering (container let-bindings, map/array value
         // stores, push of a container element). v0.1 WASM has no
-        // refcounted heap, so these are pure identity — emit the operand
+        // refcounted heap, so these are pure identity - emit the operand
         // as the result, no host import required.
         // -------------------------------------------------------------
         if (func == "kryos_string_retain_opt"
@@ -3638,7 +3669,7 @@ impl<'a> FnEmitter<'a> {
             Ok(())
         } else {
             Err(WasmCodegenError::unsupported(&format!(
-                "call to `{func}` — supported builtins: println, len, str_concat, array_new/get/set, to_string"
+                "call to `{func}` - supported builtins: println, len, str_concat, array_new/get/set, to_string"
             )))
         }
     }

@@ -133,7 +133,18 @@ let all = walk_dir("/home/alice/src")
 
 `read_file(path: str) -> str`
 
-Read the entire contents of `path` as a string. Throws if the file does not exist or cannot be read.
+Read the entire contents of `path` as a string. Throws if the file cannot be
+opened (does not exist, permissions) or if the underlying read syscall fails.
+**Does NOT throw on invalid-UTF-8 content** -- the bytes are wrapped into a
+`str` unchecked; a later operation on that string (`substr`, indexing, and
+some stdlib string functions) is what will panic, with a message pointing
+back at UTF-8 validity, not `read_file` itself. Check `std::utf8::is_valid(s)`
+after reading a file whose contents are not guaranteed to be text. This
+differs from the global `file_read(path)` builtin (no `use` needed, not a
+`std::fs` function), which panics immediately on invalid UTF-8 rather than
+deferring the failure -- pick `file_read` if you want the panic at the read
+site, `read_file` if you want a catchable `throw` (only for open/read
+failures, not content validity) plus deferred detection.
 
 **Example:**
 ```kryos
