@@ -1,0 +1,146 @@
+// repo_auditor.kry -- a capability-governed repo audit tool.
+//
+// Walks a directory, runs a REGISTRY of analyzer "plugins" over every
+// .kry file it finds, and prints a report. The registry is an array of
+// structs holding a name plus a first-class closure -- the shape a real
+// plugin/agent tool dispatch table actually takes, not a hand-written
+// if/match chain.
+//
+//   kryos run examples/showcase/repo_auditor.kry [dir]
+//   kryos build --release examples/showcase/repo_auditor.kry -o repo_auditor
+//   kryos check --strict-capabilities examples/showcase/repo_auditor.kry
+//
+// Three analyzers are registered:
+//   - line_count   : pure, no capability -- flags files over a line budget.
+//   - todo_scan    : pure, no capability -- flags TODO/FIXME markers.
+//   - license_ref  : needs fs:read of its OWN (re-checks the repo root for
+//                    a LICENSE file) -- proves a single analyzer in the
+//                    registry can carry its own authority.
+//
+// A fourth analyzer, analyzer_phone_home, is defined below but NEVER
+// registered: it would need net (+ process, to read a webhook URL out of
+// the environment) to exfiltrate file content. main never declares net --
+// see repo_auditor_overreach.kry, which adds it to the registry and fails
+// to compile with the exact error quoted there.
+//
+// The dispatch loop additionally runs inside deny!(net:http) -- proof that
+// even a plugin smuggled into this exact registry shape (an array of
+// structs holding closures, read back out and invoked in a loop) cannot
+// reach the network from here.
+
+use std::fs::{walk_dir, exists}
+use std::http::{post}
+
+struct Finding {
+    analyzer: str,
+    file: str,
+    message: str
+}
+
+struct Analyzer {
+    name: str,
+    run: fn(str, str) -> [str]
+}
+
+// ---- Analyzer 1: pure. Flags files over a line budget. ----
+fn analyzer_line_count(path: str, content: str) -> [str] {
+    let lines = split(content, "\n")
+    let n = len(lines)
+    let mut out: [str] = []
+    if n > 400 {
+        out = push(out, "file has " + to_string(n) + " lines (budget is 400)")
+    }
+    return out
+}
+
+// ---- Analyzer 2: pure. Scans content for TODO/FIXME markers. ----
+fn analyzer_todo_scan(path: str, content: str) -> [str] {
+    let mut out: [str] = []
+    if contains(content, "TODO") {
+        out = push(out, "contains a TODO marker")
+    }
+    if contains(content, "FIXME") {
+        out = push(out, "contains a FIXME marker")
+    }
+    return out
+}
+
+// ---- Analyzer 3: needs fs:read of its own -- cross-checks that a file
+// referencing "LICENSE" has a real LICENSE file at the repo root. ----
+@capabilities(fs:read)
+fn analyzer_license_ref(path: str, content: str) -> [str] {
+    let mut out: [str] = []
+    if contains(content, "LICENSE") {
+        if not exists("LICENSE") {
+            out = push(out, "references LICENSE but no LICENSE file exists at repo root")
+        }
+    }
+    return out
+}
+
+// ---- Analyzer 4: UNTRUSTED. Would exfiltrate file content to a webhook.
+// Declared honestly -- it needs net (send the report) and process
+// (read the endpoint out of the environment). NEVER added to the registry
+// below. See repo_auditor_overreach.kry for what happens when it is.
+@capabilities(net, process)
+fn analyzer_phone_home(path: str, content: str) -> [str] {
+    let endpoint = env_get("AUDIT_WEBHOOK")
+    post(endpoint, content)
+    return ["reported " + path + " to " + endpoint]
+}
+
+// ---- Registry: the plugin dispatch table. Only the trusted three. ----
+// Needs fs:read itself: referencing analyzer_license_ref BY NAME as a
+// first-class value hands out its authority to whoever calls build_registry.
+@capabilities(fs:read)
+fn build_registry() -> [Analyzer] {
+    let mut reg: [Analyzer] = []
+    reg = push(reg, Analyzer { name: "line_count", run: analyzer_line_count })
+    reg = push(reg, Analyzer { name: "todo_scan", run: analyzer_todo_scan })
+    reg = push(reg, Analyzer { name: "license_ref", run: analyzer_license_ref })
+    return reg
+}
+
+@capabilities(fs:read)
+fn main() {
+    let argv = args()
+    let root: str = if len(argv) >= 2 { argv[1] } else { "." }
+    println("repo_auditor: scanning " + root)
+    println("")
+
+    let registry = build_registry()
+    let paths = walk_dir(root)
+    let mut findings: [Finding] = []
+
+    deny!(net:http) {
+        let mut i = 0
+        while i < len(paths) {
+            let path = paths[i]
+            if ends_with(path, ".kry") {
+                let content = file_read(path)
+                let mut j = 0
+                while j < len(registry) {
+                    let a = registry[j]
+                    let msgs = a.run(path, content)
+                    let mut k = 0
+                    while k < len(msgs) {
+                        findings = push(findings, Finding { analyzer: a.name, file: path, message: msgs[k] })
+                        k = k + 1
+                    }
+                    j = j + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+
+    println("findings:")
+    let mut m = 0
+    while m < len(findings) {
+        let f = findings[m]
+        println("  [" + f.analyzer + "] " + f.file + ": " + f.message)
+        m = m + 1
+    }
+    println("")
+    println(to_string(len(findings)) + " findings across " + to_string(len(paths)) + " entries")
+}

