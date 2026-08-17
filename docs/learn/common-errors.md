@@ -37,6 +37,29 @@ if x { ... } elif y { ... }       //  OK
 
 It's `elif`, not `else if`. The grammar diverges from Rust here on purpose — saves a token, no scope ambiguity.
 
+## Strings
+
+### `E0009: unterminated string literal` when hand-building JSON
+
+```kryos
+let body = "{\"status\": \"ok\"}"     //  ERROR - E0009
+let body = "{{\"status\": \"ok\"}}"   //  OK - literal braces doubled
+```
+
+**Every Kryos string literal interpolates** - `"hi {name}"`, delimiter `{ }` not
+`${ }` - so a bare `{` in ANY string, including a hand-built JSON object, opens
+an interpolation. The content after it (here, an escaped quote) is not a valid
+expression, so the compiler reports `E0009`. This is the single most common
+trap when hand-rolling JSON with `+` (as in most of the HTTP examples in this
+repo before they were fixed): every literal `{` and `}` you want to APPEAR in
+the output string must be doubled (`{{`, `}}`) or backslash-escaped (`\{`,
+`\{`). An interpolation also cannot start with a string literal directly
+(`"{"lit" + x}"` fails the same way) - put a space after the brace or bind the
+string to a variable first.
+
+For anything beyond a one-off literal, prefer `std::json::json_object` (or
+build the string with `+` instead of embedding raw braces) over hand-escaping.
+
 ## Types
 
 ### `E0101: unknown type \`T\``

@@ -42,11 +42,13 @@ struct Headers {
 ```kryos
 struct Request {
     method:  str,
-    url:     str,
+    url:     Url,
     headers: Headers,
     body:    str
 }
 ```
+
+`url` is a parsed `Url` struct, not a raw string -- use `req.url.path`, `req.url.query`, etc. (see `Url` above). To get the original raw URL text, use `req.url.raw`.
 
 ---
 
@@ -361,9 +363,18 @@ Shorthand for `add_route(router, "DELETE", path, handler)`.
 
 ### match_route
 
-`match_route(router: Router, req: Request) -> Response`
+`match_route(router: Router, method: str, path: str) -> Route`
 
-Find the first route whose method and path match `req` and call its handler. Returns a `404 Not Found` response if no route matches.
+Find the first registered `Route` whose method and path match. Takes the method and path directly (NOT a `Request`), and returns the matched `Route` -- call `route.handler(req)` yourself to get a `Response`. **Throws** (`throw "no matching route for ..."`) if nothing matches; it does not return a 404 `Response` itself. `http_serve` (below) wraps this call in a `try`/`catch` and turns an uncaught throw into a `404 Not Found` response for you -- if you call `match_route` directly, wrap it in `try`/`catch` yourself.
+
+```kryos
+try {
+    let route = match_route(router, req.method, req.url.path)
+    resp = route.handler(req)
+} catch e {
+    resp = text_response(404, "Not Found")
+}
+```
 
 ---
 
@@ -401,11 +412,11 @@ Convenience constructor: build a `Response` with `Content-Type: application/json
 
 ---
 
-### listen
+### http_serve
 
-`listen(port: i64, router: Router)`
+`http_serve(port: i64, router: Router) -> void`
 
-Bind a TCP server to `port` and dispatch incoming requests through `router`. Blocks indefinitely. Requires `@capabilities(net)`.
+Bind a TCP server to `port` and dispatch incoming requests through `router` (each connection handled on its own `spawn`ed task; an unmatched route or a handler panic is caught internally and turned into a `404`/`500` response, not a crash). Blocks indefinitely. Requires `@capabilities(net)`. There is no separate `listen` function -- this is the only server entry point.
 
 **Example:**
 ```kryos
@@ -418,7 +429,7 @@ route_get(router, "/", fn(req: Request) -> Response {
 })
 
 route_get(router, "/health", fn(req: Request) -> Response {
-    return json_response(200, "{\"status\": \"ok\"}")
+    return json_response(200, "{{\"status\": \"ok\"}}")
 })
 
 route_post(router, "/echo", fn(req: Request) -> Response {
@@ -428,11 +439,13 @@ route_post(router, "/echo", fn(req: Request) -> Response {
 @capabilities(net)
 fn start() {
     println("listening on :8080")
-    listen(8080, router)
+    http_serve(8080, router)
 }
 
 start()
 ```
+
+Note the doubled `{{`/`}}` in the JSON literals above: **every string literal interpolates** (CLAUDE.md hard rule 4), so a bare `{` opens interpolation and a JSON object literal must escape its braces as `{{`/`}}` (or be built with `+`) -- see `docs/learn/common-errors.md`.
 
 ---
 
@@ -447,7 +460,7 @@ fn run_client() {
     let resp = get("https://httpbin.org/get")
     println(resp.status)   // 200
 
-    let payload = "{\"name\": \"kryos\", \"version\": \"0.3.4\"}"
+    let payload = "{{\"name\": \"kryos\", \"version\": \"0.3.4\"}}"
     let created = post_json("https://httpbin.org/post", payload)
     println(created.status)   // 200
 }
@@ -456,16 +469,16 @@ fn run_client() {
 let api = new_router()
 
 route_get(api, "/ping", fn(req: Request) -> Response {
-    return json_response(200, "{\"pong\": true}")
+    return json_response(200, "{{\"pong\": true}}")
 })
 
 route_post(api, "/data", fn(req: Request) -> Response {
     // req.body contains the raw request payload
-    return json_response(201, "{\"received\": true}")
+    return json_response(201, "{{\"received\": true}}")
 })
 
 // Error response helper
-let not_found_resp = json_response(404, "{\"error\": \"not found\"}")
+let not_found_resp = json_response(404, "{{\"error\": \"not found\"}}")
 
 @capabilities(net)
 fn serve() {

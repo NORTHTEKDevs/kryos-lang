@@ -270,9 +270,17 @@ Convert an `Err(e)` to `Some(e)`, or `Ok` to `None`.
 
 ### to_array
 
-`to_array(r: Result) -> [any]`
+`to_array<T>(r: Result) -> [T]`
 
 Return `[v]` if `Ok(v)`, or `[]` if `Err`.
+
+**You must annotate the binding** (`let a: [str] = to_array(r)`). `T` cannot be
+inferred from `r` -- `r`'s own type is the hand-rolled `std::result::Result`
+enum, whose payload is `any`, so there is nothing on the argument side for `T`
+to bind against; it is fixed only by an explicit annotation at the call site.
+An unannotated call (`let a = to_array(ok("hi"))`) compiles clean but prints a
+raw pointer, not the value -- a silent wrong answer, not a type error.
+`std::iter::count` is NOT affected (its `T` binds from a real `[T]` argument).
 
 ---
 
@@ -374,7 +382,7 @@ let parse_port = fn(config: str) -> Result {
 
 let validate_port = fn(port: i64) -> Result {
     if port < 1 || port > 65535 {
-        return err("port out of range: " + port)
+        return err("port out of range: " + to_string(port))
     }
     return ok(port)
 }
@@ -389,7 +397,7 @@ let result = and_then(
 )
 
 if is_ok(result) {
-    println("listening on port " + unwrap(result))   // 8080
+    println("listening on port " + to_string(unwrap(result)))   // 8080
 } else {
     println("error: " + unwrap_err(result))
 }

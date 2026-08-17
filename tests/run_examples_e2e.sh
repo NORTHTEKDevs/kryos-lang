@@ -44,7 +44,7 @@ fail=0
 skipped=()
 
 kill_servers() {
-    for n in rest_api_e2e web_server_e2e; do
+    for n in rest_api_e2e web_server_e2e task_api_e2e; do
         if [[ "${OS:-}" == "Windows_NT" ]]; then
             taskkill //F //IM "$n.exe" //T >/dev/null 2>&1
         else
@@ -66,7 +66,13 @@ echo "examples-e2e: layer 1 — differential stdout (both backends)"
 DIFFERENTIAL=(
     bytecode_vm parser markdown stats_pipeline
     budget_analyst kdoc dir_walker cli_tool kvdb ssg
-    secret_agent
+    secret_agent crawl_pool log_analyzer repo_auditor
+)
+# Some showcase programs need CLI args to be deterministic/self-contained --
+# both backends get the IDENTICAL args so the comparison stays apples-to-apples.
+declare -A DIFFERENTIAL_ARGS=(
+    [log_analyzer]="$REPO/examples/showcase/data/app.log"
+    [repo_auditor]="$REPO/examples/showcase"
 )
 l1_ok=0
 for name in "${DIFFERENTIAL[@]}"; do
@@ -75,12 +81,13 @@ for name in "${DIFFERENTIAL[@]}"; do
 
     jdir="$TMP/$name-jit"; adir="$TMP/$name-aot"
     mkdir -p "$jdir" "$adir"
+    extra_args="${DIFFERENTIAL_ARGS[$name]:-}"
 
-    ( cd "$jdir" && timeout 90 "$KRYOS" run "$src" >out.txt 2>&1 ); jrc=$?
+    ( cd "$jdir" && timeout 90 "$KRYOS" run "$src" $extra_args >out.txt 2>&1 ); jrc=$?
     if ! build_aot "$src" "$adir/$name.exe"; then
         echo "  BUILD FAIL $name"; sed -n '1,5p' "$TMP/build.log"; fail=1; continue
     fi
-    ( cd "$adir" && timeout 90 "./$name.exe" >out.txt 2>&1 ); arc=$?
+    ( cd "$adir" && timeout 90 "./$name.exe" $extra_args >out.txt 2>&1 ); arc=$?
 
     if [[ "$jrc" != "$arc" ]]; then
         echo "  DIVERGE $name: exit status jit=$jrc aot=$arc"; fail=1
@@ -217,6 +224,40 @@ else
             else
                 skipped+=("web_server[$backend] (port 8080 unavailable)")
                 echo "  SKIP web_server[$backend]: could not reach 127.0.0.1:8080"
+            fi
+            kill_servers; sleep 1
+        fi
+
+        # ---- task_api: nested JSON CRUD, least-privilege net:tcp only,
+        # exits after --max requests so it never leaks a background process ----
+        src="$REPO/examples/showcase/task_api.kry"
+        if [[ -f "$src" ]]; then
+            if [[ "$backend" == aot ]]; then
+                if build_aot "$src" "$TMP/task_api_e2e.exe"; then
+                    ( cd "$TMP" && ./task_api_e2e.exe --port 7981 --max 30 >task_api.log 2>&1 & )
+                else
+                    echo "  BUILD FAIL task_api"; fail=1
+                fi
+            else
+                ( timeout 90 "$KRYOS" run "$src" --port 7981 --max 30 >"$TMP/task_api_jit.log" 2>&1 & )
+            fi
+            for _ in $(seq 1 60); do
+                curl -s --max-time 2 http://127.0.0.1:7981/health >/dev/null 2>&1 && break
+                sleep 1
+            done
+
+            if curl -s --max-time 3 http://127.0.0.1:7981/health >/dev/null 2>&1; then
+                want_body "task_api[$backend] GET /health"        "http://127.0.0.1:7981/health"  '"status":"ok"'
+                want_body "task_api[$backend] GET /tasks (seed)"  "http://127.0.0.1:7981/tasks"   '"id":1'
+                want_body "task_api[$backend] GET /tasks/1"       "http://127.0.0.1:7981/tasks/1" '"title":"write kryos"'
+                curl -s --max-time 5 -X POST http://127.0.0.1:7981/tasks \
+                    -d '{"title":"e2e task","meta":{"priority":1,"tags":["e2e"]}}' >/dev/null 2>&1
+                want_body "task_api[$backend] POST creates id 3"    "http://127.0.0.1:7981/tasks" '"id":3'
+                curl -s --max-time 5 -X DELETE http://127.0.0.1:7981/tasks/1 >/dev/null 2>&1
+                want_body "task_api[$backend] DELETE removes id 1"  "http://127.0.0.1:7981/tasks" '"count":2'
+            else
+                skipped+=("task_api[$backend] (port 7981 unavailable)")
+                echo "  SKIP task_api[$backend]: could not reach 127.0.0.1:7981"
             fi
             kill_servers; sleep 1
         fi

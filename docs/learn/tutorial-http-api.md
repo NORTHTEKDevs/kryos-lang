@@ -112,6 +112,8 @@ fn index_of_char(s: str, c: str) -> i64 {
 
 ## Step 3 — Add JSON request handling
 
+> Building a JSON string by hand with `+`? Every Kryos string literal interpolates (a bare `{` opens an interpolation), so a literal `{`/`}` in a hand-built JSON string must be doubled (`{{`/`}}`) as shown below -- see `docs/learn/common-errors.md`. Prefer `std::json::json_object`/`std::fmt` for anything beyond a one-off literal.
+
 For `POST /todos` we'll accept `{"title": "..."}` and store it. We won't fully implement state mutation in this snippet (Kryos's mutex story is the next add) — for now show the JSON parse path:
 
 ```kryos
@@ -124,12 +126,12 @@ fn handle_create(req: Request) -> str {
         return http_400("title required")
     }
     // ... store ...
-    let payload = "{\"id\": 1, \"title\": \"" + title + "\"}"
+    let payload = "{{\"id\": 1, \"title\": \"" + title + "\"}}"
     return http_ok("application/json", payload)
 }
 
 fn http_400(msg: str) -> str {
-    let body = "{\"error\": \"" + msg + "\"}"
+    let body = "{{\"error\": \"" + msg + "\"}}"
     return "HTTP/1.1 400 Bad Request\r\n" +
            "Content-Type: application/json\r\n" +
            "Content-Length: " + to_string(len(body)) + "\r\n" +
