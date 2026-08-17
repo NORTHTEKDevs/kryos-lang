@@ -1,0 +1,299 @@
+// wordscope.kry -- a text-analysis tool that runs identically NATIVE and on
+// WASM, from the same source, with byte-identical output on all three
+// executions the toolchain offers.
+//
+// Demonstrates: the WebAssembly target with a real (150+ line) program, not a
+// toy probe -- word count, unique-word count, top-10 frequency (map + manual
+// sort by value), average word length, sentence count, longest word, and a
+// small concordance for three chosen words.
+//
+// The input is a built-in multi-paragraph string constant (see
+// `sample_document`), not a file or argv, because the wasm host contract
+// (docs/wasm-contract.md) has no filesystem or argv surface -- a wasm module
+// can only call the functions the JS/browser host chooses to expose. Keeping
+// the input in source means the exact same bytes run everywhere with zero
+// capabilities.
+//
+// WASM SUBSET NOTES (found by direct probing, since the compile errors here
+// are the authoritative source of truth over the docs -- see the campaign
+// report for the full list):
+//   - P0 (silent wrong answer, not a compile refusal): the `==` operator on
+//     `str` compiles cleanly on wasm but compares the packed (offset, len)
+//     HANDLE, not the string's content. Two source-identical LITERALS
+//     happen to read equal (the compiler interns/dedupes literal data, so
+//     both point at the same offset) -- but a heap-built string (from `+`
+//     concat, `substr`, a function return, ...) compared against a literal,
+//     or against another independently-built string with the same content,
+//     is silently `false` even though the bytes match. `kryos run` and the
+//     AOT binary both compare by content and say `true`. This is exactly
+//     the class of bug the 2026-08-14 wasm validator does NOT catch --
+//     the emitted module is structurally valid and instantiates fine, it
+//     just computes the wrong answer, with exit code 0. This program never
+//     uses `==` on a `str` that isn't a source literal -- see `str_eq`
+//     below, which compares content char-by-char and gives correct,
+//     matching results on all three backends.
+//   - `split` (core builtin) is REFUSED on wasm -- tokenize by hand with
+//     `char_code`/`substr` instead (same pattern as word_frequency.kry).
+//   - `to_lower` (std::string) and `char_from` (core builtin) are REFUSED on
+//     wasm -- lowercase ASCII letters via a literal 26-entry lookup table and
+//     `char_code`/`substr` arithmetic instead (no stdlib import at all).
+//   - `round` (core builtin) is REFUSED on wasm (and, separately, actually
+//     returns f64 not i64 on EITHER backend despite its documented
+//     `-> i64` signature -- a doc bug independent of wasm) -- this program
+//     prints the raw f64 average instead of a rounded one, sidestepping both
+//     issues.
+//   - Array INDEX ASSIGNMENT (`arr[i] = v`) is REFUSED on wasm (`arr[i]`
+//     READ, `push`, and MAP index assignment `m[k] = v` all work) -- see
+//     the note on `print_top10` below for the workaround used here.
+//   - `map<str, i64>`, arrays, `push`, `substr`, `char_code`, string `+`
+//     concat, `contains`, and string/i64/f64 interpolation (`"{x}"`) all
+//     compile and run correctly on wasm -- verified against the native
+//     output below, not assumed from the docs.
+//
+// Usage:
+//   kryos run wordscope.kry
+//   kryos build --release wordscope.kry -o wordscope && ./wordscope
+//   kryos build --release --backend wasm wordscope.kry -o wordscope.wasm
+//   node tools/wasm-host/run.mjs wordscope.wasm
+//
+// All three must print byte-identical output.
+
+@capabilities()
+fn main() {
+    let doc: str = sample_document()
+    let tbl = lower_table()
+
+    let words = tokenize(doc)
+    let n = len(words)
+
+    let mut names: [str] = []
+    let mut counts: map<str, i64> = {}
+    let mut total_chars: i64 = 0
+    let mut longest: str = ""
+
+    let mut i: i64 = 0
+    while i < n {
+        let w = to_lower_ascii(words[i], tbl)
+        total_chars = total_chars + len(w)
+        if len(w) > len(longest) {
+            longest = w
+        }
+        if contains(counts, w) {
+            counts[w] = counts[w] + 1
+        } else {
+            names = push(names, w)
+            counts[w] = 1
+        }
+        i = i + 1
+    }
+
+    let unique_count = len(names)
+    let avg: f64 = (total_chars as f64) / (n as f64)
+    let sentence_count = count_sentences(doc)
+
+    println("=== WordScope ===")
+    println("")
+    println("word count:    " + to_string(n))
+    println("unique words:  " + to_string(unique_count))
+    println("avg word len:  " + to_string(avg))
+    println("sentences:     " + to_string(sentence_count))
+    println("longest word:  " + longest + " (" + to_string(len(longest)) + " chars)")
+
+    println("")
+    println("=== Top 10 words by frequency ===")
+    print_top10(names, counts)
+
+    println("")
+    println("=== Concordance ===")
+    print_concordance(words, tbl, "kryos")
+    print_concordance(words, tbl, "wasm")
+    print_concordance(words, tbl, "backend")
+}
+
+// The document under analysis. Built in source (not read from a file) so the
+// exact same bytes run on every backend, including wasm's I/O-free contract.
+fn sample_document() -> str {
+    return "Kryos is a capability safe systems language with two native " +
+        "backends and a WebAssembly target. The Kryos compiler produces " +
+        "the same output on every backend it supports, and this program " +
+        "is a small proof of that claim. Kryos code compiles to a native " +
+        "binary through the cranelift backend or the llvm backend, and " +
+        "it compiles to a wasm module through the wasm backend.\n\n" +
+        "WebAssembly runs inside a browser or inside a small host " +
+        "runtime such as the node host used by this project. A wasm " +
+        "module cannot read files or open sockets on its own. It can " +
+        "only call the functions the host chooses to expose, so a wasm " +
+        "program must be written with that narrow contract in mind. " +
+        "This document is a built in constant precisely because file " +
+        "access is not part of the wasm contract.\n\n" +
+        "WordScope reads this text once and produces several statistics " +
+        "from it. It counts every word, it counts every unique word, it " +
+        "finds the ten most common words, it measures the average word " +
+        "length, it counts sentences, it finds the longest word, and it " +
+        "builds a small concordance for a handful of chosen words. None " +
+        "of this analysis depends on randomness or on the current time, " +
+        "so the output is exactly the same every single run.\n\n" +
+        "If the kryos compiler accepts a wasm build and that build " +
+        "produces output, the output must match the native run and the " +
+        "native release binary byte for byte. A silent mismatch between " +
+        "backends would be a serious bug. A clean refusal at compile " +
+        "time is always better than a wrong answer at run time, and " +
+        "that is the whole point of the wasm validator this project " +
+        "relies on."
+}
+
+// 26-entry ASCII lowercase lookup table, indexed by (upper_code - 65).
+// A plain array literal + arithmetic index, not a stdlib call -- verified
+// working on wasm where `char_from`/`to_lower` are refused (see header).
+fn lower_table() -> [str] {
+    return ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+            "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z"]
+}
+
+// Byte-for-byte string equality. NOT the same as the `==` operator on
+// wasm -- see the P0 note in the file header. Used everywhere two `str`
+// values (at least one of them heap-built, not a source literal) need
+// comparing.
+fn str_eq(a: str, b: str) -> bool {
+    let la = len(a)
+    let lb = len(b)
+    if la != lb {
+        return false
+    }
+    let mut i: i64 = 0
+    while i < la {
+        if char_code(substr(a, i, i + 1)) != char_code(substr(b, i, i + 1)) {
+            return false
+        }
+        i = i + 1
+    }
+    return true
+}
+
+fn to_lower_ascii(s: str, tbl: [str]) -> str {
+    let n = len(s)
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(s, i, i + 1))
+        if c >= 65 && c <= 90 {
+            out = out + tbl[c - 65]
+        } else {
+            out = out + substr(s, i, i + 1)
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// Hand-rolled tokenizer (letters + digits are word characters). Avoids the
+// core `split` builtin, which the wasm backend refuses to compile.
+fn tokenize(text: str) -> [str] {
+    let mut words: [str] = []
+    let n = len(text)
+    let mut start: i64 = 0
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(text, i, i + 1))
+        let is_word_char = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)
+        if !is_word_char {
+            if i > start {
+                words = push(words, substr(text, start, i))
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    if n > start {
+        words = push(words, substr(text, start, n))
+    }
+    return words
+}
+
+// A run of one or more of '.', '!', '?' counts as a single sentence end, so
+// "done!!" and "done." both count once, not once per punctuation character.
+fn count_sentences(text: str) -> i64 {
+    let n = len(text)
+    let mut count: i64 = 0
+    let mut in_run: bool = false
+    let mut i: i64 = 0
+    while i < n {
+        let c = char_code(substr(text, i, i + 1))
+        let is_terminal = c == 46 || c == 33 || c == 63
+        if is_terminal {
+            if !in_run {
+                count = count + 1
+                in_run = true
+            }
+        } else {
+            in_run = false
+        }
+        i = i + 1
+    }
+    return count
+}
+
+// Selection sort over the unique-word list by frequency, printing the top
+// 10 (or fewer if the document has fewer unique words).
+//
+// WASM GOTCHA: this originally tracked "already printed" with a parallel
+// `[i64]` marker array (`used[k] = 1`) -- that compiles and runs fine
+// natively but the wasm backend cleanly REFUSES array INDEX ASSIGNMENT
+// (`kryos_array_set` is not in its supported set), even though array index
+// READ (`arr[i]`), `push`, and MAP index assignment (`m[k] = v`) all work.
+// docs/wasm-contract.md's "Verified working" table lists array support as
+// just "indexing arr[i]" without distinguishing read from write, so this is
+// invisible until the compiler refuses it. Worked around here by mutating
+// `counts` in place instead (map writes are verified) -- this leaves
+// `counts` with sentinel `-1` entries for every printed word, so it is not
+// safe for the caller to reuse `counts` after calling this. `main` does not.
+fn print_top10(names: [str], counts: map<str, i64>) {
+    let n = len(names)
+    let limit: i64 = if n < 10 { n } else { 10 }
+    let mut printed: i64 = 0
+    while printed < limit {
+        let mut best_idx: i64 = -1
+        let mut best_count: i64 = -1
+        let mut k: i64 = 0
+        while k < n {
+            let c = counts[names[k]]
+            if c > best_count {
+                best_count = c
+                best_idx = k
+            }
+            k = k + 1
+        }
+        if best_idx < 0 {
+            break
+        }
+        let rank = printed + 1
+        println(to_string(rank) + ". " + names[best_idx] + " (" + to_string(best_count) + ")")
+        counts[names[best_idx]] = -1
+        printed = printed + 1
+    }
+}
+
+// Lists the zero-based word-token positions where `target` occurs.
+fn print_concordance(words: [str], tbl: [str], target: str) {
+    let n = len(words)
+    let mut positions: [i64] = []
+    let mut i: i64 = 0
+    while i < n {
+        let w = to_lower_ascii(words[i], tbl)
+        if str_eq(w, target) {
+            positions = push(positions, i)
+        }
+        i = i + 1
+    }
+    let count = len(positions)
+    let mut line: str = target + " (" + to_string(count) + "): "
+    let mut j: i64 = 0
+    while j < count {
+        line = line + to_string(positions[j])
+        if j < count - 1 {
+            line = line + ", "
+        }
+        j = j + 1
+    }
+    println(line)
+}
