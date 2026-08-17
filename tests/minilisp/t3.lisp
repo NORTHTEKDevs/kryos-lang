@@ -1,0 +1,6 @@
+(define mymap (lambda (f lst)
+  (if (null? lst)
+      (list)
+      (cons (f (car lst)) (mymap f (cdr lst))))))
+(define square (lambda (x) (* x x)))
+(mymap square (list 1 2 3))

@@ -2060,6 +2060,82 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
+### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: an enum with a heap [Value] payload bound as a closure ARGUMENT through the minilisp interpreter corrupts memory -- JIT segfaults, AOT silently loses an env frame (universal-claim campaign 2026-08-16, minimized 2026-08-17) -- NOT FIXED, top-ranked open defect
+
+THE MINIMAL REPRO IS TWO LINES OF LISP against the committed interpreter
+(`examples/showcase/minilisp.kry`, file mode). Corpus pinned at
+`tests/minilisp/`:
+
+```
+$ kryos run examples/showcase/minilisp.kry tests/minilisp/t9b.lisp
+    (define first (lambda (lst) (car lst)))
+    (first (list 7 8 9))
+JIT:  prints "first", then SEGFAULT (rc=139)
+AOT:  (same interpreter built --release) runs -- this exact case passes there
+```
+
+```
+$ ... tests/minilisp/t9.lisp        # add recursion + car/cdr walk
+JIT:  prints "suml", then ILLEGAL INSTRUCTION
+AOT:  prints "suml", then "ERROR: unbound symbol: +"  rc=0   <- SILENT wrong
+      answer: the outermost (builtin) env frame vanishes from the chain
+```
+
+```
+$ ... tests/minilisp/t3.lisp        # recursive closure taking a closure arg
+JIT:  7x KRYOS-FREE-DIAG double-free + WRONG ANSWER
+      ("*: expected an integer argument, got a list")
+AOT:  "ERROR: unbound symbol: cons"
+```
+
+THE PASS/FAIL BOUNDARY, measured one cut at a time (all on JIT, KRYOS_FREE_DIAG=1):
+
+| corpus | shape | result |
+| --- | --- | --- |
+| t1 | define + apply closure, INT arg | OK (49) |
+| t2 | closure passed AS ARG, applied once | OK |
+| t4 | self-recursive closure, int arg | OK (5) |
+| t5 | recursion + cons building a list | OK ((3 2 1)) |
+| t6 | recursion + closure arg, `+` combiner | OK (14) |
+| t7 | recursion + UNUSED closure arg + cons | OK |
+| t8 | recursion + cons of (f n), counter recursion | OK ((9 4 1)) |
+| t9b | **LIST arg bound into a closure frame, car** | **SEGFAULT** |
+| t9 | + recursion via car/cdr | **ILLEGAL INSTRUCTION / AOT frame loss** |
+| t3 | + closure arg too (lisp map) | **double-frees + wrong answer** |
+
+So the ONE ingredient that flips t1 -> t9b is the closure argument being
+`Value.ListV([Value])` (heap payload) instead of `Value.Int`. No recursion, no
+cycles, no closure-in-closure needed for the segfault.
+
+FOUR PURE-KRYOS DISTILLATIONS THAT DO **NOT** REPRODUCE IT (all clean on both
+backends -- recorded so the next attempt does not re-derive them):
+  A. map mutated through an `arr[i]` alias (item-15 shape, for maps) -- agrees
+  B. recursive enum V.Clo carrying `[map<str,V>]` in a true reference CYCLE,
+     extended 3 levels, looked up through the closure payload -- clean
+  C. self-recursive cons-list builder over `[V]` payloads, depth 60 -- clean
+  D. V.L([V]) stored into `map<str,V>`, read back through a FUNCTION boundary,
+     payload element extracted -- clean
+So the corruption needs MORE than any one of those shapes; the interpreter's
+combination (args collected into `[Value]`, inserted into a frame map, chain in
+`[map<str,Value>]`, read back, payload re-entering an args array) is currently
+the smallest known trigger. Next investigative step per the repo's probe-first
+rule: instrument kryos-rt retain/release (map insert of enum-with-heap-payload,
+map read, array element read) and diff the refcount ledger between a t1 run and
+a t9b run -- the divergence point IS the bug. Suspect surface: enum payload
+ownership on map insert/read (kryos-rt map.rs + the enum boxing paths in
+kryos-mir lower.rs), same family as gotcha #23's arr[i] alias divergence and
+the item-3 struct-argument leak, but NOT identical (probes A/D pass).
+
+SEVERITY: P0. A segfault is loud, but the AOT half is a SILENT wrong answer
+(exit 0, plausible interpreter error message), and the corrupted-argument case
+(t3) computes wrong values. This is the textbook closures-with-captured-state
+case every language demo uses. The interpreter demos degrade gracefully
+(try/catch), so the SHOWCASE still runs -- but this is the #1 defect standing
+between Kryos and "an interpreter written in it just works".
+
+---
+
+
 ### 40c. `std::result::to_array<T>` is only type-safe WITH an explicit annotation -- unannotated it still renders a raw pointer, and item 40b's own CLOSED entry claimed otherwise (found by adversarial verification, 2026-08-16) -- NOT FIXED
 
 Measured 2026-08-16, current HEAD:
