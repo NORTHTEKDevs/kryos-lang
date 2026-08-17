@@ -103,7 +103,7 @@ run_one() {
     local out rc lastline diagn
     out="$(KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1 timeout 30 "$@" "$CORPUS/$name.lisp" 2>&1)"
     rc=$?
-    diagn="$(printf '%s\n' "$out" | grep -c "KRYOS-FREE-DIAG")"
+    diagn="$(printf '%s\n' "$out" | grep -ciE "KRYOS-FREE-DIAG|double free")"
     lastline="$(printf '%s\n' "$out" | tail -1)"
 
     if [ "$diagn" -ne 0 ]; then

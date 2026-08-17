@@ -19,7 +19,13 @@ no_df() {
   printf '%s' "$src" > "$f"
   local out
   out="$(KRYOS_FREE_DIAG=1 timeout 30 "$KRYOS" run "$f" 2>&1)"
-  if printf '%s' "$out" | grep -q "DOUBLE-FREE"; then
+  # Match EVERY double-free emission format the runtime has, not one:
+  #   "KRYOS-FREE-DIAG ... DOUBLE-FREE ..."          (the rc-0 diag this gate was built for)
+  #   "kryos_free: double free of 0x... ; ignored"   (the alloc.rs poison-guard, found
+  #                                                   slipping past BOTH gates on 2026-08-17 --
+  #                                                   the minilisp demo printed three of them
+  #                                                   while every gate stayed green)
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
     echo "  DOUBLE-FREE  $name"
     fail=$((fail+1))
   fi
