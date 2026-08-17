@@ -1,0 +1,471 @@
+// snake_game.kry — a real, playable terminal snake game.
+//
+// Two modes:
+//   kryos run snake_game.kry --demo   deterministic: fixed seed, a greedy
+//                                     "chase the food" auto-pilot, N frames
+//                                     to stdout, final score. Byte-identical
+//                                     on both backends -- this is the mode
+//                                     pinned in gates/docs.
+//   kryos run snake_game.kry          interactive: std::term raw mode reads
+//                                     wasd keys, real-time frame loop paced
+//                                     with sleep().
+//
+// State is plain structs + an enum; food placement uses the seedable
+// std::random (splitmix64) PRNG documented in docs/learn/cookbook/22.
+//
+// FINDINGS (public-docs-only campaign; full detail in each comment above
+// the relevant code, summarized here):
+//   [P3] `const NAME: TYPE = value` at top level fails to parse (E0001,
+//        "unexpected token identifier") even though
+//        docs/19-language-reference.md SS11.2 lists `const` as a valid
+//        top-level declaration. Top-level `let` works and is used instead.
+//   [P3] docs/stdlib/option.md documents lowercase `some()`/`none()`
+//        constructors for Option. The actual working convention --
+//        confirmed against a prior verified showcase,
+//        examples/showcase/log_analyzer.kry -- is capitalized
+//        `Some(x)`/`None()` via `use std::option::{Some, None}`, matching
+//        docs/learn/cheatsheet.md instead. option.md's own page is wrong.
+//   [P2] `std::term::read_key()` is named (only by name, no signature) in
+//        the docs/stdlib/README.md module-index row for std.term; its own
+//        reference page (term.md) never documents it at all -- no
+//        signature, no return type, no example, despite documenting every
+//        other std::term function in full. It returns a `KeyEvent`
+//        struct, not `str` as its name would suggest. Its shape had to be
+//        reverse-engineered field-by-field via deliberate compile-error
+//        probing (`k.<guess>` and reading E0106's "no field" vs a clean
+//        type-check): `KeyEvent { char: str, code: i32, is_special: bool }`.
+//        A new user following only the published surface has no way to
+//        discover this type without trial and error against the compiler.
+//   [P3] Struct field-mutation-through-a-param vs whole-binding-reassign
+//        asymmetry is real but effectively undocumented for parameters
+//        specifically: `fn f(g: Game) { g.field = x }` compiles with no
+//        `mut` needed, but `fn f(g: Game) { g = other_game }` is E0302
+//        ("assignment to immutable variable"). docs/06-ownership.md
+//        explains ARC sharing and `let mut` for LOCALS at length but never
+//        states params can't be declared `mut` at all (no `fn f(mut g: T)`
+//        syntax exists) and never calls out that this makes the two
+//        mutation styles asymmetric on a parameter binding. Worked around
+//        below (see `step`) by shadowing the param with a fresh
+//        `let mut` local of the same name.
+
+use std::term
+use std::random::{new_rng, next_i64, range_i64}
+use std::option::{Some, None}
+use std::process::{argc, argv}
+
+let GRID_W: i64 = 20
+let GRID_H: i64 = 12
+let DEMO_SEED: i64 = 20260817
+let DEMO_FRAMES: i64 = 80
+
+enum Dir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+struct Game {
+    snake_x: [i64],
+    snake_y: [i64],
+    dir: Dir,
+    food_x: i64,
+    food_y: i64,
+    score: i64,
+    alive: bool,
+    w: i64,
+    h: i64,
+}
+
+fn dir_name(d: Dir) -> str {
+    return match d {
+        Up    => "up",
+        Down  => "down",
+        Left  => "left",
+        Right => "right",
+    }
+}
+
+fn opposite(d: Dir) -> Dir {
+    return match d {
+        Up    => Dir.Down,
+        Down  => Dir.Up,
+        Left  => Dir.Right,
+        Right => Dir.Left,
+    }
+}
+
+fn delta(d: Dir) -> (i64, i64) {
+    return match d {
+        Up    => (0, 0 - 1),
+        Down  => (0, 1),
+        Left  => (0 - 1, 0),
+        Right => (1, 0),
+    }
+}
+
+// Prepend `head` to `xs`; drop the last element unless `grow` is true.
+fn advance_body(xs: [i64], head: i64, grow: bool) -> [i64] {
+    let mut out: [i64] = [head]
+    let n: i64 = len(xs)
+    let mut limit: i64 = n - 1
+    if grow {
+        limit = n
+    }
+    let mut i: i64 = 0
+    while i < limit {
+        out = push(out, xs[i])
+        i = i + 1
+    }
+    return out
+}
+
+fn body_contains(xs: [i64], ys: [i64], upto: i64, x: i64, y: i64) -> bool {
+    let mut i: i64 = 0
+    while i < upto {
+        if xs[i] == x and ys[i] == y {
+            return true
+        }
+        i = i + 1
+    }
+    return false
+}
+
+// Move `food` to a random cell not currently covered by the snake.
+// Leaves food where it was if the board is full.
+fn place_food(rng: [i64], game: Game) -> Game {
+    let total: i64 = game.w * game.h
+    let occupied: i64 = len(game.snake_x)
+    if occupied >= total {
+        return game
+    }
+    let mut placed: bool = false
+    let mut tries: i64 = 0
+    // Bounded retry loop -- rejection sampling against a random cell.
+    while placed == false and tries < 10000 {
+        let fx: i64 = range_i64(rng, 0, game.w)
+        let fy: i64 = range_i64(rng, 0, game.h)
+        if body_contains(game.snake_x, game.snake_y, len(game.snake_x), fx, fy) == false {
+            game.food_x = fx
+            game.food_y = fy
+            placed = true
+        }
+        tries = tries + 1
+    }
+    return game
+}
+
+fn new_game(rng: [i64], w: i64, h: i64) -> Game {
+    let cx: i64 = w / 2
+    let cy: i64 = h / 2
+    let mut game: Game = Game {
+        snake_x: [cx, cx - 1, cx - 2],
+        snake_y: [cy, cy, cy],
+        dir: Dir.Right,
+        food_x: 0,
+        food_y: 0,
+        score: 0,
+        alive: true,
+        w: w,
+        h: h,
+    }
+    game = place_food(rng, game)
+    return game
+}
+
+// Change direction, ignoring a 180-degree reversal (classic snake rule).
+fn turn(game: Game, requested: Dir) -> Game {
+    let blocked: Dir = opposite(game.dir)
+    let same_axis: bool = dir_name(requested) == dir_name(blocked)
+    if same_axis == false {
+        game.dir = requested
+    }
+    return game
+}
+
+fn step(rng: [i64], param_game: Game) -> Game {
+    // Function params are immutable bindings -- mutating a FIELD through
+    // one is allowed (see place_food/turn above), but reassigning the
+    // whole binding is not (E0302, see the finding log up top). Shadow
+    // with a `mut` local to reassign it below.
+    let mut game: Game = param_game
+    if game.alive == false {
+        return game
+    }
+    let d: (i64, i64) = delta(game.dir)
+    let dx: i64 = d.0
+    let dy: i64 = d.1
+    let nx: i64 = game.snake_x[0] + dx
+    let ny: i64 = game.snake_y[0] + dy
+
+    if nx < 0 or nx >= game.w or ny < 0 or ny >= game.h {
+        game.alive = false
+        return game
+    }
+
+    let ate: bool = nx == game.food_x and ny == game.food_y
+    // The tail cell vacates this tick unless we're growing, so it's safe
+    // to land on it -- exclude the last segment from the collision check.
+    let mut check_upto: i64 = len(game.snake_x) - 1
+    if ate {
+        check_upto = len(game.snake_x)
+    }
+    if body_contains(game.snake_x, game.snake_y, check_upto, nx, ny) {
+        game.alive = false
+        return game
+    }
+
+    game.snake_x = advance_body(game.snake_x, nx, ate)
+    game.snake_y = advance_body(game.snake_y, ny, ate)
+
+    if ate {
+        game.score = game.score + 10
+        game = place_food(rng, game)
+    }
+    return game
+}
+
+// Would moving in direction `d` this tick be legal (in bounds, not a
+// reversal, not a self-collision)? Used by both the demo auto-pilot and
+// could back a "reject illegal input" check in interactive mode.
+fn is_safe(game: Game, d: Dir) -> bool {
+    if dir_name(d) == dir_name(opposite(game.dir)) {
+        return false
+    }
+    let dd: (i64, i64) = delta(d)
+    let nx: i64 = game.snake_x[0] + dd.0
+    let ny: i64 = game.snake_y[0] + dd.1
+    if nx < 0 or nx >= game.w or ny < 0 or ny >= game.h {
+        return false
+    }
+    let ate: bool = nx == game.food_x and ny == game.food_y
+    let mut check_upto: i64 = len(game.snake_x) - 1
+    if ate {
+        check_upto = len(game.snake_x)
+    }
+    return body_contains(game.snake_x, game.snake_y, check_upto, nx, ny) == false
+}
+
+fn abs_i64(v: i64) -> i64 {
+    if v < 0 {
+        return 0 - v
+    }
+    return v
+}
+
+// Deterministic greedy auto-pilot for --demo: step toward the food on
+// whichever axis has the larger gap, falling back through the remaining
+// directions (preferring to keep going straight) if the preferred move
+// isn't safe. No randomness here -- only food placement uses the RNG.
+fn choose_move(game: Game) -> Dir {
+    let hx: i64 = game.snake_x[0]
+    let hy: i64 = game.snake_y[0]
+    let dx: i64 = game.food_x - hx
+    let dy: i64 = game.food_y - hy
+
+    let mut horiz: Dir = Dir.Right
+    if dx < 0 {
+        horiz = Dir.Left
+    }
+    let mut vert: Dir = Dir.Down
+    if dy < 0 {
+        vert = Dir.Up
+    }
+
+    let mut first: Dir = horiz
+    let mut second: Dir = vert
+    if abs_i64(dy) > abs_i64(dx) {
+        first = vert
+        second = horiz
+    }
+
+    if is_safe(game, first) {
+        return first
+    }
+    if is_safe(game, second) {
+        return second
+    }
+    if is_safe(game, game.dir) {
+        return game.dir
+    }
+    if is_safe(game, Dir.Up) {
+        return Dir.Up
+    }
+    if is_safe(game, Dir.Down) {
+        return Dir.Down
+    }
+    if is_safe(game, Dir.Left) {
+        return Dir.Left
+    }
+    if is_safe(game, Dir.Right) {
+        return Dir.Right
+    }
+    return game.dir // nothing is safe -- collide on the next step, game over
+}
+
+fn render(game: Game) -> str {
+    let mut out: str = ""
+    let mut y: i64 = 0
+    while y < game.h {
+        let mut line: str = ""
+        let mut x: i64 = 0
+        while x < game.w {
+            let mut ch: str = "."
+            if x == game.food_x and y == game.food_y {
+                ch = "*"
+            } elif x == game.snake_x[0] and y == game.snake_y[0] {
+                ch = "O"
+            } elif body_contains(game.snake_x, game.snake_y, len(game.snake_x), x, y) {
+                ch = "o"
+            }
+            line = line + ch
+            x = x + 1
+        }
+        out = out + line + "\n"
+        y = y + 1
+    }
+    return out
+}
+
+fn border(w: i64) -> str {
+    let mut line: str = "+"
+    let mut i: i64 = 0
+    while i < w {
+        line = line + "-"
+        i = i + 1
+    }
+    return line + "+"
+}
+
+// Pull the y-th '\n'-terminated line out of a rendered frame.
+fn line_at(body: str, y: i64) -> str {
+    let mut start: i64 = 0
+    let mut current: i64 = 0
+    let mut i: i64 = 0
+    let n: i64 = len(body)
+    while i < n {
+        if byte_at(body, i) == 10 {
+            if current == y {
+                return substr(body, start, i)
+            }
+            current = current + 1
+            start = i + 1
+        }
+        i = i + 1
+    }
+    return ""
+}
+
+fn print_frame(game: Game, header: str) {
+    println(header)
+    println(border(game.w))
+    let body: str = render(game)
+    let mut y: i64 = 0
+    while y < game.h {
+        println("|" + line_at(body, y) + "|")
+        y = y + 1
+    }
+    println(border(game.w))
+    println("score: " + to_string(game.score))
+}
+
+fn dir_from_char(key: str) -> Option<Dir> {
+    if key == "w" or key == "W" {
+        return Some(Dir.Up)
+    } elif key == "s" or key == "S" {
+        return Some(Dir.Down)
+    } elif key == "a" or key == "A" {
+        return Some(Dir.Left)
+    } elif key == "d" or key == "D" {
+        return Some(Dir.Right)
+    }
+    return None()
+}
+
+// --- Demo mode: fixed seed, deterministic auto-pilot, both backends agree.
+fn run_demo() {
+    let rng: [i64] = new_rng(DEMO_SEED)
+    let mut game: Game = new_game(rng, GRID_W, GRID_H)
+
+    println("=== snake_game --demo (seed " + to_string(DEMO_SEED) + ") ===")
+    let mut frame: i64 = 0
+    while frame < DEMO_FRAMES and game.alive {
+        let d: Dir = choose_move(game)
+        game = turn(game, d)
+        game = step(rng, game)
+        print_frame(game, "frame " + to_string(frame + 1))
+        frame = frame + 1
+    }
+
+    if game.alive == false {
+        println("game over")
+    } else {
+        println("demo complete")
+    }
+    println("final score: " + to_string(game.score))
+}
+
+// --- Interactive mode: real terminal raw-mode input + pacing.
+@capabilities(term)
+fn run_interactive() {
+    let rng: [i64] = new_rng(0)
+    let mut game: Game = new_game(rng, GRID_W, GRID_H)
+
+    println("snake -- wasd to move, q to quit. starting in raw mode...")
+    sleep(600)
+
+    raw_enable()
+    let mut running: bool = true
+    while running and game.alive {
+        clear()
+        cursor_home()
+        print_frame(game, "kryos snake")
+        println("wasd = move, q = quit")
+
+        let k: KeyEvent = read_key()
+        if k.char == "q" or k.char == "Q" {
+            running = false
+        } else {
+            let maybe_dir: Option<Dir> = dir_from_char(k.char)
+            match maybe_dir {
+                Some(d) => { game = turn(game, d) },
+                None()  => { },
+            }
+        }
+
+        if running {
+            game = step(rng, game)
+        }
+        sleep(150)
+    }
+    raw_disable()
+
+    clear()
+    cursor_home()
+    print_frame(game, "kryos snake -- final")
+    if game.alive == false {
+        println("game over")
+    } else {
+        println("quit")
+    }
+    println("final score: " + to_string(game.score))
+}
+
+@capabilities(term)
+fn main() {
+    let mut demo: bool = false
+    let n: i64 = argc()
+    let mut i: i64 = 0
+    while i < n {
+        if argv(i) == "--demo" {
+            demo = true
+        }
+        i = i + 1
+    }
+
+    if demo {
+        run_demo()
+    } else {
+        run_interactive()
+    }
+}
