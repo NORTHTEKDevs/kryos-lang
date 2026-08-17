@@ -63,6 +63,18 @@ cmd_preflight() {
         grn "  ok: no strays"
     fi
 
+    # TRAP 3: the `kryos` on PATH can be MONTHS behind this repo while reporting a
+    # HIGHER version than the source. On 2026-08-16 the installed binary said
+    # "1.0.0-beta.1" against a repo at 0.9.0 and rejected a valid 315-line program
+    # with 72 errors that all read as language bugs (undefined `None`, `Dict<K,V>`
+    # mismatch, "unknown capability `fs:read`"). Three separate agents hit it while
+    # simply trying to USE the language. No other gate catches this, because every
+    # other gate invokes compiler/target/release/kryos.exe by path.
+    echo "== installed toolchain vs this repo =="
+    if ! bash tests/installed_toolchain_check.sh 2>&1 | sed 's/^/  /'; then
+        bad=1
+    fi
+
     echo "== tree =="
     if [ -n "$(git status --porcelain)" ]; then
         ylw "  dirty working tree:"; git status --porcelain | head -5 | sed 's/^/    /'
