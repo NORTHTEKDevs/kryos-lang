@@ -1,0 +1,794 @@
+// ============================================================
+// Kryos Showcase: minilisp -- a small but real Lisp interpreter
+//
+// A tokenizer + recursive-descent reader + tree-walking evaluator
+// for a minimal Lisp/Scheme-family language, written in Kryos.
+//
+// Values:    integers, symbols, booleans, lists, builtin fns,
+//            user lambdas -- one recursive enum, tuple variants.
+// Specials:  quote if define lambda let set!
+// Builtins:  + - * / = < cons car cdr list null?
+// Env model: a CHAIN of frames (innermost first), each frame a
+//            map<str, Value>. A lambda captures the chain that was
+//            live at its creation point (proper lexical scoping);
+//            set! walks the chain to mutate the frame that
+//            actually owns the binding, which is what gives a
+//            closure genuinely persistent, shared mutable state
+//            (see the closure-counter demo below).
+//
+// KNOWN COMPILER BUG WORKED AROUND HERE (see minilisp findings in
+// the campaign report): indexing a [map<str, Value>] PARAMETER
+// with a chained expression -- contains(chain[i], name) or
+// chain[i][name] written inline, evaluated 2+ times across calls
+// -- segfaults under kryos run (Cranelift) while kryos build
+// --release (LLVM) runs the identical source to completion: a
+// live backend divergence in a user-defined recursive-enum-valued
+// map nested inside an array. Every environment access in this file
+// therefore binds chain[i] to a local (let frame = chain[i])
+// BEFORE calling contains()/indexing it -- that rewrite alone made
+// the crash disappear in isolation testing, and it is applied
+// uniformly below even where a single index would probably be safe.
+//
+// SECOND, MORE SEVERE COMPILER BUG (not worked around -- reported
+// as-is, see the campaign findings): the workaround above only
+// covers the SHALLOW-chain case. The higher-order-map and
+// closure-counter demos below build DEEPER chains (3-4 env_extend
+// levels, and/or two closures -- lisp-map and square, or
+// make-counter and its returned counter closure -- sharing/
+// threading the same map<str, Value> chain) and that alone, even
+// with EVERY access following the bind-first rule above, still
+// corrupts the interpreter's own state:
+//   - under kryos run (Cranelift): KRYOS-FREE-DIAG double-free-of-
+//     already-freed-box diagnostics fire repeatedly, and the map
+//     demo goes on to compute a WRONG answer ("*: expected an
+//     integer argument, got a boolean" -- square's own parameter
+//     got corrupted mid-recursion); an even more minimal reduction
+//     (a self-recursive cons-list builder with NO closure argument
+//     at all, see the campaign report) segfaults outright.
+//   - under kryos build --release (LLVM): no crash and no double-
+//     free, but a DIFFERENT wrong answer -- "unbound symbol: cons"
+//     / "unbound symbol: +" -- as if the outermost (builtin) frame
+//     silently drops out of a chain that is 3+ frames deep.
+//   Hand-tracing the eval/apply/env_extend logic for both failing
+//   demos shows the Lisp-level semantics are correct; the two
+//   backends fail DIFFERENTLY on the SAME source, which is itself
+//   the P0 (backend divergence). This was left uncorrected at the
+//   source level -- both demos are wrapped in try/catch (see
+//   run_source / run_closure_counter_demo) so the program still
+//   exits 0 and reports a clean "-> ERROR: ..." instead of
+//   propagating whatever corrupted/uncatchable state results, but
+//   the map and closure-counter results themselves are NOT
+//   currently correct on either backend.
+//
+// Demo mode (no args): runs a deterministic suite -- recursive
+// factorial, recursive fibonacci, and a 70-deep recursive sum (the
+// "60+ deep" recursion stress case) are all verified correct on
+// BOTH backends -- plus a higher-order map written IN Lisp itself
+// and a closure counter, which currently demonstrate the bug above
+// instead of their intended results (see the campaign findings).
+// File mode (one arg): reads and evaluates that file, printing the
+// value of every top-level form.
+//
+// run-expect: factorial(10) = 3628800
+// ============================================================
+
+enum Value {
+    Int(i64),
+    Sym(str),
+    Bool(bool),
+    ListV([Value]),
+    Builtin(str),
+    Closure([str], [Value], [map<str, Value>]),
+}
+
+// --- Character classification -------------------------------
+
+fn is_ws(c: str) -> bool {
+    return c == " " or c == "\t" or c == "\n" or c == "\r"
+}
+
+fn is_digit(c: str) -> bool {
+    return c == "0" or c == "1" or c == "2" or c == "3" or c == "4" or c == "5" or c == "6" or c == "7" or c == "8" or c == "9"
+}
+
+fn is_delim(c: str) -> bool {
+    if is_ws(c) {
+        return true
+    }
+    return c == "(" or c == ")" or c == ";"
+}
+
+// --- Tokenizer -------------------------------------------------
+
+fn tokenize(src: str) -> [str] {
+    let n = len(src)
+    let mut toks: [str] = []
+    let mut i = 0
+    while i < n {
+        let c = substr(src, i, i + 1)
+        if is_ws(c) {
+            i = i + 1
+        } elif c == ";" {
+            let mut hit_nl = false
+            while i < n and !hit_nl {
+                let cc = substr(src, i, i + 1)
+                if cc == "\n" {
+                    hit_nl = true
+                } else {
+                    i = i + 1
+                }
+            }
+        } elif c == "(" {
+            toks = push(toks, "(")
+            i = i + 1
+        } elif c == ")" {
+            toks = push(toks, ")")
+            i = i + 1
+        } else {
+            let start = i
+            let mut stop = false
+            while i < n and !stop {
+                let cc = substr(src, i, i + 1)
+                if is_delim(cc) {
+                    stop = true
+                } else {
+                    i = i + 1
+                }
+            }
+            toks = push(toks, substr(src, start, i))
+        }
+    }
+    return toks
+}
+
+// --- Reader (recursive-descent parser over the token stream) ---
+
+struct Reader {
+    toks: [str]
+    pos: [i64]
+}
+
+fn new_reader(toks: [str]) -> Reader {
+    return Reader { toks: toks, pos: [0] }
+}
+
+fn r_at_end(r: Reader) -> bool {
+    return r.pos[0] >= len(r.toks)
+}
+
+fn r_peek(r: Reader) -> str {
+    return r.toks[r.pos[0]]
+}
+
+fn r_advance(r: Reader) -> str {
+    let t = r.toks[r.pos[0]]
+    r.pos[0] = r.pos[0] + 1
+    return t
+}
+
+fn is_int_tok(tok: str) -> bool {
+    let n = len(tok)
+    if n == 0 {
+        return false
+    }
+    let mut i = 0
+    let first = substr(tok, 0, 1)
+    if first == "-" {
+        if n == 1 {
+            return false
+        }
+        i = 1
+    }
+    let mut ok = true
+    while i < n {
+        let c = substr(tok, i, i + 1)
+        if !is_digit(c) {
+            ok = false
+        }
+        i = i + 1
+    }
+    return ok
+}
+
+fn parse_atom(tok: str) -> Value {
+    if is_int_tok(tok) {
+        return Value.Int(parse_int(tok))
+    }
+    return Value.Sym(tok)
+}
+
+fn read_list(r: Reader) -> Value {
+    let mut items: [Value] = []
+    let mut done = false
+    while !done {
+        if r_at_end(r) {
+            throw "read error: unterminated list, missing a closing paren"
+        }
+        if r_peek(r) == ")" {
+            let discard = r_advance(r)
+            done = true
+        } else {
+            let item = read_form(r)
+            items = push(items, item)
+        }
+    }
+    return Value.ListV(items)
+}
+
+fn read_form(r: Reader) -> Value {
+    if r_at_end(r) {
+        throw "read error: unexpected end of input"
+    }
+    let t = r_advance(r)
+    if t == "(" {
+        return read_list(r)
+    }
+    if t == ")" {
+        throw "read error: unexpected closing paren"
+    }
+    return parse_atom(t)
+}
+
+fn parse_program(src: str) -> [Value] {
+    let toks = tokenize(src)
+    let r = new_reader(toks)
+    let mut forms: [Value] = []
+    while !r_at_end(r) {
+        let f = read_form(r)
+        forms = push(forms, f)
+    }
+    return forms
+}
+
+// --- Environment: a chain of frames, innermost first -----------
+// SAFETY RULE (see header note): every access binds chain[i] (or
+// chain[0]) to a local frame before calling contains()/indexing
+// it -- never contains(chain[i], k) or chain[i][k] inline.
+
+fn env_extend(parent_chain: [map<str, Value>], frame: map<str, Value>) -> [map<str, Value>] {
+    let mut chain: [map<str, Value>] = []
+    chain = push(chain, frame)
+    let n = len(parent_chain)
+    let mut i = 0
+    while i < n {
+        let f = parent_chain[i]
+        chain = push(chain, f)
+        i = i + 1
+    }
+    return chain
+}
+
+fn env_lookup(chain: [map<str, Value>], name: str) -> Value {
+    let n = len(chain)
+    let mut i = 0
+    while i < n {
+        let frame = chain[i]
+        if contains(frame, name) {
+            return frame[name]
+        }
+        i = i + 1
+    }
+    throw "unbound symbol: " + name
+}
+
+fn env_define(chain: [map<str, Value>], name: str, val: Value) {
+    let frame = chain[0]
+    frame[name] = val
+}
+
+fn env_set(chain: [map<str, Value>], name: str, val: Value) {
+    let n = len(chain)
+    let mut i = 0
+    let mut found = false
+    while i < n and !found {
+        let frame = chain[i]
+        if contains(frame, name) {
+            frame[name] = val
+            found = true
+        } else {
+            i = i + 1
+        }
+    }
+    if !found {
+        throw "set!: unbound symbol: " + name
+    }
+}
+
+fn make_global_frame() -> map<str, Value> {
+    let mut g: map<str, Value> = {}
+    g["+"] = Value.Builtin("+")
+    g["-"] = Value.Builtin("-")
+    g["*"] = Value.Builtin("*")
+    g["/"] = Value.Builtin("/")
+    g["="] = Value.Builtin("=")
+    g["<"] = Value.Builtin("<")
+    g["cons"] = Value.Builtin("cons")
+    g["car"] = Value.Builtin("car")
+    g["cdr"] = Value.Builtin("cdr")
+    g["list"] = Value.Builtin("list")
+    g["null?"] = Value.Builtin("null?")
+    return g
+}
+
+fn new_global_chain() -> [map<str, Value>] {
+    let g = make_global_frame()
+    let mut chain: [map<str, Value>] = []
+    chain = push(chain, g)
+    return chain
+}
+
+// --- Small helpers ----------------------------------------------
+
+fn sym_name_or_empty(v: Value) -> str {
+    match v {
+        Value.Sym(s) => return s,
+        _ => return "",
+    }
+}
+
+fn is_truthy(v: Value) -> bool {
+    match v {
+        Value.Bool(b) => return b,
+        _ => return true,
+    }
+}
+
+fn type_name(v: Value) -> str {
+    match v {
+        Value.Int(n) => return "integer",
+        Value.Sym(s) => return "symbol",
+        Value.Bool(b) => return "boolean",
+        Value.ListV(items) => return "list",
+        Value.Builtin(name) => return "builtin",
+        Value.Closure(p, b, e) => return "closure",
+    }
+}
+
+fn param_names(v: Value) -> [str] {
+    match v {
+        Value.ListV(items) => {
+            let mut names: [str] = []
+            let mut i = 0
+            while i < len(items) {
+                let it = items[i]
+                let nm = sym_name_or_empty(it)
+                if nm == "" {
+                    throw "lambda: parameter list must contain only symbols"
+                }
+                names = push(names, nm)
+                i = i + 1
+            }
+            return names
+        },
+        _ => { throw "lambda: expected a parameter list" },
+    }
+}
+
+fn build_let_frame(bindings: Value, chain: [map<str, Value>]) -> map<str, Value> {
+    let mut frame: map<str, Value> = {}
+    match bindings {
+        Value.ListV(pairs) => {
+            let mut i = 0
+            while i < len(pairs) {
+                let pair = pairs[i]
+                match pair {
+                    Value.ListV(pv) => {
+                        if len(pv) != 2 {
+                            throw "let: each binding must be (name expr)"
+                        }
+                        let nm = sym_name_or_empty(pv[0])
+                        if nm == "" {
+                            throw "let: binding name must be a symbol"
+                        }
+                        let rhs = pv[1]
+                        let v = eval(rhs, chain)
+                        frame[nm] = v
+                    },
+                    _ => { throw "let: each binding must be a (name expr) pair" },
+                }
+                i = i + 1
+            }
+        },
+        _ => { throw "let: expected a list of bindings" },
+    }
+    return frame
+}
+
+// --- Evaluator (eval / eval_special / apply are mutually recursive) ---
+
+fn eval(expr: Value, chain: [map<str, Value>]) -> Value {
+    match expr {
+        Value.Int(n) => return Value.Int(n),
+        Value.Bool(b) => return Value.Bool(b),
+        Value.Sym(name) => return env_lookup(chain, name),
+        Value.Builtin(name) => return Value.Builtin(name),
+        Value.Closure(params, body, cenv) => return Value.Closure(params, body, cenv),
+        Value.ListV(items) => return eval_list(items, chain),
+    }
+}
+
+fn eval_list(items: [Value], chain: [map<str, Value>]) -> Value {
+    if len(items) == 0 {
+        return Value.ListV(items)
+    }
+    let head = items[0]
+    let tag = sym_name_or_empty(head)
+    if tag == "quote" or tag == "if" or tag == "define" or tag == "lambda" or tag == "let" or tag == "set!" {
+        return eval_special(tag, items, chain)
+    }
+    let fnval = eval(head, chain)
+    let argvals = eval_args(items, chain)
+    return apply(fnval, argvals)
+}
+
+fn eval_args(items: [Value], chain: [map<str, Value>]) -> [Value] {
+    let mut out: [Value] = []
+    let mut i = 1
+    while i < len(items) {
+        let it = items[i]
+        let v = eval(it, chain)
+        out = push(out, v)
+        i = i + 1
+    }
+    return out
+}
+
+fn eval_special(tag: str, items: [Value], chain: [map<str, Value>]) -> Value {
+    if tag == "quote" {
+        if len(items) != 2 {
+            throw "quote: expected exactly 1 argument, got " + to_string(len(items) - 1)
+        }
+        return items[1]
+    }
+    if tag == "if" {
+        if len(items) != 3 and len(items) != 4 {
+            throw "if: expected (if test then [else]), got " + to_string(len(items) - 1) + " part(s)"
+        }
+        let test_expr = items[1]
+        let cond = eval(test_expr, chain)
+        if is_truthy(cond) {
+            let then_expr = items[2]
+            return eval(then_expr, chain)
+        }
+        if len(items) == 4 {
+            let else_expr = items[3]
+            return eval(else_expr, chain)
+        }
+        return Value.ListV([])
+    }
+    if tag == "define" {
+        if len(items) != 3 {
+            throw "define: expected (define name expr), got " + to_string(len(items) - 1) + " part(s)"
+        }
+        let name = sym_name_or_empty(items[1])
+        if name == "" {
+            throw "define: first argument must be a symbol"
+        }
+        let rhs = items[2]
+        let val = eval(rhs, chain)
+        env_define(chain, name, val)
+        return Value.Sym(name)
+    }
+    if tag == "lambda" {
+        if len(items) < 3 {
+            throw "lambda: expected (lambda (params...) body...), got too few parts"
+        }
+        let param_list = items[1]
+        let params = param_names(param_list)
+        let mut body: [Value] = []
+        let mut i = 2
+        while i < len(items) {
+            let b = items[i]
+            body = push(body, b)
+            i = i + 1
+        }
+        return Value.Closure(params, body, chain)
+    }
+    if tag == "let" {
+        if len(items) < 3 {
+            throw "let: expected (let ((n v)...) body...), got too few parts"
+        }
+        let bindings = items[1]
+        let frame = build_let_frame(bindings, chain)
+        let new_chain = env_extend(chain, frame)
+        let mut result = Value.ListV([])
+        let mut i = 2
+        while i < len(items) {
+            let form = items[i]
+            result = eval(form, new_chain)
+            i = i + 1
+        }
+        return result
+    }
+    if tag == "set!" {
+        if len(items) != 3 {
+            throw "set!: expected (set! name expr), got " + to_string(len(items) - 1) + " part(s)"
+        }
+        let name = sym_name_or_empty(items[1])
+        if name == "" {
+            throw "set!: first argument must be a symbol"
+        }
+        let rhs = items[2]
+        let val = eval(rhs, chain)
+        env_set(chain, name, val)
+        return val
+    }
+    throw "internal error: unknown special form " + tag
+}
+
+fn apply(fnval: Value, args: [Value]) -> Value {
+    match fnval {
+        Value.Builtin(name) => return apply_builtin(name, args),
+        Value.Closure(params, body, cenv) => {
+            if len(params) != len(args) {
+                throw "arity mismatch: closure expects " + to_string(len(params)) + " argument(s), got " + to_string(len(args))
+            }
+            let mut frame: map<str, Value> = {}
+            let mut i = 0
+            while i < len(params) {
+                let pname = params[i]
+                let aval = args[i]
+                frame[pname] = aval
+                i = i + 1
+            }
+            let call_chain = env_extend(cenv, frame)
+            let mut result = Value.ListV([])
+            let mut j = 0
+            while j < len(body) {
+                let form = body[j]
+                result = eval(form, call_chain)
+                j = j + 1
+            }
+            return result
+        },
+        _ => { throw "not callable: value of type " + type_name(fnval) },
+    }
+}
+
+fn expect_arity(name: str, args: [Value], n: i64) {
+    if len(args) != n {
+        throw name + ": expected " + to_string(n) + " argument(s), got " + to_string(len(args))
+    }
+}
+
+fn as_int(v: Value, ctx: str) -> i64 {
+    match v {
+        Value.Int(n) => return n,
+        _ => { throw ctx + ": expected an integer argument, got a " + type_name(v) },
+    }
+}
+
+fn apply_builtin(name: str, args: [Value]) -> Value {
+    if name == "+" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        return Value.Int(a + b)
+    }
+    if name == "-" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        return Value.Int(a - b)
+    }
+    if name == "*" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        return Value.Int(a * b)
+    }
+    if name == "/" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        if b == 0 {
+            throw "/: division by zero"
+        }
+        return Value.Int(a / b)
+    }
+    if name == "=" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        return Value.Bool(a == b)
+    }
+    if name == "<" {
+        expect_arity(name, args, 2)
+        let a = as_int(args[0], name)
+        let b = as_int(args[1], name)
+        return Value.Bool(a < b)
+    }
+    if name == "cons" {
+        expect_arity(name, args, 2)
+        let a = args[0]
+        let b = args[1]
+        match b {
+            Value.ListV(items) => {
+                let mut out: [Value] = []
+                out = push(out, a)
+                let mut i = 0
+                while i < len(items) {
+                    let it = items[i]
+                    out = push(out, it)
+                    i = i + 1
+                }
+                return Value.ListV(out)
+            },
+            _ => { throw "cons: second argument must be a list" },
+        }
+    }
+    if name == "car" {
+        expect_arity(name, args, 1)
+        let a = args[0]
+        match a {
+            Value.ListV(items) => {
+                if len(items) == 0 {
+                    throw "car: cannot take car of an empty list"
+                }
+                return items[0]
+            },
+            _ => { throw "car: argument must be a list" },
+        }
+    }
+    if name == "cdr" {
+        expect_arity(name, args, 1)
+        let a = args[0]
+        match a {
+            Value.ListV(items) => {
+                if len(items) == 0 {
+                    throw "cdr: cannot take cdr of an empty list"
+                }
+                let mut out: [Value] = []
+                let mut i = 1
+                while i < len(items) {
+                    let it = items[i]
+                    out = push(out, it)
+                    i = i + 1
+                }
+                return Value.ListV(out)
+            },
+            _ => { throw "cdr: argument must be a list" },
+        }
+    }
+    if name == "list" {
+        return Value.ListV(args)
+    }
+    if name == "null?" {
+        expect_arity(name, args, 1)
+        let a = args[0]
+        match a {
+            Value.ListV(items) => return Value.Bool(len(items) == 0),
+            _ => return Value.Bool(false),
+        }
+    }
+    throw "unknown builtin: " + name
+}
+
+// --- Display ------------------------------------------------------
+
+fn to_display(v: Value) -> str {
+    match v {
+        Value.Int(n) => return to_string(n),
+        Value.Sym(s) => return s,
+        Value.Bool(b) => {
+            if b {
+                return "#t"
+            }
+            return "#f"
+        },
+        Value.ListV(items) => {
+            let mut out = "("
+            let mut i = 0
+            while i < len(items) {
+                let it = items[i]
+                out = out + to_display(it)
+                if i < len(items) - 1 {
+                    out = out + " "
+                }
+                i = i + 1
+            }
+            out = out + ")"
+            return out
+        },
+        Value.Builtin(name) => return "#<builtin " + name + ">",
+        Value.Closure(p, b, e) => return "#<closure>",
+    }
+}
+
+// --- Driver: run a whole program (multiple top-level forms), -----
+// returning the value of the LAST form.
+
+fn run_program(forms: [Value], chain: [map<str, Value>]) -> Value {
+    let mut result = Value.ListV([])
+    let mut i = 0
+    while i < len(forms) {
+        let f = forms[i]
+        result = eval(f, chain)
+        i = i + 1
+    }
+    return result
+}
+
+fn run_source(label: str, src: str) {
+    try {
+        let forms = parse_program(src)
+        let chain = new_global_chain()
+        let result = run_program(forms, chain)
+        println(label + " = " + to_display(result))
+    } catch e {
+        println(label + " -> ERROR: " + e)
+    }
+}
+
+// The closure-counter demo needs to observe THREE successive calls
+// to the SAME returned closure, so it drives eval() directly instead
+// of going through the run_source helper (which only reports the
+// value of the LAST top-level form).
+fn run_closure_counter_demo() {
+    try {
+        let src = "(define make-counter (lambda () (let ((n 0)) (lambda () (set! n (+ n 1)) n)))) (define c1 (make-counter)) (c1)"
+        let forms = parse_program(src)
+        let chain = new_global_chain()
+        let last = len(forms) - 1
+        let mut i = 0
+        while i < last {
+            let f = forms[i]
+            let setup_result = eval(f, chain)
+            i = i + 1
+        }
+        let call_form = forms[last]
+        let r1 = eval(call_form, chain)
+        let r2 = eval(call_form, chain)
+        let r3 = eval(call_form, chain)
+        println("closure counter: " + to_display(r1) + " " + to_display(r2) + " " + to_display(r3))
+    } catch e {
+        println("closure counter -> ERROR: " + e)
+    }
+}
+
+fn run_demo() {
+    println("=== Kryos Showcase: minilisp -- a small real Lisp interpreter ===")
+    println("")
+    run_source("factorial(10)", "(define fact (lambda (n) (if (< n 1) 1 (* n (fact (- n 1)))))) (fact 10)")
+    run_source("fibonacci(15)", "(define fib (lambda (n) (if (< n 2) n (+ (fib (- n 1)) (fib (- n 2)))))) (fib 15)")
+    run_source("deep recursion sum(1..70)", "(define sum-to (lambda (n) (if (= n 0) 0 (+ n (sum-to (- n 1)))))) (sum-to 70)")
+    run_source("map(square, (1 2 3 4 5))", "(define lisp-map (lambda (f lst) (if (null? lst) lst (cons (f (car lst)) (lisp-map f (cdr lst)))))) (define square (lambda (x) (* x x))) (lisp-map square (list 1 2 3 4 5))")
+    run_closure_counter_demo()
+    println("")
+    println("=== Error handling (graceful -- no panics) ===")
+    run_source("unbound symbol", "(frobnicate 1 2)")
+    run_source("bad arity", "(define f (lambda (a b) (+ a b))) (f 1)")
+    run_source("car of empty list", "(car (list))")
+    println("")
+    println("=== Done ===")
+}
+
+// --- File mode: reads and evaluates a .kry-external Lisp file ----
+
+@capabilities(fs:read)
+fn run_file(path: str) {
+    let src = file_read(path)
+    try {
+        let forms = parse_program(src)
+        let chain = new_global_chain()
+        let mut i = 0
+        while i < len(forms) {
+            let f = forms[i]
+            let result = eval(f, chain)
+            println(to_display(result))
+            i = i + 1
+        }
+    } catch e {
+        println("ERROR: " + e)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let argv = args()
+    if len(argv) >= 2 {
+        run_file(argv[1])
+    } else {
+        run_demo()
+    }
+}
