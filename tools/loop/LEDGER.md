@@ -2387,6 +2387,173 @@ dead code until the retain site is found. Next attempt: rc-ledger diff (the
 focused on WHERE the payload array acquires its unretained second owner.
 ---
 
+AOT RESIDUAL, SESSION 4 (2026-08-18, KRYOS_RC_TRACE tracer + two fix
+attempts, BOTH REVERTED, root cause narrowed further -- STILL NOT FIXED):
+
+Re-added the a3dfc58-style tracer (env-gated KRYOS_RC_TRACE=1,
+kryos-rt/src/lib.rs rc_trace()/rc_trace_event()), wired into
+kryos-rt/src/array.rs (dup/retain/retain_opt/free) AND, new this session,
+kryos-rt/src/alloc.rs (kryos_calloc allocation arms, kryos_free exit
+branches, kryos_struct_retain, kryos_struct_release_shared) -- the a3dfc58
+session only covered the array side. Built a -g debug-info AOT binary
+(kryos build --release -g) and ran AOT t1 (clean) and AOT t9b (1 diag) side
+by side under KRYOS_RC_TRACE=1 KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1, then
+grepped every event for the double-freed array pointer from t9b (matches
+the exact address the a3dfc58 reconciliation already identified). The new
+trace reproduces the a3dfc58 5-event reconciliation exactly and, this
+time, names the SITE the prior session could not:
+
+  1. RCTRACE ARR-DUP-NEW rc=1 -- birth, apply_builtin "list" case
+     (Value.ListV(args), the ALREADY-FIXED 5c611fa construction path).
+  2. RCTRACE ARR-RETAIN-OPT rc->2 -- apply_builtin "car" case
+     match-destructuring Value.ListV(items) (the correctly-working
+     match-arm-bind mechanism, retain_for_ty Array branch).
+  3. RCTRACE ARR-FREE rc 2->1 -- items own scope-end drop, balanced
+     against event 2. Stack still inside apply_builtin/apply (the INNER
+     apply() call for the (car lst) evaluation).
+  4. RCTRACE ARR-FREE rc 1->0 -- THE UNBALANCED EXTRA FREE. Stack:
+     eval_list <- eval <- apply() <- eval_list <- eval <- run_file <- main
+     -- apply_builtin/inner-apply have ALREADY RETURNED; this fires at
+     eval_list own return apply(fnval, argvals) (minilisp.kry:421),
+     evaluating (car lst). argvals is eval_list OWN, freshly-built,
+     legitimately-owned local array (built by eval_args, minilisp.kry
+     424-434) holding ONE element: the SAME Value.ListV(X) enum value
+     that env_lookup returned for the symbol lst (a container READ,
+     gotcha #23 documented "shared handle" policy -- no retain). argvals,
+     once apply() returns its result (which the caller now separately
+     owns), is a dead local and gets DROPPED; dropping an array of
+     Enum-typed elements walks each element through the enum own,
+     correctly-gated __kryos_drop_<Value> helper (this ONE step of the
+     chain IS gated with kryos_struct_release_shared, per the a3dfc58
+     entry own finding) -- which finds ZERO extra owners on the box
+     (nothing ever retained IT) and proceeds to free its ListV payload
+     field, i.e. array X. This is the theft: argvals never legitimately
+     owned that reference, it merely re-aliased one the environment frame
+     (frame["lst"]) still needed.
+  5. RCTRACE ARR-FREE rc=0 (already dead) == the reported array
+     DOUBLE-FREE -- the array real, textbook-correct final owner (the
+     OUTER, top-level eval_list own argvals for the top-level
+     (first (list 7 8 9)) statement, stack WITHOUT the inner apply()
+     frame) arrives to find it already gone.
+
+MECHANISM, stated precisely: eval_args push(out, v) (minilisp.kry:430)
+pushes a value obtained from env_lookup (an unretained container read,
+matching gotcha #23) into a brand-new array. kryos_array_push itself
+(kryos-rt/src/array.rs) is fully type-erased and retains nothing -- it
+trusts the CALLER (codegen) to have already arranged ownership.
+kryos-mir::lower.rs consume_call_args (the function auditing every push()
+call argument) DOES retain Str/Array/Map values being pushed
+(retain_for_ty, ~line 2301) but has NO Enum branch, so an Enum-typed
+pushed value gets ctx.dropped_locals.insert(local_id.0) (source-local drop
+suppressed) with NO compensating retain on the box itself -- exactly the
+gap gotcha #23 and the a3dfc58 entry suspect list named, now pinned to
+this EXACT call (push(out, v) inside eval_args, feeding the inner
+(car lst) call own argvals).
+
+FIX ATTEMPT 1 (REVERTED): extended consume_call_args push_like branch to
+retain ANY Enum-typed pushed value via kryos_struct_retain (new
+declare ptr @kryos_struct_retain(ptr) in LLVM, matching Cranelift
+pre-declare for kryos_struct_release_shared). Full rebuild, full
+tests/minilisp_gate.sh: JIT REGRESSED to 0/10 (every case now shows
+array DOUBLE-FREE, rc=132/rc=253-style aborts) and AOT REGRESSED to 0/10,
+crashing EVERY case (including previously-clean t1/t2/t4/t5) with
+"kryos_free: kryos_struct_retain on NON-BOX pointer 0x1 (never returned by
+kryos_calloc)". REVERTED (git checkout --), rebuilt, re-verified clean
+(exact baseline restored, quoted below).
+
+FIX ATTEMPT 2 (REVERTED, narrower): rather than patching EVERY push() call
+site (attempt 1 blast radius -- push is used pervasively by
+stdlib/collection code with OTHER enum types too), moved the retain to the
+one container-READ site the trace actually implicates: the map-GET
+lowering for arr[i]/m[k] IndexAccess (kryos-mir::lower.rs ~line
+12107-12150, the SAME retain_fn pattern already covering Str/Array/Map
+map-VALUES), extended to MirType::Enum gated on
+ctx.enum_defs.contains_key. Same two declares re-added. Full rebuild: JIT
+stayed 10/10 clean (both attempts never touched Cranelift/JIT correctness
+-- worth recording, since it rules out the map-get site itself being
+wrong for JIT). AOT REGRESSED to 0/10 again, this time crashing on
+"kryos_struct_retain on NON-BOX pointer 0x5" inside env_lookup lookup of a
+CLOSURE value (the trace names square/apply1/mymap/etc, i.e. every corpus
+program own function symbol, right before the crash) -- EVERY case fails
+now, including t1. REVERTED, rebuilt, re-verified clean (exact baseline
+restored, quoted below).
+
+ROOT CAUSE OF BOTH REVERTS, now understood precisely (this is the actual
+finding of this session, even without a landed fix): on AOT/LLVM, an Enum
+value is NOT uniformly heap-boxed. RValue::EnumVariant construction
+(kryos-codegen-llvm/src/codegen.rs ~7513-7622) builds the tagged union as
+an LLVM SSA AGGREGATE VALUE (insertvalue {llvm_ty} undef, ..., optionally
+spilled to a STACK alloca when the destination local is mutable) -- there
+is NO kryos_calloc call anywhere in that construction path. A given Enum
+value only becomes a genuine heap-boxed POINTER at specific,
+backend-chosen transition points (this session did not fully enumerate
+them, but array/map element storage is confirmed one, since
+kryos_array_push slot and kryos_map_get/_insert i64 value are both
+pointer-sized and Enum elements/values ARE observed as real heap
+addresses at THOSE points in the t9b trace). WHICH representation a given
+Enum-typed MIR local/operand currently holds -- SSA aggregate vs. heap
+pointer -- is backend-internal codegen state that MirType::Enum(name)
+alone does not encode, so neither consume_call_args (MIR-level,
+backend-agnostic) nor the map-get lowering (same) can safely decide "is
+this operand currently a real box" before emitting a blind
+kryos_struct_retain call -- kryos_struct_retain does unchecked
+ptr.sub(HEADER) pointer arithmetic on whatever i64 it receives, so
+handing it a raw small-int tag (0x1, 0x5 -- observed exactly) walks off
+into unrelated memory and crashes at the very next kryos_free/
+kryos_calloc touching the corrupted header. Cranelift/JIT was UNAFFECTED
+by both attempts (10/10 clean throughout) -- consistent with Cranelift
+apparently representing Enum values more uniformly (already boxed, or
+already correctly handling this elsewhere), which is itself now the
+leading candidate for why JIT stays clean on this whole corpus while AOT
+does not, superseding the a3dfc58 session two unverified candidates (MIR
+Drop-instruction-count parity, allocator pool-reuse timing) -- NEITHER of
+which explains a same-pointer-identity reconciliation this precise, and
+this session trace (both the natural t9b repro AND the two crash-only
+diagnostics) never showed pool-reuse-style pointer collision.
+
+NEXT ATTEMPT (not tried this session; the correct scope per the above):
+gate the retain at the LLVM CODEGEN layer specifically, at the SAME place
+RValue::EnumVariant construction ALREADY checks val_ty == "ptr" before
+touching a FIELD value as a pointer (codegen.rs ~7584-7611) -- i.e. emit
+kryos_struct_retain only when the operand ACTUAL LLVM-level type at that
+call site is ptr (skip when it is still an SSA aggregate {...}, which
+needs no retain at all since a stack value copied by insertvalue/
+extractvalue is already independent, no aliasing possible). This is
+backend-specific by necessity (Cranelift own representation may not need
+the same gate, matching its unaffected 10/10 throughout both attempts)
+and needs its OWN fresh instrumentation session to enumerate every "SSA
+aggregate -> heap pointer" transition point precisely before landing
+anything -- do not repeat a MIR-level retain_for_ty-style fix a third
+time.
+
+TEST-VACUITY of BOTH reverts, quoted, full rebuilds each time
+(tests/minilisp_gate.sh):
+  - fix 1 REVERTED, rebuild, gate: JIT 10/10; AOT ok t1/t2/t4/t5,
+    FAIL diag=... t3/t6/t7/t8/t9/t9b -- exact baseline.
+  - fix 2 REVERTED, rebuild, gate: identical output to fix 1 revert,
+    byte-for-byte the same pass/fail set and diag counts (t9b:
+    "array DOUBLE-FREE rc=0 len=3 cap=4" then prints "7", exactly as
+    originally documented).
+  - RCTRACE instrumentation removed (git checkout -- on the 3 kryos-rt
+    files), rebuilt AGAIN, gate re-run a third time: identical result,
+    "minilisp: 6 FAILED -- AOT:t3(diag) AOT:t6(diag) AOT:t7(diag)
+    AOT:t8(diag) AOT:t9(diag) AOT:t9b(diag)".
+
+NOT FIXED. Per the debugging discipline ("never iterate more than twice on
+the same error, rethink the approach") -- two DIFFERENT-mechanism attempts
+this session, both cleanly reverted and vacuity-confirmed, both failing
+the SAME way (retaining a non-box), is exactly the "3 misses -> question
+the architecture" signal (counting the a3dfc58 session own reverted
+blanket-retain_for_ty attempt as the first miss, across sessions). The
+site is now named to statement-level precision (eval_args push(out, v)
+inside eval_list evaluation of (car lst), feeding argvals premature
+element-drop) and the reason two straightforward MIR-level fixes both
+crash is now understood (SSA-aggregate-vs-heap-box is backend-state, not
+MIR-visible) -- narrower than any prior session had it, but still NOT
+FIXED. A correct fix needs a fresh, LLVM-codegen-scoped session gating
+the retain on the operand actual LLVM type, not a MIR-level retain.
+---
+
 
 ### 40c. `std::result::to_array<T>` is only type-safe WITH an explicit annotation -- unannotated it still renders a raw pointer, and item 40b's own CLOSED entry claimed otherwise (found by adversarial verification, 2026-08-16) -- NOT FIXED
 
