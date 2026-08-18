@@ -2196,6 +2196,180 @@ printed answer. This is the textbook closures-with-captured-state case
 every language demo uses, so it remains ranked high, now specifically as
 an AOT-only defect.
 
+AOT RESIDUAL, ROOT-CAUSE SESSION (2026-08-17, instrumented, NOT FIXED):
+followed the non-negotiable instrument-first method. Added a TEMPORARY,
+env-gated (`KRYOS_ARR_TRACE=1`) event tracer to `kryos-rt/src/array.rs`
+(`kryos_array_dup`, `kryos_array_retain`, `kryos_array_retain_opt`,
+`kryos_array_free`'s `free_diag` branch) that prints pointer + true
+refcount + the existing Kryos-level shadow-stack trace
+(`crate::trace::format_stack_trace()`, itself only populated by a
+`kryos build --release -g` binary since `kryos_trace_enter`/`_exit` are
+gated on `self.options.debug_info` in both backends' codegen) on every
+retain/dup/free. Removed before this commit (`git diff` confirmed clean;
+grep tag was `ARRTRACE`).
+
+Reconciled the FULL ownership history of AOT t9b's `(first (list 7 8 9))`
+target array (the one `tests/minilisp_gate.sh` reports as
+"array DOUBLE-FREE rc=0 len=3 cap=4"), one event at a time, by pointer:
+  1. **DUP-NEW**, true rc=1 -- born inside `apply_builtin`'s `"list"` case
+     (`return Value.ListV(args)`, minilisp.kry:561), confirming the JIT
+     fix (5c611fa) IS working correctly on AOT too: this is a genuinely
+     independent `kryos_array_dup` copy, not an alias of the caller's
+     `args`.
+  2. **RETAIN-OPT**, rc 1->2 -- `apply_builtin`'s `"car"` case
+     (minilisp.kry:620-631) destructuring `match a { Value.ListV(items)
+     => ... }`; binding `items` correctly calls `kryos_array_retain_opt`
+     to give the new local its own reference.
+  3. **FREE-CALL**, rc 2->1 -- `items`'s own scope-end drop at the end of
+     that match arm. Balanced against event 2. Correct.
+  4. **FREE-CALL**, rc 1->0 -- fires while STILL inside the "first"
+     closure's `apply()` call (stack: eval_list<-eval<-apply<-eval_list
+     <-eval<-run_file<-main), i.e. BEFORE the array's real/original owner
+     chain has had any chance to release it. This is the FIRST unbalanced
+     free: nothing retained a 3rd reference to compensate.
+  5. **FREE-CALL**, rc already 0 -- the reported double-free itself, at
+     the OUTER eval_list (stack: eval_list<-eval<-run_file<-main, i.e.
+     AFTER the closure call has returned) -- this is the array's real,
+     textbook-correct final owner (the outer `eval_list`'s own `argvals`
+     local going out of scope) arriving to find the array already gone.
+
+So: 2 genuine owner events were ever created (birth + the `items`
+retain/release pair, which nets to 0 extra), but 3 independent
+`kryos_array_free` calls happened -- one too many, and it happens
+DURING the closure's own evaluation, before the legitimate final owner
+ever gets a turn.
+
+Traced the extra free to a REAL, source-verified gap present in BOTH
+backends: an ordinary local-variable `Instruction::Drop` of a
+Struct/Enum-typed local NEVER calls `kryos_struct_release_shared` before
+freeing payload fields + the box:
+  - LLVM: `kryos-codegen-llvm/src/codegen.rs`, `Instruction::Drop`'s
+    `MirType::Enum`/`MirType::Struct` arms -> `emit_enum_drop`/
+    `emit_struct_drop` -> `emit_enum_drop_inner` (~line 10969) frees every
+    droppable field unconditionally by tag, then unconditionally
+    `call void @kryos_free(ptr {val})` when `free_buf` -- no
+    `kryos_struct_release_shared` call anywhere in the function.
+  - Cranelift: `kryos-codegen-cranelift/src/codegen.rs`,
+    `Instruction::Drop`'s `MirType::Enum`/`MirType::Struct` arms ->
+    `emit_drop_for_value` (~line 7687) -- the `MirType::Struct` arm
+    (~7830) and `MirType::Enum` arm (~7949) both free fields then
+    unconditionally call `kryos_free`, again with no
+    `kryos_struct_release_shared` gate.
+  - CONTRAST: the STANDALONE, separately-generated `__kryos_drop_<T>`
+    type helper (used when an array/map ELEMENT of Struct/Enum type is
+    dropped) correctly calls `kryos_struct_release_shared` FIRST as a
+    documented "Shared-ownership bail-out" on BOTH backends (Cranelift:
+    codegen.rs ~line 2052-2073, explicit comment referencing the
+    `struct Tree { kids: [Tree] }` heap corruption this gate was added to
+    fix; LLVM's `emit_type_drop_helpers`-generated functions follow the
+    same pattern). Only the ORDINARY per-local drop path lacks it.
+
+This gap is IDENTICAL on both backends (same missing gate, same two
+functions read side by side), so it is NOT itself the JIT/AOT
+differentiator -- by itself it is a latent, universal hazard: any enum/
+struct box aliased into more than one independently-dropped local (with
+no compensating `kryos_struct_retain`) is over-freed once per untracked
+alias, on either backend. The reason JIT stays 10/10 clean on the corpus
+while AOT does not remains UNRESOLVED this session -- plausible candidates
+(not verified): (a) a difference in which/how-many aliasing locals
+actually receive a MIR `Drop` at all per backend's own last-use/move
+elision (the MIR feeding both backends is nominally shared, but neither
+backend's own `Drop`-instruction COUNT for this exact program was diffed
+against the other this session), or (b) allocator/pool reuse timing --
+LLVM's header-recycling freelist could hand the just-double-freed header
+back out to a live, unrelated object before the FURTHER stale frees land,
+turning what would show as a same-instant box-level double-free (which
+`kryos_free`'s own CLASS_POISON guard reports unconditionally,
+independent of any diag flag -- confirmed: this message never fires for
+t9b, on any run, with or without `KRYOS_BOX_DIAG=1`) into a silent,
+undetectable corruption of a DIFFERENT, reused object.
+
+NOT FIXED. A real fix needs BOTH a compensating `kryos_struct_retain` at
+whichever specific aliasing site(s) create the untracked 3rd reference
+(candidates in this exact repro: `frame[pname] = aval` in `apply`'s
+closure branch, or `let a = args[0]` in `apply_builtin`, minilisp.kry
+519-545) AND the missing `kryos_struct_release_shared` gate added to the
+ordinary per-local Enum/Struct drop path in BOTH backends together --
+adding retains alone (already tried once, see the REVERTED attempt above)
+cannot work without the gate, since nothing currently consumes a retained
+box's extra-owner count on the ordinary drop path at all. This is a two-
+sided change needing its own careful, narrowly-scoped, freshly-instrumented
+session; per the debugging discipline ("state the mechanism before
+editing", "never iterate more than twice, rethink") this session stops
+here with the mechanism precisely diagnosed rather than risking a third
+speculative patch on top of one already-reverted attempt.
+
+SECOND TARGET, exception-path double-free (2026-08-17, investigated,
+NOT FIXED): reproduced the class the session brief described ("3x
+`kryos_free: double free ... ignored`" from the minilisp demo's
+unbound-symbol / bad-arity / car-of-empty error-handling calls) with a
+MINIMAL, fully isolated harness: a scratch copy of `minilisp.kry` with
+`run_demo()` trimmed to just those 3 `run_source(...)` calls (no
+`map()`/closure-counter beforehand) -- confirms the bug does NOT need any
+preceding corruption to manifest.
+
+MEASURED, JIT (`kryos run`): all 3 cases reproduce, each showing BOTH an
+"array DOUBLE-FREE" AND a "kryos_free: double free of <box>
+(already-freed box); ignored" -- 3x of the box-level message exactly as
+described. The freed array's reported LENGTH matches the throwing
+S-expression's own element count exactly: case 1 `(frobnicate 1 2)` ->
+len=3, case 2 `(f 1)` (inside "bad arity") -> len=2, case 3
+`(car (list))` -> len=2. That identifies the array being double-freed as
+the currently-evaluating form's own `Value.ListV` payload -- a BORROWED
+parameter (gotcha #22: `items` in `eval_list(items, chain)`) that
+`eval_list` must only read, never free; its real owner is `forms[i]` back
+in `run_program`'s loop. The Kryos-level stack traces show the "true
+first zero" firing INSIDE `run_program`'s own frame (before the
+exception has even fully propagated out of it) and the reported
+double-free firing again ONE STACK LEVEL FURTHER UP, in `run_source`'s
+frame, after `run_program` has already unwound -- consistent with EACH
+stack level the exception unwinds through independently (and wrongly)
+treating the borrowed form array as owned and freeing it once per level.
+
+MEASURED, AOT (`kryos build --release`): the SAME isolated harness,
+built and run standalone 3x for repeatability, shows ZERO double-free
+diagnostics -- this class does NOT reproduce on AOT in isolation,
+contradicting the assumption that it is present on both backends
+identically. Whether it appears on AOT only downstream of the (separately
+tracked, above) map()-residual corruption remains UNOBSERVED this
+session: running the full, UNMODIFIED demo on AOT under
+`KRYOS_FREE_DIAG=1` SEGFAULTS partway through evaluating
+`map(square, (1 2 3 4 5))`, before ever reaching the error-handling
+section -- and a PLAIN (non-diag) full-demo AOT run independently confirms
+that same `map()` line prints a WRONG answer
+(`ERROR: car: cannot take car of an empty list` instead of the correct
+`(1 4 9 16 25)`) -- the identical `mymap`/`square` recursive-`apply()`
+shape as corpus case t3, i.e. the SAME already-tracked AOT residual above,
+not a new bug. The exception-path class could not be isolated on AOT this
+session because the OTHER residual crashes first in the full demo, and the
+isolated errs-only harness alone does not reproduce it on AOT.
+
+ROOT-CAUSE CANDIDATE (not verified to statement-level precision): the
+function-exit-via-exception-propagation path does not respect the
+"array parameter is a borrow, do not free it" rule that the NORMAL return
+path does -- most likely in kryos-mir's exception-check/unwind lowering.
+This is the SAME general area (asymmetric drop/cleanup emission between
+normal-return and exception-unwind exits) as the untracked, UNVERIFIED
+probe `tests/mem/throw_unwind_leak.kry` already sitting in the working
+tree from an earlier campaign -- read this session, NOT run, NOT
+committed (someone else's probe; it targets a DIFFERENT-shaped symptom,
+a LEAK of try-body locals never dropped on a caught throw, not this
+EXTRA free of a borrowed parameter -- both point at the same neighborhood
+of the exception-unwind machinery but are not confirmed to be the same
+bug).
+
+NOT FIXED, NOT further isolated to a single MIR call site this session.
+
+LEDGER STATUS: item 44 stays OPEN. JIT half (EnumVariant construction)
+remains FIXED and gated (unaffected by this session -- re-verified 10/10
+clean after removing all instrumentation and a full rebuild). Neither the
+AOT residual nor the exception-path class closed this session; both now
+have a precisely measured mechanism (owner-count reconciliation +
+source-verified missing-gate finding for the AOT residual; isolated
+cross-backend repro + stack-trace-verified borrowed-parameter
+identification for the exception-path class) to resume from without
+re-deriving.
+
 ---
 
 
