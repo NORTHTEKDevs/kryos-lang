@@ -2060,7 +2060,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT PARTIALLY FIXED with a second, distinct, precisely-diagnosed residual left OPEN
+### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT PARTIALLY FIXED with a second, distinct, precisely-diagnosed residual left OPEN. WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is now ALSO FIXED -- see the dated addendum below. AOT `apply()` args-parameter residual (below) remains OPEN; item 44 stays OPEN overall.
 
 MEASURED MECHANISM (instrumented via the pre-existing `KRYOS_BOX_DIAG=1
 KRYOS_FREE_DIAG=1` runtime diagnostics, kryos-rt `alloc.rs`/`map.rs` --
@@ -2360,15 +2360,161 @@ bug).
 
 NOT FIXED, NOT further isolated to a single MIR call site this session.
 
-LEDGER STATUS: item 44 stays OPEN. JIT half (EnumVariant construction)
-remains FIXED and gated (unaffected by this session -- re-verified 10/10
-clean after removing all instrumentation and a full rebuild). Neither the
-AOT residual nor the exception-path class closed this session; both now
-have a precisely measured mechanism (owner-count reconciliation +
-source-verified missing-gate finding for the AOT residual; isolated
-cross-backend repro + stack-trace-verified borrowed-parameter
-identification for the exception-path class) to resume from without
-re-deriving.
+LEDGER STATUS (2026-08-17 session): item 44 stays OPEN. JIT half
+(EnumVariant construction) remains FIXED and gated (unaffected by this
+session -- re-verified 10/10 clean after removing all instrumentation
+and a full rebuild). Neither the AOT residual nor the exception-path
+class closed this session; both now have a precisely measured mechanism
+(owner-count reconciliation + source-verified missing-gate finding for
+the AOT residual; isolated cross-backend repro + stack-trace-verified
+borrowed-parameter identification for the exception-path class) to
+resume from without re-deriving.
+
+WAVE 2 (2026-08-18): exception-path double-free class -- FIXED (JIT).
+
+MECHANISM, CONFIRMED VIA LIVE INSTRUMENTATION (not just source reading):
+traced the SAME isolated 3-error-case harness the prior session built
+(a scratch copy of `examples/showcase/minilisp.kry` with `run_demo()`
+trimmed to only the `frobnicate`/bad-arity/`(car (list))` cases) with
+`KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1` and read the reported "previously
+freed at" / "first (rc->0) freed at" stack traces frame-by-frame. Both
+point at `run_program`'s own frame for the first (premature) free and
+`run_source`'s frame for the second (the reported double-free), for all
+3 cases, with the freed array's length matching the throwing top-level
+form's own element count exactly (3/2/2) -- the SAME signature the prior
+session's static trace already suggested, now confirmed live.
+
+ROOT CAUSE: `run_program`'s loop body binds `let f = forms[i]` (a plain
+array-index read of a BORROWED parameter -- `forms` is owned by the
+caller, `run_program` only reads it) then calls `eval(f, chain)`. MIR's
+own ownership tracking (`ctx.borrowed_locals` in `kryos-mir/src/
+lower.rs`) already knows `f` is not independently owned and correctly
+excludes it (alongside `ctx.param_locals`) from every NORMAL
+`Instruction::Drop` -- `emit_named_scope_drops` and
+`drop_loop_exit_locals` both check `ctx.borrowed_locals` before emitting
+a drop. But when `eval(f, chain)` throws and the exception is NOT caught
+inside `run_program` (the `try` lives one level up, in `run_source`),
+control does not reach any of those MIR-emitted drop sites at all --
+instead it takes a DIFFERENT, entirely codegen-synthesized path:
+`kryos-codegen-cranelift/src/codegen.rs`'s post-call
+`kryos_exception_check` early-return ("the codegen's own post-call
+unwind safety net", `translate_instruction`'s `Instruction::Assign`
+arm), which on a pending exception calls `emit_exception_cleanup_drops`
+to free "live" locals before propagating. That function's
+`locals_to_drop` filter excluded PARAMETERS (`param_ids`) but had no
+notion of `ctx.borrowed_locals` at all -- MIR-lowering-internal state
+codegen never had access to -- so it blanket-dropped every named,
+non-parameter, droppable-typed local, `f` included. That freed the
+currently-evaluating top-level form's own heap payload while `run_
+program` was still on the stack, one frame before its real owner
+(`forms`, in `run_source`) ever got a legitimate turn to free it when
+the `try`/`catch` unwound to its own scope-end -- a double-free, once
+per stack frame that (a) does not itself catch the exception and (b)
+held a named local bound from a shared/borrowed read.
+
+This is a DIFFERENT call site from the already-diagnosed AOT residual's
+missing `kryos_struct_release_shared` gate (that one is in the ordinary
+per-local `Instruction::Drop` path, `emit_drop_for_value`'s
+MirType::Struct/Enum arms) -- not the same bug, though both are
+instances of codegen not respecting MIR's own ownership analysis. The
+AOT backend has NO equivalent exception-cleanup-drops step at all
+(`kryos-codegen-llvm/src/codegen.rs`'s `emit_post_call_exception_check`
+only replays `mutated_scalar_writeback_pairs` and returns a default
+value -- it drops nothing) -- confirming, structurally, why the prior
+session measured this exact harness as ZERO diagnostics on AOT in
+isolation: AOT LEAKS on this path instead of double-freeing. That LLVM
+leak is a separate, not-yet-quantified issue, explicitly out of this
+wave's scope (the task was the double-free class, JIT).
+
+FIX: exported the exact set MIR's own drop-emission logic already
+excludes. Added `MirAttributes::non_owned_locals: Vec<u32>` (`kryos-
+mir/src/ir.rs`), populated from `ctx.borrowed_locals` at every
+`MirFunction` construction site in `lower_function` (`kryos-mir/src/
+lower.rs`) and re-applied at the 3 sites that overwrite `.attributes`
+wholesale from source annotations right after (`annotations_to_mir_
+attributes` builds a fresh `MirAttributes`, which would otherwise wipe
+the field for any ANNOTATED function). `emit_exception_cleanup_drops`
+(`kryos-codegen-cranelift/src/codegen.rs`) now excludes
+`non_owned_locals` from `locals_to_drop` the same way it already
+excludes `param_ids`.
+
+TEST-VACUITY, both directions, verified 2026-08-18 (`git stash` the 3
+changed files, full `cargo build --release`, re-test, restore, rebuild,
+re-test), on the same isolated 3-error-case harness under
+`KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`:
+  - fix REVERTED: 12 diagnostic lines (`KRYOS-FREE-DIAG[0..11]`), exactly
+    matching the original pre-fix baseline (4 diagnostics x 3 cases).
+  - fix RESTORED: 0 diagnostic lines, all 3 error messages correct
+    (`unbound symbol: frobnicate` / `arity mismatch: closure expects 2
+    argument(s), got 1` / `car: cannot take car of an empty list`), rc=0.
+
+REGRESSION EVIDENCE:
+  - `tests/minilisp_gate.sh`: JIT still 10/10 clean (unaffected, as
+    expected -- this fix targets the exception-unwind path, not the
+    EnumVariant-construction path wave 1 fixed). AOT still exactly
+    4/10 clean + 6/10 correctly RED with the SAME diag counts/programs
+    as before this session -- the separately-tracked AOT residual is
+    untouched, no regression, no accidental fix.
+  - `tests/mem_plateau_check.sh`: PASS, peak RSS 4MB (ceiling 250MB) --
+    guards exactly the "skipping too many drops in unwind = leak" risk
+    this class of fix could introduce; excluding MORE locals than
+    necessary from the cleanup drop would show up here as growth.
+  - `tests/mem/throw_unwind_leak.kry` (the untracked probe already
+    sitting in the working tree, read but NOT run by the prior session):
+    RUN this session, all 5 modes (loop_locals/match_arm/closure/
+    if_stmt/baseline) complete correctly at 200k iterations with no
+    crash. `loop_locals` mode measured for a real leak via the same
+    PowerShell `PeakWorkingSet64` polling technique `mem_plateau_check.
+    sh` uses: 100k iters -> 4,177,920 bytes peak; 2M iters (20x) ->
+    4,800,512 bytes peak -- a ~15% RSS difference against a 20x
+    iteration-count difference is allocator noise, not linear growth.
+    This probe's own header describes a DIFFERENT, unrelated bug
+    (try-body locals never dropped on a CAUGHT throw, in `lower_try_
+    catch`'s own MIR lowering -- this session's fix does not touch that
+    function) -- it is filed as its own probe, not committed as a gate
+    by this session, and this measurement does not claim that separate
+    bug is fixed, only that it does not manifest as a measurable leak
+    at this scale on the current binary.
+  - `tools/loop/kryos-loop.sh gates 1` (tier 1, full ladder), run under
+    severe machine contention this session (a system-wide bash-fork-
+    storm, ~86 bash.exe peak, recovered with one `taskkill //F //IM
+    bash.exe`, still slow for the remainder): 16 of 18 gates GREEN
+    (conformance 65/65, no_double_free, type_soundness, inferred_
+    soundness, match_exhaustiveness, concurrency_smoke, module_case_
+    gate, docs_status_gate, utf8_invalid_string, backend_divergence_
+    pins, diagnostics, assert_shadow, parser_nesting, stdlib_compile,
+    cli_smoke). `minilisp` FAILs the ladder's exit-code check --
+    exactly the pre-existing, already-tracked AOT residual above (6
+    FAILED: AOT t3/t6/t7/t8/t9/t9b, identical diag counts/programs to
+    the direct `minilisp_gate.sh` run reported earlier in this entry),
+    NOT a regression from this wave's fix. `authority_surface`,
+    `jit_symbols`, `selfhost_regressions` -- orthogonal to this fix's
+    code path (capability/FFI surface, JIT-symbol export, self-host-
+    parser checks; no interaction with exception-unwind cleanup) --
+    were still running when this entry was finalized; not independently
+    reconfirmed by the ladder itself, a truthful gap rather than a
+    claimed PASS. `tools/loop/kryos-loop.sh gates 1` therefore does NOT
+    report tier1 GREEN this session -- expected and correct, since the
+    AOT residual (out of this wave's scope) is still open and its own
+    gate is part of tier 1.
+
+FIX LOCATIONS: `kryos-mir/src/ir.rs` (`MirAttributes::non_owned_
+locals`), `kryos-mir/src/lower.rs` (4 sites: `lower_function`'s
+`MirFunction` construction + the 3 `.attributes = annotations_to_mir_
+attributes(..)` overwrite sites), `kryos-codegen-cranelift/src/
+codegen.rs` (`emit_exception_cleanup_drops`'s `locals_to_drop` filter).
+AOT (`kryos-codegen-llvm`) untouched -- it has no equivalent drop step
+on this path at all (see LEAK note above), out of scope for this wave.
+
+LEDGER STATUS (2026-08-18, wave 2): the exception-path double-free
+class is FIXED and vacuity-proven both ways. Item 44 stays OPEN overall
+-- the AOT `apply()` args-parameter residual (documented above) is a
+separate, still-unfixed piece. Both waves are therefore NOT both green;
+item 44 is NOT moved to the CLOSED table. `docs/LAUNCH-READINESS.md`'s
+interpreter-domain verdict and minilisp.kry's closure-counter-demo
+header are left as previously documented (not re-verified fixed this
+session, and the closure-counter demo's own bug is the separate deep-
+chain-env divergence, unrelated to either wave's fix).
 
 
 RULED OUT BY EXPERIMENT (2026-08-17, post-diagnosis): adding the

@@ -1901,6 +1901,12 @@ pub fn lower_module_with_lambda_params(
                 let mut func = lower_function(&mut ctx, name, params, ret_ty, body);
                 func.attributes = annotations_to_mir_attributes(annotations);
                 func.attributes.is_async = *is_async;
+                // LEDGER item 44: annotations_to_mir_attributes() builds a
+                // FRESH MirAttributes, wiping the non_owned_locals lower_function
+                // just populated -- restore it from ctx.borrowed_locals, which
+                // still reflects the function just lowered (ctx.reset() only
+                // runs at the START of the NEXT lower_function call).
+                func.attributes.non_owned_locals = ctx.borrowed_locals.iter().copied().collect();
                 inject_budget_frames(&mut func, annotations);
                 functions.push(func);
             }
@@ -2005,6 +2011,9 @@ pub fn lower_module_with_lambda_params(
                             lower_function(&mut ctx, &mangled, &all_params, ret_ty, body);
                         func.attributes = annotations_to_mir_attributes(annotations);
                         func.attributes.is_async = m_is_async;
+                        // LEDGER item 44: restore non_owned_locals, see the
+                        // matching comment at the top-level fn decl site above.
+                        func.attributes.non_owned_locals = ctx.borrowed_locals.iter().copied().collect();
                         functions.push(func);
                     }
                 }
@@ -2076,6 +2085,9 @@ pub fn lower_module_with_lambda_params(
                                     );
                                     func.attributes = annotations_to_mir_attributes(annotations);
                                     func.attributes.is_async = *is_async;
+                                    // LEDGER item 44: restore non_owned_locals, see the
+                                    // matching comment at the top-level fn decl site above.
+                                    func.attributes.non_owned_locals = ctx.borrowed_locals.iter().copied().collect();
                                     functions.push(func);
                                 }
                             }
@@ -2788,7 +2800,16 @@ pub fn lower_function(
         ret_ty: mir_ret_ty,
         blocks: ctx.blocks.clone(),
         locals,
-        attributes: MirAttributes::default(),
+        attributes: MirAttributes {
+            // LEDGER item 44 exception-path class: export the exact set
+            // MIR's own emit_named_scope_drops/drop_loop_exit_locals
+            // already exclude (alongside params) from every normal Drop,
+            // so codegen's exception-cleanup early-return path can apply
+            // the same exclusion instead of blanket-dropping every named
+            // non-parameter heap local.
+            non_owned_locals: ctx.borrowed_locals.iter().copied().collect(),
+            ..MirAttributes::default()
+        },
         source_file: None,
         source_line: 0,
     }

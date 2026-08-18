@@ -302,6 +302,23 @@ pub struct MirAttributes {
     /// on the NEXT call. Empty for every function that isn't a closure with
     /// a mutated scalar capture.
     pub mutated_scalar_writeback_pairs: Vec<(u32, u32)>,
+    /// Local ids this function's OWN lowering (`ctx.borrowed_locals` in
+    /// lower.rs) knows are NOT independently owned -- e.g. a `let` bound
+    /// directly from an array/map index read (`let f = forms[i]`), a
+    /// match-destructure of a borrowed scrutinee, or a loop variable -- and
+    /// so must never be freed by this function. `emit_named_scope_drops`/
+    /// `drop_loop_exit_locals` already exclude these (alongside
+    /// `param_locals`) from every MIR-emitted `Instruction::Drop`. This field
+    /// exists so codegen's OWN exception-triggered early-return cleanup
+    /// (`emit_exception_cleanup_drops` in kryos-codegen-cranelift, LEDGER
+    /// item 44's exception-path class) -- synthesized entirely in codegen,
+    /// same reason `mutated_scalar_writeback_pairs` above exists -- can apply
+    /// the identical exclusion instead of blanket-dropping every named
+    /// non-parameter heap local. Without it, a shared/borrowed local still
+    /// live at a throw point was freed a second time when its REAL owner
+    /// (further up the call stack) later dropped it normally, one
+    /// "kryos_free: double free ... ignored" per unwound stack frame.
+    pub non_owned_locals: Vec<u32>,
 }
 
 /// A single MIR function.

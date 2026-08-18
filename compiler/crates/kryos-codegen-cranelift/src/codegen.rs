@@ -8116,6 +8116,23 @@ fn emit_exception_cleanup_drops<M: Module>(
         .iter()
         .map(|p| p.local.0)
         .collect();
+    // LEDGER item 44 exception-path class: a local bound from a shared/
+    // borrowed source (an array/map index read, a match-destructure of a
+    // borrowed scrutinee, a loop variable, ...) is NOT independently owned
+    // -- MIR's own emit_named_scope_drops/drop_loop_exit_locals already
+    // exclude these (see MirAttributes::non_owned_locals) from every
+    // NORMAL Drop instruction. This synthesized early-return path must
+    // apply the identical exclusion: without it, e.g. `let f = forms[i]`
+    // in a loop got freed here on a throw mid-`eval(f, ..)`, and again
+    // (correctly) when the real owner (`forms`) was later dropped by the
+    // enclosing try/catch -- a double-free once per unwound stack frame.
+    let non_owned_ids: std::collections::HashSet<u32> = translator
+        .mir_func
+        .attributes
+        .non_owned_locals
+        .iter()
+        .copied()
+        .collect();
 
     // Collect the locals we need to drop: non-parameter, droppable types.
     // @copy structs are excluded: they share field pointers with their source
@@ -8124,7 +8141,7 @@ fn emit_exception_cleanup_drops<M: Module>(
         .mir_func
         .locals
         .iter()
-        .filter(|l| !param_ids.contains(&l.id.0))
+        .filter(|l| !param_ids.contains(&l.id.0) && !non_owned_ids.contains(&l.id.0))
         // Skip unnamed compiler temporaries. A temp (e.g. the `to_string(x)`
         // result inside `"pre-" + to_string(x)`) is CONSUMED within its own
         // statement -- string concat frees its operands inline -- so at any
