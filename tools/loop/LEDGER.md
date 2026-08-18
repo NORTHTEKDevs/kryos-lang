@@ -2370,6 +2370,21 @@ cross-backend repro + stack-trace-verified borrowed-parameter
 identification for the exception-path class) to resume from without
 re-deriving.
 
+
+RULED OUT BY EXPERIMENT (2026-08-17, post-diagnosis): adding the
+`kryos_struct_release_shared` gate to the LLVM `emit_enum_drop_inner`
+heap path (mirroring `emit_struct_drop`'s shared-ownership bail-out) is a
+MEASURED NO-OP -- minilisp gate identical before/after (JIT 10/10, AOT 4/10 +
+6 residual). Conclusion: nothing ever RETAINS an enum box on this path, so the
+sharing that produces the extra `kryos_array_free` leaves no rc trace for a
+gate to read. This confirms the diagnosis's "compensating retain AND gate must
+land TOGETHER": the unfound half is the SITE where AOT creates the second
+payload owner without a retain (suspect family: gotcha #23's AOT byval
+copies / container reads sharing payload pointers). The gate alone was
+reverted rather than shipped -- half a fix that measurably changes nothing is
+dead code until the retain site is found. Next attempt: rc-ledger diff (the
+2026-08-17 tracer methodology in this entry) between AOT t1 and AOT t9b,
+focused on WHERE the payload array acquires its unretained second owner.
 ---
 
 
