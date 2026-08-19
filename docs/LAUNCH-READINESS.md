@@ -291,6 +291,22 @@ addendum for the full trace-based root-cause account. The paragraph below
 is preserved as historical record of the addendum's original (now
 superseded) finding.
 
+**New, separate finding from the same WAVE 1 session, NOT part of item 44
+and NOT fixed -- LEDGER item 45 (AOT-only leak):** while closing item 44's
+JIT residual, a 2026-08-19 verifier measured a pre-existing, proportional
+leak in the general enum-array-push pattern: ~454MB peak at 5M fresh-enum
+pushes on AOT, JIT flat/clean (~11MB) at the same scale. Neither of item
+44's WAVE 1 fixes touches this path (they are scoped to construction's own
+field-dup and to the map/array-insert retain, not `kryos_array_push`'s
+AOT-only aggregate-boxing step). Characterized and pinned only, per the
+WAVE 1 brief's own instruction not to attempt the fix this wave --
+committed regression/characterization probe: `tests/mem/
+enum_array_push_leak.kry` (`LEAK_ITERS`-gated, 500k/5M both measured).
+Ranked as a LEAK (below any silent-wrong-answer/crash class): requires
+millions of fresh-enum-then-immediately-pushed iterations to become
+visible, does not corrupt output or crash. See LEDGER item 45 for the full
+measurement table and candidate fix site.
+
 **[SUPERSEDED, kept for history] Original 2026-08-18 finding:** YES on
 BOTH backends for the original 10-program corpus. `kryos run` and `kryos
 build --release` are both fully correct for real Lisp-interpreter

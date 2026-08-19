@@ -13,29 +13,32 @@ now **0 escaping** (`bash tools/loop/escape_status.sh`). Read
 [`docs/LAUNCH-READINESS.md`](docs/LAUNCH-READINESS.md) for the current,
 measured verdict rather than trusting this file's queue as current.
 
-**FURTHER UPDATE (2026-08-18, session 5, WAVE 3 of LEDGER item 44):**
-this document's "Remaining queue" and "Both 1.0 blockers are FIXED" sections
-below are about the 2026-07-28 concurrency/leak line and remain accurate for
-what they measured. Since then, a separate, more severe P0 was found and is
-now MOSTLY closed: **LEDGER item 44**, a memory-corruption bug in enum
-handling on AOT (`kryos build --release`). Construction (JIT+AOT), a JIT-only
-exception-path double-free, AND the AOT-only `apply()`/array-push residual
-that stayed open across four prior sessions are ALL now FIXED and gated
-(`tests/minilisp_gate.sh`, wired into tier 1) -- root cause was a SECOND raw
-bit-copy site (push's aggregate-boxing codegen) missing the same per-field
-dup `RValue::EnumVariant` construction already had, fixed with a new
-per-enum-type `__kryos_dup_fields_<Name>` helper plus a guard against
-double-dup'ing an already-independent fresh construction (see LEDGER item 44
-WAVE 3 for the full mechanism, including a self-caught leak regression from
-the first fix candidate, measured and mitigated before landing). AOT is now
-genuinely clean (zero diagnostic lines, correct output) on the full 10-program
-minilisp corpus. What remains open: a NEW, JIT-only regression this session
-pinned as its own corpus case (`tests/minilisp/t10.lisp`, the closure-counter
-shape -- `make-counter`'s returned closure `set!`-mutating a captured local
-across two calls) fails nondeterministically on Cranelift (`kryos run`),
-untouched by any of this session's AOT-side work. This is the current, single
-most important correctness caveat for anyone building on JIT
-(`kryos run`) today; nothing else in this file's queue is more current than
+**FURTHER UPDATE (2026-08-19, WAVE 1 of a new campaign, LEDGER item 44
+CLOSED):** this document's "Remaining queue" and "Both 1.0 blockers are
+FIXED" sections below are about the 2026-07-28 concurrency/leak line and
+remain accurate for what they measured. Since then, a separate, more severe
+P0 was found and is now **FULLY CLOSED**: **LEDGER item 44**, a
+memory-corruption bug in enum handling, backend-divergent. Construction
+(JIT+AOT), a JIT-only exception-path double-free, the AOT-only
+`apply()`/array-push residual that stayed open across four prior sessions,
+and finally a JIT-only `set!`-on-captured-variable regression
+(`tests/minilisp/t10.lisp`, closure-counter) found while closing the AOT
+half -- ALL are now fixed and gated (`tests/minilisp_gate.sh`, 11/11 both
+backends, wired into tier 1). The closing fix (WAVE 1, 2026-08-19) was two
+Cranelift-only bugs: an `elem_kind` numbering mismatch at
+`RValue::EnumVariant`/`RValue::Struct` construction's array-dup call
+(silently skipped every Map-typed field's retain), and a missing
+Struct/Enum compensating retain at the `m[k]=v`/`arr[i]=v` IndexAssign
+codegen site. Both backends are now genuinely clean (zero diagnostic lines,
+correct output) on the full 11-program minilisp corpus, including the demo
+printing "closure counter: 1 2 3" correctly on both backends for the first
+time. See LEDGER item 44's WAVE 1 addendum for the full trace-based
+root-cause account and six-session evidence chain. A separate, NOT-fixed
+finding spun off the same session: **LEDGER item 45**, a pre-existing,
+AOT-only leak in the general enum-array-push pattern (~454MB at 5M
+fresh-enum pushes, JIT clean) -- characterized and pinned only
+(`tests/mem/enum_array_push_leak.kry`), deliberately out of scope for that
+wave. Nothing else in this file's queue is more current than
 `docs/LAUNCH-READINESS.md` and the LEDGER.
 
 

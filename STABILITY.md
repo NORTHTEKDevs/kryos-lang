@@ -151,14 +151,41 @@ block is rejected with E0500.
   enum immediately pushed with no other use, re-dup'd on top of
   construction's own independent reference) was mitigated, not left in.
   See LEDGER item 44 for the full mechanism and residual notes.
-- **JIT closure-counter regression, OPEN (LEDGER item 44, tracked
-  2026-08-18):** `make-counter`'s returned closure (`set!`-mutating a
-  captured local across two calls) fails NONDETERMINISTICALLY on
-  `kryos run` -- illegal-instruction or a wrong "unbound symbol" answer,
-  zero diagnostic lines either way, classic use-after-free roulette. Pinned
-  as `tests/minilisp/t10.lisp` in the regression corpus so it cannot be lost
-  track of; NOT fixed, mechanistically distinct from the AOT fix above
-  (Cranelift/JIT codegen was not touched this session).
+- **JIT closure-counter regression -- FIXED (LEDGER item 44, WAVE 1,
+  2026-08-19; item 44 is now fully CLOSED, both backends):**
+  `make-counter`'s returned closure (`set!`-mutating a captured local
+  across two calls, `tests/minilisp/t10.lisp`) used to fail
+  NONDETERMINISTICALLY on `kryos run` -- illegal-instruction or a wrong
+  "unbound symbol" answer, zero diagnostic lines either way. Root-caused to
+  two Cranelift-only bugs: `RValue::EnumVariant`/`RValue::Struct`
+  construction computed `kryos_array_dup`'s `elem_kind` arg with a
+  numbering that does not match the dup function's real convention
+  (Map-typed fields silently skipped every retain -- `Value.Closure`'s
+  captured-env chain is exactly an Array-of-Map payload), and
+  `kryos-mir::lower.rs`'s `retain_for_ty` never covered Struct/Enum for the
+  `m[k]=v`/`arr[i]=v` IndexAssign value-retain site (a UAF surfacing as a
+  `br_table`-on-garbage-tag SIGILL). Fixed entirely in
+  `kryos-codegen-cranelift/src/codegen.rs`; `kryos-mir`,
+  `kryos-codegen-llvm`, and `kryos-rt` untouched. `tests/minilisp_gate.sh`
+  is now 11/11 on BOTH backends (22/22 total), zero diagnostic lines, t10
+  10x per backend under diag-on and diag-off all correct; the demo prints
+  "closure counter: 1 2 3" correctly on both backends, byte-identical to
+  each other, for the first time since item 44 opened. See LEDGER item 44
+  for the full six-session evidence chain.
+- **AOT-only enum-array-push leak, OPEN (LEDGER item 45, characterized
+  2026-08-19, NOT fixed):** a separate, pre-existing, proportional leak in
+  the general enum-array-push pattern -- ~454MB peak at 5M fresh-enum
+  pushes on AOT, JIT flat/clean (~11MB) at the same scale. Found while
+  closing item 44's JIT residual; neither of that fix touches this path
+  (scoped to construction's own field-dup and to the map/array-insert
+  retain, not `kryos_array_push`'s AOT-only aggregate-boxing step).
+  Committed regression/characterization probe:
+  `tests/mem/enum_array_push_leak.kry` (`LEAK_ITERS`-gated). Ranked as a
+  LEAK, below any silent-wrong-answer/crash class: requires millions of
+  fresh-enum-then-immediately-pushed iterations to become visible, does not
+  corrupt output or crash. Candidate fix site:
+  `local_is_always_fresh_enum_construction` in
+  `kryos-codegen-llvm/src/codegen.rs`.
 
 
 ### 5.0 WASM backend coverage (v0.7)
