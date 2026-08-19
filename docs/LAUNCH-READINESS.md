@@ -271,24 +271,40 @@ underlying array.
   candidate introduced and this session's own adversarial memory testing
   caught and mitigated before landing.
 
-**Revised interpreter-domain verdict (supersedes 0b's and this addendum's
-own prior table row for `minilisp.kry`):** **YES on BOTH backends for the
-original 10-program corpus.** `kryos run` and `kryos build --release` are
-both fully correct for real Lisp-interpreter workloads, including recursion
-and repeated `apply()` calls (10/10 clean on each). One NEW, narrower
-qualification, found and pinned THIS session, not present in any prior
-verdict: a closure that `set!`-mutates a variable captured from an
-enclosing scope, called more than once (the `make-counter`/closure-counter
-shape, `tests/minilisp/t10.lisp`), fails nondeterministically on JIT
-(`kryos run`) -- illegal-instruction or a wrong answer depending on
-allocator timing, zero diagnostic lines either way. AOT is unaffected
-(10/10 clean on this exact case too). This is a DIFFERENT bug from
-everything fixed above (Cranelift codegen was not touched this session) and
-remains open. Regression gate: `tests/minilisp_gate.sh` (wired into tier 1,
-now 11 cases), which fails unconditionally on any diagnostic line rather
-than trusting the printed answer -- so a "looks right but corrupted" case
-cannot pass, and t10's JIT failure is a real, visible gate FAIL, not a
-silently-tolerated exemption.
+**Revised interpreter-domain verdict, UPDATED 2026-08-19 (LEDGER item 44
+WAVE 1, supersedes the paragraph below and this addendum's prior table row
+for `minilisp.kry`):** **YES on BOTH backends, ALL 11 corpus programs,
+INCLUDING t10/closure-counter.** The JIT-only `set!`-on-captured-variable
+regression this addendum originally flagged as open is FIXED: two
+Cranelift-only bugs (an `elem_kind` numbering mismatch at
+`RValue::EnumVariant`/`RValue::Struct` construction's array-dup call, and a
+missing Struct/Enum compensating retain at the `m[k]=v`/`arr[i]=v`
+IndexAssign codegen site), neither the shape originally suspected. `git
+diff --stat -- compiler/` shows exactly one file changed
+(`kryos-codegen-cranelift/src/codegen.rs`) -- `kryos-mir`,
+`kryos-codegen-llvm`, `kryos-rt` untouched. `tests/minilisp_gate.sh`:
+22/22 (11/11 both backends), zero diagnostic lines, t10 10x per backend
+under both diag-on and diag-off all rc=0 with correct output. The demo
+(no args) now prints "closure counter: 1 2 3" correctly on both backends,
+byte-identical to each other, 10x each. See LEDGER item 44's WAVE 1
+addendum for the full trace-based root-cause account. The paragraph below
+is preserved as historical record of the addendum's original (now
+superseded) finding.
+
+**[SUPERSEDED, kept for history] Original 2026-08-18 finding:** YES on
+BOTH backends for the original 10-program corpus. `kryos run` and `kryos
+build --release` are both fully correct for real Lisp-interpreter
+workloads, including recursion and repeated `apply()` calls (10/10 clean
+on each). One NEW, narrower qualification, found and pinned that session:
+a closure that `set!`-mutates a variable captured from an enclosing scope,
+called more than once (the `make-counter`/closure-counter shape,
+`tests/minilisp/t10.lisp`), fails nondeterministically on JIT (`kryos
+run`) -- illegal-instruction or a wrong answer depending on allocator
+timing, zero diagnostic lines either way. AOT is unaffected (10/10 clean
+on this exact case too). Regression gate: `tests/minilisp_gate.sh` (wired
+into tier 1, now 11 cases), which fails unconditionally on any diagnostic
+line rather than trusting the printed answer -- so a "looks right but
+corrupted" case cannot pass.
 
 **Items 3, 6, 40c, 41 -- re-confirmed unchanged this session, no new
 findings:**

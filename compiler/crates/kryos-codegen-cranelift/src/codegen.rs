@@ -5197,11 +5197,73 @@ fn translate_rvalue<M: Module>(
             }
 
             let call_inst = builder.ins().call(func_ref, &arg_vals);
-            let results = builder.inst_results(call_inst);
-            if results.is_empty() {
-                Ok(None)
-            } else {
-                Ok(Some(results[0]))
+            let result0: Option<cranelift_codegen::ir::Value> =
+                builder.inst_results(call_inst).first().copied();
+
+            // Cranelift-only compensating retain for `m[k] = v` / `arr[i] = v`
+            // (IndexAssign lowers to a plain kryos_map_insert(_str)/
+            // kryos_array_set call, no dedicated MIR instruction) when `v` is
+            // Struct/Enum-typed. `kryos-mir::lower.rs`'s `retain_for_ty` (the
+            // shared, backend-agnostic helper that would normally emit this)
+            // only covers Str/Array/Map -- Struct/Enum was never included
+            // because the value-typed local `v` still gets its own ordinary
+            // scope-end Drop (IndexAssign is not one of the enum-constructor-
+            // argument sites `suppress_enum_field_arg_drops` covers), so the
+            // map/array entry's copy of the same box went unretained. LEDGER
+            // item 44 WAVE 1 (t10/closure-counter): `set!`'s `frame[name] =
+            // val` under-retained the freshly-computed `Value.Int`, freed by
+            // `val`'s own drop while the frame's entry still pointed at it --
+            // the next read was a UAF (br_table-on-garbage-tag SIGILL, or a
+            // silent wrong "unbound symbol" depending on allocator timing).
+            //
+            // Scoped to Cranelift codegen ONLY, not `kryos-mir` (which both
+            // backends share) or LLVM: Cranelift always represents a Struct/
+            // Enum value as a real heap pointer by this point (confirmed by
+            // reading RValue::EnumVariant construction -- always
+            // `kryos_calloc`'d), so `arg_vals[2]` here is safe to retain
+            // directly. LLVM does NOT always box a Struct/Enum value this
+            // early (it may still be an SSA aggregate `{i64, i64, ...}`) --
+            // routing the same fix through shared MIR made LLVM try to call
+            // `kryos_struct_retain` on an aggregate value and fail to codegen
+            // (`use of undefined value '@kryos_struct_retain'`, aggregate
+            // type mismatch), and LLVM's own AOT gate was ALREADY clean for
+            // this exact case before this fix, confirming AOT does not need
+            // it. A prior session's attempt to add Enum coverage directly to
+            // `retain_for_ty` (the shared function) also regressed JIT t1/t2
+            // ("unbound symbol") by double-counting against
+            // `suppress_enum_field_arg_drops`'s existing drop-suppression at
+            // OTHER `retain_for_ty` call sites -- this fix avoids that by
+            // living entirely outside `retain_for_ty` and firing only for
+            // these 3 specific runtime call names.
+            if matches!(
+                func.as_str(),
+                "kryos_map_insert_str" | "kryos_map_insert" | "kryos_array_set"
+            ) && args.len() == 3
+            {
+                if let Operand::Local(vid) = &args[2] {
+                    let is_struct_or_enum = translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *vid)
+                        .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
+                        .unwrap_or(false);
+                    if is_struct_or_enum {
+                        let retain_ref = ensure_func_ref_with_args(
+                            "kryos_struct_retain",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        builder.ins().call(retain_ref, &[arg_vals[2]]);
+                    }
+                }
+            }
+
+            match result0 {
+                None => Ok(None),
+                Some(v) => Ok(Some(v)),
             }
         }
 
@@ -5445,15 +5507,28 @@ fn translate_rvalue<M: Module>(
                                     // caught this). kryos_array_dup clones
                                     // elements per kind; elem_kind=0 degenerates
                                     // to the plain header clone for scalars.
+                                    // elem_kind MUST match kryos_array_dup's own encoding
+                                    // (kryos-rt/src/array.rs): 1 = generic refcounted
+                                    // container (Str/Array/Map all share the ref_count
+                                    // field at header offset 24, bumped uniformly), 4 =
+                                    // arc-boxed Struct/Enum (kryos_struct_retain), 0 =
+                                    // scalar/no-op. This must mirror the LLVM backend's
+                                    // already-correct convention (kryos-codegen-llvm's
+                                    // RValue::EnumVariant arm) exactly -- a PREVIOUS
+                                    // version of this match used a different (FREE-side,
+                                    // not DUP-side) numbering, Str=1/Array=2/Map=3/
+                                    // Struct=4, under which elem_kind=3 (Map) silently
+                                    // fell through every branch of kryos_array_dup's
+                                    // if/else-if chain -- no retain, no error -- because
+                                    // that function has no elem_kind==3 case at all.
+                                    // LEDGER item 44 WAVE 1: this under-retained ANY
+                                    // Array-of-Map struct field (e.g. a captured env
+                                    // chain), causing the underlying map to be freed one
+                                    // reference early and its header recycled/wiped
+                                    // before a later legitimate read.
                                     let elem_kind: i64 = match elem.as_ref() {
-                                        MirType::Str => 1,
-                                        MirType::Array(_, _) => 2,
-                                        MirType::Map { .. } => 3,
-                                        // A dup of an array of STRUCTS is a header clone that
-                                        // shares the element boxes, so the copy must add an
-                                        // owner or the source's element-free releases boxes the
-                                        // copy still points at.
-                                        MirType::Struct(_) => 4,
+                                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                                        MirType::Struct(_) | MirType::Enum(_) => 4,
                                         _ => 0,
                                     };
                                     let dup_ref = ensure_func_ref_with_args(
@@ -5894,10 +5969,18 @@ fn translate_rvalue<M: Module>(
                 let field_ty = variant_field_tys.get(i);
                 let stored_val = match field_ty {
                     Some(MirType::Array(elem, _)) => {
+                        // elem_kind MUST match kryos_array_dup's own encoding (see the
+                        // matching comment at the RValue::Struct non-@copy field-init
+                        // site above) -- this match previously used the FREE-side
+                        // numbering (Str=1/Array=2/Map=3/Struct+Enum=4) instead of
+                        // kryos_array_dup's actual DUP-side one, so elem_kind=3 (Map)
+                        // silently skipped every retain branch. LEDGER item 44 WAVE 1:
+                        // this is the t10/closure-counter bug -- `Value.Closure`'s
+                        // `env: [map<str, Value>]` field is exactly an Array-of-Map
+                        // payload, under-retained on construction, freed one owner
+                        // early, later read as an empty/wiped map ("unbound symbol").
                         let elem_kind: i64 = match elem.as_ref() {
-                            MirType::Str => 1,
-                            MirType::Array(_, _) => 2,
-                            MirType::Map { .. } => 3,
+                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
                             MirType::Struct(_) | MirType::Enum(_) => 4,
                             _ => 0,
                         };

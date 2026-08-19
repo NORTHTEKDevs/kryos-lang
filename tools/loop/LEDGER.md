@@ -2060,7 +2060,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT FIXED (WAVE 3, 2026-08-18). WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is ALSO FIXED. WAVE 3 (2026-08-18): the AOT `apply()`/push array-of-enum residual is now FIXED and vacuity-proven (see the dated addendum near the end of this entry) -- both prior AOT blockers are closed. Item 44 stays OPEN overall ONLY because WAVE 3 also pinned a NEW, separate, still-unfixed JIT-only regression target (`tests/minilisp/t10.lisp`, the closure-counter shape) -- see the WAVE 3 addendum for the precise, partial-truth accounting.
+### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT FIXED (WAVE 3, 2026-08-18), JIT t10/closure-counter residual FIXED (WAVE 1 of a new campaign, 2026-08-19) -- ITEM CLOSED, moved to the CLOSED table. WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is ALSO FIXED. WAVE 3 (2026-08-18): the AOT `apply()`/push array-of-enum residual is now FIXED and vacuity-proven -- both prior AOT blockers are closed, but WAVE 3 pinned a NEW, separate JIT-only regression (`tests/minilisp/t10.lisp`, closure-counter). 2026-08-19 (this entry's final addendum): that JIT residual is FIXED too, both backends now 11/11 clean on `tests/minilisp_gate.sh` -- see the dated addendum near the end of this entry for the full six-session accounting and the closing fix.
 
 MEASURED MECHANISM (instrumented via the pre-existing `KRYOS_BOX_DIAG=1
 KRYOS_FREE_DIAG=1` runtime diagnostics, kryos-rt `alloc.rs`/`map.rs` --
@@ -2910,7 +2910,244 @@ verdict and `minilisp.kry`'s closure-counter-demo header are updated
 to say AOT is clean and JIT's closure-counter path is the one
 remaining, precisely-characterized open piece -- not "mostly fixed"
 or any other vaguer claim.
+
 ---
+
+WAVE 1 (2026-08-19, a NEW campaign's first wave -- this is the SIXTH
+session of measurement on item 44 counting a3dfc58/session-2/session-4/
+WAVE-2/WAVE-3 above): t10/closure-counter (JIT) -- FIXED, vacuity-proven
+both ways, item 44 CLOSED overall (both backends 11/11 on
+`tests/minilisp_gate.sh`).
+
+PRIME HYPOTHESIS GOING IN, REJECTED BY TRACE: the brief's own working
+theory was that Cranelift's array-push and/or `set!`'s map-store site
+lacked a payload guard symmetric to 9b4503f's LLVM push fix. Read first
+per the debugging discipline, then LIVE-TRACED (not assumed) via a
+temporary env-gated tracer (`KRYOS_ARR_TRACE=1`, mirroring the a3dfc58
+methodology -- added to `kryos_array_dup` and every map/array retain/
+free entry point in `kryos-rt`, `git diff`-confirmed removed before
+this commit): the real mechanism is TWO DIFFERENT, more specific bugs,
+neither of which is "a missing push-boxing guard".
+
+BUG 1 (root cause of the crash/wrong-answer, found first): Cranelift's
+`RValue::EnumVariant` construction (5c611fa) and the parallel non-`@copy`
+struct-literal field-init path (`kryos-codegen-cranelift/src/codegen.rs`,
+two call sites) both computed the `elem_kind` argument to
+`kryos_array_dup` using `Str=>1, Array=>2, Map=>3, Struct/Enum=>4` -- a
+numbering that happens to MATCH `kryos_array_free_typed`'s (the FREE-side
+function's) convention but does NOT match `kryos_array_dup`'s (the DUP-
+side function's) actual implementation in `kryos-rt/src/array.rs`, which
+only branches on `elem_kind == 1` (generic refcounted-container bump,
+covering Str/Array/Map together via the shared `ref_count` field at
+header offset 24), `== 2` (unused by any real caller -- `kryos_arc_
+retain`), and `== 4` (`kryos_struct_retain`). `elem_kind == 3` falls
+through EVERY branch of that if/else-if chain silently -- no retain, no
+error. `Value.Closure`'s `env: [map<str, Value>]` field is exactly an
+Array-of-Map payload (elem_kind=3 under the wrong convention), the FIRST
+corpus case exercising it (t1-t9b's only Array-typed enum payload is
+`[Value]`, i.e. elem=Enum=>4, correctly handled either way -- this bug
+was invisible to the whole prior corpus). Live trace confirmed exactly 4
+`DUP-UNHANDLED elem_kind=3` events on a t10 run, precisely at both
+`Value.Closure` construction sites (`make-counter`'s own closure
+capturing the global frame, and the returned inner closure capturing
+`new_chain`'s 3 frames) -- the affected map's refcount under-counts by
+1, so it gets freed one owner early and its header recycled/wiped
+(`kryos_map_new`'s `MAP_HDR_POOL` reuse) before a later legitimate read,
+surfacing as the diag-off failure mode ("ERROR: unbound symbol: n").
+LLVM's own construction-site code already uses the CORRECT convention
+(`Str|Array|Map=>1, Struct|Enum=>4`) -- this was a Cranelift-only
+divergence from its own sibling backend, not a new bug class.
+
+FIX 1: corrected both Cranelift `elem_kind` match arms to
+`MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+MirType::Struct(_) | MirType::Enum(_) => 4, _ => 0` -- exactly LLVM's
+existing convention. `kryos-codegen-cranelift/src/codegen.rs` only.
+
+BUG 2 (found second, after fix 1 alone changed the failure mode from
+"rc=0 wrong answer" to "rc=132 SIGILL on every run, zero diag lines" --
+i.e. progress, not a wash, but not sufficient alone): `kryos-mir::
+lower.rs`'s `retain_for_ty` (the shared, backend-agnostic helper used at
+~13 call sites for Str/Array/Map compensating retains) has NEVER covered
+`MirType::Struct`/`MirType::Enum` -- confirmed by reading its match arms.
+`m[k] = v` / `arr[i] = v` (IndexAssign, lowered to a plain
+`kryos_map_insert(_str)`/`kryos_array_set` call) uses this same function
+for its value-retain. Unlike an enum-CONSTRUCTOR argument (where
+`suppress_enum_field_arg_drops` drop-suppresses a bare-identifier source
+local instead of retaining the value), a plain IndexAssign statement
+NEVER drop-suppresses its RHS local -- so `v`'s own ordinary scope-end
+Drop always still fires, and the map/array entry's copy of the same box
+was never independently retained. `set!`'s `env_set(chain, name, val)` ->
+`frame[name] = val` is exactly this shape: the freshly-computed
+`Value.Int` gets freed by `val`'s own drop while the frame's entry still
+points at it: a genuine UAF on the NEXT read, surfacing as a `br_table`-
+on-garbage-tag SIGILL (a corrupted enum tag driving Cranelift's jump-
+table-based `match` dispatch off the end of the table) -- consistent
+with zero `KRYOS_BOX_DIAG`/`KRYOS_FREE_DIAG` diagnostic lines, since
+nothing double-frees; the box is simply read after its one, correctly-
+counted free. Live-traced with a second tracer pass (map_new/insert_str/
+get_str/has_str/free instrumentation) confirming all frame-map reads
+leading up to the crash were structurally sound (no capacity=0 stale-
+handle hits) -- the crash happens immediately AFTER a clean `MAP-GET-STR`
+retrieval of `n`, consistent with the retrieved BOX itself (not the map)
+being the corrupted object.
+
+A prior AOT session (see the "AOT RESIDUAL, SESSION 4" entry above)
+already tried extending `retain_for_ty` ITSELF to cover
+`MirType::Enum(_)` and reverted after it regressed JIT t1/t2 to "unbound
+symbol" -- widening the SHARED function double-counts against sites that
+already have their own compensating mechanism (e.g.
+`suppress_enum_field_arg_drops`). FIX 2 avoids repeating that mistake by
+NOT touching `retain_for_ty` or `kryos-mir` at all: the compensating
+retain is emitted directly in `kryos-codegen-cranelift/src/codegen.rs`'s
+generic `RValue::Call` lowering, gated on `func` being exactly
+`kryos_map_insert_str`/`kryos_map_insert`/`kryos_array_set` with a 3rd
+argument whose MIR-declared type is `Struct`/`Enum`, calling
+`kryos_struct_retain` on the already-translated SSA value. This is
+Cranelift-only by necessity, not just by caution: an IDENTICAL MIR-level
+fix (extending the shared `retain_for_ty`'s call site here, still without
+touching the function itself) was tried FIRST and broke AOT compilation
+(`use of undefined value '@kryos_struct_retain'`, LLVM IR type mismatch)
+-- LLVM does not always box a Struct/Enum value this early (it may still
+be an SSA aggregate `{i64, i64, ...}`, per session 4's own finding), and
+critically AOT's `minilisp_gate.sh` was ALREADY 11/11 clean before this
+fix existed, proving LLVM does not need it at all for this shape. The
+codegen-only fix keeps `kryos-mir` and `kryos-codegen-llvm` byte-for-byte
+untouched (`git diff --stat` confirms only `kryos-codegen-cranelift/src/
+codegen.rs` changed, 1 file, 99 insertions/16 deletions).
+
+TEST-VACUITY (both fixes together, both directions): `git diff --stat --
+compiler/` after landing shows exactly one file changed. Reverting it
+(`git stash`) + full `cargo build --release` + `tests/minilisp_gate.sh`
+reproduces the exact pre-fix baseline (JIT 10/10 + FAIL t10 rc=132);
+`git stash pop` + full rebuild returns to 11/11 both backends.
+
+ACCEPTANCE, ALL VERIFIED THIS SESSION (fresh command output, not
+self-report):
+  - `tests/minilisp_gate.sh`: 22/22 ok, BOTH backends 11/11 clean
+    (zero diag lines under `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`, every
+    program's independently-derived correct output, t10 included).
+  - t10 10x per backend, BOTH diag-on and diag-off: JIT 10/10 rc=0
+    output "make-counter/c1/1/2" every run (both settings); AOT
+    10/10 rc=0 same output under diag-on.
+  - The demo (no args, the actual closure-counter showcase path) 10x
+    per backend: JIT 10/10 byte-identical, AOT 10/10 byte-identical,
+    AND JIT output byte-identical to AOT output -- prints
+    "closure counter: 1 2 3" correctly (this line was silently ABSENT/
+    wrong for the entire duration item 44 was open).
+  - `tests/mem_plateau_check.sh`: PASS, peak RSS 4MB (unchanged).
+  - `tests/no_double_free.sh`: PASS, all programs clean.
+  - `tools/loop/escape_status.sh`: STILL ESCAPING: 0, now-rejected: 19
+    (unaffected -- capability soundness untouched by this fix).
+  - `tests/ir_signature_gate.sh`: PASS, 65 modules, no severe mismatches.
+  - `tests/strict_caps_examples.sh`: 101/101 pass.
+  - `tests/backend_divergence_pins.sh`: PASS.
+  - `tests/concurrency_smoke.sh`: PASS, no deadlock.
+  - `tests/run_examples_gate.sh`: PASS (root 45/45, fixtures 16/16,
+    showcase 34/34, capability-rejection 4/4).
+  - `tests/conformance/run_conformance.sh`: 65/65 PASS, run ALONE per
+    the environment's flake-under-contention note.
+  - `tests/conformance/conf_stdlib_wave14.kry`: `kryos check` rc=0.
+
+FIX LOCATIONS: `kryos-codegen-cranelift/src/codegen.rs` ONLY -- two
+`elem_kind` match-arm corrections (the `RValue::Struct` non-`@copy`
+field-init path and the `RValue::EnumVariant` construction path) plus
+one new conditional retain emission in the generic `RValue::Call`
+lowering tail. `kryos-mir`, `kryos-codegen-llvm`, `kryos-rt` all
+untouched (confirmed clean via `git diff --stat` for each).
+
+ITEM 44 STATUS: CLOSED. Moved to the CLOSED table below with a summary
+entry; this numbered entry is kept in place as the full six-session
+history per this ledger's own convention for large items.
+
+COLLATERAL FINDING, out of scope for this wave, flagged not fixed (same
+"leak, ranked below silent-wrong-answer" class the brief itself used for
+the enum-array-push leak below): while implementing FIX 2, found that
+`release_if_ne_fn` (`kryos-mir::lower.rs`, the release-side counterpart
+of `retain_for_ty`, used at the SAME IndexAssign/field-assignment sites
+to release a REPLACED heap value) also does not cover `MirType::Struct`/
+`MirType::Enum` -- `m[k] = v` / `arr[i] = v` on a key/index that already
+held a Struct/Enum value leaks the OLD value on every overwrite (one
+box per overwrite, matching the established "leak-on-copy" pattern
+elsewhere in this codebase). Not characterized with a measurement or a
+committed probe this session (would need its own dedicated wave); not
+the SAME leak as `tests/mem/enum_array_push_leak.kry` below (that one is
+AOT-only, push-time aggregate-boxing; this one is backend-general,
+overwrite-time non-release) -- named here so it is not lost.
+
+---
+
+### 45. LEAK, AOT-only, PROPORTIONAL: the enum-array-push pattern leaks
+~454MB at 5M fresh-enum pushes on AOT (JIT clean) -- pre-existing,
+NOT attributable to any fix this session or WAVE 3's -- characterized
+and pinned, NOT FIXED (deliberately out of scope, 2026-08-19)
+
+Per the WAVE 1 brief's own instruction ("do NOT attempt the fix this
+wave, characterize and pin only"): a 2026-08-19 verifier measured a
+proportional leak in the enum-array-push pattern generally (~445MB peak
+at 5M fresh-enum pushes), separate from and unaffected by both of item
+44's WAVE 1 fixes above (neither fix touches array-push codegen; the
+`elem_kind` fix is scoped to `RValue::Struct`/`RValue::EnumVariant`
+construction's own field-dup, and the retain fix is scoped to
+`kryos_map_insert(_str)`/`kryos_array_set`, not `kryos_array_push`).
+
+Wrote a COMMITTED, reproducible probe, `tests/mem/enum_array_push_leak.kry`
+(env-gated `LEAK_ITERS`, default 500000, matching this repo's existing
+`tests/mem/*.kry` convention): construct a fresh `Val.ListV([i64])` enum
+variant every iteration, push it into a scratch `[Val]` array that is
+itself a fresh per-iteration local (dropped every iteration) -- the exact
+shape WAVE 3's own adversarial probe used, generalized into a permanent
+regression/characterization fixture.
+
+MEASURED (this session, Windows --release, PowerShell `PeakWorkingSet64`
+polling, `mem_plateau_check.sh`'s own technique), HEAD after both of item
+44's WAVE 1 fixes:
+
+| backend | 500k iters | 5M iters | verdict |
+| --- | --- | --- | --- |
+| JIT | ~12 MB | ~11 MB | FLAT -- no leak |
+| AOT | ~12 MB | ~454 MB | LEAKS -- proportional past baseline |
+
+JIT is clean by construction, not by luck: Cranelift always heap-boxes an
+enum value at CONSTRUCTION time (5c611fa's own fix site, confirmed by
+reading `RValue::EnumVariant`'s Cranelift codegen -- always `kryos_calloc`
+before any field is stored), so `push` on JIT stores an already-boxed
+pointer with no second aggregate-boxing step at all. The class of bug
+9b4503f fixed (a raw bit-copy at a SECOND enum-to-box transition site,
+inside `push`'s aggregate-boxing branch) is AOT/LLVM-only by construction
+-- LLVM's `RValue::EnumVariant` construction can leave a value as an SSA
+aggregate rather than a heap pointer (per session 4's finding), so `push`
+has its own, separate boxing step that construction's own dup does not
+cover. This measurement confirms JIT was never exposed to this class.
+
+~12MB at 500k on AOT is indistinguishable from baseline process overhead
+(`mem_plateau_check.sh`'s own steady-state baseline is ~4MB for a much
+larger, longer-running workload); ~454MB at 5M is unambiguous real
+growth. This is the SAME residual WAVE 3 itself flagged when it guarded
+its own unconditional-dup fix candidate against a narrower, uncommitted
+probe (50k -> 9.3MB, 500k -> 48.7MB, "meaningfully reduced ... but NOT
+fully back to the pre-fix baseline (15.3MB) ... not fully explained this
+session") -- WAVE 3's own text already named the fix direction: extend
+`local_is_always_fresh_enum_construction` (`kryos-codegen-llvm/src/
+codegen.rs`) from its current sound-but-incomplete same-local-any-block
+scan toward a real per-block reaching-definition analysis, or instrument
+the guarded probe directly with `KRYOS_BOX_DIAG`/an allocation-count diff
+to find the exact remaining extra allocation. NOT attempted this wave.
+
+SEVERITY: ranked as a LEAK, below every silent-wrong-answer/crash class
+in this ledger's own ranking doctrine -- AOT-only, requires millions of
+fresh-enum-then-immediately-pushed iterations to become visible, does
+not corrupt output or crash. `mem_plateau_check.sh` does not cover it
+(its own workload never constructs an enum with a heap-typed payload
+field) -- this probe is the first committed regression fixture for this
+specific class; a future session closing it should verify against this
+probe at both 500k and 5M, not just the smaller narrower probe WAVE 3
+used.
+
+FIX LOCATIONS: none this wave (characterization only, per instruction).
+Candidate site for a future session: `local_is_always_fresh_enum_
+construction`, `kryos-codegen-llvm/src/codegen.rs`.
+---
+
 
 
 ### 40c. `std::result::to_array<T>` is only type-safe WITH an explicit annotation -- unannotated it still renders a raw pointer, and item 40b's own CLOSED entry claimed otherwise (found by adversarial verification, 2026-08-16) -- NOT FIXED
@@ -3690,6 +3927,7 @@ verified via grep/CI-config inspection (commands below), not by exercising a fai
 
 | Item | Evidence |
 | --- | --- |
+| **item 44: P0 memory corruption, backend-divergent enum/container ownership (six sessions: construction-dup, AOT residual root-cause, exception-path double-free, AOT residual session 4, WAVE 3 AOT close + t10 discovery, WAVE 1 t10/JIT close) -- FULLY FIXED, both backends 11/11 clean** | Closed 2026-08-19 (WAVE 1). Final piece: JIT's t10/closure-counter shape (SIGILL / silent "unbound symbol" wrong answer). Live-traced (KRYOS_ARR_TRACE tracer, not assumed) to TWO Cranelift-only bugs, neither the brief's own prime hypothesis: (1) `RValue::EnumVariant`/`RValue::Struct` construction computed `kryos_array_dup`'s `elem_kind` arg with a numbering (`Str=1,Array=2,Map=3,Struct/Enum=4`) that does not match `kryos_array_dup`'s real implementation (only handles 1/2/4) -- `elem_kind=3` (Map) silently skipped every retain, under-counting any Array-of-Map enum payload (`Value.Closure`'s captured env chain) by one owner, freeing it one owner early. Fixed to match LLVM's already-correct `Str|Array|Map=>1, Struct|Enum=>4` convention. (2) `kryos-mir::lower.rs`'s `retain_for_ty` never covered Struct/Enum for the `m[k]=v`/`arr[i]=v` IndexAssign value-retain site -- `set!`'s `frame[name]=val` under-retained the computed `Value.Int`, freed by its own local's ordinary drop while the map entry still pointed at it (UAF, surfacing as a `br_table`-on-garbage-tag SIGILL). Fixed with a NEW, narrowly-scoped Cranelift-only codegen retain (not a `retain_for_ty`/`kryos-mir` change -- a prior session already regressed JIT t1/t2 that way, and an identical MIR-level version of this exact fix broke AOT compilation this session, since LLVM does not always box a Struct/Enum value this early and its own gate was already clean without this fix). `git diff --stat -- compiler/` after both fixes: exactly one file, `kryos-codegen-cranelift/src/codegen.rs` (99 insertions/16 deletions) -- `kryos-mir`, `kryos-codegen-llvm`, `kryos-rt` byte-for-byte untouched. PROOF BOTH WAYS: `git stash` + full `cargo build --release` reproduces the exact pre-fix baseline (`tests/minilisp_gate.sh` JIT 10/10 + FAIL t10 rc=132); `git stash pop` + full rebuild returns to 22/22 (11/11 both backends). t10 10x per backend, diag-on AND diag-off: 20/20 rc=0 correct output. The demo (no args) 10x per backend: byte-identical, and JIT output byte-identical to AOT output, prints the correct "closure counter: 1 2 3" for the first time since item 44 opened. `tests/mem_plateau_check.sh` PASS (4MB), `tests/no_double_free.sh` PASS, `tools/loop/escape_status.sh` STILL ESCAPING 0, `tests/ir_signature_gate.sh` PASS (65 modules), `tests/strict_caps_examples.sh` 101/101, `tests/backend_divergence_pins.sh` PASS, `tests/concurrency_smoke.sh` PASS, `tests/run_examples_gate.sh` PASS, `tests/conformance/run_conformance.sh` 65/65 (run ALONE per the environment's contention-flake note), `tests/conformance/conf_stdlib_wave14.kry` check rc=0. Regression: `tests/minilisp_gate.sh` (now 11/11 both backends, no more `aot_known_wrong`/JIT-t10 exemption columns needed). See the numbered item 44 entry above (kept in place, not physically moved) for the full six-session history. Two related-but-separate findings spun off, NOT fixed this session: item 45 below (AOT-only enum-array-push leak, ~454MB/5M iters, characterized+pinned only) and a collateral leak noted inline in item 44's WAVE 1 addendum (`release_if_ne_fn` also never covers Struct/Enum, so overwriting an existing Struct/Enum-valued map/array slot leaks the old value -- not measured or probed this session). |
 | **item 25: struct literal with ~50,000 fields was superlinear (O(n^2) in field count) -- FIXED** | Closed 2026-08-16. Was flagged PAPERCUT/NOT FIXED with no repro file and no root cause. Re-measured fresh this session before touching anything (generated fixtures, 500-100,000 `i64`-field struct literals, min-of-N timing against a trivial-program control to separate fixed process overhead from algorithmic cost): confirmed still superlinear and undiminished, n=2,000 fields at the ~1.8s process-overhead floor scaling to n=50,000 fields ~8.2-8.8s. ROOT CAUSE (read, not guessed): `Expr::StructLiteral`'s handling in `kryos-types/src/check.rs` (the type checker -- `kryos check` never reaches MIR lowering, per `kryos-driver::check_file_with_options_full`, so this is the only place the measured cost could live) ran TWO separate linear scans once PER FIELD: `def.fields.iter().find(...)` to look up each literal field's declared type (scanning the full declared-field list per literal field), and `fields.iter().any(...)` in the missing-fields check (scanning the full literal per declared field) -- both O(n) work repeated n times, O(n^2) total. FIX: replaced both linear scans with a `HashMap<&str, &Type>` (declared fields, built once) and a `HashSet<&str>` (literal's own field names, built once), each O(n) to build and O(1) amortized per lookup -- the arm is now O(n) instead of O(n^2), no cloning, scoped to the one match arm. PROOF BOTH WAYS, min-of-2 timing, same fixtures: `git stash` the `check.rs` hunk + FULL `cargo build --release` (kryos-types is upstream of kryos-mir/kryos-driver/kryos-cli, `-p kryos-cli` alone is not sufficient) -- n=2,000 3.7s, n=50,000 8.25s (RED, matches the pre-fix re-measurement); `git stash pop` + full rebuild -- n=2,000 1.81s, n=50,000 1.99s (GREEN, at the floor). Pushed past the original benchmark size to confirm the fix generalizes: n=100,000 fields (2x) -- 2.2s, still at the floor. Correctness verified live and unchanged for all four diagnostic paths through the touched arm: normal literal (compiles, runs, correct value), missing declared field (`E0100`), unknown field (`E0110`), duplicate field in the literal (`E0110`, that check was untouched -- it already used a `HashSet` and was never part of this bug). No repro file existed to fold (the item's own text said so); the fix is a pure complexity improvement with identical observable behavior at every field count, so no new pin was added -- existing struct-literal conformance tests already exercise the same code path for correctness. Gates: all 3 mandatory canaries PASS (security/ir-signature/strict-caps 91/91/inferred-soundness), `escape_status.sh` STILL ESCAPING 0, cascade detector rc=0, conformance 65/65 both backends, `check-docs-truth.sh` PASS, `diagnostics_gate.sh` PASS, self-host `test_bootstrap.sh` 16/16 run alone. See the Wave section at the top of this file for the combined-session write-up (this item was fixed alongside the `diag_e0009_misattributed_span_in_loop.kry` known-failures fold in the same session). |
 | **item 15: `let a = arr[i]` (array-of-struct element read) is a SHARED HANDLE on Cranelift/JIT but an INDEPENDENT COPY on LLVM/AOT -- DECIDED as a documented, pinned boundary (option b), not point-fixed -- CLOSED** | Closed 2026-08-15. Was ranked OPEN with heading "NOT FIXED" even though the actual resolution work (root-cause, doc correction, regression pin) had already landed on 2026-08-05/06 and was just never reflected in this table -- an item-10-class ledger-hygiene bug (non-negotiable #5) where the OPEN section contradicted its own history. Re-verified everything fresh this session rather than trusting the prior headings: (1) root cause stands -- Cranelift's `RValue::Index` returns the raw box pointer unmodified for a Struct/Enum array element (every alias of `arr[0]` is the literal same pointer), while LLVM materializes struct/enum values as first-class SSA aggregates (`RValue::Index`'s aggregate branch does a genuine `load`, `RValue::Field` reads via `extractvalue`), so `let a = arr[0]` / `let b = arr[0]` are independent copies on AOT only -- the SAME representational fork as item 3 (struct-argument leak), not a separate bug, and item 3's own cost analysis (Design A, uniform struct boxing, an ABI break touching every call site) is the only fix that closes both; too large and too risky to attempt as a point-patch this close to 1.0. (2) CLAUDE.md gotcha #23 and `docs/claude/FULL-REFERENCE.md` were read fresh this session and both now correctly state the divergence (corrected 2026-08-05) instead of the earlier "both backends agree" overclaim the item was originally filed against -- no doc drift found. (3) `tests/backend_divergence_pins.sh` (added `eaebc06`, wired into `kryos-loop.sh` tier 1) re-run fresh this session: `alias-refcount JIT pin holds (last=x19999!|x19999!|x19999!|x19999!|5)`, `alias-refcount AOT pin holds (last=x19999!|x19999|x19999|x19999|5)`, `backend-divergence-pins: PASS` -- the exact documented shape, not a fixed or drifted one. (4) All three standing canaries re-run fresh this session, none touched by this change: `security_gate.sh` PASS, `ir_signature_gate.sh` PASS (65 modules, no severe mismatches), `strict_caps_examples.sh` 91/91, `inferred_soundness.sh` all probes correct. No code changed this session -- this entry closes the LEDGER-BOOKKEEPING gap only; the language-level decision (accept as a documented boundary until item 3's Design A lands) was already made and is unchanged. Regression: `tests/backend_divergence_pins.sh`. Docs: CLAUDE.md gotcha #23 (last bullet) and `docs/claude/FULL-REFERENCE.md` (struct-copy section) both already correct, re-verified not re-written. |
 | **item 9: `\|\|`-continuation parse trap also swallows closure literals silently -- previously undetectable, now DETECTED via a new W0001 warning (the grammar merge itself is an accepted, documented ASI-class trap per CLAUDE.md hard rule 1, not fixed nor being fixed)** | Closed 2026-08-13 (`## Wave: ... plus a REAL fix for item 9` above has the full session log). A 2026-08-08 attempt at a naive "warn on any newline-led `\|\|`/`\|`" diagnostic was DEMONSTRATED wrong first (false positives on 3 real shipped `is_digit`-style chains) and shelved as needing type info. This session found a narrower purely-syntactic heuristic that needs none: warn only when the newline-led `\|\|` is the FIRST `\|\|` encountered while building the current expression (an established same-statement chain, the `is_digit` shape, does not warn). Implemented: `Token.newline_before: bool` (`kryos-lexer`, computed once at the lexer's single `emit()` choke point); `kryos-parser`'s Pratt infix loop tracks `seen_pipe_or_chain` and emits new `codes::W0001` on a first-occurrence newline-led `\|\|`. Deliberately `PipePipe`-only, NOT single `\|` -- a repo-wide sweep found `examples/cdp_bot.kry`/`examples/websocket_client.kry` use a genuine multi-line bitwise-or bit-packing pattern that the first-occurrence heuristic cannot distinguish from the bug shape, so single `\|` was dropped from the warning rather than ship a known false positive. ALSO FIXED a pre-existing bug this uncovered: `kryos_parser::parse()`'s `Ok` branch silently discarded every non-error diagnostic, so no parser warning (old or new) could ever have reached a real `kryos run`/`build`/`check` invocation -- added `parse_with_diagnostics` and wired it into the two driver entry points that matter (`compile_file_impl`, `check_file_with_options_full`); `kryos-lsp` and the string-based `compile_source`/`check_source` paths still silently drop a parser warning on success (explicitly out of scope, named as a follow-up). PROOF BOTH WAYS, live: `git stash` the 7 changed files + rebuild `-p kryos-cli` -- `tests/diagnostics_gate.sh` section 7's true-bug-must-warn check FAILS (`W0001` absent, merge output unchanged) and `kryos explain W0001` fails to resolve; `git stash pop` + rebuild -- all 4 section-7 checks PASS. Validated against every `.kry` file in the repo containing a leading `\|\|`/`\|` continuation (9 candidate files): the true bug repro warns, 2 independent ASI-trap demo files warn (correct positives), the 3 `is_digit`-style chains and 2 unrelated `\|\|`-using files stay silent (0 false positives). RE-VERIFIED this session (2026-08-15), fresh binary, no compiler changes: `bash tests/diagnostics_gate.sh` -- all 4 section-7 checks (`newline-led first-occurrence \|\| warns (W0001) AND merge unchanged`, `is_digit-style chain does not false-positive`, `bitwise-or bit-packing chain does not false-positive`, `kryos explain W0001 resolves`) PASS, gate exits `diagnostics-gate: PASS`. Gates at close time: `kryos-loop.sh gates 2` tier1 14/14 (conformance 62/62), tier2 5/5; `test_bootstrap.sh` 16/16 run alone. Regression: `tests/diagnostics_gate.sh` section 7 (4 checks); `tests/known_failures/closure_pipe_continuation_silent_wrong.kry` folded/deleted, its README row replaced with a "DETECTED (not eliminated)" entry. Docs: CLAUDE.md hard rule 1 updated with the `\|\|`/`\|` mechanism and the detected-not-eliminated distinction. |

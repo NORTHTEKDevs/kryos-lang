@@ -86,6 +86,20 @@
 // (`kryos build --release`) is clean on this exact shape too (pinned as
 // `tests/minilisp/t10.lisp`, correct output `2` on every run this session).
 // See LEDGER item 44 for the full, current mechanism and status.
+//
+// UPDATE 2 (2026-08-19, LEDGER item 44 WAVE 1): the closure-counter demo
+// is now CORRECT on BOTH backends. Root cause was NOT a map/env-chain
+// aliasing bug as this file's own history above assumed -- it was two
+// Cranelift-only codegen bugs (a wrong `elem_kind` numbering at enum/
+// struct construction's array-dup call, under-retaining `Value.Closure`'s
+// captured env chain by exactly one owner; and a missing Struct/Enum
+// compensating retain at `m[k]=v`/`arr[i]=v` codegen, under-retaining
+// `set!`'s freshly-computed value). Both fixed in
+// `kryos-codegen-cranelift/src/codegen.rs` only. `tests/minilisp_gate.sh`
+// is now 22/22 (11/11 both backends); this demo now prints
+// "closure counter: 1 2 3" correctly on every run, both backends,
+// byte-identical output. See LEDGER item 44's WAVE 1 addendum for the
+// full trace-based account.
 // ============================================================
 
 enum Value {

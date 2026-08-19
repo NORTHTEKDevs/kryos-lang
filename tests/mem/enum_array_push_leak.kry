@@ -1,0 +1,80 @@
+// Characterization probe for a PRE-EXISTING, NOT fix-attributable leak in
+// the enum-array-push pattern -- LEDGER item 44 WAVE 1 (2026-08-19).
+//
+// Shape: construct a FRESH enum variant with a heap-typed ([i64]) payload
+// field, immediately push it into a scratch array, drop the scratch array
+// every iteration. This is exactly the shape 9b4503f's fix (the AOT
+// aggregate-boxing dup + its `local_is_always_fresh_enum_construction`
+// double-dup guard) targeted -- and the shape the 2026-08-19 verifier used
+// to find this leak, generalized here into a committed, reproducible probe.
+//
+// Measured (this session, Windows --release, PowerShell PeakWorkingSet64
+// polling, mem_plateau_check.sh's own technique), HEAD after the WAVE 1
+// t10/JIT fix (Cranelift-only elem_kind + map/array-insert retain fixes;
+// this probe's own code path -- array push, not map/array-value-insert --
+// is untouched by either of this session's fixes):
+//
+//   backend  500k iters   5M iters    verdict
+//   JIT      ~12 MB       ~11 MB      FLAT -- no leak (expected: Cranelift
+//                                     always heap-boxes an enum at
+//                                     CONSTRUCTION time, per 5c611fa, so
+//                                     `push` on JIT stores an already-boxed
+//                                     pointer with no second aggregate-
+//                                     boxing step at all -- the class of
+//                                     bug 9b4503f fixed is AOT-only by
+//                                     construction, and this measurement
+//                                     confirms JIT was never exposed to it)
+//   AOT      ~12 MB       ~454 MB     LEAKS -- ~12MB at 500k is
+//                                     indistinguishable from baseline
+//                                     process overhead (mem_plateau_check's
+//                                     own steady-state baseline is ~4MB);
+//                                     the ~454MB at 5M is clearly real
+//                                     growth, not baseline noise -- matches
+//                                     the 2026-08-19 verifier's own
+//                                     independently-measured ~445MB at 5M
+//                                     closely enough to confirm the same
+//                                     leak, not a different one
+//
+// AOT-only, proportional to iteration count once past baseline. This is
+// the SAME residual the WAVE 3 session flagged when it guarded its own
+// unconditional-dup fix candidate (measured on a DIFFERENT, narrower probe
+// shape: 50k -> 9.3MB, 500k -> 48.7MB, "meaningfully reduced ... but NOT
+// fully back to the pre-fix baseline (15.3MB) -- some residual, smaller-
+// than-before growth remains in this exact adversarial shape, not fully
+// explained this session") and left for a future session to close via a
+// real per-block reaching-definition analysis (the current
+// `local_is_always_fresh_enum_construction` guard is a sound-but-
+// incomplete same-local-any-block scan, per its own doc comment in
+// kryos-codegen-llvm/src/codegen.rs).
+//
+// mem_plateau_check.sh does NOT cover this: its own workload never
+// constructs an enum with a heap-typed payload field, so this class of
+// leak is invisible to that gate. NOT a candidate fix target this wave
+// per the debugging discipline ("never iterate more than twice on the
+// same error, rethink the approach" -- WAVE 3 already spent its own
+// double-dup-hazard investigation on a closely related shape and left
+// this residual open on purpose) -- characterize and pin ONLY.
+//
+// Run:  LEAK_ITERS=<n> ./enum_array_push_leak   (default 500000)
+
+enum Val {
+    ListV([i64])
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        let v = Val.ListV([i, i + 1, i + 2])
+        let mut tmp: [Val] = []
+        tmp = push(tmp, v)
+        match tmp[0] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
