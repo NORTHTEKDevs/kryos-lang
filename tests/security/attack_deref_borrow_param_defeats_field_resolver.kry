@@ -1,0 +1,58 @@
+// SECURITY RED-TEAM PROBE (assault round 6, classic-regression lens,
+// 2026-08-07). NEW bypass class, not a variant of the actor-state alias
+// family (block/match/for-loop/tuple wraps of `self.<field>`) that rounds
+// 5-7 already found and disclosed. This targets `decompose_container_path`
+// (checker.rs:932-947) directly -- it has exactly THREE arms: `Identifier`,
+// `FieldAccess`, `IndexAccess`. `Expr::Deref` and `Expr::Borrow` are NOT
+// among them, so any receiver chain that passes through an explicit `*x`/
+// `&x` falls to `_ => None`, the same failure mode every actor-state alias
+// finding exploits -- but reached through Kryos's REFERENCE/POINTER surface
+// syntax (`&T`/`*T`, ordinary non-`unsafe` grammar per parser.rs:2400-2423
+// and :3614-3625) on a PLAIN FUNCTION PARAMETER, not actor state at all.
+//
+// Consequence, both independent of each other:
+//  (1) call-site: `compute_hot_params`'s structural walk of
+//      `invoke_via_deref`'s body also calls `decompose_container_path` (the
+//      same helper) to find `b.f()`-shaped occurrences rooted at parameter
+//      "b" -- but the body writes `(*b).f()`, whose root can't be named, so
+//      parameter 0 of `invoke_via_deref` is never marked hot. `main`'s call
+//      `invoke_via_deref(&b)` is charged nothing extra for the argument.
+//  (2) callee-internal: `resolve_method_field_invoke_caps`'s first line
+//      does `let Some((root, path)) = decompose_container_path(object) else
+//      { return CapabilitySet::empty() }` -- `object` here is
+//      `Expr::Deref { inner: Identifier("b") }`, decomposition fails, and
+//      the FAIL-OPEN early return fires (the exact fallback
+//      docs/capability-soundness.md §3 names as the historically dangerous
+//      "positive empty default" -- see checker.rs:3241-3246).
+// Total charged capability for the whole call chain: empty. The call is
+// accepted inside `deny!(fs:read)` even though it invokes an `fs:read`
+// closure at runtime.
+//
+// Positive control: attack_deref_borrow_param_defeats_field_resolver_control.kry
+// calls `b.f()` directly (no `&`/`*`) and IS correctly rejected -- confirming
+// the `&`/`*` indirection, not something generic about a struct-typed
+// parameter, is what defeats the guard here.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+fn invoke_via_deref(b: &Box) -> str {
+    return (*b).f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = invoke_via_deref(&b)
+        println("DEREF-BORROW LEAK: " + leaked)
+        sleep(100)
+    }
+}

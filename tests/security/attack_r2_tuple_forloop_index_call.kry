@@ -1,0 +1,30 @@
+// ASSAULT round 2, historical-regression lens (2026-08-07). Combines two
+// already-distinct bypass classes that have so far only been tested
+// SEPARATELY: item 32's tuple-index call (`pair.1()`, direct variable
+// receiver) and the for-loop-alias class (`attack_plain_forloop_container_
+// alias.kry`, struct-field receiver). Here the fn-value is reached through
+// BOTH a for-loop binding AND a tuple index in the same expression
+// (`x.0()` where `x` is the for-loop's own bound variable, not a
+// separately-let-bound local) -- a shape neither existing repro covers
+// directly.
+//
+// ACCEPTANCE: should be REJECTED (E0507) under both `--capabilities-
+// mode=inferred` (default `kryos run`) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let items: [(fn() -> str, str)] = [(reader, "tag")]
+    deny!(fs:read) {
+        let mut out: str = ""
+        for x in items {
+            out = x.0()
+        }
+        println("TUPLE-FORLOOP-INDEX LEAK: " + out)
+    }
+}

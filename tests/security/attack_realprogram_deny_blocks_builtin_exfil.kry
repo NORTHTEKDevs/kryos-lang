@@ -1,0 +1,69 @@
+// REAL-PROGRAM LENS, ASSAULT round 1 (2026-08-06) -- POSITIVE control.
+// Companion to attack_realprogram_tool_registry.kry. Confirms the OTHER
+// half of that file's finding: `deny!` around the untrusted dispatch lane
+// DOES correctly block a plugin that tries to exfiltrate the secret
+// through an actual gated builtin (here, re-invoking the vault's
+// `fs:read`-backed reader closure from inside the sandbox), even though
+// (per the companion file) it cannot stop a plugin reading the secret
+// through a plain, ungated actor-state accessor. This file exists so the
+// two findings are not confused: the checker's fail-closed machinery for
+// closures/fn-values IS working as designed for this natural, real-shaped
+// program; the gap is scope (data flow vs. system I/O), not a checker
+// bug of the kind rounds 1-7 found.
+//
+// EXPECTED: compile rejection (E0507, `all` required), under
+// `--capabilities-mode=inferred` (the file's only mode -- default).
+//
+// ACTUAL (verified live, compiler/target/release/kryos.exe, no compiler
+// changes): rejected as expected, but NOT at the `reader()` call site
+// inside the sandboxed `deny!` block as this file originally set out to
+// prove -- one level up, at `dispatch(tools, "smuggler", "job")` itself,
+// which requires `[all]` regardless of `deny!`, because `tools` is built
+// from `make_smuggler_tool(reader)` (a factory-function return value, not
+// a struct literal) -- the same non-literal-container scope boundary
+// documented in attack_realprogram_blanket_deny_blocks_legit_plugin.kry.
+// So this file does NOT independently confirm "deny! blocks a
+// builtin-based exfil attempt reached through a plugin registry" -- it
+// confirms the registry itself is uncallable before that question is
+// even reached. See attack_realprogram_spy_tool_zerocap_leak.kry (built
+// with INLINE struct literals, no factory functions, specifically to get
+// past this wall) for a version that actually compiles and runs.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct PluginTool {
+    name: str,
+    run: fn(str) -> str,
+}
+
+fn make_smuggler_tool(reader: fn() -> str) -> PluginTool {
+    return PluginTool {
+        name: "smuggler",
+        run: |input: str| reader() + "|" + input,
+    }
+}
+
+fn dispatch(tools: [PluginTool], name: str, input: str) -> str {
+    let mut i = 0
+    while i < len(tools) {
+        if tools[i].name == name {
+            return tools[i].run(input)
+        }
+        i = i + 1
+    }
+    return "ERROR: unknown tool " + name
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/realprogram_secret.txt")
+    let tools: [PluginTool] = [make_smuggler_tool(reader)]
+
+    deny!(fs:write, fs:read, process) {
+        let leaked = dispatch(tools, "smuggler", "job")
+        println("SMUGGLER LEAK (should not compile): " + leaked)
+    }
+}

@@ -1,0 +1,46 @@
+// ADVERSARIAL VERIFICATION ATTACK (not part of the closed-item claim).
+// Two local hops between actor state and invocation:
+//   let x = self.b      (tracked by current_actor_state_alias_locals: x -> "b")
+//   let y = x            (NOT tracked -- build_actor_state_alias_locals only
+//                          records `let name = self.<path>`, root must be
+//                          literally `self`; a bare-identifier alias of an
+//                          ALREADY-aliased local is invisible to it)
+//   y.f()                 -- resolve_actor_self_field_invoke_caps(object=y,...)
+//                            decomposes to root="y", looks up
+//                            current_actor_state_alias_locals["y"] -> None,
+//                            falls through to CapabilitySet::empty().
+// ACCEPTANCE (if the property holds): REJECTED (E0507) under both modes.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        let x = self.b
+        let y = x
+        let leaked = y.f()
+        println("DOUBLE-ALIAS LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

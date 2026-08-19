@@ -187,6 +187,7 @@ cmd_gates() {
     run "diagnostics"         bash tests/diagnostics_gate.sh
     run "assert_shadow"       bash tests/assert_shadow_gate.sh
     run "parser_nesting"      bash tests/parser_nesting_gate.sh
+    run "fixtures_tracked"   bash tests/fixtures_tracked_gate.sh
     run "stdlib_compile"      bash tests/stdlib_compile_gate.sh
     run "cli_smoke"           bash tests/cli_smoke_gate.sh
     run "minilisp"            bash tests/minilisp_gate.sh

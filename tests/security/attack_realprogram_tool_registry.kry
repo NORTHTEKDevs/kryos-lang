@@ -1,0 +1,207 @@
+// REAL-PROGRAM LENS, ASSAULT round 1 (2026-08-06). Not a minimal repro --
+// a plausible several-hundred-line program: a capability-gated tool
+// registry, an "agent" holding a secret API key, third-party plugins
+// held in a container, concurrent workers dispatching jobs, and an
+// attempt to sandbox untrusted plugins so they cannot exfiltrate the
+// secret. Written the way a real user would write it FIRST, then
+// hardened once it hit friction -- every friction point is called out in
+// a comment at the point it was hit, not summarized after the fact.
+//
+// FRICTION POINT 1 (fatal to the first design, fixed here): the FIRST
+// natural design modeled the secret-holding agent as an `actor Vault`
+// (stateful, encapsulated -- exactly what the brief asks for: "an agent
+// that holds secrets"). This does not compile at all: `kryos check`
+// rejected every handler with a return type --
+//
+//   error[E0110]: actor handler `peek_raw` declares return type `str`,
+//   but actor sends are asynchronous fire-and-forget: there is no
+//   synchronous reply channel ... Request-response actors are not
+//   supported yet -- declare `peek_raw` with no return type
+//   (fire-and-forget) instead.
+//
+// So an actor cannot be queried for a value at all, ever -- not a
+// capability issue, a language-shape issue. This forces the SAME
+// workaround `examples/showcase/secret_agent_vault.kry` already uses:
+// the agent has to be an ordinary struct threaded by value through free
+// functions, not an actor. That is a real, load-bearing ergonomic wall
+// for "agent holds secrets" specifically, because a struct threaded by
+// value cannot serialize concurrent access the way an actor's own
+// mailbox would -- see the concurrent-workers section below for the
+// consequence.
+
+use std::string::{to_upper}
+
+// ---------------------------------------------------------------------
+// 1. The secret-holding agent. Forced to be a plain struct (see friction
+//    point 1 above) -- vault_peek_raw/vault_masked read a private-in-
+//    intent field with NO capability required, because reading a field
+//    the caller already has a reference to is not a gated operation in
+//    this model at all (capabilities gate SYSTEM I/O, not data flow).
+// ---------------------------------------------------------------------
+
+struct Vault {
+    api_key: str,
+    reader: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn load_api_key(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities()
+fn vault_masked(v: Vault) -> str {
+    let n = len(v.api_key)
+    return "sk-****" + substr(v.api_key, n - 4, n)
+}
+
+// Intended for legitimate internal callers only (e.g. a real notifier
+// tool that must authenticate an outbound call). Calls no gated builtin
+// -- just returns a field -- so it requires no capability and none is
+// inferred. This is the accessor a malicious plugin wants a reference
+// to; see make_spy_tool below.
+@capabilities()
+fn vault_peek_raw(v: Vault) -> str {
+    return v.api_key
+}
+
+// ---------------------------------------------------------------------
+// 2. Plugin shape. `dyn Trait` cannot sit inside a container (CLAUDE.md
+//    documented limitation), so the idiomatic Kryos plugin registry is a
+//    struct wrapping a closure, held in an array.
+// ---------------------------------------------------------------------
+
+struct PluginTool {
+    name: str,
+    run: fn(str) -> str,
+}
+
+// ---------------------------------------------------------------------
+// 3. TRUSTED lane: tools with their own real, honestly-declared
+//    capabilities. Not sandboxed -- these are first-party, reviewed code.
+//    Registered through ordinary "factory" functions, the natural way
+//    anyone building a registry of many tools would avoid repeating a
+//    struct literal inline at every call site -- see FRICTION POINT 2
+//    below for why this specific, extremely ordinary pattern turned out
+//    to matter.
+// ---------------------------------------------------------------------
+
+fn make_echo_tool() -> PluginTool {
+    return PluginTool { name: "echo", run: |input: str| "echo: " + input }
+}
+
+fn make_shout_tool() -> PluginTool {
+    return PluginTool { name: "shout", run: |input: str| "shout: " + to_upper(input) }
+}
+
+@capabilities(fs:write)
+fn append_log(path: str, line: str) {
+    file_write(path, line + "\n")
+}
+
+fn make_audit_logger(log_path: str) -> PluginTool {
+    return PluginTool {
+        name: "audit_logger",
+        run: |input: str| {
+            append_log(log_path, "audit: " + input)
+            return "logged"
+        },
+    }
+}
+
+// ---------------------------------------------------------------------
+// 4. UNTRUSTED lane: shaped like ordinary tools (same `PluginTool`
+//    struct, same `fn(str) -> str` signature -- a real registry cannot
+//    tell "friendly" and "hostile" plugins apart by type), dispatched
+//    from inside a `deny!` sandbox. `clean_tool` is a positive control
+//    (a genuinely harmless third-party tool that must still work).
+//    `spy_tool` is the attack: it holds a reference to `vault` (handed
+//    to it at registration time -- the natural way a tool that must know
+//    "which agent am I running under" would receive it) and calls the
+//    zero-capability `vault_peek_raw` accessor.
+// ---------------------------------------------------------------------
+
+fn make_clean_tool() -> PluginTool {
+    return PluginTool { name: "clean", run: |input: str| "clean: " + input }
+}
+
+fn make_spy_tool(vault: Vault) -> PluginTool {
+    return PluginTool {
+        name: "spy",
+        run: |input: str| vault_peek_raw(vault) + "|" + input,
+    }
+}
+
+// ---------------------------------------------------------------------
+// 5. Dispatch + concurrent workers.
+//
+// FRICTION POINT 2 (the load-bearing finding of this file): a generic
+// `dispatch` helper that indexes into an `[PluginTool]` array and calls
+// `.run(input)` is the single most natural shape for "look a tool up by
+// name and invoke it" -- see below at the call sites for what happened
+// when `main` (declaring only `fs:read, fs:write, process`) called it.
+// ---------------------------------------------------------------------
+
+fn dispatch(tools: [PluginTool], name: str, input: str) -> str {
+    let mut i = 0
+    while i < len(tools) {
+        if tools[i].name == name {
+            return tools[i].run(input)
+        }
+        i = i + 1
+    }
+    return "ERROR: unknown tool " + name
+}
+
+@capabilities(fs:read, fs:write, process)
+fn main() {
+    let secret_path = "tests/security/realprogram_secret.txt"
+    let log_path = "tests/security/realprogram_audit.log"
+
+    let key = load_api_key(secret_path)
+    let reader = make_secret_reader(secret_path)
+    let vault = Vault { api_key: key, reader: reader }
+
+    println("vault masked view: " + vault_masked(vault))
+
+    // --- Trusted lane. ---
+    let trusted: [PluginTool] = [make_echo_tool(), make_shout_tool(), make_audit_logger(log_path)]
+
+    let mut w = 0
+    while w < len(trusted) {
+        let t = trusted[w]
+        println("[trusted] " + t.name + " -> " + dispatch(trusted, t.name, "job-" + to_string(w)))
+        w = w + 1
+    }
+
+    // --- Untrusted lane: two concurrent workers, each its own OS thread
+    //     (`spawn`), each wrapping ITS OWN dispatch call in
+    //     `deny!(fs:write, fs:read, process)` -- the intended sandbox
+    //     boundary for third-party code, applied per-worker rather than
+    //     once around a shared loop (see the companion blanket-deny file
+    //     for why a single shared deny! around a generic loop cannot
+    //     admit a mixed-trust registry at all).
+    let untrusted: [PluginTool] = [make_clean_tool(), make_spy_tool(vault)]
+
+    spawn {
+        deny!(fs:write, fs:read, process) {
+            let r1 = dispatch(untrusted, "clean", "worker-A-job")
+            println("[untrusted worker A] clean -> " + r1)
+        }
+    }
+
+    spawn {
+        deny!(fs:write, fs:read, process) {
+            let r2 = dispatch(untrusted, "spy", "worker-B-job")
+            println("[untrusted worker B] spy -> " + r2)
+        }
+    }
+
+    sleep(300)
+    println("done")
+}

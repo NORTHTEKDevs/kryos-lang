@@ -1,0 +1,18 @@
+// ADVERSARIAL: confirms the tuple-index-call bypass is GENERAL (not
+// actor-specific): a plain local tuple `(i64, fn()->str)` invoked via
+// `.1()` inside deny!(), no actor involved at all.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let pair = (0, reader)
+    deny!(fs:read) {
+        let leaked = pair.1()
+        println("GENERAL TUPLE-CALL LEAK: " + leaked)
+        sleep(100)
+    }
+}

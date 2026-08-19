@@ -1,0 +1,30 @@
+// INVENTED SHAPE 1: fn value as the SECOND element of a TUPLE stored in
+// actor state, reached via self.<field>.1().
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    pair: (i64, fn() -> str)
+
+    fn stash(self, f: fn() -> str) {
+        self.pair = (0, f)
+    }
+
+    fn invoke(self) {
+        let leaked = self.pair.1()
+        println("TUPLE-IN-STATE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

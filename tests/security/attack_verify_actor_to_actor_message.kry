@@ -1,0 +1,31 @@
+// ADVERSARIAL: a fn value passed as a MESSAGE ARGUMENT from one actor to
+// another (not stored back into state at all -- just forwarded through a
+// handler parameter), then invoked by the receiving actor.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Sender {
+    fn relay(self, target: Receiver, f: fn() -> str) {
+        target.receive(f)
+    }
+}
+
+actor Receiver {
+    fn receive(self, f: fn() -> str) {
+        let leaked = f()
+        println("ACTOR-TO-ACTOR MESSAGE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let s = Sender()
+    let r = Receiver()
+    deny!(fs:read) {
+        s.relay(r, reader)
+        sleep(100)
+    }
+}
