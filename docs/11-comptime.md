@@ -66,11 +66,14 @@ The keyword is real, reserved, and forward-compatible; the compile-time
 
 ## What runs today
 
+`comptime` is EXPRESSION-ONLY. The block must evaluate to a value; a
+side-effecting STATEMENT inside one, or a `comptime` block used in statement
+position, is a compile error (`E0110`):
+
 ```kryos
 fn main() {
     let x: i64 = 7
     let y = comptime {
-        println("this prints at RUNTIME, once per execution")
         x + 1
     }
     println(to_string(y))
@@ -80,47 +83,57 @@ fn main() {
 Output:
 
 ```
-this prints at RUNTIME, once per execution
 8
 ```
 
 `x` (an outer-scope runtime variable) is read normally inside the block, and
-the `println` inside it executes exactly once, at the point the block is
-reached -- there is no compile-time pass that would have run it earlier or
-suppressed it. A comptime block called from a function invoked N times runs
-N times:
+the block's VALUE is what survives. A comptime block called from a function
+invoked N times evaluates N times:
 
 ```kryos
 fn get_value() -> i64 {
     return comptime {
-        println("evaluating")
         42
     }
 }
 
 fn main() {
-    println(to_string(get_value()))   // prints "evaluating" then "42"
-    println(to_string(get_value()))   // prints "evaluating" then "42" AGAIN
+    println(to_string(get_value()))   // prints "42"
+    println(to_string(get_value()))   // prints "42" AGAIN
 }
 ```
 
+**Why statements are rejected rather than allowed.** This page previously
+showed a `println` inside a `comptime` block and claimed it "executes exactly
+once, at the point the block is reached". Measured 2026-08-16 via `--emit-mir`,
+that was false, and false in a dangerous direction: MIR lowering keeps only the
+block's VALUE, so `comptime { println("x") }` emitted NO println at all and
+vanished silently, while `comptime { n = 99 }` survived and applied. A debug
+print disappearing while the assignment beside it lands is a trap -- you
+conclude the block did not run, and you are wrong. Rather than pick one of
+those two behaviours and pretend the keyword means it, both shapes are now
+rejected with a diagnostic that names the limitation (LEDGER item 42).
+
 Treat `comptime { EXPR }` as syntactic sugar for `{ EXPR }` today -- a plain
-block, evaluated where it appears, with full access to the enclosing scope
-and full I/O capability (gated the same way any other code in that function
-is gated). There is no isolation, no determinism guarantee, and no
-performance benefit: it costs exactly what the equivalent bare block would
-cost, every time it runs.
+value block, evaluated where it appears, with full access to the enclosing
+scope. There is no isolation, no determinism guarantee, and no performance
+benefit: it costs exactly what the equivalent bare block would cost, every
+time it runs.
 
 ## Syntax (this part is real)
 
 ```kryos
-let pi = comptime {
-    3.14159
+fn main() {
+    let pi = comptime {
+        3.14159
+    }
+    println(to_string(pi))
 }
 ```
 
-Wraps any expression or group of statements in `comptime { }`. Type-checks
-and runs like `let pi = { 3.14159 }` would.
+Wraps an EXPRESSION in `comptime { }`. Type-checks and runs like
+`let pi = { 3.14159 }` would. Statements inside the block, and `comptime` in
+statement position, are rejected -- see above.
 
 ## Should I use `comptime` today?
 
