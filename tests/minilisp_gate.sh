@@ -28,35 +28,56 @@
 # reverting the fix reproduces `kryos run .. t9b.lisp` segfaulting (rc=139)
 # exactly as LEDGER item 44 recorded; restoring it is green again.
 #
-# KNOWN RESIDUAL (AOT ONLY, NOT FIXED, tracked separately in LEDGER item 44):
-# a SEPARATE, deeper gap remains on the LLVM/AOT backend for a closure
-# CALLED THROUGH `apply()` whose `args: [Value]` parameter -- documented
-# elsewhere (CLAUDE.md gotcha #22) as a BORROW the callee must not free --
-# still gets an extra release somewhere in apply()'s own scope: t1/t2/t4/t5
-# (a single, non-recursive `apply()` call per run) stay genuinely clean
-# under KRYOS_BOX_DIAG+KRYOS_FREE_DIAG, but t3/t6/t7/t8/t9/t9b (every case
-# with a SECOND `apply()` call in the same process, whether from
-# self-recursion or just two sequential closure calls) all show a real
-# "array DOUBLE-FREE"/"use-after-free" diagnostic on AOT even when -- as in
-# t6 and t9b -- the plain (non-diag) run's PRINTED ANSWER still happens to
-# be correct. Confirmed with a debug-info AOT build's symbolized trace: for
-# `(first (list 7 8 9))`, the array backing that list frees once inside
-# `apply()`'s closure-call branch (examples/showcase/minilisp.kry:519) and
-# again later at the top-level statement's own drop. This gate's diag check
-# runs unconditionally BEFORE comparing output, specifically so a
-# correct-looking-but-corrupted run like t9b's cannot slip through as a
-# false pass. A first attempt at a general fix (extending
-# kryos-mir::lower.rs's `retain_for_ty` to cover `MirType::Enum`
-# generically, reusing `kryos_struct_retain` at all 13 of that function's
-# call sites) was tried and REVERTED: it regressed previously-correct
-# simple cases (t1, t2 -- `ERROR: unbound symbol: square`/`apply1`),
-# proving the fix must be scoped far more narrowly than a blanket
-# retain_for_ty addition (with a matching release, which has no existing
-# "release if not equal" primitive for enum/struct boxes the way
-# str/array/map do). Not attempted further this session; JIT is unaffected
-# (10/10 below, zero diag hits). The `aot_known_wrong` column below is
-# purely documentation -- the diag check already fails these cases
-# unconditionally regardless of its value.
+# AOT RESIDUAL -- FIXED (2026-08-18, session 5, see LEDGER item 44 WAVE 3):
+# the SEPARATE, deeper gap that lived on the LLVM/AOT backend for a closure
+# CALLED THROUGH `apply()` is now closed. Root cause: `push`'s
+# aggregate-boxing codegen path (kryos-codegen-llvm's `"push"` builtin arm)
+# boxes a still-unboxed Enum SSA aggregate via `kryos_calloc` + a raw `store`
+# with NO per-field dup of the just-boxed copy's heap-typed (str/array)
+# payload -- unlike `RValue::EnumVariant` construction (5c611fa), which
+# already dups those fields at ITS OWN boxing/construction site. A value
+# reaching push from a shared/unretained container read (e.g. `eval()`
+# forwarding whatever `env_lookup` read out of an env-frame map, gotcha #23's
+# "shared handle" policy) got re-boxed as an ALIAS of the same payload with
+# no compensating reference; a later independent drop of the env frame and
+# of the pushed array element then double-freed it. Fix: a new generated
+# per-enum helper (`__kryos_dup_fields_<Name>`, `emit_enum_dup_field_helpers`,
+# mirrors `__kryos_drop_<Name>`'s tag-switch structure) dups the box's
+# heap-typed fields in place after boxing, EXCEPT when the pushed local's
+# only defining assignment(s) in the function are direct `RValue::EnumVariant`
+# constructions (`local_is_always_fresh_enum_construction`) -- construction
+# already dups its own fields, so re-dup'ing a value that can never alias
+# anything else would leak, not fix anything (measured: an adversarial
+# construct-then-immediately-push loop leaked ~150 bytes/iteration before
+# this guard). All 10 original corpus cases are now genuinely clean (correct
+# output, ZERO diag lines) on AOT -- t1-t9b previously needed the
+# `aot_known_wrong=1` exemption below; none do anymore, kept literally 0.
+# `mem_plateau_check.sh` still PASSes (4MB, unaffected) and a targeted
+# construct-then-push probe (50k vs 500k iterations) shows bounded, non-
+# proportional growth after the guard (was clearly proportional before it).
+# NOT independently proven leak-free in every shape -- only in the exact
+# patterns measured this session; see LEDGER item 44 for the full account.
+#
+# A first attempt at a general fix (extending kryos-mir::lower.rs's
+# `retain_for_ty` to cover `MirType::Enum` generically, reusing
+# `kryos_struct_retain` at all 13 of that function's call sites) was tried
+# and REVERTED across two earlier sessions: it regressed previously-correct
+# simple cases by retaining a value that was still an unboxed SSA aggregate,
+# not yet a real pointer (`kryos_struct_retain on NON-BOX pointer`) --
+# proving the fix needed to be scoped at the CODEGEN layer (where the actual
+# LLVM-level representation, ptr vs aggregate, is known) rather than MIR.
+#
+# JIT STILL OPEN (untouched by the above, tracked in LEDGER item 44): t10
+# (the closure-counter shape) fails NONDETERMINISTICALLY on JIT --
+# `rc=132`/illegal-instruction with `KRYOS_BOX_DIAG`/`KRYOS_FREE_DIAG` set
+# (10/10 reproductions this session), `rc=0`/"ERROR: unbound symbol: n"
+# without them (10/10) -- classic UAF-roulette, zero diag lines either way.
+# This is a DIFFERENT bug from the one fixed above (Cranelift/JIT was never
+# touched by this session's fix) and is NOT closed. Deliberately given NO
+# known-wrong exemption below (unlike the AOT column, which now stays 0
+# everywhere): t10 is a newly-pinned regression target for unresolved work,
+# not a documented tolerated gap, so its JIT failure is a real, visible FAIL
+# in this gate's output, not silently swallowed.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos.exe}"
@@ -70,6 +91,7 @@ pass=0; fail=0; failed=""
 # name  expected-last-line  aot_known_wrong(1/0)
 # Expected values independently derived from each .lisp file's own Lisp
 # semantics (see the per-case comment), not copied from a prior run's output.
+# name  expected-last-line  aot_known_wrong(1/0)
 declare -a CASES=(
   # t1: square(x)=x*x ; square(7) = 49
   "t1|49|0"
@@ -77,24 +99,38 @@ declare -a CASES=(
   "t2|49|0"
   # t3: mymap(f,lst) conses (f (car lst)) onto (mymap f (cdr lst)) ;
   #     mymap(square,(1 2 3)) = (1 4 9)
-  "t3|(1 4 9)|1"
+  "t3|(1 4 9)|0"
   # t4: count(n) = n=0 ? 0 : 1+count(n-1) ; count(5) = 5
   "t4|5|0"
   # t5: build(n) = n=0 ? () : cons(n, build(n-1)) ; build(3) = (3 2 1)
   "t5|(3 2 1)|0"
   # t6: rep(f,n) = n=0 ? 0 : f(n)+rep(f,n-1) ; rep(square,3) = 9+4+1 = 14
-  "t6|14|1"
+  "t6|14|0"
   # t7: build2(f,n) = n=0 ? () : cons(n, build2(f,n-1)), f unused ;
   #     build2(square,3) = (3 2 1)
-  "t7|(3 2 1)|1"
+  "t7|(3 2 1)|0"
   # t8: build3(f,n) = n=0 ? () : cons(f(n), build3(f,n-1)) ;
   #     build3(square,3) = (9 4 1)
-  "t8|(9 4 1)|1"
+  "t8|(9 4 1)|0"
   # t9: suml(lst) = null?(lst) ? 0 : car(lst)+suml(cdr(lst)) ;
   #     suml((1 2 3 4)) = 10
-  "t9|10|1"
+  "t9|10|0"
   # t9b: first(lst)=car(lst) ; first((7 8 9)) = 7
-  "t9b|7|1"
+  "t9b|7|0"
+  # t10: closure-counter shape -- make-counter returns a closure that
+  # set!-mutates a captured local n on each call; two successive top-
+  # level calls to the SAME returned closure c1 must observe 1 then 2
+  # (LEDGER item 44 WAVE 2 second target -- the demo's own
+  # run_closure_counter_demo section died nondeterministically; this pins
+  # the shape as its own corpus case so it runs under the gate's usual
+  # diag+output checks). AOT is clean (WAVE 3 fix). JIT still fails here
+  # NONDETERMINISTICALLY (rc=132 illegal-instruction, or rc=0 with a wrong
+  # "unbound symbol" answer, zero diag lines either way) -- a SEPARATE,
+  # still-open bug this session's fix does not touch. Deliberately given NO
+  # known-wrong exemption (unlike aot_known_wrong above): this is a real,
+  # visible FAIL below, not silently swallowed, because it is a newly-pinned
+  # regression target for unresolved work, not a documented tolerated gap.
+  "t10|2|0"
 )
 
 run_one() {
@@ -155,7 +191,7 @@ fi
 
 echo
 if [ "$fail" -eq 0 ]; then
-    echo "minilisp: $pass/$pass ok (JIT fully correct; AOT correct + 4 known-residual per LEDGER item 44)"
+    echo "minilisp: $pass/$pass ok (both backends fully correct)"
     exit 0
 fi
 echo "minilisp: $fail FAILED --$failed"

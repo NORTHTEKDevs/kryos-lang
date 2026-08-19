@@ -228,6 +228,106 @@ that two honest named exceptions beat a vague claim.
 
 ---
 
+## 0c. Wave-3 closeout addendum (2026-08-18, HEAD `7f79c45`)
+
+This addendum reconciles Section 0b's interpreter-domain verdict against what
+was actually found and fixed AFTER 0b was written, and re-confirms the rest
+of this document's standing claims against a fresh, full gate-ladder run.
+
+**What changed since Section 0b:** the "deep-chain-env divergence" 0b named
+as minilisp's one open wall was minimized and root-caused post-0b into
+**LEDGER item 44** -- a more fundamental and more severe bug than 0b's own
+description suggests. It is NOT specific to deep closure-capturing env
+chains: the minimal repro is `(car (list 7 8 9))`, needing neither a closure
+nor an environment frame at all. Root cause: `RValue::EnumVariant`
+construction, on BOTH backends, built a new enum box as a raw bit-copy of its
+payload fields with no retain/clone/dup of any heap-typed (str/array) field
+-- unlike the parallel `RValue::Struct` path immediately above it in both
+codegen files, which already did this correctly. A later independent drop of
+the source local and of the new enum's own field then double-freed the same
+underlying array.
+
+**Current status, per backend:**
+
+- **JIT (Cranelift, `kryos run`): FULLY FIXED.** The construction-site retain
+  (`5c611fa`) plus a JIT-only exception-path double-free found and fixed in a
+  second wave (`7f79c45`, this session's HEAD) bring the full 10-program
+  minilisp corpus to 10/10 clean under `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`
+  (zero diagnostic lines, correct output, independently derived per program).
+- **AOT (LLVM, `kryos build --release`): FIXED (2026-08-18, session 5,
+  LEDGER item 44 WAVE 3).** The construction-site fix applies and is correct
+  at the construction site itself. The SEPARATE, AOT-only defect that lived
+  in the interpreter's own `apply()`/`push` dispatch path across four
+  investigation sessions is now closed: the real gap was a SECOND raw
+  bit-copy site (the `push` builtin's aggregate-boxing codegen, not the
+  `apply()` parameter-borrow path session 4 suspected) missing the same
+  per-field heap-reference dup `RValue::EnumVariant` construction already
+  had. Fixed with a new generated per-enum-type helper
+  (`__kryos_dup_fields_<Name>`) called after boxing, gated against a
+  double-dup on an already-independent fresh construction. All 10 original
+  corpus programs plus a new closure-counter case (`t10`) are now genuinely
+  clean on AOT (zero diagnostic lines, correct output). See LEDGER item 44's
+  WAVE 3 entry for the full mechanism, including a leak the first fix
+  candidate introduced and this session's own adversarial memory testing
+  caught and mitigated before landing.
+
+**Revised interpreter-domain verdict (supersedes 0b's and this addendum's
+own prior table row for `minilisp.kry`):** **YES on BOTH backends for the
+original 10-program corpus.** `kryos run` and `kryos build --release` are
+both fully correct for real Lisp-interpreter workloads, including recursion
+and repeated `apply()` calls (10/10 clean on each). One NEW, narrower
+qualification, found and pinned THIS session, not present in any prior
+verdict: a closure that `set!`-mutates a variable captured from an
+enclosing scope, called more than once (the `make-counter`/closure-counter
+shape, `tests/minilisp/t10.lisp`), fails nondeterministically on JIT
+(`kryos run`) -- illegal-instruction or a wrong answer depending on
+allocator timing, zero diagnostic lines either way. AOT is unaffected
+(10/10 clean on this exact case too). This is a DIFFERENT bug from
+everything fixed above (Cranelift codegen was not touched this session) and
+remains open. Regression gate: `tests/minilisp_gate.sh` (wired into tier 1,
+now 11 cases), which fails unconditionally on any diagnostic line rather
+than trusting the printed answer -- so a "looks right but corrupted" case
+cannot pass, and t10's JIT failure is a real, visible gate FAIL, not a
+silently-tolerated exemption.
+
+**Items 3, 6, 40c, 41 -- re-confirmed unchanged this session, no new
+findings:**
+
+- **Item 3 (struct-argument leak, ~86MB/1M calls):** still open, still a
+  performance issue not a correctness/security blocker, still 8 ruled-out
+  fix attempts. No change.
+- **Item 6 (`any` type erasure):** still open, still an ABI-change-required
+  design note. The container-shaped variant is still a clean compile-time
+  rejection (items 40/40b); the direct-slot `str` case still silently
+  mis-renders, still documented in CLAUDE.md. No change.
+- **Item 40c (`std::result::to_array<T>` unannotated silent wrong answer):**
+  still open, still zero real callers repo-wide, still documented in
+  `docs/stdlib/result.md`. No change.
+- **Item 41 (precision cost, 41/75 legitimate closures needing
+  `@capabilities(all)`):** still open, still deliberate and quantified, still
+  the 2026-08-15 re-evaluation's conclusion holds (narrowing reopens 2 real
+  escapes). No change.
+
+**The two still-true caveats, re-confirmed this session:**
+
+- **CI has never been confirmed to run green on this HEAD or any recent
+  HEAD.** This session did not exercise `gh`/network access for that
+  purpose either. Static validity (YAML parses, every referenced script path
+  exists) remains necessary but not sufficient for "CI is green" -- treat CI
+  health as unverified, exactly as Section 5 already states. Not re-verified
+  as passing; not claimed as passing.
+- **`VERSIONING.md`'s external-user bar for the `1.0.0` tag remains
+  unmet.** Kryos still has one user. Nothing this session did constitutes
+  external exposure. The engineering-completeness bar (this repo's own gate
+  ladder) is a real, narrower, internally-defined bar that this session
+  continued to exercise -- it is not a substitute for the exposure bar
+  `VERSIONING.md` sets for `1.0.0`, and the two should not be conflated, per
+  Section 4's own standing framing.
+
+**Version label: still `v0.9.0`. Do not round up to `1.0.0`.**
+
+---
+
 ## 1. VERDICT
 
 **NOT YET 1.0. Ship as v0.9.0-beta, unchanged from VERSIONING.md's own standing bar.** The

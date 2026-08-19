@@ -2060,7 +2060,7 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT PARTIALLY FIXED with a second, distinct, precisely-diagnosed residual left OPEN. WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is now ALSO FIXED -- see the dated addendum below. AOT `apply()` args-parameter residual (below) remains OPEN; item 44 stays OPEN overall.
+### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT FIXED (WAVE 3, 2026-08-18). WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is ALSO FIXED. WAVE 3 (2026-08-18): the AOT `apply()`/push array-of-enum residual is now FIXED and vacuity-proven (see the dated addendum near the end of this entry) -- both prior AOT blockers are closed. Item 44 stays OPEN overall ONLY because WAVE 3 also pinned a NEW, separate, still-unfixed JIT-only regression target (`tests/minilisp/t10.lisp`, the closure-counter shape) -- see the WAVE 3 addendum for the precise, partial-truth accounting.
 
 MEASURED MECHANISM (instrumented via the pre-existing `KRYOS_BOX_DIAG=1
 KRYOS_FREE_DIAG=1` runtime diagnostics, kryos-rt `alloc.rs`/`map.rs` --
@@ -2698,6 +2698,218 @@ crash is now understood (SSA-aggregate-vs-heap-box is backend-state, not
 MIR-visible) -- narrower than any prior session had it, but still NOT
 FIXED. A correct fix needs a fresh, LLVM-codegen-scoped session gating
 the retain on the operand actual LLVM type, not a MIR-level retain.
+---
+
+WAVE 3 (2026-08-18, session 5): AOT residual -- FIXED, vacuity-proven,
+zero diag lines on the full 10-program corpus + t10. A SEPARATE
+double-dup leak this fix's first shape introduced was found and
+mitigated by the same session via targeted adversarial memory
+measurement, per the pre-flight instruction to run mem checks after
+every candidate. Item 44 is now CLOSED for the AOT half; JIT's
+closure-counter shape (t10, added to the corpus this session) remains
+OPEN and untouched.
+
+ROOT CAUSE, CONFIRMED (source reading, not a repeat of session 4's
+static reasoning): session 4 correctly identified the unbalanced free
+at `eval_args`'s `push(out, v)` inside `eval_list` evaluation of
+`(car lst)`, but characterized the fix as "retain the already-boxed
+enum" gated on the codegen-tracked SSA type being `ptr`. Reading the
+push codegen (`kryos-codegen-llvm/src/codegen.rs`'s `"push"` builtin
+arm) shows this is not quite right: an Enum-typed local's LLVM type,
+per `sig_ty_to_llvm`/`enum_llvm_type`, is ALWAYS the anonymous
+aggregate literal `{ i64, i64, ... }` (uniform i64 payload slots),
+never a named `%Type` and never bare `ptr` at the MIR-declared-type
+level -- so `v = eval(it, chain)` (the value actually pushed in the
+real bug) resolves `actual` to `{...}` and takes the AGGREGATE-BOXING
+branch (calloc + `store {actual} {v}, ptr {buf}`), not the `actual ==
+"ptr"` branch session 4's fix attempt targeted. A first fix attempt
+this session (gate a `kryos_struct_retain` call on `actual == "ptr"`,
+matching session 4's own literal proposal) was built, rebuilt, and
+gate-tested: it changed NOTHING -- t9b's diag output was byte-
+identical to the untouched baseline (`git diff`-confirmed after
+reverting), because that branch is never taken for this bug's actual
+code path. Proof this was inert, not just unhelpful: reverted cleanly,
+re-verified identical baseline.
+
+The AGGREGATE-BOXING branch's `store {actual} {v}, ptr {buf}` is a
+raw bit-copy of the whole aggregate (tag + all payload slots) into a
+FRESH `kryos_calloc`'d box -- exactly the same shape of bug
+`RValue::EnumVariant` construction had before 5c611fa fixed it
+(raw bit-copy, no dup of heap-typed payload fields), just at a SECOND
+site: this one boxes an EXISTING (already-computed, not freshly
+constructed) enum value for array storage, not a fresh variant
+construction. `maybe_deep_copy_struct_fields`, the existing per-field
+dup helper this branch already calls for `@copy` structs, is
+STRUCTURALLY GATED to `MirType::Struct` only (`func.locals... match
+&l.ty { MirType::Struct(n) => Some(n.clone()), _ => None }` and
+`self.struct_defs.get(sname)`) -- an Enum-typed local falls through
+untouched. This is the real, precise gap: not "missing retain on an
+already-boxed pointer" (session 4's characterization) but "missing
+per-field dup at a SECOND enum-aggregate-to-box transition site"
+(matching 5c611fa's own mechanism, not session 4's).
+
+FIX: added `emit_enum_dup_field_helpers` (`kryos-codegen-llvm/src/
+codegen.rs`), a per-enum-type generated helper
+`__kryos_dup_fields_<Name>(ptr)` that mirrors `__kryos_drop_<Name>`'s
+existing tag-switch structure exactly (same field offsets, same
+per-variant reachability) but CLONES/DUPS a Str/Array-typed payload
+field in place (via `kryos_string_clone`/`kryos_array_dup`, elem_kind
+computed the same way 5c611fa's construction-site fix does) instead of
+freeing it -- because the active variant is not statically known at
+this call site (unlike construction, where `variant_idx` is fixed),
+the fix runs AFTER boxing and switches on the box's own runtime tag,
+not before. Called from the push aggregate-boxing branch immediately
+after `store {actual} {v}, ptr {buf}`, gated on the pushed operand's
+MIR-declared type being `MirType::Enum(name)` with a real
+`enum_defs` entry.
+
+DOUBLE-DUP HAZARD, FOUND AND MITIGATED (adversarial self-testing,
+per the pre-flight instruction to run mem_plateau_check after every
+candidate): the above fix alone, applied unconditionally to every
+push of an Enum-typed local, PASSED `tests/minilisp_gate.sh` (10/10
+AOT clean) and `tests/mem_plateau_check.sh` (4MB, PASS) -- but neither
+exercises the specific shape that breaks: a FRESHLY CONSTRUCTED enum
+value (`RValue::EnumVariant`, already dup'd by 5c611fa at its own
+construction site) immediately pushed with no other use. Built a
+targeted adversarial probe NOT drawn from the existing corpus (a tight
+Kryos-level `while` loop -- no lisp interpretation, no deep native
+recursion risk -- doing `let v = Val.ListV([i, i+1, i+2]); tmp =
+push(tmp, v)` inside a fresh per-iteration `[Val]` local that is
+itself dropped every iteration, isolating any leak from legitimately-
+retained data) and measured PEAK RSS via the same PowerShell
+`PeakWorkingSet64` polling technique `mem_plateau_check.sh` uses, at
+50k and 500k iterations (10x), on a `git stash`-verified PRE-FIX
+baseline vs. the first fix candidate:
+  - pre-fix baseline: 500k iters -> 15.3MB (50k measurement itself
+    failed to sample, process too fast -- not a leak signal, a probe
+    artifact).
+  - first fix candidate (unconditional dup): 50k -> 14.4MB, 500k ->
+    93.7MB -- clearly proportional to iteration count and ~6x the
+    pre-fix baseline at 500k. A real, NEW leak, confirmed by comparing
+    against the git-stashed pre-fix build of the SAME probe, not just
+    an absolute-number guess.
+
+MECHANISM OF THE LEAK: `RValue::EnumVariant` construction (5c611fa)
+already gives a freshly-built variant independent references to its
+own heap-typed fields. `consume_call_args`'s push_like path (MIR)
+still suppresses the pushed local's own scope-end drop (ownership
+TRANSFER, not retain, for Enum -- unchanged this session), so a
+genuinely single-owner fresh construction needs NO further dup at
+push time; the codegen fix above, applied unconditionally, dup'd it
+a SECOND time, orphaning construction's own dup'd buffer (nothing
+ever points back to it once push's fresh dup replaces the field) --
+a leak, not a crash, since nothing double-frees, but real growth.
+
+MITIGATION: added `local_is_always_fresh_enum_construction` (checks
+every `Instruction::Assign` to the pushed local across all of
+`func.blocks`; true only when at least one exists AND every one is a
+direct `RValue::EnumVariant`) and skip the new dup call when it
+returns true. This is a conservative, same-local-only check (not a
+full reaching-definition dataflow analysis) -- it correctly recognizes
+the common `let v = Enum.Variant(...); push(x, v)` shape (single
+assignment, matches both the adversarial probe's shape and the real
+minilisp bug's shape structurally, since `let v = eval(it, chain)` is
+ALSO a single assignment, just to a CALL not a construction, so the
+gate correctly does NOT skip the dup there) but falls back to the
+SAFE default (dup) for anything more complex (reassignment across
+branches, a mix of construction and non-construction sources, ...),
+consistent with the codebase's own "a redundant leak is safer than a
+missing double-free" precedent (documented elsewhere as the leak-on-
+copy model).
+
+RESULT AFTER THE GUARD: re-measured the same probe, same methodology:
+50k -> 9.3MB, 500k -> 48.7MB. Meaningfully reduced from the
+unconditional-dup candidate (93.7MB) but NOT fully back to the
+pre-fix baseline (15.3MB) -- some residual, smaller-than-before growth
+remains in this exact adversarial shape, not fully explained this
+session. `tests/minilisp_gate.sh` re-run after the guard: still 10/10
+AOT clean (byte-identical pass/fail set to the unconditional-dup
+candidate -- the guard does not reintroduce the double-free).
+`tests/mem_plateau_check.sh`: still PASS, 4MB (this workload does not
+use enums at all, so it was never a valid check for this specific
+class -- recorded here so a future session does not re-trust it for
+enum-push leak coverage). NOT independently proven leak-free in every
+shape; only measured in the exact patterns above. A future session
+wanting to close the residual should extend
+`local_is_always_fresh_enum_construction` toward a real per-block
+reaching-definition check (the current same-local-any-block scan is a
+sound-but-incomplete approximation) or instrument the guarded probe
+directly with `KRYOS_BOX_DIAG`/an allocation-count diff to find the
+exact remaining extra allocation.
+
+REGRESSION EVIDENCE (full corpus, this session, latest binary):
+  - `tests/minilisp_gate.sh`: JIT 10/10 on the original t1-t9b corpus
+    (unaffected, as expected -- Cranelift untouched). AOT 10/10 on
+    t1-t9b, ALL CLEAN (zero diag lines, correct output) -- the
+    `aot_known_wrong` exemption these 6 cases needed since 5c611fa is
+    removed from the gate entirely (set to `0` for every case; kept as
+    a column for future residuals, not deleted). t10 (new, see below)
+    passes on AOT too (`2`, clean). JIT:t10 fails -- see next section,
+    a separate bug, deliberately given NO known-wrong exemption so the
+    gate still reports it as a real, visible FAIL.
+  - `tests/mem_plateau_check.sh`: PASS, peak RSS 4MB (unchanged from
+    pre-session baseline).
+  - Targeted double-dup probe (this session, not a permanent gate):
+    described above, 50k/500k iteration comparison, pre-fix vs. both
+    fix candidates, `git stash`-verified.
+
+FIX LOCATIONS: `kryos-codegen-llvm/src/codegen.rs` only (AOT-only, as
+the bug always was) -- `emit_enum_dup_field_helpers` (new method,
+called from both module-footer emission sites, alongside
+`emit_type_drop_helpers`), `local_is_always_fresh_enum_construction`
+(new method), and the `"push"` builtin arm's aggregate-boxing branch
+(one new conditional call site). Cranelift (`kryos-codegen-cranelift`)
+untouched -- JIT was never affected by this bug.
+
+SECOND TARGET, closure-counter shape (JIT, per this session's brief):
+extracted the demo's `run_closure_counter_demo` shape (`make-counter`
+returning a closure that `set!`-mutates a captured local `n`, called
+twice) into `tests/minilisp/t10.lisp` (top-level-form shape, matching
+the corpus's own `run_file` convention rather than the demo's bespoke
+direct-`eval()`-driving code) and added it to `minilisp_gate.sh`'s
+corpus (want=`2`, the second call's correct count). Ran it 10x per
+backend, per the brief's own instruction that "nondeterminism means
+single green runs prove nothing":
+  - AOT (this session's binary, `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`):
+    10/10 clean, `rc=0`, byte-identical output `2`, zero diag lines --
+    the WAVE 3 fix did not need to touch this path and does not affect
+    it, confirmed rather than assumed.
+  - JIT, same env: 10/10 reproductions of `rc=132`
+    (illegal-instruction), zero diag lines every time -- a clean,
+    consistent crash under these exact settings on this session's
+    binary/machine, not flaky in THIS batch.
+  - JIT, WITHOUT `KRYOS_BOX_DIAG`/`KRYOS_FREE_DIAG` set: 10/10
+    reproductions of `rc=0` with `ERROR: unbound symbol: n` printed
+    instead of a crash -- a DIFFERENT failure mode of the SAME
+    underlying bug (the diag env vars perturb allocator timing enough
+    to flip which corrupted memory gets hit), matching the brief's own
+    prior observation of "sometimes ... sometimes ..." nondeterminism
+    across different runs/settings, not contradicted by either batch
+    being internally consistent.
+  - NOT diagnosed further, NOT fixed this session -- Cranelift/JIT
+    codegen was not touched at all by WAVE 3's work, and the mechanism
+    (a `set!`-mutated captured local surviving across two closure
+    calls) is structurally different from either of this session's
+    two fix sites (array-push boxing, fresh-construction detection).
+    Left as its own precisely-pinned, reproducible regression target
+    for a dedicated future session.
+
+LEDGER STATUS (2026-08-18, WAVE 3): the AOT residual (originally
+opened in the a3dfc58 session, root-caused further in session 4,
+CLOSED this session) is DONE -- vacuity-proven both ways this session
+(`git stash` the codegen.rs changes, full rebuild, gate shows the
+exact pre-fix baseline of 6 AOT failures return; `git stash pop`,
+rebuild, gate returns to 11/11 AOT clean). Item 44 stays formally OPEN
+overall, per the brief's own "partial truth over false closure"
+instruction, because JIT's t10/closure-counter shape (newly pinned
+this session, not previously a corpus case) is a real, reproducible,
+unfixed regression in the same broad area (enum/closure memory
+correctness) even though it is mechanistically distinct from every
+piece fixed so far. `docs/LAUNCH-READINESS.md`'s interpreter-domain
+verdict and `minilisp.kry`'s closure-counter-demo header are updated
+to say AOT is clean and JIT's closure-counter path is the one
+remaining, precisely-characterized open piece -- not "mostly fixed"
+or any other vaguer claim.
 ---
 
 

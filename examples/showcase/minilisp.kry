@@ -70,6 +70,22 @@
 // value of every top-level form.
 //
 // run-expect: factorial(10) = 3628800
+//
+// UPDATE (2026-08-18, session 5, LEDGER item 44 WAVE 3): the "SECOND, MORE
+// SEVERE COMPILER BUG" paragraph above describes an EARLIER state of this
+// bug, before it was minimized and root-caused across several sessions --
+// keep it for history, but it no longer matches current behavior. Current
+// status: the higher-order-map demo (`map(square, ...)`) is now CORRECT on
+// BOTH backends (the array-of-enum double-free that corrupted it is fixed --
+// see `tests/minilisp_gate.sh`, 11/11 clean on AOT). The closure-counter
+// demo below is the ONE piece still open, and only on JIT (`kryos run`):
+// it fails NONDETERMINISTICALLY -- illegal-instruction or a wrong "unbound
+// symbol: n" answer, zero double-free diagnostic lines either way (not the
+// "double-free-of-already-freed-box" symptom the older paragraph above
+// describes -- that was a different, now-fixed manifestation). AOT
+// (`kryos build --release`) is clean on this exact shape too (pinned as
+// `tests/minilisp/t10.lisp`, correct output `2` on every run this session).
+// See LEDGER item 44 for the full, current mechanism and status.
 // ============================================================
 
 enum Value {

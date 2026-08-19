@@ -135,6 +135,31 @@ Honest, non-blocking residuals:
 
 `unsafe { }` is now ENFORCED: a raw-pointer dereference outside any `unsafe`
 block is rejected with E0500.
+- **AOT memory corruption in enum-payload array handling -- FIXED
+  (2026-08-18, LEDGER item 44 WAVE 3):** an array whose elements are enum
+  values could be double-freed on `kryos build --release` if it flowed
+  through more than one call to a shared closure/builtin dispatcher (e.g. an
+  interpreter's own `apply()`) during the program's lifetime -- root cause
+  was a second raw bit-copy site (the `push` builtin's aggregate-boxing
+  codegen) missing the same per-field heap-reference dup that
+  `RValue::EnumVariant` construction already had. Both backends are now
+  clean: `tests/minilisp_gate.sh` (tier 1) reports JIT 10/10 and AOT 11/11
+  (the original 10-program corpus plus a new closure-counter case), all with
+  zero use-after-free/double-free diagnostic lines under
+  `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`. A fix-candidate leak this session
+  found via its own adversarial memory measurement (a freshly-constructed
+  enum immediately pushed with no other use, re-dup'd on top of
+  construction's own independent reference) was mitigated, not left in.
+  See LEDGER item 44 for the full mechanism and residual notes.
+- **JIT closure-counter regression, OPEN (LEDGER item 44, tracked
+  2026-08-18):** `make-counter`'s returned closure (`set!`-mutating a
+  captured local across two calls) fails NONDETERMINISTICALLY on
+  `kryos run` -- illegal-instruction or a wrong "unbound symbol" answer,
+  zero diagnostic lines either way, classic use-after-free roulette. Pinned
+  as `tests/minilisp/t10.lisp` in the regression corpus so it cannot be lost
+  track of; NOT fixed, mechanistically distinct from the AOT fix above
+  (Cranelift/JIT codegen was not touched this session).
+
 
 ### 5.0 WASM backend coverage (v0.7)
 

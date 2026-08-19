@@ -47,7 +47,7 @@ pub struct LlvmCodegen {
     string_counter: u32,
     /// Emission options (target triple, opt level, etc.).
     options: EmitOptions,
-    /// Tracks whether any ARC operations are used — so we emit runtime decls.
+    /// Tracks whether any ARC operations are used - so we emit runtime decls.
     needs_arc_runtime: bool,
     /// Local type map for the current function (LocalId -> LLVM type string).
     local_types: HashMap<u32, String>,
@@ -68,12 +68,12 @@ pub struct LlvmCodegen {
     /// Tracks the actual LLVM type of each SSA temp (%tN -> type string).
     /// Used to know the real type of a value when coercing between ptr/i64/double.
     value_types: HashMap<String, String>,
-    /// Structs annotated with `@copy` — assignment deep-copies the struct.
+    /// Structs annotated with `@copy` - assignment deep-copies the struct.
     copy_structs: HashSet<String>,
     /// True while emitting an instruction whose IMMEDIATE successor in the
     /// same MIR block is a `kryos_exception_check` call (placed by try/catch
     /// lowering right after every throwing call inside a try). Only such
-    /// calls skip the auto post-call unwind check — the MIR check routes to
+    /// calls skip the auto post-call unwind check - the MIR check routes to
     /// the catch block instead. All other calls (including ones outside the
     /// try in the same function) keep the net so a pending exception
     /// propagates immediately (mirrors the Cranelift backend's gating).
@@ -81,7 +81,7 @@ pub struct LlvmCodegen {
     /// True if ANY function in the module calls `kryos_exception_throw` (the
     /// only thing that sets the catchable-exception flag; native panics abort
     /// instead). When false, no `throw` can ever fire, so the auto post-call
-    /// exception check after every call is dead overhead and is elided —
+    /// exception check after every call is dead overhead and is elided - 
     /// a large win for call-heavy throw-free code (e.g. recursion). Default
     /// true (conservative); set false only when a full module scan proves it.
     module_can_throw: bool,
@@ -117,11 +117,11 @@ pub struct LlvmCodegen {
     /// of mangled method names. Used to materialize trait objects and
     /// dispatch VtableCall.
     trait_vtables: HashMap<(String, String), Vec<String>>,
-    /// Names of functions that have been emitted, in order — used when
+    /// Names of functions that have been emitted, in order - used when
     /// emitting DWARF debug metadata at module footer.
     emitted_function_names: Vec<String>,
     /// Per-emitted-function source-line tracking for DISubprogram emission.
-    /// Same order as `emitted_function_names`. None means unknown line — we
+    /// Same order as `emitted_function_names`. None means unknown line - we
     /// then synthesize line 1.
     emitted_function_lines: Vec<u32>,
     /// Metadata id currently assigned to the function being emitted, used
@@ -342,7 +342,7 @@ impl LlvmCodegen {
         // String constant globals.
         self.emit_string_globals();
 
-        // ARC runtime declarations — always emit; some codegen paths use
+        // ARC runtime declarations - always emit; some codegen paths use
         // ARC calls without going through ArcRetain/ArcRelease MIR.
         self.emit_arc_declarations();
 
@@ -380,6 +380,7 @@ impl LlvmCodegen {
         // Emit type drop helpers for struct/enum types with heap-owning fields.
         // These enable array element drop to recursively clean up nested fields.
         self.emit_type_drop_helpers();
+        self.emit_enum_dup_field_helpers();
         self.emit_arc_drop_helpers();
 
         // Emit C-compatible main() wrapper if needed.
@@ -537,7 +538,7 @@ impl LlvmCodegen {
         self.emit_header();
         self.emit_struct_type_decls();
         self.emit_string_globals();
-        // Always emit ARC declarations — some codegen paths (drop helpers,
+        // Always emit ARC declarations - some codegen paths (drop helpers,
         // aggregate dispatch) emit kryos_arc_release / kryos_arc_alloc_i64
         // calls without going through ArcRetain/ArcRelease MIR instructions,
         // so we cannot rely on `needs_arc_runtime` alone (was the root cause
@@ -568,6 +569,7 @@ impl LlvmCodegen {
         self.emit_closure_thunks();
         self.emit_vtable_thunks();
         self.emit_type_drop_helpers();
+        self.emit_enum_dup_field_helpers();
         self.emit_arc_drop_helpers();
         if has_void_main {
             self.emit_main_wrapper();
@@ -833,7 +835,7 @@ impl LlvmCodegen {
         self.emit_line("; External C functions (used by Kryos builtins)");
         self.emit_line("declare i32 @puts(ptr)");
         self.emit_line("declare i32 @printf(ptr, ...)");
-        // libc exit declaration — suppressed when the program defines its
+        // libc exit declaration - suppressed when the program defines its
         // own `fn exit` (the std::process stdlib does), because the
         // user's `define internal void @exit(i32)` would otherwise clash
         // with this external declare AND with the libc-exported `exit`
@@ -932,7 +934,7 @@ impl LlvmCodegen {
         self.emit_line("declare double @kryos_fpow(double, double)");
         self.emit_line("declare double @kryos_fmod(double, double)");
         // C math functions (used by sqrt, floor, ceil, sin, cos, etc. builtins).
-        // Suppressed per-name when the program DEFINES a function of that name —
+        // Suppressed per-name when the program DEFINES a function of that name - 
         // std::math provides pure-Kryos `floor`/`ceil`/`round`/`sqrt`/`sin`/...
         // and a `declare double @floor` (external) clashes with the user's
         // `define internal double @floor` ("invalid redefinition"). Same pattern
@@ -1134,7 +1136,7 @@ impl LlvmCodegen {
         // deadlocks on purpose) contract for user-facing std::sync::Mutex.
         self.emit_line("declare void @kryos_closure_lock_acquire(i64)");
         self.emit_line("declare void @kryos_closure_lock_release(i64)");
-        self.emit_line("; Low-level FFI helpers (v2.3.4) — pointers carried as i64 in IR.");
+        self.emit_line("; Low-level FFI helpers (v2.3.4) - pointers carried as i64 in IR.");
         self.emit_line("declare i64 @kryos_str_to_ptr(i64)");
         self.emit_line("declare i64 @kryos_arr_to_ptr(i64)");
         self.emit_line("declare i64 @kryos_buf_to_str(i64, i64)");
@@ -1448,7 +1450,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_wrapping_add_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_wrapping_mul_i64(i64, i64)");
         self.emit_line("declare i64 @kryos_wrapping_sub_i64(i64, i64)");
-        // Multi-line runtime signatures the auto-generator skipped — added by
+        // Multi-line runtime signatures the auto-generator skipped - added by
         // hand. Only entries NOT already declared above; types match the
         // actual extern "C" fn declarations in kryos-stdlib-native / kryos-rt.
         self.emit_line("declare i64 @kryos_db_col_text_copy(i64, i32, i64, i64)");
@@ -2074,7 +2076,7 @@ impl LlvmCodegen {
         for method_name in method_set {
             let param_types = match self.func_param_types.get(&method_name).cloned() {
                 Some(v) => v,
-                None => continue, // unknown method — skip
+                None => continue, // unknown method - skip
             };
             let ret_ty_llvm = self
                 .func_ret_types
@@ -2134,7 +2136,7 @@ impl LlvmCodegen {
             let arg_list = call_parts.join(", ");
 
             // Emit the call.  If the method uses sret, it returns void at the
-            // ABI level — we load the aggregate, then widen its first slot to
+            // ABI level - we load the aggregate, then widen its first slot to
             // i64 for the uniform dyn return.
             if let Some((slot, agg)) = sret_slot {
                 self.emit_line(&format!(
@@ -2409,7 +2411,7 @@ impl LlvmCodegen {
                 if !prev_skip_label.is_empty() {
                     // We're already in the previous skip block.
                 } else {
-                    // First variant check — we're in entry.
+                    // First variant check - we're in entry.
                 }
 
                 let cmp = self.next_temp();
@@ -2471,6 +2473,139 @@ impl LlvmCodegen {
             self.emit_line(&format!("  br label %{merge_label}"));
             self.emit_line(&format!("{merge_label}:"));
             self.emit_line("  call void @kryos_free(ptr %ptr)");
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
+    }
+
+    /// Emit per-enum "dup fields" helpers: `__kryos_dup_fields_<Enum>(ptr)`
+    /// gives an ALREADY-BOXED enum its own independent reference to any
+    /// heap-typed (str/array) payload field of its CURRENT (runtime) active
+    /// variant, by mutating the box's fields in place. Mirrors
+    /// `__kryos_drop_<Enum>`'s tag-switch structure exactly (same field
+    /// offsets, same per-variant reachability), but clones/dups instead of
+    /// freeing, and stores the result back into the same slot instead of
+    /// releasing it.
+    ///
+    /// Used at the ONE site (so far) that boxes an already-existing enum
+    /// SSA aggregate value fresh onto the heap via a raw bit-copy with no
+    /// per-field dup of its own: `push`'s aggregate-element path
+    /// (`kryos-codegen-llvm`'s `"push"` builtin arm) boxes whatever `[Value]`
+    /// element it is given via `kryos_calloc` + `store`, which -- unlike
+    /// `RValue::EnumVariant` construction (5c611fa, which already dups
+    /// heap-typed fields at the point a NEW variant is built) -- copies the
+    /// aggregate's raw bytes untouched. If that aggregate came from a
+    /// shared/unretained container read (e.g. `eval()` forwarding whatever
+    /// `env_lookup` read out of an env-frame map, gotcha #23's "shared
+    /// handle" policy) rather than a fresh construction, the payload pointer
+    /// is now aliased by two independent owners with only one increment
+    /// ever having happened -- LEDGER item 44's AOT residual. This helper
+    /// closes that gap without needing to know which variant is active
+    /// until runtime (unlike the construction-site fix, which knows the
+    /// variant statically from `variant_idx`).
+    fn emit_enum_dup_field_helpers(&mut self) {
+        let enum_defs: Vec<(String, Vec<EnumVariantDef>)> = self
+            .enum_defs
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        fn dupable_fields(fields: &[MirType]) -> Vec<(usize, &MirType)> {
+            fields
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| matches!(f, MirType::Str | MirType::Array(_, _)))
+                .collect()
+        }
+
+        for (name, variants) in &enum_defs {
+            let has_dupable = variants
+                .iter()
+                .any(|v| !dupable_fields(&v.fields).is_empty());
+            let dup_name = format!("__kryos_dup_fields_{name}");
+            self.emit_line(&format!("; Enum dup-fields helper for {name}"));
+            self.emit_line(&format!("define internal void @{dup_name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+
+            if !has_dupable {
+                self.emit_line("  ret void");
+                self.emit_line("}");
+                self.emit_blank();
+                continue;
+            }
+
+            let nck = self.next_temp();
+            self.emit_line(&format!("  {nck} = icmp eq ptr %ptr, null"));
+            self.emit_line(&format!(
+                "  br i1 {nck}, label %edup_ret_{name}, label %edup_body_{name}"
+            ));
+            self.emit_line(&format!("edup_body_{name}:"));
+
+            let uid = self.temp_counter;
+            self.temp_counter += 1;
+            let tag_tmp = self.next_temp();
+            self.emit_line(&format!("  {tag_tmp} = load i64, ptr %ptr"));
+            let merge_label = format!("edup_merge_{uid}");
+
+            for (idx, variant) in variants.iter().enumerate() {
+                let dupable = dupable_fields(&variant.fields);
+                if dupable.is_empty() {
+                    continue;
+                }
+                let var_label = format!("edup_v{idx}_{uid}");
+                let skip_label = format!("edup_skip{idx}_{uid}");
+
+                let cmp = self.next_temp();
+                self.emit_line(&format!("  {cmp} = icmp eq i64 {tag_tmp}, {idx}"));
+                self.emit_line(&format!(
+                    "  br i1 {cmp}, label %{var_label}, label %{skip_label}"
+                ));
+
+                self.emit_line(&format!("{var_label}:"));
+                for (fi, fty) in &dupable {
+                    let offset = fi + 1;
+                    let fgep = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {fgep} = getelementptr i64, ptr %ptr, i64 {offset}"
+                    ));
+                    let fval = self.next_temp();
+                    self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
+                    let cloned = self.next_temp();
+                    match *fty {
+                        MirType::Str => {
+                            self.emit_line(&format!(
+                                "  {cloned} = call ptr @kryos_string_clone(ptr {fval})"
+                            ));
+                        }
+                        MirType::Array(elem_ty, _) => {
+                            let elem_kind: i64 = match elem_ty.as_ref() {
+                                MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                                MirType::Struct(_) | MirType::Enum(_) => 4,
+                                _ => 0,
+                            };
+                            if elem_kind == 0 {
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_array_clone(ptr {fval})"
+                                ));
+                            } else {
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_array_dup(ptr {fval}, i64 {elem_kind})"
+                                ));
+                            }
+                        }
+                        _ => unreachable!("dupable_fields only yields Str/Array"),
+                    }
+                    self.emit_line(&format!("  store ptr {cloned}, ptr {fgep}"));
+                }
+                self.emit_line(&format!("  br label %{merge_label}"));
+                self.emit_line(&format!("{skip_label}:"));
+            }
+
+            self.emit_line(&format!("  br label %{merge_label}"));
+            self.emit_line(&format!("{merge_label}:"));
+            self.emit_line(&format!("  br label %edup_ret_{name}"));
+            self.emit_line(&format!("edup_ret_{name}:"));
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
@@ -2541,8 +2676,8 @@ impl LlvmCodegen {
 
     /// Emit a tiny no-op function `@__kryos_dwarf_anchor` that carries
     /// a `DISubprogram` (!6) + `DILocation` (!8). LLVM strips orphan
-    /// `!DICompileUnit` nodes — i.e. CUs not referenced by any
-    /// instruction's `!dbg` — leaving only `.debug_frame`. Anchoring
+    /// `!DICompileUnit` nodes - i.e. CUs not referenced by any
+    /// instruction's `!dbg` - leaving only `.debug_frame`. Anchoring
     /// the CU on this dummy function preserves `.debug_info`,
     /// `.debug_line`, `.debug_str`, etc., so addr2line and gdb see
     /// the user's `.kry` source path.
@@ -2551,7 +2686,7 @@ impl LlvmCodegen {
     /// which would also drop the metadata.
     fn emit_dwarf_anchor_fn(&mut self) {
         self.emit_blank();
-        self.emit_line("; DWARF metadata anchor — keeps !DICompileUnit live.");
+        self.emit_line("; DWARF metadata anchor - keeps !DICompileUnit live.");
         self.emit_line("define internal void @__kryos_dwarf_anchor() !dbg !6 {");
         self.emit_line("entry:");
         self.emit_line("  ret void, !dbg !8");
@@ -2919,7 +3054,7 @@ impl LlvmCodegen {
     ///      allowed forms (see body). Any other reference = escape = not stackable.
     ///   4. No terminator references L.
     fn compute_stackable_locals(func: &MirFunction) -> HashSet<u32> {
-        // Step 1: find candidates — fixed-size array locals with n <= 64
+        // Step 1: find candidates - fixed-size array locals with n <= 64
         // that are assigned exactly once with an Array literal.
         let mut candidates: HashSet<u32> = HashSet::new();
         // Track size n for each candidate.
@@ -3168,7 +3303,7 @@ impl LlvmCodegen {
             }
         }
         // Same for ANY aggregate-typed local that is the object of a
-        // StoreField — e.g. the MIR inliner turns a callee's mutated param
+        // StoreField - e.g. the MIR inliner turns a callee's mutated param
         // into a single-assign temp copy, which the count-based rule above
         // leaves immutable; the store path then emits `inttoptr %AggType`.
         for block in &func.blocks {
@@ -3512,7 +3647,7 @@ impl LlvmCodegen {
         let mut referenced: HashSet<u32> = HashSet::new();
         for block in &func.blocks {
             for inst in &block.instructions {
-                // Every instruction that BINDS a local counts as a definition —
+                // Every instruction that BINDS a local counts as a definition - 
                 // otherwise the defensive pass zero-inits it and collides with
                 // the real def (observed for ActorStateLoad / ActorSpawn dests).
                 match inst {
@@ -3527,7 +3662,7 @@ impl LlvmCodegen {
             }
             Self::collect_terminator_locals(&block.terminator, &mut referenced);
         }
-        // Build the union of `referenced` and `func.locals` ids — local 3 in
+        // Build the union of `referenced` and `func.locals` ids - local 3 in
         // the test_process bug is referenced but not in func.locals.
         let mut candidate_ids: Vec<u32> = referenced.iter().copied().collect();
         for local in &func.locals {
@@ -3764,7 +3899,7 @@ impl LlvmCodegen {
                 // function call and return early to propagate the unwind
                 // toward the nearest try/catch up the call stack. Skipped
                 // only when the MIR placed its own check right after this
-                // call (throwing call inside a try) — that check routes to
+                // call (throwing call inside a try) - that check routes to
                 // the catch block instead (mirrors the Cranelift backend).
                 if self.module_can_throw
                     && !self.next_is_mir_exc_check
@@ -3873,7 +4008,7 @@ impl LlvmCodegen {
                         if !self.copy_structs.contains(name) {
                             let local_llvm = self.local_type(*local);
                             if local_llvm.starts_with('%') {
-                                // SSA aggregate struct value — spill to alloca to
+                                // SSA aggregate struct value - spill to alloca to
                                 // give emit_struct_drop a ptr; do not free the alloca.
                                 let agg = local_llvm;
                                 let buf = self.next_temp();
@@ -3890,7 +4025,7 @@ impl LlvmCodegen {
                         // emit_enum_drop expects a ptr to enum data.
                         // - If the local is held as an SSA aggregate (or as
                         //   storage backing an alloca, i.e. mutable), the
-                        //   buffer is stack-allocated — drop the payload but
+                        //   buffer is stack-allocated - drop the payload but
                         //   do NOT free the buffer.
                         // - Otherwise the enum is heap-allocated via malloc
                         //   and the buffer itself must be freed.
@@ -3910,7 +4045,7 @@ impl LlvmCodegen {
                                 self.emit_enum_drop_payload(&buf, name, func);
                             }
                         } else {
-                            // Heap-allocated enum via malloc — free after drop.
+                            // Heap-allocated enum via malloc - free after drop.
                             self.emit_enum_drop(&val, name, func);
                         }
                     }
@@ -3959,7 +4094,7 @@ impl LlvmCodegen {
                 // Coop tasks route to the cooperative executor; both entry
                 // points now share the (fn_ptr, args_ptr, count) ABI, so ALL
                 // captures are packed and marshalled by arity. (The coop path
-                // used to thread only args[0] — 2+ captures were garbage,
+                // used to thread only args[0] - 2+ captures were garbage,
                 // backlog #114.)
                 let spawn_target = if spawn_fn.starts_with("__coopspawn_") {
                     "kryos_coop_spawn"
@@ -4445,7 +4580,7 @@ impl LlvmCodegen {
                 // (struct/tuple) local lives in its own `%_N.addr` alloca; GEP
                 // into that directly. `operand_to_llvm` would instead LOAD the
                 // aggregate VALUE, which then cannot be inttoptr'd (it is not an
-                // integer) — the cause of invalid `inttoptr %Struct ... to ptr`
+                // integer) - the cause of invalid `inttoptr %Struct ... to ptr`
                 // IR that clang rejects. Heap structs (i64 handle) and ptr-typed
                 // objects still go through the load + inttoptr path.
                 let ptr_tmp = match object {
@@ -4504,7 +4639,7 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  store {fty} {coerced}, ptr {field_ptr}"));
                         } else if fty == "i64" || fty == "ptr" || fty == "double" {
                             // The slot is stored as i64 but the value's SSA type
-                            // may be ptr (str constant), double, or i1 — coerce
+                            // may be ptr (str constant), double, or i1 - coerce
                             // to the slot first (`store i64 <ptr>` is invalid IR).
                             let val_ty = self
                                 .actual_type(&val)
@@ -4856,7 +4991,7 @@ impl LlvmCodegen {
                     || actual_ty.starts_with('[')
                 {
                     // Aggregate VALUE under a different type spelling (named
-                    // %Parser vs the literal body — layouts identical): spill
+                    // %Parser vs the literal body - layouts identical): spill
                     // with the value's own type; the byval annotation keeps
                     // the callee-declared type. The boxed-handle branch below
                     // would emit `inttoptr %Agg` (invalid IR).
@@ -5032,7 +5167,7 @@ impl LlvmCodegen {
                 // Coerce value to the destination type if they differ.
                 let mut coerced = self.coerce_value(&val, &val_ty, &effective_dest_ty);
                 // @copy struct with heap fields: clone the heap fields so each
-                // copy owns its own data — same semantics as the Cranelift
+                // copy owns its own data - same semantics as the Cranelift
                 // backend's deep copy on `let c = b` (gotcha #23 unification).
                 if let Operand::Local(src_id) = op {
                     coerced = self.maybe_deep_copy_struct_fields(
@@ -5061,7 +5196,7 @@ impl LlvmCodegen {
                 // String operations: dispatch to runtime instead of integer ops.
                 let is_string =
                     Self::operand_is_string(left, func) || Self::operand_is_string(right, func);
-                // Unsigned if either operand is an unsigned integer type —
+                // Unsigned if either operand is an unsigned integer type - 
                 // drives unsigned div/rem, comparison, and logical shr below.
                 let is_unsigned = Self::operand_is_unsigned(left, func)
                     || Self::operand_is_unsigned(right, func);
@@ -5103,7 +5238,7 @@ impl LlvmCodegen {
                     // String ordering: kryos_string_compare(a, b) -> -1/0/+1,
                     // then an integer compare against 0. Without this arm the
                     // generic path compared the HANDLE POINTERS ("a" < "b"
-                    // was whichever allocated lower — Cranelift has had the
+                    // was whichever allocated lower - Cranelift has had the
                     // dispatch since v1).
                     let left_val = self.operand_to_llvm(left, func);
                     let left_ty = self.operand_type(left, func);
@@ -5248,7 +5383,7 @@ impl LlvmCodegen {
                     } else {
                         // Immutable dest: when the (possibly widened) op type
                         // differs from the declared local type, compute into a
-                        // temp and define %_N at dest_ty — otherwise call
+                        // temp and define %_N at dest_ty - otherwise call
                         // sites that pass %_N at its declared width emit
                         // mismatched IR. Comparisons always produce i1 and
                         // match a bool dest.
@@ -5662,12 +5797,12 @@ impl LlvmCodegen {
                                 ("kryos_bool_to_string", format!("i64 {ext}"))
                             } else if arg_ty == "ptr" {
                                 // Already a string handle. `to_string<T=str>`
-                                // is the identity — clone the string so the
+                                // is the identity - clone the string so the
                                 // caller can own + drop the result without
                                 // touching the original. (kryos_string_clone
                                 // makes a fresh KryosString with its own
                                 // refcount.) Short-circuit out of the shared
-                                // post-match logic — that path emits with
+                                // post-match logic - that path emits with
                                 // i64 return type, but kryos_string_clone
                                 // returns ptr.
                                 let cloned = self.next_temp();
@@ -5704,7 +5839,7 @@ impl LlvmCodegen {
                                 return Ok(());
                             } else {
                                 // Integer types: coerce to i64 if needed.
-                                // Unsigned ints ZERO-extend — the coerce_value
+                                // Unsigned ints ZERO-extend - the coerce_value
                                 // sext arm would print u8 200 as -56. (iN type
                                 // strings carry no signedness, so it must come
                                 // from the MIR local type.) A 64-bit unsigned
@@ -6033,6 +6168,82 @@ impl LlvmCodegen {
                                         "  {buf} = call ptr @kryos_calloc(i64 1, i64 {size_i64})"
                                     ));
                                     self.emit_line(&format!("  store {actual} {v}, ptr {buf}"));
+                                    // FIX: give the freshly-boxed Enum its own
+                                    // independent reference to any heap-typed
+                                    // (str/array) payload FIELD before the
+                                    // array stores a pointer to this box.
+                                    // The `store` above is a raw bit-copy of
+                                    // the whole aggregate (tag + payload
+                                    // slots) -- if the active variant's
+                                    // payload holds a pointer read out of a
+                                    // shared/unretained source (e.g. a
+                                    // `Value` returned by `eval()`, which
+                                    // just forwards whatever `env_lookup`
+                                    // read out of the env-frame map with no
+                                    // retain, per CLAUDE.md gotcha #23's
+                                    // "shared handle" container-read policy),
+                                    // this fresh box now ALIASES that same
+                                    // payload with no compensating reference.
+                                    // A later independent drop of the source
+                                    // (the env frame) and of this array
+                                    // element then double-frees it (LEDGER
+                                    // item 44, AOT residual). Mirrors
+                                    // RValue::EnumVariant construction's own
+                                    // field-dup fix (5c611fa) -- this push
+                                    // site is a SECOND place a raw enum
+                                    // aggregate turns into a heap box, with
+                                    // the identical gap. Unlike construction,
+                                    // the active variant is not statically
+                                    // known here (`v` can hold ANY variant of
+                                    // the enum at runtime), so the dup runs
+                                    // AFTER boxing, via a generated
+                                    // per-enum-type helper
+                                    // (__kryos_dup_fields_<Name>,
+                                    // emit_enum_dup_field_helpers) that
+                                    // switches on the box's own tag the same
+                                    // way __kryos_drop_<Name> already does.
+                                    // DOUBLE-DUP HAZARD: RValue::EnumVariant
+                                    // construction (5c611fa) ALREADY gives a
+                                    // freshly-built variant its own
+                                    // independent field references. A local
+                                    // whose ONLY defining assignment(s) in
+                                    // this function are direct
+                                    // RValue::EnumVariant constructions can
+                                    // never be an alias of anything else (a
+                                    // stack SSA aggregate cannot be
+                                    // independently referenced before it is
+                                    // ever boxed), so dup'ing it AGAIN here
+                                    // would orphan construction's own dup'd
+                                    // buffer -- a leak, not a crash, but a
+                                    // real one (measured: a tight
+                                    // construct-then-push loop leaked ~150
+                                    // bytes/iteration -- 15MB at 50k iters
+                                    // vs 94MB at 500k -- before this guard).
+                                    // Skip the dup ONLY when every assignment
+                                    // to this exact local is a fresh
+                                    // construction; any other source
+                                    // (function-call return, container
+                                    // read/index, reassignment from another
+                                    // local, ...) falls through to the dup
+                                    // above, which is the safe default (a
+                                    // redundant dup leaks; a missing one
+                                    // double-frees).
+                                    if let Operand::Local(eid) = &args[1] {
+                                        if let Some(MirType::Enum(ename)) = func
+                                            .locals
+                                            .iter()
+                                            .find(|l| l.id == *eid)
+                                            .map(|l| l.ty.clone())
+                                        {
+                                            if self.enum_defs.contains_key(&ename)
+                                                && !self.local_is_always_fresh_enum_construction(*eid, func)
+                                            {
+                                                self.emit_line(&format!(
+                                                    "  call void @__kryos_dup_fields_{ename}(ptr {buf})"
+                                                ));
+                                            }
+                                        }
+                                    }
                                     let t = self.next_temp();
                                     self.emit_line(&format!("  {t} = ptrtoint ptr {buf} to i64"));
                                     t
@@ -6047,7 +6258,7 @@ impl LlvmCodegen {
                             ));
                             // MIR binds push's result to the dest local (e.g.
                             // `_3 = call push(_2, _1)`) but the runtime
-                            // `kryos_array_push` returns void — it mutates the
+                            // `kryos_array_push` returns void - it mutates the
                             // array in-place. Alias dest to the same array so
                             // downstream uses of `_3` (struct rebuilds, drop
                             // tracking) see the right SSA value. Closes
@@ -6128,7 +6339,7 @@ impl LlvmCodegen {
                                     ));
                                     h
                                 } else if ty == "ptr" {
-                                    // KryosString* — already a packed string handle. Convert
+                                    // KryosString* - already a packed string handle. Convert
                                     // ptr -> i64 for the runtime's i64-handle ABI.
                                     let t = self.next_temp();
                                     self.emit_line(&format!(
@@ -6180,7 +6391,7 @@ impl LlvmCodegen {
                             } else {
                                 "0".to_string()
                             };
-                            // Discard the return value — assert is void in Kryos.
+                            // Discard the return value - assert is void in Kryos.
                             self.emit_line(&format!(
                                 "  call i64 @kryos_builtin_assert(i64 {cond_val}, i64 {msg_val})"
                             ));
@@ -6435,7 +6646,7 @@ impl LlvmCodegen {
                             // (matches Cranelift's user_shadows_builtin behavior).
                             // Without this guard, `fn contains(arr, target) -> bool`
                             // would silently route to `kryos_builtin_contains(str, str)`
-                            // — the test_user_fn_shadows_builtin regression.
+                            // - the test_user_fn_shadows_builtin regression.
                             let user_shadow =
                                 self.func_param_types.contains_key(fname.as_str());
                             // Translate Kryos user-facing builtin names to runtime symbols.
@@ -6732,7 +6943,7 @@ impl LlvmCodegen {
                                     // func_ret_types and never return a Kryos aggregate
                                     // BY VALUE. So when the dest is an aggregate, the
                                     // function must have returned an i64 handle (a boxed
-                                    // pointer) — e.g. kryos_map_get* for a
+                                    // pointer) - e.g. kryos_map_get* for a
                                     // `map<_, Struct>` value, or a channel recv of an
                                     // aggregate. Treat the return as i64 so the coerce
                                     // path below unboxes it (inttoptr + load). Falling
@@ -7270,14 +7481,14 @@ impl LlvmCodegen {
                 let idx_ty = self.operand_type(index, func);
 
                 if obj_ty == "ptr" || obj_ty == "i64" {
-                    // Dynamic KryosArray — use kryos_array_get(ptr, i64) -> i64.
+                    // Dynamic KryosArray - use kryos_array_get(ptr, i64) -> i64.
                     // The element is stored as i64; convert back to ptr if dest is ptr.
                     //
                     // obj_ty == "i64" means an `any`-erased array handle (e.g. an
                     // element of a `[any]` read back into an `any` local, as zip/
                     // enumerate produce). At runtime it is a KryosArray pointer, so
                     // it must be dereferenced via array_get (header->data), NOT the
-                    // inline-aggregate direct-GEP in the else branch — that read the
+                    // inline-aggregate direct-GEP in the else branch - that read the
                     // header, so `p[0]` returned `len` (a silent wrong-output
                     // miscompile on AOT only). Mirror Cranelift, which uses
                     // array_get uniformly for every indexable handle.
@@ -7367,14 +7578,14 @@ impl LlvmCodegen {
                         ));
                     } else {
                         // Integer element: truncate the i64 slot to a narrow element
-                        // type (i8/i16/i32/i1) before the identity `add` — otherwise
+                        // type (i8/i16/i32/i1) before the identity `add` - otherwise
                         // `add i32 <i64>` is emitted and clang rejects it. i64 is a
                         // no-op (coerce_value returns the value unchanged).
                         let coerced = self.coerce_value(&raw, "i64", &dest_ty);
                         self.emit_line(&format!("  %_{} = add {dest_ty} {coerced}, 0", dest.0));
                     }
                 } else {
-                    // Fixed-size array or tuple aggregate — direct GEP + load.
+                    // Fixed-size array or tuple aggregate - direct GEP + load.
                     // Coerce obj to ptr if it is carried as an i64 handle in the
                     // local type map (was the cause of "defined with type 'i64'
                     // but expected 'ptr'" in for-loop iteration over fixed-size
@@ -7408,7 +7619,7 @@ impl LlvmCodegen {
                 // Allocate ARC-managed memory and store the inner value at offset 0.
                 // For aggregate types (struct/tuple/enum that are not ptr/i64), we
                 // allocate sizeof(T) bytes so the value is stored inline in the arc
-                // block.  Scalar types (i64, ptr, double, …) continue to use the
+                // block.  Scalar types (i64, ptr, double, ...) continue to use the
                 // existing 8-byte-slot approach (ptr-to-data model).
                 let inner_val = self.operand_to_llvm(inner, func);
                 let inner_ty = self.operand_type(inner, func);
@@ -7420,7 +7631,7 @@ impl LlvmCodegen {
                 };
 
                 // Detect aggregate inner types (named structs like %Tree, or
-                // literal struct/array types { … } / [ … ]).
+                // literal struct/array types { ... } / [ ... ]).
                 let is_aggregate = inner_ty.starts_with('%')
                     || inner_ty.starts_with('{')
                     || inner_ty.starts_with('[');
@@ -7610,7 +7821,7 @@ impl LlvmCodegen {
                             _ => {}
                         }
                         // Payload slot is i64; cast non-i64 values (e.g. ptr) first.
-                        // void-typed operands (rare — result of a void-returning
+                        // void-typed operands (rare - result of a void-returning
                         // call cached into a local before the throw/catch
                         // rewrite) get replaced with a literal 0 to keep the
                         // emitted IR well-typed.
@@ -7731,7 +7942,7 @@ impl LlvmCodegen {
                     // dest_ty pointing at a named struct or aggregate ({...} / %X)
                     // means the i64 payload slot is actually a heap-handle to the
                     // enum value (the recursive-Expr case). Materialise it via
-                    // inttoptr+load instead of bitcast — bitcasting i64 to an
+                    // inttoptr+load instead of bitcast - bitcasting i64 to an
                     // opaque struct is invalid LLVM ("invalid cast opcode for
                     // cast from 'i64' to '%Expr = type opaque'").
                     if dest_ty.starts_with('%') || dest_ty.starts_with('{') {
@@ -8067,7 +8278,7 @@ impl LlvmCodegen {
                 end,
                 inclusive,
             } => {
-                // Range layout: { i64 start, i64 end, i64 inclusive } — alloca 3 x i64.
+                // Range layout: { i64 start, i64 end, i64 inclusive } - alloca 3 x i64.
                 let range_ptr = self.next_temp();
                 self.emit_line(&format!("  {range_ptr} = alloca [3 x i64]"));
                 // Store start.
@@ -8125,7 +8336,7 @@ impl LlvmCodegen {
                 // If the local is mutable (has an alloca), use its alloca address.
                 // Otherwise, create a temp alloca, store the value, return address.
                 if self.mutable_locals.contains(&local.0) {
-                    // The alloca already exists as %_N.addr — return its pointer.
+                    // The alloca already exists as %_N.addr - return its pointer.
                     if dest_ty == "ptr" {
                         if is_mutable {
                             self.emit_line(&format!(
@@ -8403,7 +8614,7 @@ impl LlvmCodegen {
                             dest.0
                         ));
                     } else if dest_ty == "void" {
-                        // dest already void — nothing to bind.
+                        // dest already void - nothing to bind.
                     } else {
                         self.emit_line(&format!(
                             "  %_{} = add {dest_ty} {coerced}, 0",
@@ -8418,7 +8629,7 @@ impl LlvmCodegen {
                 //
                 // Every operand passed to @kryos_string_concat must be a `ptr`. A
                 // string-typed local that was loaded from an i64-shaped alloca
-                // (the common case for mutable string locals — see test_string_clobber)
+                // (the common case for mutable string locals - see test_string_clobber)
                 // arrives here as an i64 SSA value and must be `inttoptr`-cast first.
                 // Without the cast, clang rejects the IR with
                 //   "'%tN' defined with type 'i64' but expected 'ptr'"
@@ -8539,7 +8750,7 @@ impl LlvmCodegen {
     /// index of `field` within the struct type of `object`.
     ///
     /// Falls back to index 0 with a warning if the struct or field cannot be
-    /// resolved — this indicates a gap in the type checker or MIR lowering that
+    /// resolved - this indicates a gap in the type checker or MIR lowering that
     /// should be investigated.
     /// The struct type name backing `object`, if it is a struct-typed local.
     fn resolve_struct_name(&self, object: &Operand, func: &MirFunction) -> Option<String> {
@@ -8590,28 +8801,28 @@ impl LlvmCodegen {
                         return i;
                     }
                 }
-                // Field not found in known struct — emit a warning.
+                // Field not found in known struct - emit a warning.
                 eprintln!(
-                    "warning: LLVM codegen: field `{}` not found in struct `{}` (known fields: {:?}) — defaulting to index 0",
+                    "warning: LLVM codegen: field `{}` not found in struct `{}` (known fields: {:?}) - defaulting to index 0",
                     field,
                     name,
                     fields.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
                 );
             } else {
-                // Struct definition not registered — emit a warning.
+                // Struct definition not registered - emit a warning.
                 eprintln!(
-                    "warning: LLVM codegen: struct `{}` not found in struct_defs — defaulting to index 0 for field `{}`",
+                    "warning: LLVM codegen: struct `{}` not found in struct_defs - defaulting to index 0 for field `{}`",
                     name, field
                 );
             }
         } else {
-            // Could not determine struct type from operand — emit a warning.
+            // Could not determine struct type from operand - emit a warning.
             eprintln!(
-                "warning: LLVM codegen: could not determine struct type for field access `.{}` — defaulting to index 0",
+                "warning: LLVM codegen: could not determine struct type for field access `.{}` - defaulting to index 0",
                 field
             );
         }
-        0 // Fallback — should not be reached in well-typed programs.
+        0 // Fallback - should not be reached in well-typed programs.
     }
 
     fn emit_binop(
@@ -8640,7 +8851,7 @@ impl LlvmCodegen {
         is_unsigned: bool,
     ) -> Result<(), CodegenError> {
         // Operands whose tracked SSA type differs from the op's chosen type
-        // (e.g. an i16 local compared against an i64 literal — the emitter
+        // (e.g. an i16 local compared against an i64 literal - the emitter
         // picks i64 but the load produced i16) must be coerced first or
         // clang rejects the module. coerce_value no-ops when types agree;
         // signed narrows sign-extend, matching Cranelift's i64 slots.
@@ -8662,7 +8873,7 @@ impl LlvmCodegen {
         }
         // Runtime guard for integer division/modulo. A bare sdiv/srem is
         // undefined behaviour under LLVM on a zero divisor AND on `MIN / -1`
-        // (unrepresentable quotient) — the latter raised a hardware exception
+        // (unrepresentable quotient) - the latter raised a hardware exception
         // with no diagnostic on both backends. Call the same runtime check
         // the JIT uses, which panics with "integer division by zero" /
         // "integer division overflow".
@@ -8678,7 +8889,7 @@ impl LlvmCodegen {
             if let Some(bits) = bits {
                 // Unsigned ints ZERO-extend to i64 for the check; signed
                 // sign-extend. Unsigned division has only the zero-divisor
-                // trap (no MIN/-1 overflow), so use the zero-only guard —
+                // trap (no MIN/-1 overflow), so use the zero-only guard - 
                 // the signed guard would falsely trap legitimate unsigned
                 // divisions whose bit patterns look like MIN / -1.
                 let ext = if is_unsigned { "zext" } else { "sext" };
@@ -8706,7 +8917,7 @@ impl LlvmCodegen {
         // Mask the shift amount to the operand width, matching the Cranelift
         // JIT (which masks like x86 hardware). LLVM's raw shl/lshr/ashr yield
         // POISON for a shift >= bit width, so `1024 >> 66` produced garbage on
-        // AOT while the JIT gave 256 — a silent AOT/JIT divergence (backlog
+        // AOT while the JIT gave 256 - a silent AOT/JIT divergence (backlog
         // #100/#108/#120).
         let right_owned2;
         let mut right = right;
@@ -8745,7 +8956,7 @@ impl LlvmCodegen {
             MirBinOp::Eq if is_float => format!("  {target} = fcmp oeq {ty} {left}, {right}"),
             MirBinOp::Eq => format!("  {target} = icmp eq {ty} {left}, {right}"),
             // UNordered-ne: `!=` must be the negation of `==`, so NaN != x
-            // (incl. NaN != NaN) is TRUE — IEEE 754, Rust, and the Cranelift
+            // (incl. NaN != NaN) is TRUE - IEEE 754, Rust, and the Cranelift
             // JIT all agree; `fcmp one` returned false for any NaN operand.
             MirBinOp::Neq if is_float => format!("  {target} = fcmp une {ty} {left}, {right}"),
             MirBinOp::Neq => format!("  {target} = icmp ne {ty} {left}, {right}"),
@@ -9038,7 +9249,7 @@ impl LlvmCodegen {
 
         if elems.is_empty() {
             if dest_ty == "ptr" {
-                // Dynamic (unsized) array — allocate an empty array via kryos_array_new.
+                // Dynamic (unsized) array - allocate an empty array via kryos_array_new.
                 // elem_size=8 (all Kryos values are i64/ptr sized), initial cap=0 (runtime min=4).
                 let arr_tmp = self.next_temp();
                 self.emit_line(&format!(
@@ -9057,7 +9268,7 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {tmp} = insertvalue {dest_ty} undef, i8 0, 0"));
                 self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
             } else {
-                // Empty fixed-size array — just produce undef.
+                // Empty fixed-size array - just produce undef.
                 self.emit_line(&format!(
                     "  %_{} = insertvalue {dest_ty} undef, i8 0, 0",
                     dest.0
@@ -9076,7 +9287,7 @@ impl LlvmCodegen {
         func: &MirFunction,
         is_mutable: bool,
     ) -> Result<(), CodegenError> {
-        // Same approach as arrays — insertvalue into a struct type.
+        // Same approach as arrays - insertvalue into a struct type.
         // When the destination is mutable, the final value is stored to its alloca.
         //
         // Resolve the aggregate type. `dest_ty` arrives from local_type(),
@@ -9189,7 +9400,7 @@ impl LlvmCodegen {
             .map(|fs| fs.iter().map(|(_, t)| t.clone()).collect())
             .unwrap_or_default();
         // Declared LLVM field types via sig_ty_to_llvm (enum-aware), matching
-        // emit_struct_type_decls — so an enum field's initializer is inserted as
+        // emit_struct_type_decls - so an enum field's initializer is inserted as
         // the `{ i64, <payloads> }` aggregate, not coerced to a bare i64.
         let declared_field_tys: Vec<String> =
             field_mir_tys.iter().map(|t| self.sig_ty_to_llvm(t)).collect();
@@ -9319,7 +9530,7 @@ impl LlvmCodegen {
                     format!("%_{}", dest.0)
                 }
             } else {
-                // Fresh SSA name per step in the chain — never reuses dest.0.
+                // Fresh SSA name per step in the chain - never reuses dest.0.
                 self.next_temp()
             };
             self.emit_line(&format!(
@@ -9463,7 +9674,7 @@ impl LlvmCodegen {
             "inttoptr"
         } else {
             // int -> int: sext/zext or trunc. Unsigned sources (and booleans)
-            // widen with ZERO extension — `true as i64` must be 1 not -1
+            // widen with ZERO extension - `true as i64` must be 1 not -1
             // (sext i1 1 = -1), and u8 200 -> u64 must stay 200 not sign-flip.
             if llvm_type_width(&dst_ty) > llvm_type_width(&src_ty) {
                 if src_ty == "i1" || src_unsigned {
@@ -9512,7 +9723,7 @@ impl LlvmCodegen {
                     );
                 }
                 if self.aggregate_llvm_ty(&func.ret_ty).is_some() {
-                    // sret return — nothing to store, just exit.
+                    // sret return - nothing to store, just exit.
                     self.emit_line("  ret void");
                 } else {
                     let ret_ty = self.sig_ty_to_llvm(&func.ret_ty);
@@ -9539,7 +9750,7 @@ impl LlvmCodegen {
                     // Mirror the scalar-return coercion logic. The operand type may
                     // not match the aggregate return type after a `kryos_exception_throw`
                     // fallthrough (void/i64 result feeds a Return in an aggregate-returning
-                    // function). The ret is dead code in that case — store undef to keep
+                    // function). The ret is dead code in that case - store undef to keep
                     // the IR well-typed instead of emitting `store %Parser 0, ptr ...`.
                     if from_ty == agg {
                         self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
@@ -9572,7 +9783,7 @@ impl LlvmCodegen {
                         // If the destination is an aggregate but the source
                         // is a scalar, we need a different strategy. For
                         // enums, the source is usually already the aggregate
-                        // SSA value — trust the operand and bypass coerce.
+                        // SSA value - trust the operand and bypass coerce.
                         if (want_ty.starts_with('{') || want_ty.starts_with('%'))
                             && !(from_ty.starts_with('{') || from_ty.starts_with('%'))
                         {
@@ -9615,7 +9826,7 @@ impl LlvmCodegen {
             } => {
                 let ty = self.operand_type(value, func);
                 let val = self.operand_to_llvm(value, func);
-                // Coerce subject to i64 if needed — LLVM `switch` requires
+                // Coerce subject to i64 if needed - LLVM `switch` requires
                 // all case constants to share the subject's integer type, and
                 // MIR lowering emits case constants sized for i64.
                 // For enum aggregates ({ i64, i64 } etc.), extract the tag field.
@@ -9699,7 +9910,7 @@ impl LlvmCodegen {
     /// Build the LLVM struct type for an enum: `{ i64, <payload fields> }`.
     /// All payload slots use i64 for uniform layout.
     /// Resolve an MIR type to its LLVM representation for function signatures
-    /// and locals — uses the proper enum aggregate instead of the i64 fallback.
+    /// and locals - uses the proper enum aggregate instead of the i64 fallback.
     fn sig_ty_to_llvm(&self, ty: &MirType) -> String {
         match ty {
             MirType::Enum(name) => {
@@ -9922,7 +10133,7 @@ impl LlvmCodegen {
         if from_type == to_type {
             return value.to_string();
         }
-        // void operands cannot be coerced — substitute a typed zero/null.
+        // void operands cannot be coerced - substitute a typed zero/null.
         // This arises when a MIR local was assigned the result of a
         // void-returning call (try/catch lowering pre-allocates payload
         // slots) and is later read in an expression position.
@@ -9976,7 +10187,7 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {tmp} = bitcast double {value} to i64"));
                 self.track_type(&tmp, "i64");
             }
-            // Integer width changes — used by `fn -> i32` returns and i32
+            // Integer width changes - used by `fn -> i32` returns and i32
             // arithmetic that the rest of the codegen carries as i64.
             ("i64", "i32") => {
                 self.emit_line(&format!("  {tmp} = trunc i64 {value} to i32"));
@@ -9994,7 +10205,7 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {tmp} = sext i8 {value} to i64"));
                 self.track_type(&tmp, "i64");
             }
-            // Bool conversions — Kryos carries booleans as i64; LLVM `br` and
+            // Bool conversions - Kryos carries booleans as i64; LLVM `br` and
             // `select` require i1, and the typechecker carries booleans as i64
             // when read from variables.
             ("i64", "i1") => {
@@ -10043,7 +10254,7 @@ impl LlvmCodegen {
                 // MULTI-FIELD aggregate: this value is being stored into a
                 // pointer-sized slot (array element, map value, etc.). The
                 // read side (RValue::Index/Field on an aggregate dest) does
-                // `inttoptr i64 raw; load %T, ptr` — i.e. it expects the i64
+                // `inttoptr i64 raw; load %T, ptr` - i.e. it expects the i64
                 // to be a POINTER to a heap copy of the struct. So we must BOX
                 // it: heap-allocate, store the aggregate, return the pointer
                 // as i64. The old code did `extractvalue ..., 0` (field 0
@@ -10199,7 +10410,7 @@ impl LlvmCodegen {
             // General integer width change between LLVM iN types not covered by
             // the explicit arms above (e.g. i16<->i64, i128<->i64, i16->i32).
             // Without this, a narrow int (e.g. `x as i16`) passed where i64 is
-            // expected — like `to_string(x as i16)` — was emitted unchanged,
+            // expected - like `to_string(x as i16)` - was emitted unchanged,
             // producing `call ...(i64 %v)` with %v actually i16, which clang
             // rejects. Signedness is not tracked at the LLVM type level, so
             // widen with sext (matching the existing i8/i32 arms); narrow with
@@ -10244,7 +10455,7 @@ impl LlvmCodegen {
             self.track_type(target, ty);
         } else if ty.starts_with('%') || ty.starts_with('{') {
             // Named struct types and inline aggregate types do not support
-            // `add ty x, 0`. Use `select` on a true constant — LLVM optimizes
+            // `add ty x, 0`. Use `select` on a true constant - LLVM optimizes
             // this away, but it is type-correct for any first-class value.
             self.emit_line(&format!(
                 "  {target} = select i1 true, {ty} {val}, {ty} {val}"
@@ -10264,6 +10475,34 @@ impl LlvmCodegen {
         let t = format!("%t{}", self.temp_counter);
         self.temp_counter += 1;
         t
+    }
+
+    /// True when EVERY `Instruction::Assign` to `local_id` anywhere in `func`
+    /// is a direct `RValue::EnumVariant` construction (and at least one such
+    /// assignment exists). A local meeting this bar can never hold an alias
+    /// of an existing box -- a freshly-constructed SSA aggregate has no
+    /// other owner by definition, since `RValue::EnumVariant` construction
+    /// (5c611fa) already gives it independent references to its own
+    /// heap-typed fields. Used to skip a redundant, leak-causing dup at a
+    /// push aggregate-boxing site (see its call site's comment). A local fed
+    /// from ANY other source (call return, container read, reassignment
+    /// from another local, ...) conservatively returns false, since it may
+    /// be aliasing something else.
+    fn local_is_always_fresh_enum_construction(&self, local_id: LocalId, func: &MirFunction) -> bool {
+        let mut found_any = false;
+        for block in &func.blocks {
+            for inst in &block.instructions {
+                if let Instruction::Assign { dest, value } = inst {
+                    if *dest == local_id {
+                        found_any = true;
+                        if !matches!(value, RValue::EnumVariant { .. }) {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        found_any
     }
 
     /// If `src` is an `@copy` struct local with heap-backed fields, rebuild
@@ -10973,7 +11212,7 @@ impl LlvmCodegen {
         func: &MirFunction,
         free_buf: bool,
     ) {
-        // Guard: an enum local can legitimately hold null — a callee that
+        // Guard: an enum local can legitimately hold null - a callee that
         // throws returns a scalar default 0 before the exception check
         // routes to catch, so the binding's drop at scope exit sees a null
         // pointer. Loading the tag from it was a segfault-after-catch
@@ -10991,7 +11230,7 @@ impl LlvmCodegen {
         let variants = match self.enum_defs.get(enum_name).cloned() {
             Some(v) => v,
             None => {
-                // Unknown enum — free the pointer if requested.
+                // Unknown enum - free the pointer if requested.
                 if free_buf {
                     self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
                 }
@@ -11140,7 +11379,7 @@ impl LlvmCodegen {
 }
 
 // ===========================================================================
-// Free functions — type mapping and utilities
+// Free functions - type mapping and utilities
 // ===========================================================================
 
 /// Map a MIR type to its LLVM IR textual representation.
@@ -11151,7 +11390,7 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
         MirType::I32 => "i32".into(),
         MirType::I64 => "i64".into(),
         MirType::I128 => "i128".into(),
-        // LLVM has no unsigned integer types — signedness is on the operations.
+        // LLVM has no unsigned integer types - signedness is on the operations.
         MirType::U8 => "i8".into(),
         MirType::U16 => "i16".into(),
         MirType::U32 => "i32".into(),
@@ -11188,7 +11427,7 @@ pub fn mir_type_to_llvm(ty: &MirType) -> String {
             "ptr".into()
         }
         MirType::DynTrait(_) => {
-            // Fat pointer: (data_ptr, vtable_ptr) — represented as i64.
+            // Fat pointer: (data_ptr, vtable_ptr) - represented as i64.
             "i64".into()
         }
         MirType::Map { .. } => {
@@ -11404,7 +11643,7 @@ fn post_call_exception_check_applies(value: &RValue) -> bool {
 
 /// True if any function in the module calls `kryos_exception_throw` (what
 /// `throw` lowers to, and the only thing that sets the catchable-exception
-/// flag — native panics abort the process instead). When this is false the
+/// flag - native panics abort the process instead). When this is false the
 /// auto post-call exception check is provably dead and can be elided.
 /// Conservative: a CallIndirect/VtableCall to an unknown target could in
 /// principle reach a throw, so their presence also forces `true`.
@@ -11432,7 +11671,7 @@ fn default_value_for_type(ty: &str) -> &str {
         "ptr" => "null",
         "void" => "void",
         // Aggregate types (struct %Name, tuple/struct {..}, array [..]) cannot
-        // use the integer literal `0` — `ret {i64,i64,i64} 0` is malformed IR.
+        // use the integer literal `0` - `ret {i64,i64,i64} 0` is malformed IR.
         // This fires on the implicit fallthrough return of an aggregate-returning
         // function (e.g. every std::json `-> JsonValue` helper's dead default
         // block emitted `ret {i64,i64,i64} 0`).
@@ -11480,7 +11719,7 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         // str-key map variants: the string key is coerced to an i64 handle. Without
         // these the string key was passed as `ptr`, mismatching the i64 declares.
         "kryos_map_insert_str" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
-        // http_request(method, url, headers, body, timeout_ms) — all str
+        // http_request(method, url, headers, body, timeout_ms) - all str
         // handles + i64, passed as i64 slots to kryos_http_request_ks.
         "http_request" => Some(vec![
             "i64".into(),
@@ -11498,7 +11737,7 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
             Some(vec!["i64".into(), "i64".into()])
         }
         "kryos_map_keys_str" => Some(vec!["i64".into()]),
-        // C math functions — single double argument
+        // C math functions - single double argument
         "sqrt" | "floor" | "ceil" | "round" | "sin" | "cos" | "tan"
         | "log" | "log2" | "log10" | "fabs" => Some(vec!["double".into()]),
         _ => None,
