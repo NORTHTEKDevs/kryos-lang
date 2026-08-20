@@ -38,10 +38,10 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 06 | Structs & enums (`06-structs-and-enums.md`) | planned -- summarizes [`docs/05-structs-and-enums.md`](../../05-structs-and-enums.md) |
-| 07 | Collections (`07-collections.md`) | planned -- new material: `[T]`, `map<K, V>`, `std::collections` (`List`/`Stack`/`Queue`/`Deque`/`Dict`); no existing `docs/NN` chapter owns this today |
-| 08 | Strings & text (`08-strings-and-text.md`) | planned -- new material: UTF-8 model, interpolation, `std::string`/`std::utf8`/`std::bytes`; no existing `docs/NN` chapter owns this today |
-| 09 | Generics & traits (`09-generics-and-traits.md`) | planned -- summarizes [`docs/08-traits-and-generics.md`](../../08-traits-and-generics.md) |
+| 06 | [Structs & enums](06-structs-and-enums.md) | written -- summarizes [`docs/05-structs-and-enums.md`](../../05-structs-and-enums.md); also covers the bare-variant name-collision gotcha, the tuple-variant-only rule, and why struct-style variants (`A { x: i64 }`) are rejected |
+| 07 | [Collections](07-collections.md) | written -- new material: `[T]`, `map<K, V>`, tuple, `contains()`'s str/map-only scope, and the `push`-returns-reassign rule (including the aliasing hazard and the AOT-only enum-array-push leak, LEDGER item 45); `std::collections` (`List`/`Stack`/`Queue`/`Deque`/`Dict`) is not yet a standalone section |
+| 08 | [Strings](08-strings.md) | written -- new material: UTF-8 byte-vs-codepoint model, interpolation and literal-brace escaping, the `base64_encode`/`chr`/`byte_at` latin-1 byte-buffer caveat, `string_builder` for O(n) concat, and the substr-mid-codepoint panic; `std::bytes` is not yet a standalone section |
+| 09 | [Generics & traits](09-generics-and-traits.md) | written -- summarizes [`docs/08-traits-and-generics.md`](../../08-traits-and-generics.md); also covers the `dyn Trait` container limitation (clean `E0110`) and its enum-and-`match` workaround |
 
 ## Part III -- The Kryos difference
 
