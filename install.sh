@@ -70,7 +70,7 @@ echo "Installing Kryos ($PLATFORM-$ARCH)..."
 # silently invisible to the old filter too. FALLBACK_VERSION below is still
 # the real latest published release as of this fix; bump it the day a
 # v0.9.0 (or later) release is actually cut and published.
-FALLBACK_VERSION="v1.0.0-rc.2"
+FALLBACK_VERSION="v0.9.0"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"
