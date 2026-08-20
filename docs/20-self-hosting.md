@@ -105,7 +105,7 @@ only — physical memory is committed on demand.
 
 ## Stability
 
-> **Current status (1.0.0-beta.5):** the standalone per-module check
+> **Current status (v0.9.0):** the standalone per-module check
 > (`test_bootstrap.sh`) passes **16/16**, stable across consecutive runs.
 > The byte-identical bootstrap **fixed point** (stage-3 == stage-4,
 > `bootstrap-win.sh`) holds; stage-2 differs because stage-1 uses a

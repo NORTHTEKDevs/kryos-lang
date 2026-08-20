@@ -224,7 +224,7 @@ Where Kryos shines: simple loops, recursion, and floating-point arithmetic — c
 
 ---
 
-## What ships in v1.0.0-beta
+## What ships in v0.9.0
 
 The full toolchain. Not a roadmap — actually built and tested:
 

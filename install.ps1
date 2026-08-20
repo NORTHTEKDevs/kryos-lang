@@ -36,10 +36,20 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 }
 
 # Resolve release tag. GitHub's releases/latest is NOT used directly: the
-# repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically. Query
-# the release list and take the newest v1.0.0* release by publish order,
-# falling back to a pinned floor if the API is unreachable. Override with
-# KRYOS_VERSION to install any specific tag.
+# repo carries legacy v2.x/v4.x tags that outrank the current version line
+# semantically. Query the release list (newest first) and take the first
+# release whose tag is NOT one of those legacy major lines, falling back to
+# a pinned floor if the API is unreachable. Override with KRYOS_VERSION to
+# install any specific tag.
+#
+# NOTE (2026-08-20, launch-readiness audit): this used to hardcode a
+# "v1.0.0*" allowlist, which silently kept resolving to the stale
+# v1.0.0-rc.2 release (published 2026-07-10) even after the project
+# recalibrated its current version to 0.9.0 -- no "v1.0.0*"-matching release
+# has been cut since, and a future "v0.9.0" release would have been
+# silently invisible to the old filter too. FALLBACK_VERSION below is still
+# the real latest published release as of this fix; bump it the day a
+# v0.9.0 (or later) release is actually cut and published.
 $FALLBACK_VERSION = "v1.0.0-rc.2"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
@@ -48,13 +58,13 @@ if ($env:KRYOS_VERSION) {
     $TAG = $null
     try {
         $rels = Invoke-RestMethod -Uri "https://api.github.com/repos/$REPO/releases?per_page=30" -Headers $AUTH -UseBasicParsing
-        $TAG = ($rels | Where-Object { $_.tag_name -like "v1.0.0*" } | Select-Object -First 1).tag_name
+        $TAG = ($rels | Where-Object { $_.tag_name -notlike "v2.*" -and $_.tag_name -notlike "v4.*" } | Select-Object -First 1).tag_name
     } catch { }
     if (-not $TAG) {
         $TAG = $FALLBACK_VERSION
         Write-Host "Installing default version (API unavailable, pinned floor): $TAG"
     } else {
-        Write-Host "Installing latest 1.0 release: $TAG"
+        Write-Host "Installing latest release: $TAG"
     }
 }
 

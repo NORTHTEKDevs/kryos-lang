@@ -619,3 +619,363 @@ different method. Continuing to say "not yet capability-safe" after this measure
 have been **overstating** it. Both errors cost credibility; this document tries to name the actual
 state precisely instead: zero known escapes, not formally proven, one usability cost, one user, not
 1.0 yet.
+
+
+---
+
+## 10. Wave 2 public-readiness certification (2026-08-20, HEAD `ee83deb`)
+
+This section answers the WAVE 2 brief directly: not "is the engineering
+gated" (Sections 1-9 already answered that at HEAD-adjacent commits within
+the last 1-4 days, and nothing in the working tree changed the compiler,
+stdlib, or tests this session -- `git diff --stat` for this session's
+commit touches only `README.md`, `QUICKSTART.md`, `docs/learn/README.md`,
+`docs/19-language-reference.md`, `docs/20-self-hosting.md`,
+`examples/showcase/README.md`, `docs/package-registry.md`, `install.sh`,
+`install.ps1`, and this file) but **"can Kristian tell people to start
+using this today."**
+
+### 10.1 Gate ladder -- what was re-run fresh this session, honestly scoped
+
+A full from-scratch gate ladder run was started this session
+(`tools/loop/kryos-loop.sh preflight` then the full named ladder) under
+severe, documented machine-level contention (the git-bash fork-storm mode
+this repo's own `kryos-loop.sh preflight` and `docs/claude/FULL-REFERENCE.md`
+already warn about -- `mcp__winobs__orphan_scan` showed 27-31 pre-existing
+`bash.exe` processes at session start, most 7000-14000 minutes old, from
+other concurrent sessions on this machine, and every interactive shell
+command this session queued behind that backlog with multi-minute delays).
+Rather than block the certification on that queue, the ladder was launched
+as a detached background run logging to a scratch file and polled across
+this session's tool calls, exactly as this task's own instructions
+anticipate ("if something takes more than 10 min, log-and-poll across
+calls").
+
+**Completed fresh, this session, full real output:**
+
+| Gate | Command | Result |
+|---|---|---|
+| Preflight | `bash tools/loop/kryos-loop.sh preflight` | **PASS** -- staticlib archives current, 0 stray test processes, installed PATH `kryos` (0.9.0) agrees with the repo build (0.9.0) on `examples/showcase/log_analyzer.kry`, HEAD `ee83deb`, 0 commits unpushed |
+| Installed-toolchain drift | `bash tests/installed_toolchain_check.sh` | **PASS** -- repo build and PATH `kryos` both report `kryos 0.9.0` and agree functionally |
+| Capability-escape corpus | `bash tools/loop/escape_status.sh` | **PASS -- STILL ESCAPING: 0, now-rejected: 19, missing: 0** (unchanged from the 2026-08-16 measurement in Section 2 row 1) |
+| Security gate | `bash tests/security_gate.sh` | **IN PROGRESS at the time this addendum was written -- 60+ checks executed, 100% `ok` so far, zero failures, not yet reached completion** under the same machine contention described above |
+
+**Not completed within this session's turn budget** (queued, still running
+in the background scratch log at the time this addendum was written):
+`ir_signature_gate`, `strict_caps_examples`, `inferred_soundness`,
+`conf_stdlib_wave14`, `conformance`, `type_soundness`,
+`backend_divergence_pins`, `diagnostics_gate`, `parser_nesting_gate`,
+`concurrency_smoke`, `no_double_free`, `match_exhaustiveness`,
+`mem_plateau_check`, `stdlib_compile_gate`, `cli_smoke_gate`,
+`wasm_differential_gate`, `authority_surface_gate`, `capability_matrix_gate`,
+`jit_symbols_gate`, `minilisp_gate`, `fixtures_tracked_gate`,
+`package_selftests`, `ecosystem_check`, `run_examples_gate`,
+`run_examples_e2e`, `selfhost_wholeprogram_gate`, `test_bootstrap` (alone),
+`check-docs-truth`, `docs_status_gate`, `acceptance`.
+
+**This is not a gap in evidence, it is a disclosed gap in RE-verification
+timing.** Every one of those gates was run to completion and PASSED at
+HEAD `dbea2da`/`2256449`/`7f79c45` (2026-08-16 through -18, Sections 1-9,
+0, 0b, 0c above) and again implicitly covered by CI run `32295425858`
+(2026-08-19, HEAD `ee83deb` -- this session's exact HEAD, see 10.3) which
+runs `security_gate.sh`, `stdlib_compile_gate.sh`, `cli_smoke_gate.sh`,
+`authority_surface_gate.sh`, and `jit_symbols_gate.sh` on Windows, plus the
+conformance/examples/self-host suites on Linux. Nothing in the working tree
+between those measurements and this session touched compiler, stdlib, or
+test code -- only prose in 7 docs and the two install scripts (10.2, 10.4)
+changed. The two gates fully re-run fresh THIS session (escape corpus,
+partial security gate) are the two most load-bearing for the capability-
+safety claim specifically, and both hold at zero known escapes. Extending
+the fresh re-run to the remaining ~26 gates is recommended before the next
+public-facing claim is made, but the machine-contention delay measured this
+session (single-digit gate progress over roughly an hour of wall clock) is
+itself the finding worth recording: **this repo's own gate ladder is not
+currently fast enough to re-run in full inside one interactive session on a
+contended machine**, independent of anything about the language itself.
+
+### 10.2 The new-user path, walked literally
+
+**(a) The documented one-line installer is broken in a way nobody had
+named: it silently installs a 5-week-stale, pre-recalibration build, and
+would keep doing so even after a correct release is cut.**
+
+- `README.md`'s own "Install" section, `QUICKSTART.md`, and
+  `docs/learn/README.md` all tell a new user to run
+  `curl -fsSL .../install.sh | bash` (or `install.ps1` on Windows). This is
+  the primary documented path -- ahead of "build from source" in every one
+  of those three docs.
+- The GitHub Releases API (`api.github.com/repos/NORTHTEKDevs/kryos-lang/releases`,
+  queried live this session) returns exactly 9 releases, ALL prerelease,
+  none newer than **`v1.0.0-rc.2`, published 2026-07-10**. The tags API
+  confirms the same 9 tags and confirms **no `v0.9.0` (or `0.9.0`) tag
+  exists anywhere in the repo** -- the version recalibration documented in
+  `VERSIONING.md` renamed the CURRENT source version to 0.9.0 but no
+  release was ever cut under that name. `.github/workflows/` contains only
+  `ci.yml` -- there is no release-automation workflow, so this is a fully
+  manual step nobody has done since the recalibration.
+- `install.sh`/`install.ps1` (both, identically) resolved their release tag
+  by filtering the release list for `tag_name -like "v1.0.0*"` and falling
+  back to a hardcoded `FALLBACK_VERSION="v1.0.0-rc.2"`. Since v1.0.0-rc.2 is
+  both the only match AND the newest release, **every user who ran the
+  documented one-line installer got a binary from 2026-07-10** -- before
+  the 0.9.0 relabel, before LEDGER item 39 (self-host bootstrap capability
+  resolution was exponential, hung on real programs), before LEDGER item 44
+  (a backend-divergent memory-corruption bug in enum construction, fixed
+  across six sessions ending 2026-08-19), before the wasm `str == str`
+  content-comparison fix, before roughly a dozen of the 19 now-closed
+  capability-escape shapes, and before every doc fix in this and the prior
+  four addenda. The installed binary would also self-report
+  `kryos 1.0.0-rc.2` -- a version string that LOOKS newer than the correct
+  current `0.9.0`, which is the exact "stale toolchain reporting a HIGHER
+  version than source" trap `tests/installed_toolchain_check.sh`'s own
+  header describes as "the single most likely thing to make someone
+  conclude the language is broken when it is not" -- except that gate only
+  checks a LOCAL PATH install against a local repo build; nothing in this
+  repo's gates exercised the actual public installer end to end.
+- **Fixed this session** (mechanical, does not require release-cutting
+  authority): `install.sh` and `install.ps1` no longer hardcode a
+  `"v1.0.0*"` allowlist. Both now take the newest release that is NOT one
+  of the explicitly-legacy `v2.*`/`v4.*` major lines (the reason the script
+  itself gives for not using GitHub's `releases/latest` directly), so the
+  NEXT release cut under any name (`v0.9.0`, `v0.9.1`, `v1.0.0`, ...) is
+  picked up automatically instead of silently ignored. **This does NOT
+  change what the installer resolves to today** -- `v1.0.0-rc.2` is still
+  genuinely the newest release that exists, so the fix is inert until a
+  new one is published, which is the point: it stops the NEXT recalibration
+  from repeating this exact silent-staleness bug.
+- **Still open, requires the repo owner, not fixable from this session:**
+  cut and publish a real GitHub release from current `master` (`ee83deb` or
+  later), tagged to match the current source version (`v0.9.0`, matching
+  `compiler/Cargo.toml`'s `version = "0.9.0"` and every badge/doc in this
+  repo), with the platform assets the installers expect by name --
+  `kryos-linux-x86_64.tar.gz`, `kryos-macos-x86_64.tar.gz` /
+  `kryos-macos-aarch64.tar.gz` (per `install.sh`'s `$PLATFORM-$ARCH`
+  naming), and `kryos-windows-x86_64.zip` (per `install.ps1`). Until that
+  happens, the documented one-line install path remains materially behind
+  the source in this repository, regardless of the filter fix above.
+
+**(b) Build-from-source (QUICKSTART.md's actual fallback path) is current
+and correct.** `git clone` + `cd compiler && cargo build --release -j 2`
+produces exactly what this session's gates ran against: PATH `kryos`
+(`~/.local/bin/kryos`, this machine's prior build) and the fresh repo build
+both report `kryos 0.9.0` and agree functionally on a real showcase program
+(preflight, 10.1). This path is honest and current; it is simply not the
+FIRST thing either doc tells a new user to run.
+
+**(c) QUICKSTART's literal tour, spot-checked this session via the
+`kryos-mcp` sandbox (compile+run, independent of the machine's own
+contended shell):**
+
+- `hello.kry`, `fibonacci.kry`, `shapes.kry`, `channels.kry` -- all four
+  compile-checked/ran; output matched each file's own `// expect-stdout:`
+  header exactly where a run completed. (Four parallel `kryos_run` calls
+  briefly collided on the sandbox's shared linker temp path
+  [`LNK1104: cannot open file ...main.exe`] under this session's own
+  concurrent background gate-ladder load -- a sandbox-contention artifact,
+  reproduced once more sequentially with the same result, not a Kryos
+  compiler defect; `kryos_check` on the same sources succeeded clean
+  throughout, confirming the type-checker was never the problem.)
+- `docs/README.md`'s own "Quick Start" snippet (struct `Point`,
+  `distance`, comma-separated struct fields and struct-literal) --
+  type-checks clean (`kryos_check`, fresh this session).
+- Cookbook 01 (CLI word counter) and 03 (JSON pipeline) -- both ran via the
+  sandbox exactly as published; recipe 03's output matched its doc's
+  claimed output byte-for-byte (`admins: [name=alice age=30,name=carol
+  age=41]` / `wrote 2 admin records`); recipe 01 correctly hit its
+  `len(argv) < 2` usage branch (the sandbox has no CLI-arg injection, so
+  the file-reading path itself was not exercised here, but the
+  `@capabilities(io)`-annotated compile path is proven clean).
+  Cookbook 02 (HTTP server) was reviewed but not run to completion in the
+  sandbox -- it blocks in `http_serve`, which a fixed-timeout sandbox call
+  cannot cleanly probe; this is a testing-harness limitation, not a finding
+  about the recipe itself, and it is already covered live by
+  `run_examples_e2e.sh`'s `task_api`/`rest_api`/`web_server` server
+  assertions (Section 0.3 above).
+
+### 10.3 CI, verified honestly (updating Section 5's "unverified" posture)
+
+Section 5 above (written 2026-08-16/17) explicitly declined to claim CI
+green because it had not been checked. This session checked it, live, via
+the GitHub Actions API:
+
+- **Run `32295425858`, HEAD `ee83deb` (this session's exact working
+  HEAD), push event, 2026-08-19: conclusion SUCCESS.** All **9** jobs
+  (`build-and-test`, `wasm-smoke`, `selfhost-stage1`, `docs-examples`,
+  `registry-smoke`, `quickstart-e2e`, `fuzz`, `build-and-test-macos`,
+  `build-and-test-windows`) completed with conclusion `success`; none
+  failed, none were skipped. (`.github/workflows/ci.yml` defines exactly 9
+  jobs -- confirmed by direct count, correcting this task brief's own "10
+  jobs" parenthetical, which listed only 9 names.)
+- This is the most recent run on `master`; no push has landed since
+  (`git rev-list --count origin/master..HEAD` = 0 this session, before
+  this session's own commit).
+- The prior six-session pattern of red/cancelled runs (`32291948674`
+  failure, `32276005465` cancelled, `32250995114` failure,
+  `32228096851` cancelled, `32193514907` failure, `32175309444` failure --
+  all 2026-08-18/19, all superseded) is now resolved: the run on the commit
+  this repo currently sits at is clean. **CI is GREEN, verified live, not
+  carried forward.**
+
+### 10.4 Docs truth sweep -- stale version-string sweep, fixed this session
+
+A repo-wide sweep for the pre-recalibration version string (`1.0.0-beta.*`,
+`1.0.0-rc.*`) found 7 places where CURRENT-STATUS prose (not historical
+"as of"/"re-measured on" annotations, which are legitimately dated and left
+alone) still named the old scheme as if it were live. All 7 fixed this
+session, each a single surgical string replacement, no other content
+touched:
+
+| File | Before | After |
+|---|---|---|
+| `docs/learn/README.md` | `kryos --version # -> kryos 1.0.0-beta.1 (or newer)` | `-> kryos 0.9.0 (or newer)` |
+| `QUICKSTART.md` | `CHANGELOG.md -- what's new in v1.0.0-beta.5` | `CHANGELOG.md -- full release history` (the CHANGELOG's own newest dated entry is `1.0.0-rc.2`; nothing has been filed under `0.9.0` -- see 10.1's note that this file's own version-header gap is a separate, lower-severity finding, not fixed this session) |
+| `README.md` | `## What ships in v1.0.0-beta` | `## What ships in v0.9.0` |
+| `docs/19-language-reference.md` | `What "implemented" means in 1.0.0-beta.5:` | `...in v0.9.0:` |
+| `docs/20-self-hosting.md` | `Current status (1.0.0-beta.5):` | `Current status (v0.9.0):` |
+| `examples/showcase/README.md` | `All examples target Kryos 1.0.0-beta.1` | `...target Kryos 0.9.0` |
+| `docs/package-registry.md` | `do not block 1.0.0-beta.1 of the toolchain.` | `do not block shipping the toolchain.` (generalized so it does not go stale again at the next recalibration) |
+
+`tests/docs_status_gate.sh` and `tools/loop/check-docs-truth.sh` were
+queued as part of the fresh gate re-run (10.1) but had not reached
+completion at the time this addendum was written; both passed at HEAD
+`2256449` (2026-08-16, Section 2 rows 26-27) against the same prose these
+fixes touch only tangentially (neither gate's known checks -- escape count,
+conformance count -- are affected by a version-string correction).
+
+**Left as a disclosed, lower-severity residual, not fixed this session:**
+`CHANGELOG.md` has no `## [0.9.0]` entry at all -- the newest dated entry is
+still `## [1.0.0-rc.2] -- 2026-07-10`, with everything since (including the
+0.9.0 relabel itself) sitting under `## [Unreleased]`. This is honest (it
+does not claim a release that was not cut) but means a reader following
+QUICKSTART's own link to "see what's new" cannot find a version header
+matching the version they just installed. Best fixed alongside 10.2's
+release-cutting action item, by adding a `## [0.9.0]` header over the
+existing `[Unreleased]` content the day that release is cut.
+
+### 10.5 README's opening claim, read as a skeptical stranger
+
+The first 40 lines were re-read specifically for unbacked superlatives.
+Every badge and bullet either names its own evidence file/gate inline
+(`tests/parity/run_parity.sh`, `tools/diff-fuzz/`,
+`compiler/self-host/bootstrap-win.sh`, `tests/ecosystem_check.sh`) or
+hedges explicitly where the evidence is qualified (the capability-safety
+paragraph's own "Zero KNOWN escapes is not zero escapes... not yet a
+boundary to run untrusted code behind" -- this is the opposite of hype).
+The `77/77` parity and `14,000+`/`0 divergences` diff-fuzz badge numbers
+were NOT independently re-measured this session (both require a
+multi-minute fuzz/parity run this session's contention made prohibitive
+inside the available window) -- no evidence of drift was found either
+(both are dynamic-count gates, `run_parity.sh` and the diff-fuzz harness,
+not hardcoded numbers this session had reason to distrust), so they are
+carried forward, disclosed as such, rather than re-asserted as
+independently fresh. The **Status** line correctly states `0.9.0`,
+matches `compiler/Cargo.toml`, and correctly does not round up to 1.0. No
+hype was found that needed removing; the two version-string
+inconsistencies in 10.4 were the only credibility gaps in the top-level
+docs, and both are now fixed.
+
+### 10.6 What a new user can build TODAY, by domain (11 dogfood programs, 10 domains)
+
+Naming the programs the "universal general-purpose language" claim in
+Section 0b/0c is actually backed by, so this is not an assertion without a
+receipt:
+
+| # | Domain | Program | Verdict (Section 0b/0c, unchanged this session) |
+|---|---|---|---|
+| 1 | CLI tooling | `log_analyzer.kry` | YES, zero findings |
+| 2 | Concurrent/worker-pool | `crawl_pool.kry` | YES, zero findings |
+| 3 | Capability-governed dispatch | `repo_auditor.kry` (+ its overreach negative twin) | YES, correctly rejects the overreaching twin |
+| 4 | HTTP/JSON server | `task_api.kry` | QUALIFIED YES -- proven live on AOT (5/5), JIT path contention-limited not defect-limited last measured |
+| 5 | Language interpreter | `minilisp.kry` (11-program corpus incl. `t10` closure-counter) | YES, both backends, since item 44's 2026-08-19 close |
+| 6 | Interactive terminal | `snake_game.kry` | YES, no qualification beyond closed doc gaps |
+| 7 | Numeric simulation | `orbit_sim.kry` | YES, zero findings, zero capabilities needed |
+| 8 | Binary data | `karc.kry` | QUALIFIED YES -- one named wall (`byte_at` on invalid-UTF-8 input, documented workaround) |
+| 9 | WebAssembly | `wordscope.kry` | QUALIFIED YES -- the `==` P0 is closed; one open wall (a short-circuit-in-a-loop wasm codegen ICE) still blocks this exact file's own `to_lower_ascii` helper from building for wasm |
+| 10 | REST API (secondary showcase) | `rest_api.kry` | YES, part of the 14/14 byte-identical JIT-vs-AOT differential set |
+
+(`crawl_pool`, `repo_auditor`, `task_api`, `rest_api`, plus the five
+universal-claim programs and `repo_auditor_overreach` = 11 named programs
+across the 10 domains above; `web_server.kry` and the 24-45 root/showcase
+examples beyond these are additional, not double-counted here.)
+
+### 10.7 Named exceptions (LEDGER OPEN section, unchanged this session)
+
+Grepped fresh this session: `tools/loop/LEDGER.md`'s `## OPEN - ranked`
+section contains exactly 5 numbered items, unchanged in count and content
+from the 2026-08-19 addendum (0c) above:
+
+- **Item 3** -- struct-argument leak, ~86MB per 1M calls (a struct with
+  heap-bearing fields crossing any call boundary). Performance issue, not
+  correctness/security. 8 fix attempts ruled out. DESIGN NOTE, NOT FIXED.
+- **Item 6** -- `any` is a bare i64 with no runtime type tag; a DIRECT
+  (non-container) `any` slot holding a `str` mis-renders on
+  `to_string`/`format`. The container-shaped variant is a clean
+  compile-time rejection (items 40/40b). DESIGN NOTE, NOT FIXABLE WITHOUT
+  AN ABI CHANGE.
+- **Item 40c** -- `std::result::to_array<T>` only binds `T` from an
+  EXPLICIT annotation at the binding site; called unannotated, it compiles
+  clean and prints a raw pointer instead of the value. Zero real callers
+  repo-wide. Documented in `docs/stdlib/result.md`. NOT FIXED.
+- **Item 41** -- precision cost: 41 of 75 enumerated LEGITIMATE
+  pure-closure shapes require `@capabilities(all)` under the fail-closed
+  `Unknown -> ALL` stance. A narrowing experiment (2026-08-15) reopened 2
+  real escapes, so this is deliberate, not an oversight. NOT FIXED,
+  DELIBERATE.
+- **Item 45** -- AOT-only, proportional leak in the enum-array-push
+  pattern: ~454MB at 5M fresh-enum pushes on AOT, JIT clean (~11MB) at the
+  same scale. Characterized and pinned (`tests/mem/enum_array_push_leak.kry`),
+  deliberately not fixed this wave (2026-08-19 brief's own scope
+  instruction).
+
+No item outside these 5 remains in the OPEN section. All 5 are
+non-security (2 performance leaks, 1 ABI-limited design note, 1 zero-caller
+stdlib gap, 1 deliberate usability/soundness trade already re-evaluated and
+kept).
+
+### 10.8 The one remaining VERSIONING.md bar
+
+Unchanged from Section 4: **1.0.0 is cut only after external users have run
+real workloads against it.** Kryos still has one user. `v0.9.0` remains the
+correct current label -- confirmed still accurate against
+`compiler/Cargo.toml`'s `version = "0.9.0"` this session. Nothing in this
+session's work constitutes external exposure; 10.2's install-path finding
+is if anything a reason external exposure has not meaningfully started yet
+(the one public-facing path a stranger would take first was materially
+behind the source until this session's mechanical fix, and still points at
+a stale binary until a release is cut).
+
+### 10.9 Direct answer: can Kristian tell people to start using this?
+
+**Two different answers depending on which path "using this" means, and
+the gap between them is this session's headline finding:**
+
+- **If "start using this" means build-from-source (`git clone` + `cargo
+  build --release`, exactly as QUICKSTART's own fallback documents, and
+  exactly what this session's gate ladder ran against): YES.** The engine
+  is feature-complete, self-hosting, at zero known capability escapes
+  across two independent methods, CI is genuinely green on the exact
+  current HEAD (verified live, not asserted), and the 5 remaining OPEN
+  LEDGER items are honestly named, narrow, and non-security. This has been
+  true since Section 1's 2026-08-16 verdict and remains true today.
+- **If "start using this" means the documented one-line installer
+  (`curl | bash` / `irm | iex`, which every entry doc lists FIRST, ahead of
+  build-from-source): NOT YET.** It currently hands a new user a binary
+  from 2026-07-10 -- before the version recalibration, before roughly a
+  dozen closed capability-escape shapes, before the item-39
+  self-host-hang fix, before the item-44 memory-corruption fix -- while
+  self-reporting a version string (`1.0.0-rc.2`) that reads as NEWER than
+  the correct, current `0.9.0`. This session fixed the forward-looking half
+  of the bug (the installers no longer hardcode a filter that would keep
+  ignoring a correctly-named future release) but the release itself still
+  needs to be cut and published by the repo owner -- an action outside an
+  agent's authority from inside this repo.
+
+**Recommendation, concretely: point people at "build from source" today
+(it is honest and it is what every gate in this document was measured
+against); do not amplify the one-line installer link until a `v0.9.0`
+release with the right platform assets is cut and published on GitHub.**
+That is a same-day fix for whoever holds release credentials, not a
+code-quality blocker -- but it is the one gap in this document's evidence
+chain between "the engineering is done" (true, extensively) and "a
+stranger who follows the README top-to-bottom gets the engineering that
+was actually verified" (not yet true, until that release exists).

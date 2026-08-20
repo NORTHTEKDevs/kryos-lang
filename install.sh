@@ -56,21 +56,31 @@ ARTIFACT="kryos-${PLATFORM}-${ARCH}"
 echo "Installing Kryos ($PLATFORM-$ARCH)..."
 
 # Resolve release tag. GitHub's releases/latest is NOT used directly: the
-# repo carries legacy v2.x/v4.x tags that outrank v1.0.0 semantically. Query
-# the release list and take the newest v1.0.0* release by publish order,
-# falling back to a pinned floor if the API is unreachable. Override with
-# KRYOS_VERSION to install any specific tag.
+# repo carries legacy v2.x/v4.x tags that outrank the current version line
+# semantically. Query the release list (newest first) and take the first
+# release whose tag is NOT one of those legacy major lines, falling back to
+# a pinned floor if the API is unreachable. Override with KRYOS_VERSION to
+# install any specific tag.
+#
+# NOTE (2026-08-20, launch-readiness audit): this used to hardcode a
+# "v1.0.0*" allowlist, which silently kept resolving to the stale
+# v1.0.0-rc.2 release (published 2026-07-10) even after the project
+# recalibrated its current version to 0.9.0 -- no "v1.0.0*"-matching release
+# has been cut since, and a future "v0.9.0" release would have been
+# silently invisible to the old filter too. FALLBACK_VERSION below is still
+# the real latest published release as of this fix; bump it the day a
+# v0.9.0 (or later) release is actually cut and published.
 FALLBACK_VERSION="v1.0.0-rc.2"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"
 else
-    TAG=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"}         "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null         | grep -o '"tag_name": *"v1.0.0[^"]*"'         | head -1 | grep -o 'v1.0.0[^"]*')
+    TAG=$(curl -fsSL ${AUTH_HEADER:+-H "$AUTH_HEADER"}         "https://api.github.com/repos/$REPO/releases?per_page=30" 2>/dev/null         | grep -o '"tag_name": *"[^"]*"'         | grep -oE 'v[^"]*' | grep -vE '^v(2|4)\.' | head -1)
     if [ -z "$TAG" ]; then
         TAG="$FALLBACK_VERSION"
         echo "Installing default version (API unavailable, pinned floor): $TAG"
     else
-        echo "Installing latest 1.0 release: $TAG"
+        echo "Installing latest release: $TAG"
     fi
 fi
 
