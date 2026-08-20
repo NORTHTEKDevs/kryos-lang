@@ -29,10 +29,10 @@ the existing reference material until their book chapter lands. Follow
 | # | Chapter | Status |
 |---|---|---|
 | 01 | [Hello Kryos & the toolchain](01-hello.md) | written |
-| 02 | Values & types (`02-values-and-types.md`) | planned -- summarizes [`docs/02-variables-and-types.md`](../../02-variables-and-types.md) (the type half) |
-| 03 | Bindings & mutability (`03-bindings-and-mutability.md`) | planned -- summarizes [`docs/02-variables-and-types.md`](../../02-variables-and-types.md) (the `let`/`let mut` half, split out for teaching order: types before binding rules) |
-| 04 | Functions (`04-functions.md`) | planned -- summarizes [`docs/03-functions.md`](../../03-functions.md) |
-| 05 | Control flow (`05-control-flow.md`) | planned -- summarizes [`docs/04-control-flow.md`](../../04-control-flow.md); also covers `comptime {}` as an expression-position block (full depth: [`docs/11-comptime.md`](../../11-comptime.md)) since no standalone book chapter is allocated to it in this outline |
+| 02 | [Values & types](02-values-and-types.md) | written -- summarizes the type half of [`docs/02-variables-and-types.md`](../../02-variables-and-types.md) (that reference chapter predates the current dialect in places -- e.g. it claims `i32` is the default integer and shows `none`/no-`Option` -- this book chapter is the corrected, current version; do not treat the two as interchangeable) |
+| 03 | [Bindings](03-bindings.md) | written -- summarizes the `let`/`let mut` half of [`docs/02-variables-and-types.md`](../../02-variables-and-types.md), split out for teaching order: types before binding rules. Also covers the `-`/`(`/`[` line-continuation trap (CLAUDE.md hard rule 1) |
+| 04 | [Functions](04-functions.md) | written -- summarizes [`docs/03-functions.md`](../../03-functions.md) (that reference chapter's closure section is pre-dialect-shift and not reflected here); this book chapter's core content is the borrow/ownership-transfer split between `str`/`[T]`/`map` params, struct params, and scalar params, including the LEDGER item 3 struct-argument leak |
+| 05 | [Control flow](05-control-flow.md) | written -- summarizes [`docs/04-control-flow.md`](../../04-control-flow.md) (that reference chapter's "Coming from Rust" section overclaims `match` as value-only patterns; current `match` supports tuple/or/guard patterns, covered here); also covers `comptime {}` as an expression-position block under "Blocks are expressions" (full depth: [`docs/11-comptime.md`](../../11-comptime.md)) since no standalone book chapter is allocated to it in this outline |
 
 ## Part II -- Data
 
