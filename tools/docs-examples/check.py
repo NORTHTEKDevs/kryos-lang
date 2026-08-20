@@ -26,6 +26,7 @@ KRYOS = REPO / "compiler" / "target" / "release" / ("kryos.exe" if sys.platform 
 DOC_GLOBS = [
     "docs/learn/*.md",
     "docs/learn/cookbook/*.md",
+    "docs/learn/book/*.md",
     "docs/0*.md",
     "docs/1[0-9]-*.md",
     "QUICKSTART.md",
