@@ -41,6 +41,24 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
         let source = kryos_driver::read_source(Path::new(path))
             .map_err(|e| format!("cannot read `{path}`: {e}"))?;
 
+        // Refuse to launder a W0001 ambiguous newline-led `||`/`-`/`[`/`(`
+        // continuation (CLAUDE.md hard rule 1). A plain AST-based re-emit
+        // would silently rewrite the source into the merged reading with
+        // canonical formatting and zero diagnostic -- baking the ambiguity
+        // in permanently and destroying the only trace of it (the original
+        // line break) without ever telling the user, which is strictly
+        // worse than leaving it alone: `kryos run`/`check`/`build` still
+        // warn on the un-formatted file, but formatting it removes that
+        // warning's only trigger. Skip (leave untouched), same policy as
+        // an un-anchorable comment below.
+        if kryos_fmt::source_has_ambiguous_continuation(&source) {
+            eprintln!(
+                "  skipped {path} (contains an ambiguous newline-led continuation -- run `kryos check {path}` to see the W0001 warning; file left untouched)"
+            );
+            skipped += 1;
+            continue;
+        }
+
         // The AST does not carry `//` line/inline comments (only `///` doc
         // comments survive), so a naive re-emit would DELETE them. For files
         // with such comments, use the comment-preserving path: it re-anchors
@@ -82,7 +100,7 @@ pub fn execute(files: &[String], check: bool) -> Result<(), String> {
 
     if skipped > 0 {
         eprintln!(
-            "kryos fmt: skipped {skipped} file{} to avoid deleting comments (see above)",
+            "kryos fmt: skipped {skipped} file{} rather than destroy a comment or launder an ambiguous continuation (see above)",
             if skipped == 1 { "" } else { "s" }
         );
     }

@@ -356,6 +356,33 @@ impl Parser {
         );
     }
 
+    /// W0001-class warning: a fresh line whose first token is one the Pratt
+    /// loop can ALSO consume as a continuation of the previous statement's
+    /// expression (CLAUDE.md hard rule 1 -- the parser has no newline
+    /// awareness at all). `token_desc` is the literal token text (`"||"`,
+    /// `"-"`, `"("`, `"["`); `as_desc` names what the silent merge turns it
+    /// into (`"a boolean-or"`, `"subtraction"`, `"a function call"`, `"an
+    /// index access"`); `instead_desc` names the construct a human most
+    /// likely meant to start fresh (`"a closure literal"`, `"a negative
+    /// number literal"`, `"a parenthesized expression"`, `"an array
+    /// literal"`). Shared by every W0001 call site so the four shapes stay
+    /// textually consistent.
+    fn warn_asi_trap(&mut self, span: Span, token_desc: &str, as_desc: &str, instead_desc: &str) {
+        self.diagnostics.push(
+            Diagnostic::warning(format!(
+                "this line starts with `{token_desc}`, which silently continues the PREVIOUS statement's expression as {as_desc} -- if you meant to start a NEW statement (e.g. {instead_desc}), this merge produces a wrong value with no error"
+            ))
+            .with_code(kryos_errors::codes::W0001)
+            .with_label(
+                span,
+                "ambiguous: continues the previous line instead of starting fresh",
+            )
+            .with_note(format!(
+                "move `{token_desc}` to the END of the previous line instead, or restructure so this statement's first token isn't `{token_desc}`"
+            )),
+        );
+    }
+
     /// Synchronize after a parse error — skip tokens until we reach a
     /// likely declaration or statement boundary.
     fn synchronize(&mut self) {
@@ -2049,6 +2076,17 @@ impl Parser {
         // (boolean-or / bitwise-or) infix operator -- see the W0001
         // warning below, right before the generic infix consume.
         let mut seen_pipe_or_chain = false;
+        // Same "first occurrence in this expression, right after a newline"
+        // tracking as seen_pipe_or_chain above, extended to the other three
+        // tokens CLAUDE.md hard rule 1 names as ambiguous continuation
+        // openers: unary `-` (infix subtraction below), `[` and `(`
+        // (postfix index/call, checked further up this same loop before the
+        // generic infix branch is even reached). An established chain
+        // (matrix[i][j], curried f(x)(y), a - b - c) stays silent; only the
+        // FIRST occurrence right after a newline warns.
+        let mut seen_minus_chain = false;
+        let mut seen_lbracket_chain = false;
+        let mut seen_lparen_chain = false;
 
         loop {
             if self.at_end() {
@@ -2176,6 +2214,15 @@ impl Parser {
             }
 
             if kind == TokenKind::LBracket && POSTFIX_BP >= min_bp {
+                if !seen_lbracket_chain && self.peek().newline_before {
+                    self.warn_asi_trap(
+                        self.peek().span,
+                        "[",
+                        "an index access",
+                        "an array literal",
+                    );
+                }
+                seen_lbracket_chain = true;
                 self.advance();
                 let index = self.parse_expr();
                 let rbracket = self.expect(TokenKind::RBracket);
@@ -2189,6 +2236,15 @@ impl Parser {
             }
 
             if kind == TokenKind::LParen && POSTFIX_BP >= min_bp {
+                if !seen_lparen_chain && self.peek().newline_before {
+                    self.warn_asi_trap(
+                        self.peek().span,
+                        "(",
+                        "a function call",
+                        "a parenthesized expression",
+                    );
+                }
+                seen_lparen_chain = true;
                 self.advance();
                 let args = self.parse_arg_list();
                 let rparen = self.expect(TokenKind::RParen);
@@ -2373,7 +2429,10 @@ impl Parser {
                 // dangerous first-occurrence case, where a fresh-looking
                 // operand is silently annexed by a `||` a human is far more
                 // likely to have meant as a NEW statement (an empty-param
-                // closure literal). Deliberately `||`-ONLY, not single `|`:
+                // closure literal). The SAME first-occurrence-after-a-newline
+                // heuristic is applied to `-` (below, this branch) and to `[`
+                // / `(` (postfix, earlier in this loop) -- see warn_asi_trap
+                // and its call sites. Deliberately `||`-ONLY here, not single `|`:
                 // an empirical corpus sweep (examples/, tests/conformance/,
                 // self-host/, stdlib/) found the identical "first occurrence,
                 // newline-led" shape is a COMMON, LEGITIMATE pattern for
@@ -2406,6 +2465,26 @@ impl Parser {
                 }
                 if is_pipe_pipe {
                     seen_pipe_or_chain = true;
+                }
+
+                // Same trap, `-` (subtraction) flavor: `let a = 5` then a
+                // fresh line `-1` silently merges into `5 - 1` instead of a
+                // new statement holding a negative literal. Only the FIRST
+                // `-` encountered while building this expression, right
+                // after a newline, is ambiguous -- an established multi-line
+                // subtraction chain (`a` then `- b` then `- c` on
+                // successive lines) does not re-warn on its second/third line.
+                let is_minus = kind == TokenKind::Minus;
+                if is_minus && !seen_minus_chain && self.peek().newline_before {
+                    self.warn_asi_trap(
+                        self.peek().span,
+                        "-",
+                        "subtraction",
+                        "a negative number literal",
+                    );
+                }
+                if is_minus {
+                    seen_minus_chain = true;
                 }
 
                 self.advance();

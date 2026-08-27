@@ -885,32 +885,39 @@ pass the field by reference:
 
 // ----- W0001 ----------------------------------------------------------------
 
-const W0001: &str = r#"W0001: ambiguous newline-led `||` continuation
+const W0001: &str = r#"W0001: ambiguous newline-led continuation
 
 The parser has no newline awareness -- tokens carry only byte-offset spans,
-not line numbers. `||` is both a binary operator (boolean-or) AND the
-empty-param closure-literal opener (`|| ...`). When a
-fresh line begins with `||` and the previous line already parsed as a
-complete-looking expression, the parser has no way to tell whether you meant
-to CONTINUE that expression (an intentional multi-line boolean-or chain) or
-START a new statement (most often a closure literal) -- it always chooses
-CONTINUE, silently, with no diagnostic before this warning existed.
+not line numbers. Four tokens are both a valid FIRST token of a new
+statement's expression AND something the Pratt loop can consume as a
+continuation of the PREVIOUS statement's expression: `||` (boolean-or /
+empty-param closure opener), `-` (subtraction / a negative literal), `[`
+(index access / an array literal), and `(` (a function call / a
+parenthesized expression). When a fresh line begins with one of these and
+the previous line already parsed as a complete-looking expression, the
+parser has no way to tell whether you meant to CONTINUE that expression or
+START a new statement -- it always chooses CONTINUE, silently, with no
+diagnostic before this warning existed.
 
-Example that triggers the warning -- a SILENT WRONG VALUE, not a crash:
+Four examples, each a SILENT WRONG VALUE, not a crash:
 
-    fn main() {
-        let a: bool = false
-        let b: bool = true
-        let c: bool = a
-        || b
-        println(to_string(c))   // prints "true": `c` became `a || b`,
-    }                           // not a plain copy of `a` followed by a
-                                // discarded closure-literal statement
+    let c: bool = a
+    || b                  // c stays `a`, but this reads as `a || b`
 
-This warning fires only on the FIRST `||` encountered while building an
-expression -- an established chain (the operator already appeared earlier
-in the SAME statement, e.g. `is_digit`-style predicates spanning several
-lines) is common, intentional, and does not warn:
+    let a = 5
+    -1                     // a is 4 (5 - 1), not 5 followed by a lone -1
+
+    let x = arr
+    [0]                     // x is arr[0], not arr followed by a lone [0]
+
+    let f = curry(x)
+    (y)                     // one call `curry(x)(y)`, not two statements
+
+This warning fires only on the FIRST occurrence of a given token while
+building an expression -- an established chain (the SAME token already
+appeared earlier in the SAME statement, e.g. `is_digit`-style `||`
+predicates, `matrix[i][j]` indexing, or `a - b - c` subtraction spanning
+several lines) is common, intentional, and does not warn:
 
     return c == "0" || c == "1" || c == "2" || c == "3" || c == "4"
         || c == "5" || c == "6" || c == "7" || c == "8" || c == "9"
@@ -919,24 +926,26 @@ SINGLE `|` IS DELIBERATELY NOT COVERED. It has the same silent-merge
 hazard (it is also a closure opener, `|x| ...`), but an empirical sweep of
 this repo's own corpus found newline-led single-`|` bitwise-or bit-packing
 is a common, legitimate shipped pattern -- one byte per line, operator
-leading from the very first continuation:
+leading from the very first continuation, which the "first occurrence"
+heuristic that cleanly separates bug from intent for `||`/`-`/`[`/`(`
+cannot distinguish from the real trap:
 
     plen = (a << 24)
         | (b << 16)
         | (c << 8)
         | d
 
-The "first occurrence in statement" heuristic that cleanly separates bug
-from intent for `||` does not hold for `|`, so warning there would
-false-positive on real code. `-`, `(` and `[` are likewise uncovered. This
-warning is a partial net, not a complete one -- see CLAUDE.md hard rule 1.
+This warning is a partial net, not a complete one -- see CLAUDE.md hard
+rule 1. `*` and `&` share the identical grammar collision (unary
+deref/borrow vs. infix multiply/bitwise-and) and are not yet covered.
 
 Fixes:
-  - If you meant a NEW statement, restructure it so its first token is not
-    `|`/`||` -- e.g. bind a closure via its own `let name = || ...`.
+  - If you meant a NEW statement, restructure it so its first token isn't
+    the ambiguous one -- e.g. bind a closure via its own
+    `let name = || ...`, or parenthesize a leading negative literal.
   - If you meant to CONTINUE the previous expression, move the operator to
-    the END of the previous line instead (`a ||`) so the intent is visible
-    without relying on this warning.
+    the END of the previous line instead (`a ||`, `total -`) so the intent
+    is visible without relying on this warning.
 
 This is a warning, not an error: the program still compiles and runs with
 the merged-continuation reading, exactly as before this diagnostic existed.

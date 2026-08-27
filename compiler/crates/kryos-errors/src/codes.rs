@@ -15,7 +15,7 @@ pub const E0009: &str = "E0009"; // syntax error (general / uncategorized)
 pub const E0010: &str = "E0010"; // program nesting too deep / expression too complex
 
 // Parse warnings (W00xx)
-pub const W0001: &str = "W0001"; // ambiguous newline-led `||` silently continues the previous statement (single `|` deliberately excluded -- bit-packing false positives)
+pub const W0001: &str = "W0001"; // ambiguous newline-led `||`/`-`/`[`/`(` silently continues the previous statement (single `|` deliberately excluded -- bit-packing false positives)
 
 // Type errors (E01xx)
 pub const E0100: &str = "E0100"; // type mismatch

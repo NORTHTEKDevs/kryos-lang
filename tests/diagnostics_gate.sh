@@ -267,6 +267,168 @@ else
     echo "  FAIL: kryos explain W0001 did not resolve"; fail=1
 fi
 
+# 7b. W0001 EXTENSION (this wave): the SAME first-occurrence-after-a-newline
+#     heuristic applied above to `||` now ALSO covers `-`, `[`, and `(` --
+#     the other three tokens CLAUDE.md hard rule 1 names as ambiguous
+#     continuation openers (unary-vs-infix `-`, array-literal-vs-index `[`,
+#     paren-expr-vs-call `(`). Each gets one MUST-warn trap shape (with the
+#     merge output pinned, proving the underlying merge is unchanged, only
+#     detected) and one MUST-NOT-warn legitimate shape drawn from real style
+#     used elsewhere in this repo (operator-TRAILING continuation for `-`,
+#     multi-line array-literal call args for `[`/`(`, an established
+#     multi-line chain for `[`).
+cat > "$TMP/minus_trap.kry" <<'KRY'
+fn main() {
+    let a = 5
+    -1
+    println(to_string(a))
+}
+KRY
+out="$("$K" run "$TMP/minus_trap.kry" 2>&1)"
+if grep -q "warning\[W0001\]" <<<"$out" && grep -q "^4$" <<<"$out"; then
+    echo "  ok   newline-led first-occurrence \`-\` warns (W0001) AND the documented merge behavior (a=4) is unchanged"
+else
+    echo "  FAIL: expected a W0001 warning plus unchanged merge output '4':"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/minus_chain_ok.kry" <<'KRY'
+fn main() {
+    let total = 100 -
+        10 -
+        5
+    println(to_string(total))
+}
+KRY
+out="$("$K" check "$TMP/minus_chain_ok.kry" 2>&1)"
+if ! grep -q "W0001" <<<"$out"; then
+    echo "  ok   an operator-TRAILING multi-line subtraction chain does not false-positive"
+else
+    echo "  FAIL: legitimate operator-trailing subtraction chain triggered W0001:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/lbracket_trap.kry" <<'KRY'
+fn main() {
+    let arr = [10, 20, 30]
+    let x = arr
+    [0]
+    println(to_string(x))
+}
+KRY
+out="$("$K" run "$TMP/lbracket_trap.kry" 2>&1)"
+if grep -q "warning\[W0001\]" <<<"$out" && grep -q "^10$" <<<"$out"; then
+    echo "  ok   newline-led first-occurrence \`[\` warns (W0001) AND the documented merge behavior (x=10) is unchanged"
+else
+    echo "  FAIL: expected a W0001 warning plus unchanged merge output '10':"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/lbracket_chain_ok.kry" <<'KRY'
+fn get_matrix() -> [[i64]] {
+    return [[1, 2], [3, 4]]
+}
+fn main() {
+    let m = get_matrix()
+    let v = m[0]
+        [1]
+    println(to_string(v))
+}
+KRY
+out="$("$K" check "$TMP/lbracket_chain_ok.kry" 2>&1)"
+if ! grep -q "W0001" <<<"$out"; then
+    echo "  ok   an established multi-line chained-index chain (m[0] then [1]) does not false-positive"
+else
+    echo "  FAIL: legitimate chained multi-line index access triggered W0001:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/lparen_trap.kry" <<'KRY'
+fn square(x: i64) -> i64 {
+    return x * x
+}
+@capabilities()
+fn main() {
+    let f = square
+    (5)
+    println(to_string(f))
+}
+KRY
+out="$("$K" run "$TMP/lparen_trap.kry" 2>&1)"
+if grep -q "warning\[W0001\]" <<<"$out" && grep -q "^25$" <<<"$out"; then
+    echo "  ok   newline-led first-occurrence \`(\` warns (W0001) AND the documented merge behavior (f=25) is unchanged"
+else
+    echo "  FAIL: expected a W0001 warning plus unchanged merge output '25':"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/lparen_calls_ok.kry" <<'KRY'
+fn make(a: [str], b: [str]) -> i64 {
+    return len(a) + len(b)
+}
+fn main() {
+    let n = make(
+        ["a", "b"],
+        ["c", "d", "e"]
+    )
+    println(to_string(n))
+}
+KRY
+out="$("$K" check "$TMP/lparen_calls_ok.kry" 2>&1)"
+if ! grep -q "W0001" <<<"$out"; then
+    echo "  ok   a multi-line call with array-literal arguments (json_object-style) does not false-positive"
+else
+    echo "  FAIL: legitimate multi-line call with array-literal args triggered W0001:"; echo "$out" | sed 's/^/    /'; fail=1
+fi
+
+# 7c. `kryos fmt` must NOT launder a W0001-triggering ambiguous continuation:
+#     an AST-based re-emit prints the already-merged reading back out in
+#     clean canonical formatting, deleting the original line break that was
+#     the only trace the source was ever ambiguous -- and previously did so
+#     with ZERO diagnostic, because `format_source` parses via the
+#     diagnostic-discarding `parse()`, not `parse_with_diagnostics()`. `kryos
+#     fmt` now refuses (skips, leaves the file untouched) any file with a
+#     live W0001, the same policy it already uses for an un-anchorable
+#     comment. Byte-for-byte untouched is the assertion, not just "still
+#     contains a `-`" -- a partial reformat around the ambiguity would be a
+#     regression of its own.
+cat > "$TMP/fmt_asi_trap.kry" <<'KRY'
+fn check_a() -> bool { return true }
+fn check_b() -> bool { println("check_b called") return false }
+
+@capabilities()
+fn main() {
+    let ready: bool = check_a()
+    || check_b()
+    println("ready={ready}")
+
+    let a = 5
+    -1
+    println("a={a}")
+
+    let arr = [10, 20, 30]
+    let x = arr
+    [0]
+    println("x={x}")
+}
+KRY
+before_hash="$(md5sum "$TMP/fmt_asi_trap.kry" | cut -d' ' -f1)"
+fmt_out="$("$K" fmt "$TMP/fmt_asi_trap.kry" 2>&1)"
+after_hash="$(md5sum "$TMP/fmt_asi_trap.kry" | cut -d' ' -f1)"
+if [ "$before_hash" = "$after_hash" ] && grep -q "skipped" <<<"$fmt_out" && grep -qi "ambiguous" <<<"$fmt_out"; then
+    echo "  ok   kryos fmt refuses to launder a W0001-triggering file (byte-identical, reports skipped)"
+else
+    echo "  FAIL: kryos fmt should have left the ambiguous file byte-identical and reported a skip:"; echo "$fmt_out" | sed 's/^/    /'; fail=1
+fi
+
+cat > "$TMP/fmt_clean.kry" <<'KRY'
+fn main() {
+let x=1
+println(to_string(x))
+}
+KRY
+"$K" fmt "$TMP/fmt_clean.kry" >/dev/null 2>&1
+if grep -q "let x = 1" "$TMP/fmt_clean.kry"; then
+    echo "  ok   kryos fmt still reformats an ordinary (non-ambiguous) file"
+else
+    echo "  FAIL: kryos fmt did not reformat an ordinary file (over-broad refusal):"; cat "$TMP/fmt_clean.kry" | sed 's/^/    /'; fail=1
+fi
+
 # 8. LEDGER item 24: `let x: any = <bool>` used to fail the LLVM AOT build
 #    outright ("%_0 defined with type 'i1' but expected 'i64'") while the
 #    identical source silently misrendered on the Cranelift JIT (printed

@@ -51,6 +51,33 @@ empirical sweep found single-`|` bitwise-or bit-packing (`examples/cdp_bot.kry`,
 newline-led" shape as a common, legitimate pattern, so warning there would
 false-positive on real shipped code.
 
+DETECTED (not eliminated -- same accepted-limitation status as item 9 above)
+and folded into `tests/diagnostics_gate.sh` sections 7b/7c: `rt3_fmt_audit_crash/
+fmt_launders_asi_trap.kry` (Wave W0001, this session; had no row here or in
+docs/BUGS.md to begin with) -- W0001 covered only `||`, so a fresh line
+starting with `-` (subtraction) or `[` (index access) right after a newline
+still silently continued the PREVIOUS statement's expression with zero
+diagnostic (`let a = 5` then `-1` gave `a=4`; `let x = arr` then `[0]` gave
+`x=arr[0]`), and `kryos fmt` LAUNDERED all three shapes (including the
+already-detected `||` one) into clean, canonical, permanently-merged source
+with NO warning at all -- because `format_source` parsed via the
+diagnostic-discarding `kryos_parser::parse()`, not `parse_with_diagnostics()`,
+so fmt could not have surfaced W0001 even for the shape it already covered.
+Fix, same "detect, don't change the grammar" policy as item 9: W0001 now
+also fires on the first newline-led `-`/`[`/`(` encountered while building
+an expression (an established multi-line chain -- `matrix[0]` then `[1]`,
+or an operator-TRAILING `a - / b` (operator ending the line) subtraction chain -- stays silent, same
+heuristic as `||`'s `is_digit` case); `kryos fmt` now calls
+`kryos_fmt::source_has_ambiguous_continuation` before formatting and REFUSES
+(skips, leaves the file untouched) any file carrying a live W0001, the same
+policy it already used for an un-anchorable comment. Single `|` remains
+deliberately uncovered for the reason above; `*`/`&` share the identical
+grammar collision and are also not yet covered (see the W0001 explain
+article). Verified false-positive-free by re-running the original item-9
+corpus sweep methodology across the full repo (`examples/`, `tests/`,
+`compiler/stdlib`, `compiler/self-host`, `stdlib/`, `ecosystem/`, 1106
+files): only the known repro fired, on all three shapes, and nothing else.
+
 FIXED and folded into `tests/diagnostics_gate.sh` section 9:
 `diag_e0009_misattributed_span_in_loop.kry` -- an unescaped `{` opening a
 string interpolation (CLAUDE.md hard rule 4) whose content was not a valid

@@ -10,9 +10,30 @@ pub mod formatter;
 use kryos_ast::Module;
 use kryos_errors::Diagnostic;
 use kryos_lexer::Lexer;
-use kryos_parser::parse;
+use kryos_parser::{parse, parse_with_diagnostics};
 
 pub use formatter::Formatter;
+
+/// True if parsing `source` emits a W0001 warning (an ambiguous newline-led
+/// `||`/`-`/`[`/`(` continuation -- CLAUDE.md hard rule 1). The parser
+/// silently picks the CONTINUE reading (an already-baked-in behavior, kept
+/// for backward compat), so an AST-based re-emit like `format_source` would
+/// otherwise print that exact merged reading back out in clean, canonical
+/// formatting -- permanently erasing the only trace (the original line
+/// break) that the source was ever ambiguous, and doing so with NO warning
+/// at all, because `format_source` parses via the diagnostic-discarding
+/// `parse()` rather than `parse_with_diagnostics()`. Callers that must not
+/// silently launder the trap (the `kryos fmt` CLI) should call this FIRST
+/// and refuse to format (skip, leave the file untouched) when it returns
+/// true, mirroring the existing "can't re-anchor a comment -> skip, don't
+/// destroy" policy `format_source_preserving_comments` already uses.
+pub fn source_has_ambiguous_continuation(source: &str) -> bool {
+    let tokens = Lexer::new(source, 0).tokenize();
+    let (_module, diagnostics) = parse_with_diagnostics(tokens);
+    diagnostics
+        .iter()
+        .any(|d| d.code.as_deref() == Some(kryos_errors::codes::W0001))
+}
 
 /// Convenience function: parse source code, then format the resulting AST.
 ///
