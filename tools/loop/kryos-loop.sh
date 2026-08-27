@@ -190,6 +190,7 @@ cmd_gates() {
     run "fixtures_tracked"   bash tests/fixtures_tracked_gate.sh
     run "stdlib_compile"      bash tests/stdlib_compile_gate.sh
     run "cli_smoke"           bash tests/cli_smoke_gate.sh
+    run "audit_parse_failure" bash tests/audit_parse_failure_gate.sh
     run "minilisp"            bash tests/minilisp_gate.sh
     run "authority_surface"   bash tests/authority_surface_gate.sh
     run "jit_symbols"         bash tests/jit_symbols_gate.sh

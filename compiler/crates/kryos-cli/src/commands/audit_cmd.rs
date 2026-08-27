@@ -2,29 +2,26 @@
 //!
 //! Walks every `.kry` file under the project and produces:
 //!
-//! 1. **Capability violations** -- the SAME inferred-mode capability
+//! 1. **Parse failures** -- any file `audit` could not read, lex, or parse
+//!    at all. THE MOST IMPORTANT SECTION: a file audit cannot see into is
+//!    reported LOUDLY here and forces a nonzero exit, rather than the file
+//!    silently vanishing from every other section as if it were clean.
+//! 2. **Capability violations** -- the SAME inferred-mode capability
 //!    inference/enforcement pass `kryos check`/`run`/`build` use, run
 //!    per-file and filtered to capability/extern-gate diagnostics
-//!    (E0500-E0508). This is what makes `audit` trustworthy: LEDGER item 13
-//!    found that the report below (annotation text only) came back clean on
-//!    code `kryos check` rejects outright. A finding here means the code
-//!    will NOT compile as-is.
-//! 2. **Capability inventory** -- every function with an `@capabilities(...)`
-//!    annotation, grouped by capability. This is a TEXTUAL inventory of what
-//!    is declared, not what is required -- see the violations section above
-//!    for what the code actually needs.
-//! 3. **Extern surface** -- every `extern "C" { ... }` block and the items it
-//!    declares.
-//! 4. **Secret patterns** -- string literals matching common credential
-//!    shapes (API_KEY=..., bearer prefixes, AWS access keys, GitHub tokens,
-//!    private-key markers). Flagged as critical for review.
+//!    (E0500-E0508). LEDGER item 13: the report below (annotation text
+//!    only) used to come back clean on code `kryos check` rejects outright.
+//! 3. **Capability inventory** -- every function with an `@capabilities(...)`
+//!    annotation, grouped by capability. A TEXTUAL inventory of what is
+//!    declared, not what is required.
+//! 4. **Extern surface** -- every `extern "C" { ... }` block and the items
+//!    it declares.
+//! 5. **Secret patterns** -- string literals matching common credential
+//!    shapes.
 //!
 //! `audit` is a report, not a gate: it exits non-zero when it finds a real
-//! capability violation (section 1), so CI can treat it as a genuine check,
-//! but it is not a substitute for actually running `kryos check`/`build` --
-//! it checks each file independently in `--capabilities-mode=inferred` (the
-//! default), so a project relying on `--strict-capabilities` or on
-//! cross-file project resolution should still run the real compiler.
+//! capability violation OR a file it could not parse, so CI can treat it as
+//! a genuine check, but it is not a substitute for `kryos check`/`build`.
 //!
 //! Output is human-readable by default; `--format=json` emits a single JSON
 //! document on stdout.
@@ -34,6 +31,7 @@ use std::path::{Path, PathBuf};
 
 use kryos_ast::Decl;
 use kryos_driver::CapabilityMode;
+use kryos_errors::SourceMap;
 
 #[derive(Debug, Clone)]
 pub struct AuditOptions {
@@ -49,15 +47,33 @@ impl Default for AuditOptions {
 
 #[derive(Debug, Default)]
 struct AuditReport {
+    parse_failures: Vec<ParseFailure>,
     cap_violations: Vec<CapViolation>,
     capabilities: std::collections::BTreeMap<String, Vec<String>>,
     extern_blocks: Vec<ExternEntry>,
     secrets: Vec<SecretEntry>,
 }
 
+/// A file `audit` could NOT analyze -- failed to be read as UTF-8, or
+/// failed lexing, or failed parsing. Before this fix such a file vanished
+/// from the report completely: `scan_file` did
+/// `let Ok(module) = kryos_parser::parse(tokens) else { return }`,
+/// discarding the diagnostics and returning before the extern/capability
+/// AST walk AND before `check_cap_violations` ran. A file containing an
+/// extern block declaring a dangerous native symbol plus
+/// `@capabilities(all)`, wrapped in a `main` missing a close-paren, audited
+/// as clean, rc=0 -- indistinguishable from a genuinely safe file.
+#[derive(Debug)]
+struct ParseFailure {
+    file: PathBuf,
+    stage: &'static str,
+    message: String,
+    line: u32,
+    col: u32,
+}
+
 /// A capability/extern-gate diagnostic (E0500-E0508) that `kryos
-/// check`/`run`/`build` would reject, surfaced by re-running the same
-/// inferred-mode capability checker those commands use. See LEDGER item 13.
+/// check`/`run`/`build` would reject. See LEDGER item 13.
 #[derive(Debug)]
 struct CapViolation {
     file: PathBuf,
@@ -67,11 +83,6 @@ struct CapViolation {
     col: u32,
 }
 
-/// Capability/extern-gate diagnostic codes (see `kryos_errors::codes`):
-/// E0500 unsafe-outside-unsafe, E0501-E0507 the capability system proper,
-/// E0508 unsupported extern shape. Any other code (type errors, ownership,
-/// parse errors, ...) is out of scope for this report -- `audit` only
-/// speaks to capability/extern trust surface, not general correctness.
 const CAP_VIOLATION_CODES: &[&str] = &[
     "E0500", "E0501", "E0502", "E0503", "E0504", "E0505", "E0506", "E0507", "E0508",
 ];
@@ -117,11 +128,26 @@ pub fn execute(opts: AuditOptions) -> Result<(), String> {
         _ => emit_pretty(&report, files.len()),
     }
 
+    let mut problems: Vec<String> = Vec::new();
+    if !report.parse_failures.is_empty() {
+        problems.push(format!(
+            "{} file{} could not be parsed -- capability/extern/secret analysis is INCOMPLETE for {} (see \"Parse failures\" above); a file audit cannot read is NEVER reported clean",
+            report.parse_failures.len(),
+            if report.parse_failures.len() == 1 { "" } else { "s" },
+            if report.parse_failures.len() == 1 { "it" } else { "them" }
+        ));
+    }
     if !report.cap_violations.is_empty() {
-        return Err(format!(
-            "kryos audit: {} capability violation{} found -- this code would be REJECTED by `kryos check`/`kryos build` (see \"Capability violations\" above). `kryos audit` is a report, not a substitute for `kryos check`.",
+        problems.push(format!(
+            "{} capability violation{} found -- this code would be REJECTED by `kryos check`/`kryos build` (see \"Capability violations\" above)",
             report.cap_violations.len(),
             if report.cap_violations.len() == 1 { "" } else { "s" }
+        ));
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "kryos audit: {}. `kryos audit` is a report, not a substitute for `kryos check`.",
+            problems.join("; ")
         ));
     }
 
@@ -146,9 +172,20 @@ fn collect_kry(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 fn scan_file(path: &Path, report: &mut AuditReport) {
-    let Ok(source) = fs::read_to_string(path) else { return };
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            report.parse_failures.push(ParseFailure {
+                file: path.to_path_buf(),
+                stage: "read",
+                message: format!("could not read file: {e}"),
+                line: 0,
+                col: 0,
+            });
+            return;
+        }
+    };
 
-    // Secret-pattern scan via text walk.
     for (idx, line) in source.lines().enumerate() {
         for (pat, name) in SECRET_PATTERNS {
             if line.contains(pat) {
@@ -162,10 +199,46 @@ fn scan_file(path: &Path, report: &mut AuditReport) {
         }
     }
 
-    // AST-driven capability + extern scan (textual inventory of what's
-    // DECLARED -- see check_cap_violations below for what's REQUIRED).
-    let tokens = kryos_lexer::Lexer::new(&source, 0).tokenize();
-    let Ok(module) = kryos_parser::parse(tokens) else { return };
+    // Lexer AND parser diagnostics are both captured now (previously
+    // `.tokenize()` silently dropped lexer-level errors like an
+    // unterminated string, and a parser error discarded its diagnostics
+    // entirely via `let Ok(module) = ... else { return }` -- both are now
+    // recorded as a loud ParseFailure instead of vanishing).
+    let (tokens, lex_diags) = kryos_lexer::Lexer::new(&source, 0).tokenize_with_diagnostics();
+    let lex_error = lex_diags.iter().find(|d| d.is_error());
+    let parse_result = kryos_parser::parse(tokens);
+
+    let first_error = lex_error.or_else(|| match &parse_result {
+        Err(diags) => diags.iter().find(|d| d.is_error()),
+        Ok(_) => None,
+    });
+
+    if let Some(diag) = first_error {
+        let stage = if lex_error.is_some() { "lex" } else { "parse" };
+        let mut sm = SourceMap::default();
+        let fid = sm.add_file(path.display().to_string(), source.clone());
+        let (line, col) = diag
+            .labels
+            .iter()
+            .find(|l| l.is_primary)
+            .or_else(|| diag.labels.first())
+            .map(|l| sm.offset_to_line_col(fid, l.span.start))
+            .unwrap_or((0, 0));
+        report.parse_failures.push(ParseFailure {
+            file: path.to_path_buf(),
+            stage,
+            message: diag.message.clone(),
+            line,
+            col,
+        });
+        // Cannot safely walk an AST that does not exist, and re-running the
+        // real capability checker on a file that does not parse would only
+        // rediscover the same failure under a different code path -- the
+        // ParseFailure above already makes this loud and fails the run.
+        return;
+    }
+
+    let module = parse_result.expect("checked for parser errors above");
 
     for decl in &module.declarations {
         match decl {
@@ -193,13 +266,6 @@ fn scan_file(path: &Path, report: &mut AuditReport) {
         }
     }
 
-    // Real capability-inference/enforcement pass -- the fix for LEDGER item
-    // 13. Runs the exact same checker `kryos check`/`run`/`build` use, in
-    // `--capabilities-mode=inferred` (the default), and keeps only the
-    // capability/extern-gate diagnostics (E0500-E0508) it produces. This is
-    // what makes a clean "Capability violations" section mean something --
-    // previously `audit` never ran this pass at all, so it reported a
-    // program `kryos check` rejects outright as clean.
     check_cap_violations(path, report);
 }
 
@@ -253,6 +319,28 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
     println!("note: audit is a report, not a substitute for `kryos check`/`kryos build`.");
     println!();
 
+    println!("\x1b[1m== Parse failures (audit could NOT analyze these files) ==\x1b[0m");
+    if report.parse_failures.is_empty() {
+        println!("  \x1b[32m(none -- every scanned file lexed and parsed cleanly)\x1b[0m");
+    } else {
+        for p in &report.parse_failures {
+            println!(
+                "  \x1b[31mCRITICAL\x1b[0m {}:{}:{} [{}] {}",
+                p.file.display(),
+                p.line,
+                p.col,
+                p.stage,
+                p.message
+            );
+        }
+        println!();
+        println!(
+            "\x1b[31m{} file(s) failed to parse -- every OTHER section below is INCOMPLETE for these files, not a clean bill for them.\x1b[0m",
+            report.parse_failures.len()
+        );
+    }
+
+    println!();
     println!("\x1b[1m== Capability violations (kryos check would reject) ==\x1b[0m");
     if report.cap_violations.is_empty() {
         println!("  \x1b[32m(none -- every file passes the same inferred-mode capability check `kryos check` runs)\x1b[0m");
@@ -269,8 +357,7 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
         }
         println!();
         println!(
-            "\x1b[31m{} capability violation(s) -- this code will NOT compile with \
-`kryos check`/`kryos build`.\x1b[0m",
+            "\x1b[31m{} capability violation(s) -- this code will NOT compile with `kryos check`/`kryos build`.\x1b[0m",
             report.cap_violations.len()
         );
     }
@@ -287,6 +374,12 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
             }
         }
     }
+    if !report.parse_failures.is_empty() {
+        println!(
+            "  \x1b[33m({} unparseable file(s) excluded from this section -- see Parse failures above)\x1b[0m",
+            report.parse_failures.len()
+        );
+    }
 
     println!();
     println!("\x1b[1m== Extern blocks ==\x1b[0m");
@@ -302,6 +395,12 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
                 if ex.item_count == 1 { "" } else { "s" }
             );
         }
+    }
+    if !report.parse_failures.is_empty() {
+        println!(
+            "  \x1b[33m({} unparseable file(s) excluded from this section -- see Parse failures above)\x1b[0m",
+            report.parse_failures.len()
+        );
     }
 
     println!();
@@ -325,6 +424,20 @@ fn emit_pretty(report: &AuditReport, file_count: usize) {
 
 fn emit_json(report: &AuditReport) {
     let mut out = String::from("{");
+
+    out.push_str("\"parse_failures\":[");
+    for (i, p) in report.parse_failures.iter().enumerate() {
+        if i > 0 { out.push(','); }
+        out.push_str(&format!(
+            r#"{{"file":"{}","stage":"{}","line":{},"col":{},"message":"{}"}}"#,
+            p.file.display().to_string().replace('\\', "/"),
+            p.stage,
+            p.line,
+            p.col,
+            json_escape(&p.message)
+        ));
+    }
+    out.push_str("],");
 
     out.push_str("\"capability_violations\":[");
     for (i, v) in report.cap_violations.iter().enumerate() {

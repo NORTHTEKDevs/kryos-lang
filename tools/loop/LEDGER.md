@@ -2011,6 +2011,114 @@ Run `tools/loop/kryos-loop.sh preflight` first, every time. Then:
 
 ---
 
+## Wave: `kryos audit` reports CLEAN (rc=0) on a file that fails to parse -- FIXED (2026-08-27), trust-tool honesty break, highest rank
+
+TRUST-TOOL HONESTY BREAK, highest rank in this repo's own priority order
+(breaks-the-trust-model > silent-wrong-answer > blocks-CI > leak >
+papercut) -- `kryos audit` is the tool a user runs to inspect a package's
+extern blocks, capability usage, and secret patterns BEFORE trusting it.
+
+**Repro (confirmed live before the fix, on the unmodified release binary):**
+`kryos audit tests/known_failures/rt3_fmt_audit_crash/audit_blind_parse_failure/broken.kry`
+printed "== Extern blocks == (no extern blocks)" / "== Secret patterns ==
+(none detected)" / rc=0 for a file that FAILS TO PARSE (missing
+close-paren in `main`) and CONTAINS an `extern "C" { fn
+kryos_dangerous_native_thing(..) }` block plus `@capabilities(all)`.
+Byte-identical clean shape to `good.kry` (an actually safe file).
+
+**Root cause:** `compiler/crates/kryos-cli/src/commands/audit_cmd.rs`'s
+`scan_file` did:
+    let tokens = kryos_lexer::Lexer::new(&source, 0).tokenize();
+    let Ok(module) = kryos_parser::parse(tokens) else { return };
+`.tokenize()` (not `.tokenize_with_diagnostics()`) silently drops
+lexer-level errors (e.g. an unterminated string) entirely -- there was no
+way for a lexer error to ever surface. On a parser error, the `else {
+return }` discarded the diagnostics and returned BEFORE the extern/
+capability AST walk AND before `check_cap_violations` (the real
+capability-checker call) ran -- that call sat several lines AFTER the
+early return. The file simply vanished from the report, which then printed
+every section's "clean" empty-state text as if the file had been
+successfully verified.
+
+**Fix:** `scan_file` now calls `tokenize_with_diagnostics()` and keeps
+`kryos_parser::parse`'s `Err(diagnostics)`, checking both for an error
+before proceeding. On either failure it pushes a new `ParseFailure { file,
+stage: "lex"|"parse"|"read", message, line, col }` entry (also covers a
+file that fails to be `read_to_string` at all -- previously the same silent
+`return` shape) and returns -- it does NOT fall through to the AST walk or
+`check_cap_violations`, since there is no valid AST to walk. `AuditReport`
+gained a `parse_failures` field, rendered as a NEW, FIRST section ("==
+Parse failures (audit could NOT analyze these files) ==") in both pretty
+and `--format=json` output; every other section (Capability inventory,
+Extern blocks) appends a caveat line when `parse_failures` is non-empty
+("(N unparseable file(s) excluded from this section -- see Parse failures
+above)") so an aggregate "no extern blocks" verdict cannot be misread as
+covering a file audit never actually saw. `execute()` now returns `Err(..)`
+-- nonzero exit -- when `parse_failures` is non-empty, independent of
+`cap_violations`, combining both into one message when both fire. The
+secret-pattern text scan (already independent of lex/parse) still runs on
+every file regardless, including ones that go on to fail parsing.
+
+**Shapes probed and fixed, per the brief:**
+- Clean parse failure (missing paren) with a dangerous extern block --
+  the exact incident repro: now rc=1, file named, loudly flagged.
+- A genuinely clean file: unaffected, stays rc=0, no Parse-failures noise
+  (regression control).
+- A LEXER error (unterminated string literal): previously invisible even
+  in principle (`.tokenize()` had no path to surface it) -- now caught the
+  same way, stage "lex".
+- An empty file: correctly stays clean (0 declarations is not a parse
+  failure) -- not a false positive.
+- A directory with several files, one unparseable: the broken file no
+  longer silently vanishes from the aggregate report; the OTHER files in
+  the same run are still fully scanned and reported (verified: a sibling
+  `good.kry`'s fs:read capability annotation still appears in the same
+  run's Capability inventory).
+- `--format=json`: emits a `parse_failures` array; verified with a real
+  JSON parser (python3's json.loads) that the output stays valid JSON with
+  the array populated.
+
+**PROOF BOTH WAYS, live, fresh (per rule 3):** reverted the file to the
+unmodified version via version control, full `cargo build --release -p
+kryos-cli` (kryos-cli only -- this file never touches
+kryos-rt/kryos-stdlib-native, so `-p` is sufficient per rule 2's own
+scope), reran -- `broken.kry` audited clean, rc=0 (bug reproduces FRESH,
+not a stale process: `tasklist` showed zero kryos.exe processes
+beforehand). Restored the fix, rebuilt, reran -- Parse failures section
+present, `broken.kry` named, rc=1. The new gate
+(`tests/audit_parse_failure_gate.sh`) was proven the same way: reverted
+binary -> 10/15 checks FAIL (broken_rc, broken_has_parse_failures_section,
+broken_names_the_file, broken_extern_section_caveated,
+good_no_parse_failures, lex_bad_rc, lex_bad_has_parse_failures_section,
+dir_rc, dir_broken_file_named, json_has_parse_failures); fixed binary ->
+15/15 PASS.
+
+**Gate added and wired:** `tests/audit_parse_failure_gate.sh` (new, 15
+checks across the 6 shapes above), wired into
+`tools/loop/kryos-loop.sh`'s tier-1 ladder right after `cli_smoke`. Full
+`bash tools/loop/kryos-loop.sh gates 2` reran GREEN afterward (tier1 21/21
+incl. `audit_parse_failure PASS`, `conformance 65/65 PASS`; tier2 7/7,
+`tier2 GREEN`). `bash compiler/self-host/test_bootstrap.sh` still 16/16.
+
+**Repro dir retired per rule 9:**
+`tests/known_failures/rt3_fmt_audit_crash/audit_blind_parse_failure/`
+deleted (its `broken.kry`/`good.kry` shapes are now inline in the new gate
+script, not left as standalone fixtures) -- the sibling unrelated repros in
+that same directory (`enum_struct_array_rebuild_double_free.kry`,
+`fmt_launders_asi_trap.kry`, `taskstore_stack_overflow.kry`) were left
+untouched, out of scope for this wave. This specific repro had no row in
+`tests/known_failures/README.md`'s table or `docs/BUGS.md` to begin with
+(checked both before deleting -- neither referenced
+`audit_blind_parse_failure` or `rt3_fmt_audit_crash` by name), so no README
+row needed updating.
+
+**Not fixed / out of scope this session:** none for this wave -- all
+probed shapes (parse error, lexer error, empty file, mixed directory, JSON
+format) were fixed and gated. Everything else in the OPEN section below is
+untouched by this session.
+
+---
+
 ## OPEN - ranked
 
 > **READ THIS BEFORE TRUSTING ANY STATUS BELOW.** Run
