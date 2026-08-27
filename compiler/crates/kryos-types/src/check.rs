@@ -3099,6 +3099,52 @@ impl TypeChecker {
                     if record {
                         self.resolved_let_types.insert(*span, final_ty.clone());
                     }
+
+                    // LEDGER item 40c: a call to a GENERIC free function
+                    // (`fn f<T>(..) -> ..`) whose return type mentions a
+                    // generic param `T` that does NOT appear anywhere in
+                    // its OWN PARAMETER LIST is structurally unbindable from
+                    // any argument, for any caller, ever -- `to_array<T>(r:
+                    // Result) -> [T]` is the exact shape: `Result`'s payload
+                    // is the hand-rolled `any` enum (no `T` inside it), so
+                    // `T` has nothing to unify against no matter what is
+                    // passed. This is a pure signature-shape check (the
+                    // function's DECLARED param/return types, not a fresh
+                    // per-call-site instantiation), so it does NOT fire for
+                    // a normal generic like `push<T>(arr: [T], val: T) ->
+                    // [T]` or `count<T>(arr: [T]) -> i64`, where `T` DOES
+                    // appear in a param and genuinely binds from the
+                    // argument at every call site -- including inside
+                    // another generic function/struct's own template body,
+                    // where the checker's single pass over that body only
+                    // ever sees the ENCLOSING generic's own abstract
+                    // placeholder var (never a concrete type until each
+                    // real monomorphized call site), which a naive
+                    // "did this end up concrete" check would have wrongly
+                    // flagged. Reject immediately at the call site instead
+                    // of shipping the erasure sentinel through codegen (the
+                    // item 40c repro: unannotated `to_array(Ok("hi-there"))`
+                    // printed a raw pointer, not the string).
+                    if let Some(Expr::FnCall { callee, .. }) = value.as_ref() {
+                        if let Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
+                            let unbindable = self.env.lookup_function(callee_name).is_some_and(|sig| {
+                                !sig.generic_var_ids.is_empty()
+                                    && sig.generic_var_ids.iter().any(|gid| {
+                                        type_mentions_var(&sig.ret, *gid)
+                                            && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
+                                    })
+                            });
+                            if unbindable {
+                                self.error_with_code(
+                                    format!(
+                                        "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
+                                    ),
+                                    *span,
+                                    kryos_errors::codes::E0110,
+                                );
+                            }
+                        }
+                    }
                 }
 
                 // Binding the result of the IN-PLACE builtins `sort`/`reverse`
@@ -9516,6 +9562,38 @@ fn type_check_with_lambda_params_inner(
         std::mem::take(&mut checker.resolved_lambda_params),
         let_types,
     )
+}
+
+/// LEDGER item 40c: does `ty` mention the type variable `id` anywhere in its
+/// structure? Used to check, purely from a `FunctionSig`'s DECLARED (never
+/// per-call-site-instantiated) param/return types, whether one of the
+/// function's own generic params appears in its parameter list at all --
+/// the only way a generic argument can ever bind that param through
+/// ordinary unification. A generic var that appears ONLY in the return type
+/// can never be inferred from any argument, at any call site, ever (see
+/// `to_array<T>(r: Result) -> [T]`, where `Result`'s hand-rolled `any`
+/// payload has no `T` inside it for the return's `T` to unify against).
+fn type_mentions_var(ty: &Type, id: u32) -> bool {
+    match ty {
+        Type::Var(v) => *v == id,
+        Type::Array { element, .. } | Type::Set { element } | Type::Option { inner: element } => {
+            type_mentions_var(element, id)
+        }
+        Type::Tuple { elements } => elements.iter().any(|e| type_mentions_var(e, id)),
+        Type::Map { key, value } => type_mentions_var(key, id) || type_mentions_var(value, id),
+        Type::Result { ok, err } => type_mentions_var(ok, id) || type_mentions_var(err, id),
+        Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+            generics.iter().any(|g| type_mentions_var(g, id))
+        }
+        Type::Function { params, ret, .. } => {
+            params.iter().any(|p| type_mentions_var(p, id)) || type_mentions_var(ret, id)
+        }
+        Type::Reference { inner, .. }
+        | Type::Shared { inner }
+        | Type::Weak { inner }
+        | Type::Pointer { inner, .. } => type_mentions_var(inner, id),
+        _ => false,
+    }
 }
 
 // ── Missing return analysis ─────────────────────────────────────────

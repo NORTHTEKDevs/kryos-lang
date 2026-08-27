@@ -277,10 +277,14 @@ Return `[v]` if `Ok(v)`, or `[]` if `Err`.
 **You must annotate the binding** (`let a: [str] = to_array(r)`). `T` cannot be
 inferred from `r` -- `r`'s own type is the hand-rolled `std::result::Result`
 enum, whose payload is `any`, so there is nothing on the argument side for `T`
-to bind against; it is fixed only by an explicit annotation at the call site.
-An unannotated call (`let a = to_array(ok("hi"))`) compiles clean but prints a
-raw pointer, not the value -- a silent wrong answer, not a type error.
-`std::iter::count` is NOT affected (its `T` binds from a real `[T]` argument).
+to bind against; it is fixed only by an explicit annotation at the call site
+(or by something else later in the same function that pins `T` down, e.g.
+passing the array element into a real, non-`any` typed parameter). An
+unannotated call whose element type is never established anywhere
+(`let a = to_array(ok("hi"))  println(a[0])`) is a clean `E0110` compile
+error, not a silent wrong answer -- add the annotation the diagnostic
+suggests. `std::iter::count` is NOT affected (its `T` binds from a real `[T]`
+argument).
 
 ---
 

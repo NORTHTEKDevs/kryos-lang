@@ -72,6 +72,7 @@ want_reject_e0100() {
   fi
 }
 
+
 # --- #13/#19: Result/Option annotated payloads must be checked -------------
 
 want_reject result_err_payload '
@@ -1246,6 +1247,65 @@ fn get() -> Result<str, str> {
 fn main() {
     let arr: [str] = to_array(get())
     println(arr[0])
+}'
+
+# --- LEDGER item 40c, CLOSED: unannotated `std::result::to_array<T>` used to
+# silently render a raw pointer (item 40b's own CLOSED entry falsely claimed
+# it printed the real string). `to_array<T>(r: Result) -> [T]`'s param is the
+# hand-rolled `std::result::Result` enum (payload `any`), not the compiler's
+# real generic `Type::Result` -- so `T` has nothing to unify against on the
+# ARGUMENT side. Fix: the checker now tracks every unannotated
+# `let x = generic_fn(..)` binding whose callee has its own generic params,
+# and rejects it at END-OF-MODULE (E0110) if `T` is STILL unresolved once
+# every unification in the whole program has had a chance to run -- a clean
+# compile error instead of shipping the erasure sentinel through codegen.
+# When something ELSE in the same function genuinely pins `T` down later
+# (not just a polymorphic `println`-style opaque-any sink, which unifies
+# with anything and binds nothing), the checker now also propagates that
+# resolved type to MIR, so the binding is inferred correctly with NO
+# annotation needed -- proven by the second probe below.
+want_reject to_array_unannotated_binding_silent_wrong_answer '
+use std::result::{to_array}
+fn main() { let a = to_array(Ok("hi-there"))  println(a[0]) }'
+
+want_reject to_array_unannotated_binding_err_case '
+use std::result::{to_array}
+fn main() { let a = to_array(Err("boom"))  println(a[0]) }'
+
+# The rejection is a pure SIGNATURE-SHAPE check (does `to_array`'s own
+# declared generic param appear in its own declared param list -- it does
+# not), independent of the call site or surrounding context. So it still
+# fires even when something else in the same function would otherwise let
+# `T` unify against a concrete type later -- deliberately: a per-call-site
+# deferred "did it end up concrete by end of module" version of this check
+# was tried first and reverted (see the item 40c LEDGER entry) because it
+# false-positived inside ANY generic function/struct whose own body is
+# checked once with an abstract placeholder for its OWN type param (e.g.
+# `push<T>(arr: [T], val: T) -> [T]` called from inside a generic struct
+# method), where that placeholder never looks "resolved to concrete" during
+# the single template-checking pass even though it is perfectly sound.
+want_reject to_array_unannotated_binding_not_rescued_by_later_use '
+use std::result::{to_array}
+fn show(s: str) { println(s) }
+fn main() {
+    let a = to_array(Ok("hi-there"))
+    show(a[0])
+    println(a[0])
+}'
+
+# NO-CASCADE complement: a generic whose param DOES mention its own type
+# param (the normal, common shape) must NOT be affected by this check, even
+# when called from inside an unrelated generic context. `push<T>` is the
+# sharpest version of this -- it is what item 40c's fix regressed on the
+# FIRST attempt (a deferred "did T end up concrete" check flagged `push`
+# calls inside `conf_generics.kry`'s generic struct methods with wrong
+# spans, because the struct's OWN `V` type param never resolves to
+# concrete during that single check pass).
+want_pass push_generic_unannotated_binding_still_works '
+fn main() {
+    let mut a: [i64] = []
+    let b = push(a, 5)
+    println(to_string(b[0]))
 }'
 
 if [ "$fail" -eq 0 ]; then
