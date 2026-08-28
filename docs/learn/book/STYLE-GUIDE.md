@@ -232,9 +232,13 @@ rather than asking a reader to remember argument position.
 
   fn join_words(words: [str]) -> str {
       let sb = string_builder()
-      for w in words {
-          sb.append(w)
-          sb.append(" ")
+      let mut i = 0
+      while i < len(words) {
+          if i > 0 {
+              sb.append(" ")
+          }
+          sb.append(words[i])
+          i = i + 1
       }
       return sb.build()
   }

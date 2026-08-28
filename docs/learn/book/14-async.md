@@ -110,10 +110,19 @@ a: start
 b: start
 c: start
 c: done
-a: done
 b: done
+a: done
 elapsed_ms_under_1000: true
 ```
+
+The three `start` lines always appear in spawn order -- `coop_run` starts
+tasks in the order they were spawned, and nothing has yielded yet. **The
+three `done` lines do not.** Their order is whatever order the three sleeps
+happen to expire in, which varies run to run: five consecutive runs of this
+exact program on one machine produced `c b a` three times, `c a b` once, and
+`b c a` once. Do not write code that depends on the completion order of
+concurrently-sleeping tasks, and do not be surprised when your own run
+prints a different order than the block above.
 
 Three tasks, each sleeping 300ms, finish in well under the 900ms a
 sequential run would take (the exact elapsed time is timing-dependent, so

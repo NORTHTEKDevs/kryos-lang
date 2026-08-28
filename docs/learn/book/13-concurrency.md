@@ -398,17 +398,25 @@ returns is guaranteed to be processed -- no `sleep` needed to wait for it.
 
 ### Handlers are fire-and-forget: request-response needs a reply channel
 
-A handler cannot declare a return type. This is a compile error, not a
-runtime limitation:
+A handler cannot usefully declare a return type. This is a compile error, not
+a runtime limitation -- but note *where* it fires: at the **call site**, not
+at the declaration. Declaring the handler alone compiles clean; the error
+appears the moment you try to send it a message. That is why the example
+below includes the call:
 
 <!-- docs-example: skip -->
 ```kryos
 actor Counter {
     count: i64
 
-    fn get(self) -> i64 {   // ERROR
+    fn get(self) -> i64 {
         return self.count
     }
+}
+
+fn main() {
+    let c = Counter()
+    c.get()             // ERROR -- the diagnostic points HERE, not at `fn get`
 }
 ```
 
@@ -418,7 +426,15 @@ are asynchronous fire-and-forget: there is no synchronous reply channel, so
 the return value can never reach this call site (see docs/09-concurrency.md).
 Request-response actors are not supported yet -- declare `get` with no return
 type (fire-and-forget) instead.
+  --> counter.kry:11:5
+   |
+11 |     c.get()
+   |     ^^^^^^^ here
 ```
+
+If you drop the `fn main` half and check only the `actor` block, the file
+compiles with no diagnostic at all -- the return type is not rejected until
+something sends the message.
 
 There is no reply path baked into the language, but you can build one: pass
 a channel as an argument and have the handler `send` its answer on it.
@@ -545,6 +561,8 @@ an actor.
 **Declaring an actor handler with a return type.** `fn get(self) -> i64`
 inside an `actor` block is a compile error (`E0110`) -- handlers are
 fire-and-forget by design. Pass a reply channel as an argument instead.
+The diagnostic fires at the CALL SITE, not at the declaration, so a file
+that only declares such a handler and never sends to it compiles clean.
 
 **Trusting `recv` alone to detect a closed channel.** A drained, closed
 channel and a real `send(ch, 0)` both make `recv` return `0`. Call
