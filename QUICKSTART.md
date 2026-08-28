@@ -71,7 +71,7 @@ cd editors/vscode && npm install && npm run package
 
 ## 5. Where to next
 
-The **[Learn Kryos](docs/learn/README.md)** track is the recommended path from here: a 30-minute tour of the language followed by 27 runnable cookbook recipes (CLI tools, HTTP servers, JSON pipelines, worker pools, async fetch, libraries, dates, regex, encoding, structured logs, sorting, hashes, dedup, CSV, env config, retry, input validation, subprocesses, number formatting, path manipulation, random numbers, fuzzy search, resilience patterns, priority tasks, caching, and LLM chat).
+The **[Learn Kryos](docs/learn/README.md)** track is the recommended path from here: a 30-minute tour of the language, then **[the book](docs/learn/book/README.md)** -- a 20-chapter, cover-to-cover manual for actually learning Kryos, each chapter building only on what came before -- and 27 runnable cookbook recipes (CLI tools, HTTP servers, JSON pipelines, worker pools, async fetch, libraries, dates, regex, encoding, structured logs, sorting, hashes, dedup, CSV, env config, retry, input validation, subprocesses, number formatting, path manipulation, random numbers, fuzzy search, resilience patterns, priority tasks, caching, and LLM chat) to use as reference once you know the language.
 
 For deeper reference:
 

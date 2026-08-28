@@ -44,7 +44,8 @@ kryos run hello.kry
 | If you want to… | Go to |
 |---|---|
 | Install and verify in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
-| Learn the language (the manual) | [docs/learn/](docs/learn/README.md) |
+| Learn the language cover-to-cover | [the book](docs/learn/book/README.md) |
+| Guided path: install, tour, cookbook, deep dives | [docs/learn/](docs/learn/README.md) |
 | Browse the full docs | [docs/README.md](docs/README.md) |
 | Build an MCP server in 60 seconds | [kryos-mcp-template](https://github.com/NORTHTEKDevs/kryos-mcp-template) |
 | Embed a governed agent in your Python/Go/Node app | [ecosystem/kryos-embed](ecosystem/kryos-embed/README.md) |

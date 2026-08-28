@@ -55,7 +55,7 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 13 | [Concurrency: spawn/channels/actors](13-concurrency.md) | written -- summarizes the sync half of [`docs/09-concurrency.md`](../../09-concurrency.md); also covers `std::sync`'s `Mutex`/`AtomicInt`, and states two confirmed hang/deadlock caveats (LEDGER item 46: a two-caller `WaitGroup.wg_wait` only releases the first waiter, and a shared mutating closure's lock held across a coop-yield point deadlocks) |
+| 13 | [Concurrency: spawn/channels/actors](13-concurrency.md) | written -- summarizes the sync half of [`docs/09-concurrency.md`](../../09-concurrency.md); also covers `std::sync`'s `Mutex`/`AtomicInt`, and states two of LEDGER item 46's three confirmed hang/deadlock caveats (a two-caller `WaitGroup.wg_wait` only releases the first waiter, and two different shared mutating closures calling each other from separate threads can deadlock -- the third, a shared closure lock held across a coop-yield point, is [Chapter 14](14-async.md)'s to teach) |
 | 14 | [Async](14-async.md) | written -- summarizes the async/await half of [`docs/09-concurrency.md`](../../09-concurrency.md), split out for teaching order: sync concurrency before async; states the "`await` is a yield point, not a future combinator" limit and Chapter 13's coop-yield/closure-lock deadlock as it applies to `coop_spawn` |
 
 ## Part V -- Ecosystem
@@ -70,9 +70,9 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 18 | The backends: Cranelift/LLVM/wasm (`18-backends.md`) | planned -- summarizes [`docs/15-codegen.md`](../../15-codegen.md); cross-compilation ([`docs/18-cross-compilation.md`](../../18-cross-compilation.md)) folds in here as the same "one source, multiple targets" topic |
-| 19 | FFI & unsafe (`19-ffi-and-unsafe.md`) | planned -- summarizes [`docs/13-ffi.md`](../../13-ffi.md) and [`docs/17-unsafe-audit.md`](../../17-unsafe-audit.md) |
-| 20 | Idioms & pitfalls (`20-idioms.md`) | planned -- new material: the named traps, drawn from this repo's `CLAUDE.md` gotcha list and [`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md)'s open items -- the book's honest "here's what will bite you" chapter |
+| 18 | [The backends: Cranelift/LLVM/wasm](18-backends.md) | written -- summarizes [`docs/15-codegen.md`](../../15-codegen.md); cross-compilation ([`docs/18-cross-compilation.md`](../../18-cross-compilation.md)) folds in here as the same "one source, multiple targets" topic, with a correction noted where that page's WASM paragraph is stale against the current, re-verified [`docs/wasm-contract.md`](../../wasm-contract.md) |
+| 19 | [FFI & unsafe](19-ffi-and-unsafe.md) | written -- summarizes [`docs/13-ffi.md`](../../13-ffi.md) and [`docs/17-unsafe-audit.md`](../../17-unsafe-audit.md); also verifies live that `docs/19-language-reference.md`'s "all extern calls require unsafe" claim does not match this compiler's actual enforcement |
+| 20 | [Idioms & pitfalls](20-idioms-and-pitfalls.md) | written -- new material: the named traps, drawn from this repo's `CLAUDE.md` gotcha list and [`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md)'s open items -- the book's honest "here's what will bite you" chapter, plus the `||`/`-`/`[`/`(` continuation trap in its full post-campaign W0001 form and the `kryos fmt` refusal-to-launder behavior |
 
 ## Not part of the core path
 
@@ -101,14 +101,19 @@ them. The ones with the widest teaching surface:
 - **`any` type erasure** (LEDGER item 6 / CLAUDE.md gotcha #22): `any` has
   no runtime type tag; `to_string`/`format` on a `str`/`f64` value routed
   through a direct `any` slot mis-renders it. Relevant to Chapters 7 and 9.
-- **`std::result::to_array<T>` needs an explicit annotation** (LEDGER item
-  40c) to stay type-safe -- unannotated it renders a raw pointer. Relevant
+- **`std::result::to_array<T>` needs an explicit annotation** to stay
+  type-safe (its `T` cannot bind from the argument) -- unannotated, this
+  is now a clean `E0110` compile error rather than the silent raw-pointer
+  output it used to produce (LEDGER item 40c, FIXED 2026-08-27). Relevant
   to Chapter 12.
-- **Two confirmed concurrency-primitive hangs** (LEDGER item 46, found and
-  logged 2026-08-28, not yet fixed): a `std::chan::ChanWaitGroup` with two
-  callers blocked on `wg_wait` only releases the first one, and a shared
-  mutating closure's per-closure lock held across a coop-yield point
-  deadlocks the whole process. Relevant to Chapters 13 and 14.
+- **Three confirmed concurrency-primitive hangs** (LEDGER item 46, found
+  and logged 2026-08-28, not yet fixed): a `std::chan::ChanWaitGroup` with
+  two callers blocked on `wg_wait` only releases the first one; two
+  different shared mutating closures calling each other from separate
+  threads can deadlock, since each closure's reentrancy lock is invisible
+  to the other; and a shared mutating closure's per-closure lock held
+  across a coop-yield point deadlocks the whole process. Relevant to
+  Chapters 13 and 14.
 - ~~AOT-only proportional leak in the enum-array-push pattern~~ (LEDGER
   item 45): FIXED 2026-08-27 on both backends (was never actually
   AOT-only -- a measurement artifact). No longer a caveat.

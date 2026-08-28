@@ -125,16 +125,18 @@ their `push`/`push_front`/`push_back` share a backing buffer the same way,
 so the single-name reassignment idiom (`xs = xs.push(v)`) is required
 there too, not just on a raw `[T]`.
 
-There's a second, narrower trap in the same family: pushing a
+There *was* a second, narrower trap in the same family -- pushing a
 freshly-constructed enum value with a heap-typed field (a `str`, array, or
-nested struct payload) into an array leaks memory on the **LLVM/AOT
-backend only** -- proportional to how many times you do it (roughly
-450MB at five million fresh-enum pushes), while Cranelift/JIT stays flat.
-This is a real, open compiler limitation, characterized but not fixed
-([`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md), item 45) -- it
-does not corrupt output or crash, and it only becomes visible at genuinely
-large iteration counts, but a hot loop that constructs-and-pushes enum
-values by the million on a release build is where you'd feel it.
+nested struct payload) into an array leaked memory proportional to how many
+times you did it (roughly 450MB at five million fresh-enum pushes) -- but
+it's fixed now: [`tools/loop/LEDGER.md`](../../../tools/loop/LEDGER.md)
+item 45 closed it on both backends 2026-08-27 (the original report's "AOT
+only, Cranelift/JIT clean" characterization also turned out to be a
+measurement artifact of how the leak was polled, not a real backend
+difference -- both leaked at an identical rate once measured correctly).
+Mentioned here only so the pattern -- building enum values with heap
+payloads inside a hot push loop -- doesn't look suspect on sight if you've
+read older Kryos material that still describes it as open.
 
 ## `sort`/`reverse`: in-place, and `void` -- never reassign them
 

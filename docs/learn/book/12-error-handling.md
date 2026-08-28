@@ -263,14 +263,28 @@ That number is a raw pointer, not the string `"division by zero"` --
 `Result` with no type arguments erases its payload to `i64` (the same
 erasure CLAUDE.md's gotcha #13 documents for `Option`), and printing an
 `i64`-erased `str` prints the bit pattern instead of the text. The fix is
-the annotated signature from the top of this chapter:
-`Result<i64, str>`. The same erasure hits `std::result::to_array<T>`: call
-it with the return binding annotated (`let a: [str] = to_array(r)`), not
-bare (`let a = to_array(r)`), or you get the identical raw-pointer failure
--- an open gap tracked as
-[LEDGER item 40c](../../../tools/loop/LEDGER.md), since `to_array`'s `T`
-has nothing to bind against on the argument side and can only be resolved
-from an explicit annotation.
+the annotated signature from the top of this chapter: `Result<i64, str>`.
+
+A related shape, `std::result::to_array<T>`, does NOT reproduce this
+silent failure -- it fails louder instead. `to_array`'s `T` has nothing to
+bind against on the argument side (its parameter is the untyped `Result`
+enum, not a real `Result<T, E>`), so it can only be resolved from an
+explicit annotation on the binding. Leaving the binding bare is a clean
+`E0110` at check time (not a runtime raw-pointer output -- this was fixed
+as [LEDGER item 40c](../../../tools/loop/LEDGER.md)):
+
+<!-- docs-example: skip -->
+```kryos
+let a = to_array(r)   // ERROR
+```
+
+```
+error[E0110]: cannot infer the generic type parameter of `to_array(..)`
+from this unannotated binding -- ... Add an explicit type annotation on
+the binding, e.g. `let x: [str] = to_array(..)`
+```
+
+Annotate the binding (`let a: [str] = to_array(r)`) and it works.
 
 **Wrapping a panicking builtin in `try`/`catch` and expecting it to help.**
 The global `file_read` builtin panics (uncatchable, exit 98) if the file is
@@ -346,8 +360,10 @@ the recoverable one.
   force callers to handle failure.
 - Always write the full `Result<T, E>` on a signature -- a bare `Result`
   erases its payload to `i64` and silently corrupts a `str`/struct value on
-  read-back. The same annotation requirement applies to
-  `std::result::to_array<T>`'s binding (LEDGER item 40c).
+  read-back. `std::result::to_array<T>` needs the same explicit annotation
+  on its binding, but fails differently: leaving it bare is a clean
+  `E0110` compile error, not a silent wrong answer (LEDGER item 40c,
+  fixed).
 - `?` on a `Result`-returning call unwraps `Ok` or returns the `Err` early;
   it only works inside a function that itself returns a compatible
   `Result`.

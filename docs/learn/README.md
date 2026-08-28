@@ -52,7 +52,17 @@ By the end you'll recognize idiomatic Kryos and be able to read any program in t
 
 ---
 
-## 4 · The cookbook
+## 4 · The book (the thorough path)
+
+The tour above is a taste. [**docs/learn/book/**](./book/README.md) is the
+full manual -- 20 chapters, cover to cover, each building only on concepts
+earlier chapters introduced, ending with an honest "here's what will bite
+you" chapter drawn from this repo's own gotcha list. If you want to
+actually learn Kryos rather than skim it, start there after the tour and
+read it in order; come back to the cookbook below afterward as reference
+once you already know the language.
+
+## 5 · The cookbook
 
 Practical, runnable recipes for things people actually build:
 
@@ -91,9 +101,9 @@ See also: [Common errors](./common-errors.md) for the top-20 errors and how to f
 
 ---
 
-## 5 · Deeper dives (when you need them)
+## 6 · Deeper dives (when you need them)
 
-The 19-chapter manual covers each topic in depth. Read these as questions come up, not all at once:
+These 19 numbered reference chapters are what [the book](./book/README.md) summarizes and links out to for exhaustive, single-topic depth (grammar edge cases, full soundness history, and the like). Read them as questions come up, not all at once:
 
 - [01 · Getting started](../01-getting-started.md)
 - [02 · Variables and types](../02-variables-and-types.md)
@@ -117,7 +127,7 @@ The 19-chapter manual covers each topic in depth. Read these as questions come u
 
 ---
 
-## 6 · Editor setup
+## 7 · Editor setup
 
 Productivity in Kryos requires an editor with LSP support.
 
@@ -129,7 +139,7 @@ The extension gives you syntax highlighting, autocomplete, hover-for-types, goto
 
 ---
 
-## 7 · When you get stuck
+## 8 · When you get stuck
 
 - Look at [`examples/`](../../examples) — 74 runnable programs covering nearly every feature
 - Search [Discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) — ask if you don't find it

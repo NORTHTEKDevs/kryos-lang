@@ -150,6 +150,19 @@ already holds. Kryos detects this and panics immediately
 98) rather than hanging. If you need self-recursion, write a named `fn`
 instead -- named recursive functions are unaffected by any of this.
 
+**That detector only catches a thread re-acquiring its own closure's
+lock -- a deadlock between two different shared closures is invisible to
+it.** Each closure's lock lives at its own, distinct address, so nothing
+about a cross-closure wait looks like the same-lock reentrancy case above.
+If thread 1 calls closure A (which, before returning, calls closure B)
+while thread 2 concurrently calls closure B (which calls closure A), the
+two threads can each end up holding one lock and blocking on the other --
+a classic two-lock deadlock, no diagnostic, no timeout. This is a
+confirmed, reproducible hang (not a hypothetical), tracked as [LEDGER item
+46](../../../tools/loop/LEDGER.md). Don't let two shared mutating closures
+call each other from different threads; route the interaction through a
+channel instead of a direct call if they need to coordinate.
+
 ### Error handling inside a spawned block
 
 An uncaught `throw` or an unrecoverable panic (division by zero, an
@@ -542,6 +555,11 @@ from "there is nothing left".
 waiter is released; the second hangs forever (LEDGER item 46). Keep
 `wg_wait` to a single caller per `WaitGroup`.
 
+**Two shared mutating closures calling each other from different
+threads.** Each closure's lock is invisible to the other's reentrancy
+check, so this can deadlock with no diagnostic (LEDGER item 46). Route the
+interaction through a channel instead.
+
 **Building a hot shared counter with a `Mutex` when `AtomicInt` would
 do.** `Mutex` works for this, but `AtomicInt`'s lock is scoped to the
 single operation, not the whole critical section -- prefer it whenever the
@@ -571,7 +589,9 @@ protected state really is just one number or flag.
 - Every `spawn` capture is a deep-copied snapshot, **except** a closure or
   fn-value, which is shared and, if it mutates its own capture, serialized
   under a per-closure lock -- correct, but locking the whole call, not just
-  the load/store.
+  the load/store. The lock only detects a thread re-entering its OWN
+  closure's lock; two different closures calling each other from separate
+  threads can still deadlock (LEDGER item 46).
 - An uncaught `throw` or an unrecoverable panic inside a spawned block is
   fatal to the whole process, not just that thread -- catch and signal
   "done" on both paths if you need per-task failure isolation.
@@ -583,7 +603,8 @@ protected state really is just one number or flag.
   build request-response with a reply channel passed as an argument.
 - `std::sync::atomic_int`/`AtomicBool` and `Mutex` are the traditional
   shared-state primitives for when message passing does not fit; a
-  two-caller `wg_wait` on one `WaitGroup` is a known, confirmed hang
-  (LEDGER item 46) worth designing around.
+  two-caller `wg_wait` on one `WaitGroup`, and a cross-closure two-lock
+  deadlock between two different shared mutating closures, are both
+  known, confirmed hangs (LEDGER item 46) worth designing around.
 
 Next: [Async](14-async.md)

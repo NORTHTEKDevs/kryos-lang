@@ -24,7 +24,7 @@ hand.
 **New since the W0001-extension wave: `kryos fmt` refuses to touch a file
 that contains a live ambiguous newline-led continuation.** If a `.kry`
 file has a fresh line starting with `||`, `-`, `[`, or `(` in the specific
-shape that trips [`W0001`](../error-codes.md#w0001----ambiguous-newline-led-continuation),
+shape that trips [`W0001`](../../error-codes.md#w0001----ambiguous-newline-led-continuation),
 `kryos fmt` prints:
 
 ```
@@ -45,7 +45,7 @@ restructure the ambiguous line per its fix -- then run `kryos fmt` again.
 - **Functions, variables, module names, and struct fields:** `snake_case`.
 - **Types** (`struct`, `enum`, `trait`): `PascalCase`.
 - **Top-level constants** (a module-level `let`, since there is no
-  `const` keyword -- see the [glossary](../glossary.md#const-does-not-exist)):
+  `const` keyword -- see the [glossary](../../glossary.md#const-does-not-exist)):
   `SCREAMING_SNAKE_CASE`. This matches the stdlib's own convention
   (`compiler/stdlib/agent.kry`'s `ALIGNMENT_STRICT`, `STATE_RUNNING`, ...).
 
@@ -290,5 +290,5 @@ rather than asking a reader to remember argument position.
 - This repo's root `CLAUDE.md` gotcha list covers runtime pitfalls (the
   ones that compile clean and misbehave) rather than style -- read it
   alongside this page.
-- [`docs/error-codes.md`](../error-codes.md) for the full diagnostic
+- [`docs/error-codes.md`](../../error-codes.md) for the full diagnostic
   reference this guide's examples were checked against.
