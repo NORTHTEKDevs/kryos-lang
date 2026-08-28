@@ -1,0 +1,41 @@
+// LEDGER item 47 adjacent-shape enumeration (2026-08-28): the GENERIC IMPL
+// METHOD twin of the growing-wrapper trick, routed through
+// `monomorphize_impl_fn` rather than `monomorphize_struct`/`_enum`.
+// `monomorphize_impl_fn` ALREADY calls `enter_mono_frame`/`exit_mono_frame`
+// (it was never in the item 47 gap -- only the struct/enum call sites were
+// missing the guard), so this shape is a CONTROL, not a new hole.
+//
+// MEASURED (not assumed): this does NOT hang and is NOT a resource-DoS --
+// `kryos check` rc=0, `kryos run` fails in ~0.25s. It does NOT hit the
+// item 47 `mono_fatal` E0113 path either; it hits a DIFFERENT, pre-existing
+// error first: "codegen (cranelift) failed: internal error: cannot resolve
+// the struct type for field access `.val`" (a struct-type-propagation gap
+// for a self-referential generic impl method calling itself with a growing
+// `Self` type). That error is flagged by the compiler itself as an ICE-class
+// bug needing a report, but it is FAST and terminates cleanly -- out of
+// scope for item 47 (which is specifically about unbounded HANGS), not
+// fixed here, not claimed fixed. Kept as a probe (not wired into the
+// permanent regression gate) to document that this adjacent shape was
+// enumerated per rule 4, tested, and found to be a different, already-fast-
+// failing bug rather than a resource-DoS.
+
+struct Wrap<T> {
+    val: T,
+}
+
+struct Box<T> {
+    val: T,
+}
+
+impl<T> Box<T> {
+    fn wrap(self) -> Box<Wrap<T>> {
+        let w: Box<Wrap<T>> = Box { val: Wrap { val: self.val } }
+        return w.wrap()
+    }
+}
+
+fn main() {
+    let b: Box<i64> = Box { val: 1 }
+    let w: Box<Wrap<i64>> = b.wrap()
+    println("built")
+}

@@ -15722,6 +15722,16 @@ fn monomorphize_struct(
     if ctx.struct_defs.contains_key(&mangled) {
         return mangled;
     }
+    // Resource-DoS guard (LEDGER item 47): the placeholder inserted just below
+    // only short-circuits a RE-ENTRANT call for the SAME mangled name (an
+    // exact self-referential struct, `Node<T> { next: Option<Node<T>> }`).
+    // A struct whose recursive field wraps the type parameter in ANOTHER
+    // generic at each level (`Node<T> { next: Option<Node<Wrap<T>>> }`)
+    // produces a DIFFERENT mangled name every recursion, so the placeholder
+    // check above never fires and the field-substitution recursion below
+    // was previously unbounded. Mirror `monomorphize`/`monomorphize_impl_fn`
+    // and pay the same MAX_MONO_DEPTH/MAX_MONO_TOTAL cost here.
+    enter_mono_frame(ctx, struct_name, &mangled);
 
     // Insert a PLACEHOLDER before substituting field types. A self-referential
     // generic struct (`struct Node<T> { next: Option<Node<T>> }`) resolves a
@@ -15752,6 +15762,7 @@ fn monomorphize_struct(
 
     // Insert the monomorphized struct definition (overwrites the placeholder).
     ctx.struct_defs.insert(mangled.clone(), field_list);
+    exit_mono_frame(ctx);
 
     mangled
 }
@@ -15802,6 +15813,14 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
     if ctx.enum_defs.contains_key(&mangled) {
         return mangled;
     }
+    // Resource-DoS guard (LEDGER item 47): mirrors the monomorphize_struct
+    // fix above. The placeholder below only short-circuits a RE-ENTRANT call
+    // for the SAME mangled name (an exact self-referential enum). An enum
+    // whose recursive variant field wraps the type parameter in ANOTHER
+    // generic at each level produces a DIFFERENT mangled name every
+    // recursion, so the placeholder never fires and the variant-substitution
+    // recursion below was previously unbounded.
+    enter_mono_frame(ctx, enum_name, &mangled);
 
     // Insert a placeholder BEFORE substituting variant field types. A
     // self-referential generic enum (e.g. `List<T> { Nil, Cons(T, List<T>) }`)
@@ -15838,6 +15857,7 @@ fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[Mi
 
     // Insert the monomorphized enum definition (overwrites the placeholder).
     ctx.enum_defs.insert(mangled.clone(), variant_defs);
+    exit_mono_frame(ctx);
 
     mangled
 }

@@ -1,0 +1,34 @@
+// LEDGER item 47, adjacent-shape gate (2026-08-28): the MUTUALLY-recursive
+// twin of the single-struct growing-wrapper repro. Two DIFFERENT generic
+// structs each hold the other, wrapped in `Wrap<T>` at every hop
+// (`A<T> { b: Option<B<Wrap<T>>> }`, `B<T> { a: Option<A<Wrap<T>>> }`), so
+// the recursion alternates between two distinct `monomorphize_struct` call
+// sites (different struct_name each level) rather than one struct calling
+// itself. This exercises that `enter_mono_frame`'s MAX_MONO_DEPTH counter
+// (`ctx.mono_depth`) is tracked GLOBALLY across the whole monomorphization
+// call stack, not per-struct-name -- a per-name counter would never trip
+// here since neither A nor B individually exceeds any per-name threshold
+// every OTHER level.
+//
+// BEFORE the item 47 fix: same unbounded-hang shape as the single-struct
+// and enum repros (neither monomorphize_struct call site had any guard).
+// AFTER the fix: fails fast with the same mono_fatal E0113 diagnostic.
+
+use std::option::{Option, Some, None}
+
+struct Wrap<T> {
+    val: T,
+}
+
+struct A<T> {
+    b: Option<B<Wrap<T>>>,
+}
+
+struct B<T> {
+    a: Option<A<Wrap<T>>>,
+}
+
+fn main() {
+    let x: A<i64> = A { b: None() }
+    println("built A<i64>")
+}

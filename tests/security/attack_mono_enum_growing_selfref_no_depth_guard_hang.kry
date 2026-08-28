@@ -1,0 +1,34 @@
+// LEDGER item 47, adjacent-shape gate (2026-08-28): the ENUM twin of
+// `attack_mono_struct_growing_selfref_no_depth_guard_hang.kry`. Same
+// growing-wrapper trick (`Wrap<T>` composed at every level so the mangled
+// name is never the same twice), routed through `monomorphize_enum`
+// instead of `monomorphize_struct` -- the two functions are separate call
+// sites and the fix must guard BOTH independently (the struct-only fix
+// would leave this shape hanging).
+//
+// Mechanism: `EBox<T> { Nil, Cons(T, EBox<Wrap<T>>) }` -- constructing the
+// base value `EBox<i64>` via the nullary `Nil` variant still forces
+// `monomorphize_enum` to substitute EVERY variant's field types (including
+// the recursive `Cons(T, EBox<Wrap<T>>)` payload), which recurses into
+// `monomorphize_enum(ctx, "EBox", [Wrap<i64>])` for a distinct, never-cached
+// mangled name -- no variant needs to be actually constructed for the
+// unbounded recursion to fire.
+//
+// BEFORE the item 47 fix: hangs `kryos run` indefinitely with unbounded
+// RSS growth (measured on the struct twin: 5.6GB -> 8.2GB in 8s), zero
+// stdout, no diagnostic. AFTER the fix: `kryos run` fails fast (< 1s) with
+// a clean `mono_fatal` E0113 diagnostic naming `Wrap`, depth 301.
+
+struct Wrap<T> {
+    val: T,
+}
+
+enum EBox<T> {
+    Nil,
+    Cons(T, EBox<Wrap<T>>),
+}
+
+fn main() {
+    let e: EBox<i64> = Nil
+    println("built EBox<i64>")
+}
