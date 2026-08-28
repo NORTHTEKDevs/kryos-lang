@@ -3568,6 +3568,36 @@ fn drop_unescaped_str_temps(
                 {
                     true
                 }
+                // An enum-variant construction DUPS an ARRAY payload field
+                // exactly like a struct literal does above -- LLVM's AND
+                // Cranelift's `RValue::EnumVariant` codegen both call
+                // kryos_array_dup/kryos_array_clone on any Array-typed field
+                // unconditionally (mirroring the struct-literal field
+                // cloning this file already accounts for), so the source
+                // temp still owns ITS OWN array and must be dropped here
+                // too. This arm was missing entirely -- EnumVariant fell
+                // through to the generic `other` catch-all below, which
+                // treats any mention of `id` as a possible escape and bails
+                // the whole candidate out of `to_drop` -- so
+                // `Enum.Variant([i, i+1, i+2])` inside a loop leaked the
+                // array literal's own buffer every iteration: LEDGER item
+                // 45, ~454-485MB at 5M iterations on BOTH backends (the
+                // item's original "AOT-only, JIT clean" characterization was
+                // a measurement artifact -- `kryos run` execs the
+                // Cranelift-compiled binary as a CHILD PROCESS
+                // (kryos-cli/src/commands/run.rs, `Command::new(bin).status()`),
+                // so polling the PARENT `kryos.exe run` process's
+                // PeakWorkingSet64 -- what the original measurement did --
+                // shows near-flat memory regardless of the child's actual
+                // growth; polling the child directly shows the identical
+                // ~485MB leak on JIT too, since this fix lives in shared MIR
+                // lowering, not a backend-specific codegen path).
+                RValue::EnumVariant { fields, .. }
+                    if matches!(cand_ty, MirType::Array(_, _))
+                        && fields.iter().any(|op| mentions(op, id)) =>
+                {
+                    true
+                }
                 // Any other rvalue shape touching this temp is a potential
                 // escape (Use copies the pointer, aggregate inits store it...).
                 other => {

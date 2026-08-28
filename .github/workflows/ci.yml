@@ -232,6 +232,16 @@ jobs:
         # reintroduced unbounded leaks (Linux GNU time -v).
         run: bash tests/mem_plateau_check.sh
 
+      - name: Enum-array-push memory gate (LEDGER item 45)
+        # A fresh enum construction with an Array payload field, pushed into
+        # a scratch array every iteration, must keep peak RSS under a hard
+        # ceiling on BOTH backends. Pre-fix build grew to ~460MB at 5M iters
+        # on AOT AND JIT (the original "AOT-only" characterization was a
+        # measurement artifact -- see the script's header); fixed build
+        # plateaus near 4MB on both. Windows-only (PowerShell
+        # PeakWorkingSet64 polling) -- SKIPs cleanly elsewhere.
+        run: bash tests/mem_enum_array_push_gate.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM

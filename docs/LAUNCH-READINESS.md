@@ -292,20 +292,20 @@ is preserved as historical record of the addendum's original (now
 superseded) finding.
 
 **New, separate finding from the same WAVE 1 session, NOT part of item 44
-and NOT fixed -- LEDGER item 45 (AOT-only leak):** while closing item 44's
-JIT residual, a 2026-08-19 verifier measured a pre-existing, proportional
-leak in the general enum-array-push pattern: ~454MB peak at 5M fresh-enum
-pushes on AOT, JIT flat/clean (~11MB) at the same scale. Neither of item
-44's WAVE 1 fixes touches this path (they are scoped to construction's own
-field-dup and to the map/array-insert retain, not `kryos_array_push`'s
-AOT-only aggregate-boxing step). Characterized and pinned only, per the
-WAVE 1 brief's own instruction not to attempt the fix this wave --
-committed regression/characterization probe: `tests/mem/
+-- LEDGER item 45:** while closing item 44's JIT residual, a 2026-08-19
+verifier measured a pre-existing, proportional leak in the general
+enum-array-push pattern: ~454MB peak at 5M fresh-enum pushes, originally
+measured as AOT-only. Characterized and pinned that session, per the
+WAVE 1 brief's own instruction not to attempt the fix then -- committed
+regression/characterization probe: `tests/mem/
 enum_array_push_leak.kry` (`LEAK_ITERS`-gated, 500k/5M both measured).
-Ranked as a LEAK (below any silent-wrong-answer/crash class): requires
-millions of fresh-enum-then-immediately-pushed iterations to become
-visible, does not corrupt output or crash. See LEDGER item 45 for the full
-measurement table and candidate fix site.
+**UPDATE 2026-08-27: FIXED on BOTH backends.** The "AOT-only, JIT clean"
+read was a measurement artifact (`kryos run` execs the Cranelift binary
+as a child process; polling the parent process's RSS masked the child's
+identical growth). Root cause and fix: `kryos-mir/src/lower.rs`'s
+temp-drop pass was missing an `RValue::EnumVariant` arm analogous to its
+existing `RValue::Struct` one. See LEDGER item 45's CLOSED entry for the
+full proof and the new `tests/mem_enum_array_push_gate.sh` CI gate.
 
 **[SUPERSEDED, kept for history] Original 2026-08-18 finding:** YES on
 BOTH backends for the original 10-program corpus. `kryos run` and `kryos
@@ -921,14 +921,13 @@ from the 2026-08-19 addendum (0c) above:
   `Unknown -> ALL` stance. A narrowing experiment (2026-08-15) reopened 2
   real escapes, so this is deliberate, not an oversight. NOT FIXED,
   DELIBERATE.
-- **Item 45** -- AOT-only, proportional leak in the enum-array-push
-  pattern: ~454MB at 5M fresh-enum pushes on AOT, JIT clean (~11MB) at the
-  same scale. Characterized and pinned (`tests/mem/enum_array_push_leak.kry`),
-  deliberately not fixed this wave (2026-08-19 brief's own scope
-  instruction).
+**UPDATE 2026-08-27: item 45 is FIXED and moved to LEDGER's CLOSED table**
+(both backends, not AOT-only -- the original characterization was a
+measurement artifact; see the CLOSED entry). The OPEN section now
+contains 4 items, not 5:
 
-No item outside these 5 remains in the OPEN section. All 5 are
-non-security (2 performance leaks, 1 ABI-limited design note, 1 zero-caller
+No item outside these 4 remains in the OPEN section. All 4 are
+non-security (1 performance leak, 1 ABI-limited design note, 1 zero-caller
 stdlib gap, 1 deliberate usability/soundness trade already re-evaluated and
 kept).
 

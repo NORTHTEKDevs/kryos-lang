@@ -172,20 +172,19 @@ block is rejected with E0500.
   "closure counter: 1 2 3" correctly on both backends, byte-identical to
   each other, for the first time since item 44 opened. See LEDGER item 44
   for the full six-session evidence chain.
-- **AOT-only enum-array-push leak, OPEN (LEDGER item 45, characterized
-  2026-08-19, NOT fixed):** a separate, pre-existing, proportional leak in
-  the general enum-array-push pattern -- ~454MB peak at 5M fresh-enum
-  pushes on AOT, JIT flat/clean (~11MB) at the same scale. Found while
-  closing item 44's JIT residual; neither of that fix touches this path
-  (scoped to construction's own field-dup and to the map/array-insert
-  retain, not `kryos_array_push`'s AOT-only aggregate-boxing step).
-  Committed regression/characterization probe:
-  `tests/mem/enum_array_push_leak.kry` (`LEAK_ITERS`-gated). Ranked as a
-  LEAK, below any silent-wrong-answer/crash class: requires millions of
-  fresh-enum-then-immediately-pushed iterations to become visible, does not
-  corrupt output or crash. Candidate fix site:
-  `local_is_always_fresh_enum_construction` in
-  `kryos-codegen-llvm/src/codegen.rs`.
+- **Enum-array-push leak, FIXED (LEDGER item 45; characterized
+  2026-08-19, root-caused and fixed 2026-08-27):** a pre-existing,
+  proportional leak in the general enum-array-push pattern. **UPDATE
+  2026-08-27:** the original "AOT-only, JIT clean" characterization was a
+  measurement artifact (`kryos run` execs the Cranelift binary as a CHILD
+  process; polling the parent's RSS masked the child's growth) -- both
+  backends leaked identically (~460MB at 5M fresh-enum pushes). Root
+  cause: `kryos-mir`'s `drop_unescaped_str_temps` pass special-cased
+  `RValue::Struct` for the analogous array-field-dup leak but never got a
+  matching `RValue::EnumVariant` arm. Fixed in
+  `kryos-mir/src/lower.rs`; both backends now flat (~4MB) at 5M iters,
+  gated by `tests/mem_enum_array_push_gate.sh` (wired into CI). See
+  LEDGER item 45 (CLOSED table) for the full proof.
 
 
 ### 5.0 WASM backend coverage (v0.7)

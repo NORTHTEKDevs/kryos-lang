@@ -33,12 +33,13 @@ codegen site. Both backends are now genuinely clean (zero diagnostic lines,
 correct output) on the full 11-program minilisp corpus, including the demo
 printing "closure counter: 1 2 3" correctly on both backends for the first
 time. See LEDGER item 44's WAVE 1 addendum for the full trace-based
-root-cause account and six-session evidence chain. A separate, NOT-fixed
-finding spun off the same session: **LEDGER item 45**, a pre-existing,
-AOT-only leak in the general enum-array-push pattern (~454MB at 5M
-fresh-enum pushes, JIT clean) -- characterized and pinned only
-(`tests/mem/enum_array_push_leak.kry`), deliberately out of scope for that
-wave. Nothing else in this file's queue is more current than
+root-cause account and six-session evidence chain. A separate finding
+spun off the same session, **LEDGER item 45** (pre-existing leak in the
+general enum-array-push pattern), was characterized-only that session and
+is now FIXED (2026-08-27) on BOTH backends -- the original "AOT-only,
+JIT clean" call was a measurement artifact, not a real backend
+difference; see LEDGER item 45's CLOSED entry for the correction and
+proof. Nothing else in this file's queue is more current than
 `docs/LAUNCH-READINESS.md` and the LEDGER.
 
 
