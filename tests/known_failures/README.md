@@ -20,6 +20,48 @@ the file here.
 | `wasm_shortcircuit_loop_strcat.kry` | `kryos build --backend wasm` refuses to write a structurally invalid module ("type mismatch: expected i64 but nothing on stack") for a short-circuit `&&`/`||` if/else condition INSIDE A LOOP where both branches reassign a `mut str` local by concatenation -- e.g. `while i < n { if c >= 65 && c <= 90 { out = out + ... } else { out = out + ... } }`. All three of (short-circuit `&&`/`||`, inside a loop, `mut str` reassigned in both arms) are required; removing any one compiles clean. This is a compile-time ICE correctly caught by the post-codegen validator, not a silent miscompile. Found wiring `examples/showcase/wordscope.kry`'s WASM leg into `tests/run_examples_e2e.sh` -- that file's real `to_lower_ascii` helper has this exact shape and cannot build for wasm as a result. |
 | `test_repl_jit_missing_rt_symbols.kry` | `kryos test` and `kryos repl` both crash the WHOLE PROCESS (Rust panic, rc=101 -- `can't resolve symbol kryos_calloc` from `cranelift-jit`'s own linker) on a plain struct literal, the most basic possible construct. `kryos check`/`kryos run` accept the byte-identical file and run it correctly. Root cause: both commands build an in-process `cranelift_jit::JITBuilder` via `kryos-codegen-cranelift/src/jit.rs`, which hand-registers a partial allowlist of ~120 `kryos_*` runtime symbols and is missing `kryos_calloc` (every struct/array construction lowers to it) -- `kryos run` never hits this because, per CLAUDE.md, it is "AOT + subprocess, not an in-process JIT" and links the full `kryos_rt.lib` static lib. Directly falsifies CLAUDE.md's claim that `kryos test` "Works with stdlib imports" -- `std::json`, `std::csv`, and `std::string::string_builder` all crash the same way (`std::math`, which allocates nothing, does not), and one variant (a file calling `std::json::stringify`) fails with a distinct JIT verifier error instead of a panic, same underlying gap. Because the crash is process-fatal, ONE struct-constructing test in a file loses every other test's result in that run, not just its own. Found during the toolchain-realworld red-team round. |
 
+FIXED and folded into `tests/no_double_free.sh` (4 new cases):
+`rt3_fmt_audit_crash/enum_struct_array_rebuild_double_free.kry` (had no row
+here or in `docs/BUGS.md` to begin with -- this session's own wave brief
+carried the repro and observed output directly) -- a struct FIELD typed
+Enum (or a nested Struct holding one) got no compensating owner when copied
+into a rebuilt array element on Cranelift/JIT, in TWO distinct missing-arm
+gaps: `RValue::Struct`'s non-`@copy` field-init match (a fresh struct
+literal copying a field off a shared array-element alias, e.g. `Task {
+priority: t.priority, .. }`) and `emit_struct_deep_copy_inner`'s per-field
+match (the `__kryos_struct_index_clone` helper `push(dest, t)` uses to give
+a re-pushed whole-struct alias its own independent copy) -- both handled
+Array/Str/Map fields but fell through to a bare pointer share for
+Struct/Enum, `_ => val` / `_ => field_val`. The source struct's field and
+the rebuilt array's field ended up pointing at the SAME enum box with zero
+compensating owner; each side's later independent drop then freed it once
+-> `KRYOS-FREE-DIAG: double free` (correct printed output up to that
+point -- output alone would have missed this). AOT (LLVM) was never
+affected (it materializes an enum field as an inline aggregate value, not a
+heap alias, per CLAUDE.md gotcha #23/item 15's documented backend
+divergence) -- confirmed live, zero diagnostics on the unmodified pre-fix
+AOT binary. Fix: added the missing `MirType::Enum` arm to
+`emit_struct_deep_copy_inner` (mirrors the existing `MirType::Struct` arm,
+recursing into `emit_enum_deep_copy`) and a `MirType::Struct`/`MirType::Enum`
+arm to `RValue::Struct`'s non-`@copy` field match (a `kryos_struct_retain`
+owner-count bump, matching the existing convention already used for an
+Array-of-Struct/Enum ELEMENT a few lines above in the same function).
+`compiler/crates/kryos-codegen-cranelift/src/codegen.rs` only. PROVEN BOTH
+WAYS: pre-fix binary shows 3x `KRYOS-FREE-DIAG` on the original repro and
+3/4 of the new gate cases go RED (`enum_field_struct_rebuild`,
+`_two_fields`, `nested_struct_enum_field_rebuild`); post-fix, zero
+diagnostics on the repro (both `kryos run` and `kryos build --release`) and
+all 4 gate cases GREEN. The 4th case (`enum_field_struct_rebuild_under_spawn`,
+added per the wave's own "check under spawn" instruction) was ALREADY clean
+pre-fix on 8/8 runs -- spawn's own capture mechanism (a prior, separate
+fix, LEDGER "Cranelift shared one box for a loop-local enum captured by
+spawn") deep-clones the captured array independently at spawn time and MIR
+elides `new_tasks`'s own end-of-main drop once it is moved into the spawn
+capture, so this exact shape never exercised two independent drops of the
+same box either way -- kept as a non-regression guard, not a proof of this
+fix. Original repro file deleted per rule 9 (folded into the gate script
+above, not left as a standalone fixture).
+
 FIXED and folded into `tests/conformance/conf_spawn_closure_capture_lock.kry`:
 `spawn_closure_shared_env_race.kry` (LEDGER item 7b) -- a closure captured
 by `spawn` and called from multiple OS threads was a genuine DATA RACE (a

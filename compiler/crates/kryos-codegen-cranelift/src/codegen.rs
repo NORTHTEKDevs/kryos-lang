@@ -2665,6 +2665,24 @@ fn emit_struct_deep_copy_inner<M: Module>(
                     emit_struct_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
                 }
             }
+            // LEDGER "enum-in-struct array rebuild" wave: a Struct field
+            // typed Enum had NO arm here at all (fell to `_ => field_val`,
+            // a bare pointer share) -- unlike the MirType::Struct arm right
+            // above it, which already recurses into a real deep copy for a
+            // non-@copy nested struct. Enum boxes are calloc'd blocks with
+            // the exact same shared-owner header word Struct boxes have
+            // (kryos_struct_retain's own doc comment), so sharing the raw
+            // pointer here left BOTH the source struct's field and this
+            // deep-copied destination struct's field pointing at the SAME
+            // enum box with zero compensating owner -- each side's later
+            // independent drop then freed it once, and the common
+            // rebuild-array-of-struct-with-enum-field pattern (`push(dest,
+            // t)` where `t` holds an enum field) drops it twice:
+            // `KRYOS-FREE-DIAG: double free`. Mirrors the Struct arm exactly
+            // via the existing `emit_enum_deep_copy` sibling helper.
+            Some(MirType::Enum(inner_name)) => {
+                emit_enum_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
+            }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                 let retain_ref =
                     ensure_func_ref_with_args("kryos_arc_retain", builder, translator, module, 1)?;
@@ -5551,6 +5569,39 @@ fn translate_rvalue<M: Module>(
                                         1,
                                     )?;
                                     let c = builder.ins().call(clone_ref, &[val]);
+                                    builder.inst_results(c)[0]
+                                }
+                                // LEDGER "enum-in-struct array rebuild" wave: a
+                                // Struct/Enum-typed field had NO arm here either
+                                // (fell to `_ => val`, a bare pointer share) --
+                                // reading an Enum/Struct field out of a shared
+                                // source (e.g. `Task { priority: t.priority }`
+                                // where `t` is a shared array-element alias, see
+                                // gotcha #23/item 15) and storing it straight
+                                // into a freshly-constructed sibling struct's own
+                                // field left BOTH structs' fields pointing at the
+                                // SAME enum/struct box with zero compensating
+                                // owner. Each side's later independent drop then
+                                // freed it once -> `KRYOS-FREE-DIAG: double
+                                // free` the moment both the source and the
+                                // rebuilt struct outlive the loop iteration.
+                                // kryos_struct_retain (a cheap owner-count bump,
+                                // not a deep copy) matches the existing
+                                // convention this same construction path already
+                                // uses for an Array-of-Struct/Enum ELEMENT a few
+                                // lines above (elem_kind=4) -- Struct/Enum boxes
+                                // are refcounted shared handles by design
+                                // (CLAUDE.md gotcha #23), not values needing a
+                                // full clone.
+                                Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => {
+                                    let retain_ref = ensure_func_ref_with_args(
+                                        "kryos_struct_retain",
+                                        builder,
+                                        translator,
+                                        module,
+                                        1,
+                                    )?;
+                                    let c = builder.ins().call(retain_ref, &[val]);
                                     builder.inst_results(c)[0]
                                 }
                                 _ => val,

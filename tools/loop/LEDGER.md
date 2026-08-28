@@ -2119,6 +2119,157 @@ untouched by this session.
 
 ---
 
+## Wave: enum-in-struct array rebuild -- masked double frees (KRYOS-FREE-DIAG), Cranelift/JIT only -- FIXED (2026-08-27)
+
+MEMORY CORRUPTION, Cranelift/JIT-only, backend-divergent (AOT was never
+affected). Confirmed live before touching anything, on the unmodified HEAD
+binary:
+
+    kryos run tests/known_failures/rt3_fmt_audit_crash/enum_struct_array_rebuild_double_free.kry
+    -> correct stdout ("rebuilt 3 tasks" / "#1 HIGH" / "#2 LOW" / "#3 MED"),
+       THEN 3x `KRYOS-FREE-DIAG[n]: kryos_free: double free of 0x...
+       (already-freed box); ignored site=-1` -- one per `Task.priority`
+       enum box, exactly matching the wave brief's own numbers.
+
+RECONCILED WITH LEDGER ITEM 44 (per the brief's own instruction, read in
+full before touching code): this is a DISTINCT, unrelated gap, not a shape
+item 44's fix missed. Item 44 fixed `RValue::EnumVariant` construction
+(giving a NEW enum box its own independent Array/Str payload FIELDS) and
+the array-of-Struct/Enum ELEMENT retain path (`elem_kind`). Neither of
+those touches the case here: a STRUCT whose OWN field is Enum- (or
+Struct-) typed, copied field-by-field into a sibling struct or a
+whole-struct clone. Confirmed via `kryos build --emit-mir --backend
+cranelift`: MIR emits an explicit `kryos_string_retain` for the struct's
+`str` field before reuse (`title`) but NOTHING for the `priority` (Enum)
+field read the same way -- the retain-insertion asymmetry is visible
+directly in the MIR dump, not just codegen.
+
+ROOT CAUSE, TWO independent missing-arm gaps in
+`kryos-codegen-cranelift/src/codegen.rs`, both Cranelift-only (confirmed by
+reading the code, not guessed):
+
+1. **`emit_struct_deep_copy_inner`** (the `__kryos_struct_index_clone`
+   helper MIR lowering inserts for `push(dest_arr, struct_index_or_field_
+   read)`, i.e. re-pushing a WHOLE aliased struct, `push(new_tasks, t)`):
+   its per-field match handles `Array`/`Str`/`Map`/nested-`Struct` (the
+   last one recursing into a real deep copy) but had NO `MirType::Enum`
+   arm at all -- fell to `_ => field_val`, a bare pointer share. The
+   deep-copied destination struct's enum field ended up pointing at the
+   EXACT SAME box the source struct's field still held, zero compensating
+   owner.
+2. **`RValue::Struct`'s non-`@copy` field-init match** (a FRESH struct
+   literal copying a field off another value, `Task { priority: t.priority,
+   .. }`): same story -- `Array`/`Str` were handled, `Struct`/`Enum` fell
+   to `_ => val`, a bare pointer share.
+
+Both leave the source struct's field and the newly-built struct's field
+aliased with NO retain, so each side's own later independent drop
+(`emit_drop_for_value`'s `MirType::Enum` arm, which calls `kryos_free` --
+itself refcount-aware via the box header's owner-count word, see
+`kryos_free`/`kryos_struct_retain` in `kryos-rt/src/alloc.rs`, so a real
+retain would have been enough on its own) frees the SAME box twice.
+Confirmed live with `KRYOS_BOX_DIAG=1`: the reported box's "ownership
+history" showed exactly one event, `[0] ALLOC (extra owners now 0)` -- no
+RETAIN ever happened, on either backend-agnostic gap.
+
+AOT (LLVM) was independently confirmed CLEAN on the unmodified pre-fix
+binary (`KRYOS_FREE_DIAG=1 KRYOS_BOX_DIAG=1`, zero diagnostics, correct
+output, both `kryos run` and `kryos build --release` compared) -- LLVM
+materializes an Enum-typed struct field as an inline SSA aggregate value,
+not a heap-pointer alias, the same documented backend divergence CLAUDE.md
+gotcha #23 / LEDGER item 15 already records for reading a struct out of a
+container. No LLVM code was touched.
+
+FIX: added the two missing arms, both in
+`compiler/crates/kryos-codegen-cranelift/src/codegen.rs` only (`git diff
+--stat -- compiler/`: one file, 51 insertions, 0 deletions):
+  - `emit_struct_deep_copy_inner`: `Some(MirType::Enum(inner_name)) =>
+    emit_enum_deep_copy(inner_name, field_val, ..)` -- mirrors the
+    adjacent `MirType::Struct` arm exactly, reusing the already-existing
+    `emit_enum_deep_copy` sibling helper and its cycle guard.
+  - `RValue::Struct`'s non-`@copy` match: `Some(MirType::Struct(_)) |
+    Some(MirType::Enum(_)) => kryos_struct_retain(val)` -- a cheap
+    owner-count bump (not a deep copy), matching the EXISTING convention
+    this same construction path already uses for an Array-of-Struct/Enum
+    ELEMENT a few lines above (`elem_kind=4`) -- Struct/Enum boxes are
+    refcounted shared handles by design (CLAUDE.md gotcha #23), not values
+    needing a full clone.
+
+PROOF BOTH WAYS, live (`git stash` the one file, full `cargo build
+--release` from `compiler/`, re-test, `git stash pop`, rebuild, re-test --
+rule 2 applies, kryos-codegen-cranelift links into kryos-rt/kryos-cli):
+  - fix REVERTED, rebuilt fresh: original repro shows the same 3x
+    `KRYOS-FREE-DIAG` double-free lines; 3 of the 4 new
+    `tests/no_double_free.sh` cases go RED (`enum_field_struct_rebuild`,
+    `enum_field_struct_rebuild_two_fields`,
+    `nested_struct_enum_field_rebuild`).
+  - fix RESTORED, rebuilt fresh: original repro -- zero diagnostic lines
+    (`KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1`), correct stdout, on both `kryos
+    run` and `kryos build --release`; `tests/no_double_free.sh` -- all
+    programs clean.
+
+ADJACENT SHAPES CHECKED (per the wave's own instruction), all clean on
+BOTH backends with the fix, all wired into the gate below:
+  - enum field overwritten in place (`t.priority = Priority::High` in a
+    loop, no rebuild) -- was already fine (a plain `StoreField`, not a
+    construction-site alias); confirmed clean, not gated separately (no
+    repro of a bug, nothing to pin).
+  - struct with TWO enum fields, both copied through the rebuild-literal
+    pattern -- gated (`enum_field_struct_rebuild_two_fields`).
+  - nested struct-with-enum-field inside an array, rebuilt via plain
+    whole-struct push -- gated (`nested_struct_enum_field_rebuild`).
+  - the same rebuild read from inside a `spawn` block -- gated
+    (`enum_field_struct_rebuild_under_spawn`) but honestly disclosed as
+    NOT independently reproducing the bug pre-fix (8/8 clean runs on the
+    reverted binary): spawn's own capture mechanism (a prior, separate
+    fix -- "Cranelift shared one box for a loop-local enum captured by
+    spawn", CLOSED table) already deep-clones the captured array
+    independently at spawn time, and MIR elides `new_tasks`'s own
+    end-of-main drop once it is moved into the spawn capture -- so this
+    shape never exercised two independent drops of the same box either
+    way. Kept in the gate as a non-regression guard, not a proof of this
+    fix; disclosed here rather than silently claimed as a 4th RED-to-GREEN
+    case.
+
+REGRESSION GATE: `tests/no_double_free.sh`, 4 new `no_df` cases (the exact
+original repro plus the 3 reproducing adjacent shapes above). Wired into
+`tools/loop/kryos-loop.sh` tier 1 already (pre-existing `run
+"no_double_free"` line, no wiring change needed).
+
+REPRO FOLDED PER RULE 9: `tests/known_failures/rt3_fmt_audit_crash/
+enum_struct_array_rebuild_double_free.kry` deleted (its shape is now
+inline in `tests/no_double_free.sh`, not left as a standalone fixture --
+note this whole file/directory was never `git`-tracked to begin with, so
+no `git rm` was needed, and it had no row in `tests/known_failures/
+README.md`'s OPEN table or `docs/BUGS.md` -- checked both before deleting,
+per the same precedent the prior wave in this file already established for
+a sibling repro in the same directory). `tests/known_failures/README.md`
+updated with a "FIXED and folded into" paragraph documenting the closure,
+matching that file's own established convention for two prior entries.
+
+GATES: full tier 1 (18 checks) + tier 2 (6 checks) run individually (the
+monolithic `kryos-loop.sh gates 2` wedged under machine contention from an
+unrelated pre-existing runaway `find` process eating CPU since before this
+session started -- killed the stuck background task, verified zero stray
+`kryos.exe`/`cargo.exe` processes, then ran each gate script standalone per
+non-negotiable #11) -- ALL GREEN: `conformance 65/65 PASS`, `no_double_free`
+PASS, `type_soundness`/`inferred_soundness`/`match_exhaustiveness`/
+`concurrency_smoke`/`module_case_gate`/`docs_status_gate`/
+`utf8_invalid_string`/`backend_divergence_pins`/`diagnostics`/
+`assert_shadow`/`parser_nesting`/`fixtures_tracked`/`stdlib_compile`/
+`cli_smoke`/`audit_parse_failure`/`minilisp` (22/22, unaffected --
+item 44's closure is intact)/`authority_surface`/`jit_symbols`/
+`selfhost_regressions` all PASS; tier 2 `wasm_differential`/
+`capability_matrix`/`examples`/`strict_caps`/`examples_e2e`/`ir_signatures`/
+`selfhost_wholeprogram` all PASS. `compiler/self-host/test_bootstrap.sh` run
+ALONE per non-negotiable #6/rule 5 (zero stray `kryos.exe` confirmed first)
+-- **16/16 PASS**.
+
+NOT FIXED / OUT OF SCOPE: none for this wave -- the assigned repro and every
+adjacent shape probed were fixed and gated, both backends confirmed.
+
+---
+
 ## OPEN - ranked
 
 > **READ THIS BEFORE TRUSTING ANY STATUS BELOW.** Run

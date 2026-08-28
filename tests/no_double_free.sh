@@ -199,6 +199,137 @@ fn main() {
     println(to_string(len(a)) + "," + to_string(len(b)))
 }'
 
+# --- enum-typed FIELD of a struct rebuilt across an array-push loop, both
+# via a fresh struct LITERAL copying a field off a shared array-element alias
+# (`Task { priority: t.priority, .. }`) and via a bare re-push of the whole
+# aliased struct (`push(dest, t)`). Cranelift had NO retain/deep-copy arm for
+# a Struct/Enum-typed field in either RValue::Struct's non-@copy field-init
+# match OR emit_struct_deep_copy_inner's (__kryos_struct_index_clone's) field
+# match -- the enum box ended up shared between the source and the rebuilt
+# array with zero compensating owner, freed once by each side's later drop.
+# LEDGER "enum-in-struct array rebuild" wave. AOT was never affected (LLVM
+# materializes an enum field as an inline aggregate, not a heap alias). ---
+no_df enum_field_struct_rebuild \
+'enum Priority { Low  Medium  High }
+fn priority_label(p: Priority) -> str {
+    match p { Priority::Low => "LOW"  Priority::Medium => "MED"  Priority::High => "HIGH" }
+}
+struct Task { id: i64  title: str  done: bool  priority: Priority }
+fn main() {
+    let tasks = [
+        Task { id: 1, title: "a", done: false, priority: Priority::High },
+        Task { id: 2, title: "b", done: false, priority: Priority::Low },
+        Task { id: 3, title: "c", done: false, priority: Priority::Medium },
+    ]
+    let mut new_tasks: [Task] = []
+    let mut i = 0
+    while i < len(tasks) {
+        let t = tasks[i]
+        if t.id == 2 {
+            new_tasks = push(new_tasks, Task { id: t.id, title: t.title, done: true, priority: t.priority })
+        } else {
+            new_tasks = push(new_tasks, t)
+        }
+        i = i + 1
+    }
+    let mut j = 0
+    while j < len(new_tasks) {
+        println(priority_label(new_tasks[j].priority))
+        j = j + 1
+    }
+}'
+
+# --- adjacent shape: TWO enum-typed fields on the same struct, both copied
+# through the same rebuild-literal pattern. ---
+no_df enum_field_struct_rebuild_two_fields \
+'enum Priority { Low  Medium  High }
+enum Status { Open  Closed }
+fn priority_label(p: Priority) -> str {
+    match p { Priority::Low => "LOW"  Priority::Medium => "MED"  Priority::High => "HIGH" }
+}
+fn status_label(s: Status) -> str {
+    match s { Status::Open => "OPEN"  Status::Closed => "CLOSED" }
+}
+struct Task { id: i64  priority: Priority  status: Status }
+fn main() {
+    let tasks = [
+        Task { id: 1, priority: Priority::High, status: Status::Open },
+        Task { id: 2, priority: Priority::Low, status: Status::Closed },
+    ]
+    let mut new_tasks: [Task] = []
+    let mut i = 0
+    while i < len(tasks) {
+        let t = tasks[i]
+        new_tasks = push(new_tasks, Task { id: t.id, priority: t.priority, status: t.status })
+        i = i + 1
+    }
+    let mut j = 0
+    while j < len(new_tasks) {
+        println(priority_label(new_tasks[j].priority) + " " + status_label(new_tasks[j].status))
+        j = j + 1
+    }
+}'
+
+# --- adjacent shape: a STRUCT field (not just Enum) holding an enum, nested
+# two levels deep inside an array-rebuild via plain push (the whole-struct
+# alias path, __kryos_struct_index_clone). ---
+no_df nested_struct_enum_field_rebuild \
+'enum Priority { Low  Medium  High }
+struct Inner { priority: Priority }
+struct Outer { inner: Inner }
+fn priority_label(p: Priority) -> str {
+    match p { Priority::Low => "LOW"  Priority::Medium => "MED"  Priority::High => "HIGH" }
+}
+fn main() {
+    let outers = [
+        Outer { inner: Inner { priority: Priority::High } },
+        Outer { inner: Inner { priority: Priority::Low } },
+    ]
+    let mut rebuilt: [Outer] = []
+    let mut i = 0
+    while i < len(outers) {
+        let o = outers[i]
+        rebuilt = push(rebuilt, o)
+        i = i + 1
+    }
+    let mut j = 0
+    while j < len(rebuilt) {
+        println(priority_label(rebuilt[j].inner.priority))
+        j = j + 1
+    }
+}'
+
+# --- adjacent shape: same rebuild, then the rebuilt array is read from
+# inside a spawned thread -- the enum-field retain must hold across the
+# spawn boundary too, not just the synchronous teardown path. ---
+no_df enum_field_struct_rebuild_under_spawn \
+'enum Priority { Low  Medium  High }
+struct Task { id: i64  priority: Priority }
+fn priority_label(p: Priority) -> str {
+    match p { Priority::Low => "LOW"  Priority::Medium => "MED"  Priority::High => "HIGH" }
+}
+fn main() {
+    let tasks = [
+        Task { id: 1, priority: Priority::High },
+        Task { id: 2, priority: Priority::Low },
+    ]
+    let mut new_tasks: [Task] = []
+    let mut i = 0
+    while i < len(tasks) {
+        let t = tasks[i]
+        new_tasks = push(new_tasks, Task { id: t.id, priority: t.priority })
+        i = i + 1
+    }
+    spawn {
+        let mut j = 0
+        while j < len(new_tasks) {
+            println(priority_label(new_tasks[j].priority))
+            j = j + 1
+        }
+    }
+    sleep(200)
+}'
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else
