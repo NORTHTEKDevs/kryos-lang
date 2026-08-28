@@ -210,12 +210,101 @@ Every feature must be handled in all 10 locations. Missing any one causes a comp
 
 ---
 
+## Documentation examples must compile
+
+Every self-contained ` ```kryos ` code block in `docs/learn/**` (including
+the book at `docs/learn/book/`), `docs/0*.md`, `docs/1[0-9]-*.md`,
+`docs/error-codes.md`, `QUICKSTART.md`, and `CLAUDE.md` is type-checked
+against the compiler as part of CI (`tools/docs-examples/check.py`, the
+`docs-examples` job in `.github/workflows/ci.yml`). This applies whether
+or not your PR is *about* docs -- editing a builtin's signature, a
+capability rule, or a stdlib function that a doc example calls can break
+this gate even if you never touched a `.md` file yourself.
+
+If you touch anything under those globs (or change compiler behavior a
+doc example depends on), build first, then run:
+
+```bash
+python3 tools/docs-examples/check.py
+```
+
+It scans the *whole* repo, not just your file, so confirm your own
+file's blocks show 0 failures in the output rather than only checking the
+overall exit code (other pre-existing failures, if any, aren't yours to
+fix in an unrelated PR). Budget a few minutes -- it compiles every block
+in the corpus, there's no per-file mode.
+
+A block that's illustrative pseudo-code rather than a real program opts
+out with `<!-- docs-example: skip -->` on the line directly above the
+fence; a block demonstrating a deliberate compiler error uses a
+`// ERROR` comment on the offending line, which auto-skips it. Never use
+`skip` to avoid fixing a block that's supposed to compile but doesn't --
+see [`docs/learn/book/STYLE.md`](docs/learn/book/STYLE.md#example-conventions)
+for the full convention (binding for the book; good practice everywhere
+else in `docs/`).
+
+---
+
 ## Code Style
 
 - Rust: standard `rustfmt` formatting (`cargo fmt`)
-- Kryos: `kryos fmt` (the formatter enforces the canonical style)
+- Kryos: `kryos fmt` (the formatter enforces the canonical style -- see
+  [`docs/learn/book/STYLE-GUIDE.md`](docs/learn/book/STYLE-GUIDE.md) for
+  naming conventions, capability-annotation idioms, and stdlib patterns
+  beyond what the formatter itself enforces)
 - No clippy warnings (`cargo clippy -- -D warnings` must be clean)
 - No unused imports, no dead code
+
+---
+
+## CI gates
+
+A PR runs the full `.github/workflows/ci.yml` matrix: Linux/macOS/Windows
+builds, the native test runner (Cranelift JIT *and* LLVM AOT, every
+fixture), the docs-examples gate above, the self-host stage-1 check, and
+a long list of narrowly-scoped regression gates under `compiler/tests/`
+and the repo-root `tests/` directory (capability soundness, security/
+capability-attenuation, UTF-8 handling, IR signature parity, memory-
+plateau, backend parity, wasm smoke, package selftests, and more) --
+each one exists because it caught a real bug once and now guards the
+class of bug, not just the specific instance; their headers in
+`ci.yml` say which bug. This file doesn't duplicate that list --
+`.github/workflows/ci.yml` is the source of truth for exactly what runs
+and why; read it before adding a new gate so you don't recreate one that
+already exists.
+
+Locally, the closest single-command approximation of the mandatory core
+(build + native tests + smoke + docs-examples) is:
+
+```bash
+cd compiler && cargo build --release -j 2 && cargo test --release -j 2 -p kryos-test-runner --test native_runner -p kryos-rt
+cd .. && python3 tools/docs-examples/check.py
+```
+
+Not every gate is practical to run locally before every commit (some need
+`clang`/`wasmtime`/a full ecosystem checkout) -- CI is the authority; run
+what you can locally to catch obvious breaks early, and expect CI to
+catch the rest.
+
+## Known limitations (`tools/loop/LEDGER.md`)
+
+[`tools/loop/LEDGER.md`](tools/loop/LEDGER.md) is this repo's running
+record of found-and-triaged defects: fixed ones (with the commit and the
+evidence that closed them) and OPEN ones (real, disclosed limitations
+that haven't been fixed yet, ranked by how seriously they threaten the
+capability/trust model). Read it before you:
+
+- **Report a bug** -- it may already be a known OPEN item with more
+  context than a fresh issue would capture.
+- **Touch ownership, capabilities, codegen, or the wasm backend** -- the
+  OPEN items in those areas explain the sharp edges you're most likely to
+  collide with.
+- **Fix something ledger-worthy.** If your PR fixes an OPEN item, move it
+  to the CLOSED table in the same commit with the evidence (gate output,
+  repro) that proves it; if your PR finds a NEW real defect you aren't
+  fixing this PR, add it rather than letting it evaporate at the end of
+  your session. "Update this file in the SAME commit as the work" is the
+  file's own standing rule -- anything not written there is lost.
 
 ---
 
@@ -223,8 +312,15 @@ Every feature must be handled in all 10 locations. Missing any one causes a comp
 
 1. Fork the repo and create a branch from `master`
 2. Make your changes -- ensure all tests pass and clippy is clean
-3. Write or update tests for the change
-4. Open a pull request with a clear description of what and why
+3. Write or update tests for the change; if you touched docs (or compiler
+   behavior a doc example relies on), run `tools/docs-examples/check.py`
+4. If your change closes or newly discloses a `tools/loop/LEDGER.md`
+   item, update the ledger in the same PR
+5. Open a pull request with a clear description of what and why
+
+A PR that changes compiler behavior, adds a language feature, or affects
+capability enforcement should expect the full CI matrix above to run
+before merge -- not just the Rust unit tests.
 
 ---
 

@@ -29,6 +29,7 @@ DOC_GLOBS = [
     "docs/learn/book/*.md",
     "docs/0*.md",
     "docs/1[0-9]-*.md",
+    "docs/error-codes.md",
     "QUICKSTART.md",
     "CLAUDE.md",
 ]
