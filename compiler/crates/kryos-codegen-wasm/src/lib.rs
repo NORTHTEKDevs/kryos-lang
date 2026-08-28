@@ -3227,8 +3227,44 @@ impl<'a> FnEmitter<'a> {
                 self.wfunc.instruction(&W::Br(cont));
             }
             Terminator::Return(val) => {
-                if let Some(op) = val {
-                    self.emit_operand(op)?;
+                match val {
+                    Some(op) => {
+                        self.emit_operand(op)?;
+                    }
+                    None => {
+                        // A bare `return` (no value) inside a function whose
+                        // declared return type is NOT void. The dispatch
+                        // relooper emits an `if pc==i {...}` case for EVERY
+                        // block position unconditionally (unlike the
+                        // structured path, which only ever visits blocks
+                        // actually reachable by walking Goto/Branch/Switch
+                        // edges from the entry block) -- so a dead,
+                        // zero-incoming-edge cleanup block MIR sometimes
+                        // appends after a function's real `return` (e.g. a
+                        // trailing "drop locals; return" epilogue emitted
+                        // regardless of whether the body already returned)
+                        // still gets emitted here, and the wasm validator
+                        // statically type-checks EVERY code path regardless
+                        // of dynamic reachability. Without a value, `return`
+                        // leaves 0 items on the stack where the function
+                        // signature demands 1, so validation fails with
+                        // "type mismatch: expected i64 but nothing on
+                        // stack" even though this path can never execute.
+                        // Push a placeholder of the declared return type,
+                        // mirroring the identical fallback `emit_function`
+                        // already uses for a body that falls off the end --
+                        // this block has zero incoming edges so the value is
+                        // never observed at runtime.
+                        if !is_void(&self.func.ret_ty) {
+                            match lower_type(&self.func.ret_ty) {
+                                Ok(ValType::I32) => { self.wfunc.instruction(&W::I32Const(0)); }
+                                Ok(ValType::I64) => { self.wfunc.instruction(&W::I64Const(0)); }
+                                Ok(ValType::F32) => { self.wfunc.instruction(&W::F32Const(0.0)); }
+                                Ok(ValType::F64) => { self.wfunc.instruction(&W::F64Const(0.0)); }
+                                _ => {}
+                            }
+                        }
+                    }
                 }
                 self.wfunc.instruction(&W::Return);
             }

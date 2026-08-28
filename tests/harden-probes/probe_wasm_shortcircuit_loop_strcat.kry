@@ -1,0 +1,46 @@
+// Regression pin (LEDGER, wasm-backend wave): a short-circuit boolean
+// condition (`&&` or `||`) used as an if/else condition INSIDE A LOOP, where
+// BOTH branches reassign a `str`-typed mutable local via concatenation, used
+// to make `kryos build --backend wasm` emit a structurally INVALID wasm
+// module ("type mismatch: expected i64 but nothing on stack"). The compiler's
+// post-codegen `wasmparser` validator caught it and refused to write the
+// file -- a compile-time ICE, not a silent miscompile -- but it blocked
+// examples/showcase/wordscope.kry's wasm leg (its `to_lower_ascii` helper has
+// this exact shape).
+//
+// ROOT CAUSE (not the short-circuit lowering itself): the structured
+// control-flow translator correctly detects this CFG shape is beyond what it
+// can express and falls back to the dispatch relooper (`emit_relooper` in
+// kryos-codegen-wasm). The relooper emits an `if pc==i {...}` case for EVERY
+// block position unconditionally, including a dead, zero-incoming-edge
+// "drop locals; return" epilogue block MIR appends after this function's
+// real `return` -- a block only ever reached in the fallback relooper's
+// blanket emission, never dynamically. `wasmparser` validates every code
+// path statically regardless of reachability, so a bare `return` (no value)
+// inside a non-void function failed type-checking even though the path can
+// never execute. Fixed by pushing a placeholder of the function's declared
+// return type before a valueless `Return` in `emit_relooper_terminator`,
+// mirroring the identical fallback `emit_function` already uses for a body
+// that falls off the end.
+//
+// kryos build --backend wasm + node tools/wasm-host/run.mjs must now produce
+// output byte-identical to native (enforced by wasm_differential_gate.sh,
+// which globs this directory).
+
+fn f(n: i64) -> str {
+    let mut out: str = ""
+    let mut i: i64 = 0
+    while i < n {
+        if i >= 1 && i <= 3 {       // `||` reproduces identically
+            out = out + "Z"
+        } else {
+            out = out + "Y"
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn main() {
+    println(f(5))
+}

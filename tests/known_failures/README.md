@@ -16,9 +16,46 @@ the file here.
 | File | Bug |
 |---|---|
 | `generic_struct_closure_field_passthrough_f64.kry` | A generic struct field typed `fn() -> T` (a closure/fn-value field), returned by a BARE self-field passthrough method (`fn get_closure(self: Holder<T>) -> fn() -> T { return self.f }`), keeps the erased i64-return compiled copy at T=f64: calling the returned closure and formatting with `to_string()` prints the raw i64 bit pattern of the float (`4616752568008179712`) instead of `4.5`. Same class of bug as the CLAUDE.md gotcha #17 fix (`instance_ret_needs_monomorphization` covering Array/Tuple/map bare self-field passthrough) but that fix's type coverage does not extend to a `fn() -> T`-typed field. `T=str` at the identical call shape is unaffected. Reproduces identically on both backends (silent wrong value, not a JIT/AOT divergence). Found during the type-confusion red-team round. |
-| `wasm_narrow_int_no_truncation.kry` | The `--backend wasm` codegen never truncates a narrow integer (`u8`/`i8`/`u16`/`i16`/`u32`/`i32`) to its declared width after arithmetic, on PLAIN LOCALS (not just struct fields) -- `let mut v: u8 = 250  v = v + 10` prints `260` on wasm vs. `4` on both native backends (which agree and wrap correctly, per CLAUDE.md gotcha #21). All 5 narrow widths tested diverge from both native backends on every line. `docs/wasm-contract.md` states the wasm backend "never miscompiles silently" and rejects anything outside its subset "at compile time" -- narrow-int arithmetic on locals IS accepted (compiles, runs) so this contradicts that claim; it is a silent wrong-answer miscompile, not a documented gap. Found during the toolchain-realworld red-team round. |
-| `wasm_shortcircuit_loop_strcat.kry` | `kryos build --backend wasm` refuses to write a structurally invalid module ("type mismatch: expected i64 but nothing on stack") for a short-circuit `&&`/`||` if/else condition INSIDE A LOOP where both branches reassign a `mut str` local by concatenation -- e.g. `while i < n { if c >= 65 && c <= 90 { out = out + ... } else { out = out + ... } }`. All three of (short-circuit `&&`/`||`, inside a loop, `mut str` reassigned in both arms) are required; removing any one compiles clean. This is a compile-time ICE correctly caught by the post-codegen validator, not a silent miscompile. Found wiring `examples/showcase/wordscope.kry`'s WASM leg into `tests/run_examples_e2e.sh` -- that file's real `to_lower_ascii` helper has this exact shape and cannot build for wasm as a result. |
 | `test_repl_jit_missing_rt_symbols.kry` | `kryos test` and `kryos repl` both crash the WHOLE PROCESS (Rust panic, rc=101 -- `can't resolve symbol kryos_calloc` from `cranelift-jit`'s own linker) on a plain struct literal, the most basic possible construct. `kryos check`/`kryos run` accept the byte-identical file and run it correctly. Root cause: both commands build an in-process `cranelift_jit::JITBuilder` via `kryos-codegen-cranelift/src/jit.rs`, which hand-registers a partial allowlist of ~120 `kryos_*` runtime symbols and is missing `kryos_calloc` (every struct/array construction lowers to it) -- `kryos run` never hits this because, per CLAUDE.md, it is "AOT + subprocess, not an in-process JIT" and links the full `kryos_rt.lib` static lib. Directly falsifies CLAUDE.md's claim that `kryos test` "Works with stdlib imports" -- `std::json`, `std::csv`, and `std::string::string_builder` all crash the same way (`std::math`, which allocates nothing, does not), and one variant (a file calling `std::json::stringify`) fails with a distinct JIT verifier error instead of a panic, same underlying gap. Because the crash is process-fatal, ONE struct-constructing test in a file loses every other test's result in that run, not just its own. Found during the toolchain-realworld red-team round. |
+
+FIXED and folded into `tests/harden-probes/probe_wasm_shortcircuit_loop_strcat.kry`
+(so `wasm_differential_gate.sh` covers it permanently): `wasm_shortcircuit_loop_strcat.kry`
+(LEDGER, wasm-backend wave, 2026-08-27) -- a short-circuit `&&`/`||` if/else
+condition INSIDE A LOOP where both branches reassign a `mut str` local by
+concatenation made `kryos build --backend wasm` refuse to write a
+structurally invalid module ("type mismatch: expected i64 but nothing on
+stack"), blocking `examples/showcase/wordscope.kry`'s wasm leg. ROOT CAUSE
+was NOT the short-circuit lowering itself: the structured control-flow
+translator correctly detects this CFG shape is beyond what it can express
+and falls back to the dispatch relooper (`emit_relooper` in
+`kryos-codegen-wasm`), which emits an `if pc==i {...}` case for EVERY block
+position unconditionally -- including a dead, zero-incoming-edge "drop
+locals; return" epilogue block MIR appends after this function's real
+`return`, a block only ever reached by the relooper's blanket emission,
+never dynamically. `wasmparser` validates every code path statically
+regardless of reachability, so a bare `return` (no value) inside a non-void
+function failed type-checking even though the path can never execute. Fixed
+by pushing a placeholder of the function's declared return type before a
+valueless `Return` in `emit_relooper_terminator`
+(`compiler/crates/kryos-codegen-wasm/src/lib.rs`), mirroring the identical
+fallback `emit_function` already uses for a body that falls off the end.
+PROVEN BOTH WAYS: reverting the fix and rebuilding reproduces the exact
+original error (`type mismatch: expected i64 but nothing on stack (at
+offset 0x70e)`) on the minimal repro; restoring it, both the repro AND
+`examples/showcase/wordscope.kry` build clean and produce output
+byte-identical to native via `node tools/wasm-host/run.mjs`.
+`wasm_differential_gate.sh`: 65/65 compiled programs agree with native (was
+62/63 before this fix -- the repro moved from a compile-refusal count into
+the compiled-and-agreed count). `tests/run_examples_e2e.sh` layer 1b now
+hard-fails (`fail=1`) on a wordscope wasm build failure instead of treating
+it as a known, disclosed skip.
+
+BONUS (same fix, same session): this also closed the wasm-contract's own
+documented "last remaining gap" -- `tests/harden-probes/probe_23_string_ops.kry`
+(complex control flow / irreducible CFG) hit the identical dispatch-relooper
+`Return(None)` bug and is now correctly accepted and byte-identical to
+native too (confirmed by reverting the fix and reproducing the same error
+class at a different byte offset, 0x92c). See `docs/wasm-contract.md`.
 
 FIXED and folded into `tests/no_double_free.sh` (4 new cases):
 `rt3_fmt_audit_crash/enum_struct_array_rebuild_double_free.kry` (had no row

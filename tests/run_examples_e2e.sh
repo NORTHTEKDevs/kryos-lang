@@ -159,21 +159,13 @@ if [[ -f "$wordscope_src" && -s "$wordscope_native" ]]; then
                 fail=1
             fi
         else
-            # KNOWN, DISCLOSED, NOT-YET-FIXED gap (not a silent omission): a
-            # short-circuit &&/|| condition inside a loop, reassigning a
-            # `mut str` local in both if/else arms (wordscope's
-            # `to_lower_ascii` helper), makes the wasm backend refuse to
-            # write a structurally invalid module -- see
-            # docs/wasm-contract.md and
-            # tests/known_failures/wasm_shortcircuit_loop_strcat.kry for the
-            # isolated minimal repro and tools/loop/LEDGER.md for the OPEN
-            # item. Deliberately non-fatal here (does NOT set fail=1) so this
-            # gate stays a real signal instead of permanently red for a known
-            # compiler limitation this wave did not fix -- re-tighten to a
-            # hard failure once that codegen bug is closed.
-            skipped+=("wordscope[wasm] (KNOWN ICE: short-circuit &&/|| in a loop + mut str reassign -- tests/known_failures/wasm_shortcircuit_loop_strcat.kry)")
-            echo "  SKIP wordscope[wasm]: known, disclosed wasm codegen ICE (not fixed this session)"
-            sed -n '1,3p' "$TMP/wasm_build.log" | sed 's/^/    /'
+            # The short-circuit &&/|| -inside-a-loop ICE that used to block
+            # this build (dispatch-relooper `Return(None)` in a non-void
+            # function -- see tools/loop/LEDGER.md) is fixed; a build failure
+            # here is a real regression, not a known, disclosed gap.
+            echo "  FAIL wordscope[wasm]: build failed"
+            sed -n '1,12p' "$TMP/wasm_build.log" | sed 's/^/    /'
+            fail=1
         fi
     else
         skipped+=("wordscope[wasm] (node not installed)")

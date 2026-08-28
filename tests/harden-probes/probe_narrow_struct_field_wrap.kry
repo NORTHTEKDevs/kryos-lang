@@ -1,0 +1,63 @@
+// Companion to probe_narrow_int_wrap.kry: that probe pinned narrow-int
+// (u8/i8/u16/i16/u32/i32) wrap-on-overflow arithmetic for PLAIN LOCALS on
+// wasm (LEDGER, closed 2026-08-14). This probe covers the sibling shape --
+// a narrow-int STRUCT FIELD mutated via `s.field = expr` -- which was never
+// independently exercised against the wasm backend: the native-only
+// AOT/LLVM struct-field-store bug (tests/conformance/conf_narrow_struct_field_store.kry)
+// doesn't build for wasm at all (it calls `exit()`, an unsupported builtin),
+// so that file has never actually gated this shape on wasm. Verified live
+// (2026-08-27, wasm-backend wave) that the wasm backend already produces the
+// correct wrapped value here, matching both native backends exactly on
+// every field width, self-referencing overflow arithmetic, and a
+// narrow-field-adjacent-to-a-wide-field layout (the exact shape that
+// corrupted a neighbor on the AOT backend before that bug was fixed) --
+// wasm represents every struct field as its own full i64 slot
+// (`kryos_array_get`/`kryos_array_set`), so there is no narrower-than-i64
+// storage to overflow the way LLVM's native struct layout did. Wired here so
+// `wasm_differential_gate.sh` keeps proving it, not just this session's
+// one-off manual check.
+
+struct SingleU8 { v: u8 }
+struct SingleI8 { v: i8 }
+struct SingleI16 { v: i16 }
+struct SingleI32 { v: i32 }
+struct SingleU16 { v: u16 }
+struct SingleU32 { v: u32 }
+struct TwoU8 { x: u8, y: u8 }
+struct NarrowThenWide { x: u8, y: u8, z: i64 }
+
+fn main() {
+    let mut a = SingleU8 { v: 250 }
+    a.v = a.v + 10
+    println(to_string(a.v))
+
+    let mut b = SingleI8 { v: 120 }
+    b.v = b.v + 10
+    println(to_string(b.v))
+
+    let mut c = SingleI16 { v: 32760 }
+    c.v = c.v + 10
+    println(to_string(c.v))
+
+    let mut d = SingleI32 { v: 2147483640 }
+    d.v = d.v + 10
+    println(to_string(d.v))
+
+    let mut e = SingleU16 { v: 65530 }
+    e.v = e.v + 10
+    println(to_string(e.v))
+
+    let mut f = SingleU32 { v: 4294967290 }
+    f.v = f.v + 10
+    println(to_string(f.v))
+
+    let mut h = TwoU8 { x: 1, y: 2 }
+    h.x = 9
+    println(to_string(h.x) + "," + to_string(h.y))
+    h.y = 8
+    println(to_string(h.x) + "," + to_string(h.y))
+
+    let mut k = NarrowThenWide { x: 1, y: 2, z: 999999 }
+    k.y = 42
+    println(to_string(k.x) + "," + to_string(k.y) + "," + to_string(k.z))
+}
