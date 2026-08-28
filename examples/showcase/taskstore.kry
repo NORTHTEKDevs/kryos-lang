@@ -1,0 +1,297 @@
+// taskstore.kry - a small real-world CLI task tracker exercising a broad
+// slice of Kryos: structs, enums, Result/Option, closures/HOFs, string
+// processing, file I/O, capability model, error handling.
+
+use std::string::{string_builder, find, trim, split}
+use std::iter::{filter, map, fold}
+
+enum Priority {
+    Low
+    Medium
+    High
+}
+
+fn priority_label(p: Priority) -> str {
+    match p {
+        Priority::Low => "LOW"
+        Priority::Medium => "MED"
+        Priority::High => "HIGH"
+    }
+}
+
+fn priority_rank(p: Priority) -> i64 {
+    match p {
+        Priority::Low => 0
+        Priority::Medium => 1
+        Priority::High => 2
+    }
+}
+
+struct Task {
+    id: i64
+    title: str
+    done: bool
+    priority: Priority
+}
+
+enum StoreError {
+    NotFound(i64)
+    DuplicateId(i64)
+    EmptyTitle
+}
+
+fn store_error_msg(e: StoreError) -> str {
+    match e {
+        StoreError::NotFound(id) => "task not found: " + to_string(id)
+        StoreError::DuplicateId(id) => "duplicate id: " + to_string(id)
+        StoreError::EmptyTitle => "title cannot be empty"
+    }
+}
+
+struct Store {
+    tasks: [Task]
+    next_id: i64
+}
+
+fn new_store() -> Store {
+    return Store { tasks: [], next_id: 1 }
+}
+
+fn add_task(s: Store, title: str, p: Priority) -> Result<Store, StoreError> {
+    let trimmed = trim(title)
+    if len(trimmed) == 0 {
+        return Result::Err(StoreError::EmptyTitle)
+    }
+    let t = Task { id: s.next_id, title: trimmed, done: false, priority: p }
+    let mut new_tasks = s.tasks
+    new_tasks = push(new_tasks, t)
+    return Result::Ok(Store { tasks: new_tasks, next_id: s.next_id + 1 })
+}
+
+fn find_task(s: Store, id: i64) -> Option<Task> {
+    let mut i = 0
+    while i < len(s.tasks) {
+        if s.tasks[i].id == id {
+            return Option::Some(s.tasks[i])
+        }
+        i = i + 1
+    }
+    return Option::None
+}
+
+fn complete_task(s: Store, id: i64) -> Result<Store, StoreError> {
+    let mut new_tasks: [Task] = []
+    let mut found = false
+    let mut i = 0
+    while i < len(s.tasks) {
+        let t = s.tasks[i]
+        if t.id == id {
+            found = true
+            new_tasks = push(new_tasks, Task { id: t.id, title: t.title, done: true, priority: t.priority })
+        } else {
+            new_tasks = push(new_tasks, t)
+        }
+        i = i + 1
+    }
+    if !found {
+        return Result::Err(StoreError::NotFound(id))
+    }
+    return Result::Ok(Store { tasks: new_tasks, next_id: s.next_id })
+}
+
+fn render_task(t: Task) -> str {
+    let sb = string_builder()
+    sb.append("[")
+    if t.done {
+        sb.append("x")
+    } else {
+        sb.append(" ")
+    }
+    sb.append("] #")
+    sb.append(to_string(t.id))
+    sb.append(" (")
+    sb.append(priority_label(t.priority))
+    sb.append(") ")
+    sb.append(t.title)
+    return sb.build()
+}
+
+fn render_all(s: Store) -> str {
+    let sb = string_builder()
+    let mut i = 0
+    while i < len(s.tasks) {
+        sb.append(render_task(s.tasks[i]))
+        sb.append("\n")
+        i = i + 1
+    }
+    return sb.build()
+}
+
+fn pending_count(s: Store) -> i64 {
+    let pending = filter(s.tasks, |t: Task| !t.done)
+    return len(pending)
+}
+
+fn highest_priority_pending(s: Store) -> Option<Task> {
+    let pending = filter(s.tasks, |t: Task| !t.done)
+    if len(pending) == 0 {
+        return Option::None
+    }
+    let mut best = pending[0]
+    let mut i = 1
+    while i < len(pending) {
+        if priority_rank(pending[i].priority) > priority_rank(best.priority) {
+            best = pending[i]
+        }
+        i = i + 1
+    }
+    return Option::Some(best)
+}
+
+@capabilities(fs:write)
+fn save_store(s: Store, path: str) -> Result<i64, str> {
+    let sb = string_builder()
+    let mut i = 0
+    while i < len(s.tasks) {
+        let t = s.tasks[i]
+        sb.append(to_string(t.id))
+        sb.append("|")
+        sb.append(t.title)
+        sb.append("|")
+        if t.done {
+            sb.append("1")
+        } else {
+            sb.append("0")
+        }
+        sb.append("|")
+        sb.append(to_string(priority_rank(t.priority)))
+        sb.append("\n")
+        i = i + 1
+    }
+    file_write(path, sb.build())
+    return Result::Ok(len(s.tasks))
+}
+
+fn parse_priority(rank: i64) -> Priority {
+    if rank == 2 {
+        return Priority::High
+    }
+    if rank == 1 {
+        return Priority::Medium
+    }
+    return Priority::Low
+}
+
+@capabilities(fs:read)
+fn load_store(path: str) -> Result<Store, str> {
+    let content = file_read(path)
+    let lines = split(content, "\n")
+    let mut tasks: [Task] = []
+    let mut max_id = 0
+    let mut i = 0
+    while i < len(lines) {
+        let line = trim(lines[i])
+        if len(line) > 0 {
+            let parts = split(line, "|")
+            if len(parts) == 4 {
+                let id = parse_int(parts[0])
+                let title = parts[1]
+                let done = parts[2] == "1"
+                let pr = parse_priority(parse_int(parts[3]))
+                tasks = push(tasks, Task { id: id, title: title, done: done, priority: pr })
+                if id > max_id {
+                    max_id = id
+                }
+            }
+        }
+        i = i + 1
+    }
+    return Result::Ok(Store { tasks: tasks, next_id: max_id + 1 })
+}
+
+@capabilities(fs:read, fs:write)
+fn main() {
+    let mut store = new_store()
+
+    let r1 = add_task(store, "write report", Priority::High)
+    match r1 {
+        Result::Ok(s) => { store = s }
+        Result::Err(e) => { println("error: " + store_error_msg(e)) }
+    }
+
+    let r2 = add_task(store, "buy milk", Priority::Low)
+    match r2 {
+        Result::Ok(s) => { store = s }
+        Result::Err(e) => { println("error: " + store_error_msg(e)) }
+    }
+
+    let r3 = add_task(store, "  fix bug  ", Priority::Medium)
+    match r3 {
+        Result::Ok(s) => { store = s }
+        Result::Err(e) => { println("error: " + store_error_msg(e)) }
+    }
+
+    let r_empty = add_task(store, "   ", Priority::Low)
+    match r_empty {
+        Result::Ok(s) => {
+            store = s
+            println("BUG: empty title accepted")
+        }
+        Result::Err(e) => { println("expected error: " + store_error_msg(e)) }
+    }
+
+    println("--- all tasks ---")
+    println(render_all(store))
+
+    let c1 = complete_task(store, 2)
+    match c1 {
+        Result::Ok(s) => { store = s }
+        Result::Err(e) => { println("error: " + store_error_msg(e)) }
+    }
+
+    let c_missing = complete_task(store, 999)
+    match c_missing {
+        Result::Ok(s) => {
+            store = s
+            println("BUG: completed nonexistent task")
+        }
+        Result::Err(e) => { println("expected error: " + store_error_msg(e)) }
+    }
+
+    println("--- after completing #2 ---")
+    println(render_all(store))
+    println("pending count: {pending_count(store)}")
+
+    let hp = highest_priority_pending(store)
+    match hp {
+        Option::Some(t) => { println("highest priority pending: " + render_task(t)) }
+        Option::None => { println("no pending tasks") }
+    }
+
+    let path = "taskstore_data.txt"
+    let saved = save_store(store, path)
+    match saved {
+        Result::Ok(n) => { println("saved {n} tasks") }
+        Result::Err(e) => { println("save error: " + e) }
+    }
+
+    let loaded = load_store(path)
+    match loaded {
+        Result::Ok(s2) => {
+            println("--- reloaded ---")
+            println(render_all(s2))
+            if len(s2.tasks) == len(store.tasks) {
+                println("round-trip OK: {len(s2.tasks)} tasks")
+            } else {
+                println("BUG: round-trip mismatch, expected {len(store.tasks)} got {len(s2.tasks)}")
+            }
+        }
+        Result::Err(e) => { println("load error: " + e) }
+    }
+
+    let f = find_task(store, 1)
+    match f {
+        Option::Some(t) => { println("found #1: " + render_task(t)) }
+        Option::None => { println("BUG: #1 should exist") }
+    }
+}

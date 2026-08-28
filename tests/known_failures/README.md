@@ -136,3 +136,57 @@ happened to close on the loop's own `}`, corrupting the token stream. Fix:
 the interpolation loop now recognizes an `Error`-kind token immediately and
 reports E0009 at that exact byte, with a note pointing at the real cause (a
 bare `{` starts interpolation; escape it `{{`/`\{` for a literal brace).
+
+FIXED (already, by a prior commit) and folded into `tests/run_examples_e2e.sh`
+layer 1 (`DIFFERENTIAL`) as `examples/showcase/taskstore.kry`:
+`rt3_fmt_audit_crash/taskstore_stack_overflow.kry` (2026-08-27 taskstore
+wave; had no row here or in `docs/BUGS.md` to begin with) -- a plain
+real-world CLI task tracker printed correct output through "--- after
+completing #2 ---" and then died with `kryos: stack overflow (unbounded
+recursion?)`, rc=253, on `kryos run` (JIT/Cranelift only). ROOT CAUSE:
+NOT a new bug -- the SAME corruption the "enum-in-struct array rebuild"
+wave above (commit `e4b0d70`) already fixed, just left unverified against
+this specific real-program repro (that wave's own closing note explicitly
+listed `taskstore_stack_overflow.kry` as "left untouched, out of scope").
+`complete_task()`'s rebuild loop (`push(new_tasks, Task { id: t.id, ...,
+priority: t.priority })` / `push(new_tasks, t)`) is exactly the
+enum-typed-struct-field rebuild pattern that wave's two missing-arm gaps
+(`emit_struct_deep_copy_inner`, `RValue::Struct`'s non-`@copy` field
+match) double-freed with zero compensating owner. Confirmed same
+mechanism directly: `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1` on the
+pre-`e4b0d70` binary shows the double-free/use-after-free diagnostics on
+this program too; the STACK OVERFLOW (rather than an immediate crash-at-
+free, as `enum_struct_array_rebuild_double_free.kry` showed) is a
+downstream symptom of the same corrupted allocator state -- taskstore's
+longer run (more tasks, a save/reload round-trip, more struct rebuilds
+after the corrupting double-free) gives the corrupted heap more chances to
+have a freed block's memory reused and handed back into the recursive
+struct/array drop routine, which then recurses on a cycle formed out of
+stale/overlapping freed memory instead of a real self-reference. PROVEN
+BOTH WAYS, live, fresh (`git revert --no-commit e4b0d70`, full `cargo
+build --release` from `compiler/`, rerun, `git revert --abort`, rebuild,
+rerun -- per rule 2/3, this crate links into `kryos_rt`/`kryos-cli`):
+commit reverted -> `kryos run examples/showcase/taskstore.kry` prints
+through "--- after completing #2 ---" then `kryos: stack overflow
+(unbounded recursion?)`, rc=253 (exact match to the wave brief's observed
+output); commit restored -> rc=0, full correct output on `kryos run` AND
+`kryos build --release`, zero `KRYOS_BOX_DIAG`/`KRYOS_FREE_DIAG` lines.
+No code change was needed this session -- only proving the connection and
+closing the loop `e4b0d70`'s own closing note left open. Folded into
+`tests/run_examples_e2e.sh` layer 1's differential (JIT vs AOT,
+byte-identical stdout + rc=0 required) as `taskstore`, the observable the
+bug actually corrupted (a full-program crash), rather than re-adding a
+diagnostic-only `no_double_free.sh` case that would not have caught the
+overflow symptom specifically. The file's one hardcoded path
+(`scratchpad/rt3/taskstore_data.txt`, specific to a prior session's scratch
+directory) was changed to a plain relative `taskstore_data.txt` so the
+program is self-contained and safe to run from any cwd, matching every
+other showcase program's convention. Wiring it into `strict_caps_examples.sh`
+(every showcase program must pass `kryos check --strict-capabilities`) surfaced
+one more real gap while doing so, unrelated to the crash: `save_store`/
+`load_store` called `file_write`/`file_read` with no `@capabilities` of their
+own (fine under the default `inferred` mode, where only `main` needs to
+declare and helpers are inferred, but `strict` requires every function to
+self-declare) -- fixed by adding `@capabilities(fs:write)` /
+`@capabilities(fs:read)` to those two functions, least-privilege per function
+rather than reusing `main`'s combined `fs:read, fs:write`.

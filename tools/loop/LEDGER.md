@@ -2270,6 +2270,144 @@ adjacent shape probed were fixed and gated, both backends confirmed.
 
 ---
 
+## Wave: taskstore.kry -- plain real-world program dies with stack overflow after op #2 -- CLOSED, no new fix required (2026-08-27)
+
+CRASH on a plain real-world program, confirmed live before touching
+anything, on the HEAD binary as first built this session:
+
+    kryos run tests/known_failures/rt3_fmt_audit_crash/taskstore_stack_overflow.kry
+    -> prints "expected error: task not found: 999", "--- after completing #2 ---",
+       then "kryos: stack overflow (unbounded recursion?)", rc=253.
+
+`taskstore.kry` is a small CLI task tracker (structs, enums, Result/Option,
+closures/HOFs, string processing, `std::iter` fold/map/filter) -- this
+wave's brief asked to minimize the repro, root-cause it (drop recursion?
+closure-env cycle? iterator recursion? codegen?), fix at the root, and
+gate it.
+
+**FOUND BEFORE MINIMIZING: the working tree already contained the fix,
+uncommitted-then-committed by a PRIOR, unrelated wave.** `git status`
+showed `MM compiler/crates/kryos-codegen-cranelift/src/codegen.rs` (a
+stray double-modification that net-cancelled to match HEAD exactly --
+cleaned up with `git reset` on that one file, no content change). `git log`
+showed HEAD (`e4b0d70`, "fix(codegen-cranelift): retain/deep-copy
+Struct/Enum-typed struct fields at construction") was this repo's own
+"enum-in-struct array rebuild" wave (LEDGER entry directly above this one),
+committed the same day. Re-running the taskstore repro on the freshly
+built HEAD binary (no code touched yet) came back **clean, rc=0, full
+correct output** -- the crash this wave was assigned to fix did not
+reproduce on the unmodified starting binary at all.
+
+That prior wave's own closing note explicitly flagged this: "the sibling
+unrelated repros in that same directory
+(`enum_struct_array_rebuild_double_free.kry`, `fmt_launders_asi_trap.kry`,
+`taskstore_stack_overflow.kry`) were left untouched, out of scope for this
+wave" -- i.e. that wave fixed a codegen bug using a DIFFERENT, smaller
+repro and never checked whether the fix also closed this ledger item's own
+repro. It does.
+
+ROOT CAUSE, established by proof rather than assumed: `complete_task()`'s
+rebuild loop (`push(new_tasks, Task { id: t.id, title: t.title, done:
+true, priority: t.priority })` and `push(new_tasks, t)`) is exactly the
+enum-typed-struct-field array-rebuild pattern the "enum-in-struct array
+rebuild" wave's two missing-arm gaps double-freed with zero compensating
+owner (`emit_struct_deep_copy_inner` and `RValue::Struct`'s non-`@copy`
+field-init match, both in `kryos-codegen-cranelift/src/codegen.rs`, both
+Cranelift/JIT-only -- AOT/LLVM materializes an enum-typed struct field as
+an inline aggregate, not a heap alias, so it was never affected). The
+STACK OVERFLOW symptom (rather than the immediate
+`KRYOS-FREE-DIAG`/`kryos_free: double free` diagnostic that wave's own
+minimal repro showed) is a downstream consequence of the SAME corruption,
+not a different bug: taskstore runs far longer than that minimal repro
+(4 `add_task` calls, a `complete_task` rebuild, a save-to-disk +
+reload-from-disk round trip, more struct construction after the
+corrupting double-free), giving the corrupted allocator state more chances
+for a freed block's memory to be reused and handed back into the
+recursive struct/array drop routine, which then recurses on a cycle built
+out of stale/overlapping freed memory rather than a genuine
+self-reference -- an unbounded-looking recursion with no real cycle in
+the source, matching the observed "stack overflow (unbounded
+recursion?)" diagnostic exactly.
+
+**PROOF BOTH WAYS, live, fresh** (`git revert --no-commit e4b0d70`, full
+`cargo build --release` from `compiler/` -- rule 2 applies,
+kryos-codegen-cranelift links into `kryos_rt`/`kryos-cli` -- rerun,
+`git revert --abort`, rebuild, rerun; zero stray `kryos.exe` confirmed
+before each run per rule 5):
+  - **commit reverted, rebuilt fresh:** `kryos run
+    examples/showcase/taskstore.kry` prints correct output through
+    "--- after completing #2 ---" then `kryos: stack overflow (unbounded
+    recursion?)`, rc=253 -- an exact match to this wave's brief.
+  - **commit restored, rebuilt fresh:** rc=0 on BOTH `kryos run` (JIT) and
+    `kryos build --release` (AOT), full correct output, byte-identical
+    between backends; `KRYOS_BOX_DIAG=1 KRYOS_FREE_DIAG=1` on the JIT run
+    shows ZERO diagnostic lines (no corruption, not just correct-looking
+    output).
+
+**No new compiler code was written this session** -- the root-cause fix
+already existed at HEAD; this wave's work was minimizing/confirming the
+connection (rule 1: reproduce before theorizing caught the "already fixed"
+state immediately, before any wasted minimization effort), proving it
+both ways against the ACTUAL assigned repro (not just the prior wave's own
+smaller one), and closing the loop that wave's closing note explicitly
+left open.
+
+**GATE, folded per rule 9:** the repro is a full real-world program, and
+the observable it corrupts is a full-program crash (rc, not a diagnostic
+proxy) -- rule 4. Rather than re-adding a `no_double_free.sh` diagnostic
+case (which would guard the double-free but not the overflow symptom this
+wave was actually assigned), the file was copied to
+`examples/showcase/taskstore.kry` (one line changed: its sole hardcoded
+path, `scratchpad/rt3/taskstore_data.txt` -- specific to a prior session's
+scratch directory -- became a plain relative `taskstore_data.txt`, so the
+program is self-contained like every sibling showcase program) and wired
+into `tests/run_examples_e2e.sh` layer 1's `DIFFERENTIAL` array
+(JIT-vs-AOT byte-identical stdout + rc=0 required, the exact assertion
+that would have caught this). Wiring it into `tests/strict_caps_examples.sh`
+(every showcase program must pass `kryos check --strict-capabilities`)
+surfaced one more real, unrelated gap: `save_store`/`load_store` called
+`file_write`/`file_read` with no `@capabilities` of their own -- fine under
+the default `inferred` mode (only `main` need declare, helpers are
+inferred) but rejected under `strict` (every function must self-declare).
+Fixed by adding `@capabilities(fs:write)` / `@capabilities(fs:read)` to
+those two functions respectively, least-privilege per function rather than
+reusing `main`'s combined `fs:read, fs:write`. `tests/known_failures/
+rt3_fmt_audit_crash/taskstore_stack_overflow.kry` deleted (never
+git-tracked, confirmed via `git ls-files` before deleting);
+`tests/known_failures/README.md` updated with a "FIXED (already, by a
+prior commit)" paragraph, same convention the wave above already
+established for two prior entries in this file.
+
+**GATES:** `bash tools/loop/kryos-loop.sh gates 2` (run standalone as a
+background job to avoid the machine's own ambient contention this session --
+an unrelated ~55-process `node.exe` fork storm was already running on this
+box before this session started, confirmed via `tasklist`, same class as
+`feedback_bash_fork_storm`/`feedback_orphan_node_storm` -- not caused by
+this work and not touched, per this ledger's own scope): tier 1 fast
+correctness **21/21 PASS** (`conformance 65/65`, `no_double_free`,
+`type_soundness`, `inferred_soundness`, `match_exhaustiveness`,
+`concurrency_smoke`, `module_case_gate`, `docs_status_gate`,
+`utf8_invalid_string`, `backend_divergence_pins`, `diagnostics`,
+`assert_shadow`, `parser_nesting`, `fixtures_tracked`, `stdlib_compile`,
+`cli_smoke`, `audit_parse_failure`, `minilisp`, `authority_surface`,
+`jit_symbols`, `selfhost_regressions`); tier 2 **7/7, `tier2 GREEN`**
+(`wasm_differential`, `capability_matrix`, `examples`, `strict_caps`,
+`examples_e2e` -- this is the one carrying the new `taskstore` differential
+case -- `ir_signatures`, `selfhost_wholeprogram`). First attempt at this
+run caught the `strict_caps` gap above (`FAIL examples/showcase/
+taskstore.kry`, 101/102) before the `@capabilities` fix; the run pasted
+here is the full green rerun after that fix, not the first attempt.
+`bash compiler/self-host/test_bootstrap.sh` (run alone, zero stray
+`kryos.exe` confirmed via `tasklist` first, per rule 5/6) -- **16/16 PASS**
+(token/lexer/ast/parser/types/mir/lower/optimize/regalloc/x86/codegen/elf/
+coff/linker/runtime/main.kry all OK).
+
+**NOT FIXED / OUT OF SCOPE this session:** none for this wave's assigned
+repro -- it was fully closed. The broader "one bug in eleven dresses"
+capability-escape item and every other OPEN item below remain untouched.
+
+---
+
 ## OPEN - ranked
 
 > **READ THIS BEFORE TRUSTING ANY STATUS BELOW.** Run

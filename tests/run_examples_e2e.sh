@@ -79,7 +79,7 @@ DIFFERENTIAL=(
     bytecode_vm parser markdown stats_pipeline
     budget_analyst kdoc dir_walker cli_tool kvdb ssg
     secret_agent crawl_pool log_analyzer repo_auditor
-    snake_game orbit_sim karc wordscope
+    snake_game orbit_sim karc wordscope taskstore
 )
 # Some showcase programs need CLI args to be deterministic/self-contained --
 # both backends get the IDENTICAL args so the comparison stays apples-to-apples.
