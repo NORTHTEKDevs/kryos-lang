@@ -1,0 +1,27 @@
+// ADVERSARIAL PROBE (infer-wrong lens, extern/FFI, 2026-08-06): CLAUDE.md
+// states the extern capability rule as "requires the capability of the
+// builtin it backs when the name is `kryos_*` ... or `ffi` for any other
+// extern name". That rule is a NAME-PREFIX test, not a "is this actually a
+// recognized runtime builtin" test. What does the checker require for an
+// extern item whose name STARTS WITH `kryos_` but does not match any real
+// builtin in the capability model's name->capability table at all --
+// something the model's own lookup has never heard of? If the lookup
+// defaults an unrecognized-but-`kryos_`-prefixed name to "no capability
+// required" (rather than failing closed to `ffi`/`all`), a program could
+// declare a bogus `kryos_`-prefixed extern name for a *real* gated
+// operation's underlying symbol and call it capability-free. This probe
+// only needs `kryos check` (capability checking happens before codegen) --
+// it doesn't need to actually link, since the checker's verdict is the
+// thing under test, not the linker's.
+extern {
+    fn kryos_this_symbol_does_not_exist_in_any_table(x: i64) -> i64
+}
+
+// UNANNOTATED main -- the strongest test of inferred mode's own promise
+// ("an unannotated main that transitively uses a gated builtin is
+// rejected"). If this compiles clean with no @capabilities at all, the
+// extern-name capability lookup defaulted an unrecognized name to nothing.
+fn main() {
+    let r = kryos_this_symbol_does_not_exist_in_any_table(42)
+    println("UNKNOWN-KRYOS-EXTERN CALL SUCCEEDED, result=" + to_string(r))
+}

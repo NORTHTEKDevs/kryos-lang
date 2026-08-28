@@ -1,0 +1,64 @@
+// SECURITY ATTACK (round-3 assault, strip-the-effect lens, 2026-08-06):
+// a for-loop iteration variable that SHADOWS an outer, already-resolved
+// zero-capability local of the SAME NAME reuses the outer local's STALE
+// `locals["name"]` entry instead of the real per-iteration value, because
+// `build_local_closure_caps_block`'s `Stmt::For` arm only recurses into the
+// loop BODY -- it never registers (or clears) an entry for its own `pattern`
+// binding (checker.rs ~2333-2335). `resolve_closure_caps`'s `Identifier` arm
+// checks `local_caps.get(name)` FIRST (checker.rs:1860) before anything else,
+// so a loop body call `f()` finds the OUTER `f`'s cached `Known(empty)`
+// result, even though the value actually bound to `f` for this iteration is
+// the privileged closure pulled out of the array being iterated. This is
+// DISTINCT from the already-documented for-loop findings (attack_actor_state_
+// forloop_alias.kry: an unresolvable alias defaulting to `empty()` instead of
+// `Unknown->all`) -- here the loop variable IS resolvable, just to the WRONG
+// (stale, unrelated) value via name collision, not to an absent/default one.
+//
+// VERIFIED LIVE this session (compiler/target/release/kryos.exe, HEAD
+// 0d6b426, no compiler changes), all four combinations:
+//   kryos run                            -> rc=0, "SHADOW-LOOPVAR LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a"
+//   kryos run --strict-capabilities      -> rc=0, SAME leak (mode-independent -- current_local_closure_caps
+//                                            is built once per function regardless of enforcement mode)
+//   kryos check                          -> rc=0, NO diagnostic (silently accepted at compile time too)
+//   kryos build --release && run (AOT)   -> rc=0, SAME leak (not JIT-specific -- the checker runs identically
+//                                            pre-codegen for both backends)
+// POSITIVE CONTROL (attack_forloop_shadows_outer_local_control.kry, identical
+// shape MINUS the outer `let f = harmless` shadow): CORRECTLY REJECTED,
+// `error[E0507]: call through a function value requires capabilities [all]
+// not granted to caller`, rc=1 -- proving the checker's for-loop handling is
+// otherwise sound (an unresolvable loop-var direct call DOES fail closed to
+// `all`) and isolating the shadowing/staleness as the exact, necessary
+// mechanism of the bypass, not "for-loop calls are unenforced" in general.
+// Same root cause also reproduces for a MATCH-arm pattern binding, not just
+// a for-loop pattern -- see attack_match_bound_var_shadows_outer_local.kry
+// (also verified live, both modes) -- confirming this is a general property
+// of `build_local_closure_caps_block`'s design (it recurses into every
+// compound statement's BODY but has no arm for ANY of the three
+// pattern-introducing binding forms -- `Stmt::For`'s `pattern`, a `Stmt::Let`
+// with `pattern: Some(..)` [tuple destructuring, untested live this round --
+// name inserted under the empty-string key per the parser, same class of gap
+// by code inspection but not independently executed], and a match `Expr`'s
+// arm patterns), not a for-loop-specific special case.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn harmless() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f = harmless
+    println(f())
+    let fns: [fn() -> str] = [reader]
+    deny!(fs:read) {
+        for f in fns {
+            println("SHADOW-LOOPVAR LEAK: " + f())
+        }
+        sleep(100)
+    }
+}

@@ -1,0 +1,29 @@
+// RED TEAM round 3, deny-narrowing lens (2026-08-06). Nested deny! blocks:
+// deny!(fs:read) { deny!(net) { ... } }. The inner deny!(net) narrows a
+// capability the outer block does not touch. Tests whether the OUTER
+// deny!(fs:read) narrowing is still honored once a SECOND, unrelated
+// deny! is pushed on top of it -- i.e. whether the narrowed-capability set
+// used to check calls inside the innermost block is the INTERSECTION of
+// both denials (correct) or gets reset/only reflects the innermost single
+// deny!'s own denied set (a composition bug that would let fs:read back in
+// merely by wrapping in an unrelated second deny!).
+//
+// ACCEPTANCE: REJECTED (E0503/E0507) under inferred (default) mode -- the
+// call to `reannounce_reader` from inside the doubly-nested block must
+// still fail on fs:read, which the OUTER block denies, regardless of the
+// inner block's own (unrelated) denial.
+
+@capabilities(fs:read)
+fn reannounce_reader(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        deny!(net) {
+            let leaked = reannounce_reader("tests/security/secret_for_closure_launder.txt")
+            println("NESTED-DENY-REANNOUNCE LEAK: " + leaked)
+        }
+    }
+}

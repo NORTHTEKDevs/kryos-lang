@@ -1,0 +1,121 @@
+// ASSAULT round 5, real-program lens (2026-08-06).
+//
+// Same brief as round 4's assault4_real_program_tool_registry.kry: a
+// capability-gated tool registry, an agent holding a secret, third-party
+// plugins dispatched through a CONTAINER, a pool of concurrent workers, and
+// a plugin that MUST be prevented from exfiltrating. Round 4 modeled a
+// plugin as a bare `fn(str) -> str` value (a directly fn-typed parameter --
+// `hot_params` territory, already covered by invariant 2/6). This round
+// deliberately uses the OTHER natural shape a real plugin system reaches
+// for first: a Plugin STRUCT (name + metadata fields alongside the callback,
+// so the registry can log/filter/rate-limit by plugin identity -- the
+// callback is a FIELD, not the whole value) held in an ARRAY, dispatched
+// through both a plain per-plugin call and the stdlib's own generic
+// `for_each` HOF (the idiomatic way to "run every registered plugin").
+//
+// Toolchain: compiler/target/release/kryos.exe, read-only, no rebuild.
+// KRYOS_STDLIB_DIR set per the repo's own operational rule.
+
+use std::iter::{for_each}
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+// ---------------------------------------------------------------------
+// Part 1: the Agent. Holds a secret reader closure with real fs:read
+// authority. Exposes a registry-dispatch method that MUST be plugin-safe.
+// ---------------------------------------------------------------------
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn safe_greeter() -> str {
+    return "hello from a trusted plugin"
+}
+
+// Dispatches ONE plugin's callback -- the shape a real registry uses so it
+// can log/wrap/rate-limit around the call (name, timing, retries) instead
+// of storing bare closures with no metadata.
+fn run_one(p: Plugin) -> str {
+    return p.run()
+}
+
+@capabilities(fs:read)
+actor Agent {
+    secret_reader: fn() -> str
+
+    fn init(self, reader: fn() -> str) {
+        self.secret_reader = reader
+    }
+
+    // A pool of concurrent, TRUSTED background workers -- real work the
+    // agent does on its own account, narrowed to nothing extra since these
+    // workers only touch pure string logic.
+    fn run_trusted_batch(self) {
+        let wg = new_wait_group()
+        wg_add(wg, 3)
+        spawn {
+            println("[worker] " + safe_greeter())
+            wg_done(wg)
+        }
+        spawn {
+            println("[worker] batch-item-2")
+            wg_done(wg)
+        }
+        spawn {
+            println("[worker] batch-item-3")
+            wg_done(wg)
+        }
+        wg_wait(wg)
+    }
+
+    // Runs every registered plugin, deliberately narrowed to bare `all`-free
+    // authority -- a THIRD-PARTY plugin dropped into `registry` must never
+    // be able to reach fs/net/process/ffi, no matter what closure it holds.
+    fn run_registry(self, registry: [Plugin]) {
+        deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) {
+            // Idiomatic dispatch #1: the stdlib's own generic iteration HOF.
+            for_each(registry, |p: Plugin| {
+                let out = p.run()
+                println("[registry:for_each] " + p.name + " -> " + out)
+            })
+            // Idiomatic dispatch #2: per-plugin call through a named helper
+            // (so the host can wrap logging/telemetry around each call).
+            let n = len(registry)
+            let mut i = 0
+            while i < n {
+                let out = run_one(registry[i])
+                println("[registry:run_one] " + registry[i].name + " -> " + out)
+                i = i + 1
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let secret = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let agent = Agent()
+    agent.init(secret)
+
+    agent.run_trusted_batch()
+
+    // The registry holds one honest plugin and one malicious plugin whose
+    // `run` field is literally the agent's own secret-reading closure --
+    // exactly what a supply-chain-compromised or simply buggy third-party
+    // plugin package could end up wired to by a host integration mistake.
+    let registry: [Plugin] = [
+        Plugin { name: "greeter", run: safe_greeter },
+        Plugin { name: "evil-exfil", run: secret },
+    ]
+
+    agent.run_registry(registry)
+
+    sleep(100)
+    println("DONE")
+}

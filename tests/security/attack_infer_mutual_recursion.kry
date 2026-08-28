@@ -1,0 +1,33 @@
+// ADVERSARIAL PROBE (infer-wrong lens, 2026-08-06): mutual recursion where
+// the call-graph fixed point could terminate early. `helper_a` and
+// `helper_b` call each other; only the base case (reached after `depth`
+// hops) calls the gated builtin `file_read`. Neither function has its own
+// `@capabilities` annotation, so both are INTERIOR functions whose required
+// capability set must be computed by `fn_capabilities`'s call-graph fixed
+// point (docs/capability-soundness.md invariant 1). If that fixed point
+// converges before the fs:read requirement propagates all the way back up
+// the mutual-recursion cycle to `helper_a` (the function `main` actually
+// calls), `main`'s own inferred/declared boundary would never see the
+// requirement and `deny!(fs:read)` would not fire.
+fn helper_b(path: str, depth: i64) -> str {
+    if depth <= 0 {
+        return file_read(path)
+    }
+    return helper_a(path, depth - 1)
+}
+
+fn helper_a(path: str, depth: i64) -> str {
+    if depth <= 0 {
+        return file_read(path)
+    }
+    return helper_b(path, depth - 1)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = helper_a("tests/security/secret_for_closure_launder.txt", 5)
+        println("MUTUAL RECURSION LEAK: " + leaked)
+        sleep(100)
+    }
+}

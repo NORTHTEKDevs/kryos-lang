@@ -1,0 +1,26 @@
+// CONTROL for attack_pipe_expr_skips_capability_check.kry
+//
+// Identical program, but the deny!-block call uses ORDINARY call syntax
+// (`zero_cap_tool(reader)`) instead of the pipe form (`reader |>
+// zero_cap_tool`). This is the exact example documented as REJECTED
+// (E0507) in docs/10-capabilities.md's "Closure indirection, including
+// containers, is sound" section. Expected: kryos check REJECTS this with
+// E0507. If this control is NOT rejected, the attack file's divergence is
+// not attributable to pipe syntax and the finding is invalid.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_pipe_expr_secret.txt")
+    deny!(fs:read) {
+        println(zero_cap_tool(reader))
+    }
+}

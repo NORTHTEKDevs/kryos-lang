@@ -1,0 +1,22 @@
+// ADVERSARIAL PROBE (infer-wrong lens, 2026-08-06): a GLOBAL BUILTIN (not a
+// user-defined function) referenced BARE as a first-class fn-value and
+// forwarded through a generic HOF's fn-typed parameter, then invoked at a
+// separate call site. The prior probe in this file's sibling
+// (attack_infer_named_fn_alias_local.kry) confirmed a user-defined function
+// referenced as a value is correctly charged. This probe asks whether the
+// SAME machinery covers a BUILTIN name (`env_get`), which the checker's
+// capability model tracks through a different table (a builtin-name ->
+// required-capability map, not `defined_fns`/`local_caps`) than an ordinary
+// user function declaration.
+fn call_it(f: fn(str) -> str, arg: str) -> str {
+    return f(arg)
+}
+
+@capabilities(process)
+fn main() {
+    deny!(process) {
+        let leaked = call_it(env_get, "PATH")
+        println("BUILTIN-AS-VALUE LEAK: " + leaked)
+        sleep(100)
+    }
+}

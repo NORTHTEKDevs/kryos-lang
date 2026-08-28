@@ -1,0 +1,52 @@
+// Type-confusion red team round 5 attack, uniform-closure-ABI lens.
+// tests/security/attack_closure_array_mixed_capture.kry already probed
+// closures of different CAPTURE shapes sharing one `[fn() -> f64]` array
+// (scalar return) -- ruled clean previously. This variant keeps the same
+// mixed-capture-shape array idea but makes the RETURN type a compound
+// heap-allocated STRUCT (with both an i64 and a str field) instead of a
+// scalar f64, to see whether the uniform closure-call thunk mishandles
+// the return-value marshalling once BOTH capture shape AND return shape
+// vary across array elements sharing one `fn() -> Pair` type.
+
+// RULED OUT, live, both backends, HEAD read-only run (compiler/target/
+// release/kryos.exe, no rebuild). `kryos run` and `kryos build --release`
+// (+ running the binary) produced byte-identical, fully correct output for
+// all 6 array slots (varying both capture shape 0/1/2-captures AND the
+// returned struct's field values) -- no capture/return-shape ABI mixup.
+
+struct Pair { a: i64, b: str }
+
+fn make_zero_capture() -> fn() -> Pair {
+    return || Pair { a: 100, b: "zero" }
+}
+
+fn make_i64_capture(n: i64) -> fn() -> Pair {
+    return || Pair { a: n, b: "i64cap" }
+}
+
+fn make_str_capture(label: str) -> fn() -> Pair {
+    return || Pair { a: len(label), b: label }
+}
+
+fn make_two_capture(n: i64, label: str) -> fn() -> Pair {
+    return || Pair { a: n + len(label), b: label + "!" }
+}
+
+@capabilities(all)
+fn main() {
+    let mut fns: [fn() -> Pair] = []
+    fns = push(fns, make_zero_capture())
+    fns = push(fns, make_i64_capture(42))
+    fns = push(fns, make_str_capture("hello"))
+    fns = push(fns, make_two_capture(7, "world"))
+    fns = push(fns, make_i64_capture(-999))
+    fns = push(fns, make_zero_capture())
+
+    let mut i: i64 = 0
+    while i < len(fns) {
+        let f = fns[i]
+        let p = f()
+        println("fns[" + to_string(i) + "] a=" + to_string(p.a) + " b=" + p.b)
+        i = i + 1
+    }
+}

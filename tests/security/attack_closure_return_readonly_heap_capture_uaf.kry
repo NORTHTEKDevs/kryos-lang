@@ -1,0 +1,58 @@
+// RED TEAM round 5 (memory-unsafety lens): a closure that READ-ONLY-captures a
+// HEAP-typed value (str) and is returned DIRECTLY as the function's return
+// value (never explicitly stored into a struct field/array element inside
+// the defining function -- gotcha #11 only documents the snapshot-at-store-
+// time guarantee for THAT shape). If a read-only capture is genuinely "by
+// reference" to the defining frame's local slot, and returning the closure
+// itself does not trigger a retain/snapshot, the captured str could be a
+// dangling reference to a torn-down stack frame once the caller does enough
+// unrelated heap churn between construction and invocation.
+//
+// Methodology: build many closures (heap capture depends on a fresh value
+// per iteration, per non-negotiable #7), STORE them for later (so the
+// defining frame is long gone), do a large burst of unrelated heap
+// allocation to encourage reuse of any freed memory, THEN invoke every
+// closure and check the exact captured string against what it should be.
+// A mismatch or crash is corruption, not merely a leak.
+
+fn make_greeter(tag: str, n: i64) -> fn() -> str {
+    // heap local, built fresh from a heap param -- both are read-only from
+    // the closure's perspective (never mutated inside the lambda)
+    let greeting: str = "hello-" + tag + "-" + to_string(n) + "-end"
+    return || greeting
+}
+
+fn main() {
+    let mut i = 0
+    let mut results: [fn() -> str] = []
+    let total = 6000
+    while i < total {
+        let g = make_greeter("user", i)
+        results = push(results, g)
+        i = i + 1
+    }
+
+    // heavy unrelated heap churn between construction and invocation
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 300000 {
+        junk = push(junk, "junk-" + to_string(j) + "-filler-filler-filler")
+        j = j + 1
+    }
+    let junk_len = len(junk)
+
+    let mut bad = 0
+    let mut k = 0
+    while k < len(results) {
+        let v = results[k]()
+        let expected = "hello-user-" + to_string(k) + "-end"
+        if v != expected {
+            bad = bad + 1
+            if bad < 8 {
+                println("MISMATCH at k=" + to_string(k) + " got=" + v + " expected=" + expected)
+            }
+        }
+        k = k + 1
+    }
+    println("bad=" + to_string(bad) + " total=" + to_string(total) + " junk_len=" + to_string(junk_len))
+}

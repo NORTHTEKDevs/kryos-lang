@@ -1,0 +1,24 @@
+// ASSAULT round 4 minimal repro: the "sandbox untrusted code with deny!()"
+// idiom is unwritable for ANY dynamically-supplied fn-value, even one that
+// is trivially, syntactically, provably capability-free at every call site
+// that will ever exist in this file.
+//
+// EXPECTED if the model were usable: this should compile and run, printing
+// the closure's result, because `pure` is a zero-capability literal and
+// `sandbox_call`'s only caller passes exactly that.
+//
+// OBSERVED (see below): rejected unconditionally, INSIDE sandbox_call's own
+// declaration, before any caller is even considered.
+
+fn sandbox_call(f: fn() -> str) -> str {
+    deny!(fs:read) {
+        return f()
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let pure = || "safe, capability-free result"
+    let out = sandbox_call(pure)
+    println(out)
+}

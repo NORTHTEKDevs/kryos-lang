@@ -1,0 +1,35 @@
+// ATTACK: pipe-expr-skips-cap-check
+//
+// `a |> f` is documented (docs/03-functions.md) to be exactly equivalent to
+// `f(a)`. The capability checker's `Expr::PipeExpr` arm in
+// `kryos-capabilities/src/checker.rs` (check_expr, ~line 4758) only
+// RECURSES into `left` and `right` as independent value expressions -- it
+// never calls `check_callee_capabilities`/`enforce_callee_name`/
+// `compute_hot_extra_caps`, the machinery that makes the equivalent CALL
+// form (`f(a)`) require the closure's authority at the call site (see
+// docs/10-capabilities.md "Closure indirection, including containers, is
+// sound").
+//
+// This is the exact documented-sound example from docs/10-capabilities.md,
+// rewritten with `|>` instead of a direct call. The direct-call form is
+// REJECTED (E0507) inside deny!(fs:read). This piped form is expected to
+// compile clean and leak the secret at runtime, from inside the denied
+// scope, main already legitimately holding fs:read.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Zero capabilities declared -- correctly, same as std::iter::map/filter.
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_pipe_expr_secret.txt")
+    deny!(fs:read) {
+        println(reader |> zero_cap_tool)
+    }
+}

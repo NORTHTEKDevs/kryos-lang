@@ -1,0 +1,28 @@
+// RED TEAM round 2, type-confusion lens.
+// Hypothesis: a generic free function that matches on Option<T> and returns
+// the bound payload `v` (type T, unresolved inside the single generic check
+// pass) may not carry the real per-instantiation type the way a directly
+// typed match does (gotcha #13), and may not get the same
+// active_generic_bindings substitution the curried-closure-return fix
+// (gotcha #22 "curried generic closure return") applies to explicitly
+// annotated lambda params. If unresolved, f64/str instantiations render as
+// raw i64 bit patterns / pointers instead of their logical value.
+use std::option::{Option, Some, None}
+
+fn unwrap_or_default<T>(o: Option<T>, default: T) -> T {
+    match o {
+        Some(v) => return v,
+        None() => return default,
+    }
+}
+
+fn main() {
+    let a: f64 = unwrap_or_default(Some(3.14), 0.0)
+    let b: str = unwrap_or_default(None(), "fallback")
+    let c: f64 = unwrap_or_default(None(), 2.5)
+    let d: str = unwrap_or_default(Some("present"), "unused")
+    println("a=" + to_string(a))
+    println("b=" + b)
+    println("c=" + to_string(c))
+    println("d=" + d)
+}

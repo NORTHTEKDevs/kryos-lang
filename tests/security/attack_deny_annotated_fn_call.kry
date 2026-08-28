@@ -1,0 +1,30 @@
+// RED TEAM round 3, deny-narrowing lens (2026-08-06). Tests whether an
+// ordinary, EXPLICITLY-`@capabilities`-ANNOTATED function -- itself a
+// declared "boundary" per docs/capability-soundness.md S1.2 -- can be
+// called as a PLAIN NAMED CALL from inside a `deny!(fs:read)` block without
+// the CALL SITE itself being charged fs:read. Invariant 1 says a direct
+// call to a named, statically-resolved function requires exactly that
+// callee's own capability, CHARGED TO THE CALLING SCOPE -- so calling an
+// annotated fn from inside deny!(fs:read) should be charged against the
+// narrowed scope the same way a bare `file_read()` call would be. This is
+// NOT a closure-laundering, actor, generic, or alias shape -- it's the
+// most basic possible interior-annotated-function call, checking whether
+// deny! narrowing is honored for THIS shape at all before assuming it is.
+//
+// ACCEPTANCE: REJECTED (E0503/E0507) under inferred (default) mode -- the
+// call to `reannounce_reader` from inside deny!(fs:read) must fail because
+// the narrowed scope lacks fs:read, regardless of what `reannounce_reader`
+// itself declares.
+
+@capabilities(fs:read)
+fn reannounce_reader(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = reannounce_reader("tests/security/secret_for_closure_launder.txt")
+        println("ANNOTATED-FN-CALL-DENY LEAK: " + leaked)
+    }
+}

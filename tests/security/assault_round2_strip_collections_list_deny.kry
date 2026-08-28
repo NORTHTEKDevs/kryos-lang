@@ -1,0 +1,24 @@
+// ASSAULT round 2 (strip-the-row lens): a privileged closure pushed into a
+// std::collections::List<fn() -> str> (a real stdlib generic wrapper struct,
+// not a raw array), retrieved via `.get(0)`, invoked inside deny!(fs:read).
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+use std::collections::{List}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut ls: List<fn() -> str> = List.new()
+    ls = ls.push(reader)
+    deny!(fs:read) {
+        let picked = ls.get(0)
+        let leaked = picked()
+        println("COLLECTIONS-LIST LEAK: " + leaked)
+    }
+}

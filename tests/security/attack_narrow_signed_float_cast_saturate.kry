@@ -1,0 +1,73 @@
+// Type-confusion red team round 5 attack, numeric-boundaries lens.
+//
+// CLAUDE.md gotcha #18 states: "out-of-range float->int casts SATURATE
+// (no UB) on both backends" -- verified/documented for i64/u64
+// (tests/security/attack_u64_boundary_tostring.kry, examples/wasm_float_cast_saturate.kry).
+// Hypothesis: the native `as` lowering for a NARROW SIGNED integer type
+// (i8/i16/i32) might implement "f64 -> narrow" as a two-step pipeline
+// (f64 -> i64 saturate, then i64 -> narrow TRUNCATE), rather than
+// saturating directly to the narrow type's own range. For an UNSIGNED
+// narrow type or i64/u64 themselves this coincidentally produces the
+// right bit pattern (i64::MAX/MIN's low bits already equal the unsigned
+// narrow bounds), which is why the prior boundary tests never caught it.
+// For a SIGNED narrow type it does not coincide: i64::MAX's low byte is
+// 0xFF (== -1 as i8, not +127); i64::MIN's low byte is 0x00 (== 0 as i8,
+// not -128). A moderate in-i64-range but out-of-narrow-range value
+// (e.g. 300.0 as i8) does not even need extreme magnitude to expose it.
+//
+// Correct saturating semantics: any value >= the type's max saturates to
+// max; any value <= the type's min saturates to min. Every printed value
+// below MUST fall within the type's own range if saturation is real.
+//
+// RULED OUT, live, both backends, HEAD read-only run (compiler/target/
+// release/kryos.exe, no rebuild). `kryos run`: every value saturates
+// correctly to its narrow type's own range (127/-128, 32767/-32768,
+// 2147483647/-2147483648), control case 42 unaffected. `kryos build
+// --release` + running the produced binary: byte-identical output, rc=0
+// both times. The two-step-truncation hypothesis (f64->i64 saturate then
+// i64->narrow truncate) does not hold; narrow signed float->int casts
+// saturate to their own declared range directly on both backends.
+
+@capabilities(all)
+fn main() {
+    // i8: range [-128, 127]
+    let a1: f64 = 300.0
+    let r1: i8 = a1 as i8
+    println("300.0_as_i8=" + to_string(r1) + " (want 127, in-range [-128,127])")
+
+    let a2: f64 = -300.0
+    let r2: i8 = a2 as i8
+    println("neg300.0_as_i8=" + to_string(r2) + " (want -128, in-range [-128,127])")
+
+    let a3: f64 = 1.0e300
+    let r3: i8 = a3 as i8
+    println("1e300_as_i8=" + to_string(r3) + " (want 127, in-range [-128,127])")
+
+    let a4: f64 = -1.0e300
+    let r4: i8 = a4 as i8
+    println("neg1e300_as_i8=" + to_string(r4) + " (want -128, in-range [-128,127])")
+
+    // i16: range [-32768, 32767]
+    let b1: f64 = 100000.0
+    let r5: i16 = b1 as i16
+    println("100000.0_as_i16=" + to_string(r5) + " (want 32767, in-range [-32768,32767])")
+
+    let b2: f64 = -100000.0
+    let r6: i16 = b2 as i16
+    println("neg100000.0_as_i16=" + to_string(r6) + " (want -32768, in-range [-32768,32767])")
+
+    // i32: range [-2147483648, 2147483647]
+    let c1: f64 = 9.0e18
+    let r7: i32 = c1 as i32
+    println("9e18_as_i32=" + to_string(r7) + " (want 2147483647, in-range i32)")
+
+    let c2: f64 = -9.0e18
+    let r8: i32 = c2 as i32
+    println("neg9e18_as_i32=" + to_string(r8) + " (want -2147483648, in-range i32)")
+
+    // control: in-range values must still cast exactly (sanity check the
+    // harness itself isn't broken)
+    let d1: f64 = 42.0
+    let r9: i8 = d1 as i8
+    println("42.0_as_i8_control=" + to_string(r9) + " (want 42)")
+}

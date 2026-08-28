@@ -1,0 +1,20 @@
+// CONTROL for attack_coop_throw_silent_swallow_hang.kry: identical shape,
+// but the coop task never throws, so both sends land and both recv() calls
+// return promptly. Proves the hang in the attack file is caused by the
+// swallowed coop-task throw, not by the chan()/coop_spawn machinery itself.
+fn worker(ch: i64, idx: i64) {
+    send(ch, idx)
+}
+
+fn main() {
+    let ch = chan()
+    coop_spawn(worker(ch, 0))
+    coop_spawn(worker(ch, 1))
+    coop_run()
+    println("coop_run returned")
+    let a = recv(ch)
+    println("got a=" + to_string(a))
+    let b = recv(ch)
+    println("got b=" + to_string(b))
+    println("control finished cleanly")
+}

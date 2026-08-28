@@ -1,0 +1,16 @@
+// ASSAULT round 2 (strip-the-row lens): a privileged closure stored in a
+// MODULE-LEVEL global `let` (not a local, not a param), invoked from inside
+// main's deny!(fs:read). Tests whether the global-binding route around the
+// per-function scope/param tracking machinery is charged at all.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+let global_reader: fn() -> str = || file_read("tests/security/secret_for_closure_launder.txt")
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = global_reader()
+        println("MODULE-GLOBAL LEAK: " + leaked)
+    }
+}

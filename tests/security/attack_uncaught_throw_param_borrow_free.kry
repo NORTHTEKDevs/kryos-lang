@@ -1,0 +1,42 @@
+// RED TEAM round 2 (memory-unsafety lens): corruption sibling of the
+// caught-try/match-arm leak in tests/mem/throw_unwind_leak.kry.
+//
+// Hypothesis: on an UNCAUGHT throw, exception unwind runs
+// emit_exception_cleanup_drops at the function's exception-return exit
+// (per LEDGER item 21's root-cause note on lower.rs / codegen.rs). If that
+// cleanup routine frees a STR/ARRAY/MAP PARAMETER local (a BORROW per
+// CLAUDE.md -- "Parameters are BORROWS -- the caller owns and frees a
+// str/[T]/map argument; the callee just reads it") instead of skipping
+// borrowed params, the caller's own copy is freed a second time (by the
+// callee's unwind cleanup, and again by the caller's own normal scope-end
+// drop) -- a genuine double-free / use-after-free, not a leak.
+//
+// Single-shot canary version: read the "secret" back after the catch and
+// compare byte-for-byte. A freed-and-reused buffer would show corruption
+// (wrong bytes) or crash; an intact buffer proves no premature free here.
+
+fn boom() {
+    throw "boom"
+}
+
+fn consume_and_throw(s: str) {
+    let dup: str = s
+    boom()
+    println("UNREACHABLE: " + dup)
+}
+
+@capabilities(process)
+fn main() {
+    let secret: str = "UAF-CANARY-0123456789-ABCDEFGHIJ"
+    try {
+        consume_and_throw(secret)
+    } catch e {
+        println("caught: " + e)
+    }
+    println("after: " + secret)
+    if secret == "UAF-CANARY-0123456789-ABCDEFGHIJ" {
+        println("RESULT: INTACT")
+    } else {
+        println("RESULT: CORRUPT len=" + to_string(len(secret)))
+    }
+}

@@ -1,0 +1,49 @@
+// SECURITY RED-TEAM PROBE (assault round 4, 2026-08-06). NEW shape, not
+// previously reported: the for-loop alias gap that defeated the ACTOR-STATE
+// invariant (invariant 24 / attack_actor_state_forloop_alias.kry, CLOSED via
+// the actor-specific `current_actor_state_alias_locals` tracker) is retested
+// here WITHOUT any actor at all -- a PLAIN local struct value wrapped in a
+// single-element array literal and consumed by `for x in [b] { x.f() }`
+// inside an ordinary function.
+//
+// Rationale: per docs/capability-roadmap.md and tools/loop/LEDGER.md, the
+// general (non-actor) container-literal tracker `build_local_container_lits_
+// block` has the SAME documented "Stmt::For only recurses into the loop
+// body, never records the loop variable itself" shape as its actor-specific
+// sibling `build_actor_state_alias_locals_block` (both cited as structurally
+// identical, checker.rs ~2690-2692 vs ~2775-2777). Invariant 24's fix closed
+// ONLY the actor-state alias tracker; it did not touch the general container
+// tracker `resolve_method_field_invoke_caps` consults for a plain local. If
+// that general path shares the same gap, a for-loop-bound alias of an
+// ordinary (non-actor, non-parameter) struct should defeat it exactly like
+// the actor case did, with zero actor/spawn/deny-scope machinery involved.
+//
+// ACCEPTANCE: REJECTED (E0507, "requires capabilities [all]" or similar)
+// under `deny!(fs:read)`, both `inferred` (default `kryos run`) and
+// `--strict-capabilities`, matching every other closed shape in this suite.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+fn invoke_via_forloop(b: Box) -> str {
+    let mut out: str = ""
+    for x in [b] {
+        out = x.f()
+    }
+    return out
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = invoke_via_forloop(b)
+        println("PLAIN-FORLOOP-ALIAS LEAK: " + leaked)
+        sleep(100)
+    }
+}

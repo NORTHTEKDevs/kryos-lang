@@ -1,0 +1,77 @@
+// ATTACK (red team round 5, concurrency lens): does the codegen-inserted
+// mutating-closure serialization lock (LEDGER item 7b / 11(a),
+// kryos_closure_lock_acquire/kryos_mutex_lock in
+// kryos-stdlib-native/src/sync_prims.rs) interact safely with the
+// COOPERATIVE async executor (kryos-rt/src/executor.rs), or does holding
+// that lock across a coop-yield point permanently wedge BOTH the real
+// atomic mutex AND the executor's single-active-task baton?
+//
+// The closure thunk is: kryos_closure_lock_acquire(lock) -> call underlying
+// fn body -> store-back -> kryos_closure_lock_release(lock). If the
+// underlying body calls a blocking op that yields the coop baton
+// (`sleep_ms`, `await`, `http_get`, ... -- docs/09-concurrency.md: "A
+// blocking I/O op ... called inside an async task yields the scheduler for
+// the duration of the syscall") WHILE the lock is held, task A's OS thread
+// physically sleeps but the lock (both the thread-local reentrancy marker
+// AND the real AtomicBool in sync_prims.rs) stays held the whole time.
+//
+// The executor hands the baton to the next ready task (task B). If task B
+// then calls the SAME shared closure, `kryos_closure_lock_acquire` sees a
+// DIFFERENT thread (not self-reentrancy, so no panic) and falls through to
+// the real `kryos_mutex_lock` CAS spin -- which is a bare
+// spin-then-yield_now() loop that only yields the OS SCHEDULER, never the
+// COOP BATON (it has no idea a cooperative executor exists). Task B is
+// therefore stuck spinning forever on its own OS thread while, from the
+// coop scheduler's point of view, task B still "holds the baton" (it never
+// calls kryos_coop_yield or returns). Task A, meanwhile, is parked waiting
+// for the baton to come back after its sleep -- which the scheduler can
+// never grant, because task B never releases it. Neither task can ever
+// finish: task A cannot resume to unlock the real mutex, task B cannot ever
+// win the CAS because task A never gets to run again to release it. This is
+// a genuine permanent hang/livelock (task B spins at ~100% of one core
+// forever; the process never exits) with ZERO throw/panic/reentrancy
+// involved -- just two ordinary async tasks sharing one stateful closure,
+// the documented, encouraged idiom ("Sharing is now safe" in
+// docs/09-concurrency.md, which only demonstrates OS-thread `spawn`
+// contention, never coop-task contention).
+//
+// Control: `attack_closure_lock_coop_yield_deadlock_control.kry` runs the
+// identical program but with the `sleep_ms` call REMOVED from the closure
+// body (no yield point while the lock is held) -- if the control finishes
+// fast and this one hangs, the yield-while-locked interaction is the cause,
+// not coop_spawn/shared-closure contention in general.
+//
+// CONFIRMED (both backends, isolated from machine contention by re-running
+// after killing stray kryos.exe and comparing against the control at the
+// same time): this file HANGS PERMANENTLY. `kryos run` (Cranelift JIT):
+// 5/5 runs each printed "about to coop_run" then never returned, still
+// alive and unresponsive past 25s per run (`timeout 25` rc=124 every time);
+// the sibling control ran 5/5 to completion in ~4s each with deterministic
+// output `order: A=1 B=3`. `kryos build --release` (LLVM AOT): the built
+// binary reproduced the same hang (rc=124 at 25s) while the AOT-built
+// control completed normally (`order: A=1 B=3`, rc=0). A `Get-Process`
+// check on one hung JIT run showed ~0.125s of CPU time consumed across
+// 70+ seconds of wall time -- the process is genuinely PARKED (a lost
+// baton / condvar deadlock), not a hot CAS spin, so this is a true
+// permanent hang, not a livelock burning a core.
+fn caller(f: fn(i64) -> i64, n: i64, tag: str) -> i64 {
+    let r = f(n)
+    coop_record(tag + "=" + to_string(r))
+    return r
+}
+
+fn main() {
+    let mut counter: i64 = 0
+    let bump = |n: i64| {
+        counter = counter + n
+        sleep_ms(80)
+        counter
+    }
+    coop_reset()
+    coop_spawn(caller(bump, 1, "A"))
+    coop_spawn(caller(bump, 2, "B"))
+    println("about to coop_run -- if the closure lock deadlocks the coop baton, this HANGS FOREVER")
+    coop_run()
+    println("coop_run returned, counter=" + to_string(counter))
+    println("order: " + coop_order())
+}

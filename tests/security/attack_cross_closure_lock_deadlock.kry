@@ -1,0 +1,63 @@
+// RED TEAM round 1, concurrency lens: cross-closure lock-order-inversion
+// deadlock between TWO DIFFERENT mutating closures.
+//
+// LEDGER item 11(a) (`kryos_closure_lock_acquire` in
+// kryos-stdlib-native/src/sync_prims.rs) only detects a THREAD re-entering
+// the SAME lock address it already holds (a closure reaching itself
+// through its own stored value). The detector is a thread-local
+// HashMap<lock_addr, ()> -- it says nothing about two DIFFERENT lock
+// addresses acquired in opposite orders by two DIFFERENT threads, which is
+// the textbook AB-BA mutex deadlock, and each mutating closure's lock word
+// lives at a fixed offset in ITS OWN env block (a genuinely separate
+// address per closure). This program builds exactly that: closure `a`
+// mutates `a_state` then (after a delay to widen the interleaving window)
+// calls closure `b` through a map cell; closure `b` mutates `b_state` then
+// calls `a` back the same way. One thread is spawned to call `a(1)` first,
+// a second to call `b(1)` first. If thread-1 finishes entering `a`'s lock
+// before attempting `b`'s, and thread-2 finishes entering `b`'s lock before
+// attempting `a`'s (the `sleep_ms` inside each body exists to force this
+// ordering deterministically), thread-1 blocks forever on `b`'s lock while
+// holding `a`'s, and thread-2 blocks forever on `a`'s lock while holding
+// `b`'s: a permanent, unrecoverable hang, with none of item 11(a)'s
+// self-reentry detection able to see it (it is not the same thread
+// re-acquiring the same address).
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+@capabilities(all)
+fn main() {
+    let mut a_state: i64 = 0
+    let mut b_state: i64 = 0
+    let mut cell_a: map<i64, fn(i64) -> i64> = {}
+    let mut cell_b: map<i64, fn(i64) -> i64> = {}
+
+    let a = |n: i64| {
+        a_state = a_state + 1
+        sleep_ms(300)
+        let g = cell_b[0]
+        g(n)
+    }
+    let b = |n: i64| {
+        b_state = b_state + 1
+        sleep_ms(300)
+        let g = cell_a[0]
+        g(n)
+    }
+    cell_a[0] = a
+    cell_b[0] = b
+
+    let mut wg = new_wait_group()
+    wg = wg_add(wg, 2)
+    spawn {
+        let g = cell_a[0]
+        g(1)
+        wg_done(wg)
+    }
+    spawn {
+        let g = cell_b[0]
+        g(1)
+        wg_done(wg)
+    }
+    println("main: waiting on wg (hangs forever if the AB-BA deadlock hypothesis is correct)...")
+    wg_wait(wg)
+    println("main: both cross-closure calls returned (this line should be unreachable if the hang hypothesis is correct)")
+}

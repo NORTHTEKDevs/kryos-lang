@@ -1,0 +1,46 @@
+// Probe: an ACTOR HANDLER (always declaration-enforced per invariant 17,
+// unlike an ordinary inferred function) receiving a map<str, fn()->str>
+// PARAMETER built from a non-literal source elsewhere, then invoking an
+// entry from it -- no deny!, actor declares NOTHING.
+//
+// If invariant 17 (actor = declaration-enforced) and invariant 4/22
+// (non-literal container root -> Unknown -> all, fail-closed) both hold,
+// this must be REJECTED: the actor's own declared set is empty, so it can
+// never satisfy the `all` immediate-charge fallback for an unresolvable
+// container-in-parameter root.
+//
+// If it is ACCEPTED, that is a live capability escape distinct from every
+// previously found shape: a zero-capability actor silently invoking a
+// privileged closure smuggled in through a map parameter.
+
+@capabilities(fs:read)
+fn make_secret_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn pure_tool() -> str {
+    return "pure result"
+}
+
+fn build_registry() -> map<str, fn() -> str> {
+    return {
+        "pure": pure_tool,
+        "secret": make_secret_reader(),
+    }
+}
+
+actor ZeroCapDispatcher {
+    fn run_it(self, reg: map<str, fn() -> str>, name: str) {
+        let f = reg[name]
+        let out = f()
+        println("ACTOR-HANDLER-MAP-PARAM: " + out)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg = build_registry()
+    let d = ZeroCapDispatcher()
+    d.run_it(reg, "secret")
+    sleep(100)
+}

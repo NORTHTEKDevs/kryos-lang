@@ -1,0 +1,40 @@
+// Probe: docs/capability-soundness.md invariant 4 says a container whose
+// ROOT is a non-literal source (e.g. built and RETURNED by another
+// function, like `build_registry()` in the real-program repro) resolves to
+// Unknown -> all. This probes whether that residual is actually live: a
+// registry function returns a map literal containing ONE privileged
+// closure (needs fs:read) alongside pure ones, read back out through a
+// local bound to the function's return value, and invoked with NO deny!
+// narrowing at all.
+//
+// EXPECTED per the documented residual: REJECTED, requiring [all] (the
+// conservative non-literal-container fallback), NOT [fs:read] specifically
+// and NOT accepted silently.
+
+@capabilities(fs:read)
+fn make_secret_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn pure_tool() -> str {
+    return "pure result"
+}
+
+fn build_registry() -> map<str, fn() -> str> {
+    return {
+        "pure": pure_tool,
+        "secret": make_secret_reader(),
+    }
+}
+
+fn dispatch(name: str) -> str {
+    let reg = build_registry()
+    let f = reg[name]
+    return f()
+}
+
+@capabilities()
+fn main() {
+    let out = dispatch("pure")
+    println("PROVENANCE-PROBE: " + out)
+}

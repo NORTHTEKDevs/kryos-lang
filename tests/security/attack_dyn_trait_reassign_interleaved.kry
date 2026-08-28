@@ -1,0 +1,83 @@
+// Type-confusion red team round 5 attack, dyn-thunks lens.
+//
+// CLAUDE.md's documented dyn Trait limitation says a SINGLE dyn Trait
+// value/param/field/return/let-binding "works and dispatches correctly".
+// That claim was presumably verified for a dyn value bound ONCE. This
+// attack re-binds the SAME `let mut` dyn variable to alternating concrete
+// impls (IntBox / FloatBox) and also passes it through a plain function
+// parameter, to see whether the vtable/dispatch thunk is re-resolved on
+// every call or whether it is cached/stale from the first assignment
+// (which would misdirect a later call to the wrong impl body and print
+// the wrong label/amount for the CURRENT concrete value). Also checks a
+// helper function that receives the dyn value as a PARAMETER and calls
+// both methods, across an interleaved sequence of concrete types.
+
+trait Value {
+    fn label(self) -> str
+    fn amount(self) -> f64
+}
+
+struct IntBox { n: i64 }
+impl Value for IntBox {
+    fn label(self) -> str { return "int" }
+    fn amount(self) -> f64 { return (self.n as f64) }
+}
+
+struct FloatBox { x: f64 }
+impl Value for FloatBox {
+    fn label(self) -> str { return "float" }
+    fn amount(self) -> f64 { return self.x }
+}
+
+struct StrBox { s: str }
+impl Value for StrBox {
+    fn label(self) -> str { return "str" }
+    fn amount(self) -> f64 { return len(self.s) as f64 }
+}
+
+// RULED OUT, live, both backends, HEAD read-only run (compiler/target/
+// release/kryos.exe, no rebuild). `kryos run` and `kryos build --release`
+// (+ running the binary) produced byte-identical output: every direct
+// reassignment, every param-passed call, and every interleaved loop
+// iteration dispatched to the correct impl for the CURRENT concrete type
+// (label and amount both correct every time) -- no stale/cached vtable
+// thunk from an earlier assignment observed.
+
+fn report(v: dyn Value) -> str {
+    return v.label() + "=" + to_string(v.amount())
+}
+
+@capabilities(all)
+fn main() {
+    let mut v: dyn Value = IntBox { n: 7 }
+    println("direct1 " + v.label() + "=" + to_string(v.amount()))
+    v = FloatBox { x: 3.25 }
+    println("direct2 " + v.label() + "=" + to_string(v.amount()))
+    v = IntBox { n: 99 }
+    println("direct3 " + v.label() + "=" + to_string(v.amount()))
+    v = StrBox { s: "hello world" }
+    println("direct4 " + v.label() + "=" + to_string(v.amount()))
+    v = FloatBox { x: -12.5 }
+    println("direct5 " + v.label() + "=" + to_string(v.amount()))
+
+    println("param1 " + report(IntBox { n: 5 }))
+    println("param2 " + report(FloatBox { x: 8.5 }))
+    println("param3 " + report(StrBox { s: "abcd" }))
+    println("param4 " + report(IntBox { n: 1000 }))
+    println("param5 " + report(FloatBox { x: 0.125 }))
+
+    // interleave direct-var dispatch and param dispatch on the same
+    // underlying variable to maximize chance of a stale thunk showing up
+    let mut i: i64 = 0
+    while i < 6 {
+        if i % 3 == 0 {
+            v = IntBox { n: i * 10 }
+        } elif i % 3 == 1 {
+            v = FloatBox { x: (i as f64) * 1.5 }
+        } else {
+            v = StrBox { s: "iter" + to_string(i) }
+        }
+        println("loop" + to_string(i) + " direct=" + v.label() + "=" + to_string(v.amount()) + " param=" + report(v))
+        i = i + 1
+    }
+}

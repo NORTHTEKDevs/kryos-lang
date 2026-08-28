@@ -1,0 +1,39 @@
+// ASSAULT round 1, historical-regression lens: "for-loop alias" variant on
+// the closure-launder class (items 30/32 family), applied to a literal
+// ARRAY of fn values rather than a container-read-into-local (already
+// covered by cap_escape_closure_launder_array.kry) or a tuple (item 32).
+// Here the loop-bound variable `f` is a fresh per-iteration binding
+// produced by `for f in fns`, not a `let`-alias of a container read -- a
+// syntactically distinct provenance path from the existing array-launder
+// test. Only one element (the privileged reader) is invoked; the rest are
+// decoys to rule out "whole-array" over-approximation false negatives.
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507) under both
+// `kryos run` (inferred default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn make_safe(tag: str) -> fn() -> str {
+    return || tag
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let decoy1 = make_safe("decoy1")
+    let decoy2 = make_safe("decoy2")
+    let fns = [decoy1, reader, decoy2]
+    deny!(fs:read) {
+        let mut i: i64 = 0
+        for f in fns {
+            if i == 1 {
+                let leaked = f()
+                println("FORLOOP-ARRAY-ELEMENT LEAK: " + leaked)
+            }
+            i = i + 1
+        }
+    }
+}

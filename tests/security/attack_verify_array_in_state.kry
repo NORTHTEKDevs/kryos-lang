@@ -1,0 +1,30 @@
+// ADVERSARIAL: fn value stored inside an ARRAY inside actor state, reached
+// via self.<field>[i]().
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    readers: [fn() -> str]
+
+    fn stash(self, r: fn() -> str) {
+        self.readers = [r]
+    }
+
+    fn invoke(self) {
+        let leaked = self.readers[0]()
+        println("ARRAY-IN-STATE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

@@ -1,0 +1,22 @@
+// CONTROL for assault_round2_strip_reassigned_local_deny.kry: identical
+// shape but WITHOUT the placeholder-then-reassign step -- `slot` is bound
+// DIRECTLY to the privileged reader at declaration. Must still be REJECTED
+// (matches the many other direct-local probes that already reject
+// correctly), proving the escape is specifically about the
+// declare-placeholder-then-reassign shape, not "any local fn-value call
+// inside deny! passes".
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let slot: fn() -> str = reader
+    deny!(fs:read) {
+        let leaked = slot()
+        println("DIRECT-BIND-CONTROL LEAK: " + leaked)
+    }
+}

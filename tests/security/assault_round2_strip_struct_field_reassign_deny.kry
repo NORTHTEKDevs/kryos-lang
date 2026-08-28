@@ -1,0 +1,28 @@
+// ASSAULT round 2 (strip-the-row lens), deeper variant of the reassigned-
+// local escape: a STRUCT FIELD initialized with a harmless placeholder
+// closure, then reassigned (`h.f = reader`) to the privileged reader before
+// being invoked inside deny!(fs:read). Tests whether the same
+// declaration-site-keyed tracking gap applies to a field slot, not just a
+// bare local.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+struct Holder {
+    f: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut h = Holder { f: || "placeholder" }
+    h.f = reader
+    deny!(fs:read) {
+        let leaked = h.f()
+        println("STRUCT-FIELD-REASSIGN LEAK: " + leaked)
+    }
+}

@@ -1,0 +1,26 @@
+// ASSAULT round 1, historical-regression lens: fresh dress on the
+// closure-launder-via-container class (cap_escape_closure_launder_map*),
+// specifically map-insert-by-assignment (`m[k] = v`) rather than a
+// map-literal or a `std::collections` insert call, followed by an
+// IMMEDIATE index-and-call in one expression (`m["k"]()`) with no
+// intervening `let` binding of the read value -- distinct provenance path
+// from the existing container-read-into-local tests.
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507) under both
+// `kryos run` (inferred default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, fn() -> str> = {}
+    m["k"] = reader
+    deny!(fs:read) {
+        let leaked = m["k"]()
+        println("MAP-INSERT-IMMEDIATE-CALL LEAK: " + leaked)
+    }
+}

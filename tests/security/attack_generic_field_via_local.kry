@@ -1,0 +1,31 @@
+// Type-confusion red team round 2 attack: CLAUDE.md gotcha #17 says a BARE
+// self-field-passthrough return (`return self.f`) carries the real
+// per-instantiation type now. This tests the same shape but routed through
+// an intermediate LOCAL variable (`let v: T = self.f  return v`) instead of
+// a bare return, to see if the monomorphization fix is keyed specifically
+// to the bare-return AST shape and misses the local-rebind shape.
+
+struct Holder<T> {
+    f: T
+}
+
+impl<T> Holder<T> {
+    fn get_direct(self: Holder<T>) -> T {
+        return self.f
+    }
+    fn get_via_local(self: Holder<T>) -> T {
+        let v: T = self.f
+        return v
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let h: Holder<f64> = Holder { f: 4.5 }
+    println("direct=" + to_string(h.get_direct()))
+    println("via_local=" + to_string(h.get_via_local()))
+
+    let h2: Holder<f64> = Holder { f: 123.75 }
+    println("direct2=" + to_string(h2.get_direct()))
+    println("via_local2=" + to_string(h2.get_via_local()))
+}

@@ -1,0 +1,35 @@
+// ERGONOMICS + soundness probe: the registry built with the idiomatic
+// std::collections::List<T> wrapper (the stdlib's OWN recommended growable
+// container, per CLAUDE.md gotcha #22: "xs = xs.push(v)") instead of a raw
+// `[T]` array literal -- the container-literal tracker only special-cases
+// the free-function `push(arr, v)` builtin, never a METHOD call like
+// `xs.push(v)`. Real code registering plugins one at a time (a config loop,
+// a plugin-discovery loop) would naturally do this.
+use std::collections::{List}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn safe_plugin() -> str {
+    return "safe-plugin-ran"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let evil_reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut reg: List<Plugin> = List.new()
+    reg = reg.push(Plugin { name: "safe", run: safe_plugin })
+    reg = reg.push(Plugin { name: "evil", run: evil_reader })
+    deny!(fs:read) {
+        let p = reg.get(1)
+        let out = p.run()
+        println("LIST-WRAPPER RESULT: " + out)
+    }
+}

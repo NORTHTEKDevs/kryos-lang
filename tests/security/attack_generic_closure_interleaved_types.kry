@@ -1,0 +1,23 @@
+// RED TEAM round 2, type-confusion lens.
+// Hypothesis: interleaving two different-typed instantiations of the SAME
+// generic function that returns a closure, evaluated within a single
+// expression (not sequential `let`s), may leak monomorphization state
+// (active_generic_bindings / pending_lambda_ret_hint are mutable fields
+// threaded through lowering) between the two instantiations, since the
+// existing regression coverage (conf_generic_closure_return_f64,
+// conf_curried_generic_closure) only exercises ONE instantiation per test
+// body, not two DIFFERENT-typed instantiations interleaved in one statement.
+fn wrap<T>(x: T) -> fn() -> T {
+    return || x
+}
+
+fn main() {
+    let f1 = wrap(3.14)
+    let f2 = wrap("hello")
+    // Interleave calls in one expression, forcing both closures to coexist
+    // and be invoked back-to-back rather than fully sequentially.
+    let combo: str = to_string(f1()) + "|" + f2() + "|" + to_string(wrap(2.71)()) + "|" + wrap("world")()
+    println(combo)
+    println("f1_again=" + to_string(f1()))
+    println("f2_again=" + f2())
+}

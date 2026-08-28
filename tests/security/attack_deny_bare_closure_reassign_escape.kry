@@ -1,0 +1,52 @@
+// RED TEAM round 4, deny-narrowing lens (2026-08-06). Targets
+// `build_local_closure_caps_block` directly (checker.rs ~2219): it matches
+// only `Stmt::Let` (plus If/For/While/TryCatch/bare-block recursion) when
+// building `current_local_closure_caps`, the per-function map the checker
+// uses to resolve what a BARE closure-typed LOCAL requires at a direct
+// invocation (`f()`). There is NO `Stmt::Assign` arm in that function (unlike
+// its sibling `build_local_container_lits`, which explicitly documents and
+// handles reassignment -- see that function's own "MUTATION TRACKING" doc
+// comment). So a bare `let mut` closure local's ORIGINAL (harmless) binding
+// is what gets recorded, and a later REASSIGNMENT to a privileged closure is
+// invisible to the map: the stale `Known(empty)` entry is never invalidated
+// or updated, unlike the container-literal sibling's fail-closed-on-
+// unrecognized-write design.
+//
+// Shape: `f` is let-bound OUTSIDE deny! to a harmless zero-cap closure, then
+// REASSIGNED (bare `f = reader`, not push/insert/field-write) INSIDE
+// `deny!(fs:read)` to the actual privileged closure parameter, then invoked
+// (`f()`) in the same narrowed scope.
+//
+// ACCEPTANCE: should be REJECTED (E0507, deferred-authority) the same way
+// `attack_bare_fn_param_alias_defeats_hotparam.kry` charges a direct alias.
+// If it compiles clean and the secret prints, `current_local_closure_caps`
+// trusts a stale pre-deny snapshot across a `deny!`-narrowed reassignment --
+// a live escape distinct from the closed alias/container/actor-state shapes.
+
+fn harmless() -> str {
+    return "not a secret"
+}
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let mut f: fn() -> str = harmless
+    deny!(fs:read) {
+        f = reader
+        let leaked = f()
+        println("BARE-CLOSURE-REASSIGN-DENY LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

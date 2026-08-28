@@ -1,0 +1,64 @@
+// ATTACK (red team round 4, concurrency lens): does std::chan::ChanWaitGroup
+// (used by the recently-fixed spawn-uncaught-throw-waitgroup-hang repro,
+// tests/security/attack_spawn_uncaught_throw_waitgroup_hang.kry) support
+// MORE THAN ONE concurrent waiter, the way a WaitGroup's contract implies
+// ("block until the counter reaches zero" -- Go's sync.WaitGroup, the
+// obvious mental model, releases every concurrent Wait() caller)?
+//
+// Read (not guessed) compiler/stdlib/chan.kry: `wg_done` signals completion
+// by sending EXACTLY ONE token to `done_ch`, a `buffered(1)` channel, the
+// moment the counter hits zero:
+//     if new_count == 0 { send(wg.done_ch.raw, 1) }
+// `wg_wait` re-checks the counter itself first (`if c <= 0 { return }` --
+// correctly handles a LATE waiter arriving after completion) but a waiter
+// that arrives WHILE the count is still > 0 falls through to
+// `recv(wg.done_ch.raw)` -- an ordinary channel receive that consumes ONE
+// item from the queue. A `chan_send`/`chan_recv` pair is a queue, not a
+// broadcast: `kryos_chan_send` (kryos-rt/src/channel.rs) does
+// `notify_one()` and the item is popped by whichever ONE receiver dequeues
+// it first. If TWO waiters are both blocked in `recv(done_ch)` when the
+// single completion token arrives, only ONE of them can ever dequeue it --
+// the channel has no more data and is never closed, so the other waiter's
+// `recv` blocks FOREVER. This is a different mechanism than every other
+// concurrency finding in this campaign (closure-capture lock reentrancy,
+// spawn+throw+WaitGroup single-waiter hang, actor mailbox, plain channel
+// close/drain ambiguity) -- a genuine multi-waiter fan-out defect in the
+// WaitGroup primitive itself, not a throw/reentry interaction.
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+fn main() {
+    let mut wg = new_wait_group()
+    wg = wg_add(wg, 1)
+    let results = chan()
+
+    // Two independent waiters, started BEFORE the worker signals done, so
+    // both are guaranteed to observe count>0 and block in recv(done_ch),
+    // not take the c<=0 fast path.
+    let wg1 = wg
+    spawn {
+        wg_wait(wg1)
+        send(results, 1)
+    }
+    let wg2 = wg
+    spawn {
+        wg_wait(wg2)
+        send(results, 2)
+    }
+
+    // Give both waiters time to actually reach the blocking recv before the
+    // worker signals completion (otherwise both might race the c<=0 fast
+    // path and this wouldn't test the token-contention shape at all).
+    sleep(300)
+
+    let wg3 = wg
+    spawn {
+        wg_done(wg3)
+    }
+
+    println("main: both waiters spawned and (should be) blocked; worker signaling done in a moment")
+    println("main: collecting waiter completions -- if the second waiter is starved, only ONE 'waiter done' arrives and this hangs forever on the second recv")
+    let a = recv(results)
+    println("main: got first waiter completion, id=" + to_string(a))
+    let b = recv(results)
+    println("main: got SECOND waiter completion, id=" + to_string(b) + " -- UNREACHABLE if the starvation hypothesis holds")
+}

@@ -1,0 +1,66 @@
+// RED TEAM round 6, deny-narrowing lens (2026-08-07). A TWO-HOP indirection
+// through a wrapper lambda that calls a LOCAL (not the enclosing function's
+// own fn-typed PARAMETER directly).
+//
+// `resolve_closure_caps`'s `Lambda` arm's "captured hot parameter" branch
+// (checker.rs ~1824, the fix that closed LEDGER item 10 / invariant 23) only
+// fires when the lambda's body directly calls a name that is IN
+// `own_params` -- the ENCLOSING function's own parameter set. It has no
+// transitive step through `local_caps`: a lambda whose body calls a LOCAL
+// (`wrapped`) that is itself a `DependsOnParam(reader)` value (because
+// `wrapped = wrap_once(reader)`, an ordinary passthrough-returning function
+// call, invariant 5/23) is invisible to that detection -- the call target
+// name is "wrapped", never "reader", so `captured_hot_param` never matches
+// and the lambda (`go`) falls through to the plain
+// `ClosureCapsResult::Known(collect_caps_expr(body, ...))` branch.
+//
+// This matters because `current_local_closure_caps` (hence `go`'s own
+// resolved requirement, consulted at `go`'s CALL sites via
+// `resolve_direct_invoke_caps`) is built ONCE, in a whole-body PRE-PASS,
+// before `check_function` even pushes `outer`'s own scope -- so this
+// mis-classification is not scope-dependent, it is simply wrong always. It
+// does not matter for a bare invocation written INLINE where `go` is
+// defined (that call is checked eagerly, in place, at the correct live
+// scope) -- but it DOES matter if `go` is defined at one (unnarrowed)
+// program point and CALLED, as a bare identifier, at a SEPARATE later
+// program point that IS narrowed: the second call site never re-walks
+// `go`'s lambda body, it only consults the (wrong) `Known(empty)` entry.
+//
+// Shape: `wrapped` (a real DependsOnParam-tracked local) and `go` (a
+// wrapper lambda merely forwarding to `wrapped`, both declared OUTSIDE any
+// `deny!`, where invoking `go` inline is legitimately deferred) -- then
+// `go()` is called AGAIN, as a bare identifier, from INSIDE
+// `deny!(fs:read)`.
+//
+// ACCEPTANCE: should be REJECTED (E0507, `all` required) at the `deny!`
+// call site, the same way a direct alias/reassignment would be. If it
+// compiles clean and the secret prints, `go`'s wrong `Known(empty)`
+// classification is a live escape distinct from the already-found
+// deny-bare-closure-reassign-escape (that one is about STALE
+// pre-reassignment snapshots of a single local; this one is about a
+// TRANSITIVE captured-hot-parameter miss through an intermediate local of
+// its own, with no reassignment involved at all).
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let wrapped = wrap_once(reader)
+    let go = || wrapped()
+    deny!(fs:read) {
+        let leaked = go()
+        println("DOUBLE-INDIRECTION-DENY LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

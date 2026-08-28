@@ -1,0 +1,46 @@
+// Control for attack_uncaught_throw_struct_alias_double_free.kry /
+// attack_uncaught_throw_param_borrow_free.kry: exactly ONE named heap
+// local live at an uncaught throw, NO aliasing, NO parameter borrow.
+// If THIS also crashes, the bug is more general than "aliased/moved local
+// double-freed by emit_exception_cleanup_drops" (my hypothesis) -- it
+// would mean the cleanup path is broken even for the simplest single-owner
+// case. If this one is clean (rc=0, INTACT) while the aliased variants
+// crash, that isolates the bug to the alias/move-tracking gap.
+
+fn boom() {
+    throw "boom"
+}
+
+fn single_local_then_throw() {
+    let s: str = "SINGLE-LOCAL-CANARY"
+    boom()
+}
+
+struct Holder { tag: str }
+
+fn single_struct_then_throw() {
+    let h: Holder = Holder { tag: "SINGLE-STRUCT-CANARY" }
+    boom()
+}
+
+@capabilities(process)
+fn main() {
+    try {
+        single_local_then_throw()
+    } catch e {
+        println("caught str-case: " + e)
+    }
+    try {
+        single_struct_then_throw()
+    } catch e {
+        println("caught struct-case: " + e)
+    }
+    let mut junk: [str] = []
+    let mut i = 0
+    while i < 200 {
+        junk = push(junk, "filler-" + to_string(i))
+        i = i + 1
+    }
+    println("junk_len=" + to_string(len(junk)))
+    println("done")
+}

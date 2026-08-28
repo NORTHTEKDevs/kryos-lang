@@ -1,0 +1,51 @@
+// ASSAULT round 2 (strip-the-row lens): a privileged closure stashed in
+// actor state, invoked from inside a `for` loop binding and a `match`
+// binding within a fire-and-forget handler, under deny!(fs:read) inside
+// the handler body.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Store3 {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn read_via_for(self) {
+        deny!(fs:read) {
+            let handlers: [fn() -> str] = [self.reader]
+            let mut out: str = ""
+            for h in handlers {
+                out = h()
+            }
+            println("ACTOR-FOR-LOOP LEAK: " + out)
+        }
+    }
+
+    fn read_via_match(self, flag: i64) {
+        deny!(fs:read) {
+            let picked = match flag {
+                1 => self.reader,
+                _ => self.reader,
+            }
+            let out = picked()
+            println("ACTOR-MATCH LEAK: " + out)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let store = Store3()
+    store.stash(reader)
+    store.read_via_for()
+    store.read_via_match(1)
+    sleep(100)
+}

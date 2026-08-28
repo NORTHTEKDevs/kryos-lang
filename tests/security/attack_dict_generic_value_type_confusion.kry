@@ -1,0 +1,57 @@
+// RED TEAM round 4, type-confusion lens, untyped-container angle.
+// Hypothesis: `std::collections::Dict<K, V>` is a generic struct holding a
+// `map<str, V>` field, a `[str]` keylist, and methods that construct a
+// FRESH Dict literal (`set`) and build a FRESH `[V]` array via a loop+push
+// (`values`) -- none of the ruled-out generic repros so far combine a
+// generic MAP field with a generic ARRAY-BUILDING method on the SAME
+// struct instantiated at a non-i64 V (f64/str), interleaved across two
+// DIFFERENT V instantiations sharing the call site.
+//
+// CONFIRMED, but not as hypothesized: not a silent wrong value -- a hard
+// AOT-ONLY CRASH (segfault, rc=139/access violation, no stdout at all).
+// `kryos run` (Cranelift/JIT) executes this ENTIRE program correctly (see
+// the minimal isolation in `attack_dict_min1.kry` for verbatim output).
+// `kryos build --release` (LLVM/AOT) crashes before printing anything.
+// Isolated with controls: `Dict<str, i64>` (see
+// `attack_dict_min1_control_i64.kry`) is CLEAN on AOT (3/3 runs, rc=0,
+// correct output) -- so the crash is specific to a non-i64 `V`, not Dict
+// in general; `Dict<str, str>` also crashes (see
+// `attack_dict_min1_control_str.kry`), so the trigger is "V != i64", not
+// "V == f64" specifically. `Dict.new()` ALONE (no set/get) also fails on
+// AOT but with a DIFFERENT exit code (rc=3, after printing successfully --
+// see `attack_dict_min2_new_only.kry`), suggesting at least two distinct
+// crash sites (construction/drop-time vs. the fuller set+get path), not
+// one single bug. Deterministic: 3/3 runs for the full repro and the
+// minimal repro, 3/3 clean for the i64 control.
+use std::collections::{Dict}
+
+fn main() {
+    let mut d1: Dict<str, f64> = Dict.new()
+    d1 = d1.set("pi", 3.14159)
+    d1 = d1.set("e", 2.71828)
+
+    let mut d2: Dict<str, str> = Dict.new()
+    d2 = d2.set("greeting", "hello")
+    d2 = d2.set("farewell", "goodbye")
+
+    println("d1.pi=" + to_string(d1.get("pi")))
+    println("d2.greeting=" + d2.get("greeting"))
+
+    // values() on both, interleaved, to catch a shared-buffer/cross-talk
+    // bug between the two DIFFERENT V instantiations of the same generic
+    // struct+method.
+    let v1: [f64] = d1.values()
+    let v2: [str] = d2.values()
+    println("v1[0]=" + to_string(v1[0]) + " v1[1]=" + to_string(v1[1]))
+    println("v2[0]=" + v2[0] + " v2[1]=" + v2[1])
+
+    // Re-read d1 AGAIN after d2's values() ran, to catch leaked
+    // monomorphization state.
+    println("d1.e again=" + to_string(d1.get("e")))
+    let v1b: [f64] = d1.values()
+    println("v1b[0]=" + to_string(v1b[0]) + " v1b[1]=" + to_string(v1b[1]))
+
+    // get_or default path with a non-i64 V.
+    println("d1.missing=" + to_string(d1.get_or("missing", 9.99)))
+    println("d2.missing=" + d2.get_or("missing", "fallback"))
+}

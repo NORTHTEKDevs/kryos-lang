@@ -1,0 +1,84 @@
+// ASSAULT round 2, non-capability lens, resource-dos (2026-08-07).
+//
+// Distinct from, and DEEPER than, the already-filed
+// `attack_mono_struct_doubling_no_depth_guard.kry`: that file confirmed
+// (by reading kryos-mir/src/lower.rs) that `enter_mono_frame` -- which
+// enforces `MAX_MONO_DEPTH`/`MAX_MONO_TOTAL` -- is called ONLY from
+// `monomorphize`/`monomorphize_impl_fn`, never from `monomorphize_struct`
+// or `monomorphize_enum` (re-confirmed live this session: grepping
+// `enter_mono_frame` in lower.rs finds exactly 2 call sites, at ~16233 and
+// ~16445, neither inside `monomorphize_struct` ~15613 or
+// `monomorphize_enum` ~15687). BUT that file's own tested shape -- N
+// hand-written `let` lines manually doubling a type (`Node<Node<...i64>>>`
+// via 10 explicit `Node { a: prev, b: prev }` statements) -- was
+// EXPLICITLY RULED OUT for resource-dos ("kryos check and kryos run both
+// complete in a few seconds even at depth 10-12, no timeout, no unbounded
+// memory") and instead surfaced an unrelated double-free bug.
+//
+// THIS file tests the shape that gap analysis actually predicts and that
+// repro did not try: a GENUINELY SELF-REFERENTIAL generic struct where the
+// recursive field wraps the type parameter in ANOTHER generic at each
+// level (`Node<T> { next: Option<Node<Wrap<T>>> }`), so the mangled name
+// is NEVER the same twice and the existing placeholder-only guard (which
+// protects only the EXACT-same-mangled-name case, e.g.
+// `Node<T> { next: Option<Node<T>> }`, per lower.rs's own comment at
+// monomorphize_struct ~15651) never fires. Unboundedness here comes from
+// the TYPE SUBSTITUTION ITSELF, not from source text length: a single
+// ~20-line declaration plus ONE trivial instantiation is enough.
+//
+// VERIFIED LIVE this session, `compiler/target/release/kryos.exe`, no
+// compiler changes, `KRYOS_STDLIB_DIR` set per repo convention, via a
+// Python subprocess harness (avoids any shell-level timeout ambiguity;
+// full command + stdout/stderr captured, tasklist checked after for
+// orphans):
+//
+//   control (examples/hello.kry), `kryos run`:            rc=0, 0.64s
+//   THIS FILE, `kryos check` (type-check only):            rc=0, 0.02s,
+//                                                            no output
+//   THIS FILE, `kryos run` (reaches MIR lowering):          TIMEOUT,
+//     first probe:  30s wall,  zero stdout/stderr the whole time
+//     second probe: 152.27s wall, zero stdout/stderr the whole time
+//   `tasklist` immediately after each kill: no lingering kryos.exe
+//     (the Python-side timeout kill is clean, not an orphan-leak issue)
+//
+// `kryos check` completing in 20ms with zero diagnostics pinpoints the
+// hang precisely to MIR lowering / monomorphization (type-checking itself
+// is fine -- the program is well-typed), consistent with the missing
+// `enter_mono_frame` guard on `monomorphize_struct`: each level's
+// `next: Option<Node<Wrap<...>>>` field substitution recurses back into
+// `monomorphize_struct` for a distinct, never-cached mangled name, with
+// no MAX_MONO_DEPTH-style call-stack cap and (empirically) no timely
+// MAX_MONO_TYPE_NODES=4096 trip either -- 152s+ produced neither a crash
+// nor the `mono_fatal` "monomorphization limit exceeded" diagnostic that
+// the guarded functions (`monomorphize`/`monomorphize_impl_fn`) would
+// produce almost instantly at their much lower MAX_MONO_DEPTH=300.
+//
+// Severity: RESOURCE-DOS. This is not a crafted "bomb" the way item 14's
+// stray-`;` flood or the elif-let-chain repro's 50,000-line generated
+// file are -- it's a small, idiomatic-looking generic wrapper pattern
+// (a generic node type whose recursive field is wrapped in another
+// generic, e.g. modelling a growing capability/decoration chain) that
+// ANY developer could write by accident, with zero adversarial intent,
+// and it hangs the compiler on `kryos run`/`kryos build` (both reach MIR
+// lowering) for as long as it's left running -- not diagnosed further
+// this session (no compiler changes, attacker-only mandate). Fix shape:
+// the same `enter_mono_frame`/`exit_mono_frame` pair already used by
+// `monomorphize`/`monomorphize_impl_fn`, added around the recursive field
+// -- and variant -- substitution calls inside `monomorphize_struct` and
+// `monomorphize_enum`.
+
+use std::option::{Option, Some, None}
+
+struct Wrap<T> {
+    val: T,
+}
+
+struct Node<T> {
+    depth: i64,
+    next: Option<Node<Wrap<T>>>,
+}
+
+fn main() {
+    let n: Node<i64> = Node { depth: 0, next: None() }
+    println("built depth 0: " + to_string(n.depth))
+}

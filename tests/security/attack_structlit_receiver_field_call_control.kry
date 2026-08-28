@@ -1,0 +1,25 @@
+// POSITIVE CONTROL for attack_structlit_receiver_field_call.kry -- identical
+// scenario but the receiver is a direct `let`-bound value (`a.f()`), no
+// inline-struct-literal receiver. Confirms `deny!(fs:read)` correctly
+// rejects the ordinary direct-field-call shape, isolating the inline
+// struct-literal receiver (not something generic about the struct/closure
+// shape) as what defeats the guard in the sibling attack file.
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    let a: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = a.f()
+        println("SHOULD NOT PRINT: " + leaked)
+        sleep(100)
+    }
+}

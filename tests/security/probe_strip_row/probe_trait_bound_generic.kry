@@ -1,0 +1,28 @@
+// STRIP-THE-ROW probe: a generic fn bound to a trait (`T: Runner`), calling
+// the bound method. Checks the generic-trait-bound MethodCall arm
+// (checker.rs ~4771-4816) actually charges the call (Unknown or a real row)
+// into the CALLER's (main's) accumulated row rather than leaving it out
+// entirely.
+
+trait Runner {
+    fn run(self) -> str
+}
+
+struct RealRunner {}
+
+impl Runner for RealRunner {
+    @capabilities(fs:read)
+    fn run(self) -> str {
+        return file_read("tests/security/secret_for_closure_launder.txt")
+    }
+}
+
+fn call_it<T: Runner>(t: T) -> str {
+    return t.run()
+}
+
+fn main() {
+    let r = RealRunner {}
+    let out = call_it(r)
+    println("TRAIT-BOUND: " + out)
+}

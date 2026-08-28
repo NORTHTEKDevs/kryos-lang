@@ -1,0 +1,37 @@
+// SECURITY ATTACK (round-3 assault, strip-the-effect lens, 2026-08-06):
+// same root cause as attack_forloop_shadows_outer_local.kry, different
+// binding form. A `match` arm's pattern-bound variable (`Some(f) => ...`)
+// that shares a NAME with an outer, already-resolved zero-capability local
+// reuses that outer local's STALE `current_local_closure_caps["f"]` entry --
+// `build_local_closure_caps_block` has no `Stmt`/pattern arm for match-arm
+// bindings at all (confirmed: grepped checker.rs, no `Stmt::Match`/pattern
+// handling in that function; match is an `Expr`, walked only by the runtime
+// enforcement side, never by the locals-snapshot builder), so a match arm's
+// bound name is NEVER (re)registered -- if it collides with an outer local
+// already in the map, the outer entry silently wins.
+
+use std::option::{Option, Some, None}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn harmless() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f = harmless
+    println(f())
+    let opt: Option<fn() -> str> = Some(reader)
+    deny!(fs:read) {
+        match opt {
+            Some(f) => println("MATCH-SHADOW LEAK: " + f()),
+            None() => println("none"),
+        }
+        sleep(100)
+    }
+}

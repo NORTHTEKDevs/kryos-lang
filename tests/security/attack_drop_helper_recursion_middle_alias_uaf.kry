@@ -1,0 +1,75 @@
+// RED TEAM round 5 (memory-unsafety lens): drop-helper recursion COMBINED
+// with a live alias to a node in the MIDDLE of the chain, as opposed to
+// either axis alone (the existing drop_helper_recursion.kry probes only
+// stack-depth on a plain scope-end drop with NO alias; the existing
+// container_element_alias_refcount.kry probes owner-count on a single flat
+// struct with NO recursive chain). The self-referential-struct owner-count
+// fix is documented to keep a struct box alive across multiple live
+// references -- this checks whether that owner count is honored by every
+// STEP of the recursive drop-helper descent through a deep chain, not just
+// the top-level node the chain variable itself points at. If an
+// intermediate node's owner count is not bumped when a second reference
+// (`mid`) is taken via traversal, then when the chain's OWN top-level
+// binding drops (recursively freeing every node down the spine, including
+// the middle one), `mid` is left pointing at freed memory -- reading
+// `mid.val`/`mid.next` afterward is a use-after-free, and if `mid` itself
+// later drops too, that is a double free of the same node.
+
+struct Node {
+    val: i64,
+    next: [Node],   // 0 or 1 element array standing in for Option<Box<Node>>
+}
+
+fn build_chain(n: i64) -> Node {
+    let mut cur: Node = Node { val: 0, next: [] }
+    let mut i = 1
+    while i < n {
+        cur = Node { val: i, next: [cur] }
+        i = i + 1
+    }
+    return cur
+}
+
+// walk `steps` links down from `head` and return that node (a second live
+// reference into the middle of the same chain, not a copy of the data)
+fn get_nth(head: Node, steps: i64) -> Node {
+    let mut cur: Node = head
+    let mut i = 0
+    while i < steps {
+        if len(cur.next) == 0 {
+            return cur
+        }
+        cur = cur.next[0]
+        i = i + 1
+    }
+    return cur
+}
+
+fn round(depth: i64) -> (i64, i64) {
+    let chain = build_chain(depth)
+    let mid = get_nth(chain, depth / 2)
+    let mid_val_before = mid.val
+    // `chain` drops here at scope end -- recursive teardown through the
+    // WHOLE spine, including whichever node `mid` also references.
+    return (mid_val_before, mid.val)
+}
+
+fn main() {
+    let mut i = 0
+    let mut bad = 0
+    let total = 4000
+    let depth = 3000
+    while i < total {
+        let r = round(depth)
+        let before = r.0
+        let after = r.1
+        if before != after {
+            bad = bad + 1
+            if bad < 8 {
+                println("MISMATCH iter=" + to_string(i) + " before=" + to_string(before) + " after=" + to_string(after))
+            }
+        }
+        i = i + 1
+    }
+    println("bad=" + to_string(bad) + " total=" + to_string(total))
+}

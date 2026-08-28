@@ -1,0 +1,36 @@
+// RED TEAM round 3, deny-narrowing lens (2026-08-06). A generic HOF
+// (`identity_call<T>(f: fn()->T) -> T { return f() }`) instantiated TWICE
+// in the same program with the identical privileged closure argument: once
+// OUTSIDE deny!(fs:read) (legitimate, `main` holds fs:read there) and once
+// INSIDE deny!(fs:read). Tests whether the companion/hot-param resolution,
+// computed ONCE per declaration (invariant 13 in capability-soundness.md),
+// can have its per-call-site charge short-circuited by an EARLIER,
+// legitimate call to the same generic instantiation -- i.e. whether the
+// checker's per-call-site charge (invariant 6, `accumulate_hot_extra_caps`)
+// is genuinely re-evaluated at every call site independent of scope, or
+// whether some memoization keyed only by (function, argument-identifier)
+// leaks a "already resolved fine once" fact across scope boundaries.
+//
+// ACCEPTANCE: REJECTED (E0507) under inferred (default) mode -- the SECOND
+// call site (inside deny!(fs:read)) must be charged fs:read independently
+// of the first (outside) call site succeeding.
+
+fn identity_call<T>(f: fn() -> T) -> T {
+    return f()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let warm: str = identity_call(reader)
+    println("warm: " + warm)
+    deny!(fs:read) {
+        let leaked: str = identity_call(reader)
+        println("GENERIC-INSTANTIATION-DENY LEAK: " + leaked)
+    }
+}

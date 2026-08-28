@@ -1,0 +1,87 @@
+// SECURITY -- LIVE ESCAPE, RED TEAM round 7, cap-escape lens, found
+// 2026-08-06. Attacks the actor-state fn-field invariant
+// (docs/capability-soundness.md invariant 24 / LEDGER item 18's fix,
+// `resolve_actor_self_field_invoke_caps`). That fix's alias tracker
+// (`current_actor_state_alias_locals` / `build_actor_state_alias_locals_block`,
+// checker.rs ~2722-2795) ONLY recognizes an alias introduced by a bare
+// `Stmt::Let { value: self.<path> }` binding -- it is a purely syntactic
+// scan that pattern-matches on `Stmt::Let` alone. This program aliases the
+// fn-bearing state field `b` through a FOR-LOOP iteration variable instead
+// (`for x in [self.b] { x.f() }`), a binding form `Stmt::For` introduces via
+// its own `pattern` field, never a `Stmt::Let` -- `build_actor_state_alias_
+// locals_block`'s `Stmt::For` arm only recurses INTO the loop body, never
+// records the loop variable itself (checker.rs:2775-2777), and neither does
+// its sibling `build_local_container_lits_block` (checker.rs:2690-2692,
+// same recurse-only shape) or `build_local_closure_caps_block`
+// (checker.rs:2333-2335, same). `check_stmt`'s own `Stmt::For` handling
+// (checker.rs:4539-4551) only adds the loop variable to `current_locals`
+// (a name-shadowing set, unrelated to provenance).
+//
+// So `x` is invisible to BOTH `resolve_actor_self_field_invoke_caps` (root
+// != "self", and "x" is absent from `current_actor_state_alias_locals` ->
+// falls to `CapabilitySet::empty()`, checker.rs:3352) AND
+// `resolve_method_field_invoke_caps` (root "x" is not a tracked
+// struct-literal local -> also `empty()`, checker.rs:3244-3245). The
+// call-site charge for `x.f()` in `check_expr`'s `MethodCall` arm
+// (checker.rs:4636-4655) is exactly `compute_hot_extra_caps("f", [], true)`
+// (no args, "f" not a hot-param/user-fn name -> nothing) unioned with those
+// two `empty()` results -- i.e. the ENTIRE charge is zero, not the
+// fail-closed `Unknown -> all` every other unresolvable-provenance shape in
+// this file requires (invariant 22).
+//
+// VERIFIED LIVE (compiler/target/release/kryos.exe, no compiler changes),
+// BOTH enforcement modes:
+//   kryos run                          -> exit 0, prints
+//     "FORLOOP-ALIAS LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a"
+//   kryos run --strict-capabilities    -> exit 0, SAME leak (the charging
+//                                          mechanism is mode-independent --
+//                                          resolve_actor_self_field_invoke_
+//                                          caps has no strict/inferred branch)
+//   kryos check                        -> exit 0, no diagnostic (accepted
+//                                          silently at compile time too)
+//
+// EXPECTED (currently violated): REJECTED (E0507, "requires capabilities
+// [all]") under `deny!(fs:read)`, same as `cap_escape_closure_wraps_closure.
+// kry` / `attack_actor_state_stored_closure.kry`, under BOTH modes. This
+// file's assertions describe the REQUIRED behavior; it will fail to compile
+// once fixed.
+//
+// DISTINCT from: the already-closed direct-field (`self.b.f()`) and
+// one-hop `let`-alias (`let x = self.b; x.f()`) shapes (invariant 24,
+// CLOSED), and from the separate, already-documented "chained
+// alias-of-a-`let`-alias" residual noted at the top of
+// docs/capability-soundness.md (`let x = self.b; let y = x; y.f()`) -- this
+// repro uses NO `let` binding for the alias at all, so it is not that
+// residual; it is a different binding-form gap in the SAME tracker.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        for x in [self.b] {
+            println("FORLOOP-ALIAS LEAK: " + x.f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

@@ -1,0 +1,39 @@
+// RED TEAM round, deny-narrowing lens (2026-08-06). The exact
+// deferred-hot-param-defeats-deny! shape from checker.rs's own
+// `deferred_own_param_caps` doc comment (`fn outer(reader: fn()->str) ->
+// str { deny!(fs:read) { return zero_cap_tool(reader) } }`), but routed
+// through a `spawn { ... }` BACKGROUND BLOCK instead of a `return` --
+// testing whether `spawn`'s own expression-check path
+// (`check_spawn_expr` -> `check_expr`) resets or bypasses
+// `current_fn_entry_scope_depth` tracking (it pushes no scope of its own in
+// the checker, per a direct read of checker.rs, but this proves it live
+// rather than by static reading alone).
+//
+// ACCEPTANCE: REJECTED (E0507, `all` required) under inferred (default)
+// mode -- `outer`'s own `reader` param is deferred to OUTER's caller
+// (`main`), but that deferral is unsound once `deny!(fs:read)` is active
+// between `outer`'s entry and the invocation, spawn block or not.
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+fn outer(reader: fn() -> str) {
+    deny!(fs:read) {
+        spawn {
+            let leaked = zero_cap_tool(reader)
+            println("SPAWN-BLOCK-DENY LEAK: " + leaked)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

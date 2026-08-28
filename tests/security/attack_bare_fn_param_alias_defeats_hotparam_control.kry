@@ -1,0 +1,23 @@
+// Positive control for attack_bare_fn_param_alias_defeats_hotparam.kry:
+// identical shape, but the parameter is invoked DIRECTLY (`f()`, no
+// intervening `let` alias). Must be REJECTED -- confirms the alias itself,
+// not something generic about a bare fn-typed parameter, defeats Seed A.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_direct(f: fn() -> str) -> str {
+    return f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = apply_direct(reader)
+        println("BARE-FN-PARAM DIRECT LEAK (should not print): " + leaked)
+        sleep(100)
+    }
+}

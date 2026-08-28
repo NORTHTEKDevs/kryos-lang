@@ -1,0 +1,39 @@
+// ATTACK: does freeing a long, RUNTIME-constructed self-referential struct
+// chain (linked list via Option<Node>) recurse natively (one drop-helper
+// call per node) rather than iteratively, causing a native stack overflow
+// when the list is dropped -- as opposed to a clean diagnostic or a
+// (slow but safe) iterative free? This is a distinct bug class from the
+// compile-time monomorphization-depth guard: this is a RUNTIME resource
+// exhaustion at an ownership seam (struct destructor recursion), and no
+// compile-time guard can catch it since the depth is a runtime value.
+//
+// Build a long chain, drop it by letting main return (or reassigning),
+// and see whether it crashes (raw stack overflow, uncontrolled exit code,
+// no diagnostic) instead of just being slow.
+
+use std::option::{Option, Some, None}
+
+struct Node {
+    v: i64,
+    next: Option<Node>
+}
+
+fn build(n: i64) -> Option<Node> {
+    let mut cur: Option<Node> = None()
+    let mut i: i64 = 0
+    while i < n {
+        cur = Some(Node { v: i, next: cur })
+        i = i + 1
+    }
+    return cur
+}
+
+fn main() {
+    let mut chain: Option<Node> = build(300000)
+    println("built")
+    // Drop it explicitly by overwriting with an empty value -- this is the
+    // moment the whole chain's refcounts hit zero and the recursive drop
+    // helper (if it is recursive, not iterative) unwinds the full depth.
+    chain = None()
+    println("dropped ok")
+}

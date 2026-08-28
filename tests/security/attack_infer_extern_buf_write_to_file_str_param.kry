@@ -1,0 +1,13 @@
+// ADVERSARIAL PROBE (infer-wrong / extern-FFI lens, 2026-08-06): does
+// declaring an extern item with a `str`-typed parameter for a REAL,
+// currently-unexposed native symbol (`kryos_buf_write_to_file`, which backs
+// genuine `std::fs::write` semantics per `kryos-rt/src/builtins.rs:1305`)
+// get rejected by E0508 the way CLAUDE.md documents? Trying the most naive
+// shape first before working around it.
+extern {
+    fn kryos_buf_write_to_file(handle: i64, path: str) -> i64
+}
+
+fn main() {
+    println("declared ok")
+}

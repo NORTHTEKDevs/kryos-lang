@@ -1,0 +1,54 @@
+// RED TEAM round 2 (memory-unsafety lens): corruption sibling of the
+// caught-try/match-arm LEAK filed in tests/mem/throw_unwind_leak.kry.
+//
+// Distinct root cause from LEDGER item 3 (struct-argument leak across a
+// CALL boundary): this targets the SAME "local/param/return" struct-drop
+// path (Instruction::Drop -> emit_struct_drop/emit_drop_for_value,
+// kryos-codegen-cranelift/src/codegen.rs ~7643-7715) that item 3's writeup
+// documents as freeing a struct's heap fields UNCONDITIONALLY, with NO
+// owner-count / shared-refcount check at all (unlike the array-element
+// drop path a few lines below it, which explicitly gates on
+// `ref_count == 1` before touching elements -- "another owner still holds
+// the array; dropping elements here would corrupt the shared buffer").
+//
+// If a non-@copy struct is ALIASED to a second named local in the SAME
+// function (`let h2 = h1`) and BOTH are still live when an UNCAUGHT throw
+// fires, `emit_exception_cleanup_drops` walks every named, non-parameter,
+// droppable local and drops EACH ONE -- for str/array/map/function this is
+// safe because those types are genuinely refcounted end to end, but for a
+// struct, path 2 has no owner count to consult, so the SAME struct pointer
+// gets `kryos_free`'d twice (a double free), not merely leaked.
+
+struct Holder { tag: str }
+
+fn boom() {
+    throw "boom"
+}
+
+fn make_alias_then_throw() {
+    let h1: Holder = Holder { tag: "STRUCT-CANARY-ABC123" }
+    let h2: Holder = h1
+    boom()
+}
+
+@capabilities(process)
+fn main() {
+    try {
+        make_alias_then_throw()
+    } catch e {
+        println("caught: " + e)
+    }
+    // Heap churn after the catch: if the struct's `tag` string (or the
+    // struct box itself) was double-freed, a fresh allocation of similar
+    // size is likely to reuse the corrupted slot -- crash or garbage
+    // content would show up here, or KRYOS_FREE_DIAG will flag the
+    // double-free directly regardless of whether this print looks clean.
+    let mut junk: [str] = []
+    let mut i = 0
+    while i < 200 {
+        junk = push(junk, "filler-" + to_string(i))
+        i = i + 1
+    }
+    println("junk_len=" + to_string(len(junk)))
+    println("done")
+}

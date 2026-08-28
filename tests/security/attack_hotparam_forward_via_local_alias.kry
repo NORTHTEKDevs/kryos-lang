@@ -1,0 +1,42 @@
+// ATTACK: compute_hot_params' "Propagate" fixed-point step (checker.rs ~1490-1533)
+// only recognizes a BARE identifier argument matching the forwarding function's
+// own param name (`outer(f)`) when deciding whether that param position is HOT.
+// If the forwarding function first assigns the param to a local alias and forwards
+// the ALIAS instead (`let g = reader; outer(g)`), the propagation step never marks
+// the forwarding function's own parameter as hot, so `hot_params` has no entry for
+// it. `accumulate_hot_extra_caps`, consulted at every CALL SITE of the forwarding
+// function, looks the callee up in `hot_params` and returns immediately when it
+// finds nothing (checker.rs:2876-2878) -- so a `deny!` narrowing active at the call
+// site is never applied to the closure's real authority.
+//
+// This mirrors docs/10-capabilities.md's own worked "Closure indirection is sound"
+// example line for line (`zero_cap_tool(reader)` inside `deny!(fs:read){}`, which
+// the docs say is REJECTED) except `zero_cap_tool`'s body forwards `reader` into a
+// second helper (`outer`) through a local alias `g` instead of calling `reader()`
+// directly. See the `_control.kry` sibling, which is the docs' EXACT shape (no
+// alias, no second helper) and IS correctly rejected -- proving the alias/forward
+// combination, not the deny! mechanism in general, is what defeats detection here.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(h: fn() -> str) -> str {
+    return h()
+}
+
+// Forwards its own fn-typed param into outer()'s hot parameter, but through a
+// local alias `g` instead of a bare `reader`.
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    let g = reader
+    return outer(g)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_hotparam_forward_via_local_alias_secret.txt")
+    deny!(fs:read) {
+        println("LEAK: " + zero_cap_tool(reader))
+    }
+}

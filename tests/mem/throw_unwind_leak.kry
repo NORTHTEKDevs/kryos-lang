@@ -1,0 +1,97 @@
+// Soundness probe: does try/catch drop TRY-BODY locals that were live at the
+// moment of a caught throw?
+//
+// lower_try_catch (kryos-mir/src/lower.rs) does NOT lower the try body
+// through lower_block_stmts (which calls emit_named_scope_drops after all
+// statements). Instead it hand-lowers each statement and calls
+// emit_exception_check after each one; on a pending exception that check
+// jumps DIRECTLY to check_bb, skipping every remaining try-body statement
+// AND the scope-end drop emission that would otherwise run at the end of
+// the block. Any named heap-bearing local declared BEFORE the throw point
+// is therefore never dropped on the caught-exception path.
+//
+// Modes (LEAK_MODE):
+//   loop_locals   - str + array locals live before a throwing call, in a loop
+//   match_arm     - heap local declared inside a taken match arm, before throw
+//   closure       - heap locals in the enclosing scope, throw via a closure call
+//   baseline      - same shape, NO throw (try body completes normally) -- control
+//
+// Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./throw_unwind_leak
+
+fn boom() {
+    throw "boom"
+}
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 250000 } else { parse_int(raw) }
+
+    let mut acc = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "loop_locals" {
+            try {
+                let s: str = "leak-" + to_string(i)
+                let arr: [str] = [s, s]
+                boom()
+                acc = acc + len(arr)
+            } catch e {
+                acc = acc + len(e)
+            }
+        } elif mode == "match_arm" {
+            try {
+                match i % 2 {
+                    0 => {
+                        let s2: str = "arm-" + to_string(i)
+                        let arr2: [str] = [s2]
+                        boom()
+                        acc = acc + len(arr2)
+                    },
+                    _ => {
+                        acc = acc + 1
+                    },
+                }
+            } catch e {
+                acc = acc + len(e)
+            }
+        } elif mode == "closure" {
+            try {
+                let s3: str = "clo-" + to_string(i)
+                let arr3: [str] = [s3, s3, s3]
+                let thrower = || boom()
+                thrower()
+                acc = acc + len(arr3)
+            } catch e {
+                acc = acc + len(e)
+            }
+        } elif mode == "if_stmt" {
+            try {
+                if i % 2 == 0 {
+                    let s5: str = "if-" + to_string(i)
+                    let arr5: [str] = [s5]
+                    boom()
+                    acc = acc + len(arr5)
+                } else {
+                    acc = acc + 1
+                }
+            } catch e {
+                acc = acc + len(e)
+            }
+        } elif mode == "baseline" {
+            try {
+                let s4: str = "base-" + to_string(i)
+                let arr4: [str] = [s4, s4]
+                acc = acc + len(arr4)
+            } catch e {
+                acc = acc + 1
+            }
+        } else {
+            println("unknown LEAK_MODE: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println(mode + " iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

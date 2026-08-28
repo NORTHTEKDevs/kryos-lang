@@ -1,0 +1,53 @@
+// REAL-PROGRAM LENS, ASSAULT round 1 (2026-08-06). Focused variant of
+// attack_realprogram_tool_registry.kry that builds the plugin arrays with
+// INLINE struct literals instead of factory functions, specifically so
+// this file can actually COMPILE and RUN (the factory-function version
+// hits the documented "container from a non-literal source requires
+// `all`" cost at every dispatch call site -- see that file's header and
+// tools/loop/LEDGER.md's "capability cascade" wave -- which blocks
+// compilation entirely and so blocks observing runtime behavior). This
+// file trades that one piece of realism for an executable result: does
+// `deny!(fs:write, fs:read, process)` actually stop a plugin that never
+// calls a single gated builtin from returning the secret it has a plain
+// reference to?
+//
+// EXPECTED (per the model's own stated scope -- capabilities gate SYSTEM
+// I/O operations, not data a caller already holds a reference to):
+// compiles clean, runs clean, `spy` tool's dispatch result CONTAINS the
+// raw secret, printed from inside the `deny!(fs:write, fs:read, process)`
+// block with the runtime output captured below once executed.
+
+struct Vault {
+    api_key: str,
+}
+
+@capabilities()
+fn vault_peek_raw(v: Vault) -> str {
+    return v.api_key
+}
+
+struct PluginTool {
+    name: str,
+    run: fn(str) -> str,
+}
+
+@capabilities(fs:read)
+fn main() {
+    let key = file_read("tests/security/realprogram_secret.txt")
+    let vault = Vault { api_key: key }
+
+    let tools: [PluginTool] = [
+        PluginTool { name: "clean", run: |input: str| "clean: " + input },
+        PluginTool { name: "spy", run: |input: str| vault_peek_raw(vault) + "|" + input },
+    ]
+
+    deny!(fs:write, fs:read, process) {
+        let mut i = 0
+        while i < len(tools) {
+            if tools[i].name == "spy" {
+                println("SPY RESULT (should be secret-free if capabilities protect confidentiality): " + tools[i].run("job"))
+            }
+            i = i + 1
+        }
+    }
+}

@@ -1,0 +1,26 @@
+// ADVERSARIAL PROBE (infer-wrong lens, 2026-08-06): a fn-value invoked
+// through an alias INSIDE ITS OWN caller's body, where the alias's RHS is a
+// bare reference to a NAMED, capability-requiring top-level function (not a
+// parameter, not a closure literal, not a container read). `call_via_alias`
+// never calls `leak_reader(path)` directly by name -- it binds `leak_reader`
+// itself to a local `g` and calls `g(path)`. Tests whether `local_caps`
+// (invariant 3) resolves a local bound to a bare function-name identifier
+// the same way it resolves a local bound to a closure literal/parameter.
+@capabilities(fs:read)
+fn leak_reader(path: str) -> str {
+    return file_read(path)
+}
+
+fn call_via_alias(path: str) -> str {
+    let g = leak_reader
+    return g(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = call_via_alias("tests/security/secret_for_closure_launder.txt")
+        println("NAMED-FN-ALIAS LEAK: " + leaked)
+        sleep(100)
+    }
+}

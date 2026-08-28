@@ -1,0 +1,33 @@
+// RED TEAM round, deny-narrowing lens (2026-08-06). Constructs+invokes an
+// `@capabilities(fs:read)` actor's handler from INSIDE `deny!(fs:read)`.
+// Handler calls are fire-and-forget (per docs/09-concurrency.md the runtime
+// drains/joins actor threads before main exits, so no `sleep` is needed for
+// output ordering here since we only send ONE message and then the
+// enclosing deny! block/function ends, at which point main returns and the
+// runtime joins). Checks whether `build_fn_capability_map`'s actor-handler
+// entry (checker.rs ~3481-3493, keyed by bare handler name, merged with the
+// actor's declared annotation) is consulted by `enforce_callee_name` at a
+// METHOD-CALL site the same way an ordinary annotated function is -- i.e.
+// whether `deny!` narrowing at the SPAWN/SEND call site is honored for
+// actor dispatch.
+//
+// ACCEPTANCE: REJECTED (E0507) under inferred (default) mode -- the actor's
+// declared fs:read must not be exercisable from a scope that denied it.
+
+@capabilities(fs:read)
+actor SecretReader {
+    dummy: i64
+
+    fn read_secret(self, path: str) {
+        let content: str = file_read(path)
+        println("ACTOR-HANDLER-DENY LEAK: " + content)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let r = SecretReader()
+        r.read_secret("tests/security/secret_for_closure_launder.txt")
+    }
+}

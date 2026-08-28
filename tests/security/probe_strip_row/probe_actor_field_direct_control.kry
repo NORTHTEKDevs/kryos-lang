@@ -1,0 +1,30 @@
+// Control for probe_actor_loop_bindings.kry: does a DIRECT `self.reader()`
+// call (no for-loop, no match binding) from an actor handler resolve the
+// field's row correctly, or is the field's own row var ALSO permanently
+// open? Isolates whether the unresolved-var finding is about actor state
+// FIELD row-var binding itself, or specifically the for/match indirection.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Store2 {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn read_direct(self) -> str {
+        return self.reader()
+    }
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let store = Store2()
+    store.stash(reader)
+    let r1 = store.read_direct()
+    println("ACTOR-DIRECT: " + r1)
+}

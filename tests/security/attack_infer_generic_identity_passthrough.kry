@@ -1,0 +1,36 @@
+// ADVERSARIAL PROBE (infer-wrong lens, 2026-08-06): does the checker's
+// closure-return tracing (`fn_return_closure_caps`) follow authority through
+// a GENERIC pass-through function whose own parameter is a bare,
+// unconstrained type name (`x: T`), not a declared `fn(...)->...` type?
+//
+// `is_fn_typed`/`is_fn_bearing_type` (capability-soundness.md invariant 14)
+// never recognize a bare `T` as fn-bearing -- that invariant's own writeup
+// only tested INVOKING `x()` directly inside the generic function (rejected
+// by the type checker itself, E0110, before capability checking is even
+// reached). This probe never calls `x` inside `identity` at all -- it only
+// RETURNS it unchanged (`return x`), then the CALLER (still holding the
+// value at concrete type `fn()->str`) invokes the returned value. If
+// `fn_return_closure_caps`'s handling of `identity`'s call requires the
+// callee's own body to prove the returned value is fn-bearing via the SAME
+// `is_fn_typed`-gated path invariant 14 says is blind to bare `T`, the
+// returned closure's authority would never be traced back to the original
+// `reader` argument, and the call would be (wrongly) charged nothing.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let passed = identity(reader)
+        let leaked = passed()
+        println("GENERIC-IDENTITY-PASSTHROUGH LEAK: " + leaked)
+        sleep(100)
+    }
+}

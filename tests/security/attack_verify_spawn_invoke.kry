@@ -1,0 +1,20 @@
+// INVENTED SHAPE 3: privileged closure captured by a `spawn { }` block and
+// invoked from WITHIN the spawned thread, inside deny!(). Tests whether
+// crossing a spawn/thread boundary is still analyzed under the same static
+// capability scope as the enclosing deny!() block.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        spawn {
+            let leaked = reader()
+            println("SPAWN-INVOKE LEAK: " + leaked)
+        }
+        sleep(200)
+    }
+}

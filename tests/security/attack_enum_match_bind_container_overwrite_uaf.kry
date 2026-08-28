@@ -1,0 +1,51 @@
+// RED TEAM round 5 (memory-unsafety lens): container element ownership via
+// an ENUM tuple-variant payload extracted through a MATCH BIND, as opposed
+// to a struct-field read or plain array-element alias (both already probed
+// by other files in this directory). `match arr[0] { Wrapper::Has(s) => s, .. }`
+// binds `s` to the heap str payload living inside the enum box stored at
+// arr[0]. If that bind is a raw pointer copy with no owner-count bump (the
+// same class of gap the struct owner-count fix targeted, but for the
+// enum-variant-payload path specifically), then OVERWRITING arr[0] with a
+// different variant right after the match (dropping the old enum box, which
+// may drop its payload too) would free the str `s` still holds -- a
+// use-after-free, or on the second overwrite, a double free.
+enum Wrapper {
+    Has(str),
+    Empty(),
+}
+
+fn round(i: i64) -> str {
+    let mut arr: [Wrapper] = []
+    arr = push(arr, Wrapper::Has("payload-" + to_string(i) + "-tail"))
+    let extracted: str = match arr[0] {
+        Wrapper::Has(s) => s,
+        Wrapper::Empty() => "unexpected-empty",
+    }
+    // overwrite the slot that held the enum box AFTER extracting the payload
+    // via match-bind -- if `extracted` doesn't own its own refcount, this
+    // drops the old box (and, if payload ownership isn't separately
+    // accounted, its str payload) while `extracted` still references it.
+    arr[0] = Wrapper::Empty()
+    // second overwrite for a double-free-shaped repeat drop of the same slot
+    arr[0] = Wrapper::Has("decoy-" + to_string(i))
+    return extracted
+}
+
+fn main() {
+    let mut i = 0
+    let mut last: str = ""
+    let mut bad = 0
+    let total = 20000
+    while i < total {
+        last = round(i)
+        let expected = "payload-" + to_string(i) + "-tail"
+        if last != expected {
+            bad = bad + 1
+            if bad < 8 {
+                println("MISMATCH at i=" + to_string(i) + " got=" + last + " expected=" + expected)
+            }
+        }
+        i = i + 1
+    }
+    println("bad=" + to_string(bad) + " total=" + to_string(total) + " last=" + last)
+}

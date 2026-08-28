@@ -1,0 +1,56 @@
+// RED TEAM round 4 (memory-unsafety lens): a heap local declared INSIDE a
+// match-arm block is pushed into an OUTER container (so the container now
+// shares/retains the same box) and THEN the arm throws. Unwind must drop
+// the arm-scope's own `local_str` binding -- if that drop frees the box
+// outright (rather than releasing one refcount the container already
+// bumped via `push`), the container is left holding a dangling/UAF entry;
+// if the drop is skipped instead (matching the already-filed match-arm
+// leak), the container entry is fine but the arm-scope binding leaks.
+// This targets the CORRUPTION sibling of that leak: read the container
+// back after many throws and check exact VALUES, not just exit code.
+fn main() {
+    let mut items: [str] = []
+    let mut i = 0
+    let mut caught = 0
+    while i < 40000 {
+        try {
+            match i % 4 {
+                0 => {
+                    let local_str: str = "tag-" + to_string(i)
+                    items = push(items, local_str)
+                    if i % 3 == 0 {
+                        throw "boom-" + local_str
+                    }
+                }
+                1 => {
+                    let holder: [i64] = [i, i + 1, i + 2]
+                    if i % 5 == 0 {
+                        throw "boom-arr-" + to_string(holder[0])
+                    }
+                }
+                _ => {}
+            }
+        } catch (e) {
+            caught = caught + 1
+        }
+        i = i + 1
+    }
+    let n: i64 = len(items)
+    println("caught=" + to_string(caught) + " n=" + to_string(n))
+    // Expected: one entry per i in [0,40000) with i % 4 == 0 -> 10000 entries,
+    // value "tag-<i>" for i = 0,4,8,...,39996 in that exact order.
+    let mut bad: i64 = 0
+    let mut j: i64 = 0
+    while j < n {
+        let expected_i: i64 = j * 4
+        let expected: str = "tag-" + to_string(expected_i)
+        if items[j] != expected {
+            bad = bad + 1
+            if bad < 6 {
+                println("MISMATCH at j=" + to_string(j) + " got=" + items[j] + " expected=" + expected)
+            }
+        }
+        j = j + 1
+    }
+    println("bad=" + to_string(bad) + " expected_n=10000")
+}

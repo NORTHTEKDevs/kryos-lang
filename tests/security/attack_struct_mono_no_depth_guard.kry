@@ -1,0 +1,37 @@
+// ATTACK: generic STRUCT monomorphization has no MAX_MONO_DEPTH / MAX_MONO_TOTAL
+// guard (compiler/crates/kryos-mir/src/lower.rs: monomorphize_struct never
+// calls enter_mono_frame/exit_mono_frame, unlike monomorphize()/
+// monomorphize_impl_fn() which do). Only mono_mangled_name's
+// MAX_MONO_TYPE_NODES=4096 node-budget check applies, and only to the
+// concrete type ARGUMENTS passed into a given call, not to depth.
+//
+// Nest<T>'s single field has type Nest<Cell<T>> -- each recursive
+// monomorphize_struct call grows the concrete type by exactly one Cell<..>
+// wrapper (linear growth, not the doubling pattern MAX_MONO_TYPE_NODES was
+// sized to catch quickly), so it takes ~4096 levels of REAL, uncached Rust
+// call-stack recursion through monomorphize_struct/substitute_type_expr_to_mir
+// before the node-budget check would even fire. Expectation if the guard
+// worked: a clean "monomorphization limit exceeded" diagnostic (like the
+// function-recursion analog gets via MAX_MONO_DEPTH=300). Expectation if the
+// guard is absent: raw native stack overflow (uncontrolled process crash,
+// no diagnostic) well before 4096 levels are reached.
+//
+// Never constructs an actual Nest<i64> value (impossible finitely) --
+// merely referencing the type as a function parameter is enough to force
+// the compiler to resolve/monomorphize it.
+
+struct Cell<T> {
+    v: T
+}
+
+struct Nest<T> {
+    child: Nest<Cell<T>>
+}
+
+fn touch(x: Nest<i64>) -> i64 {
+    return 0
+}
+
+fn main() {
+    println("start")
+}

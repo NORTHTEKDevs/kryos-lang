@@ -1,0 +1,73 @@
+// RED TEAM round 3, lens: type-confusion.
+//
+// kryos-mir/src/lower.rs::resolve_struct_literal_name / extract_param_binding
+// (read directly this session) has a documented-in-comments gap: a generic
+// struct field typed `map<K, Option<V>>` cannot have its `V` binding
+// recovered by field-based inference, because `extract_param_binding`'s
+// `TypeExpr::Generic` arm only special-cases `name == "map"` and recurses
+// into the map's key/value TypeExprs -- but when the recursive call lands on
+// `Option<V>` (also a `TypeExpr::Generic`, name == "Option"), the same arm's
+// `if name == "map"` guard fails and the function returns `None` with NO
+// further recursion into `Option`'s own args. So the V binding for a struct
+// field of shape `map<str, Option<V>>` is NEVER found by field inference.
+//
+// The comment at lower.rs:15138-15162 says there's a FALLBACK for exactly
+// this case ("ret_hint"): if the struct literal sits inside a generic
+// function whose OWN declared return type is `ThisStruct<V>`, the already-
+// resolved return-type instantiation is used instead. But that fallback only
+// fires when `ctx.current_ret_ty` is literally `Struct("Registry___<X>")` at
+// lowering time -- i.e. the enclosing function's DECLARED return type. If
+// the struct literal is built directly in a NON-generic context (e.g.
+// `main`, return type `()`), there is no ret_hint, and `extract_param_binding`
+// returns `None`, so the code falls all the way to `.unwrap_or(MirType::I64)`
+// -- V is silently bound to i64 regardless of the field's real element type.
+//
+// Attack: construct `Registry<V>` generic-struct literals directly in `main`
+// (unit return, no ret_hint) at THREE different real V types (i64, f64, str)
+// in the SAME run. If the hypothesis is right, every instantiation's V binds
+// to the same fallback (i64), so the struct's tracked field metadata says
+// `entries: map<str, Option<i64>>` for all three -- and reading back the f64
+// / str instances through the match arm renders the raw i64/f64 bit pattern
+// or a garbage pointer-as-string instead of the real value. Assert via
+// `to_string`/prints, not bit-level checks, per this round's instructions.
+//
+// RULED OUT, live, both backends, HEAD `5cccaf4` (compiler/target/release/
+// kryos.exe, read-only, no rebuild). `kryos run`: i64_val=42, f64_val=3.5,
+// str_val=hello-world, rc=0. `kryos build --release` + running the produced
+// binary: identical output, rc=0. The `extract_param_binding` gap for
+// `map<K, Option<V>>` is real (confirmed by reading `resolve_struct_literal_
+// name`/`extract_param_binding` in kryos-mir/src/lower.rs -- there is no
+// `TypeExpr::Optional`/`Generic{name:"Option",..}` recursion arm, so field-
+// based V inference does structurally fail for this shape), but it does not
+// manifest as an observable wrong value for a `let x: Registry<V> = ..`
+// literal -- the explicit LET type annotation apparently supplies the
+// correct V through a separate, independent path that wins before the
+// gapped field-inference fallback matters. See the `_v2` sibling file for
+// the same probe with the annotation removed (call-argument construction,
+// no `let` hint) -- also ruled out, same evidence, same HEAD.
+
+use std::option::{Option, Some, None}
+
+struct Registry<V> {
+    entries: map<str, Option<V>>
+}
+
+@capabilities(all)
+fn main() {
+    let ri: Registry<i64> = Registry { entries: {"k": Some(42)} }
+    let rf: Registry<f64> = Registry { entries: {"k": Some(3.5)} }
+    let rs: Registry<str> = Registry { entries: {"k": Some("hello-world")} }
+
+    match ri.entries["k"] {
+        Some(x) => println("i64_val=" + to_string(x)),
+        None() => println("i64_val=NONE"),
+    }
+    match rf.entries["k"] {
+        Some(x) => println("f64_val=" + to_string(x)),
+        None() => println("f64_val=NONE"),
+    }
+    match rs.entries["k"] {
+        Some(x) => println("str_val=" + x),
+        None() => println("str_val=NONE"),
+    }
+}

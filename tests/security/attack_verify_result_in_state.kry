@@ -1,0 +1,39 @@
+// INVENTED SHAPE 2: fn value carried inside a Result<T,E> Ok payload in
+// actor state, extracted via match.
+use std::result::{Result, Ok, Err}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    r: Result<fn() -> str, str>
+
+    fn stash(self, f: fn() -> str) {
+        self.r = Ok(f)
+    }
+
+    fn invoke(self) {
+        match self.r {
+            Ok(f) => {
+                let leaked = f()
+                println("RESULT-IN-STATE LEAK: " + leaked)
+            }
+            Err(e) => {
+                println("err: " + e)
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

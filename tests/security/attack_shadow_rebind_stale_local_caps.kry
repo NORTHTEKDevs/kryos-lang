@@ -1,0 +1,51 @@
+// SECURITY ASSAULT round 2 (unknown-means-nothing lens): a `let name = <safe
+// closure>` binding registers `name -> Known(empty)` in the checker's flat,
+// COMPUTED-ONCE `current_local_closure_caps` map (`build_local_closure_caps_block`,
+// kryos-capabilities/src/checker.rs). A LATER tuple-pattern destructure that
+// REBINDS the SAME name (`let (name, _tag) = pair`) parses as `Stmt::Let {
+// name: String::new(), pattern: Some(Pattern::Tuple{..}), .. }` (parser.rs
+// `parse_let`, ~line 1419) -- the pattern-let arm inserts its resolved entry
+// under the EMPTY-STRING key, NEVER under `name`'s real destructured
+// identifiers, because `build_local_closure_caps_block`'s `Stmt::Let { name,
+// value: Some(v), .. }` match arm destructures only `name`/`value` and
+// silently drops `pattern` (the `..`). So the SECOND binding never overwrites
+// the FIRST binding's `Known(empty)` entry for `f` -- the map is built in one
+// forward pass over the whole function body before enforcement runs, so by
+// the time `f()` is checked, `locals["f"]` still says `Known(empty)` from the
+// stale FIRST binding, even though `f` was rebound by the tuple destructure
+// to a privileged, `fs:read`-carrying closure.
+//
+// This is the "unknown-means-nothing" disease in a new shape: not an
+// unresolved provenance defaulting to nothing, but a REBOUND name whose
+// stale, no-longer-true safe classification is never invalidated because the
+// checker doesn't recognize `let (a, b) = ..` as touching `a`/`b` at all.
+//
+// ACCEPTANCE (pre-fix, expected LEAK): both `kryos run` (inferred, default)
+// and `kryos check --strict-capabilities` compile clean and PRINT THE SECRET
+// from inside `deny!(fs:read)`, rc=0.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(pair: (fn() -> str, i64)) -> str {
+    // First binding: a provably safe, zero-capability closure. Registers
+    // "f" -> Known(empty) in the checker's flat local-closure-caps map.
+    let f = || "safe-default"
+    // Second binding: tuple-pattern destructure REBINDS `f` at runtime to
+    // the privileged element of `pair` -- but the checker's map entry for
+    // "f" is never touched by this statement (it inserts under "" instead).
+    let (f, _tag) = pair
+    return f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let payload: (fn() -> str, i64) = (reader, 42)
+    deny!(fs:read) {
+        let leaked = zero_cap_tool(payload)
+        println("SHADOW-REBIND LEAK: " + leaked)
+    }
+}

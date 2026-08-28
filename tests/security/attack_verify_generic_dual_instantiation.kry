@@ -1,0 +1,45 @@
+// ADVERSARIAL: a generic struct `Wrap<T>` instantiated at TWO different
+// types in the SAME program -- `Wrap<i64>` (no authority) used first/
+// elsewhere, `Wrap<fn() -> str>` held in actor state (real authority).
+// Probes whether analyzing the harmless instantiation first corrupts a
+// name-keyed (not instantiation-keyed) cache used when classifying the
+// privileged instantiation's fn-bearing-ness.
+struct Wrap<T> {
+    v: T
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn harmless() -> i64 {
+    let w: Wrap<i64> = Wrap { v: 42 }
+    return w.v
+}
+
+actor Holder {
+    w: Wrap<fn() -> str>
+
+    fn stash(self, f: fn() -> str) {
+        self.w = Wrap { v: f }
+    }
+
+    fn invoke(self) {
+        let leaked = self.w.v()
+        println("GENERIC-DUAL-INSTANTIATION LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let n = harmless()
+    println(to_string(n))
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

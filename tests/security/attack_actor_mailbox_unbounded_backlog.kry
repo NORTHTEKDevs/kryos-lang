@@ -1,0 +1,50 @@
+// ATTACK: actor mailbox has no capacity bound and no backpressure
+// (kryos-rt/src/actor.rs: kryos_actor_send() unconditionally does
+// `mb.queue.push_back(data)` on a plain VecDeque -- no length check, no
+// blocking, no rejection). A producer that out-paces the consuming actor's
+// handler can therefore accumulate an arbitrarily large, entirely
+// memory-resident backlog with zero throttling. This program proves it at
+// runtime: it sends N messages to an actor whose handler is deliberately
+// slow (sleep(5) per message, ~5ms), and times ONLY the send loop.
+//
+// If sends were backpressured/bounded, the send loop's own wall time would
+// scale with N * handler_time (it would have to wait for room in the
+// mailbox). If sends are truly unbounded/fire-and-forget, the send loop
+// completes in a tiny fraction of N * handler_time, proving up to N
+// messages were buffered in memory with no cap.
+//
+// classify: rc==0 required. Real bug: send_phase_ms is orders of magnitude
+// smaller than min_expected_if_bounded_ms (N * handler_ms), proving no
+// backpressure exists -- an unbounded, attacker-controlled memory sink.
+use std::datetime::{now}
+
+actor Sink {
+    count: i64
+
+    fn recv_one(self, x: i64) {
+        self.count = self.count + x - x
+        sleep(5)
+    }
+}
+
+fn main() {
+    let sink = Sink()
+    let n: i64 = 3000
+    let handler_ms: i64 = 5
+    let start = now()
+    let mut i: i64 = 0
+    while i < n {
+        sink.recv_one(i)
+        i = i + 1
+    }
+    let send_phase_ms: i64 = start.elapsed().as_millis()
+    let min_expected_if_bounded_ms: i64 = n * handler_ms
+    println("n: " + to_string(n))
+    println("send_phase_ms: " + to_string(send_phase_ms))
+    println("min_expected_if_bounded_ms: " + to_string(min_expected_if_bounded_ms))
+    if send_phase_ms * 10 < min_expected_if_bounded_ms {
+        println("UNBOUNDED_BACKLOG_CONFIRMED")
+    } else {
+        println("backpressure_observed_or_inconclusive")
+    }
+}

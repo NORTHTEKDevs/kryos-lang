@@ -1,0 +1,37 @@
+// SECURITY RED-TEAM PROBE (assault round -- unknown-means-nothing lens,
+// 2026-08-07 subagent session). Same root cause family as
+// attack_ifexpr_receiver_field_call.kry / attack_matchexpr_receiver_field_call.kry
+// / LEDGER items 30/35/37 (`decompose_container_path`, checker.rs:932-947,
+// has arms ONLY for Expr::Identifier / Expr::FieldAccess / Expr::IndexAccess;
+// every other Expr variant hits `_ => None`, and
+// `resolve_method_field_invoke_caps` (checker.rs:3241-3243) bails to
+// `CapabilitySet::empty()` -- not the fail-closed `all` -- on that None).
+//
+// This probe is the MINIMAL case in the family: a bare STRUCT LITERAL used
+// directly as a `.field()` call's receiver, with NO let-binding, NO
+// accessor function, NO conditional expression, and NO container/HOF
+// machinery at all -- just `Box { f: reader }.f()` inline. Not previously
+// named or executed in the ledger (items 30/35/37 all route through some
+// indirection -- an accessor call, an if/match branch, or a deref/borrow --
+// this one has none).
+//
+// No compiler changes made this session (existing
+// compiler/target/release/kryos.exe used read-only throughout).
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked: str = Box { f: reader }.f()
+        println("STRUCTLIT-RECEIVER LEAK: " + leaked)
+        sleep(100)
+    }
+}

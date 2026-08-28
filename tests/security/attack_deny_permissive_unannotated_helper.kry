@@ -1,0 +1,46 @@
+// RED TEAM round, deny-narrowing lens (2026-08-06). Attacks the boundary
+// between `--capabilities-mode=permissive` and `deny!`.
+//
+// HYPOTHESIS (derived by reading checker.rs, then proven live): in
+// Permissive mode, `build_fn_capability_map` (module.rs Pass 1) only seeds
+// `fn_capabilities` for ANNOTATED functions, and the inference fixed point
+// (Pass 1b, `compute_inferred_capabilities` merge) is gated
+// `if matches!(self.mode, CapabilityMode::Inferred)` -- it does NOT run in
+// Permissive mode. So an UNANNOTATED helper that directly calls a gated
+// builtin never gets an entry in `fn_capabilities`, which means
+// `enforce_callee_name`'s call-site check (`if !callee_caps.is_empty()`)
+// has nothing to compare against and never fires for the CALL SITE.
+//
+// Separately, `check_function` for Permissive mode uses
+// `effective_annotated = annotated` (false for an unannotated function), and
+// because each top-level Decl is checked independently (the scope_stack is
+// popped back to empty between top-level declarations -- this is NOT a
+// call-graph walk, it's one static pass per declaration), the unannotated
+// helper's own body-check has `has_annotated_scope() == false` too -- so the
+// direct `file_read` call INSIDE the helper is also never gated.
+//
+// Net effect: an ordinary (non-closure, non-fn-value) named-function call to
+// an unannotated helper is invisible to the checker in Permissive mode, on
+// BOTH ends (call site and callee body) -- unlike the closure/fn-value
+// laundering vectors, which stay covered in every mode because
+// `hot_params`/`fn_return_closure_caps` (Pass 1a) run unconditionally. This
+// is a DIFFERENT shape from the already-CLOSED `cap_escape_permissive_mode.kry`
+// (which routes the leak through a closure, still caught by Pass 1a).
+//
+// ACCEPTANCE: this program SHOULD be rejected (E0505/E0507) for `deny!` to
+// mean anything under `--capabilities-mode=permissive`, since `main` is
+// explicitly annotated (an enforcing boundary) and narrows itself. If it
+// compiles clean and runs, deny! has zero effect on this call shape in
+// permissive mode.
+
+fn read_secret_directly(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = read_secret_directly("tests/security/secret_for_closure_launder.txt")
+        println("PERMISSIVE-UNANNOTATED-HELPER LEAK: " + leaked)
+    }
+}

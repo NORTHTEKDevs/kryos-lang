@@ -1,0 +1,37 @@
+// REAL-PROGRAM LENS: a capability-gated plugin registry. Plugins are held in
+// an array of structs (the natural container shape for "plugins in a
+// container"), each carrying a `run: fn() -> str` field. The host iterates
+// the registry with the STDLIB's own generic HOF (`std::iter::for_each`,
+// exactly the idiom a real Kryos program would use to "run every registered
+// plugin") inside `deny!(fs:read)`, so a malicious plugin's secret-reading
+// closure must not be reachable.
+use std::iter::{for_each}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn safe_plugin() -> str {
+    return "safe-plugin-ran"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let evil_reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let plugins: [Plugin] = [
+        Plugin { name: "safe", run: safe_plugin },
+        Plugin { name: "evil", run: evil_reader },
+    ]
+    deny!(fs:read) {
+        for_each(plugins, |p: Plugin| {
+            let out = p.run()
+            println("REGISTRY-FOREACH RESULT[" + p.name + "]: " + out)
+        })
+    }
+}

@@ -1,0 +1,39 @@
+// RED TEAM round 2 (memory-unsafety lens): loop/stress version of
+// attack_uncaught_throw_struct_alias_double_free.kry -- fresh heap value
+// per iteration, run many times so a double-free that corrupts the
+// allocator's free-list (rather than crashing immediately) has a real
+// chance to manifest as a crash, hang, or observable corruption within a
+// bounded run, per this campaign's own non-negotiable #7/#8.
+
+struct Holder { tag: str }
+
+fn boom() {
+    throw "boom"
+}
+
+fn make_alias_then_throw(i: i64) {
+    let h1: Holder = Holder { tag: "CANARY-" + to_string(i) + "-TAIL" }
+    let h2: Holder = h1
+    boom()
+}
+
+@capabilities(process)
+fn main() {
+    let iters = 20000
+    let mut i = 0
+    while i < iters {
+        try {
+            make_alias_then_throw(i)
+        } catch e {
+            acc_noop(e)
+        }
+        i = i + 1
+    }
+    println("completed iters=" + to_string(iters))
+}
+
+fn acc_noop(e: str) {
+    if len(e) < 0 {
+        println("impossible")
+    }
+}

@@ -1,0 +1,32 @@
+// ADVERSARIAL: an actor method that RETURNS the fn value read out of its own
+// state (rather than invoking it itself), invoked by the CALLER outside the
+// actor after the method returns.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    r: fn() -> str
+
+    fn stash(self, f: fn() -> str) {
+        self.r = f
+    }
+
+    fn get_reader(self) -> fn() -> str {
+        return self.r
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    let out = h.get_reader()
+    deny!(fs:read) {
+        let leaked = out()
+        println("RETURNED-FROM-ACTOR-METHOD LEAK: " + leaked)
+        sleep(100)
+    }
+}

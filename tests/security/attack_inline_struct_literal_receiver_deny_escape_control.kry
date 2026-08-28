@@ -1,0 +1,24 @@
+// CONTROL for attack_inline_struct_literal_receiver_deny_escape.kry:
+// identical struct/closure, but the struct literal is bound to a LOCAL
+// (`let b = Box { f: reader }`) before `.f()` is called on the local, the
+// ordinary bound-variable shape `resolve_method_field_invoke_caps`'s
+// `local_container_lits` tracking is designed to catch. This MUST still be
+// REJECTED, proving deny!() correctly enforces the ordinary case and the
+// attack file's leak (if any) is specific to the UNBOUND inline-literal
+// receiver, not a general break of struct-field method dispatch.
+
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+@capabilities(fs:read)
+fn main() {
+    let reader: fn() -> str = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = b.f()
+        println("BOUND-STRUCT-LITERAL DENY LEAK (should NOT happen): " + leaked)
+    }
+}

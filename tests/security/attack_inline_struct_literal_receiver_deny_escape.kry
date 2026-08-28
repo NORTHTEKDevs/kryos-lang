@@ -1,0 +1,53 @@
+// ATTACK: calling a method/field directly on a FRESH INLINE STRUCT LITERAL
+// receiver (`Box { f: reader }.f()`, no variable binding at all) defeats
+// deny!() -- a simpler, untested instance of the SAME root cause behind
+// LEDGER items 30/35 (`decompose_container_path`'s `_ => None` catch-all
+// makes `resolve_method_field_invoke_caps` fall to its own weak
+// `CapabilitySet::empty()` default, not `Unknown -> all`, for ANY receiver
+// shape it doesn't specifically recognize as Identifier/FieldAccess/
+// IndexAccess). Items 30/35 reach that same `None` branch via an
+// accessor-CALL receiver or an if/match-expression receiver; this repro
+// reaches it via a bare `StructLiteral` receiver -- no accessor function,
+// no aliasing, no for-loop, no conditional required. `decompose_container_
+// path`'s match (checker.rs:932-947) recognizes exactly three `Expr`
+// shapes as roots (`Identifier`, `FieldAccess`, `IndexAccess`); every other
+// shape -- including a struct literal constructed and immediately called
+// on -- returns `None`, which `resolve_method_field_invoke_caps` (checker.
+// rs:3241-3243) turns into `CapabilitySet::empty()`, not the fail-closed
+// `Unknown -> all` every OTHER unresolved-provenance path in this file
+// uses.
+//
+// STATUS: UNVERIFIED THIS SESSION. Code-level analysis (direct read of
+// `decompose_container_path` and `resolve_method_field_invoke_caps` in
+// checker.rs, cross-checked against LEDGER item 30's own confirmed root
+// cause for a sibling receiver shape) strongly predicts this leaks, but
+// `kryos run`/`kryos check --strict-capabilities` on this file did not
+// return a result before the shared build/execution environment became
+// unresponsive (multiple independent invocations, including a
+// `timeout`-wrapped one, produced no output over a very long wait, while
+// unrelated simple commands in the same window also stalled -- consistent
+// with environment contention, not necessarily a defect in this program).
+// Do NOT cite this file's outcome as confirmed in either direction until
+// it has actually been run and its exit code / stdout observed.
+//
+// ACCEPTANCE (if sound): REJECTED (E0507, requires [fs:read] or [all])
+// under `deny!(fs:read)`, both `inferred` (default `kryos run`) and
+// `--strict-capabilities`.
+
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+@capabilities(fs:read)
+fn main() {
+    let reader: fn() -> str = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        // LIVE ESCAPE (if this compiles clean and prints the secret): a
+        // FRESH struct literal used directly as a method-call receiver,
+        // never bound to any local, defeats deny!().
+        let leaked: str = Box { f: reader }.f()
+        println("INLINE-STRUCT-LITERAL-RECEIVER DENY LEAK: " + leaked)
+    }
+}

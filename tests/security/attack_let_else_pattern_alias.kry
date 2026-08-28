@@ -1,0 +1,44 @@
+// SECURITY RED-TEAM PROBE (assault round 4, 2026-08-06). NEW shape: a
+// `let PATTERN = expr else { ... }` binding (CLAUDE.md gotcha #2: "if let /
+// while let / let ... else all work, desugar to match") is a DIFFERENT
+// statement-level AST shape than the plain `Stmt::Let { name, value }` every
+// alias/container tracker in checker.rs is documented to pattern-match on
+// (`local_container_lits`, `local_caps`, `current_actor_state_alias_locals`
+// are all built by scanning for `Stmt::Let` specifically). If `let-else`
+// is represented as its own statement variant (or only lowered to a `match`
+// AFTER capability checking runs, e.g. in a later desugaring pass), the
+// destructured binding `b` below is never entered into ANY tracker, so a
+// `.method()` call rooted at `b` should hit the exact same
+// "root identifier not found -> CapabilitySet::empty()" fallback that every
+// other closed finding in this suite (param alias, actor-state alias,
+// for-loop alias) exploited -- just reached through a binding FORM none of
+// those fixes specifically targeted.
+//
+// ACCEPTANCE: REJECTED (E0507) under `deny!(fs:read)`, both `inferred`
+// (default) and `--strict-capabilities`.
+
+use std::option::{Option, Some, None}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box { f: fn() -> str }
+
+fn invoke_via_letelse(opt: Option<Box>) -> str {
+    let Option.Some(b) = opt else { return "NO-BOX" }
+    return b.f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    let opt: Option<Box> = Some(b)
+    deny!(fs:read) {
+        let leaked = invoke_via_letelse(opt)
+        println("LET-ELSE-ALIAS LEAK: " + leaked)
+        sleep(100)
+    }
+}

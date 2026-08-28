@@ -1,0 +1,18 @@
+// Follow-up probe to assault4_minimal_deny_fnparam_unwritable.kry: does
+// declaring the sandboxing function's own ceiling as `all` let it compile?
+// If so, does that defeat the whole purpose (the caller must now also hold
+// `all`, so nothing is actually narrowed)?
+
+@capabilities(all)
+fn sandbox_call(f: fn() -> str) -> str {
+    deny!(fs:read) {
+        return f()
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let pure = || "safe, capability-free result"
+    let out = sandbox_call(pure)
+    println(out)
+}

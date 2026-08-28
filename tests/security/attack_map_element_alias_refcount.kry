@@ -1,0 +1,33 @@
+// RED TEAM round (assault round 2, non-capability lens): the MAP analogue of
+// LEDGER item 15 / tests/security/attack_container_element_alias_refcount.kry,
+// which documented this divergence for ARRAY elements only (`let a = arr[0]`).
+// Item 15's own root-cause writeup traced the array bug to Cranelift's
+// `RValue::Index` returning a raw shared box pointer vs. LLVM's `RValue::Index`
+// materializing an independent SSA aggregate copy -- a codegen path specific to
+// array indexing. This probes whether `map<K, V>` element reads (`m["k"]`),
+// which are NOT `RValue::Index`, hit the identical divergence or are immune.
+//
+// CONFIRMED LIVE on compiler/target/release/kryos.exe, no rebuild, both
+// backends, deterministic across repeated runs:
+//   `kryos run`            (Cranelift/JIT): a=x! b=x! m=x!  (mutation through
+//                            alias `a` is visible through EVERY other alias)
+//   `kryos build --release` (LLVM/AOT):     a=x! b=x  m=x   (mutation through
+//                            `a` visible ONLY through `a` itself)
+// Same silent-wrong-answer shape as item 15, independently confirmed on the
+// map code path (not merely "the same bug", since maps do not share item 15's
+// `RValue::Index` codegen site) -- exit 0 on both backends, no crash, values
+// genuinely diverge.
+struct Row {
+    tag: str,
+}
+
+fn main() {
+    let mut m: map<str, Row> = {}
+    m["k"] = Row { tag: "x" }
+    let a: Row = m["k"]
+    let b: Row = m["k"]
+    a.tag = a.tag + "!"
+    println("a=" + a.tag)
+    println("b=" + b.tag)
+    println("m=" + m["k"].tag)
+}

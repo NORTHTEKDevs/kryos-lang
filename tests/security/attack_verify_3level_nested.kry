@@ -1,0 +1,43 @@
+// ADVERSARIAL VERIFICATION: self.a.b.c.f() -- 3 levels of field indirection
+// from actor state before reaching the fn field. Per the fix's own doc,
+// resolve_actor_self_field_invoke_caps only looks at path.first() ("a")
+// against current_actor_fn_state_fields, which is computed transitively via
+// is_fn_bearing_type_inner, so depth should not matter. Expect REJECTED.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+struct Mid {
+    b: Box
+}
+struct Outer {
+    a: Mid
+}
+
+actor Holder {
+    o: Outer
+
+    fn stash(self, no: Outer) {
+        self.o = no
+    }
+
+    fn invoke(self) {
+        let leaked = self.o.a.b.f()
+        println("3-LEVEL NESTED LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Outer { a: Mid { b: Box { f: reader } } })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

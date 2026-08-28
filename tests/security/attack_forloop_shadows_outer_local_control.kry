@@ -1,0 +1,25 @@
+// CONTROL for attack_forloop_shadows_outer_local.kry: identical shape MINUS
+// the outer `let f = harmless` shadow -- isolates whether the bypass needs
+// the name-collision-with-a-stale-outer-local, or whether a bare for-loop
+// iteration-variable direct call is unconditionally unenforced regardless of
+// shadowing. If this control is REJECTED (E0507) while the sibling file
+// LEAKS, the shadowing is the necessary mechanism (a narrower, name-collision
+// bug). If this control ALSO leaks, the bug is broader: for-loop bare-
+// identifier direct calls are never charged at all.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let fns: [fn() -> str] = [reader]
+    deny!(fs:read) {
+        for f in fns {
+            println("CONTROL-NO-SHADOW LEAK: " + f())
+        }
+        sleep(100)
+    }
+}

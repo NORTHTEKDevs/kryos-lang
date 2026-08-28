@@ -1,0 +1,39 @@
+// ASSAULT round 2, historical-regression lens (2026-08-07). "Push/map-
+// insert" + "dynamic container" combined: the map is not a LITERAL
+// (`{"k": [r]}`, the shape `cap_escape_container_chained_direct.kry`
+// covers) -- it starts EMPTY and is populated via a runtime `m[key] = v`
+// INSERT with a computed key inside a loop, then read back with a
+// SEPARATELY computed key (same value, different expression) inside
+// `deny!()`. Probes whether the container-literal tracker
+// (`build_local_container_lits`) -- which by its own name only tracks
+// LITERAL initializers -- has any fallback for an empty-then-mutated map,
+// or whether that path is silently untracked (falls through as
+// zero-requirement rather than the documented Unknown -> All).
+//
+// ACCEPTANCE: should be REJECTED (E0507) under both `--capabilities-
+// mode=inferred` (default `kryos run`) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn build_key(n: i64) -> str {
+    return "slot-" + to_string(n)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut m: map<str, fn() -> str> = {}
+    let mut i: i64 = 0
+    while i < 3 {
+        m[build_key(i)] = reader
+        i = i + 1
+    }
+    deny!(fs:read) {
+        let k = build_key(1)
+        let out = m[k]()
+        println("DYNAMIC-MAP-INSERT-READ LEAK: " + out)
+    }
+}

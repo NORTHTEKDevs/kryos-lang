@@ -1,0 +1,35 @@
+// ASSAULT round 2 (strip-the-row lens): the SAME generic `identity<T>` is
+// monomorphized at TWO different type arguments in the same function --
+// once at `fn() -> str` (carrying fs:read) and once at `i64` (carrying
+// nothing) -- to check whether the checker's per-callee-name tracking
+// cross-contaminates between the two instantiations (e.g. the `i64`
+// instantiation's "no capability" verdict overwriting the closure
+// instantiation's requirement, or vice versa causing a false reject on the
+// harmless one -- either direction is a bug, but the DANGEROUS direction is
+// the closure call ending up under-charged).
+//
+// ACCEPTANCE: the closure call (laundered_fn()) must be REJECTED (E0507)
+// under both enforcement modes; the plain-int identity call must NOT be
+// rejected (that would be a false-positive, not this probe's concern, but
+// worth noting if observed).
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let laundered_int = identity(42)
+    println("MONO-INT: " + to_string(laundered_int))
+    deny!(fs:read) {
+        let laundered_fn = identity(reader)
+        let leaked = laundered_fn()
+        println("MONO-FN LEAK: " + leaked)
+    }
+}

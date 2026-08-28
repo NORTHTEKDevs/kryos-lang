@@ -1,0 +1,29 @@
+// ASSAULT round 2 (strip-the-row lens): a CURRIED chain -- a plain fn
+// returning a fn returning the privileged closure (`make(a)(b)` shape,
+// two levels of curry) -- invoked inside deny!(fs:read). Distinct from the
+// already-tracked reassignment class: no `let mut` + `Stmt::Assign` anywhere
+// in this file, only nested `fn` return positions and immediate call
+// chaining.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn curry_stage2(path: str) -> fn() -> str {
+    return make_secret_reader(path)
+}
+
+fn curry_stage1() -> fn(str) -> fn() -> str {
+    return curry_stage2
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = curry_stage1()("tests/security/secret_for_closure_launder.txt")()
+        println("CURRIED-CHAIN LEAK: " + leaked)
+    }
+}

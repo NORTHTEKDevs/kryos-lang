@@ -1,0 +1,41 @@
+// RED TEAM round 2, type-confusion lens.
+// Hypothesis: `wrap<T>(x: T) -> fn() -> T` instantiated with T ITSELF being a
+// function type (T = fn() -> str, from a NESTED call to wrap at T=str) is an
+// untested higher-order-polymorphism edge. The ruled-out generics wave only
+// interleaved wrap<T> at scalar/str T (i64/str/f64); it never nested one
+// instantiation's RESULT as the argument (and therefore the T) of a second,
+// outer instantiation of the SAME generic. Since closures already go through
+// a uniform i64-erased env-thunk ABI, and T=str/T=f64 pick different
+// ptr-vs-double bitcast paths at the return site (per the resolved
+// conf_generic_closure_return_f64 gotcha), stacking two erasure layers could
+// plausibly confuse which bitcast applies at the OUTER layer.
+fn wrap<T>(x: T) -> fn() -> T {
+    return || x
+}
+
+fn main() {
+    let inner_str = wrap("nested-string")     // T = str
+    let outer_str = wrap(inner_str)           // T = fn() -> str
+    let unwrapped_str: str = outer_str()()
+    println("str: " + unwrapped_str)
+
+    let inner_f64 = wrap(9.75)                // T = f64
+    let outer_f64 = wrap(inner_f64)           // T = fn() -> f64
+    let unwrapped_f64: f64 = outer_f64()()
+    println("f64: " + to_string(unwrapped_f64))
+
+    // Triple-nested, mixing types across layers in one program run.
+    let inner2 = wrap(42)                     // T = i64
+    let mid2 = wrap(inner2)                   // T = fn() -> i64
+    let outer2 = wrap(mid2)                   // T = fn() -> fn() -> i64
+    let deep: i64 = outer2()()()
+    println("i64 deep: " + to_string(deep))
+
+    // Interleave a str-layered wrap right after the i64-layered one so any
+    // shared/leaked monomorphization state would show up as cross-talk.
+    let inner3 = wrap("second-string")
+    let outer3 = wrap(inner3)
+    println("str again: " + outer3()())
+    println("f64 again: " + to_string(outer_f64()()))
+    println("i64 again: " + to_string(deep))
+}

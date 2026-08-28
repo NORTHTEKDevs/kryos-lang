@@ -1,0 +1,21 @@
+// CONTROL for attack_deny_permissive_unannotated_helper.kry -- identical
+// shape, run under the DEFAULT `--capabilities-mode=inferred`. Here the
+// unannotated helper's requirement IS folded into `fn_capabilities` by Pass
+// 1b (inferred-mode-only fixed point), so `deny!(fs:read)` around the call
+// site should still reject it. Proves the permissive-mode finding is a
+// genuine mode-specific gap, not a general-purpose miss that would also
+// show up in the language's own default mode.
+//
+// ACCEPTANCE: REJECTED (E0507) under inferred (default) mode.
+
+fn read_secret_directly(path: str) -> str {
+    return file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let leaked = read_secret_directly("tests/security/secret_for_closure_launder.txt")
+        println("INFERRED-MODE-CONTROL LEAK (should never print): " + leaked)
+    }
+}

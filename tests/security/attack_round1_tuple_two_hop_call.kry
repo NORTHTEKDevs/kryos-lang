@@ -1,0 +1,27 @@
+// ASSAULT round 1 (2026-08-07), historical-regression lens, fresh syntactic
+// dress on item 32 (tuple-index call bypasses ALL enforcement). Item 32's
+// repro is a SINGLE tuple-index hop (`pair.1()`). This probes a TWO-HOP
+// tuple-index chain (`nested.0.1()`) where the outer tuple's element 0 is
+// itself a tuple containing the privileged closure at index 1 -- untested
+// shape per item 32's own writeup (its repros are `attack_verify_tuple_
+// call_general.kry` [plain local tuple, one hop] and `attack_verify_tuple_
+// in_state.kry` [actor-state tuple field, one hop]).
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507) under both
+// `kryos run` (inferred default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let inner = (0, reader)
+    let nested = (inner, 1)
+    deny!(fs:read) {
+        let leaked = nested.0.1()
+        println("TUPLE-TWO-HOP LEAK: " + leaked)
+    }
+}

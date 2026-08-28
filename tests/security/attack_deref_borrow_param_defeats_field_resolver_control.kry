@@ -1,0 +1,29 @@
+// Positive control for attack_deref_borrow_param_defeats_field_resolver.kry:
+// identical shape, but the callee invokes `b.f()` directly (no `&`/`*`
+// indirection). Must be REJECTED -- confirms the deref/borrow wrapper, not
+// something generic about a struct-typed parameter, is what defeats the
+// resolver in the sibling file.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+fn invoke_direct(b: Box) -> str {
+    return b.f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let b = Box { f: reader }
+    deny!(fs:read) {
+        let leaked = invoke_direct(b)
+        println("DIRECT LEAK (should not happen): " + leaked)
+        sleep(100)
+    }
+}

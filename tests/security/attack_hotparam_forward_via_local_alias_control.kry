@@ -1,0 +1,23 @@
+// CONTROL for attack_hotparam_forward_via_local_alias.kry: the EXACT shape from
+// docs/10-capabilities.md's "Closure indirection is sound" example (no local
+// alias, no second forwarding helper -- `zero_cap_tool` calls `reader()`
+// directly). MUST be rejected (the docs claim it always is) -- confirms the
+// alias+forward combination in the sibling attack file is what defeats
+// detection, not some unrelated change to the scenario.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_hotparam_forward_via_local_alias_secret.txt")
+    deny!(fs:read) {
+        println("LEAK: " + zero_cap_tool(reader))
+    }
+}

@@ -1,0 +1,34 @@
+// Type-confusion red team round 2 attack: a generic struct field typed
+// `Option<T>` (not bare T), returned by a bare self-field passthrough
+// method, at T=f64. CLAUDE.md gotcha #17 covers bare -> T / Array / Tuple /
+// map self-field passthrough as fixed, and known_failures already covers
+// a `fn() -> T` closure field -- this targets the untested `Option<T>`
+// field shape specifically.
+
+use std::option::{Option, Some, None}
+
+struct Holder<T> {
+    f: Option<T>
+}
+
+impl<T> Holder<T> {
+    fn get(self: Holder<T>) -> Option<T> {
+        return self.f
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let h: Holder<f64> = Holder { f: Some(9.75) }
+    let got: Option<f64> = h.get()
+    match got {
+        Some(v) => println("option_f64=" + to_string(v)),
+        None() => println("option_f64=NONE"),
+    }
+
+    let h2: Holder<f64> = Holder { f: None() }
+    match h2.get() {
+        Some(v) => println("option_f64_none_case=" + to_string(v)),
+        None() => println("option_f64_none_case=NONE"),
+    }
+}

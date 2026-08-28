@@ -1,0 +1,57 @@
+// ADVERSARIAL PROBE (infer-wrong lens, 2026-08-06): does the capability
+// inference walker actually recurse into if/while/match/try-catch bodies
+// when computing a closure's/function's required capability set, or only
+// into a flat top-level statement list? Four independent unannotated
+// helper functions, each gating its `file_read` call behind a different
+// control-flow construct, each called from `main` inside `deny!(fs:read)`.
+// If the walker misses any construct, that specific call leaks.
+
+fn via_if(path: str, cond: bool) -> str {
+    if cond {
+        return file_read(path)
+    }
+    return "unreached"
+}
+
+fn via_while(path: str) -> str {
+    let mut i: i64 = 0
+    let mut result: str = ""
+    while i < 1 {
+        result = file_read(path)
+        i = i + 1
+    }
+    return result
+}
+
+fn via_match(path: str, tag: i64) -> str {
+    match tag {
+        1 => file_read(path),
+        _ => "unreached",
+    }
+}
+
+fn via_try_catch(path: str) -> str {
+    let mut result: str = ""
+    try {
+        result = file_read(path)
+    } catch e {
+        result = "err: " + e
+    }
+    return result
+}
+
+@capabilities(fs:read)
+fn main() {
+    let secret: str = "tests/security/secret_for_closure_launder.txt"
+    deny!(fs:read) {
+        let a = via_if(secret, true)
+        println("VIA-IF LEAK: " + a)
+        let b = via_while(secret)
+        println("VIA-WHILE LEAK: " + b)
+        let c = via_match(secret, 1)
+        println("VIA-MATCH LEAK: " + c)
+        let d = via_try_catch(secret)
+        println("VIA-TRY-CATCH LEAK: " + d)
+        sleep(100)
+    }
+}

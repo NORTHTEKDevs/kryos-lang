@@ -1,0 +1,15 @@
+// Control: identical shape to assault4_minimal_deny_fnparam_unwritable.kry
+// but WITHOUT the deny! block, to isolate that the failure is specifically
+// the deny!+fn-value-parameter interaction, not fn-value parameters in
+// general (which defer correctly to the caller per invariant 2).
+
+fn sandbox_call(f: fn() -> str) -> str {
+    return f()
+}
+
+@capabilities()
+fn main() {
+    let pure = || "safe, capability-free result"
+    let out = sandbox_call(pure)
+    println(out)
+}

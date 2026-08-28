@@ -1,0 +1,23 @@
+// ASSAULT round 2 (strip-the-row lens), BARE control: `main` declares NO
+// capabilities at all. If the reassigned-local escape (see the deny!
+// sibling file) is real, main should not even need to hold fs:read to
+// begin with -- a fn-typed local's tracked authority is keyed to its
+// DECLARATION-site initializer (a harmless zero-cap placeholder closure),
+// not the value reassigned into it before the call.
+//
+// ACCEPTANCE: must be REJECTED (E0501/E0507) under both enforcement modes.
+// A clean compile + rc=0 + secret printed with main holding NOTHING is a
+// bare (no deny! narrowing needed) capability escape.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut slot: fn() -> str = || "placeholder"
+    slot = reader
+    let leaked = slot()
+    println("REASSIGNED-LOCAL-BARE LEAK: " + leaked)
+}

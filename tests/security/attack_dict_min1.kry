@@ -1,0 +1,18 @@
+// RED TEAM round 4, minimal isolation of the finding in
+// `attack_dict_generic_value_type_confusion.kry`.
+// AOT-ONLY CRASH: `kryos build --release` on this file segfaults (rc=139,
+// no stdout at all) 3/3 runs. `kryos run` (Cranelift/JIT) prints:
+//   ok
+//   3.14159
+// (rc=0), 1/1 run -- correct. See `attack_dict_min1_control_i64.kry` for
+// the V=i64 control that is clean on BOTH backends, isolating the trigger
+// to Dict's generic value type V being non-i64 (here f64; str also
+// crashes, see `attack_dict_min1_control_str.kry`).
+use std::collections::{Dict}
+
+fn main() {
+    let mut d1: Dict<str, f64> = Dict.new()
+    d1 = d1.set("pi", 3.14159)
+    println("ok")
+    println(to_string(d1.get("pi")))
+}

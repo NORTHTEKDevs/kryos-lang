@@ -1,0 +1,62 @@
+// RED TEAM round 1 (memory-unsafety lens): closure-env teardown reached
+// twice, but for a MUTATING closure specifically. attack_closure_env_
+// teardown_twice.kry already ruled this out for a PLAIN (non-mutating,
+// read-only-capture) closure stored 2-3x in containers. A mutating closure
+// goes through a DIFFERENT mechanism (CLAUDE.md gotcha #11's generalized
+// fix): every mutated scalar capture is boxed behind its OWN
+// ARC-allocated heap cell (RValue::ArcAlloc / RValue::Deref /
+// MirType::Shared) *inside* the closure's env, separate from the env
+// box's own refcount. Storing that SAME closure value in 2+ containers
+// that go out of scope independently should retain/release the env
+// (and transitively the per-capture cells) in lockstep -- if the cell's
+// own lifetime is tied to only ONE of the storing scopes instead of the
+// env's shared refcount, the other alias reads a freed cell (UAF) or the
+// cell is freed twice (double free/corruption) when both scopes tear down.
+
+fn make_counter(start: i64) -> fn() -> i64 {
+    let mut n = start
+    return || { n = n + 1  n }
+}
+
+fn scope_a(f: fn() -> i64) -> i64 {
+    let arr: [fn() -> i64] = [f, f]   // same mutating closure value, 2 slots
+    return arr[0]() + arr[1]()
+}
+
+fn scope_b(f: fn() -> i64) -> i64 {
+    let mut m: map<str, fn() -> i64> = {}
+    m["x"] = f
+    m["y"] = f   // same mutating closure value, 2 more slots
+    return m["x"]() + m["y"]()
+}
+
+struct Box {
+    f: fn() -> i64,
+}
+
+fn scope_c(f: fn() -> i64) -> i64 {
+    let b1 = Box { f: f }
+    let b2 = Box { f: f }   // same mutating closure captured into 2 struct boxes
+    return b1.f() + b2.f()
+}
+
+fn main() {
+    let mut i = 0
+    let mut total = 0
+    while i < 20000 {
+        let f = make_counter(i)
+        // f referenced across THREE independent container-owning scopes,
+        // each of which stores it multiple times and tears down at scope
+        // exit, plus f's own scope-end drop as a fourth reference -- all
+        // sharing (and mutating through) the SAME underlying heap cell.
+        total = total + scope_a(f)
+        total = total + scope_b(f)
+        total = total + scope_c(f)
+        // one more call through f directly after all the container scopes
+        // have torn down -- if any teardown path freed the shared cell
+        // early, this either reads garbage or crashes.
+        total = total + f()
+        i = i + 1
+    }
+    println("total=" + to_string(total))
+}

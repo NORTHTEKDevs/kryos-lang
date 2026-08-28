@@ -1,0 +1,81 @@
+// RED TEAM round 2, resource-dos lens (2026-08-06).
+//
+// ORIGINAL HYPOTHESIS (partially wrong, corrected below per the
+// "precise negative is a first-class deliverable" discipline): read
+// directly (kryos-mir/src/lower.rs) that `enter_mono_frame`/
+// `exit_mono_frame` -- the function enforcing MAX_MONO_DEPTH (item 23's
+// recursive-call-stack-depth guard) and MAX_MONO_TOTAL (breadth) -- is
+// called ONLY from `monomorphize` (free-function path, ~line 16230/16281)
+// and `monomorphize_impl_fn` (~line 16442/16510). `monomorphize_struct`
+// (line 15610) and `monomorphize_enum` (line 15684) never call either --
+// only `mono_mangled_name`'s MAX_MONO_TYPE_NODES=4096 node-count budget
+// covers all 4 call sites; there is no depth/call-stack guard on
+// struct/enum monomorphization recursion. The hypothesis was that this
+// gap would reproduce item 19/23's HANG/OOM shape through a generic
+// STRUCT LITERAL instead of a recursive function: `Node<T> { a: T, b: T }`
+// instantiated N times, each level doubling the type
+// (`Node<Node<...<i64>>>`) via `Node { a: prev, b: prev }`.
+//
+// WHAT WAS ACTUALLY FOUND, RE-VERIFIED LIVE (NOT a hang/OOM -- the
+// resource-dos hypothesis for THIS shape is RULED OUT: `kryos check` and
+// `kryos run` both complete in a few seconds even at depth 10-12, no
+// timeout, no unbounded memory): a REFCOUNT-ACCOUNTING (double-free) bug.
+// `kryos run` on this exact file reports repeated
+// `KRYOS-FREE-DIAG: kryos_free: double free of 0x... (already-freed box);
+// ignored` events at program-exit drop cleanup. Bisected by depth
+// (`Node<T>` nesting): depth 1 = 0 double-free events, depth 2 = 1,
+// depth 3 = 4, depth 4 = 11, depth 6 = 57 -- growth tracks the doubling
+// STRUCTURE, confirming the trigger is a generic struct literal whose TWO
+// fields are constructed from the SAME source variable
+// (`Node { a: prev, b: prev }`) at NESTING DEPTH >= 2, not a general
+// same-value-twice-in-one-literal bug: a minimal non-generic control
+// (`struct Pair { a: str, b: str }`, `Pair { a: x, b: x }`, no nesting)
+// shows ZERO double-free events and prints correctly.
+//
+// SEVERITY, characterized directly by reading `kryos-rt/src/string.rs`
+// (`kryos_string_free`), not assumed: the PRODUCTION (non-diagnostic)
+// free path does a race-free guarded decrement that returns early if
+// `rc <= 0`, so the extra/spurious frees this bug causes do NOT re-run
+// the real deallocator on a live object in this repro -- confirmed no
+// silent-wrong-answer here: a companion repro
+// (`tests/security/uaf_check_no_corruption_control.kry`, not committed,
+// see below) reads all 4 leaf values back through the full field-access
+// chain after construction (`x4.a.a.a.a`, `x4.b.b.b.b`,
+// `x4.a.b.a.b`, `x4.b.a.b.a`) and every read is correct
+// (`LEAFVALUE-marker-0001`), so this specific repro does not demonstrate
+// observable data corruption. The residual risk this leaves OPEN, not
+// verified either way here: whether an extra/spurious free landing on an
+// ALREADY-REUSED allocation (a live, unrelated object whose header was
+// placed at the same address by the allocator between the real free and
+// the spurious one) could corrupt that unrelated object's refcount --
+// not exercised by this repro, would need an allocator-reuse-timing probe
+// this round did not build.
+//
+// ROOT CAUSE, NOT diagnosed further this round (attacker-only mandate):
+// somewhere in the generic-struct-literal lowering path for
+// `Node { a: prev, b: prev }` at nesting depth >= 2, the two field
+// assignments are not each retaining their own reference to `prev`
+// (or a monomorphization-cache aliasing issue is sharing state across the
+// two field slots) -- consistent with, but not proven identical to, the
+// missing MAX_MONO_DEPTH-style bookkeeping in `monomorphize_struct`
+// theorized above. Fix shape not attempted (attacker-only mandate).
+
+struct Node<T> {
+    a: T,
+    b: T,
+}
+
+fn main() {
+    let x0: i64 = 1
+    let x1: Node<i64> = Node { a: x0, b: x0 }
+    let x2: Node<Node<i64>> = Node { a: x1, b: x1 }
+    let x3: Node<Node<Node<i64>>> = Node { a: x2, b: x2 }
+    let x4: Node<Node<Node<Node<i64>>>> = Node { a: x3, b: x3 }
+    let x5: Node<Node<Node<Node<Node<i64>>>>> = Node { a: x4, b: x4 }
+    let x6: Node<Node<Node<Node<Node<Node<i64>>>>>> = Node { a: x5, b: x5 }
+    let x7: Node<Node<Node<Node<Node<Node<Node<i64>>>>>>> = Node { a: x6, b: x6 }
+    let x8: Node<Node<Node<Node<Node<Node<Node<Node<i64>>>>>>>> = Node { a: x7, b: x7 }
+    let x9: Node<Node<Node<Node<Node<Node<Node<Node<Node<i64>>>>>>>>> = Node { a: x8, b: x8 }
+    let x10: Node<Node<Node<Node<Node<Node<Node<Node<Node<Node<i64>>>>>>>>>> = Node { a: x9, b: x9 }
+    println("built depth 10")
+}

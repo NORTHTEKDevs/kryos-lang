@@ -1,0 +1,58 @@
+// RED TEAM round 3 (memory-unsafety lens): @copy struct ASSIGNMENT with a
+// FN-TYPED (closure) field. CLAUDE.md gotcha #23 documents that @copy
+// ASSIGNMENT (`let c = b`) deep-clones str/array/map fields on BOTH
+// backends now ("each copy owns its data" -- step 224 unification,
+// tests/smoke/test_copy_assign_deep.kry). That regression test only
+// covers str/array fields. A CLOSURE-typed field was never tried: does
+// the @copy assignment's per-field deep-clone path handle a `fn(...)->T`
+// field by `kryos_arc_retain`-ing its env (matching what the deep-clone
+// does conceptually for other heap fields), or does it fall through as a
+// raw bit-copy of the env pointer (the same failure mode already found
+// and fixed for spawn's struct-capture path in
+// attack_spawn_struct_closure_field_capture.kry, but never checked for
+// plain @copy struct assignment)? If it's a raw bit-copy: `b` and `c`
+// share ONE arc-refcounted env at refcount 1. Calling through both,
+// then letting both drop at scope end, either double-frees the shared
+// env (b's drop frees it, c's drop frees it again) or the first drop's
+// free leaves the other's subsequent closure CALL reading freed memory.
+@copy
+struct Box {
+    tag: str,
+    f: fn() -> i64,
+}
+
+fn make_box(tag: str, start: i64) -> Box {
+    let mut n = start
+    return Box { tag: tag, f: || { n = n + 1  n } }
+}
+
+fn round(i: i64) -> str {
+    let b = make_box("orig", i)
+    let c = b   // @copy assignment -- does the fn field get retained?
+    let v1 = b.f()
+    let v2 = c.f()
+    let v3 = b.f()
+    let v4 = c.f()
+    // expect: b's own counter sequence i+1,i+3 and c's own i+2,i+4 IF
+    // truly independent envs (each starts at `i`, increments on each call
+    // through that struct's OWN copy). If envs are SHARED (one bit-copied
+    // pointer, no retain), b.f() and c.f() increment the SAME `n`, so the
+    // four calls interleave as i+1,i+2,i+3,i+4 in call order regardless
+    // of which struct made the call -- a silent-wrong-answer signal that
+    // the fields alias. That alone is not proof of corruption; the
+    // corruption case is what happens when BOTH b and c drop below.
+    return to_string(v1) + "," + to_string(v2) + "," + to_string(v3) + "," + to_string(v4)
+    // b and c BOTH drop here -- if their `f` fields point at the same env
+    // box with no extra retain for the copy, this is two frees of one box
+}
+
+fn main() {
+    let mut i = 0
+    let mut last: str = ""
+    while i < 20000 {
+        last = round(i)
+        i = i + 1
+    }
+    println("last=" + last)
+    println("done")
+}

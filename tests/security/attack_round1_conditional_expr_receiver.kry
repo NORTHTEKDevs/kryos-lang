@@ -1,0 +1,33 @@
+// ASSAULT round 1, historical-regression lens: "conditional-expression
+// receiver". Kryos treats `if/elif/else` as a value-producing expression
+// (CLAUDE.md gotcha #3: "a trailing if/elif/else is a block's VALUE, usable
+// as a let initializer or a match-arm tail"). This probes whether an
+// IMMEDIATELY-INVOKED if-expression result (`(if c { a } else { b })()`)
+// routes through the same callee-capability resolver as an ordinary
+// Identifier callee, or whether the checker's callee-shape match only
+// covers Identifier/FieldAccess/MethodCall and silently falls through for
+// an `Expr::If` in callee position (same class of gap as items 32/36/37 --
+// callee shape resolve_path/check_callee_capabilities cannot see).
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507) under both
+// `kryos run` (inferred default) and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn make_safe() -> fn() -> str {
+    return || "safe-value"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let safe = make_safe()
+    let pick_reader: bool = true
+    deny!(fs:read) {
+        let leaked = (if pick_reader { reader } else { safe })()
+        println("CONDITIONAL-EXPR-RECEIVER LEAK: " + leaked)
+    }
+}

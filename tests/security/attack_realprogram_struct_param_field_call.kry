@@ -1,0 +1,39 @@
+// NOVEL VECTOR (not tuple-index/item-32, not conditional-receiver/item-35,
+// not actor-state, not alias-chain, not spawn/forloop): a struct-typed
+// PARAMETER (not itself fn-typed, so it is never a `hot_params` candidate)
+// whose FIELD is a closure, invoked with ordinary method-call syntax
+// (`p.run()`) directly inside the function body that OWNS the parameter.
+// `resolve_method_field_invoke_caps` requires the receiver's root to be a
+// name found in `local_container_lits` (locally `let`-bound container
+// LITERALS only) and returns `CapabilitySet::empty()` -- not `Unknown`/`all`
+// -- for anything else, including an ordinary parameter it never
+// cross-checks against `own_params` at all. So `run_plugin`'s own inferred
+// capability set is computed as EMPTY regardless of which `Plugin` is
+// actually passed to it -- a self-contained bug independent of any HOF/
+// lambda/for_each indirection.
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+// Deliberately UNANNOTATED -- inferred mode should compute its real
+// requirement (fs:read, since the plugin passed to it may hold a reader)
+// from its own body.
+fn run_plugin(p: Plugin) -> str {
+    return p.run()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let evil_reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let evil = Plugin { name: "evil", run: evil_reader }
+    deny!(fs:read) {
+        let out = run_plugin(evil)
+        println("STRUCT-PARAM-FIELD-CALL LEAK: " + out)
+    }
+}

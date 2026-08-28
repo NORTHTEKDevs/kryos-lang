@@ -1,0 +1,32 @@
+// ADVERSARIAL: fn value stored inside a MAP inside actor state, reached
+// via self.<field>[k]().
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    readers: map<str, fn() -> str>
+
+    fn stash(self, r: fn() -> str) {
+        let mut m: map<str, fn() -> str> = {}
+        m["k"] = r
+        self.readers = m
+    }
+
+    fn invoke(self) {
+        let leaked = self.readers["k"]()
+        println("MAP-IN-STATE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

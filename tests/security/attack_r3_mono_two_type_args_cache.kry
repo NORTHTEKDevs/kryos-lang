@@ -1,0 +1,31 @@
+// SECURITY -- round 3 assault, strip-the-row lens: the SAME generic identity
+// function is monomorphized at TWO different type arguments in one program --
+// once at T=i64 (an innocuous call, evaluated FIRST) and once at
+// T=fn()->str (carrying the privileged closure, evaluated SECOND) -- probing
+// whether a monomorphization/inference cache keyed loosely (e.g. by the
+// generic function's NAME rather than its full instantiated signature)
+// lets the first (harmless) instantiation's capability row silently stick
+// for the second call.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let harmless = identity(42)
+    println("harmless mono: " + to_string(harmless))
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let laundered = identity(reader)
+    deny!(fs:read) {
+        let leaked = laundered()
+        println("MONO-TWO-TYPE-ARGS LEAK: " + leaked)
+    }
+}

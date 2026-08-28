@@ -1,0 +1,44 @@
+// SECURITY RED-TEAM PROBE (assault round -- unknown-means-nothing lens,
+// 2026-08-07 subagent session).
+//
+// Same root cause family as attack_ifexpr_receiver_field_call.kry /
+// attack_matchexpr_receiver_field_call.kry / LEDGER items 30/35/37
+// (`decompose_container_path`, checker.rs:932-947, has arms ONLY for
+// Expr::Identifier / Expr::FieldAccess / Expr::IndexAccess; every OTHER
+// Expr variant -- including the OBJECT of an IndexAccess, which is only
+// followed if IT is itself one of those three -- hits `_ => None`, and
+// `resolve_method_field_invoke_caps` (checker.rs:3241-3243) bails to
+// `CapabilitySet::empty()` instead of the fail-closed `all`).
+//
+// Distinct wrapper shape from every existing repro: an ARRAY LITERAL
+// immediately indexed (`[a][0].f()`), not an `if`/`match`/accessor-call/
+// deref/borrow. `a` itself is an ordinary previously-tracked local (built
+// via `let a: Box = Box { f: reader }` OUTSIDE the `deny!` block, exactly
+// matching the existing safe/leaking repros' own pattern) so this probe
+// does NOT hit the (separate, correctly-enforced) "referencing a gated
+// function as a bare value inside a narrowed scope" check that a first
+// attempt at this probe (attack_structlit_receiver_field_call.kry, RULED
+// OUT this session -- see its own file) tripped by constructing the
+// struct literal itself inside `deny!`.
+//
+// No compiler changes made this session (existing
+// compiler/target/release/kryos.exe used read-only throughout).
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+@capabilities(fs:read)
+fn main() {
+    let a: Box = Box { f: reader }
+    deny!(fs:read) {
+        let leaked: str = [a][0].f()
+        println("ARRAYLIT-INDEX-RECEIVER LEAK: " + leaked)
+        sleep(100)
+    }
+}

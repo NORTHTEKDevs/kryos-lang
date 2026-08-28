@@ -1,0 +1,57 @@
+// RED TEAM round 2 (memory-unsafety lens): loop/heap-churn version of
+// attack_uncaught_throw_param_borrow_free.kry -- FRESH heap value per
+// iteration (per this campaign's own non-negotiable #7), read AND
+// overwritten together, so a premature free shows up as a value mismatch
+// or crash rather than being masked by a stable/reused allocation.
+//
+// If consume_and_throw's uncaught-throw unwind cleanup frees the BORROWED
+// `s` parameter (a str -- ARC-backed handle, caller-owned per CLAUDE.md),
+// the caller's `secret` local is now a dangling handle. Immediately
+// allocating unrelated heap garbage right after the catch pressures the
+// allocator to reuse the freed slot, and the byte-for-byte comparison
+// below catches the corruption if it happens on this iteration.
+
+fn boom() {
+    throw "boom"
+}
+
+fn consume_and_throw(s: str) {
+    boom()
+}
+
+@capabilities(process)
+fn main() {
+    let iters = 20000
+    let mut i = 0
+    let mut mismatches = 0
+    let mut first_mismatch_i = -1
+    while i < iters {
+        let secret: str = "CANARY-" + to_string(i) + "-TAIL"
+        let expect: str = "CANARY-" + to_string(i) + "-TAIL"
+        try {
+            consume_and_throw(secret)
+        } catch e {
+            acc_noop(e)
+        }
+        // heap churn to pressure reuse of any prematurely-freed buffer
+        let junk1: str = "junkjunkjunkjunkjunk" + to_string(i)
+        let junk2: [str] = [junk1, junk1, junk1]
+        if len(junk2) != 3 {
+            println("impossible")
+        }
+        if secret != expect {
+            mismatches = mismatches + 1
+            if first_mismatch_i == -1 {
+                first_mismatch_i = i
+            }
+        }
+        i = i + 1
+    }
+    println("mismatches=" + to_string(mismatches) + " / " + to_string(iters) + " first=" + to_string(first_mismatch_i))
+}
+
+fn acc_noop(e: str) {
+    if len(e) < 0 {
+        println("impossible")
+    }
+}

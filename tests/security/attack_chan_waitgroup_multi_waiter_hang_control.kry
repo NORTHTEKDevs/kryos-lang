@@ -1,0 +1,27 @@
+// POSITIVE CONTROL for attack_chan_waitgroup_multi_waiter_hang.kry: the
+// SAME ChanWaitGroup shape but with only ONE waiter, proving the harness
+// itself (spawn/chan/wg_add/wg_done/wg_wait) is not just broken in
+// general -- a single waiter must complete cleanly and fast.
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+fn main() {
+    let mut wg = new_wait_group()
+    wg = wg_add(wg, 1)
+    let results = chan()
+
+    let wg1 = wg
+    spawn {
+        wg_wait(wg1)
+        send(results, 1)
+    }
+
+    sleep(300)
+
+    let wg3 = wg
+    spawn {
+        wg_done(wg3)
+    }
+
+    let a = recv(results)
+    println("control: single waiter completed, id=" + to_string(a))
+}

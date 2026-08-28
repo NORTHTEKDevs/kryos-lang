@@ -1,0 +1,35 @@
+// ASSAULT round 2 (strip-the-row lens): generic-trait-bound MethodCall arm,
+// deny! variant. `main` legitimately HOLDS fs:read, then narrows with
+// deny!(fs:read) around a call routed through `call_it<T: Runner>(t: T)`,
+// which internally calls `t.run()` (needs fs:read). Tests whether the
+// generic-trait-bound dispatch arm respects an enclosing deny! narrowing
+// the same way a direct call does.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes. Compiling
+// clean + rc=0 + secret printed inside deny! is a real narrowing escape.
+
+trait Runner {
+    fn run(self) -> str
+}
+
+struct RealRunner {}
+
+impl Runner for RealRunner {
+    @capabilities(fs:read)
+    fn run(self) -> str {
+        return file_read("tests/security/secret_for_closure_launder.txt")
+    }
+}
+
+fn call_it<T: Runner>(t: T) -> str {
+    return t.run()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = RealRunner {}
+    deny!(fs:read) {
+        let out = call_it(r)
+        println("TRAIT-BOUND-DENY LEAK: " + out)
+    }
+}

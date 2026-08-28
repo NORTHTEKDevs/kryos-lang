@@ -1,0 +1,82 @@
+// RED TEAM round 1 (memory-unsafety lens): CROSS-FUNCTION-FRAME exception
+// unwind with live heap locals in EACH frame, not just nested BLOCKS inside
+// one function (attack_throw_unwind_heap_locals.kry already ruled that out).
+// Because Kryos exceptions are documented as FLAG-BASED, not native stack
+// unwinding (CLAUDE.md / kryos-rt/src/spawn.rs comment), propagation across
+// a CALL boundary is a mechanically different code path than propagation
+// across a BLOCK boundary within one function: after each call, generated
+// code must check the pending-exception flag and skip the rest of the
+// caller's statements -- including any scope-exit drops the caller's own
+// heap locals (allocated BEFORE the call, still needed AFTER a normal
+// return) would otherwise get. If a frame's drop is skipped, that's a leak;
+// if it fires twice (once per unwind check, once via a shared cleanup
+// path), that's a double-free/corruption.
+//
+// Five frames, each allocating a str + a heap-field struct BEFORE calling
+// the next frame down, and using the heap value again (interpolated into
+// the eventual exception string) so a dangling/corrupted read isn't masked.
+
+struct Holder {
+    tag: str,
+    data: [i64],
+}
+
+fn mk(tag: str, n: i64) -> Holder {
+    let mut arr: [i64] = []
+    let mut i = 0
+    while i < n {
+        arr = push(arr, i)
+        i = i + 1
+    }
+    return Holder { tag: tag, data: arr }
+}
+
+fn frame5(n: i64) -> i64 {
+    let s5: str = "f5-" + to_string(n)
+    let h5: Holder = mk("f5", 5)
+    throw "boom n=" + to_string(n) + " f5=" + s5 + " len=" + to_string(len(h5.data))
+}
+
+fn frame4(n: i64) -> i64 {
+    let s4: str = "f4-" + to_string(n)
+    let h4: Holder = mk("f4", 5)
+    let r = frame5(n)
+    // never reached on the throwing path -- s4/h4 must still be dropped once
+    return r + len(h4.data) + len(s4)
+}
+
+fn frame3(n: i64) -> i64 {
+    let s3: str = "f3-" + to_string(n)
+    let h3: Holder = mk("f3", 5)
+    let r = frame4(n)
+    return r + len(h3.data) + len(s3)
+}
+
+fn frame2(n: i64) -> i64 {
+    let s2: str = "f2-" + to_string(n)
+    let h2: Holder = mk("f2", 5)
+    let r = frame3(n)
+    return r + len(h2.data) + len(s2)
+}
+
+fn frame1(n: i64) -> i64 {
+    let s1: str = "f1-" + to_string(n)
+    let h1: Holder = mk("f1", 5)
+    let r = frame2(n)
+    return r + len(h1.data) + len(s1)
+}
+
+fn main() {
+    let mut i = 0
+    let mut caught = 0
+    while i < 20000 {
+        try {
+            let r = frame1(i)
+            println("no throw: " + to_string(r))
+        } catch (e) {
+            caught = caught + 1
+        }
+        i = i + 1
+    }
+    println("caught=" + to_string(caught))
+}

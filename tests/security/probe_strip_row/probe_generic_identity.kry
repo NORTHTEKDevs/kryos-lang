@@ -1,0 +1,23 @@
+// STRIP-THE-ROW probe (round 1): a privileged closure round-tripped through
+// a generic identity function. Tests whether the NEW capability-typed
+// fn-value inference (KRYOS_DUMP_FN_EFFECTS) correctly threads `fs:read`
+// through `identity<T>`'s row-variable into `main`'s own accumulated row.
+// kryos-capabilities (the actual enforcer) is unmodified this stage, so
+// this does NOT test accept/reject -- it tests whether the INFERRED row
+// (the thing enforcement will read once wired) is silently stripped.
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let laundered = identity(reader)
+    let r = laundered()
+    println("GENERIC IDENTITY: " + r)
+}

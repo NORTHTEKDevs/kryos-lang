@@ -1,0 +1,28 @@
+// Type-confusion red team round 2 attack: nested generic instantiation
+// (Holder<Holder<T>>) through a bare self-field passthrough at the OUTER
+// level, where the INNER generic's own passthrough must also resolve
+// correctly. Tests whether monomorphization threads through two levels of
+// generic nesting rather than one.
+
+struct Holder<T> {
+    f: T
+}
+
+impl<T> Holder<T> {
+    fn get(self: Holder<T>) -> T {
+        return self.f
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let inner: Holder<f64> = Holder { f: 7.5 }
+    let outer: Holder<Holder<f64>> = Holder { f: inner }
+
+    let got_inner: Holder<f64> = outer.get()
+    let val: f64 = got_inner.get()
+    println("nested_f64=" + to_string(val))
+
+    // chained in one expression
+    println("nested_f64_chained=" + to_string(outer.get().get()))
+}

@@ -1,0 +1,97 @@
+// REAL-PROGRAM LENS, ASSAULT round 1 (2026-08-06) -- ERGONOMICS finding,
+// not a security escape. Companion to
+// attack_realprogram_tool_registry.kry.
+//
+// The FIRST design a real user reaches for, writing a plugin registry
+// with mixed-trust plugins, is one generic dispatch loop wrapped in a
+// single `deny!` to "sandbox everything": iterate an array of
+// `PluginTool`, call `deny!(fs:write, fs:read, process) { dispatch(...) }`
+// once, trust the sandbox to make every plugin equally safe regardless of
+// what capabilities that PARTICULAR plugin's closure actually needs.
+//
+// This does not compile the moment ONE tool in the array legitimately
+// needs a capability (here, `audit_logger` needing `fs:write` to append a
+// log line -- an entirely ordinary, non-malicious plugin). The `deny!`
+// scope is lexical over the WHOLE block, not per-plugin, so there is no
+// way to say "deny everything except what tool X is allowed" inside a
+// single generic loop body -- the only fix is to partition the registry
+// into separate trust-level lanes ahead of time (what
+// attack_realprogram_tool_registry.kry does), which defeats the point of
+// having ONE generic, data-driven plugin container in the first place:
+// the container itself cannot carry a per-entry capability ceiling, only
+// the surrounding lexical scope can, so heterogeneous-trust plugins
+// cannot share a dispatch loop at all under the current model.
+//
+// VERIFIED LIVE this session (compiler/target/release/kryos.exe, no
+// compiler changes): `kryos check` on this file exits non-zero with
+// E0507 -- but NOT at `append_log`'s `fs:write` requirement as expected.
+// It fires one level up, at the `dispatch(tools, name, ...)` call site
+// itself, requiring `[all]` (not just `fs:write`), for a reason that
+// applies BEFORE `deny!` is even reached: `tools` is built via
+// `[make_echo_tool(), make_audit_logger(log_path)]`, and each element is
+// the RETURN VALUE of a factory function call, not a struct literal
+// written directly in the array. `resolve_container_path_caps` only
+// resolves an array element's fn-typed field through
+// `local_container_lits`, which is populated for a `let x = <literal>`
+// binding, never for `let x = some_fn_call()` -- a documented, deliberate
+// scope boundary (tools/loop/LEDGER.md "capability cascade" wave; not a
+// bug, an accepted cost), but it means THIS file's fail-closed rejection
+// has nothing to do with the blanket-`deny!` hypothesis the header above
+// describes -- the call is already `[all]`-gated one call site earlier,
+// so `deny!`'s own narrowing is never exercised in this particular
+// repro. See attack_realprogram_tool_registry.kry for the same `[all]`
+// requirement firing on ALL THREE of its dispatch call sites (including
+// its fully-trusted, capability-honest lane), which is the real, more
+// general finding: a generic `dispatch(tools: [PluginTool], ...)` helper
+// is uncallable by ANY caller short of `@capabilities(all)` the moment a
+// single factory function builds one array element, regardless of
+// `deny!` or plugin trust level at all.
+
+@capabilities(fs:write)
+fn append_log(path: str, line: str) {
+    file_write(path, line + "\n")
+}
+
+struct PluginTool {
+    name: str,
+    run: fn(str) -> str,
+}
+
+fn make_audit_logger(log_path: str) -> PluginTool {
+    return PluginTool {
+        name: "audit_logger",
+        run: |input: str| {
+            append_log(log_path, "audit: " + input)
+            return "logged"
+        },
+    }
+}
+
+fn make_echo_tool() -> PluginTool {
+    return PluginTool { name: "echo", run: |input: str| "echo: " + input }
+}
+
+fn dispatch(tools: [PluginTool], name: str, input: str) -> str {
+    let mut i = 0
+    while i < len(tools) {
+        if tools[i].name == name {
+            return tools[i].run(input)
+        }
+        i = i + 1
+    }
+    return "ERROR: unknown tool " + name
+}
+
+@capabilities(fs:write)
+fn main() {
+    let tools: [PluginTool] = [make_echo_tool(), make_audit_logger("tests/security/realprogram_audit.log")]
+
+    let mut i = 0
+    while i < len(tools) {
+        let name = tools[i].name
+        deny!(fs:write, fs:read, process) {
+            println(dispatch(tools, name, "job-" + to_string(i)))
+        }
+        i = i + 1
+    }
+}

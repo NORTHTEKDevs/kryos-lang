@@ -1,0 +1,13 @@
+// Variant of `attack_dict_min1.kry` with ONLY `Dict.new()` (no set/get) at
+// V=f64. Still fails on AOT, but with a DIFFERENT observable: it PRINTS
+// "ok-new" successfully, then the process exits with rc=3 (not rc=139/
+// segfault) -- deterministic 3/3. Suggests the crash-on-drop of an empty
+// `Dict<str, f64>` (construction/teardown path) is a SEPARATE fault site
+// from whatever `attack_dict_min1.kry`'s set()+get() path hits, not one
+// single bug with one single crash location.
+use std::collections::{Dict}
+
+fn main() {
+    let d1: Dict<str, f64> = Dict.new()
+    println("ok-new")
+}

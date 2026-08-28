@@ -1,0 +1,28 @@
+// STRIP-THE-ROW probe: a privileged closure nested two containers deep
+// (array of arrays, and map of arrays) then invoked. Tests whether CapRow
+// threading through nested Array/Map generic substitution (spec S4.1)
+// actually happens at two levels of nesting, not just one.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut inner: [fn() -> str] = []
+    inner = push(inner, reader)
+    let mut outer: [[fn() -> str]] = []
+    outer = push(outer, inner)
+    let picked = outer[0][0]
+    let r = picked()
+    println("NESTED-ARRAY: " + r)
+
+    let mut m: map<str, [fn() -> str]> = {}
+    let mut arr2: [fn() -> str] = []
+    arr2 = push(arr2, reader)
+    m["k"] = arr2
+    let picked2 = m["k"][0]
+    let r2 = picked2()
+    println("MAP-OF-ARRAY: " + r2)
+}

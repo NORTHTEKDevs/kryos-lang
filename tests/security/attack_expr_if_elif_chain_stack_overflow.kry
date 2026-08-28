@@ -1,0 +1,80 @@
+// RED TEAM assault round 1, non-capability lens (2026-08-07).
+//
+// A SIXTH unguarded recursive-descent parse cycle, distinct from the
+// already-filed `attack_parser_elif_let_chain_stack_overflow.kry` (item:
+// statement-context `if let ... elif let` desugar chain via
+// parse_if_rest/parse_if_let/parse_if_let_else). This one is the
+// EXPRESSION-context sibling: an `if ... elif ... elif ... else ...`
+// chain used as a VALUE (e.g. the initializer of a `let`, a match-arm
+// tail, a function argument) is parsed by a completely separate pair of
+// functions, `parse_if_expr` / `parse_if_expr_after_if`
+// (compiler/crates/kryos-parser/src/parser.rs ~2905-2989), reached via
+// `parse_primary`'s `TokenKind::If => self.parse_if_expr()` arm
+// (~line 2633) -- NOT through `parse_if_stmt`/`parse_if_rest` at all, so
+// fixing the statement-level bug does not fix this one.
+//
+// Read directly: neither `parse_if_expr` nor `parse_if_expr_after_if`
+// calls `self.nesting_exhausted()` anywhere, and the `elif` arm of each
+// (`self.advance(); let nested_if = self.parse_if_expr_after_if(start)`)
+// and the `else if` arm (`let nested_if = self.parse_if_expr()`) are both
+// direct, unbounded native Rust recursion -- the same shape as the
+// already-fixed-guard-missing statement case, in a sibling code path the
+// fix for that case will NOT cover.
+//
+// This 3-clause file is the harmless control: parses clean, reaches the
+// checker, exits 1 with an ordinary diagnostic (undefined var `x`/`b`/`c`
+// deliberately unbound, or just a type mismatch) -- proving the
+// CONSTRUCT itself is accepted at small depth and the crash is a scale
+// effect, not a rejection of the syntax:
+fn main() {
+    let a: bool = true
+    let b: bool = false
+    let c: bool = false
+    let x: i64 = if a { 1 } elif b { 2 } elif c { 3 } else { 0 }
+    println(to_string(x))
+}
+
+// At scale (generated, not committed at full size -- mirrors the sibling
+// item's convention): a flat chain of N `elif <cond> { <lit> }` clauses
+// used as a `let` VALUE initializer. Regenerate with:
+//
+//   python3 -c "
+//   n = 50000
+//   lines = ['fn main() {', '    let a: bool = true']
+//   lines.append('    let x: i64 = if a { 0 }')
+//   for i in range(1, n):
+//       lines.append('    elif a { %d }' % i)
+//   lines.append('    else { -1 }')
+//   lines.append('    println(to_string(x))')
+//   lines.append('}')
+//   open('bomb_expr.kry', 'w').write(chr(10).join(lines))
+//   "
+//   $ kryos check bomb_expr.kry
+//
+// Expected failure mode if the hypothesis is correct: native stack
+// overflow (uncatchable, rc likely 253 matching the sibling bug's
+// classification, or a Windows-specific STATUS_STACK_OVERFLOW) during
+// PARSING, before typecheck/codegen -- so `run`/`build --release` are
+// equally exposed.
+//
+// LIVE VERIFICATION (2026-08-07, `compiler/target/release/kryos.exe`, no
+// rebuild), classified by EXIT CODE, not by grepping stdout:
+//   - Control (this 4-clause file, `kryos run`): prints `1`, rc=0. The
+//     construct is accepted and correct at small depth.
+//   - N=50000 generated bomb (50,004-line file, generator above,
+//     unmodified): `kryos check bomb_expr50000.kry` -> stderr
+//     `kryos: stack overflow (unbounded recursion?)`, rc=253. Crash
+//     happens in `kryos check` (type-check-only, no codegen reached),
+//     confirming this is a PARSE-time native-stack overflow via
+//     `parse_if_expr`/`parse_if_expr_after_if`, independent of and
+//     unfixed by any fix to the sibling statement-context bug. `run` and
+//     `build --release` were not independently re-run at N=50000 this
+//     session (parsing precedes both, so the same crash is expected to
+//     gate them too, per the sibling bug's own verified methodology) --
+//     disclosed as inferred, not independently reverified, in the
+//     interest of session time.
+// Fix shape (not attempted -- attacker-only mandate this round): add the
+// same `self.nesting_exhausted()` check (with `rec_depth` bump/pop)
+// around the recursive `self.parse_if_expr_after_if(start)` and
+// `self.parse_if_expr()` calls in both functions -- identical shape to
+// the fix already prescribed for the statement-context sibling.

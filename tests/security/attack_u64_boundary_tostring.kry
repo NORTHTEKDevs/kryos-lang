@@ -1,0 +1,22 @@
+// Type-confusion red team round 2 attack: does to_string(u64) reinterpret
+// the bit pattern as a signed i64 once the value crosses the i64::MAX
+// boundary (the runtime almost certainly stores u64 in the same 64-bit
+// register/slot as i64, so a to_string implementation that formats via a
+// signed-integer path would silently print a negative number for a value
+// the type system says is unsigned and always non-negative).
+
+@capabilities(all)
+fn main() {
+    let a: u64 = 18446744073709551615
+    println("u64_max=" + to_string(a))
+
+    let b: u64 = 9223372036854775808
+    println("u64_signed_boundary=" + to_string(b))
+
+    let c: u64 = 9223372036854775807
+    println("u64_just_below_boundary=" + to_string(c))
+
+    let mut d: u64 = 18446744073709551615
+    d = d + 1
+    println("u64_wrap_after_max=" + to_string(d))
+}

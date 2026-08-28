@@ -1,0 +1,38 @@
+// ADVERSARIAL: fn value carried inside an Option<T> payload in actor state.
+use std::option::{Option, Some, None}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    r: Option<fn() -> str>
+
+    fn stash(self, f: fn() -> str) {
+        self.r = Some(f)
+    }
+
+    fn invoke(self) {
+        match self.r {
+            Some(f) => {
+                let leaked = f()
+                println("OPTION-IN-STATE LEAK: " + leaked)
+            }
+            None() => {
+                println("no reader")
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(reader)
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

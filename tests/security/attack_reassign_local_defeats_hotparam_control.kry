@@ -1,0 +1,25 @@
+// Positive control for attack_reassign_local_defeats_hotparam.kry: calls
+// the fn-typed parameter DIRECTLY (`cb()`, no local reassignment
+// indirection at all). Seed A's own-name match fires normally here, so
+// this MUST be rejected -- confirming the reassignment indirection in the
+// sibling file, not something generic about a bare fn-typed parameter, is
+// what defeats the guard.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_direct(cb: fn() -> str) -> str {
+    return cb()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_reassign_local_defeats_hotparam_secret.txt")
+    deny!(fs:read) {
+        let leaked = apply_direct(reader)
+        println("SHOULD NOT PRINT: " + leaked)
+        sleep(100)
+    }
+}

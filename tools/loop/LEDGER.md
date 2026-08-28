@@ -2457,6 +2457,86 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
+### 46. AVAILABILITY: three independent concurrency-primitive hangs/deadlocks, found as red-team probes that sat untracked in the working tree, never logged here or run in CI (hygiene wave, 2026-08-28) -- NOT FIXED, newly logged
+
+Found while triaging ~170 untracked `tests/security/` fixtures for the
+hygiene wave (see this session's commit). Each file already carries a full
+root-cause writeup in its own header comment (read, not re-derived here);
+this entry exists so the finding survives past this session. Reconfirmed
+LIVE this session, `compiler/target/release/kryos.exe`, `kryos run`,
+`timeout 12`, all three: process still alive past the timeout (rc=124),
+matching each file's own predicted "hangs forever if the hypothesis holds"
+outcome exactly.
+
+- **`tests/security/attack_chan_waitgroup_multi_waiter_hang.kry`** --
+  `std::chan::ChanWaitGroup` only releases ONE blocked `wg_wait` caller: completion
+  is signaled by sending exactly one token on a `buffered(1)` channel
+  (`wg_done`), and `wg_wait`'s fallback path is an ordinary `recv` -- a queue
+  consumer, not a broadcast. Two waiters blocked in `recv(done_ch)` when the
+  single token arrives: one dequeues it and returns, the other blocks on an
+  empty, never-closed channel forever. Confirmed: prints both "waiter
+  spawned" lines and the first waiter's completion, then hangs on the second
+  `recv` -- exactly the predicted starvation shape.
+- **`tests/security/attack_cross_closure_lock_deadlock.kry`** -- the
+  per-closure mutating-lock serialization (LEDGER item 7b/11(a)) only
+  detects a THREAD re-entering the SAME lock address it already holds. A
+  classic AB-BA deadlock between TWO DIFFERENT closures' locks (thread 1
+  holds closure A's lock, blocks acquiring B's; thread 2 holds B's lock,
+  blocks acquiring A's) is invisible to that detector -- each lock lives at
+  a distinct address in its own closure's env block. Confirmed: hangs on
+  `wg_wait` after both spawned threads report entering their first closure.
+- **`tests/security/attack_closure_lock_coop_yield_deadlock.kry`** -- the
+  codegen-inserted closure lock is a bare spin-then-`yield_now()` CAS loop
+  with no knowledge of the cooperative async executor (`kryos-rt/src/executor.rs`).
+  Holding the lock across a coop-yield point (`sleep_ms` inside the locked
+  body) parks the OS thread while the coop baton passes to a second task
+  that then spins forever on the real mutex CAS (never yielding the coop
+  baton back), while the first task can never resume to release the lock --
+  a genuine permanent hang, confirmed both backends per the file's own
+  header (`kryos run` 5/5, `kryos build --release` 5/5, `Get-Process`
+  showing the process PARKED not hot-spinning).
+
+None of the three touches the capability/trust boundary or produces a wrong
+answer -- these are pure availability bugs (a caller can hang the process
+forever with ordinary, non-adversarial concurrency usage: two independent
+consumers of one WaitGroup, two closures that call each other, or a shared
+mutating closure used from two coop tasks). Ranked below the silent-wrong-answer
+class per this file's own doctrine, above a plain papercut. NOT FIXED --
+found and logged only, no compiler change this session (hygiene-wave scope).
+Repro files committed as regression corpus in this session's commit;
+promote to a real timeout-based gate (`tests/concurrency_smoke.sh` pattern)
+when someone picks up the fix.
+
+### 47. RESOURCE-DOS: `monomorphize_struct`/`monomorphize_enum` have no `enter_mono_frame`/`MAX_MONO_TOTAL` guard, unlike `monomorphize`/`monomorphize_impl_fn` -- a small, idiomatic generic hangs `kryos run`/`kryos build` indefinitely (found in `tests/security/attack_mono_struct_growing_selfref_no_depth_guard_hang.kry`, untracked until this hygiene wave, 2026-08-28) -- NOT FIXED, newly logged
+
+Distinct from the already-filed `attack_mono_struct_doubling_no_depth_guard.kry`
+(that shape was explicitly ruled out for resource-DOS -- completes in a few
+seconds even at depth 10-12 -- and surfaced an unrelated double-free
+instead). This file's shape is genuinely unbounded: a self-referential
+generic struct whose recursive field wraps the type parameter in ANOTHER
+generic at each level (`Node<T> { next: Option<Node<Wrap<T>>> }`), so the
+mangled name is never the same twice and the existing exact-same-mangled-name
+placeholder guard (`monomorphize_struct`, `kryos-mir/src/lower.rs` ~15651)
+never fires -- `enter_mono_frame`/`exit_mono_frame` (the depth/total cap
+`monomorphize`/`monomorphize_impl_fn` already use) are called from exactly 2
+call sites, neither inside `monomorphize_struct` (~15613) or
+`monomorphize_enum` (~15687), per the file's own header (grep-verified, not
+just asserted). Reconfirmed LIVE this session: `kryos check` on the file
+returns rc=0 in ~20ms with zero diagnostics (well-typed, hang is not a type
+error); `kryos run` on the SAME file: `timeout 12` rc=124, zero stdout the
+whole time -- consistent with the file's own prior measurement (152s+ with
+neither a crash nor the `mono_fatal` limit diagnostic the guarded functions
+would produce almost instantly). A single ~20-line struct declaration plus
+one trivial instantiation is enough -- no adversarial intent required, any
+developer modelling a growing decoration/capability chain could write this
+by accident. NOT FIXED -- found and logged only, no compiler change this
+session (hygiene-wave scope, matches item 46's split of discovery vs. fix).
+Fix shape (not attempted): add the same `enter_mono_frame`/`exit_mono_frame`
+pair around the recursive field/variant substitution calls inside
+`monomorphize_struct` and `monomorphize_enum`. Repro file committed as
+regression corpus in this session's commit.
+
+
 ### 44. P0 MEMORY CORRUPTION, BACKEND-DIVERGENT: `RValue::EnumVariant` construction never gave a new enum box an independent reference to its own str/array payload fields (universal-claim campaign 2026-08-16, minimized 2026-08-17, root-caused + JIT-fixed 2026-08-17) -- JIT FIXED + GATED, AOT FIXED (WAVE 3, 2026-08-18), JIT t10/closure-counter residual FIXED (WAVE 1 of a new campaign, 2026-08-19) -- ITEM CLOSED, moved to the CLOSED table. WAVE 2 (2026-08-18): the exception-path double-free class (JIT) is ALSO FIXED. WAVE 3 (2026-08-18): the AOT `apply()`/push array-of-enum residual is now FIXED and vacuity-proven -- both prior AOT blockers are closed, but WAVE 3 pinned a NEW, separate JIT-only regression (`tests/minilisp/t10.lisp`, closure-counter). 2026-08-19 (this entry's final addendum): that JIT residual is FIXED too, both backends now 11/11 clean on `tests/minilisp_gate.sh` -- see the dated addendum near the end of this entry for the full six-session accounting and the closing fix.
 
 MEASURED MECHANISM (instrumented via the pre-existing `KRYOS_BOX_DIAG=1

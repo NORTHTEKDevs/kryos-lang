@@ -1,0 +1,36 @@
+// ASSAULT round 2, historical-regression lens (2026-08-07). "Conditional-
+// expression receiver": the CALL EXPRESSION's own receiver is an inline
+// if/elif/else expression (a block-tail-value form, gotcha #3) selecting
+// between a privileged closure and a zero-cap decoy, evaluated and invoked
+// in one expression with no intermediate `let` at all --
+// `(if cond { reader } else { decoy })()`. No existing repro in this suite
+// makes the call receiver ITSELF a compound/conditional expression; every
+// prior shape resolves the receiver to a bare Ident, a field chain, or a
+// tuple/container index. This probes whether the checker's callee-
+// resolution walk has a fallback case for an arbitrary expression in
+// receiver position, or silently treats anything it doesn't recognize as
+// requiring nothing.
+//
+// ACCEPTANCE: should be REJECTED (E0507) under both `--capabilities-
+// mode=inferred` (default `kryos run`) and `--strict-capabilities`. If
+// this shape simply fails to PARSE, that's a ruled-out result (documented
+// limitation), not an escape -- report exit code and message honestly.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn decoy() -> str {
+    return "decoy-no-secret"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let use_real: bool = true
+    deny!(fs:read) {
+        let out = (if use_real { reader } else { decoy })()
+        println("IF-EXPR-RECEIVER LEAK: " + out)
+    }
+}

@@ -1,0 +1,45 @@
+// RED TEAM round 2, type-confusion lens.
+// Hypothesis: a user-defined generic ENUM with TWO independent type params
+// on different variants (Either<A, B> { Left(A), Right(B) }) is untested --
+// the ruled-out generics wave covered multi-param generic STRUCTS
+// (Pair<A, B>) and Option<T>/Result<T, E> (both stdlib, single free type
+// var per payload slot), but not a user enum where DIFFERENT variants each
+// bind a DIFFERENT one of two independent type params. If the enum's
+// erased-payload monomorphization keys off variant index rather than the
+// concrete (A, B) binding pair, mixing Left/Right at different concrete
+// types in one program could read a payload at the wrong type.
+enum Either<A, B> {
+    Left(A),
+    Right(B),
+}
+
+fn describe(e: Either<f64, str>) -> str {
+    match e {
+        Left(v) => return "left:" + to_string(v),
+        Right(v) => return "right:" + v,
+    }
+}
+
+fn main() {
+    let a: Either<f64, str> = Left(3.25)
+    let b: Either<f64, str> = Right("hi")
+    println(describe(a))
+    println(describe(b))
+
+    // A second instantiation with the type params SWAPPED relative to the
+    // first (A=str, B=f64) alongside the first still in scope, interleaved.
+    let c: Either<str, f64> = Left("swapped-left")
+    let d: Either<str, f64> = Right(7.5)
+    match c {
+        Left(v) => println("c left:" + v),
+        Right(v) => println("c right:" + to_string(v)),
+    }
+    match d {
+        Left(v) => println("d left:" + v),
+        Right(v) => println("d right:" + to_string(v)),
+    }
+    // Re-read the FIRST instantiation's values again after the second
+    // instantiation ran, to catch any shared/leaked erased-payload state.
+    println("a again: " + describe(a))
+    println("b again: " + describe(b))
+}

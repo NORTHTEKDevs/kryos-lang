@@ -1,0 +1,26 @@
+// SECURITY -- round 3 assault, strip-the-row lens: a closure that captures
+// ANOTHER closure (which itself captures the privileged fn value), two levels
+// of capture indirection, then the outer closure is invoked inside deny!().
+// Distinct from the single-hop closure-launder family already in this dir --
+// probes whether the checker's capture-tracking is transitive across TWO
+// closure-literal boundaries (closure captures closure captures fn-value),
+// not just one.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let inner = || reader()
+    let outer = || inner()
+    let outermost = || outer()
+    deny!(fs:read) {
+        let leaked = outermost()
+        println("NESTED-CLOSURE-TRIPLE LEAK: " + leaked)
+    }
+}

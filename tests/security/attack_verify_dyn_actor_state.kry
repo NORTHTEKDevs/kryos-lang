@@ -1,0 +1,44 @@
+// ADVERSARIAL: fn value reached through a `dyn Trait` METHOD dispatched on a
+// value read from actor state (rather than a direct field call).
+trait Reader {
+    fn read(self) -> str
+}
+
+struct BoxImpl {
+    f: fn() -> str
+}
+
+impl Reader for BoxImpl {
+    fn read(self: BoxImpl) -> str {
+        return self.f()
+    }
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Holder {
+    r: dyn Reader
+
+    fn stash(self, b: BoxImpl) {
+        self.r = b
+    }
+
+    fn invoke(self) {
+        let leaked = self.r.read()
+        println("DYN-ON-ACTOR-STATE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(BoxImpl { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

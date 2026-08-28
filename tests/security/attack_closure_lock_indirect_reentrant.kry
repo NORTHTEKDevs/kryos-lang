@@ -1,0 +1,44 @@
+// ATTACK (red team round 4, concurrency lens): does the closure-lock
+// self-reentrancy DETECTOR (kryos_closure_lock_acquire, thread-local
+// HashMap<usize,()> keyed by lock address, LEDGER "closure-lock-self-
+// reentrancy-hang") generalize to INDIRECT reentry -- A calls B, B calls
+// back into the SAME A instance -- or was it only exercised/verified for
+// the DIRECT self-call shape (f calling f through its own stored handle)?
+//
+// If detection is keyed correctly by lock address (A's env pointer), the
+// second entry into A on the same thread (via B) must be refused exactly
+// like direct self-recursion: a clean `kryos panic: reentrant call into a
+// mutating shared closure: ...`, exit 98. If detection is somehow scoped
+// to the CALL SITE or the immediately-enclosing thunk rather than the lock
+// address globally, this could instead hang forever (A's real
+// kryos_mutex_lock CAS spins against a lock the same thread already holds,
+// with no owner-thread tracking to break the spin) -- the exact permanent
+// hang item 11(a) was supposed to have eliminated for every same-thread
+// path back into a closure's own lock, not just the direct one.
+@capabilities(all)
+fn main() {
+    let mut handlers: map<i64, fn(i64) -> i64> = {}
+    let mut hits: i64 = 0
+    let a = |n: i64| {
+        hits = hits + 1
+        if n > 0 {
+            let b = handlers[1]
+            b(n - 1)
+        } else {
+            hits
+        }
+    }
+    let b = |n: i64| {
+        if n > 0 {
+            let aa = handlers[0]
+            aa(n - 1)
+        } else {
+            -1
+        }
+    }
+    handlers[0] = a
+    handlers[1] = b
+    println("about to call a(3) -- indirect A->B->A reentry, if this hangs the detector does not generalize")
+    let result = a(3)
+    println("UNREACHABLE if detection generalizes: result=" + to_string(result))
+}

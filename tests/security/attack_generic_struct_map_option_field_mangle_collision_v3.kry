@@ -1,0 +1,77 @@
+// RED TEAM round 5, lens: type-confusion / generics-with-compound-returns.
+// Follow-up to _v2's own documented untried lead: "a genuine escape would
+// need a shape with NO concrete-typed context anywhere in the call chain
+// (e.g. a fully generic forwarding function `fn wrap<V>(v: V) -> Registry<V>`
+// calling into the same struct-literal shape) -- untried, left as a lead for
+// a future round."
+//
+// This file implements exactly that. `wrap<V>` builds the `Registry<V>`
+// struct literal INSIDE a fully generic function -- there is no `let`
+// annotation on the literal, no concrete-typed helper param at the call
+// site (the call site's own argument type is what determines V, not a
+// declared `Registry<f64>` anywhere), and the struct literal's own
+// enclosing function's declared return type IS `Registry<V>` (a bare
+// generic, not a fixed instantiation) so even the `ret_hint` fallback
+// path only ever sees the unresolved type param, never a concrete
+// `Registry<f64>`/`Registry<str>` TypeExpr. If `extract_param_binding`'s
+// `map<K, Option<V>>` field-inference gap is really what supplies V in
+// this exact shape, every instantiation should fall back to i64 and
+// collide -- reading the f64/str instances back should render the raw
+// i64 bit pattern or garbage instead of the real value.
+
+// RULED OUT, live, both backends, HEAD read-only run (compiler/target/
+// release/kryos.exe, no rebuild). `kryos run` and `kryos build --release`
+// (+ running the binary) both printed: i64_val=42, f64_val=3.5,
+// str_val=hello-world, f64_val2=9.75, i64_val2=777, rc=0. The
+// `extract_param_binding` structural gap for `map<K, Option<V>>` inside a
+// fully generic forwarding function (no let-annotation, no concrete-typed
+// helper anywhere in the chain, declared return type a bare `Registry<V>`)
+// still does not manifest as an observable wrong value on either backend,
+// including on a repeat instantiation sharing the monomorphization cache
+// with a prior different V. This closes the `_v2` file's "untried lead" --
+// whatever mechanism supplies the correct V does not require a concrete-
+// typed anchor anywhere in the call chain after all.
+
+use std::option::{Option, Some, None}
+
+struct Registry<V> {
+    entries: map<str, Option<V>>
+}
+
+fn wrap<V>(v: V) -> Registry<V> {
+    return Registry { entries: {"k": Some(v)} }
+}
+
+@capabilities(all)
+fn main() {
+    let ri = wrap(42)
+    let rf = wrap(3.5)
+    let rs = wrap("hello-world")
+
+    match ri.entries["k"] {
+        Some(x) => println("i64_val=" + to_string(x)),
+        None() => println("i64_val=NONE"),
+    }
+    match rf.entries["k"] {
+        Some(x) => println("f64_val=" + to_string(x)),
+        None() => println("f64_val=NONE"),
+    }
+    match rs.entries["k"] {
+        Some(x) => println("str_val=" + x),
+        None() => println("str_val=NONE"),
+    }
+
+    // interleave a second round after the first instantiation is already
+    // cached, in case the collision only shows up on a REPEAT instantiation
+    // sharing the monomorphization cache with a prior different V
+    let rf2 = wrap(9.75)
+    let ri2 = wrap(777)
+    match rf2.entries["k"] {
+        Some(x) => println("f64_val2=" + to_string(x)),
+        None() => println("f64_val2=NONE"),
+    }
+    match ri2.entries["k"] {
+        Some(x) => println("i64_val2=" + to_string(x)),
+        None() => println("i64_val2=NONE"),
+    }
+}

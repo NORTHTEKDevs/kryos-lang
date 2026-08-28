@@ -1,0 +1,23 @@
+// ASSAULT round 2 (strip-the-row lens): a privileged closure captured by a
+// `spawn` block, invoked from inside a deny!(fs:read) scope wrapping the
+// spawn statement itself. Tests whether the spawned task's capability
+// requirement is attributed back to the spawning scope (and honors its
+// narrowing) or is silently dropped across the spawn boundary.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        spawn fn() {
+            let leaked = reader()
+            println("SPAWN LEAK: " + leaked)
+        }
+    }
+}

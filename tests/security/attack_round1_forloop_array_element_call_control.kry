@@ -1,0 +1,16 @@
+// Control for attack_round1_forloop_array_element_call.kry: reader invoked
+// directly, no array/for-loop indirection. Must REJECT (E0507).
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = reader()
+        println("FORLOOP-ARRAY-ELEMENT CONTROL LEAK: " + leaked)
+    }
+}

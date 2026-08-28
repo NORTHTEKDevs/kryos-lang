@@ -1,0 +1,28 @@
+// CONTROL for attack_closure_lock_coop_yield_deadlock.kry: identical
+// program, but the mutating closure's body does NOT call anything that
+// yields the coop baton (no sleep_ms/await inside the locked region) -- the
+// lock is acquired and released within a single, uninterrupted turn. If
+// this control finishes quickly (both backends) while the sibling attack
+// file hangs, that isolates the bug to "yielding the coop baton while
+// holding the closure lock", not merely "two coop tasks sharing a mutating
+// closure".
+fn caller(f: fn(i64) -> i64, n: i64, tag: str) -> i64 {
+    let r = f(n)
+    coop_record(tag + "=" + to_string(r))
+    return r
+}
+
+fn main() {
+    let mut counter: i64 = 0
+    let bump = |n: i64| {
+        counter = counter + n
+        counter
+    }
+    coop_reset()
+    coop_spawn(caller(bump, 1, "A"))
+    coop_spawn(caller(bump, 2, "B"))
+    println("about to coop_run")
+    coop_run()
+    println("coop_run returned, counter=" + to_string(counter))
+    println("order: " + coop_order())
+}

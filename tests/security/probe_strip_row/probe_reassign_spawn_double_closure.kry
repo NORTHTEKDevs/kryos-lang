@@ -1,0 +1,29 @@
+// STRIP-THE-ROW probe: reassigned local, a closure capturing a closure,
+// and spawn -- three routes in one file to save round trips.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+
+    // reassigned local
+    let mut slot: fn() -> str = || "placeholder"
+    slot = reader
+    let r1 = slot()
+    println("REASSIGNED-LOCAL: " + r1)
+
+    // closure capturing a closure
+    let wrapper = || reader()
+    let outer_wrapper = || wrapper()
+    let r2 = outer_wrapper()
+    println("CLOSURE-CAPTURES-CLOSURE: " + r2)
+
+    // spawn
+    spawn fn() {
+        let r3 = reader()
+        println("SPAWN: " + r3)
+    }
+}

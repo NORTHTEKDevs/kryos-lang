@@ -1,0 +1,25 @@
+// CONTROL for attack_double_wrapped_closure_deny_escape.kry: identical
+// privileged-source shape (`file_read` inside the innermost closure), but
+// the SINGLE-wrap case that LEDGER item 10 / invariant 23 already fixed --
+// `wrap_once(reader)()` called directly inside deny!(fs:read). This MUST
+// still be REJECTED (E0507), proving the double-wrap attack file (if it
+// leaks) exercises a materially different, unfixed code path rather than a
+// regression of the already-closed single-wrap escape.
+
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader: fn() -> str = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let wrapped: fn() -> str = wrap_once(reader)
+        let leaked: str = wrapped()
+        println("SINGLE-WRAP DENY LEAK (should NOT happen): " + leaked)
+    }
+}

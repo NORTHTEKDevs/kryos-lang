@@ -1,0 +1,30 @@
+// ADVERSARIAL: a module-level `let mut` global holding a fn value, set from
+// a privileged scope, then invoked from within a deny!() block via a plain
+// free function (no actor at all -- this is a different shape entirely:
+// whether the checker's provenance tracking covers a TOP-LEVEL binding, not
+// just locals/params/state fields).
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+let mut GLOBAL_READER: fn() -> str = || "unset"
+
+fn set_global(f: fn() -> str) {
+    GLOBAL_READER = f
+}
+
+fn invoke_global() {
+    let leaked = GLOBAL_READER()
+    println("GLOBAL LEAK: " + leaked)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    set_global(reader)
+    deny!(fs:read) {
+        invoke_global()
+        sleep(100)
+    }
+}

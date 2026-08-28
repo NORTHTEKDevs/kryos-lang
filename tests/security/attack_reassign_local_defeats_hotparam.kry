@@ -1,0 +1,59 @@
+// ADVERSARIAL PROBE (infer-wrong lens, round 4, 2026-08-06): a DIFFERENT
+// blind spot from the already-known `attack_bare_fn_param_alias_defeats_
+// hotparam.kry` (which uses `let g = f; return g()`, a fresh `let` alias).
+// This probe targets `build_local_closure_caps_block` (checker.rs ~2219),
+// which builds the flat `local_caps` map consulted at every closure CALL
+// site. Its `match stmt` handles `Stmt::Let`, `Stmt::If`, `Stmt::For`/
+// `Stmt::While`, `Stmt::TryCatch`, and a bare `{ }` block -- there is no
+// arm for `Stmt::Assign` at all, so a REASSIGNMENT of an existing `let mut`
+// fn-typed local (as opposed to a fresh `let` binding) never updates that
+// local's tracked provenance in the flat map. Two independent, cooperating
+// consequences:
+//   (1) Seed A (`compute_hot_params`, checker.rs ~1445) only marks a
+//       parameter hot when `walk_calls_block` finds a call whose CALLEE
+//       IDENTIFIER NAME textually equals the parameter's own name. Here the
+//       only call in the body is `state()` -- "state" never equals the
+//       parameter name "cb" -- so `cb` is never marked hot, exactly as with
+//       the alias case, but reached via `Stmt::Assign` instead of a fresh
+//       `let`.
+//   (2) Because `Stmt::Assign` is invisible to `build_local_closure_caps_
+//       block`, `local_caps["state"]` is frozen at whatever the ORIGINAL
+//       `let mut state = || "safe default"` resolved to (`Known(empty)`)
+//       even after `state = cb` rebinds it to the caller-supplied closure.
+//       The real per-call checker (`collect_caps_expr`'s `FnCall` arm ->
+//       `resolve_direct_invoke_caps` -> `resolve_closure_caps`'s
+//       `Identifier` arm) consults that SAME stale map at the `state()`
+//       call site.
+// Net effect: `apply_reassign`'s own inferred capability set comes out
+// EMPTY (not `all`, not `DependsOnParam(cb)` -- just silently empty), and
+// since it has no hot-param entry, NO caller of `apply_reassign(...)` is
+// ever charged for whatever closure it passes either. The privileged
+// closure's authority disappears completely instead of surfacing at either
+// end -- exactly the failure mode invariant 22 exists to rule out.
+//
+// Positive control: `attack_reassign_local_defeats_hotparam_control.kry`
+// calls the parameter DIRECTLY (`cb()`, no local/no reassignment) and is
+// correctly rejected -- confirming the reassignment indirection, not
+// something generic about a bare fn-typed parameter, is what defeats the
+// guard.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_reassign(cb: fn() -> str) -> str {
+    let mut state: fn() -> str = || "safe default, no privilege"
+    state = cb
+    return state()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/attack_reassign_local_defeats_hotparam_secret.txt")
+    deny!(fs:read) {
+        let leaked = apply_reassign(reader)
+        println("REASSIGN-LOCAL LEAK: " + leaked)
+        sleep(100)
+    }
+}

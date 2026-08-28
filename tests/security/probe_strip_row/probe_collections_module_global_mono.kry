@@ -1,0 +1,36 @@
+// STRIP-THE-ROW probe: std::collections List<fn()->str> wrapper, a module
+// global fn-typed `let`, and two monomorphized copies of `identity<T>` at
+// different type arguments (fn()->str and i64) to check cross-contamination.
+
+use std::collections::{List}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn identity<T>(x: T) -> T {
+    return x
+}
+
+let global_reader: fn() -> str = || file_read("tests/security/secret_for_closure_launder.txt")
+
+fn main() {
+    // std::collections wrapper
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut ls: List<fn() -> str> = List.new()
+    ls = ls.push(reader)
+    let picked = ls.get(0)
+    let r1 = picked()
+    println("COLLECTIONS-LIST: " + r1)
+
+    // module global
+    let r2 = global_reader()
+    println("MODULE-GLOBAL: " + r2)
+
+    // monomorphized copies at two type args, same generic fn
+    let laundered_fn = identity(reader)
+    let laundered_int = identity(42)
+    let r3 = laundered_fn()
+    println("MONO-FN: " + r3 + " MONO-INT: " + to_string(laundered_int))
+}

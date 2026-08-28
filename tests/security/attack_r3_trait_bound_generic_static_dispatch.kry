@@ -1,0 +1,42 @@
+// SECURITY -- round 3 assault, strip-the-row lens: a privileged closure routed
+// through a GENERIC TRAIT-BOUND function (`fn run<T: Runner>(r: T, ...)`),
+// statically monomorphized -- NOT `dyn Trait`. This is a distinct code path
+// from cap_escape_decoy_dyn_trait_method.kry (which uses `dyn Runner`,
+// dynamic dispatch). Here the compiler picks the concrete impl at
+// monomorphization time; probing whether the capability-row/companion
+// tracking follows a bound generic parameter's static call the same way it
+// (allegedly) follows a direct call.
+//
+// ACCEPTANCE: REJECTED (E0507) under both `--capabilities-mode=inferred`
+// (default) and `--strict-capabilities`. Leak == rc==0 AND secret printed.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+trait Runner {
+    fn apply(self: Self, f: fn() -> str) -> str
+}
+
+struct RealRunner {}
+
+impl Runner for RealRunner {
+    fn apply(self: RealRunner, f: fn() -> str) -> str {
+        return f()
+    }
+}
+
+fn run_it<T: Runner>(r: T, f: fn() -> str) -> str {
+    return r.apply(f)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let rr: RealRunner = RealRunner {}
+    deny!(fs:read) {
+        let out = run_it(rr, reader)
+        println("TRAIT-BOUND-GENERIC-STATIC LEAK: " + out)
+    }
+}

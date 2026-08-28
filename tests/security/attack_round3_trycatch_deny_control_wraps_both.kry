@@ -1,0 +1,26 @@
+// Control for attack_round3_trycatch_deny_narrowed_catch.kry: IDENTICAL
+// program except deny!(fs:read) wraps the WHOLE try/catch (both try and
+// catch blocks), instead of only the catch block. Proves the gap is
+// specific to narrowing ONLY the catch block while the reassignment
+// happens in a sibling try block, not "try/catch defeats deny! in general".
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let mut slot: fn() -> str = || "placeholder"
+    deny!(fs:read) {
+        try {
+            slot = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+            throw "boom"
+        } catch (e) {
+            let leaked = slot()
+            println("TRYCATCH-DENY-CONTROL LEAK: " + leaked)
+        }
+    }
+}

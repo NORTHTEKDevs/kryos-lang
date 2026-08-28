@@ -1,0 +1,11 @@
+// Variant of `attack_dict_min1.kry` with V=str instead of f64 -- also
+// crashes on AOT (rc=139, no stdout, segfault), confirming the trigger is
+// "Dict's generic V is non-i64" in general, not an f64-specific bug.
+use std::collections::{Dict}
+
+fn main() {
+    let mut d1: Dict<str, str> = Dict.new()
+    d1 = d1.set("pi", "3.14")
+    println("ok")
+    println(d1.get("pi"))
+}

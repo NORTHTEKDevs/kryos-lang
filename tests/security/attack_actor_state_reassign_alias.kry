@@ -1,0 +1,62 @@
+// SECURITY -- assault round 3 (classic-regression re-run, new dress).
+//
+// `current_actor_state_alias_locals` (checker.rs, `build_actor_state_alias_locals_block`)
+// closes `let x = self.b; x.f()` by scanning ONLY `Stmt::Let { value: Some(v) }`
+// nodes for a `self.<field>` RHS. This attack routes the SAME alias through a
+// plain REASSIGNMENT instead of a `let` binding: declare `x` earlier bound to
+// a harmless decoy value, then `x = self.b` as an ordinary `Stmt::Assign`.
+// `build_actor_state_alias_locals_block` has no `Stmt::Assign` arm at all, so
+// `x` is never inserted into `current_actor_state_alias_locals`.
+// `resolve_actor_self_field_invoke_caps`'s root-not-"self" branch then
+// consults that map, finds nothing, and falls through to its own final
+// `CapabilitySet::empty()` (checker.rs ~line 3352) -- the SAME silent
+// "nothing to charge" default invariant 24's fix was written specifically to
+// replace with `all` for the one-hop `let`-alias shape. The reassignment
+// shape was never added to the scanner.
+//
+// This is NOT the disclosed residual (invariant 24's "chained alias-of-an-
+// alias", `let y = x` where `x` is itself a `let x = self.b` alias) -- this
+// alias is a single hop, and it never goes through `Stmt::Let` at all.
+//
+// ACCEPTANCE (if sound): REJECTED under BOTH `--capabilities-mode=inferred`
+// (default, via the actor's own unannotated-so-empty ceiling, invariant 17)
+// and `--strict-capabilities`.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn decoy_reader() -> fn() -> str {
+    return || "no secret here"
+}
+
+struct Box {
+    f: fn() -> str
+}
+
+actor Holder {
+    b: Box
+
+    fn stash(self, nb: Box) {
+        self.b = nb
+    }
+
+    fn invoke(self) {
+        let mut x: Box = Box { f: decoy_reader() }
+        x = self.b
+        let leaked = x.f()
+        println("REASSIGN-ALIAS ACTOR-STATE LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let h = Holder()
+    h.stash(Box { f: reader })
+    deny!(fs:read) {
+        h.invoke()
+        sleep(100)
+    }
+}

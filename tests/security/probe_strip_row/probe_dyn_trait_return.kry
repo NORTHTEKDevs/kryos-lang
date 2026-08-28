@@ -1,0 +1,29 @@
+// STRIP-THE-ROW probe: a `dyn Trait` method that RETURNS a privileged
+// closure. The verifier already flagged this shape (LEDGER 2026-08-07
+// verification session) as showing main's row as an unresolved `{?C3}`
+// via a DIFFERENT probe; this checks the current HEAD's actual dump output
+// for a param-free, directly-invoked variant.
+
+trait Factory {
+    fn make(self) -> fn() -> str
+}
+
+struct RealFactory {}
+
+impl Factory for RealFactory {
+    @capabilities(fs:read)
+    fn make(self) -> fn() -> str {
+        return || file_read("tests/security/secret_for_closure_launder.txt")
+    }
+}
+
+fn get_factory() -> dyn Factory {
+    return RealFactory {}
+}
+
+fn main() {
+    let f: dyn Factory = get_factory()
+    let reader = f.make()
+    let r = reader()
+    println("DYN-RETURN: " + r)
+}

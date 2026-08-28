@@ -1,0 +1,29 @@
+// ASSAULT round 3 (deny-narrowing lens): a privileged closure escapes a `try`
+// block via reassignment of an outer `fn`-typed local, then a `throw` inside
+// the SAME try unwinds to a `catch` block that is itself wrapped in
+// `deny!(fs:read)`. Tests whether the checker's narrowing correctly applies
+// to a catch block reached via exception unwind, and whether the "live value
+// at the call site" tracking (already proven correct for a straight-line
+// reassignment in strip_reassigned_local_deny) still holds across a
+// try/throw/catch control-flow edge -- a combination not previously probed.
+//
+// ACCEPTANCE: REJECTED (E0507) under both enforcement modes.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let mut slot: fn() -> str = || "placeholder"
+    try {
+        slot = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+        throw "boom"
+    } catch (e) {
+        deny!(fs:read) {
+            let leaked = slot()
+            println("TRYCATCH-DENY LEAK: " + leaked)
+        }
+    }
+}

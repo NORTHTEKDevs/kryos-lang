@@ -1,0 +1,63 @@
+// RED TEAM round 3, deny-narrowing lens (2026-08-06). Deeper variant of
+// LEDGER item 32 (`pair.1()` tuple-index-call bypass), explicitly flagged
+// as NOT YET ATTEMPTED in docs/LAUNCH-READINESS.md S2(c): "compound nested
+// nesting one level past what was tried ... t.0.1() tuple-nested-in-tuple".
+//
+// Root cause read directly (checker.rs::resolve_path, ~5155-5165): for a
+// FieldAccess chain, resolve_path recurses on `object` and pushes each
+// `field` name, building a SEGMENTS vec whose length is however many
+// `.N`/`.name` hops were chained. Item 32 showed that `check_callee_
+// capabilities`'s two enforcement branches are gated `segments.len() == 1`
+// (named-callee branch) and `segments.len() <= 1` (fail-closed direct-
+// invoke default) -- a 2-segment path (`pair.1()`, one hop) satisfies
+// NEITHER and gets zero enforcement, not even the `all` fallback.
+//
+// A NESTED tuple-in-tuple (`t.1.1()`, TWO numeric-field hops before the
+// call) should, by the identical parser mechanism (checker.rs bug report,
+// LEDGER item 32's own root-cause section: the tuple-index postfix branch
+// unconditionally builds `Expr::FieldAccess` and continues, never checking
+// for a trailing `(`), produce a THREE-segment path (`["t","1","1"]`) --
+// which ALSO satisfies neither `== 1` nor `<= 1`, so by the same reasoning
+// should ALSO receive zero enforcement. Testing whether this holds for a
+// depth the parent session did not itself execute.
+//
+// ACCEPTANCE (if the checker were sound): REJECTED (E0507 or at minimum
+// the fail-closed `all` requirement) under inferred (default) mode.
+//
+// CONFIRMED LIVE, both directions, against the existing
+// `compiler/target/release/kryos.exe` (read-only, no rebuild):
+//
+//   $ kryos run tests/security/attack_deny_nested_tuple_index_call.kry
+//   NESTED-TUPLE-INDEX-CALL-DENY LEAK: TOPSECRET-CLOSURE-9f8e7d6c5b4a
+//   RC=0
+//   $ kryos check --strict-capabilities tests/security/attack_deny_nested_tuple_index_call.kry
+//   RC=0   (zero diagnostics -- not even a warning)
+//
+// Distinct from LEDGER item 32's own repro: item 32's root-cause section
+// names ONLY the plain single-digit tuple-index postfix branch
+// (kryos-parser/src/parser.rs:2094-2104, triggered by a bare `Integer`
+// token). This finding reproduces through the SEPARATE "chained tuple
+// access" branch added specifically to un-glue the lexer's greedy FLOAT
+// read of `N.M` (parser.rs:2105-2130, triggered by a `Float` token) --
+// `t.1.1` lexes as `t` `.` `1.1`(float), split back into two FieldAccess
+// hops by that branch, which ALSO never checks for a trailing `(` before
+// `continue`-ing the postfix loop, same defect, different code path. The
+// resulting 3-segment `resolve_path` (`["t","1","1"]`) satisfies neither
+// `check_callee_capabilities`'s `segments.len() == 1` named-callee gate
+// nor its `segments.len() <= 1` fail-closed default (checker.rs:4848,
+// 4875) -- exactly item 32's mechanism, one dispatch layer deeper.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let t = (0, (1, reader))
+    deny!(fs:read) {
+        let leaked = t.1.1()
+        println("NESTED-TUPLE-INDEX-CALL-DENY LEAK: " + leaked)
+    }
+}

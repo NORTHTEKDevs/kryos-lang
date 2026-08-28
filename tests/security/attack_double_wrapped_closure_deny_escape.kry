@@ -1,0 +1,78 @@
+// ATTACK: a TWICE-wrapped closure (closure literal capturing a closure
+// literal capturing the enclosing function's own fn-typed parameter)
+// defeats deny!() where the SINGLE-wrapped case
+// (tests/security/cap_escape_closure_wraps_closure.kry, LEDGER item 10 /
+// invariant 23) is already fixed.
+//
+// `wrap_twice`'s own body is `return || || inner()` -- a fresh outer lambda
+// literal whose BODY is itself a fresh inner lambda literal that calls the
+// enclosing function's captured parameter `inner`. The fix that closed
+// LEDGER item 10 recognizes "captured hot parameter" by walking every call
+// reachable in the returned lambda's body (including inside a NESTED lambda
+// literal, since `walk_calls_expr`'s `Expr::Lambda` arm recurses) and, if
+// found, resolves the OUTER lambda's own call-time requirement to
+// `DependsOnParam(inner)`. The bug: `resolve_closure_caps`'s captured-hot-
+// param branch then computes `body_caps` by calling `collect_caps_expr` on
+// the OUTER lambda's body -- which is itself the INNER lambda literal, not
+// the direct call `inner()`. `collect_caps_expr`'s own `Expr::Lambda` arm
+// (checker.rs:3959, `Expr::Lambda { body, .. } => e(body, &mut acc)`)
+// recurses into the inner lambda's body AS IF IT RAN INLINE, correctly
+// deferring the `inner()` call there to zero (the ordinary own-param
+// deferral) -- so `body_caps` for the OUTER lambda comes back EMPTY.
+// Empty `body_caps` is exactly the condition the fix uses to conclude
+// "this returned value's WHOLE requirement is DependsOnParam(inner)".
+//
+// That conclusion is applied to `f` (the OUTER lambda, `wrap_twice`'s
+// return value): `local_caps["f"] = Known([fs:read])` once resolved against
+// the real argument at the `wrap_twice(secret_reader)` call site --
+// correct in isolation (f, when called, requires fs:read is what the
+// checker BELIEVES, even though the true cost of calling f() is zero --
+// it just constructs and returns the inner lambda). The real bug surfaces
+// one step later: `let g = f()` resolves via `resolve_closure_caps`'s
+// `FnCall` arm, `Expr::Identifier` callee case (checker.rs:1917), which
+// does `if let Some(r) = local_caps.get("f") { return r.clone() }` --
+// i.e. it treats "the capability required to CALL f" as ALSO being "the
+// capability required to call the VALUE f() RETURNS" (g). Because BOTH
+// hops end up tagged with the identical `Known([fs:read])`, calling f()
+// outside deny!() (fine, we hold fs:read there) and then calling g()
+// INSIDE deny!(fs:read) is caught anyway -- the misattributed charge is
+// redundant but still safe THERE.
+//
+// The actual escape needs one more twist: give the checker a f() call site
+// it can OBSERVE (so it resolves local_caps["f"] once, correctly, at the
+// point we hold fs:read) but then invoke g() through a DIFFERENT syntactic
+// route whose own local_caps entry is built independently and does NOT
+// inherit f's Known(fs:read) tag: storing g into a struct field (a
+// literal-tracked container, the one shape `resolve_container_path_caps`
+// is supposed to handle soundly) rather than a second bare local. Reading
+// `holder.cb` back out and calling it goes through
+// `resolve_container_path_caps`'s `StructLiteral` arm for the FIELD VALUE
+// EXPRESSION `g` -- which recurses via `resolve_closure_caps` on the
+// Identifier `g` a SECOND time, in a context where local_caps still says
+// Known([fs:read]) -- so this framing alone does not escape either. The
+// escape used here instead is the direct one: call f() OUTSIDE deny (so
+// the misattributed fs:read charge on f settles there, harmlessly, since
+// we hold it), bind the result straight to g, and call g() INSIDE deny.
+// Left as a positive control below (attack, not the write-up's inline
+// theorizing) -- see the RUN output for the actual verdict.
+
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn wrap_twice(inner: fn() -> str) -> fn() -> fn() -> str {
+    return || || inner()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader: fn() -> str = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f: fn() -> fn() -> str = wrap_twice(reader)
+    let g: fn() -> str = f()
+    deny!(fs:read) {
+        // LIVE ESCAPE (if this compiles clean and prints the secret): the
+        // double-wrap defeats deny!() where the single-wrap case is fixed.
+        let leaked: str = g()
+        println("DOUBLE-WRAP DENY LEAK: " + leaked)
+    }
+}

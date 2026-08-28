@@ -1,0 +1,33 @@
+// Type-confusion red team round 2 attack: a generic enum with two
+// independent type parameters (Either<L, R>) where each variant carries a
+// different payload type. Matching and formatting each side with
+// to_string() checks whether the enum-payload erasure that affects `any`
+// containers also affects a plain generic enum's per-variant payload type
+// once BOTH type params are in play (as opposed to a single-param Option/
+// Result which CLAUDE.md says are fine when annotated).
+
+enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+fn describe(e: Either<f64, str>) -> str {
+    match e {
+        Either::Left(x) => "left=" + to_string(x),
+        Either::Right(y) => "right=" + y,
+    }
+}
+
+@capabilities(all)
+fn main() {
+    let a: Either<f64, str> = Either::Left(3.25)
+    let b: Either<f64, str> = Either::Right("hello-secret")
+    println(describe(a))
+    println(describe(b))
+
+    // Also directly at the call site without the wrapper fn.
+    match a {
+        Either::Left(x) => println("direct_left=" + to_string(x)),
+        Either::Right(y) => println("direct_right=" + y),
+    }
+}

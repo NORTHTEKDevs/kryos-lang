@@ -1,0 +1,21 @@
+// Type-confusion red team round 2 attack: std::iter::map with a closure
+// returning a COMPOUND value (a tuple pairing a numeric type with a str)
+// across the generic HOF boundary. CLAUDE.md gotcha #20 says HOFs keep the
+// real element type across the boundary, but that claim is about the
+// element type ITSELF (str/f64/struct), not a compound tuple return built
+// INSIDE the closure -- this checks whether both tuple slots survive.
+
+use std::iter::{map}
+
+@capabilities(all)
+fn main() {
+    let xs: [f64] = [1.5, 2.5, 3.5]
+    let pairs: [(f64, str)] = map(xs, |x: f64| (x * 2.0, "val=" + to_string(x)))
+
+    let mut i: i64 = 0
+    while i < len(pairs) {
+        let (num, label) = pairs[i]
+        println("pair[" + to_string(i) + "]=" + to_string(num) + "/" + label)
+        i = i + 1
+    }
+}

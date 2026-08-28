@@ -1,0 +1,27 @@
+// CONTROL for attack_shadow_rebind_stale_local_caps.kry -- identical shape but
+// WITHOUT the initial safe `let f = ...` binding, so there is no stale
+// Known(empty) entry to survive the pattern-destructure. `f` should resolve
+// Unknown -> `all` and be correctly REJECTED, same as
+// cap_escape_tuple_payload_direct.kry. Proves the leak in the sibling file is
+// caused specifically by the shadowing/staleness, not by the tuple
+// destructure alone.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(pair: (fn() -> str, i64)) -> str {
+    let (f, _tag) = pair
+    return f()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let payload: (fn() -> str, i64) = (reader, 42)
+    deny!(fs:read) {
+        let leaked = zero_cap_tool(payload)
+        println("CONTROL SHOULD NOT PRINT: " + leaked)
+    }
+}

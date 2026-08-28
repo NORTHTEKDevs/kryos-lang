@@ -1,0 +1,33 @@
+// STRIP-THE-ROW probe: a privileged closure at tuple depth (nested tuple),
+// inside Option/Result payloads, then invoked.
+
+use std::option::{Some, None}
+use std::result::{Ok, Err}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+
+    let t: ((fn() -> str, i64), str) = ((reader, 1), "x")
+    let picked = t.0.0
+    let r1 = picked()
+    println("TUPLE-DEPTH2: " + r1)
+
+    let opt: Option<fn() -> str> = Some(reader)
+    let r2 = match opt {
+        Some(f) => f(),
+        None() => "none",
+    }
+    println("OPTION-PAYLOAD: " + r2)
+
+    let res: Result<fn() -> str, str> = Ok(reader)
+    let r3 = match res {
+        Ok(f) => f(),
+        Err(e) => e,
+    }
+    println("RESULT-PAYLOAD: " + r3)
+}

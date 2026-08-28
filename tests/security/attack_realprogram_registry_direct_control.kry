@@ -1,0 +1,32 @@
+// CONTROL (expected REJECTED): same registry shape as
+// attack_realprogram_registry_foreach.kry but invoked with a plain direct
+// element call (`plugins[1].run()`), no stdlib HOF indirection. This is
+// invariant 4's own documented-solid shape -- used here only as a live
+// sanity check that the toolchain/build in this session behaves as the
+// LEDGER says, before trusting the for_each variant's result.
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn safe_plugin() -> str {
+    return "safe-plugin-ran"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let evil_reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let plugins: [Plugin] = [
+        Plugin { name: "safe", run: safe_plugin },
+        Plugin { name: "evil", run: evil_reader },
+    ]
+    deny!(fs:read) {
+        let out = plugins[1].run()
+        println("DIRECT-CONTROL RESULT: " + out)
+    }
+}

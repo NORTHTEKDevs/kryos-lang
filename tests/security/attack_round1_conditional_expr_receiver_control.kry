@@ -1,0 +1,17 @@
+// Control for attack_round1_conditional_expr_receiver.kry: same closures,
+// same deny! scope, but `reader` invoked directly with no if-expression
+// wrapper. Must REJECT (E0507).
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = reader()
+        println("CONDITIONAL-EXPR-RECEIVER CONTROL LEAK: " + leaked)
+    }
+}

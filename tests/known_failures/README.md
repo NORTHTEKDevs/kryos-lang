@@ -13,10 +13,28 @@ expected-red entries in it. Run them by hand:
 When one is fixed, fold it into the conformance test it belongs to and delete
 the file here.
 
+Currently empty -- both rows this table used to carry described files that no
+longer exist. Re-probed 2026-08-28 (hygiene wave): `generic_struct_closure_field_passthrough_f64.kry`
+(generic struct `fn() -> T` field passthrough at T=f64) was already fixed and
+its exact repro shape lives on, non-vacuously, as
+`tests/conformance/conf_generic_closure_field_passthrough.kry` (asserts the
+rendered string `"4.5"`, not just a bit pattern -- reconfirmed live this
+session, `4.5` prints correctly on both `kryos run` and `kryos build
+--release`). `test_repl_jit_missing_rt_symbols.kry` (kryos test/repl
+panicking on a struct literal, missing `kryos_calloc` in the JIT symbol
+table) is also fixed and gated two ways: `tests/jit_symbols_gate.sh`
+(source-level, PASS -- 396/396 runtime symbols now registered with the JIT,
+up from the 141-missing baseline the bug was found at) and the repro itself,
+kept as `tests/jit_struct_alloc_test.kry`. Reconfirmed live this session:
+`kryos test` on an `@test` fn building a struct literal PASSES; `kryos repl`
+accepts `struct Point { x: i64, y: i64 }` / `let p = Point { x: 1, y: 2 }`
+and prints the field read correctly, no panic. A third stale row,
+`wasm_narrow_int_no_truncation.kry`, was already removed by the wasm-backend
+wave (2026-08-27, see LEDGER) for the same reason -- described an
+already-fixed, nonexistent file.
+
 | File | Bug |
 |---|---|
-| `generic_struct_closure_field_passthrough_f64.kry` | A generic struct field typed `fn() -> T` (a closure/fn-value field), returned by a BARE self-field passthrough method (`fn get_closure(self: Holder<T>) -> fn() -> T { return self.f }`), keeps the erased i64-return compiled copy at T=f64: calling the returned closure and formatting with `to_string()` prints the raw i64 bit pattern of the float (`4616752568008179712`) instead of `4.5`. Same class of bug as the CLAUDE.md gotcha #17 fix (`instance_ret_needs_monomorphization` covering Array/Tuple/map bare self-field passthrough) but that fix's type coverage does not extend to a `fn() -> T`-typed field. `T=str` at the identical call shape is unaffected. Reproduces identically on both backends (silent wrong value, not a JIT/AOT divergence). Found during the type-confusion red-team round. |
-| `test_repl_jit_missing_rt_symbols.kry` | `kryos test` and `kryos repl` both crash the WHOLE PROCESS (Rust panic, rc=101 -- `can't resolve symbol kryos_calloc` from `cranelift-jit`'s own linker) on a plain struct literal, the most basic possible construct. `kryos check`/`kryos run` accept the byte-identical file and run it correctly. Root cause: both commands build an in-process `cranelift_jit::JITBuilder` via `kryos-codegen-cranelift/src/jit.rs`, which hand-registers a partial allowlist of ~120 `kryos_*` runtime symbols and is missing `kryos_calloc` (every struct/array construction lowers to it) -- `kryos run` never hits this because, per CLAUDE.md, it is "AOT + subprocess, not an in-process JIT" and links the full `kryos_rt.lib` static lib. Directly falsifies CLAUDE.md's claim that `kryos test` "Works with stdlib imports" -- `std::json`, `std::csv`, and `std::string::string_builder` all crash the same way (`std::math`, which allocates nothing, does not), and one variant (a file calling `std::json::stringify`) fails with a distinct JIT verifier error instead of a panic, same underlying gap. Because the crash is process-fatal, ONE struct-constructing test in a file loses every other test's result in that run, not just its own. Found during the toolchain-realworld red-team round. |
 
 FIXED and folded into `tests/harden-probes/probe_wasm_shortcircuit_loop_strcat.kry`
 (so `wasm_differential_gate.sh` covers it permanently): `wasm_shortcircuit_loop_strcat.kry`

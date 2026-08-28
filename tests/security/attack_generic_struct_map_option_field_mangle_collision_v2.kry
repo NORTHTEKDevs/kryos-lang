@@ -1,0 +1,69 @@
+// RED TEAM round 3, lens: type-confusion. Follow-up to
+// attack_generic_struct_map_option_field_mangle_collision.kry (RULED OUT: an
+// explicit `let x: Registry<V> = Registry { .. }` annotation apparently
+// supplies enough contextual typing that both backends rendered the right
+// value even though `extract_param_binding` cannot structurally recover V
+// through a `map<str, Option<V>>` field -- likely because the LET
+// annotation's own `Registry<f64>` TypeExpr is resolved independently and
+// wins over/short-circuits the field-inference path this file targets.
+//
+// This variant removes every direct type-annotation hint: the struct
+// literal is built and passed straight into a helper as a CALL ARGUMENT (no
+// `let` on the literal itself), and read back through an UNANNOTATED local.
+// If the annotation was doing the real work, this should now hit the
+// documented fallback-to-i64 gap and collide the f64/str instantiations'
+// struct layout/field metadata with the i64 one built first.
+//
+// RULED OUT, live, both backends, HEAD `5cccaf4` (compiler/target/release/
+// kryos.exe, read-only, no rebuild). `kryos run`: i64_val=42, f64_val=3.5,
+// str_val=hello-world, rc=0. `kryos build --release` + running the produced
+// binary: identical output, rc=0. Removing the `let` annotation (routing the
+// literal through a plain-param helper instead) did not change the result --
+// V still resolves correctly for all three instantiations even with no
+// direct type-annotation hint available at the literal's own lowering site.
+// The `extract_param_binding` structural gap for `map<K, Option<V>>` is
+// real (see the sibling file's note), but whatever mechanism actually
+// supplies the correct V here was not identified this round -- most likely
+// the call-site's own declared parameter type (`store_f64(r: Registry<f64>)`)
+// provides an equivalent contextual hint one level removed from the `let`
+// annotation this file was built to exclude. Not pursued further this round
+// per the effort budget; a genuine escape would need a shape with NO
+// concrete-typed context anywhere in the call chain (e.g. a fully generic
+// forwarding function `fn wrap<V>(v: V) -> Registry<V>` calling into the
+// same struct-literal shape) -- untried, left as a lead for a future round.
+
+use std::option::{Option, Some, None}
+
+struct Registry<V> {
+    entries: map<str, Option<V>>
+}
+
+fn store_i64(r: Registry<i64>) -> Registry<i64> {
+    return r
+}
+fn store_f64(r: Registry<f64>) -> Registry<f64> {
+    return r
+}
+fn store_str(r: Registry<str>) -> Registry<str> {
+    return r
+}
+
+@capabilities(all)
+fn main() {
+    let ri = store_i64(Registry { entries: {"k": Some(42)} })
+    let rf = store_f64(Registry { entries: {"k": Some(3.5)} })
+    let rs = store_str(Registry { entries: {"k": Some("hello-world")} })
+
+    match ri.entries["k"] {
+        Some(x) => println("i64_val=" + to_string(x)),
+        None() => println("i64_val=NONE"),
+    }
+    match rf.entries["k"] {
+        Some(x) => println("f64_val=" + to_string(x)),
+        None() => println("f64_val=NONE"),
+    }
+    match rs.entries["k"] {
+        Some(x) => println("str_val=" + x),
+        None() => println("str_val=NONE"),
+    }
+}

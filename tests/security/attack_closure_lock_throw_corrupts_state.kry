@@ -1,0 +1,58 @@
+// RED TEAM round 2, concurrency lens: does an exception propagating THROUGH
+// a mutating closure's locked env-thunk (LEDGER item 7b) corrupt the
+// closure's persisted captured state, even though the lock itself is
+// correctly released (not a hang)?
+//
+// kryos-codegen-cranelift/src/codegen.rs's env-thunk for a mutating closure
+// is: lock -> call underlying fn -> [store ret_val into env's mutated-
+// capture slot] -> unlock -> return. The comment there says this is "the
+// SOLE return point in this thunk, so this is the one place that needs to
+// unlock regardless of which branch produced ret_val" -- true for the LOCK
+// (it does get released), but the store-back treats ret_val as a legitimate
+// return value unconditionally, with no check for a pending exception.
+//
+// kryos-mir/src/lower.rs's Stmt::Throw (propagating case, no enclosing try)
+// emits `kryos_exception_throw` then an immediate function return using
+// Operand::Constant(Constant::Int(0)) as the return value (not the current
+// value of any local) -- see lower.rs ~5432-5440. If the underlying
+// closure function's body calls something that throws AFTER it has already
+// mutated its captured local (but before its own trailing "return the
+// mutated local" expression), the early-return-on-exception path skips that
+// trailing expression and the function returns the constant 0 instead.
+//
+// If the thunk then stores that 0 into the closure's persisted env slot
+// unconditionally (as its comment says it does), the closure's captured
+// state is silently RESET to 0 by an exception that was fully caught and
+// handled by an OUTER try/catch -- a silent wrong answer, not a hang, and a
+// different bug class than item 11(a)'s self-reentrancy hang or the AB-BA
+// cross-closure deadlock this campaign already found.
+fn helper(n: i64) -> i64 {
+    if n == 2 {
+        throw "boom in helper"
+    }
+    return n
+}
+
+fn main() {
+    let mut handlers: map<i64, fn(i64) -> i64> = {}
+    let mut counter: i64 = 100
+    let f = |n: i64| {
+        counter = counter + 1
+        let r = helper(n)
+        counter = counter + 1000
+        counter
+    }
+    handlers[0] = f
+
+    try {
+        let x = f(2)
+        println("f(2) returned (should not reach here): " + to_string(x))
+    } catch e {
+        println("caught: " + e)
+    }
+
+    println("about to call f(1) again -- if the lock leaked, this hangs")
+    let result = f(1)
+    println("result: " + to_string(result))
+    println("expected 1101 if counter correctly held 101 across the caught throw; corrupted if it shows 1001 (counter silently reset to 0)")
+}

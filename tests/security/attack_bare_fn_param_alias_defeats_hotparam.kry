@@ -1,0 +1,55 @@
+// ADVERSARIAL PROBE (infer-wrong lens, round 2, 2026-08-06): `compute_hot_params`
+// Seed A (checker.rs ~1445-1465) marks a function's own fn-TYPED PARAMETER
+// "hot" only when `walk_calls_block` finds a call whose CALLEE IDENTIFIER
+// NAME is textually equal to the parameter's own name (`!is_method && *cname
+// == p.name`). This is the mechanism the already-known
+// `attack_container_param_alias_defeats_hotparam.kry` escape defeats for a
+// CONTAINER-typed parameter (`Box.f`, Seed B). This probe targets the SAME
+// literal-name-match blind spot but on Seed A itself -- a BARE fn-typed
+// parameter (no container involved at all) aliased into a fresh local
+// before being invoked.
+//
+// `apply_via_alias`'s body is `let g = f; return g()`. The only call
+// `walk_calls_block` records is `(cname="g", ...)`; "g" never equals the
+// parameter name "f", so Seed A never marks position 0 hot for
+// `apply_via_alias`. Consequences, independent of each other:
+//   (1) call-site defense: `main`'s call `apply_via_alias(reader)` consults
+//       `hot_params["apply_via_alias"]` to decide whether to charge the
+//       actual argument's traced authority via `accumulate_hot_extra_caps`
+//       -- with no hot entry at position 0, nothing extra is charged.
+//   (2) body-internal defense: `apply_via_alias`'s OWN inferred capability
+//       set is computed by walking `g()`, which is NOT a known name, so it
+//       falls into `resolve_direct_invoke_caps` -> `local_caps.get("g")`.
+//       If `build_local_closure_caps` correctly threads `let g = f` to
+//       `DependsOnParam("f")`, the function's own inferred set stays
+//       (correctly) EMPTY, since a hot-parameter deferral to the CALLER is
+//       the intended design (invariant 2) -- but that deferral is only
+//       real when (1)'s call-site charge actually fires. Because Seed A
+//       missed the alias, the deferral resolves to nothing: the requirement
+//       silently disappears in both directions instead of surfacing at
+//       either the callee or the caller.
+//
+// Positive control: `attack_bare_fn_param_alias_defeats_hotparam_control.kry`
+// calls the parameter directly (`f()`, no alias) and IS correctly rejected
+// -- confirming the alias is what defeats the guard, not something generic
+// about a bare fn-typed parameter.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn apply_via_alias(f: fn() -> str) -> str {
+    let g = f
+    return g()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = apply_via_alias(reader)
+        println("BARE-FN-PARAM ALIAS LEAK: " + leaked)
+        sleep(100)
+    }
+}

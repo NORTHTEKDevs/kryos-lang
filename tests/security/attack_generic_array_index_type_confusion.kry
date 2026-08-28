@@ -1,0 +1,32 @@
+// RED TEAM round 2, type-confusion lens.
+// Hypothesis: a generic free function indexing [T] and returning T, called
+// at multiple concrete types (str, f64) SEQUENTIALLY and then again
+// INTERLEAVED with a third instantiation, may render a non-i64 element as
+// its raw handle/bit pattern if per-call-site type threading is incomplete
+// for array-element (not struct-field) generic returns.
+fn first<T>(arr: [T]) -> T {
+    return arr[0]
+}
+
+fn last_of<T>(arr: [T]) -> T {
+    return arr[len(arr) - 1]
+}
+
+fn main() {
+    let strs: [str] = ["alpha", "beta", "gamma"]
+    let floats: [f64] = [1.5, 2.5, 3.5]
+
+    let s1: str = first(strs)
+    let f1: f64 = first(floats)
+    let s2: str = last_of(strs)
+    let f2: f64 = last_of(floats)
+
+    println("s1=" + s1)
+    println("f1=" + to_string(f1))
+    println("s2=" + s2)
+    println("f2=" + to_string(f2))
+
+    // Interleave in one expression
+    let combo: str = first(strs) + "/" + to_string(first(floats)) + "/" + last_of(strs)
+    println("combo=" + combo)
+}

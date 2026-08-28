@@ -1,0 +1,38 @@
+// Type-confusion red team round 2 attack: uniform closure ABI lens.
+// Populate an array of `fn() -> f64` with closures that have different
+// capture shapes (zero captures, one i64 capture, one f64 capture, one str
+// capture unrelated to the return) and call each through the array to see
+// if the uniform closure-call thunk mixes up env layouts across different
+// capture shapes sharing the same array/fn-value type.
+
+fn make_zero_capture() -> fn() -> f64 {
+    return || 1.5
+}
+
+fn make_i64_capture(n: i64) -> fn() -> f64 {
+    return || (n as f64) + 0.25
+}
+
+fn make_f64_capture(x: f64) -> fn() -> f64 {
+    return || x * 2.0
+}
+
+fn make_str_and_f64_capture(label: str, y: f64) -> fn() -> f64 {
+    return || y + (len(label) as f64)
+}
+
+@capabilities(all)
+fn main() {
+    let mut fns: [fn() -> f64] = []
+    fns = push(fns, make_zero_capture())
+    fns = push(fns, make_i64_capture(7))
+    fns = push(fns, make_f64_capture(10.0))
+    fns = push(fns, make_str_and_f64_capture("abcd", 100.0))
+
+    let mut i: i64 = 0
+    while i < len(fns) {
+        let f = fns[i]
+        println("fns[" + to_string(i) + "]=" + to_string(f()))
+        i = i + 1
+    }
+}

@@ -1,0 +1,30 @@
+// Control for attack_deny_double_indirection_wrapper_local.kry. Identical
+// program EXCEPT `go` calls `reader` directly (the enclosing function's own
+// parameter, one hop, the shape the captured-hot-parameter fix already
+// covers) instead of forwarding through the intermediate `wrapped` local.
+// ACCEPTANCE: REJECTED (E0507) -- confirms the checker DOES catch the
+// single-hop version, isolating the two-hop `wrapped` indirection as the
+// specific gap the paired attack file exploits.
+
+fn wrap_once(inner: fn() -> str) -> fn() -> str {
+    return || inner()
+}
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let go = || reader()
+    deny!(fs:read) {
+        let leaked = go()
+        println("CONTROL-SINGLE-HOP LEAK: " + leaked)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

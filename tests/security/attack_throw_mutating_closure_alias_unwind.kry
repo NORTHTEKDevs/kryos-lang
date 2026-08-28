@@ -1,0 +1,61 @@
+// RED TEAM round 4 (memory-unsafety lens): the CORRUPTION sibling of the
+// already-ruled-out plain closure-env-teardown-twice case, combined with
+// throw-during-unwind. A MUTATING closure (its captured `n` lives in its
+// own ARC-allocated cell inside the env, per CLAUDE.md gotcha #11) is
+// stored TWICE in a local array (`arr = [f, f]`), one alias is invoked,
+// then the function THROWS before the array's own normal scope-exit path
+// runs -- the array must instead be torn down by the UNWIND cleanup path.
+// If that unwind-path drop over-releases the shared env/mutation-cell
+// (rather than releasing exactly the refcount the array literal's own
+// construction added), the caller's own separate binding `f` -- still
+// live across the try/catch -- reads a freed cell (UAF) or crashes on its
+// next call. Verified by an exact hand-computed VALUE (not just exit code
+// or crash-freedom), since silent wrong output is possible without any
+// crash if the freed cell is merely reused rather than unmapped.
+fn make_counter(start: i64) -> fn() -> i64 {
+    let mut n = start
+    return || { n = n + 1  n }
+}
+
+fn scope_throws(f: fn() -> i64, boom: bool) -> i64 {
+    let arr: [fn() -> i64] = [f, f]
+    let v: i64 = arr[0]()
+    if boom {
+        throw "boom"
+    }
+    return v + arr[1]()
+}
+
+fn main() {
+    let mut i = 0
+    let mut total = 0
+    let mut caught = 0
+    while i < 20000 {
+        let f = make_counter(i)
+        try {
+            total = total + scope_throws(f, i % 3 == 0)
+        } catch (e) {
+            caught = caught + 1
+        }
+        // f is still alive here -- if scope_throws's unwind path corrupted
+        // or freed the shared mutation cell / env early, this either
+        // crashes or returns a value inconsistent with sequential n++.
+        total = total + f()
+        i = i + 1
+    }
+    println("total=" + to_string(total) + " caught=" + to_string(caught))
+    // Hand-computed expected value (see ledger/attack comment for derivation):
+    // non-throw iterations (i % 3 != 0, 13333 of them) each contribute 3i+6;
+    // throw iterations (i % 3 == 0, 6667 of them) each contribute i+2
+    // (scope_throws's own return value is discarded on throw, but arr[0]()
+    // still ran once before the throw, and the outer f() call after the
+    // catch still runs). Sum = 466736666 (re-derived and double-checked
+    // after a first hand-computation arithmetic slip produced 466718666
+    // and falsely looked like a mismatch -- see attached session notes).
+    let expected: i64 = 466736666
+    if total == expected {
+        println("VALUE-OK")
+    } else {
+        println("VALUE-MISMATCH expected=" + to_string(expected) + " got=" + to_string(total))
+    }
+}

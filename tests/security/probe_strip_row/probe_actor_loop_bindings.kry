@@ -1,0 +1,44 @@
+// STRIP-THE-ROW probe: a privileged closure stored in actor state, invoked
+// from inside a `for` loop binding and a `match` binding within a handler
+// (two syntactic routes item 5's spec text calls out as "ordinary typed
+// expression" with no special resolver needed).
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+actor Store {
+    reader: fn() -> str
+
+    fn stash(self, r: fn() -> str) {
+        self.reader = r
+    }
+
+    fn read_via_for(self) -> str {
+        let handlers: [fn() -> str] = [self.reader]
+        let mut out: str = ""
+        for h in handlers {
+            out = h()
+        }
+        return out
+    }
+
+    fn read_via_match(self, flag: i64) -> str {
+        let picked = match flag {
+            1 => self.reader,
+            _ => self.reader,
+        }
+        return picked()
+    }
+}
+
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let store = Store()
+    store.stash(reader)
+    let r1 = store.read_via_for()
+    println("ACTOR-FOR-LOOP: " + r1)
+    let r2 = store.read_via_match(1)
+    println("ACTOR-MATCH: " + r2)
+}

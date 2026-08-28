@@ -1,0 +1,43 @@
+// ATTACK (red team, concurrency lens round 3): does an uncaught `throw`
+// inside a `coop_spawn`ed cooperative task get treated with the SAME
+// fatal severity an uncaught throw inside a `spawn`ed OS thread now has
+// (LEDGER item 16, docs/09-concurrency.md "Error handling in spawned
+// blocks"), or does it silently vanish and leave a consumer hanging
+// forever -- the exact bug class that was deliberately fixed for `spawn`?
+//
+// kryos-rt/src/spawn.rs's OS-thread entry point calls
+// `kryos_exception_report_thread_FATAL_if_pending()` (process::exit(101))
+// on an uncaught throw.
+//
+// kryos-rt/src/executor.rs's `kryos_coop_spawn` task-thread closure
+// (line ~148) instead calls the NON-FATAL
+// `kryos_exception_report_thread_if_pending()` -- report-only, task marked
+// done, baton handed back, PROCESS CONTINUES. Its own comment claims parity
+// ("report it like the spawn runtime does") but calls the report-only
+// twin, not the fatal one spawn.rs actually uses.
+//
+// Because a Kryos throw is a thread-local flag + synthesized early return
+// (no real unwind), every statement AFTER the throw point in the task body
+// is silently skipped -- including, here, the `send(ch, idx)` that a
+// consumer is blocked waiting for. If the swallow is real, `recv(ch)`
+// below for the second value hangs forever instead of the process dying
+// loudly with exit 101 the way an equivalent `spawn` throw would.
+fn worker(ch: i64, idx: i64) {
+    if idx == 1 {
+        throw "boom from coop task 1"
+    }
+    send(ch, idx)
+}
+
+fn main() {
+    let ch = chan()
+    coop_spawn(worker(ch, 0))
+    coop_spawn(worker(ch, 1))
+    coop_run()
+    println("coop_run returned")
+    let a = recv(ch)
+    println("got a=" + to_string(a))
+    println("about to recv second value -- if the coop throw was silently swallowed instead of fatal, this HANGS FOREVER")
+    let b = recv(ch)
+    println("got b=" + to_string(b))
+}

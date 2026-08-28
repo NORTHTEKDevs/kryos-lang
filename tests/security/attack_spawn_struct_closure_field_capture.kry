@@ -1,0 +1,57 @@
+// RED TEAM round 1 (memory-unsafety lens): spawn capture lifetime for a
+// STRUCT that itself holds a CLOSURE-typed field. CLAUDE.md documents two
+// SEPARATE spawn-capture mechanisms: a struct/enum capture is DEEP-COPIED
+// so the spawned thread privately owns it, while a closure/fn-value capture
+// is instead `kryos_arc_retain`'d (SHARED, not copied) because deep-copying
+// a closure env was explicitly ruled out elsewhere (see the closure-race
+// gotcha). Those two mechanisms have never been tried TOGETHER: a struct
+// capture whose deep-copy machinery has to decide what to do with a nested
+// FN-TYPED field. If the struct deep-copy naively bit-copies the closure
+// field's env pointer (matching "deep copy" semantics for str/array/map
+// fields) WITHOUT the closure's own arc_retain, every spawned thread's
+// "private" struct copy shares one under-refcounted closure env -- the
+// first thread to finish frees it, and every other thread's `b.f()` call
+// (plus main's own final call after wg_wait) is a use-after-free of the
+// closure env, or a later drop of the same env is a double free.
+
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+struct Box {
+    tag: str,
+    f: fn() -> i64,
+}
+
+fn make_box(tag: str, start: i64) -> Box {
+    let mut n = start
+    return Box { tag: tag, f: || { n = n + 1  n } }
+}
+
+fn main() {
+    let mut wg = new_wait_group()
+    let mut i = 0
+    let n_threads = 400
+    while i < n_threads {
+        wg = wg_add(wg, 1)
+        let b = make_box("t" + to_string(i), i)
+        // b (a struct with a closure-typed field) is captured by spawn --
+        // deep-copy path for the struct, arc-retain path for its `f` field.
+        spawn {
+            let v1 = b.f()
+            let v2 = b.f()
+            let v3 = b.f()
+            if v3 != v1 + 2 {
+                println("CORRUPT thread " + b.tag + ": v1=" + to_string(v1) + " v2=" + to_string(v2) + " v3=" + to_string(v3))
+            }
+            wg_done(wg)
+        }
+        // b is also used directly in the spawning thread, racing the
+        // spawned copy's calls through the (possibly shared) same env
+        let m1 = b.f()
+        if m1 < 0 {
+            println("impossible")
+        }
+        i = i + 1
+    }
+    wg_wait(wg)
+    println("all threads joined, n=" + to_string(n_threads))
+}

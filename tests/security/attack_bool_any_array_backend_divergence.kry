@@ -1,0 +1,56 @@
+// ASSAULT round 6 (non-capability lens, silent-wrong-value / JIT-AOT
+// divergence): a bool routed through an `[any]` array argument diverges
+// from LEDGER item 24's documented shape.
+//
+// LEDGER item 24 ("let x: any = <bool value>` then `to_string(x)` FAILS
+// the LLVM AOT build outright and silently misrenders on JIT (prints `1`,
+// not `true`)") states the bug reproduces identically for "an ordinary,
+// non-adversarial shape (`fn log_event(args: [any]) { ... }` called with a
+// bool argument, or any `any`-typed local holding a bool)" -- i.e. it
+// treats the direct-local shape and the `[any]`-array-argument shape as
+// equivalent. Verified live this session: they are NOT equivalent.
+//
+// Direct shape (`let x: any = true; to_string(x)`):
+//   kryos run    -> prints "1"                          (wrong, not "true")
+//   kryos build  -> FAILS: LLVM IR type mismatch,
+//                   "%_0 defined with type 'i1' but expected 'i64'"
+//                   (a hard build-time signal that something is broken)
+//
+// THIS file's shape (bool passed through `[any]`, read back via
+// `args[0]`):
+//   kryos run             -> prints "1"  for true, "0" for false
+//   kryos build --release -> BUILDS CLEAN (RC=0, no diagnostic at all)
+//   the resulting binary  -> prints "-1" for true, "0" for false
+//
+// So for `true` specifically, there are THREE disagreeing values for the
+// same source program: correct="true", JIT="1", AOT="-1" -- and AOT
+// reaches this silently (clean build, clean run, wrong number) instead of
+// failing to build the way the direct shape does. This is strictly worse
+// from a caller's perspective: the direct shape at least announces itself
+// at build time; this shape ships silently corrupted data.
+//
+// Verified deterministic across the true/false pair, both backends, this
+// session (`compiler/target/release/kryos.exe`, no compiler changes):
+//   kryos run:   "logged: 1" / "logged: 0"
+//   kryos build --release + run binary: "logged: -1" / "logged: 0"
+//
+// Root cause not chased further this round (attacker-only mandate) --
+// consistent with the existing `any`-erasure design note (LEDGER item 6):
+// `any` has no runtime type tag, so a bool's i1 representation gets
+// reinterpreted as a bare i64 slot differently depending on whether the
+// value flows through a direct local (fails a static LLVM type check) or
+// through an array element (some other coercion path that produces a
+// garbage i64 instead of erroring).
+
+fn log_event(args: [any]) {
+    let b: any = args[0]
+    println("logged: " + to_string(b))
+}
+
+@capabilities(process)
+fn main() {
+    let flag_true: bool = true
+    let flag_false: bool = false
+    log_event([flag_true])
+    log_event([flag_false])
+}

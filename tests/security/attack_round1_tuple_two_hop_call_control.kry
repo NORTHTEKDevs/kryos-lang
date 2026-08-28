@@ -1,0 +1,19 @@
+// Control for attack_round1_tuple_two_hop_call.kry: identical program but
+// the reader is invoked directly (no tuple indirection at all) inside the
+// same deny!(fs:read) scope. Must be REJECTED (E0507) to prove deny!
+// actually applies to this closure/scope -- isolating the tuple-index
+// dispatch gap as the specific defect, not a broken harness.
+
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    deny!(fs:read) {
+        let leaked = reader()
+        println("TUPLE-TWO-HOP CONTROL LEAK: " + leaked)
+    }
+}
