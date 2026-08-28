@@ -3125,26 +3125,18 @@ impl TypeChecker {
                     // of shipping the erasure sentinel through codegen (the
                     // item 40c repro: unannotated `to_array(Ok("hi-there"))`
                     // printed a raw pointer, not the string).
-                    if let Some(Expr::FnCall { callee, .. }) = value.as_ref() {
-                        if let Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
-                            let unbindable = self.env.lookup_function(callee_name).is_some_and(|sig| {
-                                !sig.generic_var_ids.is_empty()
-                                    && sig.generic_var_ids.iter().any(|gid| {
-                                        type_mentions_var(&sig.ret, *gid)
-                                            && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
-                                    })
-                            });
-                            if unbindable {
-                                self.error_with_code(
-                                    format!(
-                                        "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
-                                    ),
-                                    *span,
-                                    kryos_errors::codes::E0110,
-                                );
-                            }
-                        }
-                    }
+                    // Item 48 (reopened from 40c): the check below used to
+                    // only match `value` when it was DIRECTLY a `FnCall` --
+                    // so a destructuring binding, `let (a, n) =
+                    // (to_array(Ok("hi-there")), 5)`, never matched at all
+                    // (the RHS here is a `TupleLiteral`, not a `FnCall`),
+                    // and passed `kryos check` clean while still printing a
+                    // raw pointer on both backends.
+                    // `check_unbindable_generic_binding` walks the
+                    // pattern/value pair recursively (tuple + struct
+                    // destructuring, any nesting depth), reporting at each
+                    // individual unbindable call's own span.
+                    self.check_unbindable_generic_binding(pattern.as_ref(), value.as_ref());
                 }
 
                 // Binding the result of the IN-PLACE builtins `sort`/`reverse`
@@ -3627,6 +3619,123 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    // LEDGER item 48 (reopened from 40c): the unbindable-generic check (see
+    // `type_mentions_var`'s doc comment) previously only fired for a bare
+    // `let x = generic_fn(..)` binding -- it never walked a destructuring
+    // pattern, so `let (a, n) = (to_array(Ok("hi-there")), 5)` passed
+    // `kryos check` clean and still printed a raw pointer at runtime on both
+    // backends (live repro, item 48). This walks the PATTERN and its VALUE
+    // in lockstep, matching each Tuple-pattern element positionally against
+    // its TupleLiteral element and each Struct-pattern field by name against
+    // its StructLiteral field, recursing through arbitrary nesting depth
+    // (`let ((a, b), c) = ((to_array(..), 1), 2)`). Only literal-shaped
+    // values are walked -- a destructured variable or a call that itself
+    // RETURNS a tuple/struct (`let (a, b) = get_pair()`) has no per-element
+    // AST node to check here at all: `get_pair`'s own return type is already
+    // a concrete, fully-formed tuple type by the time it reaches this `let`,
+    // not a fresh unbound generic var, so there is nothing unbindable to
+    // find by walking further.
+    fn check_unbindable_generic_binding(&mut self, pattern: Option<&Pattern>, value: Option<&Expr>) {
+        let Some(value) = value else { return };
+        match pattern {
+            // No pattern at all, or a leaf identifier/wildcard inside one:
+            // this whole `value` binds to ONE name (or is discarded), so any
+            // FnCall reachable through purely-INFERRED aggregate literals
+            // (array/tuple -- neither has a per-slot DECLARED type to
+            // unify a generic's return against, unlike a struct literal's
+            // named, declared field types) is exactly as unbindable as the
+            // bare `let x = call(..)` case. Probed live: `let arr =
+            // [to_array(Ok("hi-there"))]` (item 48 adjacent shape) passed
+            // `check` clean and printed a raw pointer at `arr[0][0]`
+            // pre-fix; recursing into ArrayLiteral/TupleLiteral elements
+            // here closes that gap. A StructLiteral is deliberately NOT
+            // recursed into from this arm -- its field values ARE
+            // externally constrained by the struct's declared field types
+            // (`let h = Holder { a: to_array(..), .. }` binds `T` soundly
+            // via ordinary field unification and is proven correct at
+            // runtime by the `s4`-shaped probe below), so walking in here
+            // would be a false-positive rejection of sound code.
+            None | Some(Pattern::Ident { .. }) | Some(Pattern::Wildcard { .. }) => {
+                self.report_unbindable_generic_call(value);
+                match value {
+                    Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                        for elem in elements {
+                            self.check_unbindable_generic_binding(None, Some(elem));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Some(Pattern::Tuple { elements: pats, .. }) => {
+                if let Expr::TupleLiteral { elements: vals, .. } = value {
+                    for (p, v) in pats.iter().zip(vals.iter()) {
+                        self.check_unbindable_generic_binding(Some(p), Some(v));
+                    }
+                }
+                // A non-literal tuple-typed value (a variable, or a call
+                // returning a tuple) has no per-element AST to walk -- see
+                // the doc comment above.
+            }
+            Some(Pattern::Struct { fields: pat_fields, .. }) => {
+                // Reachable only NESTED inside a tuple pattern (`let
+                // (Holder { a, n }, x) = (Holder { .. }, 9)`) -- a
+                // top-level `let Name { .. } = ..` does not parse as a
+                // struct pattern at all (`parse_let` only recognizes a
+                // leading `(` for destructuring). Unlike the StructLiteral
+                // case above, this DOES need walking: `bind_pattern_with_mut`'s
+                // own `Pattern::Struct` arm binds each field through a
+                // brand-new `fresh_var()`, never linked back to the
+                // struct's actual declared field type -- so the
+                // externally-constrained argument above does NOT apply
+                // here. Probed live (ground truth, with this arm
+                // temporarily disabled): `let (Holder { a, n }, x) =
+                // (Holder { a: to_array(Ok("hi-there")), n: 5 }, 9)`
+                // passed `check` clean and then PANICKED at runtime
+                // ("array is null") -- a real, reachable crash from the
+                // exact same root cause, not a hypothetical.
+                if let Expr::StructLiteral { fields: val_fields, .. } = value {
+                    for (fname, ppat) in pat_fields {
+                        if let Some((_, vexpr)) = val_fields.iter().find(|(n, _)| n == fname) {
+                            self.check_unbindable_generic_binding(Some(ppat), Some(vexpr));
+                        }
+                    }
+                }
+            }
+            // `let` bindings are always irrefutable, so Or/Enum/Literal
+            // patterns never appear here (those are match-arm-only) -- no-op
+            // defensively rather than panicking on an unreachable shape.
+            Some(Pattern::Or { .. }) | Some(Pattern::Enum { .. }) | Some(Pattern::Literal { .. }) => {}
+        }
+    }
+
+    /// If `value` is a direct call to a free function whose own generic type
+    /// parameter never appears in its own parameter list (so it can never be
+    /// inferred from any argument, ever -- see `type_mentions_var`), emit
+    /// E0110 at the call's own span. Shared by the bare-`let` and
+    /// destructuring-pattern paths above.
+    fn report_unbindable_generic_call(&mut self, value: &Expr) {
+        if let Expr::FnCall { callee, span, .. } = value {
+            if let Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
+                let unbindable = self.env.lookup_function(callee_name).is_some_and(|sig| {
+                    !sig.generic_var_ids.is_empty()
+                        && sig.generic_var_ids.iter().any(|gid| {
+                            type_mentions_var(&sig.ret, *gid)
+                                && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
+                        })
+                });
+                if unbindable {
+                    self.error_with_code(
+                        format!(
+                            "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
+                        ),
+                        *span,
+                        kryos_errors::codes::E0110,
+                    );
+                }
+            }
         }
     }
 

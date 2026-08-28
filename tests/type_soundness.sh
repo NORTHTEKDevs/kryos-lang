@@ -1308,6 +1308,105 @@ fn main() {
     println(to_string(b[0]))
 }'
 
+# --- LEDGER item 48 (reopened from 40c): the unbindable-generic check above
+# only ever matched `value` when it was DIRECTLY a bare `let x =
+# generic_fn(..)` FnCall -- it never walked a DESTRUCTURING pattern, so
+# `let (a, n) = (to_array(Ok("hi-there")), 5)` passed `kryos check` clean
+# (rc=0, no diagnostic) and printed a raw pointer at `a[0]` on both backends
+# (live repro, measured pre-fix). Fix: `check_unbindable_generic_binding`
+# walks the pattern/value pair recursively for Tuple and Struct destructuring
+# (any nesting depth) and additionally recurses into Array/Tuple LITERAL
+# elements for a non-destructured single-name binding, since neither has a
+# per-slot DECLARED type to constrain a generic return against (unlike a
+# struct literal field, which is externally constrained by the struct's own
+# declared field type -- see the no-cascade complements below).
+
+want_reject to_array_unannotated_tuple_destructure_first_element '
+use std::result::{to_array}
+fn main() { let (a, n) = (to_array(Ok("hi-there")), 5)  println(a[0]) }'
+
+want_reject to_array_unannotated_tuple_destructure_nonfirst_element '
+use std::result::{to_array}
+fn main() { let (n, a) = (5, to_array(Ok("hi-there")))  println(a[0]) }'
+
+want_reject to_array_unannotated_tuple_destructure_err_case '
+use std::result::{to_array}
+fn main() { let (a, n) = (to_array(Err("boom")), 5)  println(a[0]) }'
+
+want_reject to_array_unannotated_nested_tuple_destructure '
+use std::result::{to_array}
+fn main() { let ((a, b), c) = ((to_array(Ok("hi-there")), 1), 2)  println(a[0]) }'
+
+# A struct pattern is unreachable as the TOP-LEVEL pattern of a `let`
+# (`parse_let` only recognizes a leading `(` for destructuring) but IS
+# reachable nested inside a tuple pattern. `bind_pattern_with_mut`'s own
+# `Pattern::Struct` arm binds each field through a brand-new `fresh_var()`,
+# never linked back to the struct's actual declared field type -- so unlike
+# a plain `let h = Holder { a: to_array(..), .. }` (sound, see the no-cascade
+# complement below), this shape is NOT externally constrained. Ground truth
+# probed with this arm of the fix temporarily disabled: this exact program
+# passed `check` clean and then PANICKED at runtime ("array is null") -- a
+# real, reachable crash from the same root cause, not a hypothetical.
+want_reject to_array_unannotated_struct_pattern_nested_in_tuple '
+use std::result::{to_array}
+struct Holder { a: [str], n: i64 }
+fn main() {
+    let (Holder { a, n }, x) = (Holder { a: to_array(Ok("hi-there")), n: 5 }, 9)
+    println(a[0])
+}'
+
+# Array-literal wrapping: no destructuring pattern at all (single name `arr`
+# binds the whole array), but the call's result still lands in an
+# unconstrained slot. Measured pre-fix: passed `check` clean, printed a raw
+# pointer at `arr[0][0]`.
+want_reject to_array_unannotated_inside_array_literal '
+use std::result::{to_array}
+fn main() { let arr = [to_array(Ok("hi-there"))]  println(arr[0][0]) }'
+
+# Bare tuple bound to a single name (no pattern) -- the same unconstrained-
+# literal-container argument as the array case, one level up.
+want_reject to_array_unannotated_bare_tuple_no_pattern '
+use std::result::{to_array}
+fn main() { let t = (to_array(Ok("hi-there")), 5)  println(t.0[0]) }'
+
+# NO-CASCADE complements: shapes that must NOT be flagged, because the call
+# result lands in a position with a real DECLARED type constraining it, or
+# the callee is not an unbindable generic at all.
+
+# A StructLiteral field value IS externally constrained by the struct's own
+# declared field type -- `T` is bound via ordinary field unification when the
+# whole struct literal is bound to a single (non-destructured) name. Proven
+# correct at RUNTIME, not just "not rejected": prints the real string.
+want_pass to_array_in_struct_literal_field_still_works '
+use std::result::{to_array}
+struct Holder { a: [str], n: i64 }
+fn main() { let h = Holder { a: to_array(Ok("hi-there")), n: 5 }  println(h.a[0]) }'
+
+# A generic call result passed DIRECTLY as a call argument is constrained by
+# the callee's own declared (concrete) parameter type -- also proven correct
+# at runtime.
+want_pass to_array_as_call_argument_still_works '
+use std::result::{to_array}
+fn show(a: [str]) { println(a[0]) }
+fn main() { show(to_array(Ok("hi-there"))) }'
+
+# A normal generic (`push<T>`, `T` DOES appear in its own param list) inside
+# a tuple destructure must not be falsely flagged -- guards the Tuple-walk
+# against the same false-positive class item 40c's first (reverted) attempt
+# hit for `push` inside a generic struct method.
+want_pass push_generic_still_works_inside_tuple_destructure '
+fn main() {
+    let mut a: [i64] = []
+    let (b, c) = (push(a, 5), 9)
+    println(to_string(b[0]) + "," + to_string(c))
+}'
+
+# A non-generic call inside an array literal must not be falsely flagged --
+# guards the new Array-literal walk against over-triggering on ordinary code.
+want_pass normal_call_still_works_inside_array_literal '
+fn make() -> str { return "ok" }
+fn main() { let arr = [make(), make()]  println(arr[0]) }'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else
