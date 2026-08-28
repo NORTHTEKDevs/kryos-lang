@@ -55,16 +55,16 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 13 | Concurrency: spawn/channels/actors (`13-concurrency.md`) | planned -- summarizes the sync half of [`docs/09-concurrency.md`](../../09-concurrency.md) |
-| 14 | Async (`14-async.md`) | planned -- summarizes the async/await half of [`docs/09-concurrency.md`](../../09-concurrency.md), split out for teaching order: sync concurrency before async |
+| 13 | [Concurrency: spawn/channels/actors](13-concurrency.md) | written -- summarizes the sync half of [`docs/09-concurrency.md`](../../09-concurrency.md); also covers `std::sync`'s `Mutex`/`AtomicInt`, and states two confirmed hang/deadlock caveats (LEDGER item 46: a two-caller `WaitGroup.wg_wait` only releases the first waiter, and a shared mutating closure's lock held across a coop-yield point deadlocks) |
+| 14 | [Async](14-async.md) | written -- summarizes the async/await half of [`docs/09-concurrency.md`](../../09-concurrency.md), split out for teaching order: sync concurrency before async; states the "`await` is a yield point, not a future combinator" limit and Chapter 13's coop-yield/closure-lock deadlock as it applies to `coop_spawn` |
 
 ## Part V -- Ecosystem
 
 | # | Chapter | Status |
 |---|---|---|
-| 15 | Modules & packages (`15-modules-and-packages.md`) | planned -- summarizes [`docs/12-modules-and-packages.md`](../../12-modules-and-packages.md) |
-| 16 | The standard library tour (`16-stdlib-tour.md`) | planned -- new material: a guided walk through the 66-module stdlib by category (see the table in this repo's `CLAUDE.md`); full per-symbol reference is [`docs/STDLIB.md`](../../STDLIB.md) |
-| 17 | Building & testing real programs (`17-building-and-testing.md`) | planned -- new material: project layout, `kryos.toml`, `kryos test`, `kryos fmt`, `kryos pkg`, ties together [`docs/01-getting-started.md`](../../01-getting-started.md)'s CLI reference with the cookbook |
+| 15 | [Modules & packages](15-modules-and-packages.md) | written -- summarizes the CURRENT module/package system (the old [`docs/12-modules-and-packages.md`](../../12-modules-and-packages.md) predates the current dialect in several places -- e.g. it shows `use m as alias` syntax that is now a parse error, and a stale `kryos.toml`/CLI shape -- this book chapter is the corrected, current version, verified against a live `kryos pkg init`/`add`/`install` run); covers the flat-namespace no-aliasing rule and the local-path-dependency entry-file-naming gotcha (must match the package name, not a fixed `lib.kry`) |
+| 16 | [The standard library tour](16-stdlib-tour.md) | written -- new material: a guided walk through the 66-module stdlib by category (see the table in this repo's `CLAUDE.md`); full per-symbol reference is [`docs/STDLIB.md`](../../STDLIB.md) |
+| 17 | [Building & testing real programs](17-building-and-testing.md) | written -- new material: project layout, `kryos.toml`, `kryos test`, `kryos fmt`, `kryos pkg`, capabilities in a real project (`kryos audit`), ties together [`docs/01-getting-started.md`](../../01-getting-started.md)'s CLI reference with the cookbook |
 
 ## Part VI -- Depth
 
@@ -104,6 +104,11 @@ them. The ones with the widest teaching surface:
 - **`std::result::to_array<T>` needs an explicit annotation** (LEDGER item
   40c) to stay type-safe -- unannotated it renders a raw pointer. Relevant
   to Chapter 12.
+- **Two confirmed concurrency-primitive hangs** (LEDGER item 46, found and
+  logged 2026-08-28, not yet fixed): a `std::chan::ChanWaitGroup` with two
+  callers blocked on `wg_wait` only releases the first one, and a shared
+  mutating closure's per-closure lock held across a coop-yield point
+  deadlocks the whole process. Relevant to Chapters 13 and 14.
 - ~~AOT-only proportional leak in the enum-array-push pattern~~ (LEDGER
   item 45): FIXED 2026-08-27 on both backends (was never actually
   AOT-only -- a measurement artifact). No longer a caveat.
