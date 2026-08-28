@@ -47,9 +47,9 @@ the existing reference material until their book chapter lands. Follow
 
 | # | Chapter | Status |
 |---|---|---|
-| 10 | Ownership & ARC (`10-ownership-and-arc.md`) | planned -- summarizes [`docs/06-ownership.md`](../../06-ownership.md) |
+| 10 | [Ownership & ARC](10-ownership-and-arc.md) | written -- summarizes [`docs/06-ownership.md`](../../06-ownership.md); deepens it with worked examples for arrays, structs, and multi-binding chains showing share-on-call vs copy-on-assignment side by side, plus the design rationale for why the two boundaries differ and the LEDGER item 3 struct-argument leak |
 | 11 | [Capabilities](11-capabilities.md) | written -- the headline feature, deepest chapter. Full soundness history and precision-cost data lives in [`docs/10-capabilities.md`](../../10-capabilities.md) and [`docs/capability-roadmap.md`](../../capability-roadmap.md); this chapter teaches the model and links out to those for the exhaustive version |
-| 12 | Error handling (`12-error-handling.md`) | planned -- summarizes [`docs/07-error-handling.md`](../../07-error-handling.md) |
+| 12 | [Error handling](12-error-handling.md) | written -- summarizes [`docs/07-error-handling.md`](../../07-error-handling.md); covers `Result`/`throw` side by side, the always-str catch value, and the hard line between a catchable `throw` and an uncatchable panic (exit 98 implicit / 101 for `throw`/explicit `panic()`) |
 
 ## Part IV -- Concurrency
 
