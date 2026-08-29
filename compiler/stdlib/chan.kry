@@ -308,7 +308,17 @@ fn wg_add(wg: ChanWaitGroup, n: i64) -> ChanWaitGroup {
 }
 
 /// Signal that one unit of work is done. Decrements the counter.
-/// When the counter reaches zero, send on done_ch to unblock waiters.
+/// When the counter reaches zero, CLOSE done_ch to unblock ALL waiters.
+///
+/// A `send` on a buffered(1) channel only wakes ONE blocked `recv` (queue
+/// semantics, `notify_one` -- kryos-rt/src/channel.rs). With N concurrent
+/// `wg_wait` callers blocked in `recv(done_ch)`, only one could ever dequeue
+/// the single completion token and every other waiter hung forever
+/// (LEDGER item 46a). Closing the channel instead is a real broadcast:
+/// `kryos_chan_close` sets the closed flag and calls `notify_all`, so every
+/// currently-blocked `recv` wakes, and per the documented closed-channel
+/// contract a `recv` on a closed, drained channel returns 0 immediately for
+/// any LATER waiter too -- no token to race over.
 fn wg_done(wg: ChanWaitGroup) -> ChanWaitGroup {
     recv(wg.lock_ch.raw)
     let new_count = ptr_read_i64(wg.count_cell, 0) - 1
@@ -316,7 +326,7 @@ fn wg_done(wg: ChanWaitGroup) -> ChanWaitGroup {
     send(wg.lock_ch.raw, 1)
     assert(new_count >= 0, "chan: ChanWaitGroup counter went negative")
     if new_count == 0 {
-        send(wg.done_ch.raw, 1)
+        close_chan(wg.done_ch.raw)
     }
     return wg
 }
@@ -329,6 +339,8 @@ fn wg_wait(wg: ChanWaitGroup) -> void {
     if c <= 0 {
         return
     }
+    // recv() on done_ch unblocks the instant wg_done() closes it (broadcast
+    // via close, not a dequeued token) -- see wg_done's comment above.
     recv(wg.done_ch.raw)
 }
 

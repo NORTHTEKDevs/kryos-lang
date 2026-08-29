@@ -1,0 +1,68 @@
+// ADJACENT SHAPE of LEDGER item 46b (attack_cross_closure_lock_deadlock.kry):
+// a THREE-way circular wait (A->B->C->A) across three distinct closures'
+// locks, not just the two-closure AB-BA case. The item 46b fix is a
+// wait-for-graph CYCLE detector, not a special-cased pairwise check, so this
+// exercises the "shape I did not think of" the task brief calls for: any
+// cycle length, not only length 2. Same construction as the AB-BA repro --
+// each closure mutates its own state, sleeps (widening the interleaving
+// window so the three threads deterministically finish entering their FIRST
+// lock before any of them attempts its SECOND), then calls the next closure
+// in the ring through a map cell. Three threads each enter a different ring
+// member first (thread1->a, thread2->b, thread3->c), so thread1 ends up
+// holding a's lock wanting b's (held by thread2), thread2 holds b's wanting
+// c's (held by thread3), thread3 holds c's wanting a's (held by thread1) --
+// a genuine 3-cycle, not reducible to two independent AB-BA pairs.
+use std::chan::{new_wait_group, wg_add, wg_done, wg_wait}
+
+@capabilities(all)
+fn main() {
+    let mut a_state: i64 = 0
+    let mut b_state: i64 = 0
+    let mut c_state: i64 = 0
+    let mut cell_a: map<i64, fn(i64) -> i64> = {}
+    let mut cell_b: map<i64, fn(i64) -> i64> = {}
+    let mut cell_c: map<i64, fn(i64) -> i64> = {}
+
+    let a = |n: i64| {
+        a_state = a_state + 1
+        sleep_ms(300)
+        let g = cell_b[0]
+        g(n)
+    }
+    let b = |n: i64| {
+        b_state = b_state + 1
+        sleep_ms(300)
+        let g = cell_c[0]
+        g(n)
+    }
+    let c = |n: i64| {
+        c_state = c_state + 1
+        sleep_ms(300)
+        let g = cell_a[0]
+        g(n)
+    }
+    cell_a[0] = a
+    cell_b[0] = b
+    cell_c[0] = c
+
+    let mut wg = new_wait_group()
+    wg = wg_add(wg, 3)
+    spawn {
+        let g = cell_a[0]
+        g(1)
+        wg_done(wg)
+    }
+    spawn {
+        let g = cell_b[0]
+        g(1)
+        wg_done(wg)
+    }
+    spawn {
+        let g = cell_c[0]
+        g(1)
+        wg_done(wg)
+    }
+    println("main: waiting on wg (hangs forever, or deadlocks silently forever, if the 3-cycle hangs)...")
+    wg_wait(wg)
+    println("main: all three cross-closure calls returned (this line should be unreachable if the 3-cycle deadlock hypothesis is correct)")
+}

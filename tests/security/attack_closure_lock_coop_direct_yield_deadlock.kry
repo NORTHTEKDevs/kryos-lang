@@ -1,0 +1,40 @@
+// ADJACENT SHAPE of LEDGER item 46c (attack_closure_lock_coop_yield_deadlock.kry):
+// the yield point inside the locked closure body is an EXPLICIT `coop_yield()`
+// call (the language's own documented cooperative-suspension primitive,
+// docs/09-concurrency.md) rather than a blocking I/O op (`sleep_ms`) routed
+// through `kryos_coop_io_begin`/`io_end`. Different underlying mechanism
+// (direct baton hand-back vs the io_offload wrapper), same hazard: the
+// closure-call lock is held across a coop-yield point regardless of WHICH
+// primitive caused the yield, so if the bare CAS spin never yields the
+// COOP BATON (only the OS thread), the same permanent hang reproduces. This
+// proves the item 46c fix is not sleep_ms-specific -- it must trigger for
+// ANY coop-yield-while-locked shape.
+//
+// (A literal blocking channel `recv()` is NOT an equivalent adjacent shape
+// here: read compiler/crates/kryos-rt/src/channel.rs's `kryos_chan_recv` --
+// it blocks on a plain `Condvar`, with no `io_offload`/`kryos_coop_io_begin`
+// call at all, so it does not hand back the coop baton today regardless of
+// this fix. That is a separate, pre-existing gap in the channel
+// implementation's coop-integration, not part of LEDGER item 46c's closure-
+// lock defect, and is called out un-fixed in this session's report.)
+fn caller(f: fn(i64) -> i64, n: i64, tag: str) -> i64 {
+    let r = f(n)
+    coop_record(tag + "=" + to_string(r))
+    return r
+}
+
+fn main() {
+    let mut counter: i64 = 0
+    let bump = |n: i64| {
+        counter = counter + n
+        coop_yield()
+        counter
+    }
+    coop_reset()
+    coop_spawn(caller(bump, 1, "A"))
+    coop_spawn(caller(bump, 2, "B"))
+    println("about to coop_run -- if the closure lock deadlocks the coop baton via a direct coop_yield(), this HANGS FOREVER")
+    coop_run()
+    println("coop_run returned, counter=" + to_string(counter))
+    println("order: " + coop_order())
+}
