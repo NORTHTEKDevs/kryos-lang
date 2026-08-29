@@ -2735,6 +2735,9 @@ impl LlvmCodegen {
                         self.prescan_operand(object);
                         self.prescan_operand(value);
                     }
+                    Instruction::DropIfNe { new, .. } => {
+                        self.prescan_operand(new);
+                    }
                     Instruction::Drop { .. }
                     | Instruction::Nop
                     | Instruction::DebugLine(_)
@@ -2994,6 +2997,10 @@ impl LlvmCodegen {
             }
             Instruction::Drop { local } => {
                 acc.insert(local.0);
+            }
+            Instruction::DropIfNe { old, new, .. } => {
+                acc.insert(old.0);
+                Self::collect_operand(new, acc);
             }
             Instruction::StoreField { object, value, .. } => {
                 Self::collect_operand(object, acc);
@@ -4052,6 +4059,74 @@ impl LlvmCodegen {
                     _ => {
                         self.emit_line("  ; drop (no-op)");
                     }
+                }
+            }
+            Instruction::DropIfNe { old, new, ty, via_map, .. } => {
+                // Guarded drop for an overwritten container slot / struct
+                // field holding a Struct/Enum value (LEDGER item 49). `old`
+                // is a plain I64 local holding the raw handle read back
+                // before the store; comparison is a raw i64 inequality
+                // against `new` (the handle now occupying the slot).
+                if matches!(ty, MirType::Struct(_) | MirType::Enum(_)) {
+                    let old_val = self.operand_to_llvm(&Operand::Local(*old), func);
+                    let new_val = self.operand_to_llvm(new, func);
+                    let new_ty = self.operand_type(new, func);
+                    let new_i64 = self.coerce_value(&new_val, &new_ty, "i64");
+                    let uid = self.temp_counter;
+                    self.temp_counter += 1;
+                    let ne_label = format!("dropifne_body_{uid}");
+                    let nn_label = format!("dropifne_nonnull_{uid}");
+                    let skip_label = format!("dropifne_skip_{uid}");
+                    let cmp = self.next_temp();
+                    self.emit_line(&format!("  {cmp} = icmp ne i64 {old_val}, {new_i64}"));
+                    self.emit_line(&format!(
+                        "  br i1 {cmp}, label %{ne_label}, label %{skip_label}"
+                    ));
+                    self.emit_line(&format!("{ne_label}:"));
+                    let old_ptr = self.coerce_value(&old_val, "i64", "ptr");
+                    // Guard the drop itself against a null OLD handle (a
+                    // first write into a previously-empty slot/key
+                    // legitimately reads back 0) -- emit_enum_drop already
+                    // null-checks internally, but emit_struct_drop does
+                    // not, so guard both here uniformly.
+                    let is_null = self.next_temp();
+                    self.emit_line(&format!("  {is_null} = icmp eq ptr {old_ptr}, null"));
+                    self.emit_line(&format!(
+                        "  br i1 {is_null}, label %{skip_label}, label %{nn_label}"
+                    ));
+                    self.emit_line(&format!("{nn_label}:"));
+                    match ty {
+                        MirType::Struct(name) => {
+                            if !self.copy_structs.contains(name) {
+                                self.emit_struct_drop(&old_ptr, name, func);
+                                if *via_map {
+                                    // Boxed via kryos_arc_alloc_i64 (map
+                                    // value), not kryos_calloc -- release
+                                    // through the matching ARC allocator.
+                                    self.emit_line(&format!(
+                                        "  call void @kryos_arc_release(ptr {old_ptr})"
+                                    ));
+                                } else {
+                                    self.emit_line(&format!(
+                                        "  call void @kryos_free(ptr {old_ptr})"
+                                    ));
+                                }
+                            }
+                        }
+                        MirType::Enum(name) => {
+                            if *via_map {
+                                self.emit_enum_drop_payload(&old_ptr, name, func);
+                                self.emit_line(&format!(
+                                    "  call void @kryos_arc_release(ptr {old_ptr})"
+                                ));
+                            } else {
+                                self.emit_enum_drop(&old_ptr, name, func);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.emit_line(&format!("  br label %{skip_label}"));
+                    self.emit_line(&format!("{skip_label}:"));
                 }
             }
             Instruction::StoreDeref { ptr, value } => {

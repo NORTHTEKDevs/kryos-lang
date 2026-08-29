@@ -1,0 +1,45 @@
+// LEDGER item 49 RESIDUAL (NOT fixed this session -- characterization probe
+// only): struct-field assignment holding an Enum, `h.v = Val.ListV(..)`.
+//
+// Same root cause as the array/map-index-assignment shape this item's own
+// fix closes (`release_if_ne_fn` is None for Struct/Enum), but NOT fixed by
+// the same `Instruction::DropIfNe` mechanism: unlike an array/map ELEMENT
+// (always a boxed i64 pointer on both backends, read via the raw
+// kryos_array_get/kryos_map_get getters), a Struct/Enum-typed struct FIELD
+// is embedded INLINE in the parent struct's layout on LLVM. Confirmed by
+// trying exactly this fix and reverting it: assigning an `RValue::Field`
+// read of such a field into a plain-I64 DropIfNe `old` local produced
+// invalid LLVM IR ("defined with type { i64, i64 } but expected i64"), a
+// BUILD FAILURE, not a runtime bug -- reverted rather than shipped broken.
+// Cranelift tolerated the same code (it represents Struct/Enum uniformly as
+// a pointer everywhere), so this is an LLVM-only representation split.
+//
+// Measured this session (both backends leak, no build failure on the
+// UNFIXED baseline): ~185MB/M on AOT, ~200MB/M on JIT for this exact probe.
+//
+// Run:  LEAK_ITERS=<n> ./struct_field_enum_overwrite_leak   (default 500000)
+
+enum Val {
+    ListV([i64])
+}
+
+struct Holder {
+    v: Val
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut h: Holder = Holder { v: Val.ListV([0, 0, 0]) }
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        h.v = Val.ListV([i, i + 1, i + 2])
+        match h.v {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

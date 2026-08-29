@@ -222,6 +222,13 @@ fn remap_instruction(inst: &Instruction, offset: u32) -> Instruction {
         Instruction::Drop { local } => Instruction::Drop {
             local: LocalId(local.0 + offset),
         },
+        Instruction::DropIfNe { old, new, ty, retained_by_store, via_map } => Instruction::DropIfNe {
+            old: LocalId(old.0 + offset),
+            new: remap_operand(new, offset),
+            ty: ty.clone(),
+            retained_by_store: *retained_by_store,
+            via_map: *via_map,
+        },
         Instruction::Send { channel, value } => Instruction::Send {
             channel: LocalId(channel.0 + offset),
             value: LocalId(value.0 + offset),

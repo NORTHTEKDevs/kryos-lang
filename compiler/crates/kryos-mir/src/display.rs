@@ -62,6 +62,7 @@ impl fmt::Display for Instruction {
             Instruction::ArcRetain { ptr } => write!(f, "arc_retain({ptr})"),
             Instruction::ArcRelease { ptr } => write!(f, "arc_release({ptr})"),
             Instruction::Drop { local } => write!(f, "drop({local})"),
+            Instruction::DropIfNe { old, new, ty, retained_by_store, via_map } => write!(f, "drop_if_ne({old}, {new}: {ty}, retained_by_store={retained_by_store}, via_map={via_map})"),
             Instruction::Spawn { func, args } => {
                 write!(f, "spawn {func}(")?;
                 for (i, a) in args.iter().enumerate() {

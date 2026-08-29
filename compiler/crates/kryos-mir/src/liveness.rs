@@ -178,6 +178,10 @@ fn inst_defs_uses(inst: &Instruction) -> (Vec<LocalId>, Vec<LocalId>) {
         Instruction::Drop { local } => {
             uses.push(*local);
         }
+        Instruction::DropIfNe { old, new, .. } => {
+            uses.push(*old);
+            operand_uses(new, &mut uses);
+        }
         Instruction::StoreField { object, value, .. } => {
             operand_uses(object, &mut uses);
             operand_uses(value, &mut uses);

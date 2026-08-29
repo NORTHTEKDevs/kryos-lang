@@ -1,0 +1,26 @@
+// Adjacent shape for LEDGER item 49: map-insert overwrite (`m[k] = v`)
+// instead of array-set overwrite (`arr[i] = v`). Same underlying
+// release_if_ne_fn gap, different container.
+//
+// Run:  LEAK_ITERS=<n> ./enum_map_overwrite_leak   (default 500000)
+
+enum Val {
+    ListV([i64])
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut m: map<i64, Val> = { 0: Val.ListV([0, 0, 0]) }
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        m[0] = Val.ListV([i, i + 1, i + 2])
+        match m[0] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

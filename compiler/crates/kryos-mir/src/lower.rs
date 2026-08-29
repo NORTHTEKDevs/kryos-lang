@@ -3341,6 +3341,19 @@ fn drop_unescaped_str_temps(
         match inst {
             Instruction::Assign { .. }
             | Instruction::Drop { .. }
+            // LEDGER item 49: a Struct/Enum-valued container-slot overwrite
+            // now emits Instruction::DropIfNe (old/new are separate raw i64
+            // handle temps, never a Str/Array/Map candidate this pass
+            // tracks -- the per-candidate walk below already `continue`s
+            // past any non-Assign instruction). Without this arm, ANY
+            // Struct/Enum overwrite statement (e.g. `arr[i] = Enum.V(..)`)
+            // in the SAME window as a fresh array/map literal used only as
+            // that enum's payload field made this whole-window guard bail
+            // out via its `_ => return` catch-all, silently defeating this
+            // pass's own EnumVariant-array-field cleanup (the fix for item
+            // 45) for every statement that also contains a DropIfNe --
+            // exactly the shape THIS item's own repro combines them in.
+            | Instruction::DropIfNe { .. }
             | Instruction::Nop
             | Instruction::DebugLine(_) => {}
             _ => return,
@@ -4826,6 +4839,54 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 });
                                 (rel, old_tmp)
                             });
+                            // LEDGER item 49: `release_if_ne_fn` is None for
+                            // Struct/Enum -- no generic runtime function can
+                            // recursively free an arbitrary struct/enum's
+                            // heap-owned fields (that needs compile-time
+                            // field-layout info, which only codegen has), so
+                            // the block above silently does nothing for those
+                            // types and `arr[i] = v` / `m[k] = v` leaked the
+                            // REPLACED Struct/Enum value on every overwrite of
+                            // an occupied slot. Read the OLD raw handle the
+                            // SAME way (kryos_map_get/kryos_array_get) here
+                            // too, then -- since the store's own boxing
+                            // representation for a Struct/Enum RHS is a
+                            // codegen-internal, call-site-specific detail with
+                            // no stable MIR-level operand to compare against
+                            // -- re-read the slot AFTER the store completes to
+                            // get the actual NEW raw handle, and let
+                            // `Instruction::DropIfNe` (backend-emitted,
+                            // type-directed, pointer-inequality-guarded) free
+                            // the old one.
+                            let is_struct_or_enum =
+                                matches!(val_ty, MirType::Struct(_) | MirType::Enum(_));
+                            let idx_ty_dropifne = infer_expr_type(ctx, index);
+                            let old_dropifne = if is_struct_or_enum {
+                                let old_tmp = ctx.alloc_temp(MirType::I64);
+                                let read = if matches!(obj_ty, MirType::Map { .. }) {
+                                    let get_fn = if idx_ty_dropifne == MirType::Str {
+                                        "kryos_map_get_str"
+                                    } else {
+                                        "kryos_map_get"
+                                    };
+                                    RValue::Call {
+                                        func: get_fn.to_string(),
+                                        args: vec![map_op.clone(), key_op.clone()],
+                                    }
+                                } else {
+                                    RValue::Call {
+                                        func: "kryos_array_get".to_string(),
+                                        args: vec![map_op.clone(), key_op.clone()],
+                                    }
+                                };
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: read,
+                                });
+                                Some((old_tmp, map_op.clone(), key_op.clone()))
+                            } else {
+                                None
+                            };
                             if matches!(obj_ty, MirType::Map { .. }) {
                                 let idx_ty = infer_expr_type(ctx, index);
                                 let insert_fn = if idx_ty == MirType::Str {
@@ -4886,6 +4947,50 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     },
                                 });
                             }
+                            // LEDGER item 49: guarded drop of the REPLACED
+                            // Struct/Enum value. Re-read the slot NOW (after
+                            // the store above) to get the actual raw handle
+                            // the store put there -- the RHS operand's own
+                            // representation is a bit-for-bit aggregate at
+                            // the MIR level, boxed to a heap pointer only as
+                            // a call-site-specific codegen detail of THAT one
+                            // `kryos_array_set`/`kryos_map_insert` call, so it
+                            // has no stable comparable form here.
+                            if let Some((old_tmp, map_op2, key_op2)) = old_dropifne {
+                                let new_tmp = ctx.alloc_temp(MirType::I64);
+                                let reread = if matches!(obj_ty, MirType::Map { .. }) {
+                                    let get_fn = if idx_ty_dropifne == MirType::Str {
+                                        "kryos_map_get_str"
+                                    } else {
+                                        "kryos_map_get"
+                                    };
+                                    RValue::Call {
+                                        func: get_fn.to_string(),
+                                        args: vec![map_op2, key_op2],
+                                    }
+                                } else {
+                                    RValue::Call {
+                                        func: "kryos_array_get".to_string(),
+                                        args: vec![map_op2, key_op2],
+                                    }
+                                };
+                                ctx.emit(Instruction::Assign {
+                                    dest: new_tmp,
+                                    value: reread,
+                                });
+                                ctx.emit(Instruction::DropIfNe {
+                                    old: old_tmp,
+                                    new: Operand::Local(new_tmp),
+                                    ty: val_ty.clone(),
+                                    // kryos_array_set/kryos_map_insert(_str)
+                                    // unconditionally retain a Struct/Enum
+                                    // 3rd argument on Cranelift only (see
+                                    // the field'''s doc comment) -- this IS
+                                    // that call site.
+                                    retained_by_store: true,
+                                    via_map: matches!(obj_ty, MirType::Map { .. }),
+                                });
+                            }
                         } else if let ast::Expr::Deref { inner, .. } = target {
                             // Deref assignment: *ptr = value → store through pointer.
                             let ptr_op = lower_expr_to_operand(ctx, inner);
@@ -4930,6 +5035,40 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 });
                                 (rel, old_tmp)
                             });
+                            // LEDGER item 49 adjacent shape (struct-field
+                            // assignment holding an Enum/Struct, e.g.
+                            // `h.v = Val.ListV(..)`): investigated and
+                            // measured leaking on BOTH backends (~185MB/M
+                            // AOT, ~200MB/M JIT for an [i64]-payload enum
+                            // field) -- same root cause as the array/map-
+                            // index-assignment case (`release_if_ne_fn` is
+                            // None for Struct/Enum, see the block above).
+                            // NOT fixed by this session's DropIfNe mechanism:
+                            // unlike an array/map ELEMENT (always a boxed
+                            // i64 pointer on both backends, read via the raw
+                            // kryos_array_get/kryos_map_get getters), a
+                            // Struct/Enum-typed struct FIELD is embedded
+                            // INLINE in the parent struct's layout on LLVM --
+                            // confirmed by trying exactly this: assigning an
+                            // RValue::Field read of such a field into a
+                            // plain-I64 DropIfNe `old` local produced invalid
+                            // LLVM IR ("defined with type { i64, i64 } but
+                            // expected i64", a build failure, not a runtime
+                            // bug). Cranelift tolerated the same code (it
+                            // represents Struct/Enum uniformly as a pointer
+                            // everywhere), so this is an LLVM-only
+                            // representation split, mirroring the aggregate-
+                            // vs-pointer divergence this file already works
+                            // around elsewhere (the Ptr(elem_ty) comment a
+                            // few hundred lines up, in
+                            // lower_nested_field_assign's IndexAccess arm).
+                            // Closing it needs a DIFFERENT mechanism than
+                            // DropIfNe's raw-pointer-inequality guard -- an
+                            // aggregate-aware compare/drop, or spilling the
+                            // embedded value to a heap box first before
+                            // comparing. Left OPEN; see LEDGER item 49's
+                            // residual entry and
+                            // tests/mem/struct_field_enum_overwrite_leak.kry.
                             lower_nested_field_assign(ctx, object, field, val_op.clone());
                             if let Some((rel, old_tmp)) = old_field {
                                 // TWO releases, both guarded by old != new.

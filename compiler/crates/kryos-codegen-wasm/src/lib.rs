@@ -2447,8 +2447,10 @@ impl<'a> FnEmitter<'a> {
             Instruction::Nop | Instruction::DebugLine(_) => {}
             Instruction::ArcRetain { .. }
             | Instruction::ArcRelease { .. }
-            | Instruction::Drop { .. } => {
-                // In v0.1 we have no heap, so ARC ops are no-ops.
+            | Instruction::Drop { .. }
+            | Instruction::DropIfNe { .. } => {
+                // In v0.1 we have no heap, so ARC ops (and this guarded
+                // drop, LEDGER item 49) are no-ops.
             }
             Instruction::StoreField { object, field, value } => {
                 let struct_name = match self.operand_ty(object) {

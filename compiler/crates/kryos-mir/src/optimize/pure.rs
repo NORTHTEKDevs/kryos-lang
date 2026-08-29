@@ -165,6 +165,10 @@ fn collect_inst_reads(inst: &Instruction, used: &mut HashSet<u32>) {
         Instruction::Drop { local } => {
             used.insert(local.0);
         }
+        Instruction::DropIfNe { old, new, .. } => {
+            used.insert(old.0);
+            collect_operand_reads(new, used);
+        }
         Instruction::Send { channel, value } => {
             used.insert(channel.0);
             used.insert(value.0);

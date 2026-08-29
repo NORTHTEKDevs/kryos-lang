@@ -3390,6 +3390,76 @@ fn translate_instruction<M: Module>(
                 }
             }
         }
+        Instruction::DropIfNe { old, new, ty, retained_by_store, .. } => {
+            // Guarded drop for an overwritten container slot / struct field
+            // holding a Struct/Enum value (LEDGER item 49). `old` is a
+            // plain I64 local holding the raw handle read back before the
+            // store; only Struct/Enum `ty` does anything -- other types
+            // are a defensive no-op (never emitted by lower.rs today).
+            if matches!(ty, MirType::Struct(_) | MirType::Enum(_)) {
+                if let Some(&old_var) = translator.variables.get(&old.0) {
+                    let old_val = builder.use_var(old_var);
+                    let new_val = translate_operand(new, builder, translator, module)?;
+                    // Reconcile widths defensively -- both should already be
+                    // I64 (Struct/Enum handles are always plain pointers at
+                    // the MIR operand level; see operand_cranelift_type),
+                    // but a mismatched class would trip the verifier on icmp.
+                    let old_cty = builder.func.dfg.value_type(old_val);
+                    let new_cty = builder.func.dfg.value_type(new_val);
+                    let (old_val, new_val) = if old_cty != new_cty {
+                        if old_cty.bits() < new_cty.bits() {
+                            (builder.ins().sextend(new_cty, old_val), new_val)
+                        } else if new_cty.bits() < old_cty.bits() {
+                            (old_val, builder.ins().sextend(old_cty, new_val))
+                        } else {
+                            (old_val, new_val)
+                        }
+                    } else {
+                        (old_val, new_val)
+                    };
+                    let ne = builder.ins().icmp(IntCC::NotEqual, old_val, new_val);
+                    let drop_block = builder.create_block();
+                    let after_block = builder.create_block();
+                    builder.ins().brif(ne, drop_block, &[], after_block, &[]);
+                    builder.seal_block(drop_block);
+                    builder.switch_to_block(drop_block);
+                    if *retained_by_store {
+                        // Cranelift's `kryos_array_set`/`kryos_map_insert(_str)`
+                        // codegen unconditionally retains a Struct/Enum 3rd
+                        // argument (LEDGER item 44 WAVE 1's compensating
+                        // fix), which nothing else ever balances for an
+                        // unnamed/inline enum RHS -- see the field's own doc
+                        // comment on `Instruction::DropIfNe`. The retain adds
+                        // AT MOST one extra unit (nothing else retains a
+                        // Struct/Enum value reaching this exact position),
+                        // and the SLOT'S VERY FIRST occupant (the array/map's
+                        // own initializer, never routed through
+                        // kryos_array_set/kryos_map_insert) carries NO extra
+                        // unit at all -- so the two histories can leave `old`
+                        // at either refcount, and a fixed "call the full drop
+                        // twice" is wrong for the un-retained history (it
+                        // double-frees an already-recycled box, caught live
+                        // by KRYOS_FREE_DIAG). Neutralize whichever extra
+                        // unit MIGHT be there with one explicit
+                        // `kryos_struct_release_shared` call (a same-history
+                        // no-op when there wasn't one -- it only decrements
+                        // when the count is already >0), THEN do exactly one
+                        // normal drop: by the time that runs, `old` is
+                        // provably back to sole ownership either way, so a
+                        // single `emit_drop_for_value` is correct for BOTH
+                        // histories.
+                        let release_shared_ref = ensure_func_ref_with_args(
+                            "kryos_struct_release_shared", builder, translator, module, 1,
+                        )?;
+                        builder.ins().call(release_shared_ref, &[old_val]);
+                    }
+                    emit_drop_for_value(old_val, ty, builder, translator, module)?;
+                    builder.ins().jump(after_block, &[]);
+                    builder.seal_block(after_block);
+                    builder.switch_to_block(after_block);
+                }
+            }
+        }
         Instruction::StoreField {
             object,
             field,

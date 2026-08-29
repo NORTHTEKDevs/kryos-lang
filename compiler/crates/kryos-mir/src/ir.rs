@@ -385,6 +385,61 @@ pub enum Instruction {
     /// Drop a local (scope-exit cleanup).
     Drop { local: LocalId },
 
+    /// Guarded drop of an OLD Struct/Enum handle, freed only if it differs
+    /// (raw pointer identity) from `new`. Emitted when a container slot or
+    /// struct field holding a Struct/Enum value is overwritten (`arr[i] =
+    /// v`, `m[k] = v`, `s.field = v`) -- LEDGER item 49. Unlike `Drop`,
+    /// which derives the value's type from the local's OWN declared
+    /// MirType, `old`'s declared type here is always plain `I64` (the raw
+    /// handle read back via `kryos_array_get`/`kryos_map_get`/
+    /// `RValue::Field`) so it survives becoming a cross-block value without
+    /// hitting the aggregate-vs-pointer LLVM representation split that a
+    /// bare `MirType::Enum`/`MirType::Struct` local has -- `ty` carries the
+    /// LOGICAL type explicitly instead. `new` is the value now occupying
+    /// the slot; comparison is a raw pointer/i64 inequality, matching
+    /// `kryos_array_release_if_ne` and friends for Str/Array/Map. Only
+    /// `MirType::Struct`/`MirType::Enum` values of `ty` do anything; other
+    /// types are a no-op (defensive, not expected to be emitted).
+    DropIfNe {
+        old: LocalId,
+        new: Operand,
+        ty: MirType,
+        /// True ONLY for the array/map-index-assignment call site: on
+        /// Cranelift (NOT LLVM -- see the `kryos_struct_retain` insertion
+        /// keyed on `kryos_array_set`/`kryos_map_insert(_str)` in
+        /// kryos-codegen-cranelift, LEDGER item 44 WAVE 1), storing a
+        /// Struct/Enum value via those three runtime calls UNCONDITIONALLY
+        /// retains it (a compensating fix for a DIFFERENT danger -- a named
+        /// variable stored into a container and used again). That retain is
+        /// never balanced by anything for an unnamed/inline RHS enum value
+        /// (Struct/Enum temps are not `drop_unescaped_str_temps` candidates),
+        /// so on Cranelift the value this DropIfNe frees carries ONE extra
+        /// un-balanced owner from its OWN construction/storage. Cranelift
+        /// codegen releases twice (via the shared-aware `__kryos_drop_<T>`
+        /// helper, never `emit_drop_for_value` directly -- that helper's
+        /// unconditional field-drop would double-free a droppable field on
+        /// the second call) when this is true; LLVM ignores the flag (it
+        /// never performs the compensating retain, so one release is always
+        /// correct there).
+        retained_by_store: bool,
+        /// True when this container is a MAP (kryos_map_insert/_str), false
+        /// for an ARRAY (kryos_array_set). LLVM boxes a Struct/Enum 3rd
+        /// argument DIFFERENTLY per callee: kryos_array_set uses
+        /// `kryos_calloc` (matching `__kryos_drop_<T>`/`kryos_free`'s
+        /// expected header), but kryos_map_insert(_str) uses
+        /// `kryos_arc_alloc_i64` (an ARC header) instead -- freeing an
+        /// arc-boxed value with `kryos_free` misreads the header as a bogus
+        /// pool size-class and silently leaks it (reported, never
+        /// deallocated) rather than crashing. LLVM codegen drops payload
+        /// FIELDS the same way for both (the payload bytes are laid out
+        /// identically regardless of which allocator boxed them) but frees
+        /// the box itself via `kryos_arc_release` instead of `kryos_free`
+        /// when this is true. Cranelift ignores this field -- it boxes
+        /// Struct/Enum values via `kryos_calloc` uniformly regardless of
+        /// destination container.
+        via_map: bool,
+    },
+
     /// Store a value into a struct field.
     StoreField {
         object: Operand,

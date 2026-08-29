@@ -242,6 +242,17 @@ jobs:
         # PeakWorkingSet64 polling) -- SKIPs cleanly elsewhere.
         run: bash tests/mem_enum_array_push_gate.sh
 
+      - name: Enum-array/map overwrite memory gate (LEDGER item 49)
+        # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
+        # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on
+        # BOTH backends and BOTH container kinds -- a different data-flow
+        # path into the same class of gap item 45'''s gate above does not
+        # reach (that one only covers a fresh push-and-drop). Pre-fix build
+        # grew to 371-463MB at 3M iters across the four legs; fixed build
+        # plateaus near 3-4MB on all four. Windows-only (PowerShell
+        # PeakWorkingSet64 polling) -- SKIPs cleanly elsewhere.
+        run: bash tests/mem_enum_overwrite_gate.sh
+
       - name: Backend parity matrix (Cranelift vs LLVM)
         shell: bash
         # Runs every tests/smoke/*.kry under both backends; classifies LLVM

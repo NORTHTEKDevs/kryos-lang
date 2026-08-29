@@ -1,0 +1,38 @@
+// NEW finding, discovered while enumerating LEDGER item 49's adjacent
+// shapes -- a SIBLING gap to item 45, NOT item 49's responsibility (this
+// leaks via a plain push-and-drop, no container-slot OVERWRITE involved at
+// all, and is unaffected by item 49's DropIfNe fix either way).
+//
+// `drop_unescaped_str_temps` (kryos-mir/src/lower.rs) got an
+// `RValue::EnumVariant`-with-Array-field arm from item 45's fix, but never
+// a matching Str-field arm. An EnumVariant construction CLONES a str
+// payload field (`kryos_string_clone`, both backends), exactly like it
+// clones/dups an Array-typed field -- so the ORIGINAL pre-clone string
+// temp is orphaned on every construction and nothing ever drops it,
+// leaking one buffer per Enum-with-str-payload construction regardless of
+// whether the enum is later pushed, overwritten, or just dropped.
+//
+// Measured this session: ~78MB/M on AOT, ~78MB/M on JIT (both backends,
+// confirming shared-MIR root cause) using EXACTLY item 45's own
+// push-and-drop shape (see tests/mem/enum_array_push_leak.kry) with a
+// `str` payload substituted for the `[i64]` one.
+//
+// Run:  LEAK_ITERS=<n> ./enum_str_push_leak   (default 500000)
+
+enum Val {
+    StrV(str)
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut i = 0
+    while i < iters {
+        let v = Val.StrV("payload-" + to_string(i))
+        let mut tmp: [Val] = []
+        tmp = push(tmp, v)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters))
+}

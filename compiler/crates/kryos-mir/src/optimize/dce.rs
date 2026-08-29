@@ -176,6 +176,10 @@ fn collect_locals_in_instruction(inst: &Instruction, used: &mut HashSet<u32>) {
         Instruction::Drop { local } => {
             used.insert(local.0);
         }
+        Instruction::DropIfNe { old, new, .. } => {
+            used.insert(old.0);
+            collect_locals_in_operand(new, used);
+        }
         Instruction::Spawn { args, .. } => {
             for arg in args {
                 collect_locals_in_operand(arg, used);

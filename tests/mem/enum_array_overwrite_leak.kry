@@ -1,0 +1,44 @@
+// Regression fixture for LEDGER item 49 (item 45 REOPENED): the enum-array-
+// payload leak on container-slot OVERWRITE (`arr[i] = v`), a DIFFERENT
+// data-flow path into the same underlying gap item 45's own fix (the
+// `drop_unescaped_str_temps` `RValue::EnumVariant` arm) does not reach --
+// that fix targets a fresh-push-and-drop shape; this fixture overwrites an
+// EXISTING slot every iteration instead.
+//
+// Root cause (confirmed against the code before fixing): `release_if_ne_fn`
+// in kryos-mir/src/lower.rs never covered Struct/Enum -- only Str/Array/Map
+// -- so the array/map-index-assignment lowering's "read old, store new,
+// release old (guarded by pointer inequality)" sequence silently did
+// NOTHING for a Struct/Enum-valued slot. Fixed by adding a dedicated
+// `Instruction::DropIfNe` MIR instruction (type-directed, not derived from
+// a local's own declared MirType, so it sidesteps the LLVM aggregate-vs-
+// pointer representation split a bare `MirType::Enum`/`Struct` local has)
+// that both backends lower to a pointer-inequality-guarded free of the
+// specific Struct/Enum type.
+//
+// Measured on the ORCHESTRATOR's pre-fix binary (2026-08-28): 66MB @ 500k
+// iters, 371MB @ 3M iters (~124MB/M). See tests/mem_enum_array_overwrite_gate.sh
+// for post-fix numbers on all legs/shapes.
+//
+// Run:  LEAK_ITERS=<n> ./enum_array_overwrite_leak   (default 500000)
+
+enum Val {
+    ListV([i64])
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut slots: [Val] = [Val.ListV([0, 0, 0])]
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        slots[0] = Val.ListV([i, i + 1, i + 2])
+        match slots[0] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
