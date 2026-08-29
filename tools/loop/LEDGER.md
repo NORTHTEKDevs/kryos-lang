@@ -3753,7 +3753,7 @@ eight days later. Not investigated or fixed here (separate root causes,
 separate wave, would have blown this wave's scope) -- flagged per the
 ranking doctrine (leak) so it is not lost again. Needs its own triage wave.
 
-### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED (8 attempts now ruled out)
+### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED, fix REVERTED after new evidence (10th investigation, 9 attempts + this one now ruled out)
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific - a free function leaks
 identically. Flat for contrast: scalar-only struct through a method, and the
@@ -3767,7 +3767,87 @@ scalar_method          0 MB ->  3.9 MB    FLAT
 free_fn_scalar_ret   10.9 MB -> 91.7 MB   LEAKS (confirms "not method-specific")
 ```
 
-**8th attempt was a design pass, not a patch - this session, per instruction, wrote
+#### 10th investigation (2026-08-28): a fix WAS implemented, proven on its own repro, and REVERTED anyway -- read this before the 8th-attempt design note below
+
+Written up 2026-08-29 from the three regression fixtures that session pinned;
+until then this account existed ONLY in those fixtures' own header comments,
+which pointed here for "the full account" while this section still said
+"8 attempts" -- a dangling reference to a section that had never been
+written. The fixtures are now tracked in git (they were not), so the
+evidence survives a fresh clone.
+
+The naive fix (add `MirType::Struct` to `consume_call_args`'s
+`Str`/`Array`/`Map` borrow allowlist) makes the caller's struct local get a
+real scope-end `Drop` again -- correct in isolation. But every backend's
+struct-drop path assumes a struct value has exactly ONE owner, and that
+session found **at least FOUR distinct, independent shapes where a struct
+picks up a second alias with no retain to match**, each needing its own fix,
+and -- the load-bearing fact -- **each one discoverable only after the fix
+for the previous one made struct drops real enough to expose it**:
+
+1. **A method returns `self` bare** (`SpinLock.lock() -> SpinLock { .. return
+   self }`). Cranelift boxes every struct uniformly, so the destination local
+   aliases the caller's identical box. FIXABLE, and FIXED that session
+   (Cranelift-only retain at `Terminator::Return` + owner-count-checked
+   release, mirroring the existing boxed-array-element drop path), proven both
+   ways, 5/5 both backends. Pinned: `tests/conformance/conf_spinlock_seq.kry`
+   (ZERO threads, zero `spawn` -- this repro is what falsified this item's
+   original "spawn/container sharing" attribution).
+2. **The same shape with HEAP fields.** LLVM's `byval`/`sret` struct copy is
+   only shallow, so even though LLVM never boxes the top-level struct, the
+   caller's and destination's copies still alias the same leaf `str`/`array`
+   pointers -- needing a SEPARATE, LLVM-only field-content retain at the same
+   return site (Cranelift's box-level retain does nothing for LLVM). Also
+   implemented and proven that session. Pinned:
+   `tests/mem/struct_selfreturn_leak.kry` (`single_selfreturn` mode).
+3. **A struct PARAMETER rebound to a new named local** before being threaded
+   onward (`let mut np = p; np.field = ..; return np`) -- a different MIR
+   shape from #1 (a `let`, not a `return`), needing its own Cranelift-only
+   retain at that binding site. Also implemented that session. This is the
+   idiom the self-host parser is written in throughout
+   (`advance`/`expect`/`alloc_node`-style helpers), so it is not exotic.
+4. **Reading a STRUCT element out of an array into a NAMED local**
+   (`let t = p.toks[p.pos]`) is, by existing and deliberate design predating
+   that session, an ALIAS rather than an owned copy (Cranelift `codegen.rs`'s
+   own `RValue::Index` comment: "nothing in MIR's drop-tracking expects an
+   Index-read temp to own fresh heap memory"). That assumption holds for
+   UNNAMED temps, which are never dropped, and is FALSE for a NAMED local --
+   `emit_named_scope_drops` drops every named local unconditionally,
+   regardless of type. Because structs were never actually freed before
+   (this item's own leak), the bug could not surface; fixing #1-#3 made
+   struct drops real and turned it into a live DOUBLE FREE, caught by
+   `compiler/self-host/regression_lexer_reentrant_tokenize.kry` (already
+   tracked, and referenced by `compiler/self-host/test_regressions.sh:60`).
+   NOT fixed -- found during verification of #1-#3, with the self-host
+   bootstrap still running and no time left to design, implement and
+   independently verify a correct treatment (retain-on-index-into-a-named-
+   local, or excluding such a local from the unconditional named-scope drop)
+   without risking a FIFTH undiscovered shape.
+
+**All source changes for #1-#4 were REVERTED**; `git diff` on `lower.rs` and
+both `codegen.rs` files was empty at that session's HEAD, and is empty at
+this one's (verified 2026-08-29: the only `lower.rs` diff in the tree
+belongs to item 50 and touches the generic-call arms, not the drop paths).
+What survives is the diagnosis plus three isolated, already-diagnosed
+repros, each proven to reproduce ITS OWN shape under the naive+partial
+fixes before the revert.
+
+This is the FIRST hard-evidence confirmation of what the 8th investigation's
+design note below had concluded only in the abstract: closing this needs the
+drop helpers, container reads, `spawn` capture and reassignment converted
+TOGETHER -- it is not an incremental patch. An 11th investigation that starts
+by re-attempting any single shape above is repeating a measured failure, not
+making progress.
+
+Also found that session and explicitly NOT shipped: a separate, independent,
+previously-undocumented leak mechanism, left unfixed for the same reason
+(no time to re-verify it alone once the crash-fix path it was found
+alongside had to be reverted). `tests/mem/struct_arg_leak.kry`'s header
+carries the fresh per-mode numbers, including the correction that
+`heap_field_direct` -- documented as FLAT since this item was opened --
+**also leaks** (91.2 MB/1M), under that separate mechanism.
+
+**8th attempt was a design pass, not a patch - that session, per instruction, wrote
 the design and DID NOT implement.** Reasoning below.
 
 #### The mechanism a 7-attempt investigation had not yet named: two struct-drop code paths that disagree about ownership

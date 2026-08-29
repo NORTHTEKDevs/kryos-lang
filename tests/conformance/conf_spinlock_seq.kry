@@ -1,0 +1,46 @@
+// Conformance (currently PASSES against baseline, NOT because the bug is
+// fixed -- see below): LEDGER item 3, 9th/10th investigation. Sequential
+// (ZERO threads, zero spawn) SpinLock lock/unlock. This is the minimal
+// repro that falsified the item's original "spawn/container sharing"
+// attribution: a naive one-line fix to consume_call_args (add
+// MirType::Struct to the Str/Array/Map borrow allowlist, WITHOUT the
+// paired Cranelift retain at Terminator::Return + owner-count-checked
+// struct release) crashed this 5/5 on JIT with "sync error: lock on
+// dropped mutex" -- deterministically, with no concurrency involved at
+// all. AOT was always clean for this exact repro (LLVM never boxes a
+// plain struct; nothing to double-free at the struct level for an
+// all-scalar struct like SpinLock/AtomicInt/Mutex).
+//
+// Root cause: SpinLock.lock() returns self bare. Cranelift boxes every
+// struct value uniformly (top-level included), so the caller's lock local
+// and the destination l end up as two independent Kryos-level owners of
+// the SAME box with no retain anywhere -- each believes itself sole owner;
+// whichever drops first frees a box the other still reads.
+//
+// 10th investigation (2026-08-28): implemented the fix described above
+// (Cranelift retain at Terminator::Return for a bare struct-param return
+// + owner-count-checked struct release) and proved it closes THIS repro
+// clean, 5/5, both backends. REVERTED anyway, together with the rest of
+// that session's changes -- read tools/loop/LEDGER.md item 3 in full
+// before re-attempting: the same session found at least three MORE
+// distinct struct-aliasing shapes the fix for THIS one does not cover (a
+// struct param plainly rebound to a new local before being returned; the
+// same self-return shape but with heap fields, LLVM-only; a struct read
+// out of an array into a named local), the last discovered only after the
+// first three were fixed and self-host-parser-shaped regression testing
+// caught a NEW double-free. This file's own PASS today only means the
+// compiler still has the (safe, leaking) baseline behavior -- it is
+// pinned here so an 11th investigation has an immediate, isolated,
+// already-diagnosed repro for mechanism #1 specifically, with no need to
+// re-derive it.
+use std::sync::{spin_lock}
+fn main() {
+    let lock = spin_lock()
+    let mut i = 0
+    while i < 5 {
+        let l = lock.lock()
+        l.unlock()
+        i = i + 1
+    }
+    println("conformance spinlock sequential: PASS")
+}

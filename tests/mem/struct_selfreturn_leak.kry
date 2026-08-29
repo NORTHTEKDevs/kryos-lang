@@ -1,0 +1,93 @@
+// LEDGER item 3, 10th investigation -- SOURCE CHANGE REVERTED, NEITHER
+// mode below is fixed; both currently reproduce their bug again against
+// baseline (see tools/loop/LEDGER.md item 3 for the full account of why:
+// this exact shape WAS fixed and proven, but a different, unrelated
+// struct-aliasing gap found later the same session forced a full revert).
+// Kept as pinned repros for whoever attempts the fix next. Adjacent shapes
+// to struct_arg_leak.kry:
+// a struct with HEAP fields (str/array) whose method returns `self` bare
+// (or a chain of such calls) -- the shape struct_arg_leak.kry's own modes
+// never exercised (its `add`/`.size()` methods never return `self`).
+//
+// Fields use CONSTANT literals deliberately, not a computed value
+// (`"t" + to_string(n)`, `[x, y]` built from a loop variable) -- a computed
+// value fed directly into a struct LITERAL field leaks independently of
+// everything below (a genuinely separate, NOT-fixed finding from this same
+// session: measured 4MB flat with a constant tag vs 62MB/1M with a computed
+// one). Isolating that confound out is what makes the two measurements
+// below mean what they say.
+//
+// single_selfreturn: proven fixable this session, then REVERTED along with
+// everything else (not fixed on the current binary). Cranelift: `Holder.touch()`
+// returns `self` bare, so the caller's `h` and the destination `h2` alias
+// the IDENTICAL box with no retain -- exactly the SpinLock mechanism
+// (`conf_spinlock_seq.kry`), just with heap fields instead of all-scalar
+// ones. LLVM: `touch()`'s byval/sret copy is only SHALLOW -- `h`/`h2` are
+// two distinct LLVM aggregates, but their "items"/"tag" fields are still
+// the SAME underlying pointers, so both structs' independent scope-end
+// drops each try to free them (a real double-owner situation, previously
+// MASKED by an unrelated leak -- see field_read_only_pure_borrow_use's own
+// comment in kryos-mir/src/lower.rs -- and only became visible as an
+// actual double-free once that separate leak was fixed and stopped
+// accidentally absorbing the extra owner). Was fixed on Cranelift by a
+// Terminator::Return retain + owner-count-checked release (proven against
+// `conf_spinlock_seq.kry` too); was fixed on LLVM by a new
+// `emit_struct_field_retain` helper, the field-content analog of the
+// Cranelift box retain, fired at the identical "bare struct param
+// returned" site. Neither is in the current binary -- reverted.
+//
+// chained_selfreturn: NOT FIXED. `Outer4.touch()` chained three times
+// (`o.touch().touch().touch()`) leaks -- confirmed SEPARATE root cause,
+// not a gap in the retain/release fix above: the retain this session added
+// fires correctly at EVERY `.touch()` return (three times), but the two
+// INTERMEDIATE chain results are unnamed temporaries, and struct-typed
+// temporaries are never dropped at all (`drop_unescaped_str_temps`'s
+// candidate filter is `Str | Array | Map` -- Struct is not, and never has
+// been, in that list) regardless of this session's changes. Only `o`'s and
+// `o2`'s (the chain's start and end) own scope-end drops ever run, so two
+// of the three retains this fix correctly adds are never balanced -- this
+// is the SAME mechanism `struct_arg_leak.kry`'s own `method_chain` mode
+// already names ("each link leaks"), just reached through a different
+// method shape (self-return vs a fresh literal). Workaround: bind each
+// chain link to a named `let` instead of chaining bare method calls.
+//
+// Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./struct_selfreturn_leak
+// Modes: single_selfreturn chained_selfreturn
+struct Holder { items: [str], tag: str }
+impl Holder {
+    fn touch(self: Holder) -> Holder { return self }
+}
+fn make_holder(n: i64) -> Holder {
+    return Holder { items: ["a", "b", "c"], tag: "t" }
+}
+
+struct Inner4 { data: [str] }
+struct Outer4 { inner: Inner4, label: str }
+impl Outer4 {
+    fn touch(self: Outer4) -> Outer4 { return self }
+}
+
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 250000 } else { parse_int(raw) }
+    let mut acc = 0
+    let mut i = 0
+    while i < iters {
+        if mode == "single_selfreturn" {
+            let h = make_holder(i)
+            let h2 = h.touch()
+            acc = acc + len(h2.items) + len(h2.tag)
+        } elif mode == "chained_selfreturn" {
+            let o = Outer4 { inner: Inner4 { data: ["x", "y"] }, label: "L" }
+            let o2 = o.touch().touch().touch()
+            acc = acc + len(o2.inner.data) + len(o2.label)
+        } else {
+            println("unknown LEAK_MODE: " + mode)
+            exit(2)
+        }
+        i = i + 1
+    }
+    println(mode + " iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

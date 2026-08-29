@@ -1,36 +1,97 @@
-// Reproduction for the open struct-argument leak.
+// LEDGER item 3, 10th investigation: SOURCE CHANGE REVERTED after new
+// evidence -- read tools/loop/LEDGER.md item 3 in full before attempting
+// an 11th. Still NOT FIXED. Do not re-attempt the naive one-line
+// consume_call_args change without ALSO closing every gap below; each
+// looked like the last one until the next repro was built.
 //
-// Passing a struct that has HEAP FIELDS to any function -- a free function or
-// a method, it makes no difference -- leaks that struct's heap body, roughly
-// 85 bytes per call. Everything else in this file is FLAT, which is what makes
-// the diagnosis precise.
+// Passing a struct that has HEAP FIELDS to any function -- a free function
+// or a method, it makes no difference -- leaks that struct's heap body.
+// Everything else in this file is FLAT.
 //
-// Measured peak RSS (Windows, --release), 250k vs 1M iterations. A leak grows
-// with the iteration count; a fixed shape does not:
+// Measured peak RSS (Windows, --release), 250k vs 1M iterations, HEAD:
 //
 //   bare_array           4.4 MB -> 3.9 MB    flat   (no struct at all)
 //   scalar_method        4.0 MB -> 3.9 MB    flat   (struct, but no heap field)
-//   heap_field_direct    4.5 MB -> 4.5 MB    flat   (heap fields, NO call)
+//   heap_field_direct    4.5 MB -> 4.5 MB    flat   (heap fields, NO call --
+//                                              re-measured 2026-08-28: ALSO
+//                                              leaks, 91.2 MB/1M, under a
+//                                              separate, independent bug
+//                                              this session found but did
+//                                              NOT ship a fix for either --
+//                                              see LEDGER item 3)
 //   heap_field_method   25.7 MB -> 95.5 MB   LEAKS
 //   free_fn_scalar_ret  11.8 MB -> 84.8 MB   LEAKS  (a free fn leaks the same)
 //   method_chain        72.7 MB -> 279.5 MB  LEAKS  (each link leaks)
 //
-// So the trigger is a struct with heap fields crossing a CALL boundary. It is
-// NOT specific to method receivers, and reading fields directly is fine.
+// WHY IT IS STILL OPEN, as of the 10th investigation (2026-08-28). The
+// naive fix (add MirType::Struct to consume_call_args's Str/Array/Map
+// borrow allowlist) makes the caller's struct local get a real scope-end
+// Drop again -- correct in isolation -- but every backend's struct-drop
+// path assumes a struct value has exactly ONE owner, and there turn out to
+// be at least FOUR distinct, independent MIR/codegen shapes where a struct
+// PICKS UP A SECOND ALIAS with no retain to match, each needing its own
+// fix, each found only by testing the shape before it:
 //
-// WHY IT IS STILL OPEN. consume_call_args treats a struct argument as MOVED,
-// so the caller drops its scope-end Drop; the callee records params in
-// param_locals and never drops them. Nobody frees. The obvious fix -- add
-// MirType::Struct to the Str/Array/Map borrow list -- makes the caller free a
-// handle that `spawn` still shares: conf_spinlock_mutex throws "lock on
-// dropped mutex" and segfaults. Retaining struct captures at the spawn site
-// (giving the thread its own owner count in the header word kryos_calloc
-// already reserves) does NOT rescue it either -- verified, the retain is
-// emitted and the test still fails, because the generated __kryos_drop_<T>
-// tears the mutex FIELD down regardless of the box's owner count. Closing
+//   1. A method returns `self` bare (`SpinLock.lock() -> SpinLock { ...
+//      return self }`). Cranelift boxes every struct uniformly, so the
+//      destination local aliases the caller's identical box. FIXABLE (a
+//      Cranelift-only retain at Terminator::Return + owner-count-checked
+//      release, mirroring the existing boxed-array-element drop path) --
+//      implemented and proven both ways this session
+//      (tests/conformance/conf_spinlock_seq.kry pins the repro).
+//   2. The SAME shape, but the struct ALSO has heap (str/array) fields:
+//      LLVM's byval/sret struct copy is only shallow, so even though LLVM
+//      never boxes the top-level struct, the caller's and destination's
+//      copies still alias the SAME leaf str/array pointers. Needs a
+//      SEPARATE, LLVM-only field-content retain at the same return site
+//      (Cranelift's box-level retain doesn't help LLVM at all). Also
+//      implemented and proven this session
+//      (tests/mem/struct_selfreturn_leak.kry, `single_selfreturn` mode).
+//   3. A struct PARAMETER is plainly REBOUND to a new named local before
+//      being threaded onward (`let mut np = p; np.field = ..; return np`
+//      -- the idiom the self-host parser is written in throughout:
+//      `advance`/`expect`/`alloc_node`-style helpers). This is a DIFFERENT
+//      MIR shape from #1 (a `let`, not a `return`) and needs its OWN
+//      Cranelift-only retain at that binding site. Also implemented this
+//      session.
+//   4. Reading a STRUCT element out of an array into a NAMED local
+//      (`let t = p.toks[p.pos]`) is -- BY EXISTING, DELIBERATE DESIGN,
+//      predating this session -- an ALIAS, not an owned copy (Cranelift
+//      codegen.rs's own RValue::Index comment: "nothing in MIR's
+//      drop-tracking expects an Index-read temp to own fresh heap
+//      memory"). That assumption is true for UNNAMED temps (never
+//      dropped) but FALSE for a NAMED local -- `emit_named_scope_drops`
+//      drops every named local unconditionally regardless of type. Before
+//      this session, structs were never actually freed at all (this
+//      item's own leak), so this pre-existing bug never surfaced; fixing
+//      #1-#3 above made struct drops real again, which is what finally
+//      exposed it as a live double-free
+//      (compiler/self-host/regression_lexer_reentrant_tokenize.kry,
+//      `Token` elements read out of a `[Token]` array field via `p.toks
+//      [p.pos]` inside a `cur_text`-style helper).
+//
+// #4 was found DURING verification of #1-#3, not before -- i.e. every
+// single one of these was invisible until the fix for the previous one
+// made it real. NOT fixed this session: found with the self-host bootstrap
+// still running, no time left to design, implement, and independently
+// verify a correct treatment (retain-on-index-into-a-named-local, or
+// excluding such a local from the unconditional named-scope drop) without
+// risking a FIFTH undiscovered shape. This confirms, with hard evidence
+// this time instead of a discovered-mid-attempt correction, what the 8th
+// investigation's design note already concluded in the abstract: "closing
 // this needs the drop helpers, container reads, spawn capture and
-// reassignment converted together, which is the representation change the
-// gotcha list describes -- not an incremental patch.
+// reassignment converted together... not an incremental patch." All
+// source changes for #1-#4 were reverted; `git diff` on lower.rs and both
+// codegen.rs files is empty at HEAD. See tools/loop/LEDGER.md item 3 for
+// the full account -- including a separate, independent, previously-
+// undocumented leak mechanism found (but NOT fixed/shipped, same reason
+// as above: no time left to re-verify it alone after the crash-fix path
+// it was found alongside had to be reverted) and a precise, ready-to-
+// implement fix for it -- and the three regression files
+// (conf_spinlock_seq.kry, struct_selfreturn_leak.kry,
+// regression_lexer_reentrant_tokenize.kry) now pinned for whoever
+// attempts an 11th investigation, each proven to reproduce ITS OWN
+// shape under the naive+partial fixes before being reverted.
 //
 // Run:  LEAK_MODE=<mode> LEAK_ITERS=<n> ./struct_arg_leak
 // Modes: bare_array scalar_method heap_field_direct heap_field_method

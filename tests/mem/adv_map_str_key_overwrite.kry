@@ -1,0 +1,25 @@
+// Adversarial adjacent-shape probe for LEDGER item 49: map-insert overwrite
+// with a STR key (routes through kryos_map_insert_str / kryos_map_get_str,
+// not kryos_map_insert / kryos_map_get used by the fixer's own i64-keyed
+// map fixture).
+
+enum Val {
+    ListV([i64])
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut m: map<str, Val> = { "k": Val.ListV([0, 0, 0]) }
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        m["k"] = Val.ListV([i, i + 1, i + 2])
+        match m["k"] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

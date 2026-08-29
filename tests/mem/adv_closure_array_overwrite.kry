@@ -1,0 +1,27 @@
+// Adversarial adjacent-shape probe for LEDGER item 49: the same array-index
+// overwrite, but performed from INSIDE a closure that captures the array
+// by mutation (not directly in main's own body like the fixer's fixture).
+
+enum Val {
+    ListV([i64])
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut slots: [Val] = [Val.ListV([0, 0, 0])]
+    let mut acc = 0
+    let mut step = |n: i64| {
+        slots[0] = Val.ListV([n, n + 1, n + 2])
+        match slots[0] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+    }
+    let mut i = 0
+    while i < iters {
+        step(i)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

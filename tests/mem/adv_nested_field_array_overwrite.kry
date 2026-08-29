@@ -1,0 +1,30 @@
+// Adversarial adjacent-shape probe for LEDGER item 49: array-slot overwrite
+// one level deeper -- the array being indexed is reached through a struct
+// FIELD (`h.arr[i] = v`), not a bare local variable like the fixer's own
+// fixture. Same array-index-assignment lowering arm, different object
+// operand (a Field read instead of a plain Local).
+
+enum Val {
+    ListV([i64])
+}
+
+struct Box2 {
+    arr: [Val]
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut h: Box2 = Box2 { arr: [Val.ListV([0, 0, 0])] }
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        h.arr[0] = Val.ListV([i, i + 1, i + 2])
+        match h.arr[0] {
+            Val.ListV(xs) => { acc = acc + len(xs) },
+        }
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}

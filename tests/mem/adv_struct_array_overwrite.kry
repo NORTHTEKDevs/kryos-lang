@@ -1,0 +1,24 @@
+// Adversarial adjacent-shape probe for LEDGER item 49: array-slot overwrite
+// where the payload is a plain STRUCT (not wrapped in an enum). DropIfNe's
+// type check is `MirType::Struct(_) | MirType::Enum(_)` -- the fixer's own
+// gate only ever exercises the Enum branch of that match. This exercises
+// the Struct branch via the same array-index-assignment code path.
+
+struct Holder2 {
+    xs: [i64]
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut slots: [Holder2] = [Holder2 { xs: [0, 0, 0] }]
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        slots[0] = Holder2 { xs: [i, i + 1, i + 2] }
+        acc = acc + len(slots[0].xs)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " acc=" + to_string(acc))
+}
