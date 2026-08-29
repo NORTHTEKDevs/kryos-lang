@@ -1,6 +1,6 @@
 # Why Kryos?
 
-Kryos is a compiled systems language: memory-safe without lifetime annotations (ARC + move semantics, a Swift-like trade-off), with the simplicity of Go and AI-native capabilities neither offers. It is NOT equivalent to Rust's borrow-checker guarantees — see "What Kryos Is Not".
+Kryos is a compiled systems language: memory-safe without lifetime annotations (ARC + move semantics, a Swift-like trade-off), with the simplicity of Go and AI-native capabilities neither offers. It is NOT equivalent to Rust's borrow-checker guarantees - see "What Kryos Is Not".
 
 ## The Problem
 
@@ -157,7 +157,7 @@ These optimizations improve debug build performance significantly. Release build
 
 ## Status
 
-Kryos 0.9.0 is a feature-complete compiler (pre-1.0: one primary author, not yet externally stress-tested, two known concurrency release blockers in docs/BUGS.md) with:
+Kryos 1.0.0 is a feature-complete compiler. The two concurrency release blockers that previously sat here are fixed and gated. Still true and worth knowing before you adopt: one primary author, and **not yet externally stress-tested** -- 1.0 was cut without the external-workload soak `VERSIONING.md` originally required, as a recorded owner waiver, so the stability surface is frozen but the field-hardening is not proven. Known memory-retention limits ship documented and measured in [STABILITY.md §5](../STABILITY.md). Kryos has:
 
 - 21-crate Rust implementation (~50,000 lines)
 - Dual backends: Cranelift (fast dev, ~500ms) and LLVM (optimized release; see BENCHMARKS.md for measured ratios vs Rust/C)
@@ -166,7 +166,7 @@ Kryos 0.9.0 is a feature-complete compiler (pre-1.0: one primary author, not yet
 - @pure CSE/dead-call optimization, @test runner, @copy struct deep-copy on assignment (both backends; param passing documented in gotcha #23)
 - 1,200+ functions across 66 standard library modules (0 stubs)
 - Full toolchain: LSP, formatter, doc generator, package manager, test runner, REPL with persistent state
-- Self-hosting compiler: ~19K lines of Kryos implementing the full pipeline (stage-1 is Cranelift-compiled — a different backend — so it is not byte-identical to later stages)
+- Self-hosting compiler: ~19K lines of Kryos implementing the full pipeline (stage-1 is Cranelift-compiled - a different backend - so it is not byte-identical to later stages)
 - Bootstrap fixed point: SHA-256 proof that stage-2, stage-3, and stage-4 binaries are byte-identical, reached with the ownership and type checkers disabled on the self-host source (`--skip-ownership` / `KRYOS_SKIP_TYPES=1`); see `compiler/self-host/bootstrap-win.sh`. The per-module standalone compile check (`compiler/self-host/test_bootstrap.sh`) currently passes 16/16 modules.
 
 ## Who Is Kryos For?

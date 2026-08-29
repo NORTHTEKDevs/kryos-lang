@@ -5,7 +5,7 @@ guarantee at each release, what is explicitly **not** guaranteed, and the
 process by which a release is cut. It is the source of truth referenced
 from `CHANGELOG.md` and tooling.
 
-Last updated: 2026-08-16 (v0.9.0). Check counts sync to README/CI, which
+Last updated: 2026-08-29 (v1.0.0). Check counts sync to README/CI, which
 `tests/docs_status_gate.sh` gate-checks; this file is refreshed after them.
 
 ---
@@ -14,13 +14,13 @@ Last updated: 2026-08-16 (v0.9.0). Check counts sync to README/CI, which
 
 Kryos follows **SemVer** at the language and CLI surface:
 
-- **Major** — Breaking change to source syntax, MIR ABI, runtime ABI, CLI
+- **Major** - Breaking change to source syntax, MIR ABI, runtime ABI, CLI
   command surface, or the registry/lockfile format.
-- **Minor** — Backwards-compatible additions: new builtins, new stdlib
+- **Minor** - Backwards-compatible additions: new builtins, new stdlib
   modules, new optimization passes, new CLI subcommands, new diagnostics,
   new backends. Also: bug fixes that change observable program output for
   programs that were relying on previously-undefined behavior.
-- **Patch** — Bug fixes that do not change documented behavior; build,
+- **Patch** - Bug fixes that do not change documented behavior; build,
   packaging, or documentation fixes.
 
 The `kryos-rt` runtime crate is versioned in lockstep with the compiler
@@ -36,7 +36,7 @@ in this repo; out-of-tree consumers should pin both.
 | macOS aarch64 (macOS-14)  | 1    | Supported                   | Supported                              | Yes |
 | Windows x86_64 (MSVC)     | 1    | Supported                   | Supported                              | Yes |
 | macOS x86_64              | 2    | Best-effort                 | Best-effort                            | No  |
-| iOS / Android / embedded  | —    | Out of scope                | Out of scope                           | —   |
+| iOS / Android / embedded  | - | Out of scope                | Out of scope                           | - |
 
 "Tier 1" means every release is verified on this platform via the
 `parity-matrix` CI job (Linux / macOS-14 / Windows). "Tier 2" means
@@ -66,7 +66,7 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 4. Current pass rates (v0.9.0)
+## 4. Current pass rates (v1.0.0)
 
 - Cranelift JIT (`kryos run`): **100%** on the native runner suite.
 - LLVM release (`kryos build --release`): **100%** on the
@@ -85,14 +85,54 @@ A release tag is cut when **all** of the following hold:
 
 ---
 
-## 5. Known limitations (v0.9.0)
+## 5. Known limitations (v1.0.0)
 
 Both concurrency release blockers tracked at 0.9.0 (`conf_spinlock_mutex`
 use-after-free and the `conf_errors_concurrency` actor deadlock) were traced to
-a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 65/65
+a single spawn-wrapper ABI defect and fixed on 2026-07-28. Conformance is 68/68
 on both backends (`bash tests/conformance/run_conformance.sh`; grows as tests
 are added -- `tests/docs_status_gate.sh` fails CI if this number drifts). See
 [docs/BUGS.md](docs/BUGS.md).
+
+### 5.0 Shipped with 1.0: known memory-retention limits, measured
+
+These are **leaks, not corruption** -- no wrong answers, no crashes, both
+backends agree, and every number below is a measured peak-RSS delta from this
+repo's own fixtures, not an estimate. They ship knowingly because closing them
+correctly needs alias analysis the compiler does not yet have, and the history
+of patching them shape-by-shape is a matter of record: ten investigations, each
+surfacing a further aliasing shape, several producing double-frees worse than
+the leak they replaced. Ranked live entries:
+[tools/loop/LEDGER.md](tools/loop/LEDGER.md) items 3, 51, 41.
+
+| Shape | Measured cost | Item |
+|---|---|---|
+| A struct with HEAP FIELDS passed across any call boundary (free function or method) leaks its body | ~86MB per 1M calls | 3 |
+| A struct FIELD holding a Struct/Enum overwritten in a loop, while the SAME field is also read in that loop | ~92MB per 1M iterations | 51 |
+
+**What this means in practice.** Both need a hot loop to matter: a program that
+passes heap-owning structs a few thousand times will not notice. A long-running
+server doing it per request will grow. If that is your shape, pass the heap
+field itself (`fn f(xs: [i64])`) rather than the struct that owns it, or keep
+the struct in one place and pass an index -- either avoids the call-boundary
+case entirely.
+
+**Why they are documented rather than patched.** Items 3 and 51 share one root
+cause: struct/enum value ownership is not modelled uniformly across the two
+backends (Cranelift boxes a struct/enum and represents it as a pointer; LLVM
+stores one inline in the parent's layout), and a field READ of a
+mutable-container field is deliberately NOT dropped, because dropping it
+releases a buffer the struct still points at -- that choice is exactly what
+leaves an unbalanced reference behind. Closing it means telling a genuine
+borrow apart from an owning read whose slot is about to be replaced. That is
+alias analysis, planned as one unified ownership pass, not another patch.
+
+**A third, non-memory limit:** capability inference is fail-closed on closure
+values whose provenance it cannot resolve, so 41 of 75 enumerated LEGITIMATE
+pure-closure shapes require an explicit `@capabilities(all)` annotation (LEDGER
+item 41). This is a precision cost, not an unsoundness -- it over-demands
+authority, never under-demands it -- but it is the limitation most likely to be
+felt while writing ordinary higher-order code.
 
 - **Capability enforcement is sound for direct calls AND for closure/fn-value
   indirection through a parameter, local, return value, passthrough chain,
@@ -114,13 +154,13 @@ Honest, non-blocking residuals:
 
 - **Turbofish struct construction** (`Box<i64>{..}`) is unsupported; use bare
   `Box{..}` with inference (Rust rejects the turbofish-literal form too).
-- **`panic` is not catchable by `try`/`catch`** — `throw` is the recoverable
+- **`panic` is not catchable by `try`/`catch`** - `throw` is the recoverable
   path; `panic` (div-by-zero, integer division overflow `MIN / -1`, OOB,
   `file_read` on a missing file, non-exhaustive nested match) aborts. This
   is intentional, documented semantics.
 - **Program nesting is capped (E0010):** grammar recursion at 256 levels
-  (clang-class limit) and total expression depth — including flat
-  `a+b+c+...` chains — at 2048. No legitimate program approaches either
+  (clang-class limit) and total expression depth - including flat
+  `a+b+c+...` chains - at 2048. No legitimate program approaches either
   bound; the caps exist so no input, however adversarial, can crash the
   compiler with a stack overflow instead of a diagnostic.
 - **AOT (`kryos build --release`) needs a host C toolchain** (MSVC/clang) for
@@ -128,7 +168,7 @@ Honest, non-blocking residuals:
 - **`kryos fmt` does not preserve non-doc comments.** The formatter is
   AST-based and the lexer discards `//` line and `/* */` block comments
   (only `///` doc comments are retained and re-emitted). Formatting a file
-  drops its ordinary comments. `fmt` IS semantics-preserving otherwise —
+  drops its ordinary comments. `fmt` IS semantics-preserving otherwise - 
   string interpolation and literal braces round-trip correctly. Comment
   preservation needs a trivia-carrying parse and is tracked as follow-up;
   until then, avoid `kryos fmt` on comment-heavy files you care about.
@@ -192,14 +232,14 @@ block is rejected with E0500.
 The `wasm32` backend is a compute-focused subset, not full parity. **Works**
 (verified via the node host): i64/f64, all integer widths + narrow-int casts
 (`x as u8`), strings, structs, enums, arrays (host-backed + mutable,
-`push`/`pop` in place — matching native), maps (`map<str,i64>`), if/else,
-loops (`while`, `for i in a..b`, NESTED loops, `break`/`continue` — via a
+`push`/`pop` in place - matching native), maps (`map<str,i64>`), if/else,
+loops (`while`, `for i in a..b`, NESTED loops, `break`/`continue` - via a
 dispatch-relooper fallback for CFGs the structured translator can't express),
 recursion, generics, traits, `Result`/`Option`, **closures** (no-capture AND
 capturing, via a heap env array + per-lambda thunk + `call_indirect`), and
 **higher-order functions** (`fold`/`map`/`filter` with lambdas, incl. captured
 variables). **Not on wasm:** capturing an f64/f32 value (i64/str/handle
-captures work), and all concurrency (spawn/channels/actors — wasm is
+captures work), and all concurrency (spawn/channels/actors - wasm is
 single-threaded by design). The native Cranelift JIT and LLVM AOT backends
 remain the full-language, at-parity path.
 

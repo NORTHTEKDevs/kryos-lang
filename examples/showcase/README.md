@@ -110,7 +110,7 @@ curl http://127.0.0.1:8080/count
 
 ## Notes
 
-- All examples target Kryos 0.9.0 and use only stable language features
+- All examples target Kryos 1.0.0 and use only stable language features
   documented in `docs/19-language-reference.md`.
 - Where a builtin was missing or behaved differently than expected, the
   workaround is documented inline (see e.g. the `char_from(123)` use in

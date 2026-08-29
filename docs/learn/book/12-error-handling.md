@@ -225,7 +225,7 @@ after the fact.
 
 (`docs/07-error-handling.md` also describes a planned "self-healing
 runtime" that would auto-recover from panics like these. It does not exist
-in 0.9.0 -- every `@intent`/`@constraint`/`@fallback` attribute is a parsed
+in 1.0.0 -- every `@intent`/`@constraint`/`@fallback` attribute is a parsed
 no-op today, and `--heal-report` is not a recognized flag. `try`/`catch`
 plus an explicit guard is the entire error-recovery toolkit that actually
 ships.)

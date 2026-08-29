@@ -1,7 +1,7 @@
 # Kryos
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache_2.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.9.0-blue.svg)](STABILITY.md)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](STABILITY.md)
 [![Targets](https://img.shields.io/badge/targets-native%20%7C%20wasm-purple.svg)](#what-it-targets)
 [![Parity](https://img.shields.io/badge/Cranelift_vs_LLVM-77%2F77-brightgreen.svg)](tests/parity/run_parity.sh)
 [![Diff-fuzz](https://img.shields.io/badge/differential_fuzz-14k%2B_programs%2C_0_divergences-brightgreen.svg)](tools/diff-fuzz/)
@@ -9,7 +9,7 @@
 [![Ecosystem check](https://img.shields.io/badge/ecosystem_deny--by--default-259%2F259-brightgreen.svg)](tests/ecosystem_check.sh)
 [![VS Code](https://img.shields.io/badge/VS_Code-marketplace-blue.svg)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos)
 
-**Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics — a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions — 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
+**Kryos is a compiled, general-purpose programming language: memory-safe without lifetime annotations (ARC + move semantics - a Swift-like trade-off, not Rust's borrow checker), with native binaries and the clarity of Go.** It ships a complete toolchain: compiler, formatter, LSP, package manager, debug info, and editor extensions - 30+ subcommands, 15 LSP capabilities, 60+ stdlib modules, and a cookbook of recipes.
 
 ```kryos
 fn main() {
@@ -25,23 +25,23 @@ kryos run hello.kry
 
 ## In one minute
 
-- **It's fast.** Native binaries via LLVM — typically within a small factor of Rust/C on compute-heavy work, faster than Python by orders of magnitude, with honest losses listed first. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
-- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model — simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Capability-typed effects catch I/O leaks at compile time.
+- **It's fast.** Native binaries via LLVM - typically within a small factor of Rust/C on compute-heavy work, faster than Python by orders of magnitude, with honest losses listed first. Measured medians, methodology, and where Kryos loses (and why) in [BENCHMARKS.md](BENCHMARKS.md).
+- **It's safe.** Memory safety by construction (ARC + move semantics), no `'a` lifetime annotations, no GC pauses. This is a Swift-like ownership model - simpler than Rust's borrow checker, and not equivalent to its compile-time guarantees (no data-race freedom proofs). Capability-typed effects catch I/O leaks at compile time.
 - **It's small.** One binary, no LLVM dependency for development, ~20 MB compiler, ~700 MB to build from source.
-- **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O — anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
-- **Both backends are held to the same answer.** A differential fuzzer generates random type-correct programs (structs, enums, closures, loops, containers, exception paths) and diffs the JIT's output against the AOT binary's — 14,000+ programs, zero divergences, and a smoke run repeats on every CI push. An ICE-hunt harness additionally mutates valid programs into garbage and requires diagnostics, never a compiler panic — 1,168 mutants, zero ICEs ([tools/diff-fuzz/](tools/diff-fuzz/)).
-- **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical self-hosting fixed point — a self-host-compiled compiler recompiling its own source produces a bit-identical compiler (stage-3 == stage-4, SHA-256-verified). The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
-- **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` — the CLI surface is frozen for 1.x (see VERSIONING.md).
+- **It runs anywhere.** Native (Linux / macOS / Windows / Intel / Apple Silicon) from the same source, plus an explicit-subset WebAssembly target (scalars, strings, closures, host-import I/O - anything outside the subset is a clear compile error, never a miscompile; see [docs/wasm-contract.md](docs/wasm-contract.md)).
+- **Both backends are held to the same answer.** A differential fuzzer generates random type-correct programs (structs, enums, closures, loops, containers, exception paths) and diffs the JIT's output against the AOT binary's - 14,000+ programs, zero divergences, and a smoke run repeats on every CI push. An ICE-hunt harness additionally mutates valid programs into garbage and requires diagnostics, never a compiler panic - 1,168 mutants, zero ICEs ([tools/diff-fuzz/](tools/diff-fuzz/)).
+- **It self-hosts.** The compiler is written in Kryos and reaches a byte-identical self-hosting fixed point - a self-host-compiled compiler recompiling its own source produces a bit-identical compiler (stage-3 == stage-4, SHA-256-verified). The self-host source **type-checks clean** (all 16 modules) and **ownership-checks with zero errors**; the reproduction bootstrap passes `--skip-ownership` for byte-determinism (a codegen-determinism concern, not a checker failure). Stage-1 is Cranelift-compiled (a different backend), so it is not byte-identical to later stages. The per-module standalone compile check (`test_bootstrap.sh`) passes 16/16 modules. See [`compiler/self-host/bootstrap-win.sh`](compiler/self-host/bootstrap-win.sh).
+- **The toolchain is done.** 30+ subcommands including `run`, `build`, `check`, `test`, `bench`, `fmt`, `lint`, `audit`, `coverage`, `profile`, `trace`, `new`, `watch`, `clean`, `eval`, `doc serve`, `doctor`, `tree`, `pack`, `diff`, `info`, `workspace`, `config`, `welcome`, `cheat`, `changelog` - the CLI surface is frozen for 1.x (see VERSIONING.md).
 - **Stdlib is broad.** 66 modules: fs, net, http, json, regex, datetime, duration, base64, uuid, hash, sort, collections, queue, stack, set, random, log, bytes, pathext, numfmt, strext, cmd, iter, and more.
-- **It governs AI agents at compile time for direct authority AND closure/fn-value indirection, including through containers — and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes — `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 91 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` — no flag, no project file — rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, a builtin passed as a value BY NAME, or a closure/fn-value flowing through a parameter, local, return value, passthrough chain, actor message, `spawn`, generic, `dyn Trait` dispatch, or a CONTAINER (a struct field, array element, or map value that holds a closure, including nested combinations). `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). See [docs/10-capabilities.md](docs/10-capabilities.md) for the full sound surface — and read [tools/loop/LEDGER.md](tools/loop/LEDGER.md) before treating any of this as a hard security boundary: as of 2026-08-16 **all 19 known capability-escape repros under `tests/security/` are rejected**, under BOTH the default-inferred and `--strict-capabilities` modes (`bash tools/loop/escape_status.sh` re-measures this on demand, and `tools/loop/check-docs-truth.sh` fails CI if this prose drifts from the measurement). They shared one root: enforcement resolved the callee by pattern-matching the *syntactic shape* of the call expression, so shapes it did not enumerate were not gated at all; capability-ROW enforcement (type-directed, added 2026-08-12) now covers every call shape uniformly. **Zero KNOWN escapes is not zero escapes** — that corpus is 19 adversarial shapes found by directed search, not a proof of soundness. Capabilities are a strong DEVELOPMENT-TIME discipline today; they are not yet a boundary to run untrusted code behind. Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest — see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
+- **It governs AI agents at compile time for direct authority AND closure/fn-value indirection, including through containers - and they embed anywhere.** `@capabilities(...)` is authority the compiler tracks through the call graph and verifies (`E05xx` on violation). Three enforcement modes - `permissive`, `inferred` (deny-by-default with interior inference), and `strict` (`--strict-capabilities`; all 91 examples pass it in CI). **Deny-by-default is the default.** A loose `kryos run foo.kry` - no flag, no project file - rejects any undeclared authority at compile time; you declare it once on `main` and the compiler infers every helper, catching it through direct calls, method dispatch, a builtin passed as a value BY NAME, or a closure/fn-value flowing through a parameter, local, return value, passthrough chain, actor message, `spawn`, generic, `dyn Trait` dispatch, or a CONTAINER (a struct field, array element, or map value that holds a closure, including nested combinations). `--capabilities-mode=permissive` opts out. `kryos new` scaffolds this posture. The compiler, examples, self-host compiler, and every ecosystem package are all deny-by-default (details in [docs/capability-roadmap.md](docs/capability-roadmap.md)). See [docs/10-capabilities.md](docs/10-capabilities.md) for the full sound surface - and read [tools/loop/LEDGER.md](tools/loop/LEDGER.md) before treating any of this as a hard security boundary: as of 2026-08-16 **all 19 known capability-escape repros under `tests/security/` are rejected**, under BOTH the default-inferred and `--strict-capabilities` modes (`bash tools/loop/escape_status.sh` re-measures this on demand, and `tools/loop/check-docs-truth.sh` fails CI if this prose drifts from the measurement). They shared one root: enforcement resolved the callee by pattern-matching the *syntactic shape* of the call expression, so shapes it did not enumerate were not gated at all; capability-ROW enforcement (type-directed, added 2026-08-12) now covers every call shape uniformly. **Zero KNOWN escapes is not zero escapes** - that corpus is 19 adversarial shapes found by directed search, not a proof of soundness. Capabilities are a strong DEVELOPMENT-TIME discipline today; they are not yet a boundary to run untrusted code behind. Alongside it, `@budget` refuses before spending and `Tracked<T>` carries provenance in the type. The same governed agent runs as a native binary, compiles to WebAssembly, and loads into Python / Go / Node / C# hosts through the C ABI with a machine-readable authority manifest - see [`ecosystem/kryos-embed/`](ecosystem/kryos-embed/README.md).
 
-> **Status:** Kryos is **0.9.0** — feature-complete, self-hosting, and usable. The two concurrency deadlocks that blocked 1.0 are fixed and conformance is 68/68 on both backends (`bash tests/conformance/run_conformance.sh`; this count grows as tests are added -- `tests/docs_status_gate.sh` fails CI if this number drifts from the live file count); remaining pre-1.0 work is tracked in [HANDOFF.md](HANDOFF.md). The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are shaped for 1.x compatibility but are **not frozen until 1.0**. See [STABILITY.md](STABILITY.md) for the contract.
+> **Status:** Kryos is **1.0.0** - feature-complete, self-hosting, and usable. Conformance is 68/68 on both backends (`bash tests/conformance/run_conformance.sh`; this count grows as tests are added -- `tests/docs_status_gate.sh` fails CI if this number drifts from the live file count). The CLI surface, LSP method set, stdlib symbol table, and ABI symbols are **frozen** as of 1.0 under semver; see [STABILITY.md](STABILITY.md) for the contract and [§5 Known limitations](STABILITY.md#5-known-limitations-v100) for what is measured, open, and deliberately shipped. One of those is worth reading before you adopt: **1.0 was cut without the external-workload soak** [VERSIONING.md](VERSIONING.md) originally required - the owner waived that precondition, and the waiver is recorded there rather than quietly dropped.
 
 ---
 
 ## Start here
 
-| If you want to… | Go to |
+| If you want to... | Go to |
 |---|---|
 | Install and verify in 5 minutes | [QUICKSTART.md](QUICKSTART.md) |
 | Learn the language cover-to-cover | [the book](docs/learn/book/README.md) |
@@ -85,10 +85,10 @@ kryos new hello && cd hello && kryos run
 git clone https://github.com/NORTHTEKDevs/kryos-lang.git
 cd kryos-lang/compiler
 cargo build --release -j 2
-./target/release/kryos --version   # → kryos 0.9.0
+./target/release/kryos --version   # → kryos 1.0.0
 ```
 
-Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** — the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
+Requirements: Rust 1.75+, a C compiler (`cc`/`clang`/MSVC) for linking. **LLVM is not required for development** - the LLVM backend emits IR as text. You only need `clang` or `llc` on PATH if you want optimized release binaries.
 
 For a full walkthrough including build footprint and troubleshooting, see [QUICKSTART.md](QUICKSTART.md).
 
@@ -163,7 +163,7 @@ fn main() {
 }
 ```
 
-> **Status:** `await` is a real cooperative suspension point — it hands control
+> **Status:** `await` is a real cooperative suspension point - it hands control
 > to the scheduler so another ready task runs, and tasks genuinely interleave
 > under `coop_run()` (verified on both backends). What is **not** yet shipped
 > is a non-blocking *I/O* runtime: `await http_get(url)` yields cooperatively
@@ -208,7 +208,7 @@ kryos build --backend wasm hello.kry      # WebAssembly
 
 ## How it compares
 
-Honest numbers from [BENCHMARKS.md](BENCHMARKS.md) — best of 10 runs, sandbox VM with a ~30 ms subprocess-launch floor (so very fast programs cluster at the floor; the real signal is on slower workloads).
+Honest numbers from [BENCHMARKS.md](BENCHMARKS.md) - best of 10 runs, sandbox VM with a ~30 ms subprocess-launch floor (so very fast programs cluster at the floor; the real signal is on slower workloads).
 
 | Benchmark | Kryos LLVM | Rust `--release` | gcc -O3 | Go | Python |
 |---|---|---|---|---|---|
@@ -221,25 +221,25 @@ Honest numbers from [BENCHMARKS.md](BENCHMARKS.md) — best of 10 runs, sandbox 
 
 (seconds; lower is better)
 
-Where Kryos shines: simple loops, recursion, and floating-point arithmetic — competitive with optimized C and Rust. Where Kryos still trails the C/Rust frontier: tight inner loops that depend on aggressive loop unrolling and bounds-check elision (fannkuch, nbody, matmul). The full per-benchmark analysis with "where we lose and why" is in [BENCHMARKS.md](BENCHMARKS.md).
+Where Kryos shines: simple loops, recursion, and floating-point arithmetic - competitive with optimized C and Rust. Where Kryos still trails the C/Rust frontier: tight inner loops that depend on aggressive loop unrolling and bounds-check elision (fannkuch, nbody, matmul). The full per-benchmark analysis with "where we lose and why" is in [BENCHMARKS.md](BENCHMARKS.md).
 
 ---
 
-## What ships in v0.9.0
+## What ships in v1.0.0
 
-The full toolchain. Not a roadmap — actually built and tested:
+The full toolchain. Not a roadmap - actually built and tested:
 
-- **Compiler** — three backends (Cranelift / LLVM / WASM), zero cargo warnings, 670+ workspace tests passing
-- **Self-host** — bootstrap reaches a byte-identical fixed point (stage-3 == stage-4); the self-host source type-checks and ownership-checks clean, and the per-module standalone compile check passes 16/16 modules. See [docs/20-self-hosting.md](docs/20-self-hosting.md)
-- **Language** — ownership, traits with `Self`, generics, pattern matching, closures, capabilities, FFI (async/await parse but lower synchronously — see Status). `comptime` also parses and runs, but not at compile time yet — see [docs/11-comptime.md](docs/11-comptime.md).
-- **Standard library** — 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
-- **Debug info** — LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
-- **Concurrency** — real OS-thread parallelism with `spawn` + channels (`chan<T>` MPMC, `select`), `actor` message-passing (private state, in-order handling, threads joined at exit), and **non-blocking `async`/`await`**: a blocking I/O op (`sleep`, `http_get`, `tcp_*`) inside an `async` task yields the scheduler, so `coop_spawn` N tasks and their I/O overlaps — 4 × 300 ms of I/O finishes in ~300 ms, not 1.2 s (verified concurrent on both backends). `await` also interleaves CPU-bound tasks cooperatively.
-- **WASM stdlib parity** — strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
-- **Package manager** — `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
-- **Editor extensions** — [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
+- **Compiler** - three backends (Cranelift / LLVM / WASM), zero cargo warnings, 670+ workspace tests passing
+- **Self-host** - bootstrap reaches a byte-identical fixed point (stage-3 == stage-4); the self-host source type-checks and ownership-checks clean, and the per-module standalone compile check passes 16/16 modules. See [docs/20-self-hosting.md](docs/20-self-hosting.md)
+- **Language** - ownership, traits with `Self`, generics, pattern matching, closures, capabilities, FFI (async/await parse but lower synchronously - see Status). `comptime` also parses and runs, but not at compile time yet - see [docs/11-comptime.md](docs/11-comptime.md).
+- **Standard library** - 66 modules covering strings, math, collections, JSON, HTTP, regex, datetime, crypto, files, processes, channels, tensors, AI primitives
+- **Debug info** - LLVM DWARF emission; `addr2line` resolves Kryos source lines in optimized binaries
+- **Concurrency** - real OS-thread parallelism with `spawn` + channels (`chan<T>` MPMC, `select`), `actor` message-passing (private state, in-order handling, threads joined at exit), and **non-blocking `async`/`await`**: a blocking I/O op (`sleep`, `http_get`, `tcp_*`) inside an `async` task yields the scheduler, so `coop_spawn` N tasks and their I/O overlaps - 4 × 300 ms of I/O finishes in ~300 ms, not 1.2 s (verified concurrent on both backends). `await` also interleaves CPU-bound tasks cooperatively.
+- **WASM stdlib parity** - strings, arrays, JSON, regex, HTTP all callable from Kryos compiled to WebAssembly
+- **Package manager** - `kryos pkg init / add / remove / install / publish / search / outdated`. Lockfile, semver resolution, content-addressed checksums
+- **Editor extensions** - [VS Code (live on the marketplace)](https://marketplace.visualstudio.com/items?itemName=northtekdevs.kryos) and Zed (dev-extension)
 - **REPL, formatter, doc generator, test runner, LSP, C-header bindgen**
-- **Package registry** — full spec + dependency-free reference HTTP server in [tools/registry/](tools/registry/)
+- **Package registry** - full spec + dependency-free reference HTTP server in [tools/registry/](tools/registry/)
 
 Detailed release notes: [CHANGELOG.md](CHANGELOG.md).
 
@@ -249,9 +249,9 @@ Detailed release notes: [CHANGELOG.md](CHANGELOG.md).
 
 Kryos is built on a thesis: **memory safety without lifetime annotations is achievable**, and the "complexity tax" Rust imposes for safety is mostly avoidable if you accept ARC + move-semantics over borrow-checking. The trade is small: a tiny ARC overhead in exchange for code that looks closer to Go or Python than to Rust.
 
-Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, concurrency (spawn/channels/async), HTTP, JSON, regex, crypto, package manager — all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
+Kryos also takes seriously the idea that **a language should ship with everything needed to finish a project**. Stdlib, concurrency (spawn/channels/async), HTTP, JSON, regex, crypto, package manager - all in the box. You should be able to write a real program without picking 14 third-party crates and praying their version ranges align.
 
-The third thesis is **capability typing as a first-class compile-time check**. `@pure` and `@capabilities(io, net)` aren't lint hints — they're enforced. A function annotated `@pure` that secretly calls `file_read` is a compile error, not a runtime surprise. This is the foundation for trustworthy plugin systems, sandboxed execution, and auditability.
+The third thesis is **capability typing as a first-class compile-time check**. `@pure` and `@capabilities(io, net)` aren't lint hints - they're enforced. A function annotated `@pure` that secretly calls `file_read` is a compile error, not a runtime surprise. This is the foundation for trustworthy plugin systems, sandboxed execution, and auditability.
 
 ---
 
@@ -276,14 +276,14 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 ## Status
 
-Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The package-registry supply-chain gap (`kryos pkg install`/`add` verifies a real `sha256:<hex>` content hash of the fetched package against the registry index before trusting it, rejects a mismatch or a missing checksum, and re-verifies even a cache hit) and the container-shaped closure/fn-value capability-laundering gap (a struct field, array element, or map value holding a closure is traced by capability checking in every mode, including `--strict-capabilities`) are both CLOSED. **UPDATE (2026-08-16): the last live capability escape (LEDGER item 33, an actor-to-actor message-parameter row-propagation gap) was closed 2026-08-13.** As of this measurement, `bash tools/loop/escape_status.sh` reports **0 escaping, 19 rejected** across the full named adversarial corpus (17 shapes as of the item-33 fix, grown to 19 since), independently re-confirmed via `tests/capability_matrix_gate.sh`'s combinatorial enumeration (**75/75 attacks rejected**, both enforcement modes, across SOURCE x CONTAINER x TRANSPORT). **Zero KNOWN escapes is still not a soundness proof** — the corpus is adversarial shapes found by directed search, not an exhaustive argument, and the next shape nobody has thought of is the one that matters; see [`docs/LAUNCH-READINESS.md`](docs/LAUNCH-READINESS.md) for the full, honest verdict including what remains a documented (not a bug) cost: enforcing fail-closed on every unresolved closure provenance means 41 of 75 enumerated *legitimate* pure-closure shapes currently require `@capabilities(all)` to compile (LEDGER item 41, precision cost, deliberate — soundness was prioritized over convenience). Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; `tools/loop/LEDGER.md`'s OPEN section is the authoritative current queue. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
+Kryos is **v1.0.0**. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The package-registry supply-chain gap (`kryos pkg install`/`add` verifies a real `sha256:<hex>` content hash of the fetched package against the registry index before trusting it, rejects a mismatch or a missing checksum, and re-verifies even a cache hit) and the container-shaped closure/fn-value capability-laundering gap (a struct field, array element, or map value holding a closure is traced by capability checking in every mode, including `--strict-capabilities`) are both CLOSED. **UPDATE (2026-08-16): the last live capability escape (LEDGER item 33, an actor-to-actor message-parameter row-propagation gap) was closed 2026-08-13.** As of this measurement, `bash tools/loop/escape_status.sh` reports **0 escaping, 19 rejected** across the full named adversarial corpus (17 shapes as of the item-33 fix, grown to 19 since), independently re-confirmed via `tests/capability_matrix_gate.sh`'s combinatorial enumeration (**75/75 attacks rejected**, both enforcement modes, across SOURCE x CONTAINER x TRANSPORT). **Zero KNOWN escapes is still not a soundness proof** - the corpus is adversarial shapes found by directed search, not an exhaustive argument, and the next shape nobody has thought of is the one that matters; see [`docs/LAUNCH-READINESS.md`](docs/LAUNCH-READINESS.md) for the full, honest verdict including what remains a documented (not a bug) cost: enforcing fail-closed on every unresolved closure provenance means 41 of 75 enumerated *legitimate* pure-closure shapes currently require `@capabilities(all)` to compile (LEDGER item 41, precision cost, deliberate - soundness was prioritized over convenience). Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; `tools/loop/LEDGER.md`'s OPEN section is the authoritative current queue. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
 
 > **Why "beta", and what happened to v4?** During the project's bring-up,
 > version numbers tracked development sprints, not conventional semver
-> maturity — the repo reached an internal "v4.46" within months, which would
+> maturity - the repo reached an internal "v4.46" within months, which would
 > mislead newcomers about field maturity. Before public release the scheme
 > was recalibrated: this is a **feature-complete beta with one user**.
-> Historical tags (v0.x–v4.46) are preserved; the mapping is in
+> Historical tags (v0.x-v4.46) are preserved; the mapping is in
 > [VERSIONING.md](VERSIONING.md). 1.0.0 final lands when external users have
 > stress-tested it.
 
@@ -297,12 +297,12 @@ Kryos is **v0.9.0** — feature-complete but pre-1.0. `docs/BUGS.md` tracks fixe
 | Closures (ARC-captured) | Complete |
 | Channels + `spawn` + `select` | Complete |
 | Actors (message-passing) | Complete (JIT + AOT) |
-| Async / await | Complete — non-blocking I/O (blocking ops yield the scheduler; async tasks overlap I/O) + cooperative CPU interleaving; both backends |
+| Async / await | Complete - non-blocking I/O (blocking ops yield the scheduler; async tasks overlap I/O) + cooperative CPU interleaving; both backends |
 | Capability enforcement (`@pure`, `@capabilities`) | Complete |
 | `@test` runner, `@copy`, `@pure` CSE | Complete |
 | Cranelift backend | Complete |
 | LLVM backend (native + DWARF) | Complete |
-| WebAssembly backend | Complete (v0.1 — assumes i64 array indices) |
+| WebAssembly backend | Complete (v0.1 - assumes i64 array indices) |
 | Module system + package manager | Complete |
 | LSP, REPL, formatter, doc generator | Complete |
 | Editor extensions (VS Code, Zed) | Complete |
@@ -358,7 +358,7 @@ kryos-lang/
 Kryos is a real working language but it has one user. Things that move the needle right now:
 
 1. **Try it.** Write a small program. File an issue on anything that surprises you.
-2. **Write a package.** Anything reusable — a database driver, a CLI parser, a logging library, a date library. Tagged `good-first-package` in Discussions.
+2. **Write a package.** Anything reusable - a database driver, a CLI parser, a logging library, a date library. Tagged `good-first-package` in Discussions.
 3. **Port a benchmark.** If you know another language well, port a real benchmark from it and tell us where Kryos surprises you (in either direction).
 4. **Pick a starter task.** [`.github/STARTER_TASKS.md`](.github/STARTER_TASKS.md) lists scoped first-PR-sized tasks (cookbook recipes, stdlib additions, example programs, diagnostic polish, editor work). Issues tagged `good first issue` on the tracker are also fair game.
 5. **Write a tutorial.** Even a short blog post saying "here's how I built X in Kryos" is enormously valuable for adoption.
@@ -369,10 +369,10 @@ Kryos is a real working language but it has one user. Things that move the needl
 
 ## Community & contact
 
-- **Discussions** — [github.com/NORTHTEKDevs/kryos-lang/discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) for questions, ideas, show-and-tell
-- **Issues** — [github.com/NORTHTEKDevs/kryos-lang/issues](https://github.com/NORTHTEKDevs/kryos-lang/issues) for bugs and feature requests
-- **Security** — see [SECURITY.md](SECURITY.md) for private disclosure
-- **Email** — [info@northtek.io](mailto:info@northtek.io) for direct contact
+- **Discussions** - [github.com/NORTHTEKDevs/kryos-lang/discussions](https://github.com/NORTHTEKDevs/kryos-lang/discussions) for questions, ideas, show-and-tell
+- **Issues** - [github.com/NORTHTEKDevs/kryos-lang/issues](https://github.com/NORTHTEKDevs/kryos-lang/issues) for bugs and feature requests
+- **Security** - see [SECURITY.md](SECURITY.md) for private disclosure
+- **Email** - [info@northtek.io](mailto:info@northtek.io) for direct contact
 
 ---
 
@@ -380,4 +380,4 @@ Kryos is a real working language but it has one user. Things that move the needl
 
 Apache License 2.0. See [LICENSE](LICENSE).
 
-Built by [NORTHTEKDevs](https://github.com/NORTHTEKDevs) with heavy AI-assisted development. If you build something with Kryos, open a Discussion — I want to see it.
+Built by [NORTHTEKDevs](https://github.com/NORTHTEKDevs) with heavy AI-assisted development. If you build something with Kryos, open a Discussion - I want to see it.
