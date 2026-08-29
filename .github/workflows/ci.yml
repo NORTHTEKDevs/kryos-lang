@@ -256,6 +256,21 @@ jobs:
         # elsewhere.
         run: bash tests/mem_enum_str_push_gate.sh
 
+      - name: Field-assignment temp memory gate (LEDGER item 54)
+        # A struct-field assignment whose RHS builds INTERMEDIATE heap temps
+        # (`s.name = "v-" + to_string(i)`) must keep peak RSS under a hard
+        # ceiling on BOTH backends. drop_unescaped_str_temps guards its window
+        # with a `_ => return` catch-all and Instruction::StoreField was never
+        # on the allowlist, so a field assignment aborted the pass for the
+        # whole statement and leaked every intermediate: pre-fix 184MB at 3M
+        # iters, fixed build plateaus at 4MB. The dangerous direction for this
+        # fix is a DOUBLE FREE (the stored value is moved into the field and
+        # must not be dropped), which is covered by no_double_free.sh, the
+        # self-host bootstrap, and self-host/test_regressions.sh -- not by this
+        # ceiling. Windows-only (PowerShell PeakWorkingSet64 polling) -- SKIPs
+        # cleanly elsewhere.
+        run: bash tests/mem_field_assign_temp_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

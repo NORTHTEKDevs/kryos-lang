@@ -3354,12 +3354,46 @@ fn drop_unescaped_str_temps(
             // 45) for every statement that also contains a DropIfNe --
             // exactly the shape THIS item's own repro combines them in.
             | Instruction::DropIfNe { .. }
+            // Same failure mode as the DropIfNe arm above, one statement shape
+            // over, and a live leak until it was added: a struct-FIELD
+            // assignment (`s.name = "v-" + to_string(i)`) emits
+            // Instruction::StoreField, which fell into the `_ => return`
+            // catch-all and aborted this pass for the WHOLE statement -- so
+            // every INTERMEDIATE temp it built on the way to the stored value
+            // (here `to_string(i)`, feeding the concat that is actually stored)
+            // was never dropped. Measured on a 2x2 that isolates it: the same
+            // concat assigned to a plain LOCAL is flat, a field store of a bare
+            // LITERAL (no intermediates) is flat, a field READ in a loop is
+            // flat, and only the combination -- field store WITH intermediates
+            // -- leaks, at ~61MB/M (32MB at 500k, 184MB at 3M). The stored
+            // value itself is handled by the per-candidate walk below, which
+            // treats it as the escape it is.
+            | Instruction::StoreField { .. }
             | Instruction::Nop
             | Instruction::DebugLine(_) => {}
             _ => return,
         }
     }
     let mentions = |op: &Operand, id: LocalId| matches!(op, Operand::Local(l) if *l == id);
+    // Does this window assign to a struct FIELD? The guard above now lets
+    // StoreField through so a field assignment's intermediate temps get
+    // cleaned up (LEDGER item 54), but a field assignment carries its OWN
+    // ownership accounting -- it reads the old field into a temp and emits a
+    // PAIR of `release_if_ne` calls, the first balancing that read and the
+    // second dropping the slot's reference. A field-READ temp dropped by this
+    // pass in the same window (the `field_source` branch below) lands on top
+    // of that accounting, and for a self-referential assignment
+    // (`a.tag = a.tag + "!"`) over-releases a string that other aliases of the
+    // same struct box still point at. Measured: it broke
+    // `tests/security/attack_container_element_alias_refcount.kry`'s pinned
+    // AOT output, where three aliases of one box went from reading the
+    // unmutated value to reading the mutated one with empty strings spliced in
+    // -- corruption, not a leak. Pure intermediates (a `to_string(..)` result
+    // feeding a concat) are unaffected and still get dropped, which is the
+    // whole point of item 54; only field READS are held back here.
+    let window_has_store_field = ctx.current_instructions[inst_mark..]
+        .iter()
+        .any(|i| matches!(i, Instruction::StoreField { .. }));
     let mut to_drop: Vec<LocalId> = Vec::new();
     'cand: for id in candidates {
         // Type of THIS candidate, needed by the struct-literal arm below.
@@ -3379,6 +3413,22 @@ fn drop_unescaped_str_temps(
         for inst in &ctx.current_instructions[inst_mark..] {
             let (dest, value) = match inst {
                 Instruction::Assign { dest, value } => (dest, value),
+                // StoreField is allowed through the whole-window guard above so
+                // a field assignment's intermediate temps still get cleaned up,
+                // but the value it stores is MOVED into the field (the field's
+                // own release_if_ne pair handles the OLD occupant, and nothing
+                // dups the new one), so a candidate appearing as that value --
+                // or as the object being stored into -- ESCAPES this statement.
+                // Dropping it here would be a double free, which is the exact
+                // reason the guard was conservative in the first place; the
+                // guard is relaxed and the escape is recognised explicitly
+                // instead.
+                Instruction::StoreField { object, value, .. } => {
+                    if mentions(object, id) || mentions(value, id) {
+                        continue 'cand;
+                    }
+                    continue;
+                }
                 _ => continue,
             };
             if *dest == id {
@@ -3739,7 +3789,15 @@ fn drop_unescaped_str_temps(
                 .iter()
                 .find(|l| l.id == id)
                 .is_some_and(|l| l.ty == MirType::Str);
-            if is_str_field {
+            // ...but NOT when this window also assigns to a struct field. See
+            // `window_has_store_field`'s definition above: a field assignment
+            // already emits its own old-field read plus a PAIR of
+            // `release_if_ne` calls, and adding this drop on top over-releases
+            // a string that other aliases of the same struct box still hold --
+            // corruption, caught by the pinned alias-refcount output. Item 54
+            // only needs the pure intermediates dropped, and those take the
+            // `owns` path above, not this one.
+            if is_str_field && !window_has_store_field {
                 to_drop.push(id);
             }
             //

@@ -1,0 +1,46 @@
+// LEDGER item 54. A struct-FIELD assignment whose right-hand side builds
+// INTERMEDIATE heap temps (`s.name = "v-" + to_string(i)`: `to_string(i)`
+// feeds the concat that is actually stored) leaked every intermediate, on
+// both backends.
+//
+// Root cause: `drop_unescaped_str_temps` (kryos-mir/src/lower.rs) guards its
+// whole window against instruction shapes it does not model, with a
+// `_ => return` catch-all. `Instruction::StoreField` -- what a field
+// assignment lowers to -- was never added to that allowlist, so the pass
+// aborted for the ENTIRE statement and dropped none of its temps. Exactly
+// item 49's failure mode one statement shape over: that item had to add
+// `Instruction::DropIfNe` to the same list for the same reason.
+//
+// The stored value itself must still NOT be dropped -- it is MOVED into the
+// field, and the field's own release_if_ne pair handles the old occupant --
+// so relaxing the guard required teaching the per-candidate walk to treat a
+// StoreField's `value`/`object` as an escape. Getting that half wrong is a
+// double free rather than a leak, which is why the guard was blunt to begin
+// with; `tests/no_double_free.sh`, the self-host bootstrap and
+// `compiler/self-host/test_regressions.sh` are the checks that matter here.
+//
+// Isolated by a 2x2 before any fix, each leg measured at 3M iterations:
+//   the same concat into a plain LOCAL (no StoreField)      flat, 3MB
+//   a field store of a bare LITERAL (no intermediates)      flat, 3MB
+//   a field READ in a loop (no store)                       flat, 3MB
+//   a field store WITH intermediates (this file)            LEAKS, 184MB
+// Post-fix: 4MB at 3M on AOT.
+//
+// Run:  LEAK_ITERS=<n> ./field_assign_temp_leak   (default 500000)
+
+struct S {
+    name: str
+}
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut s: S = S { name: "x" }
+    let mut i = 0
+    while i < iters {
+        s.name = "v-" + to_string(i)
+        i = i + 1
+    }
+    println("iters=" + to_string(iters) + " last=" + s.name)
+}
