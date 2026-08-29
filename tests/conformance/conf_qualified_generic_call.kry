@@ -16,6 +16,7 @@
 // checks the actual result and exits nonzero on mismatch.
 use std::result::{Result, Ok, Err, to_array}
 use std::iter::{count, zip}
+use std::strext::{to_upper}
 
 fn fail(what: str) {
     println("FAIL: " + what)
@@ -62,6 +63,23 @@ fn main() {
     if len(pairs) != 3 { fail("qualified iter::zip len") }
     if pairs[1].0 != 2 { fail("qualified iter::zip left element") }
     if pairs[1].1 != "b" { fail("qualified iter::zip right element") }
+
+    // 7. LEDGER item 53: the FULL two-segment path, the spelling the `use
+    //    std::result::{to_array}` import above is itself written in. This used
+    //    to be a hard parse error (`E0003: unexpected token '::', expected
+    //    expression`) even though the one-segment alias worked, so a user who
+    //    wrote the import and then reused its path hit a dead end. It must now
+    //    mean exactly what the one-segment spelling means -- checked by value
+    //    against case 1's own result, not merely by parsing.
+    let g: [i64] = std::result::to_array(r)
+    if len(g) != 1 { fail("two-segment to_array len") }
+    if g[0] != 42 { fail("two-segment to_array value") }
+    if g[0] != a[0] { fail("two-segment path disagrees with one-segment") }
+
+    // 8. The same for a NON-generic module function, so the multi-segment path
+    //    is not accidentally coupled to the monomorphization arm.
+    if strext::to_upper("ab") != "AB" { fail("one-segment strext::to_upper") }
+    if std::strext::to_upper("ab") != "AB" { fail("two-segment strext::to_upper") }
 
     println("conformance qualified generic call: PASS")
 }

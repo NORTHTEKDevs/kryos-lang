@@ -14,7 +14,7 @@ use kryos_lexer::{Token, TokenKind};
 /// Right-associative operators have `right_bp < left_bp + 1`.
 fn infix_binding_power(kind: TokenKind, next: Option<TokenKind>) -> Option<(u8, u8)> {
     let bp = match kind {
-        // 1. Pipe  |>  — lowest binary
+        // 1. Pipe  |> - lowest binary
         TokenKind::Pipe if next == Some(TokenKind::Gt) => (2, 3),
         // 2. or  (also `||`)
         TokenKind::Or | TokenKind::PipePipe => (4, 5),
@@ -65,9 +65,9 @@ fn prefix_binding_power(kind: TokenKind) -> Option<u8> {
         // (Was grouped with `!` at 24, so `not a == b` mis-parsed as
         // `(not a) == b` -> a type error, contradicting the documented table.)
         TokenKind::Not => Some(7),
-        // & (borrow / address-of) — same precedence as other unary prefix ops
+        // & (borrow / address-of) - same precedence as other unary prefix ops
         TokenKind::Amp => Some(24),
-        // shared / move / weak / await — prefix keyword operators (very low, just above range)
+        // shared / move / weak / await - prefix keyword operators (very low, just above range)
         TokenKind::Shared | TokenKind::Move | TokenKind::Weak | TokenKind::Await => Some(3),
         _ => None,
     }
@@ -93,11 +93,11 @@ pub struct Parser {
     /// Live nesting depth of the AST path currently being built (grammar
     /// recursion AND left-spine chain wraps both charge it). Bounding this
     /// bounds the depth of the final AST, which in turn bounds the recursion
-    /// of every downstream phase (checker, capabilities, MIR, codegen) — an
+    /// of every downstream phase (checker, capabilities, MIR, codegen) - an
     /// unbounded depth overflows the native stack (an ICE, not a diagnostic).
     nest_depth: usize,
     /// Live grammar-recursion depth only (parens, blocks, nested types /
-    /// patterns — NOT flat chains). The parser's own frames are much heavier
+    /// patterns - NOT flat chains). The parser's own frames are much heavier
     /// than the downstream phases', so recursion gets a tighter cap that
     /// keeps the parse itself safe even on a default 2 MiB thread stack.
     rec_depth: usize,
@@ -112,7 +112,7 @@ pub struct Parser {
 const MAX_NESTING_DEPTH: usize = 2048;
 
 /// Maximum grammar-recursion depth (same class of cap as clang's 256-bracket
-/// limit). Flat operator/method chains do NOT count against this — only real
+/// limit). Flat operator/method chains do NOT count against this - only real
 /// syntactic nesting, which no legitimate program takes past a few dozen.
 const MAX_RECURSION_DEPTH: usize = 256;
 
@@ -332,7 +332,7 @@ impl Parser {
 
     fn error(&mut self, message: String, span: Span) {
         // After the nesting limit fired, the rest of the parse is abandoned
-        // recovery noise — surface only the one E0010.
+        // recovery noise - surface only the one E0010.
         if self.nesting_poisoned {
             return;
         }
@@ -383,7 +383,7 @@ impl Parser {
         );
     }
 
-    /// Synchronize after a parse error — skip tokens until we reach a
+    /// Synchronize after a parse error - skip tokens until we reach a
     /// likely declaration or statement boundary.
     fn synchronize(&mut self) {
         while !self.at_end() {
@@ -661,14 +661,14 @@ impl Parser {
             None
         };
 
-        // Optional `where` clause — merged into the existing GenericParam bounds.
+        // Optional `where` clause - merged into the existing GenericParam bounds.
         let mut generics = generics;
         self.parse_where_clause_into(&mut generics);
 
         let body = if self.check(TokenKind::LBrace) {
             Some(self.parse_block())
         } else {
-            // Trait method signature — no body
+            // Trait method signature - no body
             self.eat(TokenKind::Semicolon);
             None
         };
@@ -689,7 +689,7 @@ impl Parser {
     }
 
     /// Parse `where T: Bound1 + Bound2, U: Other` and merge into the matching
-    /// `GenericParam.bounds`. `where` is a soft keyword — recognised only when
+    /// `GenericParam.bounds`. `where` is a soft keyword - recognised only when
     /// the next identifier is literally "where" *and* a generics list exists.
     fn parse_where_clause_into(&mut self, generics: &mut Vec<GenericParam>) {
         if generics.is_empty() {
@@ -717,7 +717,7 @@ impl Parser {
                 bounds.push(b);
             }
             // Merge into the matching generic param. If the name isn't a
-            // generic param, silently ignore — the checker will diagnose it.
+            // generic param, silently ignore - the checker will diagnose it.
             for g in generics.iter_mut() {
                 if g.name == type_name {
                     for b in &bounds {
@@ -1191,7 +1191,7 @@ impl Parser {
 
     fn parse_block(&mut self) -> Block {
         // Nesting guard: deeply nested blocks (`if { if { ... } }`) recurse
-        // through parse_block/parse_stmt — same stack-overflow class as
+        // through parse_block/parse_stmt - same stack-overflow class as
         // deeply nested expressions.
         if self.nesting_exhausted() {
             self.nesting_overflow();
@@ -1408,7 +1408,7 @@ impl Parser {
             {
                 Some(self.parse_deny_block())
             }
-            TokenKind::RBrace => None, // End of block — caller handles
+            TokenKind::RBrace => None, // End of block - caller handles
             TokenKind::Semicolon => {
                 let tok = self.advance().clone();
                 self.diagnostics.push(
@@ -1685,7 +1685,7 @@ impl Parser {
         }
     }
 
-    /// `loop { BODY }` — unconditional infinite loop (spec §4.4), exited via
+    /// `loop { BODY }` - unconditional infinite loop (spec §4.4), exited via
     /// `break`. Desugars to `while true { BODY }`, mirroring `while let`.
     fn parse_loop(&mut self) -> Stmt {
         let kw = self.expect(TokenKind::Loop);
@@ -1781,7 +1781,7 @@ impl Parser {
         }
     }
 
-    /// Parse `deny!(cap, cap:sub, ...) { body }` — a lexical capability-revocation
+    /// Parse `deny!(cap, cap:sub, ...) { body }` - a lexical capability-revocation
     /// block. Capability atoms are an ident optionally followed by `:` + sub-cap
     /// (e.g. `net`, `net:http`, `fs:read`), matching `@capabilities(...)` grammar.
     fn parse_deny_block(&mut self) -> Stmt {
@@ -2010,7 +2010,7 @@ impl Parser {
     }
 
     // -----------------------------------------------------------------------
-    // Expressions — Pratt parser
+    // Expressions - Pratt parser
     // -----------------------------------------------------------------------
 
     pub fn parse_expr(&mut self) -> Expr {
@@ -2067,7 +2067,7 @@ impl Parser {
 
         // Each loop iteration wraps `lhs` one level deeper (field access,
         // call, index, cast, binary op), so a long flat chain like
-        // `1+1+...+1` builds an AST as deep as a nest of parens — charge the
+        // `1+1+...+1` builds an AST as deep as a nest of parens - charge the
         // same nesting budget. Decremented in one step after the loop (the
         // loop only exits via `break`, so the accounting can't drift).
         let mut spine: usize = 0;
@@ -2122,7 +2122,7 @@ impl Parser {
             // `KRYOS_DEBUG_NEST=1`: the trip fired exactly on that trailing
             // peek, at nest_depth==MAX_NESTING_DEPTH, with the next-token
             // span belonging to a syntactically unrelated following
-            // statement (see LEDGER item 22's investigation writeup — not a
+            // statement (see LEDGER item 22's investigation writeup - not a
             // hang, this false-positive-plus-misattributed-span bug is what
             // was actually reproducible near the ceiling).
             let extends_chain = match kind {
@@ -2139,7 +2139,7 @@ impl Parser {
             spine += 1;
             self.nest_depth += 1;
             if self.nest_depth >= MAX_NESTING_DEPTH {
-                // Note: only the shared AST-depth budget — flat chains are
+                // Note: only the shared AST-depth budget - flat chains are
                 // parsed iteratively, so they never stress the parser stack.
                 self.nesting_overflow();
                 break;
@@ -2303,7 +2303,7 @@ impl Parser {
                     }],
                     span: q_span,
                 };
-                // Build `Result.Err(__kry_try_e_N)` as a MethodCall — this
+                // Build `Result.Err(__kry_try_e_N)` as a MethodCall - this
                 // matches how the parser shapes user-written enum variant
                 // construction (the type checker treats `Type.Variant(args)`
                 // specially via MethodCall, not FnCall(FieldAccess)).
@@ -2705,7 +2705,7 @@ impl Parser {
                 Expr::NoneLiteral { span: tok.span }
             }
 
-            // Identifier — may lead to struct literal, path expression, etc.
+            // Identifier - may lead to struct literal, path expression, etc.
             TokenKind::Ident | TokenKind::TypeIdent => {
                 self.advance();
                 let name = tok.text.clone();
@@ -2732,21 +2732,47 @@ impl Parser {
                 // Check for static method call: `Type::method(args)`
                 if self.check(TokenKind::ColonColon) {
                     self.advance(); // consume ::
-                    let (method, _) = self.expect_name();
+                    let (mut method, _) = self.expect_name();
+                    // LEDGER item 53: a path with MORE than two segments
+                    // (`std::result::to_array(r)`) used to stop here, leaving
+                    // the next `::` to be reported as `E0003: unexpected token
+                    // '::', expected expression` -- even though the
+                    // `use std::result::{to_array}` import that makes the short
+                    // spelling available is itself written with the full path,
+                    // so the rejected form is the one a user would reach for
+                    // first. Kryos's module namespace is flat -- module-level
+                    // functions are registered under their plain name, and MIR
+                    // resolves a qualified call by its module-alias segment --
+                    // so only the last two segments carry meaning: the final one
+                    // is the item, the one before it is the module alias.
+                    // Leading segments are a qualification prefix, which makes
+                    // `std::result::to_array(r)` mean exactly what
+                    // `result::to_array(r)` already meant.
+                    //
+                    // Strictly additive: this loop only ever runs when a THIRD
+                    // segment is present, and that is a hard parse error today,
+                    // so no program that parses now parses differently.
+                    let mut type_name = name;
+                    while self.check(TokenKind::ColonColon) {
+                        self.advance(); // consume ::
+                        let (next, _) = self.expect_name();
+                        type_name = method;
+                        method = next;
+                    }
                     if self.check(TokenKind::LParen) {
                         self.advance(); // consume (
                         let args = self.parse_arg_list();
                         let end = self.expect(TokenKind::RParen);
                         return Expr::StaticMethodCall {
-                            type_name: name,
+                            type_name,
                             method,
                             args,
                             span: start.merge(end.span),
                         };
                     }
-                    // Not a call — treat as enum variant: Name::Variant
+                    // Not a call - treat as enum variant: Name::Variant
                     return Expr::Identifier {
-                        name: format!("{name}::{method}"),
+                        name: format!("{type_name}::{method}"),
                         span: start,
                     };
                 }
@@ -3055,7 +3081,7 @@ impl Parser {
         let condition = self.parse_expr_no_struct_lit();
         let then_branch = self.parse_block();
         let else_branch = if self.peek_kind() == TokenKind::Elif {
-            // `elif` in expression context — desugar to `else { if ... }`
+            // `elif` in expression context - desugar to `else { if ... }`
             self.advance(); // eat `elif`
             let nested_if = self.parse_if_expr_after_if(start);
             let span = nested_if.span();
@@ -3068,7 +3094,7 @@ impl Parser {
             })
         } else if self.eat(TokenKind::Else) {
             if self.peek_kind() == TokenKind::If {
-                // `else if` — parse as a single-statement block containing the nested if.
+                // `else if` - parse as a single-statement block containing the nested if.
                 let nested_if = self.parse_if_expr();
                 let span = nested_if.span();
                 Some(Block {
@@ -3218,7 +3244,7 @@ impl Parser {
                     span,
                 })
             } else if explicit_return.is_some() {
-                // Arm body is `return <expr>` — wrap into a Block whose only
+                // Arm body is `return <expr>` - wrap into a Block whose only
                 // statement is `Stmt::Return { value: Some(expr) }`. The match
                 // arm's "value" is then unreachable; the return terminator fires.
                 let value_expr = self.parse_expr();
@@ -3324,7 +3350,7 @@ impl Parser {
         }
     }
 
-    /// Parse `#{ key: value, ... }` or `#{}` — always a HashMap literal.
+    /// Parse `#{ key: value, ... }` or `#{}` - always a HashMap literal.
     /// The leading `#` disambiguates from a block expression.
     fn parse_hash_map_literal(&mut self) -> Expr {
         let hash_tok = self.expect(TokenKind::Hash);
@@ -3702,7 +3728,7 @@ impl Parser {
 
     /// Consume the `>` closing a generic argument list. A `>>` token (lexed
     /// as right-shift) is SPLIT: the in-place token is rewritten to a single
-    /// `>` (not consumed) so it can close the enclosing list — this is what
+    /// `>` (not consumed) so it can close the enclosing list - this is what
     /// makes nested generics (`Option<Option<i64>>`) parse.
     fn expect_generic_gt(&mut self) -> Token {
         if self.check(TokenKind::Shr) {
@@ -3792,7 +3818,7 @@ impl Parser {
                     span: tok.span.merge(end),
                 }
             }
-            // Weak: `weak T` (not in TypeExpr, but for symmetry — store as Weak)
+            // Weak: `weak T` (not in TypeExpr, but for symmetry - store as Weak)
             TokenKind::Weak => {
                 self.advance();
                 let inner = self.parse_type();
@@ -3812,7 +3838,7 @@ impl Parser {
             TokenKind::Fn => {
                 self.advance();
                 if !self.check(TokenKind::LParen) {
-                    // Bare `fn` — opaque callable. We encode this as a
+                    // Bare `fn` - opaque callable. We encode this as a
                     // function type whose single "parameter" is the `any`
                     // sentinel and whose return is `any`. The type checker
                     // recognises this shape and skips arity / argument-type
@@ -3868,7 +3894,7 @@ impl Parser {
                     // Reject an overflowing size literal instead of silently
                     // truncating it to 0 (the infallible wrapper returned 0 on
                     // overflow, so `[i64; 10^24]` became a zero-length array
-                    // with no diagnostic — a silent-wrong, backlog #125).
+                    // with no diagnostic - a silent-wrong, backlog #125).
                     match parse_int_literal_checked(&size_tok.text) {
                         Ok(n) if n >= 0 => Some(n as u64),
                         _ => {
@@ -4031,7 +4057,7 @@ fn token_to_binop(kind: TokenKind) -> BinOp {
 /// On overflow or malformed digits, returns `Err(kind)` where `kind` is a
 /// short, human-readable description of the failure ("overflow",
 /// "invalid hex", etc.). Callers MUST surface the error as a diagnostic
-/// rather than substituting a 0 — silent zero on overflow used to mask
+/// rather than substituting a 0 - silent zero on overflow used to mask
 /// real bugs in the compiler source (bitmasks like `0xffff_ffff_ffff_ffff`
 /// silently became 0).
 fn parse_int_literal_checked(text: &str) -> Result<i64, &'static str> {
