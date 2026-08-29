@@ -1369,6 +1369,30 @@ want_reject to_array_unannotated_bare_tuple_no_pattern '
 use std::result::{to_array}
 fn main() { let t = (to_array(Ok("hi-there")), 5)  println(t.0[0]) }'
 
+# LEDGER item 50: the MODULE-QUALIFIED spelling of the same call. Until item
+# 50 taught MIR to monomorphize `result::to_array(..)`, this shape died as a
+# LINK failure (`use of undefined value '@to_array'`), so item 48's check
+# never had to cover it. Once it links it is exactly item 48's silent-wrong-
+# answer class again: measured live, `check` rc=0 clean and a raw pointer
+# (`140699791077376`) printed on both backends. `report_unbindable_generic_call`
+# resolves both spellings now. Each probe below has an unqualified twin above,
+# and the two spellings must agree.
+want_reject to_array_unannotated_qualified_call '
+use std::result::{to_array}
+fn main() { let a = result::to_array(Ok("hi-there"))  println(a[0]) }'
+
+want_reject to_array_unannotated_qualified_tuple_destructure '
+use std::result::{to_array}
+fn main() { let (a, n) = (result::to_array(Ok("hi-there")), 5)  println(a[0]) }'
+
+# The qualified spelling must also agree on the ARGUMENT-TYPED shape: `T` is
+# structurally unbindable from any argument (it appears in no param type), so
+# annotating the ARGUMENT does not help and this is rejected unqualified too.
+# Pins the two spellings to the same verdict rather than only to "rejected".
+want_reject to_array_unannotated_qualified_typed_arg '
+use std::result::{Result, Ok, to_array}
+fn main() { let r: Result<i64, str> = Ok(42)  let a = result::to_array(r)  println(a[0]) }'
+
 # NO-CASCADE complements: shapes that must NOT be flagged, because the call
 # result lands in a position with a real DECLARED type constraining it, or
 # the callee is not an unbindable generic at all.
@@ -1406,6 +1430,49 @@ fn main() {
 want_pass normal_call_still_works_inside_array_literal '
 fn make() -> str { return "ok" }
 fn main() { let arr = [make(), make()]  println(arr[0]) }'
+
+# LEDGER item 50 no-cascade complements. The qualified arm of
+# `report_unbindable_generic_call` resolves `type_name::method` by NAME
+# against the module namespace, so it has more ways to over-trigger than the
+# unqualified arm. Each of these must still run clean.
+
+# An ANNOTATED qualified call: the annotation supplies `T`, so the whole
+# check is gated off (`if ty.is_none()`). Runtime-verified, not merely
+# accepted -- prints the string, not a pointer.
+want_pass qualified_unbindable_with_annotation_still_works '
+use std::result::{Result, Ok, to_array}
+fn main() { let a: [str] = result::to_array(Ok("hi-there"))  println(a[0]) }'
+
+# A qualified call to a BINDABLE generic (`count<T>(arr: [T]) -> i64`: `T` DOES
+# appear in a param) unannotated -- the signature-shape predicate must not fire.
+want_pass qualified_bindable_generic_still_works '
+use std::iter::{count}
+fn main() { let nums: [i64] = [1, 2, 3]  println(to_string(iter::count(nums))) }'
+
+# A qualified TWO-param generic whose return type is inferred from the args --
+# the second half of item 50 (`infer_generic_fn_call_ret`). Pre-fix this
+# inferred Void and failed codegen on `.0` with a struct-propagation error.
+want_pass qualified_two_param_generic_return_infers '
+use std::iter::{zip}
+fn main() {
+    let nums: [i64] = [1, 2, 3]
+    let tags: [str] = ["a", "b", "c"]
+    let pairs = iter::zip(nums, tags)
+    println(to_string(pairs[1].0) + pairs[1].1)
+}'
+
+# A qualified unbindable call in a position with a real DECLARED type (a
+# struct-literal field, a concrete-typed call param) is soundly constrained,
+# exactly as the unqualified twins above are -- must not be flagged.
+want_pass qualified_in_struct_literal_field_still_works '
+use std::result::{Result, Ok, to_array}
+struct Holder { xs: [i64] }
+fn main() { let r: Result<i64, str> = Ok(9)  let h = Holder { xs: result::to_array(r) }  println(to_string(h.xs[0])) }'
+
+want_pass qualified_as_call_argument_still_works '
+use std::result::{Result, Ok, to_array}
+fn show(v: [i64]) { println(to_string(v[0])) }
+fn main() { let r: Result<i64, str> = Ok(7)  show(result::to_array(r)) }'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

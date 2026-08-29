@@ -9917,33 +9917,8 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     return MirType::Struct(name.clone());
                 }
                 // For generic functions, the return type depends on argument types.
-                if let Some(template) = ctx.generic_templates.get(name.as_str()) {
-                    let generic_params = template.generic_params.clone();
-                    let template_params = template.params.clone();
-                    let template_ret_ty = template.ret_ty.clone();
-                    // Build type map by recursively matching each parameter's
-                    // declared TypeExpr against the argument EXPRESSION (not
-                    // just its inferred type -- see
-                    // extract_type_bindings_from_arg). Handles `[T]`, `(A,
-                    // B)`, `fn(T) -> U`, `&T`, and an enum-variant-constructor
-                    // argument like `Some(x)` whose static type alone would
-                    // erase the payload type.
-                    let mut type_map: HashMap<String, MirType> = HashMap::new();
-                    for (i, param) in template_params.iter().enumerate() {
-                        if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
-                            extract_type_bindings_from_arg(
-                                ctx,
-                                param_ty,
-                                arg,
-                                &generic_params,
-                                &mut type_map,
-                            );
-                        }
-                    }
-                    if let Some(ret_ty) = &template_ret_ty {
-                        return substitute_type_expr_to_mir(ctx, ret_ty, &type_map);
-                    }
-                    return MirType::Void;
+                if let Some(ret) = infer_generic_fn_call_ret(ctx, name.as_str(), args) {
+                    return ret;
                 }
                 if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()).cloned() {
                     // Polymorphic builtins: return type matches argument type
@@ -10248,6 +10223,18 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             if !ctx.struct_defs.contains_key(type_name.as_str())
                 && !ctx.enum_defs.contains_key(type_name.as_str())
             {
+                // A module-level GENERIC's return type is only known per
+                // instantiation -- `func_ret_types` has no entry under the bare
+                // template name, so without this the call inferred Void and an
+                // unannotated `let pairs = iter::zip(a, b)` lost its element
+                // type: `pairs[1].0` then failed codegen on BOTH backends
+                // ("cannot resolve the struct type for field access `.0`" /
+                // "extractvalue operand must be aggregate type"). The
+                // unqualified spelling inferred it correctly all along.
+                // LEDGER item 50, second half.
+                if let Some(ret) = infer_generic_fn_call_ret(ctx, method.as_str(), args) {
+                    return ret;
+                }
                 if let Some(ret_ty) = ctx.func_ret_types.get(method.as_str()) {
                     return ret_ty.clone();
                 }
@@ -11374,50 +11361,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Check if this is a call to a generic function - monomorphize.
             if ctx.generic_templates.contains_key(&func_name) {
-                let mangled = monomorphize(ctx, &func_name, args);
-                // Apply the dyn-Trait coercion here too: a concrete struct arg
-                // passed to a `dyn Trait` param must be wrapped in a fat pointer
-                // (MakeTraitObject), exactly as the non-generic call path does
-                // below. This branch previously lowered every arg RAW, so a
-                // struct passed to a generic fn's `dyn Trait` param reached the
-                // monomorphized body's `vtable_call` as a plain struct -> the
-                // vtable deref segfaulted on BOTH backends. A `dyn Trait` param
-                // type is concrete (no dependence on the generic type params),
-                // so the template's declared param types carry it directly.
-                let template_param_tys: Vec<Option<ast::TypeExpr>> = ctx
-                    .generic_templates
-                    .get(&func_name)
-                    .map(|t| t.params.iter().map(|p| p.ty.clone()).collect())
-                    .unwrap_or_default();
-                let mir_args: Vec<Operand> = args
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        let operand = lower_expr_to_operand(ctx, a);
-                        if let Some(Some(ast::TypeExpr::DynTrait { trait_name, .. })) =
-                            template_param_tys.get(i)
-                        {
-                            if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
-                                let tmp =
-                                    ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
-                                ctx.emit(Instruction::Assign {
-                                    dest: tmp,
-                                    value: RValue::MakeTraitObject {
-                                        value: operand,
-                                        concrete_type: concrete_type.clone(),
-                                        trait_name: trait_name.clone(),
-                                    },
-                                });
-                                return Operand::Local(tmp);
-                            }
-                        }
-                        operand
-                    })
-                    .collect();
-                return RValue::Call {
-                    func: mangled,
-                    args: mir_args,
-                };
+                return lower_generic_fn_call(ctx, &func_name, args);
             }
 
             // Check if the callee is a local with function type (indirect call).
@@ -11994,6 +11938,15 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         format!("{type_name}__{method}")
                     }
                 });
+            // A module-qualified call to a module-level GENERIC function
+            // (`result::to_array(r)`) resolves above to the plain name, but this
+            // arm never monomorphized it -- it emitted a direct call to the bare
+            // template, an undefined symbol in both backends (LEDGER item 50).
+            // Only a real registered template matches here: a `method_owners`
+            // hit yields `Type__method`, which is never a template key.
+            if ctx.generic_templates.contains_key(&func_name) {
+                return lower_generic_fn_call(ctx, &func_name, args);
+            }
             // dyn Trait coercion on Rust-style `Type::method(args)` arguments:
             // this arm lowered args RAW, so a concrete struct passed to a
             // `dyn Trait` param reached vtable_call unwrapped (JIT segfault /
@@ -16414,6 +16367,101 @@ fn ensure_enum_eq_helper(ctx: &mut LoweringContext, enum_name: &str) -> String {
     ctx.monomorphized_functions.push(mir_func);
 
     helper_name
+}
+
+/// Infer the return type of a call to a module-level GENERIC function, by
+/// binding the template's type params from the call-site arguments.
+///
+/// `None` means `func_name` is not a generic template (the caller falls through
+/// to its ordinary lookup); `Some(Void)` means it is one that returns nothing.
+///
+/// Every call shape that can name a module-level generic must consult this, for
+/// the same reason `lower_generic_fn_call` exists: `func_ret_types` is keyed by
+/// the MONOMORPHIZED name, so a lookup under the bare template name misses and
+/// the call silently infers Void. See LEDGER item 50.
+fn infer_generic_fn_call_ret(
+    ctx: &mut LoweringContext,
+    func_name: &str,
+    args: &[ast::Expr],
+) -> Option<MirType> {
+    let template = ctx.generic_templates.get(func_name)?;
+    let generic_params = template.generic_params.clone();
+    let template_params = template.params.clone();
+    let template_ret_ty = template.ret_ty.clone();
+    // Build the type map by recursively matching each parameter's declared
+    // TypeExpr against the argument EXPRESSION (not just its inferred type --
+    // see extract_type_bindings_from_arg). Handles `[T]`, `(A, B)`,
+    // `fn(T) -> U`, `&T`, and an enum-variant-constructor argument like
+    // `Some(x)` whose static type alone would erase the payload type.
+    let mut type_map: HashMap<String, MirType> = HashMap::new();
+    for (i, param) in template_params.iter().enumerate() {
+        if let (Some(param_ty), Some(arg)) = (&param.ty, args.get(i)) {
+            extract_type_bindings_from_arg(ctx, param_ty, arg, &generic_params, &mut type_map);
+        }
+    }
+    match &template_ret_ty {
+        Some(ret_ty) => Some(substitute_type_expr_to_mir(ctx, ret_ty, &type_map)),
+        None => Some(MirType::Void),
+    }
+}
+
+/// Lower a call to a module-level GENERIC function: monomorphize it and lower
+/// the arguments against the TEMPLATE's declared parameter types.
+///
+/// Every call shape that can name a module-level generic function must route
+/// here. `FnCall` (`to_array(r)`) and `StaticMethodCall` (`result::to_array(r)`)
+/// both can; the latter did not, and emitted a direct call to the bare template
+/// name, which no backend ever defines -- `kryos check` passed and the build
+/// then died with `use of undefined value '@to_array'` (LLVM) / `LNK2001
+/// unresolved external symbol to_array` (Cranelift). See LEDGER item 50. The
+/// two arms are one function now specifically so they cannot drift apart again.
+///
+/// Arguments are coerced against the template's declared param types rather
+/// than `func_param_types`: a concrete struct passed to a `dyn Trait` param
+/// must be wrapped in a fat pointer (MakeTraitObject), and lowering it RAW
+/// reached the monomorphized body's `vtable_call` as a plain struct, so the
+/// vtable deref segfaulted on BOTH backends. A `dyn Trait` param type is
+/// concrete (it cannot depend on the generic type params), so the template's
+/// own annotations carry it directly.
+fn lower_generic_fn_call(
+    ctx: &mut LoweringContext,
+    func_name: &str,
+    args: &[ast::Expr],
+) -> RValue {
+    let mangled = monomorphize(ctx, func_name, args);
+    let template_param_tys: Vec<Option<ast::TypeExpr>> = ctx
+        .generic_templates
+        .get(func_name)
+        .map(|t| t.params.iter().map(|p| p.ty.clone()).collect())
+        .unwrap_or_default();
+    let mir_args: Vec<Operand> = args
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let operand = lower_expr_to_operand(ctx, a);
+            if let Some(Some(ast::TypeExpr::DynTrait { trait_name, .. })) =
+                template_param_tys.get(i)
+            {
+                if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
+                    let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                    ctx.emit(Instruction::Assign {
+                        dest: tmp,
+                        value: RValue::MakeTraitObject {
+                            value: operand,
+                            concrete_type: concrete_type.clone(),
+                            trait_name: trait_name.clone(),
+                        },
+                    });
+                    return Operand::Local(tmp);
+                }
+            }
+            operand
+        })
+        .collect();
+    RValue::Call {
+        func: mangled,
+        args: mir_args,
+    }
 }
 
 /// Monomorphize a generic function template with concrete call-site argument

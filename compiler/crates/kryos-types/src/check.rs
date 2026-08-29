@@ -3716,26 +3716,62 @@ impl TypeChecker {
     /// inferred from any argument, ever -- see `type_mentions_var`), emit
     /// E0110 at the call's own span. Shared by the bare-`let` and
     /// destructuring-pattern paths above.
+    ///
+    /// BOTH spellings of a call to a module-level function reach here: the
+    /// unqualified `to_array(..)` (`Expr::FnCall` over an `Identifier`) and the
+    /// module-qualified `result::to_array(..)` (`Expr::StaticMethodCall`).
+    /// Covering only the first was a real hole: until item 50 made the
+    /// qualified spelling monomorphize at all, an unbindable qualified call
+    /// died as a LINK failure, so this check never had to see it; once it
+    /// links, `let a = result::to_array(Ok("hi-there"))` passes `check` clean
+    /// and prints a raw pointer at runtime -- item 48's exact silent-wrong-
+    /// answer class, through a call shape item 48 never covered. Measured live
+    /// on both backends before this arm existed. See LEDGER item 50.
     fn report_unbindable_generic_call(&mut self, value: &Expr) {
-        if let Expr::FnCall { callee, span, .. } = value {
-            if let Expr::Identifier { name: callee_name, .. } = callee.as_ref() {
-                let unbindable = self.env.lookup_function(callee_name).is_some_and(|sig| {
-                    !sig.generic_var_ids.is_empty()
-                        && sig.generic_var_ids.iter().any(|gid| {
-                            type_mentions_var(&sig.ret, *gid)
-                                && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
-                        })
-                });
-                if unbindable {
-                    self.error_with_code(
-                        format!(
-                            "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
-                        ),
-                        *span,
-                        kryos_errors::codes::E0110,
-                    );
+        // Resolve the call to a module-level function NAME, whichever spelling
+        // was used. A `Type::method(..)` static call is deliberately NOT
+        // resolved here: `type_name` naming a known struct, enum, or trait
+        // means `method` belongs to that type, not to the module namespace,
+        // and its signature is not what `lookup_function(method)` would
+        // return. Erring toward NOT reporting is the safe direction for a
+        // name collision here -- a missed diagnostic on an exotic shape beats
+        // rejecting sound code.
+        let (callee_name, span) = match value {
+            Expr::FnCall { callee, span, .. } => match callee.as_ref() {
+                Expr::Identifier { name, .. } => (name, span),
+                _ => return,
+            },
+            Expr::StaticMethodCall {
+                type_name,
+                method,
+                span,
+                ..
+            } => {
+                if self.env.lookup_struct(type_name).is_some()
+                    || self.env.lookup_enum(type_name).is_some()
+                    || self.env.lookup_trait(type_name).is_some()
+                {
+                    return;
                 }
+                (method, span)
             }
+            _ => return,
+        };
+        let unbindable = self.env.lookup_function(callee_name).is_some_and(|sig| {
+            !sig.generic_var_ids.is_empty()
+                && sig.generic_var_ids.iter().any(|gid| {
+                    type_mentions_var(&sig.ret, *gid)
+                        && !sig.params.iter().any(|(_, pty)| type_mentions_var(pty, *gid))
+                })
+        });
+        if unbindable {
+            self.error_with_code(
+                format!(
+                    "cannot infer the generic type parameter of `{callee_name}(..)` from this unannotated binding -- `{callee_name}`'s generic type does not appear in any of its parameter types, so it can never be inferred from an argument here or at any call site. Left unannotated this would silently default to the raw erased representation at runtime (e.g. printing a pointer instead of a string). Add an explicit type annotation on the binding, e.g. `let x: [str] = {callee_name}(..)`"
+                ),
+                *span,
+                kryos_errors::codes::E0110,
+            );
         }
     }
 

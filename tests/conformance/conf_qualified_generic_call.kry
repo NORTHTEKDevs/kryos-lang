@@ -1,0 +1,67 @@
+// LEDGER item 50. A module-qualified call to a module-level GENERIC stdlib
+// function (`result::to_array(r)`) passed `kryos check` clean and then failed
+// the BUILD on both backends -- LLVM: `use of undefined value '@to_array'`;
+// Cranelift: `LNK2001: unresolved external symbol to_array`.
+//
+// Root cause: MIR's `StaticMethodCall` arm (the `::` call shape) resolved the
+// module alias to the plain function name but never consulted
+// `ctx.generic_templates`, so it emitted a direct call to the bare, never-
+// codegen'd template. The `FnCall` arm (the unqualified `to_array(r)` shape)
+// did monomorphize -- which is why the same function worked unqualified and
+// only broke through `::`. Both arms call one shared helper now
+// (`lower_generic_fn_call`) so they cannot drift apart again.
+//
+// This is a VALUE-asserting gate, not a build-only check: a monomorphization
+// that links but binds the wrong T would still be a bug, so every case below
+// checks the actual result and exits nonzero on mismatch.
+use std::result::{Result, Ok, Err, to_array}
+use std::iter::{count, zip}
+
+fn fail(what: str) {
+    println("FAIL: " + what)
+    exit(1)
+}
+
+fn main() {
+    // 1. The reported shape: qualified generic call, T = i64.
+    let r: Result<i64, str> = Ok(42)
+    let a: [i64] = result::to_array(r)
+    if len(a) != 1 { fail("qualified to_array Ok len") }
+    if a[0] != 42 { fail("qualified to_array Ok value") }
+
+    // 2. Err arm of the same instantiation.
+    let e: Result<i64, str> = Err("nope")
+    let b: [i64] = result::to_array(e)
+    if len(b) != 0 { fail("qualified to_array Err len") }
+
+    // 3. The unqualified path must agree -- it was always correct, and it is
+    //    the reference the qualified path is being held to.
+    let c: [i64] = to_array(r)
+    if len(c) != 1 { fail("unqualified to_array len") }
+    if c[0] != 42 { fail("unqualified to_array value") }
+
+    // 4. A SECOND instantiation at a different T through the qualified path.
+    //    Pins that this arm mangles/caches per-T rather than reusing case 1's
+    //    i64 body -- a shared-name cache bug would return 42 or a raw pointer.
+    let rs: Result<str, str> = Ok("hi")
+    let d: [str] = result::to_array(rs)
+    if len(d) != 1 { fail("qualified to_array str len") }
+    if d[0] != "hi" { fail("qualified to_array str value") }
+
+    // 5. A different module, to prove the fix is not result-specific.
+    let nums: [i64] = [1, 2, 3]
+    if iter::count(nums) != 3 { fail("qualified iter::count") }
+
+    // 6. A qualified generic with TWO type params bound to DIFFERENT types,
+    //    to pin multi-param mangling through this arm. (A closure-taking HOF
+    //    would be the other natural case here, but a closure argument forces
+    //    `@capabilities(all)` on main under the fail-closed Unknown -> ALL
+    //    stance -- LEDGER item 41, deliberate and unrelated to item 50.)
+    let tags: [str] = ["a", "b", "c"]
+    let pairs = iter::zip(nums, tags)
+    if len(pairs) != 3 { fail("qualified iter::zip len") }
+    if pairs[1].0 != 2 { fail("qualified iter::zip left element") }
+    if pairs[1].1 != "b" { fail("qualified iter::zip right element") }
+
+    println("conformance qualified generic call: PASS")
+}
