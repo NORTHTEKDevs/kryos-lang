@@ -1,0 +1,139 @@
+// LEDGER item 52. `RValue::EnumVariant` CLONES a `str` payload field
+// (`kryos_string_clone`, both backends) while `RValue::Struct` MOVES one, so
+// the source temp still owns the original and needs its own scope-end drop.
+// `drop_unescaped_str_temps` got the Array arm from item 45 and never the Str
+// one, leaking a buffer per construction (~78MB/M, both backends).
+//
+// The leak itself is measured by tests/mem_enum_str_push_gate.sh. THIS file
+// guards the other direction, which a memory ceiling cannot see: dropping the
+// source temp is only correct because the enum holds an independent clone, so
+// if that reasoning is ever wrong -- or the arm is widened to a payload kind
+// that is MOVED rather than cloned -- the result is a use-after-free or a
+// double free, not a leak. Every case below therefore reads its payload back
+// out and checks the VALUE, and the enums are kept alive past the statement
+// that built them.
+//
+// The Map case is here for the same reason inverted: a Map-typed payload field
+// falls to `_ => val` in both backends' payload-store match (it is MOVED, like
+// a struct's str field), so it must NOT be covered by that arm. If someone
+// widens the arm to Map, this case double-frees.
+use std::result::{Result}
+
+enum Val { StrV(str), NumV(i64) }
+enum Pair { P(str, str) }
+enum Mix { M(str, [i64]) }
+enum MapHolder { MapV(map<str, i64>) }
+enum Wrap<T> { Nothing, Just(T) }
+
+struct Boxed { v: Val }
+
+fn fail(what: str) {
+    println("FAIL: " + what)
+    exit(1)
+}
+
+fn make(i: i64) -> Val {
+    return Val.StrV("made-" + to_string(i))
+}
+
+fn main() {
+    // 1. The leaking shape itself: construct from a COMPUTED string (a fresh
+    //    temp, which is what gets orphaned), push, then read back. If the
+    //    source temp's drop released the buffer the enum kept, these are
+    //    garbage or a crash rather than the right strings.
+    let mut xs: [Val] = []
+    let mut i = 0
+    while i < 3 {
+        xs = push(xs, Val.StrV("item-" + to_string(i)))
+        i = i + 1
+    }
+    if len(xs) != 3 { fail("push len") }
+    let mut j = 0
+    while j < 3 {
+        match xs[j] {
+            Val.StrV(s) => {
+                if s != "item-" + to_string(j) { fail("readback " + to_string(j)) }
+            }
+            Val.NumV(n) => fail("wrong variant " + to_string(n))
+        }
+        j = j + 1
+    }
+
+    // 2. A string LITERAL payload rather than a computed temp -- a different
+    //    MIR shape reaching the same arm.
+    let lit = Val.StrV("literal-payload")
+    match lit {
+        Val.StrV(s) => { if s != "literal-payload" { fail("literal") } }
+        Val.NumV(n) => fail("literal wrong variant " + to_string(n))
+    }
+
+    // 3. TWO str payload fields, one from a named local and one from a fresh
+    //    temp -- pins that the arm drops the temp without touching the local's
+    //    own ownership.
+    let left = "left-" + to_string(1)
+    let p = Pair.P(left, "right-" + to_string(2))
+    match p {
+        Pair.P(x, y) => { if x + "|" + y != "left-1|right-2" { fail("two str fields") } }
+    }
+
+    // 4. A str field ALONGSIDE an array field: the two arms (item 45's and
+    //    item 52's) fire on the same construction.
+    let m = Mix.M("tag-" + to_string(7), [1, 2, 3])
+    match m {
+        Mix.M(s, arr) => {
+            if s != "tag-7" { fail("mixed str field") }
+            if arr[1] != 2 { fail("mixed array field") }
+        }
+    }
+
+    // 5. The enum ESCAPES its constructing statement as a return value --
+    //    the temp is dropped in the callee while the clone travels out.
+    let r = make(5)
+    match r {
+        Val.StrV(s) => { if s != "made-5" { fail("returned") } }
+        Val.NumV(n) => fail("returned wrong variant " + to_string(n))
+    }
+
+    // 6. The enum is stored in a STRUCT field, outliving the statement twice
+    //    over (enum construction temp, then struct construction).
+    let b = Boxed { v: Val.StrV("boxed-" + to_string(3)) }
+    match b.v {
+        Val.StrV(s) => { if s != "boxed-3" { fail("in struct field") } }
+        Val.NumV(n) => fail("in struct wrong variant " + to_string(n))
+    }
+
+    // 7. NEGATIVE CONTROL: a Map payload is MOVED, not cloned. This must keep
+    //    working untouched -- it is the case that double-frees if the Str arm
+    //    is ever generalized to every heap payload kind.
+    let mut mm: map<str, i64> = {}
+    mm["k"] = 42
+    let mh = MapHolder.MapV(mm)
+    match mh {
+        MapHolder.MapV(inner) => { if inner["k"] != 42 { fail("map payload moved") } }
+    }
+
+    // 8. THE BOUNDARY CASE, and the reason this arm keys off the enum's
+    //    DECLARED payload type rather than the temp's own type. A
+    //    monomorphized GENERIC enum has a str-typed TEMP whose declared field
+    //    type is not `MirType::Str`, so both backends fall to `_ => val` and
+    //    MOVE the handle instead of cloning it. A pass that dropped the temp
+    //    here would free the payload before this very loop's match reads it.
+    //    The first version of the item-52 fix did exactly that, and
+    //    conf_generic_enum.kry's own heap-enum loop went red; this case pins
+    //    the boundary from the item-52 side too, so a future widening of the
+    //    arm cannot pass its own gate while breaking this one.
+    let mut total = 0
+    let mut k = 0
+    while k < 50 {
+        let w: Wrap<str> = Wrap.Just("gen-" + to_string(k))
+        match w {
+            Wrap.Nothing => fail("generic wrong variant")
+            Wrap.Just(s) => { total = total + len(s) }
+        }
+        k = k + 1
+    }
+    // "gen-0".."gen-9" are 5 bytes, "gen-10".."gen-49" are 6 -> 10*5 + 40*6.
+    if total != 290 { fail("generic enum str payload readback, got " + to_string(total)) }
+
+    println("conformance enum str payload: PASS")
+}

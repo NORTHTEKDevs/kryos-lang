@@ -242,6 +242,20 @@ jobs:
         # PeakWorkingSet64 polling) -- SKIPs cleanly elsewhere.
         run: bash tests/mem_enum_array_push_gate.sh
 
+      - name: Enum-str-payload memory gate (LEDGER item 52)
+        # A fresh enum construction with a STR payload field, pushed into a
+        # scratch array every iteration, must keep peak RSS under a hard
+        # ceiling on BOTH backends. EnumVariant CLONES a str field
+        # (kryos_string_clone, both backends) where a struct literal MOVES
+        # one, so the source temp needs its own drop and never got it:
+        # pre-fix 388MB at 5M iters on AOT AND JIT, fixed build plateaus at
+        # 3-4MB. The value side of the same fix -- dropping that temp must not
+        # free what the enum kept, and a MOVED (Map) payload must stay
+        # uncovered -- is gated by tests/conformance/conf_enum_str_payload.kry.
+        # Windows-only (PowerShell PeakWorkingSet64 polling) -- SKIPs cleanly
+        # elsewhere.
+        run: bash tests/mem_enum_str_push_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

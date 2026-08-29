@@ -3605,10 +3605,64 @@ fn drop_unescaped_str_temps(
                 // growth; polling the child directly shows the identical
                 // ~485MB leak on JIT too, since this fix lives in shared MIR
                 // lowering, not a backend-specific codegen path).
-                RValue::EnumVariant { fields, .. }
-                    if matches!(cand_ty, MirType::Array(_, _))
-                        && fields.iter().any(|op| mentions(op, id)) =>
-                {
+                //
+                // LEDGER item 52 extends that to a STR payload field, which
+                // `RValue::EnumVariant` also CLONES (`kryos_string_clone` in
+                // Cranelift's payload-store match, `call ptr @kryos_string_clone`
+                // in LLVM's) -- unlike `RValue::Struct` above, which MOVES a str
+                // handle in with a bare insertvalue, which is exactly why THAT
+                // arm must stay Array-only. Un-dropped, the orphaned source temp
+                // leaked one buffer per construction: 388MB at 5M iterations on
+                // both backends.
+                //
+                // The condition is the enum's DECLARED PAYLOAD FIELD type, not
+                // the candidate temp's own type, because that is precisely what
+                // both backends switch on (`variant_field_tys.get(i)`):
+                // `Some(Array) => kryos_array_dup`, `Some(Str) =>
+                // kryos_string_clone`, and `_ => val`, a plain MOVE. Keying off
+                // the temp's type instead is a use-after-free, not a near miss --
+                // a monomorphized GENERIC enum (`Box<str>`, `Box.Full("item-" +
+                // to_string(i))`) has a str-typed TEMP whose declared field type
+                // is not `MirType::Str`, so codegen moves the handle into the
+                // enum while this pass drops it, and the payload is freed before
+                // the very next `match` arm reads it. Caught by
+                // `tests/conformance/conf_generic_enum.kry`'s heap-enum match
+                // loop, which went red the first time this arm was written the
+                // easy way. The Array half carried the same latent hole since
+                // item 45 and is closed here too -- being wrong in this direction
+                // costs a leak, being wrong in the other costs memory
+                // corruption, so an unknown or mismatched declared type bails.
+                RValue::EnumVariant {
+                    enum_name,
+                    variant_idx,
+                    fields,
+                } if fields.iter().any(|op| mentions(op, id)) => {
+                    let declared: Option<Vec<MirType>> = ctx
+                        .enum_defs
+                        .get(enum_name.as_str())
+                        .and_then(|variants| variants.get(*variant_idx as usize))
+                        .map(|v| v.fields.clone());
+                    // `id` can occupy more than one payload slot
+                    // (`Pair.P(s, s)`); every slot it occupies must be a
+                    // CLONE site, or dropping it frees a handle some other
+                    // slot moved in.
+                    let mut all_cloned = true;
+                    for (i, op) in fields.iter().enumerate() {
+                        if !mentions(op, id) {
+                            continue;
+                        }
+                        let cloned = matches!(
+                            (declared.as_ref().and_then(|f| f.get(i)), &cand_ty),
+                            (Some(MirType::Str), MirType::Str)
+                                | (Some(MirType::Array(_, _)), MirType::Array(_, _))
+                        );
+                        if !cloned {
+                            all_cloned = false;
+                        }
+                    }
+                    if !all_cloned {
+                        continue 'cand;
+                    }
                     true
                 }
                 // Any other rvalue shape touching this temp is a potential
