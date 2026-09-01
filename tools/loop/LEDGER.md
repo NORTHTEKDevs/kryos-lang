@@ -10,6 +10,126 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: v1.0.0 release + distribution verification (2026-08-31) -- release published and verified end to end; 6 distribution defects found and fixed; 2 items left that only the owner can close. Zero compiler changes.
+
+Assigned track: watch the `v1.0.0` release workflow to completion, verify the
+published release end to end against what the installers actually expect, and
+fix the distribution defects that verification exposes. **No compiler source
+was touched** (separate track). **No tag was pushed** -- the local-only
+`v1.1.0`..`v4.46.0` tags from the abandoned internal numbering scheme were
+not touched either.
+
+### Verified green (every value below is copied from real command output)
+
+| # | Claim | Command | Result |
+|---|---|---|---|
+| 1 | Release workflow finished | `gh run list -R NORTHTEKDevs/kryos-lang` | `completed success ... Release v1.0.0 push 33470281076 7m12s 2026-09-01T04:33:25Z` |
+| 2 | CI on master finished | same | `completed success ... CI master push 33470268540 10m21s 2026-09-01T04:33:12Z` |
+| 3 | Release published, not draft, not prerelease | `gh release view v1.0.0 --json isDraft,isPrerelease,publishedAt,targetCommitish` | `{"isDraft":false,"isPrerelease":false,"publishedAt":"2026-09-01T04:40:34Z","targetCommitish":"master"}` |
+| 4 | v1.0.0 is Latest, superseding v0.9.0 | `gh api repos/.../releases/latest -q '.tag_name, .draft, .prerelease'` | `v1.0.0` / `false` / `false`; `gh release list` shows `v1.0.0  Latest`, `v0.9.0` unmarked |
+| 5 | All four installer-expected assets attached | `gh release view v1.0.0 --json assets` | `kryos-linux-x86_64.tar.gz` 68191285, `kryos-macos-x86_64.tar.gz` 63365309, `kryos-macos-aarch64.tar.gz` 61931492, `kryos-windows-x86_64.zip` 62610103 -- all `uploaded`, plus 4 `.sha256` files, `kryos-vscode.vsix`, `zed_kryos.wasm` |
+| 6 | Linux asset checksum matches its published `.sha256` | `sha256sum kryos-linux-x86_64.tar.gz` vs asset | both `ab2bdaf8f153b30826a385ff3451faba03036ba673a6f7a71afc6c6f3d6ad1a7` |
+| 7 | Downloaded binary reports 1.0.0 | `./kryos --version` on the extracted asset | `kryos 1.0.0` (exit 0) |
+| 8 | `install.sh`'s tag resolution yields v1.0.0 | its verbatim pipeline: releases API -> `grep -o '"tag_name": *"[^"]*"'` -> `grep -oE 'v[^"]*'` -> `grep -vE '^v(2\|4)\.'` -> `head -1` | `v1.0.0` (API order is `v1.0.0`, `v0.9.0`, `v1.0.0-rc.2`, ... -- NOT rc.2, NOT 0.9.0) |
+| 9 | `install.ps1`'s equivalent predicate yields the same | same API response, `tag_name` not-like `v2.*`/`v4.*`, first | `v1.0.0` (no PowerShell on this box; the predicate was reimplemented exactly and run against the same live response) |
+| 10 | Package registry claim in README is live | `gh api repos/NORTHTEKDevs/kryos-registry` | `NORTHTEKDevs/kryos-registry`, `private=false`, `pushed_at=2026-08-02T13:58:04Z`, index dirs `ex ht js kr ma ...` present; `tools/registry/` reference server present in-repo |
+| 11 | VS Code extension is genuinely on the marketplace | marketplace `extensionquery` API for `northtekdevs.kryos` | `found: 1`, `kryos ['0.4.0']` -- listing is real; **published version is 0.4.0**, see defect 2 |
+| 12 | Docs gates still green after the doc edits | `bash tests/docs_status_gate.sh`; `bash tools/loop/check-docs-truth.sh` | `docs_status_gate: PASS -- docs/BUGS.md matches live test state` (live conformance count 68); `docs-truth: PASS` (0 escapes) |
+
+### Distribution defects found and FIXED in this commit
+
+1. **`install.sh` + `install.ps1` `FALLBACK_VERSION` was `v0.9.0`.** The
+   dynamic path is fine (row 8/9), but any user hitting an unreachable/rate-
+   limited GitHub API silently got the superseded 0.9.0 release. Bumped to
+   `v1.0.0` in both files, and the explanatory comment above it -- written
+   2026-08-20, still asserting 0.9.0 was "the real latest published release"
+   -- rewritten with the verified 1.0.0 facts and re-labelled `HISTORY:` for
+   the part that is a record of the old rc.2-allowlist bug.
+2. **`editors/vscode/package.json` was `0.4.0`.** Bumped to `1.0.0` (+ a
+   `1.0.0` entry in `editors/vscode/CHANGELOG.md`) so `publish-vscode.yml`,
+   which triggers on `release: published`, ships the extension on the
+   toolchain's version line. **This does not fix the already-published
+   release** -- see owner item A.
+3. **`docs/deploy/docker.md`'s Dockerfile could never have worked, three
+   ways at once.** (a) `ARG KRYOS_VERSION=v4.5.0-rc.1` -- a tag from the
+   abandoned internal scheme; no such GitHub release exists. (b) It fetched
+   `kryos-${KRYOS_VERSION}-linux-x86_64.tar.gz`; the real asset name is
+   `kryos-linux-x86_64.tar.gz` with no version stamp (row 5). (c) It passed
+   `tar --strip-components=1`, but `tar -tzf` on the real asset shows the
+   only top-level entry is `./` -- `bin/`, `lib/`, `stdlib/`, `examples/`
+   sit at the archive root, so stripping one component would have shredded
+   the layout. Fixed all three. The corrected form was then verified for
+   real: unpacking the actual release asset with `tar -xz -C <prefix>` (no
+   strip) gave `<prefix>/bin/kryos` + `<prefix>/lib/libkryos_rt.a` +
+   `<prefix>/lib/libkryos_stdlib_native.a` + `<prefix>/stdlib/` (66 modules),
+   `<prefix>/bin/kryos --version` printed `kryos 1.0.0`, and
+   `./bin/kryos run t.kry` compiled and ran a program through that prefix
+   (exit 0).
+4. **`README.md`'s "Why 'beta'" note contradicted the release.** It called
+   the project "a feature-complete beta with one user" and said "1.0.0 final
+   lands when external users have stress-tested it" -- 1.0.0 shipped with
+   exactly that precondition waived. Rewritten to state the shipped-with-
+   waiver fact and point at VERSIONING.md. (The rest of README was already
+   correct: version badge `1.0.0`, Status line `v1.0.0`, from-source
+   `--version` comment `kryos 1.0.0`.)
+5. **`docs/RESUME-PLAN.md` linked a `LAUNCH.md` that has never existed.**
+   Its item 5 instructed a re-verify of `../LAUNCH.md` "marked STALE
+   (2026-08-29)". The contents API returns 404 for `LAUNCH.md` at `master`,
+   at `17afa1a1`, at `v0.9.0` and at `v1.0.0-rc.1`; `git ls-files` has no
+   such path. The launch-surface claims it wanted checked (published
+   binaries / installers / registry / VSCode extension) actually live in
+   README.md, the two installers, `docs/deploy/docker.md` and the extension
+   manifest -- all re-verified above and corrected here. Dead link and item
+   5 corrected in place. `docs/LAUNCH-READINESS.md` is a different,
+   deliberately historical document and was left **verbatim**.
+6. **`publish-vscode.yml`'s `workflow_dispatch` default tag was
+   `v1.0.0-beta.1`.** Bumped to `v1.0.0` so a manual dispatch does not
+   default to republishing a beta.
+
+Deliberate history left untouched, as required: `VERSIONING.md`,
+`CHANGELOG.md`'s existing entries, `HANDOFF.md`,
+`docs/LAUNCH-READINESS.md`, and the `1.0.0-rc.2` benchmark provenance in
+`BENCHMARKS.md` / `benchmarks/RESULTS.md` / `docs/WHY_KRYOS.md` /
+`ecosystem/unlocks/dual-backend-wasm.md` (those state *when* the numbers
+were measured, which is still true and must not be relabelled).
+
+### OPEN -- owner action required, cannot be fixed from the repo
+
+**A. The `.vsix` attached to the `v1.0.0` release is version `0.4.0`, and
+the marketplace already has `0.4.0`.** `unzip`-ing the published
+`kryos-vscode.vsix` shows `extension/package.json` -> `"version": "0.4.0"`
+and `extension.vsixmanifest` -> `<Identity ... Version="0.4.0" ...>`. The
+release workflow's `package-vscode` job packaged the extension from
+`package.json` as it stood at tag time. Bumping `package.json` to `1.0.0`
+now (defect 2) affects only FUTURE builds -- the asset on the existing
+release cannot be rebuilt by re-dispatching `publish-vscode.yml`, and
+dispatching it against `v1.0.0` today would download the `0.4.0` vsix and
+fail with "already exists". Owner options: (i) re-run the `Release`
+workflow for `v1.0.0` now that `package.json` says `1.0.0` so the `1.0.0`
+vsix replaces the asset, then let/dispatch `publish-vscode.yml`; or (ii)
+package and `vsce publish` the extension manually once; or (iii) accept
+0.4.0 on the marketplace for 1.0.0 and ship the extension with the next
+release.
+
+**B. `publish-vscode.yml` did not fire when `v1.0.0` was published, and
+structurally cannot.** It declares `on: release: types: [published]`, but
+`gh run list -w "Publish VS Code extension"` shows only three runs, all
+`workflow_dispatch`, newest `2026-07-07T01:10:19Z` -- nothing on
+2026-09-01. Root cause: `release.yml`'s `create-release` job publishes via
+`softprops/action-gh-release@v2` using the default `GITHUB_TOKEN`, and
+GitHub does not trigger workflows from events raised by `GITHUB_TOKEN`
+(loop prevention). So the `release: published` trigger is dead by
+construction for any release this repo cuts itself. Fixing it needs an
+owner decision: either add a `.vsix`-publish step directly into
+`release.yml` (simplest -- same job graph, no cross-workflow event), or
+issue the release from a PAT / GitHub App token. Until then the extension
+publish is **manual-dispatch only**, and the workflow's own header comment
+("it fires automatically when a release is published") is wrong. That
+comment was left in place rather than silently edited, because the choice
+of fix determines what it should say.
+
+---
+
 ## Wave: universal-claim closeout -- triage the 5 real-program build waves (interpreter, interactive-terminal, numeric, binary-data, wasm), fix P0/P1, close the docs loop, wire gates, re-judge the universal claim (2026-08-17)
 
 Assigned wave: triage every finding from the 5 preceding real-program build

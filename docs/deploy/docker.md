@@ -10,14 +10,20 @@ native executable. The minimal production container is `gcr.io/distroless/cc`
 # ---- build stage ----------------------------------------------------------
 FROM ubuntu:24.04 AS build
 
-ARG KRYOS_VERSION=v4.5.0-rc.1
+ARG KRYOS_VERSION=v1.0.0
 RUN apt-get update && apt-get install -y --no-install-recommends \
         clang lld libssl-dev pkg-config ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install the Kryos toolchain (pre-built tarball)
-RUN curl -fsSL "https://github.com/NORTHTEKDevs/kryos-lang/releases/download/${KRYOS_VERSION}/kryos-${KRYOS_VERSION}-linux-x86_64.tar.gz" \
-        | tar -xz -C /usr/local --strip-components=1
+# Install the Kryos toolchain (pre-built tarball).
+# The release asset name is NOT version-stamped -- it is exactly
+# kryos-linux-x86_64.tar.gz for every tag. The archive already contains the
+# conventional prefix layout (bin/kryos, lib/libkryos_rt.a,
+# lib/libkryos_stdlib_native.a, stdlib/), so extract it WITHOUT
+# --strip-components: unpacking into /usr/local yields /usr/local/bin/kryos
+# with the runtime libs where the compiler looks for them.
+RUN curl -fsSL "https://github.com/NORTHTEKDevs/kryos-lang/releases/download/${KRYOS_VERSION}/kryos-linux-x86_64.tar.gz" \
+        | tar -xz -C /usr/local
 
 WORKDIR /src
 COPY kryos.toml ./

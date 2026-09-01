@@ -3,8 +3,20 @@
 Written 2026-08-31 to record exactly where the v1.0.0 release effort stood
 when the last session ended, and what remained. Read together with
 [VERSIONING.md](../VERSIONING.md) (the 1.0.0 waiver), [CHANGELOG.md](../CHANGELOG.md)
-(the `[1.0.0] - 2026-08-29` entry), and [LAUNCH.md](../LAUNCH.md) (marked
-STALE -- see item 5 below).
+(the `[1.0.0] - 2026-08-29` entry).
+
+**CORRECTION (2026-08-31, release-track verification):** this file
+originally linked `../LAUNCH.md` as a STALE launch doc to re-verify (item 5
+below). **There is no `LAUNCH.md` in this repo** -- checked at `master`, at
+`17afa1a1`, at `v0.9.0`, and at `v1.0.0-rc.1` via the contents API; all four
+return 404, so the file was never committed and the link was always dead.
+The launch-surface claims that item 5 wanted re-checked live in `README.md`,
+`install.sh` / `install.ps1`, `docs/deploy/docker.md`, and
+`editors/vscode/package.json`; they were re-verified against the actual
+published `v1.0.0` release and corrected in that same commit. The
+evidence is in the release-track wave entry in
+[tools/loop/LEDGER.md](../tools/loop/LEDGER.md). `docs/LAUNCH-READINESS.md`
+is a separate, deliberately historical document and was left verbatim.
 
 ## What was done (committed and pushed)
 
@@ -42,10 +54,10 @@ STALE -- see item 5 below).
    (Show HN / blog / social) leads with the capability wedge and the
    30-second reject-the-exfiltration demo (`examples/showcase/trust_agent.kry`
    + the deliberately rejected `trust_agent_overreach.kry`).
-5. **Re-verify LAUNCH.md**: it is explicitly marked STALE (2026-08-29); its
-   published-binaries / installers / registry / VSCode-extension sections
-   were accurate for rc.1 and must be re-checked against the actual 1.0.0
-   release rather than trusted as written.
+5. ~~**Re-verify LAUNCH.md**~~ -- see the CORRECTION at the top of this
+   file: no such file exists. Done instead: the published-binaries /
+   installers / registry / VSCode-extension claims were re-verified against
+   the real `v1.0.0` release in the files that actually carry them.
 
 ## Housekeeping done in this resume session (2026-08-31)
 

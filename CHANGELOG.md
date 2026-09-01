@@ -4,6 +4,45 @@ All notable changes to Kryos will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+Distribution-only fixes found while verifying the published `v1.0.0` release
+end to end (no compiler changes):
+
+- **`install.sh` / `install.ps1`: `FALLBACK_VERSION` bumped `v0.9.0` ->
+  `v1.0.0`.** The dynamic tag-resolution filter already resolves to `v1.0.0`
+  (verified live against the releases API: the newest tag not on the legacy
+  `v2.*`/`v4.*` lines is `v1.0.0`), but the API-unreachable fallback still
+  installed the superseded 0.9.0 release. The explanatory comment above it,
+  which was written on 2026-08-20 and still described 0.9.0 as "the real
+  latest published release", was rewritten to say what is now true.
+- **`editors/vscode/package.json`: `0.4.0` -> `1.0.0`.** `publish-vscode.yml`
+  fires on `release: published` and publishes the `.vsix` built from this
+  version, so the extension is now on the toolchain's version line. NOTE: the
+  `.vsix` already attached to the `v1.0.0` release was built from `0.4.0` and
+  cannot be changed retroactively -- see the release-track wave entry in
+  `tools/loop/LEDGER.md` for what an owner still has to do.
+- **`docs/deploy/docker.md`: the Dockerfile could never have worked.** It
+  pinned `KRYOS_VERSION=v4.5.0-rc.1` (a tag from the abandoned internal
+  numbering scheme; no such release exists), fetched a version-stamped asset
+  name `kryos-${KRYOS_VERSION}-linux-x86_64.tar.gz` (the real asset is
+  `kryos-linux-x86_64.tar.gz`, not version-stamped), and passed
+  `tar --strip-components=1` to an archive that has no top-level directory
+  (it unpacks `bin/`, `lib/`, `stdlib/` directly). All three fixed and the
+  corrected `tar -xz -C <prefix>` layout verified by unpacking the real
+  release asset and compiling and running a program through it.
+- **`README.md`: the "Why 'beta'" note still called the project a
+  "feature-complete beta with one user" and said 1.0.0 "lands when external
+  users have stress-tested it"** -- both false since 1.0.0 shipped with that
+  precondition waived. Rewritten to state the shipped-with-waiver fact and
+  point at VERSIONING.md.
+- **`docs/RESUME-PLAN.md` linked a `LAUNCH.md` that does not exist** at
+  `master`, `17afa1a1`, `v0.9.0` or `v1.0.0-rc.1` (404 at all four). Dead
+  link and its follow-up item corrected in place rather than left pointing
+  at nothing.
+- `publish-vscode.yml`'s `workflow_dispatch` default tag `v1.0.0-beta.1` ->
+  `v1.0.0`.
+
 ## [1.0.0] - 2026-08-29
 
 **The stability surface is frozen from here.** The CLI, LSP method set, stdlib

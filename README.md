@@ -278,14 +278,20 @@ kryos lsp                     Language server (used by VS Code / Zed extensions)
 
 Kryos is **v1.0.0**. `docs/BUGS.md` tracks fixed regressions as a changelog; the live, ranked list of everything still open is [tools/loop/LEDGER.md](tools/loop/LEDGER.md). The package-registry supply-chain gap (`kryos pkg install`/`add` verifies a real `sha256:<hex>` content hash of the fetched package against the registry index before trusting it, rejects a mismatch or a missing checksum, and re-verifies even a cache hit) and the container-shaped closure/fn-value capability-laundering gap (a struct field, array element, or map value holding a closure is traced by capability checking in every mode, including `--strict-capabilities`) are both CLOSED. **UPDATE (2026-08-16): the last live capability escape (LEDGER item 33, an actor-to-actor message-parameter row-propagation gap) was closed 2026-08-13.** As of this measurement, `bash tools/loop/escape_status.sh` reports **0 escaping, 19 rejected** across the full named adversarial corpus (17 shapes as of the item-33 fix, grown to 19 since), independently re-confirmed via `tests/capability_matrix_gate.sh`'s combinatorial enumeration (**75/75 attacks rejected**, both enforcement modes, across SOURCE x CONTAINER x TRANSPORT). **Zero KNOWN escapes is still not a soundness proof** - the corpus is adversarial shapes found by directed search, not an exhaustive argument, and the next shape nobody has thought of is the one that matters; see [`docs/LAUNCH-READINESS.md`](docs/LAUNCH-READINESS.md) for the full, honest verdict including what remains a documented (not a bug) cost: enforcing fail-closed on every unresolved closure provenance means 41 of 75 enumerated *legitimate* pure-closure shapes currently require `@capabilities(all)` to compile (LEDGER item 41, precision cost, deliberate - soundness was prioritized over convenience). Everything else in the toolchain (type system, ownership/ARC, generics, concurrency, both native backends, self-hosting) is feature-complete and gated green; `tools/loop/LEDGER.md`'s OPEN section is the authoritative current queue. Self-hosting compiler: bootstrap fixed point stage-3 == stage-4, byte-identical; the self-host source type-checks and ownership-checks clean, with `--skip-ownership` used in the reproduction bootstrap for byte-determinism.
 
-> **Why "beta", and what happened to v4?** During the project's bring-up,
-> version numbers tracked development sprints, not conventional semver
-> maturity - the repo reached an internal "v4.46" within months, which would
-> mislead newcomers about field maturity. Before public release the scheme
-> was recalibrated: this is a **feature-complete beta with one user**.
-> Historical tags (v0.x-v4.46) are preserved; the mapping is in
-> [VERSIONING.md](VERSIONING.md). 1.0.0 final lands when external users have
-> stress-tested it.
+> **What happened to v4?** During the project's bring-up, version numbers
+> tracked development sprints, not conventional semver maturity - the repo
+> reached an internal "v4.46" within months, which would mislead newcomers
+> about field maturity. Before public release the scheme was recalibrated
+> down to a 0.x/1.0 line. Historical tags (v0.x-v4.46) are preserved; the
+> mapping is in [VERSIONING.md](VERSIONING.md), and the local-only
+> `v1.1.0`..`v4.46.0` tags from that abandoned scheme are never pushed.
+>
+> **1.0.0 shipped 2026-08-31** (tag `v1.0.0`, commit `17afa1a1`, published
+> as the repo's Latest release, superseding v0.9.0). VERSIONING.md
+> originally required an external-workload soak before 1.0.0 final; that
+> precondition was **waived by the project owner** rather than met, and the
+> waiver - including what it does and does not claim - is recorded in
+> [VERSIONING.md](VERSIONING.md). Read it before you adopt.
 
 | Feature | Status |
 |---|---|

@@ -8,10 +8,12 @@
 #
 # The trap is worse than "it is old". The stale binary reported
 #     kryos 1.0.0-beta.1
-# while the repo's actual compiler reports
+# while the repo's actual compiler reported, at that time,
 #     kryos 0.9.0
-# so it advertised a HIGHER version than the source it came from. Nothing about
-# the failure looked like staleness: you got E0102 "undefined variable `None`",
+# so it advertised a HIGHER version than the source it came from. (The repo
+# reports `kryos 1.0.0` since the 2026-08-31 v1.0.0 release; the 0.9.0 above
+# is the version as of the 2026-08-16 incident, kept as the record of it.)
+# Nothing about the failure looked like staleness: you got E0102 "undefined variable `None`",
 # E0100 on `Dict<K,V>`, and "unknown capability `fs:read`" -- all of which read as
 # language bugs, not as a two-month-old toolchain. Two months of language work
 # (the fs:read/fs:write sub-capability model, Option spelling, Dict generics) did

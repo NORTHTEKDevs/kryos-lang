@@ -42,15 +42,20 @@ $arch = if ([System.Environment]::Is64BitOperatingSystem) { "x86_64" } else {
 # a pinned floor if the API is unreachable. Override with KRYOS_VERSION to
 # install any specific tag.
 #
-# NOTE (2026-08-20, launch-readiness audit): this used to hardcode a
+# HISTORY (2026-08-20, launch-readiness audit): this used to hardcode a
 # "v1.0.0*" allowlist, which silently kept resolving to the stale
 # v1.0.0-rc.2 release (published 2026-07-10) even after the project
-# recalibrated its current version to 0.9.0 -- no "v1.0.0*"-matching release
-# has been cut since, and a future "v0.9.0" release would have been
-# silently invisible to the old filter too. FALLBACK_VERSION below is still
-# the real latest published release as of this fix; bump it the day a
-# v0.9.0 (or later) release is actually cut and published.
-$FALLBACK_VERSION = "v0.9.0"
+# recalibrated its current version to 0.9.0. That allowlist is gone; the
+# exclude-legacy-majors filter below is what runs now.
+#
+# NOTE (2026-08-31, v1.0.0 release verification): v1.0.0 was published
+# 2026-09-01T04:40:34Z from commit 17afa1a1 and is the repo's Latest
+# release, superseding v0.9.0. The equivalent filter in install.sh was run
+# against the live releases API this day and resolves to exactly "v1.0.0"
+# (not v1.0.0-rc.2, not v0.9.0), so FALLBACK_VERSION is bumped to match the
+# real latest published release. Bump it again the day a later release is
+# actually cut AND published -- it is only used when the API is unreachable.
+$FALLBACK_VERSION = "v1.0.0"
 if ($env:KRYOS_VERSION) {
     $TAG = $env:KRYOS_VERSION
     Write-Host "Installing pinned version: $TAG"

@@ -2,6 +2,15 @@
 
 All notable changes to the **Kryos for VS Code** extension are documented here.
 
+## 1.0.0 — 2026-08-31
+
+- Version realigned onto the toolchain's 1.0 line so `publish-vscode.yml`
+  ships the extension alongside the `v1.0.0` toolchain release. No
+  functional change to the extension itself in this bump.
+- Compatible with Kryos toolchain **v1.0.0** (the `v2.x`/`v4.x` numbers
+  named in the 0.4.0 entry below are from the abandoned pre-recalibration
+  scheme -- see VERSIONING.md).
+
 ## 0.4.0 — 2026-05
 
 - Marketplace-ready packaging: license, icon, categories, keywords
