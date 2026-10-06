@@ -75,3 +75,17 @@ The ranked live queue is [tools/loop/LEDGER.md](../tools/loop/LEDGER.md).
 Both shipped memory leaks share one root cause (struct/enum ownership not
 modelled uniformly across the two backends) and close together when the
 planned unified ownership pass lands.
+
+## Resume session 2026-10-06
+
+- Re-verified on the Windows asset: `.sha256` matches, `kryos 1.0.0`, and the
+  fresh-user flow (`new` -> `run` -> `test` -> `build --release` -> run the
+  AOT exe) exits 0. Registry: 14 packages; `pkg add` + `install` writes a
+  `sha256:` checksum to `kryos.lock`.
+- Packaging the `1.0.0` extension exposed a latent `.vscodeignore` bug: only
+  some `node_modules` packages were whitelisted, so under npm 11 hoisting
+  `balanced-match` was excluded and the extension failed
+  `require('balanced-match')` (vscode-languageclient -> minimatch ->
+  brace-expansion). Whitelist extended to minimatch / brace-expansion /
+  balanced-match; the repackaged vsix loads its full module graph.
+- Step 4 (announcement) remains an owner action.
