@@ -75,7 +75,7 @@ echo "Installing Kryos ($PLATFORM-$ARCH)..."
 # v1.0.0-rc.2, not v0.9.0), so FALLBACK_VERSION is bumped to match the real
 # latest published release. Bump it again the day a later release is
 # actually cut AND published -- it is only used when the API is unreachable.
-FALLBACK_VERSION="v1.0.0"
+FALLBACK_VERSION="v1.0.1"
 if [ -n "${KRYOS_VERSION:-}" ]; then
     TAG="$KRYOS_VERSION"
     echo "Installing pinned version: $TAG"

@@ -89,3 +89,16 @@ planned unified ownership pass lands.
   brace-expansion). Whitelist extended to minimatch / brace-expansion /
   balanced-match; the repackaged vsix loads its full module graph.
 - Step 4 (announcement) remains an owner action.
+
+## v1.0.1 (2026-10-06)
+
+- Distribution-only patch so a release carries the `1.0.0` VS Code extension.
+  Release workflow green; v1.0.1 is Latest; Windows asset passes `.sha256`
+  and reports `kryos 1.0.1`; its vsix is `1.0.0`, 328 files, and loads
+  minimatch -> brace-expansion -> balanced-match. Installer fallback floor
+  bumped to `v1.0.1`.
+- OPEN (owner): Marketplace publish failed -- `VSCE_PAT` has EXPIRED
+  (run 37545182927: "You're using an expired Personal Access Token"). Mint a
+  new PAT (Marketplace -> Manage), `gh secret set VSCE_PAT`, then dispatch
+  `publish-vscode.yml` with `tag=v1.0.1`. Marketplace is still at `0.4.0`.
+- OPEN (owner): the announcement (step 4).
