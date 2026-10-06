@@ -34,7 +34,7 @@ kryos --version
 ```
 
 ```
-kryos 1.0.0
+kryos 1.0.1
 ```
 
 If you built from source, the binary is at `compiler/target/release/kryos`

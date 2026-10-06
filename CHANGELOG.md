@@ -6,8 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Distribution-only fixes found while verifying the published `v1.0.0` release
-end to end (no compiler changes):
+## [1.0.1] - 2026-10-06
+
+Distribution-only patch release: fixes found while verifying the published
+`v1.0.0` release end to end. No compiler or runtime source changes; the
+`kryos` binary differs from 1.0.0 only in its reported version.
 
 - **`install.sh` / `install.ps1`: `FALLBACK_VERSION` bumped `v0.9.0` ->
   `v1.0.0`.** The dynamic tag-resolution filter already resolves to `v1.0.0`
@@ -20,8 +23,8 @@ end to end (no compiler changes):
   fires on `release: published` and publishes the `.vsix` built from this
   version, so the extension is now on the toolchain's version line. NOTE: the
   `.vsix` already attached to the `v1.0.0` release was built from `0.4.0` and
-  cannot be changed retroactively -- see the release-track wave entry in
-  `tools/loop/LEDGER.md` for what an owner still has to do.
+  cannot be changed retroactively; 1.0.1 exists so a release carries the
+  `1.0.0` extension.
 - **`docs/deploy/docker.md`: the Dockerfile could never have worked.** It
   pinned `KRYOS_VERSION=v4.5.0-rc.1` (a tag from the abandoned internal
   numbering scheme; no such release exists), fetched a version-stamped asset
@@ -42,6 +45,12 @@ end to end (no compiler changes):
   at nothing.
 - `publish-vscode.yml`'s `workflow_dispatch` default tag `v1.0.0-beta.1` ->
   `v1.0.0`.
+- **`editors/vscode/.vscodeignore` dropped a runtime dependency.** It
+  excludes `node_modules/**` and re-includes a fixed package list. Under
+  npm 11 hoisting `balanced-match` lands at the top level, was excluded, and
+  the packaged extension failed `require('balanced-match')` via
+  `vscode-languageclient` -> `minimatch` -> `brace-expansion`. `minimatch`,
+  `brace-expansion` and `balanced-match` are now re-included.
 
 ## [1.0.0] - 2026-08-29
 
