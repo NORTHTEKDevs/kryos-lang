@@ -1,0 +1,26 @@
+// LEDGER items 3 + 51 (2026-10-06): reading an ARRAY or MAP field of a struct
+// retained the field on both backends, but MIR never dropped the read temp, so
+// the struct's own drop saw rc > 1 and freed neither the container nor its
+// elements. No call, no method, no `self` is involved -- this is the shape
+// that leaked ~90MB per 1M iterations and was mis-filed as a call-boundary
+// leak for ten investigations.
+//
+// Run:  LEAK_ITERS=<n> ./struct_field_read_leak   (default 500000)
+// Pre-fix AOT: 13.7MB at 250k, 90.5MB at 1M, 277.6MB at 3M. Post-fix: ~4-5MB flat.
+struct Bag { items: [str], tags: map<str, i64>, name: str }
+
+@capabilities(process)
+fn main() {
+    let raw = env_get("LEAK_ITERS")
+    let iters = if len(raw) == 0 { 500000 } else { parse_int(raw) }
+    let mut acc = 0
+    let mut i = 0
+    while i < iters {
+        let mut m: map<str, i64> = {}
+        m["k"] = i
+        let b = Bag { items: ["p", "q"], tags: m, name: "n" }
+        acc = acc + len(b.items) + len(b.tags)
+        i = i + 1
+    }
+    println(to_string(acc))
+}

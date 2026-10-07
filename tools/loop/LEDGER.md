@@ -10,6 +10,121 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: the struct leak was never at the call boundary -- unbalanced field-read retain FIXED, plus two JIT bugs it was masking (2026-10-06) -- items 3 + 51 NARROWED (not closed), honest residual below
+
+### How this wave differed from the 10 before it: census first, patch second
+
+Every prior attempt at item 3 made struct drops "real", hit ONE new aliasing
+shape, and stopped -- each shape was only discoverable after fixing the last.
+This wave inverted that: apply the candidate change once, then run the WHOLE
+corpus (151 programs: tests/conformance, tests/mem, self-host regression,
+non-network examples) on BOTH backends against master, under
+`KRYOS_FREE_DIAG=1` (quarantine: freed blocks are never reused, every
+over-release is reported), diffing stdout/rc against master. That turns
+"find the next shape" into "list every shape" in one ~45-minute sweep.
+
+### Finding 1: the naive call-boundary fix does not touch the AOT leak
+
+`MirType::Struct` added to `consume_call_args`'s borrow allowlist (the
+one-liner every prior attempt started from). Census: breaks exactly 4
+programs -- conf_spinlock_seq / conf_spinlock_mutex (JIT, `return self`),
+regression_lexer_reentrant_tokenize (JIT), conf_stdlib_wave14 (both backends,
+`List.push` returns a literal built from `self.items`). Bootstrap 16/16. But
+measured AOT peak RSS barely moves: heap_field_method 87.3 -> 80.6MB/1M,
+method_chain 279.5 -> 272.4MB/1M. And `heap_field_direct` -- documented FLAT
+since this item was opened -- leaks 76MB/1M on master with NO CALL AT ALL.
+
+### Finding 2 (the root): an unbalanced field-read retain
+
+`let b = Bag { items: [..] }; len(b.items)` lowers to `_10 = _9.items`. Both
+backends retain that read (LLVM `kryos_array_retain_opt`, Cranelift
+`kryos_array_retain`; same for maps), but `drop_unescaped_str_temps` only
+ever dropped STR field-read temps -- array/map reads were a deliberate
+"borrow". So the struct's drop saw rc > 1, skipped the elements, and the
+container leaked. Minimal repro (8 lines, no call): 13.7 / 90.5 / 277.6 MB at
+250k / 1M / 3M. This is item 51's residual too (its own addendum: "reading
+field X while reassigning field X leaks one small array per iteration").
+
+FIX (lower.rs): drop array/map field-read temps like str ones, EXCEPT in a
+window that stores a field (existing exclusion) or runs a whole-struct
+reassignment's `*_release_if_ne` protocol (new `window_has_release_protocol`),
+and ONLY when the read's source is a STRUCT. That last condition came from an
+independent review AFTER the census was green: a TUPLE element (`t.0`) lowers
+to the same RValue::Field but neither backend retains it (Cranelift
+`kryos_array_get`; LLVM skips `{..}` aggregates), so the first version freed
+the tuple's array -- `len(t.0)` in a loop zeroed `a`, then `a[2]` panicked, on
+BOTH backends (silent wrong answer before the panic). No corpus program read a
+container out of a tuple, so the census could not see it. Pinned by
+tests/conformance/conf_container_field_read_ownership.kry (pre-fix: "CONF
+FAIL: len(t.0) summed over 5 reads"; fixed: ok; master: ok).
+
+### Finding 3: the leaked retain was LOAD-BEARING -- it masked two JIT bugs
+
+(a) Reassignment protocol. Dropping the field reads inside `pp = pp2`'s
+per-field `release_if_ne(old.f, new.f)` freed arrays that un-retained struct
+copies still held: SILENT WRONG PARSE in stage1_mini_parser on the JIT
+("expected primary expression"), AOT byte-identical. Hence the window
+exclusion above.
+
+(b) Cranelift struct deep copy (`emit_struct_deep_copy_inner`) copied array
+fields with a plain `kryos_array_clone` -- a header clone that SHARES element
+handles without retaining them. Found by an env-gated runtime trace of
+array retain/free/clone/dup events (experiment only, not shipped): the
+parser's `[Token]` is created by `dup(kind=4)` (retains each Token box) and
+then plain-cloned on every `advance`; one clone's sole-owner drop consumed
+the owner count the dup had added, the dup'd array then freed the Tokens for
+real, and the original array freed them again -- 26 / 17 double frees in
+stage1_mini_parser / regression_lexer_reentrant_tokenize on the JIT. On
+master the unbalanced retains kept that array at rc > 1 forever, so it never
+freed. FIX: `kryos_array_dup(field, elem_kind)` with the same elem_kind
+encoding as the struct-literal dup and the LLVM backend.
+
+(c) Found by the new gate's JIT leg, not by the census (which checks
+correctness, not memory): Cranelift's struct drop had no `MirType::Map` arm,
+so EVERY struct with a map field leaked the whole map on the JIT (a struct
+holding a map, never read: 494.7MB/1M; the map alone: 4.4MB). LLVM always
+freed it. FIX: add the arm.
+
+### Evidence (every number copied from real output)
+
+| Shape | master | fixed |
+|---|---|---|
+| struct_field_read_leak.kry AOT (array+map fields read) | 586.3MB @1M, 1748.2MB @3M | 4.5MB @1M, 4.0MB @3M |
+| new gate, master binary | AOT 1167MB, JIT 1167MB @2M -> FAIL | AOT 5MB, JIT <<50MB -> PASS |
+| array field read, JIT | 42.5MB @500k, 187.9MB @2M | 4.0 / 4.1MB |
+| map field read, JIT | 237.8MB @500k, 983.9MB @2M | 4.0MB @1M |
+| heap_field_direct AOT | 76.1MB @1M | 4.0MB @1M |
+| stage1_mini_parser JIT (field fix WITHOUT dup fix) | -- | 26 double frees; with dup fix: 0 |
+
+Census of the final build: 298/298 runnable program x backend pairs byte-identical to master with 0 double-free reports (4 more do not build on either binary). Gate ladder: `kryos-loop.sh gates 2` tier1 + tier2 GREEN (rc=0, conformance 68/68); mem_struct_field_read_gate PASS (AOT 4MB, JIT 4MB at 2M); mem_field_assign_temp + mem_enum_overwrite PASS; no_double_free PASS incl. the two new self-host cases.
+Bootstrap: `test_bootstrap.sh` 16/16.
+
+Proven both ways: the new gate FAILS on the master binary (above) and PASSES
+on the fix. The two no_double_free self-host cases were red (26 / 17) on the
+field-read fix without the dup fix and are green with it.
+
+### What is NOT fixed -- items 3 and 51 stay OPEN, narrowed
+
+- Item 3's CALL-BOUNDARY half: the caller still never drops a struct it
+  passed to a user fn (`consume_call_args` treats it as moved).
+  heap_field_method still 77MB/1M, method_chain 275MB/1M on AOT. Closing it
+  is the naive allowlist change PLUS fixes for the 3 JIT alias shapes the
+  first census listed (return self; literal built from self's fields; index
+  read of a struct into a named local). That list is now complete for this
+  corpus, which no prior attempt had.
+- Item 51's own repro (`h.v = Val.ListV(..)`) is unchanged at 279.5MB/3M:
+  its read sits in a field-STORE window, which stays excluded.
+- `kryos_struct_release_shared` loads the owner count and then decrements in
+  two steps (not one atomic RMW): two threads releasing concurrently can both
+  observe 1. Not exercised by any gate; noted, not fixed.
+
+### Method assets for the next attempt
+
+`tools/loop/ownership_census.sh <base-kryos> <cand-kryos> <out-dir>` -- the
+census above as a committed tool. Run it on a candidate BEFORE theorizing
+about the next shape. Note it checks correctness, not memory: finding 3(c)
+was caught only by a peak-RSS gate's JIT leg, so pair it with one.
+
 ## Wave: v1.0.0 release + distribution verification (2026-08-31) -- release published and verified end to end; 6 distribution defects found and fixed; 2 items left that only the owner can close. Zero compiler changes.
 
 Assigned track: watch the `v1.0.0` release workflow to completion, verify the
@@ -2579,6 +2694,8 @@ capability-escape item and every other OPEN item below remain untouched.
 
 ### 51. LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 
+> **2026-10-06:** the "read field X while reassigning X" leak this entry ends on was the unbalanced field-read retain, now FIXED (wave at the top of this file). This item's own repro is UNCHANGED (279.5MB at 3M): its read sits in a field-STORE window, which that fix deliberately leaves alone.
+
 #### 2nd attempt (2026-08-29): mechanism FOUND, half the leak closed, reverted -- start an 11th attempt HERE, not from scratch
 
 RE-MEASURED FRESH before touching anything (rule 1), AOT, Windows,
@@ -3938,6 +4055,8 @@ separate wave, would have blown this wave's scope) -- flagged per the
 ranking doctrine (leak) so it is not lost again. Needs its own triage wave.
 
 ### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED, fix REVERTED after new evidence (10th investigation, 9 attempts + this one now ruled out)
+
+> **2026-10-06: NARROWED.** Most of this "leak" was not at the call boundary: an unbalanced struct field-READ retain (fixed, see the 2026-10-06 wave at the top of this file). What remains is the caller never dropping a struct it passed to a user fn: heap_field_method ~77MB/1M AOT. The census in that wave lists the 3 JIT alias shapes that block the remaining one-line fix -- start there, not below.
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any
 call boundary leaks its body. **Not** method-specific - a free function leaks
 identically. Flat for contrast: scalar-only struct through a method, and the

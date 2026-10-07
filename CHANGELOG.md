@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - struct heap fields leaked whenever they were read (LEDGER items 3 + 51)
+
+- **Reading an array or map field of a struct leaked that container on both
+  backends.** The read was retained but its temp was never dropped, so the
+  struct's own drop saw a refcount above 1 and freed nothing: a loop that built
+  a struct with an array and a map field and read both leaked 586MB per 1M
+  iterations on AOT. Now ~4MB flat on both backends. No call is needed to
+  trigger it -- this is most of what was filed as the "struct-argument leak".
+- **JIT: every struct with a `map` field leaked the whole map** (~490MB per 1M
+  constructions); the Cranelift struct drop had no map arm.
+- **JIT: Cranelift's struct deep copy shared array elements without retaining
+  them**, so two copies of a `[Token]`-style field could free the same element
+  twice. Latent until the first fix removed the leak that masked it.
+- Still open: a struct passed to a user function is not freed by the caller
+  (item 3's call-boundary half, ~77MB per 1M calls), and item 51's
+  field-overwrite repro. See tools/loop/LEDGER.md.
+
 ## [1.0.1] - 2026-10-06
 
 Distribution-only patch release: fixes found while verifying the published

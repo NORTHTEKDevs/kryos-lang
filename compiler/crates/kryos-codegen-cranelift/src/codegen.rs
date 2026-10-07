@@ -2607,10 +2607,22 @@ fn emit_struct_deep_copy_inner<M: Module>(
             .find(|(n, _)| n == field_name)
             .map(|(_, t)| t);
         let stored_val = match field_mir_ty {
-            Some(MirType::Array(_, _)) => {
-                let clone_ref =
-                    ensure_func_ref_with_args("kryos_array_clone", builder, translator, module, 1)?;
-                let call = builder.ins().call(clone_ref, &[field_val]);
+            Some(MirType::Array(elem, _)) => {
+                // kryos_array_dup, not a plain header clone: the copy shares
+                // ELEMENT handles with the source, so each element needs its
+                // own retain or the two arrays' element drops double-free it
+                // (a plain clone of `[Token]` let one copy's drop consume the
+                // owner count another copy still relied on). Same elem_kind
+                // encoding as the struct-literal dup above and the LLVM backend.
+                let elem_kind: i64 = match elem.as_ref() {
+                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                    MirType::Struct(_) | MirType::Enum(_) => 4,
+                    _ => 0,
+                };
+                let dup_ref =
+                    ensure_func_ref_with_args("kryos_array_dup", builder, translator, module, 2)?;
+                let k = builder.ins().iconst(types::I64, elem_kind);
+                let call = builder.ins().call(dup_ref, &[field_val, k]);
                 builder.inst_results(call)[0]
             }
             Some(MirType::Str) => {
@@ -7994,8 +8006,13 @@ fn emit_drop_for_value<M: Module>(
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
                             match field_ty {
+                                // Map was missing here (LLVM's struct drop has
+                                // always freed map fields): every struct with a
+                                // map field leaked the whole map on the JIT,
+                                // ~490MB per 1M constructions (2026-10-06).
                                 MirType::Str
                                 | MirType::Array(_, _)
+                                | MirType::Map { .. }
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_) => {

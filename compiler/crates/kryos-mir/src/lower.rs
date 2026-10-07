@@ -3394,6 +3394,11 @@ fn drop_unescaped_str_temps(
     let window_has_store_field = ctx.current_instructions[inst_mark..]
         .iter()
         .any(|i| matches!(i, Instruction::StoreField { .. }));
+    let window_has_release_protocol = ctx.current_instructions[inst_mark..].iter().any(|i| {
+        matches!(i, Instruction::DropIfNe { .. })
+            || matches!(i, Instruction::Assign { value: RValue::Call { func, .. }, .. }
+                if func.ends_with("_release_if_ne"))
+    });
     let mut to_drop: Vec<LocalId> = Vec::new();
     'cand: for id in candidates {
         // Type of THIS candidate, needed by the struct-literal arm below.
@@ -3752,9 +3757,25 @@ fn drop_unescaped_str_temps(
             // is not a droppable borrow: the escaping aggregate keeps the
             // struct alive past this window, so the retain this drop was
             // meant to balance is still needed.
-            // A field read of a MUTABLE-CONTAINER field (array/map/struct) is
-            // a BORROW and is NOT dropped. A `str` field read IS dropped: it
-            // retains, and nothing else balances it.
+            // A field read of an ARRAY/MAP field is dropped too (2026-10-06,
+            // LEDGER items 3 + 51): both backends retain it, and leaving that
+            // retain unbalanced was the dominant struct leak -- a struct
+            // whose array field was read even once never freed that array
+            // (its drop saw rc > 1), ~90MB per 1M constructions with no call
+            // involved at all. Two windows stay excluded: a field STORE (see
+            // below) and a whole-struct reassignment's `*_release_if_ne`
+            // protocol, which reads every old/new field and does its own
+            // accounting -- dropping those reads made `pp = pp2` free arrays
+            // that un-retained struct copies still held (silent wrong parse
+            // in stage1_mini_parser on the JIT). A STRUCT-typed field read is
+            // still a borrow and is NOT dropped.
+            //
+            // The history below explains why this was a blanket "never drop"
+            // until then; its push-grows-in-place hazard was the reassignment
+            // window above, plus a Cranelift deep copy that header-cloned
+            // array fields without retaining their elements (fixed with
+            // kryos_array_dup in emit_struct_deep_copy_inner). The leaked
+            // retain had been masking both.
             //
             // The split matters because the two cases fail in opposite
             // directions, and treating them alike broke one or the other every
@@ -3789,6 +3810,21 @@ fn drop_unescaped_str_temps(
                 .iter()
                 .find(|l| l.id == id)
                 .is_some_and(|l| l.ty == MirType::Str);
+            let is_container_field = ctx
+                .locals
+                .iter()
+                .find(|l| l.id == id)
+                .is_some_and(|l| matches!(l.ty, MirType::Array(_, _) | MirType::Map { .. }))
+                // Only a STRUCT field read is retained by both backends. A
+                // tuple element (`t.0`) lowers to the same RValue::Field but is
+                // read with no retain (Cranelift kryos_array_get, LLVM skips
+                // `{..}` aggregates), so dropping it freed the tuple's array
+                // out from under it: `len(t.0)` in a loop zeroed `a`.
+                && ctx
+                    .locals
+                    .iter()
+                    .find(|l| l.id == src)
+                    .is_some_and(|l| matches!(l.ty, MirType::Struct(_)));
             // ...but NOT when this window also assigns to a struct field. See
             // `window_has_store_field`'s definition above: a field assignment
             // already emits its own old-field read plus a PAIR of
@@ -3797,7 +3833,9 @@ fn drop_unescaped_str_temps(
             // corruption, caught by the pinned alias-refcount output. Item 54
             // only needs the pure intermediates dropped, and those take the
             // `owns` path above, not this one.
-            if is_str_field && !window_has_store_field {
+            if (is_str_field && !window_has_store_field)
+                || (is_container_field && !window_has_store_field && !window_has_release_protocol)
+            {
                 to_drop.push(id);
             }
             //

@@ -271,6 +271,16 @@ jobs:
         # cleanly elsewhere.
         run: bash tests/mem_field_assign_temp_gate.sh
 
+      - name: Struct field-read memory gate (LEDGER items 3 + 51)
+        # A struct whose array/map field is READ (len(b.items)) never freed
+        # that container: both backends retain the read, and MIR never dropped
+        # the read temp. Pre-fix AOT 586MB at 1M iters; fixed builds stay ~4MB.
+        # The fixture's map field also pins the Cranelift struct drop's missing
+        # Map arm (JIT leaked every map field, ~490MB/1M). Double-free
+        # direction: no_double_free.sh's self-host token-array cases.
+        # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
+        run: bash tests/mem_struct_field_read_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

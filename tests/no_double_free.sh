@@ -330,6 +330,26 @@ fn main() {
     sleep(200)
 }'
 
+# --- Self-host token-array programs (LEDGER items 3 + 51, 2026-10-06). These
+# run `stage1_mini_parser.kry` and `regression_lexer_reentrant_tokenize.kry`
+# in place (their `use token` / `use lexer` imports resolve relative to the
+# file). Both thread a `[Token]` through struct copies; Cranelift's struct
+# deep copy used to header-CLONE array fields without retaining their element
+# boxes, so two arrays freed the same Token boxes. An unbalanced field-read
+# retain kept one copy alive forever and hid it; balancing that retain exposed
+# 26 / 17 double frees here on the JIT until the deep copy switched to
+# kryos_array_dup. ---
+no_df_file() {
+  local name="$1" dir="$2" file="$3" out
+  out="$(cd "$dir" && KRYOS_FREE_DIAG=1 timeout 120 "$KRYOS" run "$file" 2>&1)"
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+    echo "  DOUBLE-FREE  $name"
+    fail=$((fail+1))
+  fi
+}
+no_df_file selfhost_stage1_mini_parser "$ROOT/compiler/self-host" stage1_mini_parser.kry
+no_df_file selfhost_lexer_reentrant "$ROOT/compiler/self-host" regression_lexer_reentrant_tokenize.kry
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else
