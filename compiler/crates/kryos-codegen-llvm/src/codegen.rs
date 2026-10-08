@@ -1189,6 +1189,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
+        self.emit_line("declare ptr @kryos_struct_retain(ptr)");
         self.emit_line("declare ptr @kryos_string_retain(ptr)");
         self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
         self.emit_line("declare i64 @kryos_diag_site(i64)");
@@ -4023,8 +4024,26 @@ impl LlvmCodegen {
                                 self.emit_line(&format!("  store {agg} {val}, ptr {buf}"));
                                 self.emit_struct_drop(&buf, name, func);
                             } else {
+                                // Boxed struct: honor the owner count like
+                                // `__kryos_drop_<T>` does, or a box another
+                                // owner retained (STRUCT_SHARE_FN) has its
+                                // fields freed under that owner.
+                                let uid = self.temp_counter;
+                                self.temp_counter += 1;
+                                let sh = self.next_temp();
+                                let is_sh = self.next_temp();
+                                self.emit_line(&format!(
+                                    "  {sh} = call i64 @kryos_struct_release_shared(ptr {val})"
+                                ));
+                                self.emit_line(&format!("  {is_sh} = icmp ne i64 {sh}, 0"));
+                                self.emit_line(&format!(
+                                    "  br i1 {is_sh}, label %sdrop_skip_{uid}, label %sdrop_own_{uid}"
+                                ));
+                                self.emit_line(&format!("sdrop_own_{uid}:"));
                                 self.emit_struct_drop(&val, name, func);
                                 self.emit_line(&format!("  call void @kryos_free(ptr {val})"));
+                                self.emit_line(&format!("  br label %sdrop_skip_{uid}"));
+                                self.emit_line(&format!("sdrop_skip_{uid}:"));
                             }
                         }
                     }
@@ -5496,6 +5515,37 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  store {dest_ty} {tmp}, ptr %_{}.addr", dest.0));
                 } else {
                     self.emit_unop(dest, *op, &val, &operand_ty, is_float)?;
+                }
+            }
+
+            // ----- Struct share (one more owner; see kryos_mir::ir::STRUCT_SHARE_FN) -----
+            RValue::Call { func: fname, args }
+                if fname == kryos_mir::ir::STRUCT_SHARE_FN && args.len() == 1 =>
+            {
+                if let Operand::Local(src) = &args[0] {
+                    let mir_ty = func.locals.iter().find(|l| l.id == *src).map(|l| l.ty.clone());
+                    if let Some(MirType::Struct(name)) = mir_ty {
+                        let val = self.operand_to_llvm(&args[0], func);
+                        let llvm_ty = self.local_type(*src);
+                        if llvm_ty.starts_with('%') {
+                            // Inline aggregate: the copies share each heap
+                            // leaf, so each leaf gets one more reference.
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {llvm_ty}"));
+                            self.emit_line(&format!("  store {llvm_ty} {val}, ptr {buf}"));
+                            self.emit_struct_share(&buf, &name);
+                        } else {
+                            // Boxed: one more owner of the box; the boxed
+                            // Drop path below checks it before freeing.
+                            let p = self.coerce_value(&val, &llvm_ty, "ptr");
+                            self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {p})"));
+                        }
+                    }
+                }
+                if is_mutable {
+                    self.emit_line(&format!("  store i64 0, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = add i64 0, 0", dest.0));
                 }
             }
 
@@ -9597,6 +9647,27 @@ impl LlvmCodegen {
                     coerced_val = cl;
                 }
             }
+            // A non-@copy literal takes its OWN owner of a shareable nested
+            // struct field, like Cranelift's kryos_struct_retain at the same
+            // site: the source (a local, a field read, a call temp) keeps its
+            // reference and is dropped by its owner (MIR, 2026-10-07).
+            if let Some(MirType::Struct(inner)) = field_mir_tys.get(def_i) {
+                if !self.copy_structs.contains(struct_name)
+                    && !self.copy_structs.contains(inner)
+                    && self.struct_shareable(inner)
+                    && coerced_val != "zeroinitializer"
+                {
+                    let inner = inner.clone();
+                    if expected_ty.starts_with('%') {
+                        let buf = self.next_temp();
+                        self.emit_line(&format!("  {buf} = alloca {expected_ty}"));
+                        self.emit_line(&format!("  store {expected_ty} {coerced_val}, ptr {buf}"));
+                        self.emit_struct_share(&buf, &inner);
+                    } else if expected_ty == "ptr" && coerced_val != "null" {
+                        self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {coerced_val})"));
+                    }
+                }
+            }
             let this = if literal_i + 1 == fields.len() {
                 if is_mutable {
                     // Use a temp name; we will store it to the alloca below.
@@ -10994,6 +11065,68 @@ impl LlvmCodegen {
     /// We use struct-indexed GEP (`getelementptr %S, ptr val, i32 0, i32 idx`)
     /// so that multi-word fields (e.g. inline enums = 16 bytes) are addressed
     /// at the correct byte offset regardless of field size.
+    /// Mirror of `emit_struct_drop`: one more reference on every heap leaf
+    /// `emit_struct_drop` would release, so the drop of either copy of an
+    /// inline aggregate leaves the other intact. Only reached for structs
+    /// with no Enum field (MIR's `struct_is_shareable`).
+    /// Mirror of MIR's `struct_is_shareable`: no Enum field anywhere inside.
+    fn struct_shareable(&self, name: &str) -> bool {
+        fn walk(defs: &HashMap<String, Vec<(String, MirType)>>, name: &str, depth: u32) -> bool {
+            if depth > 32 {
+                return false;
+            }
+            let Some(fields) = defs.get(name) else {
+                return false;
+            };
+            fields.iter().all(|(_, t)| match t {
+                MirType::Enum(_) => false,
+                MirType::Struct(n) => walk(defs, n, depth + 1),
+                _ => true,
+            })
+        }
+        walk(&self.struct_defs, name, 0)
+    }
+
+    fn emit_struct_share(&mut self, val: &str, struct_name: &str) {
+        let Some(struct_def) = self.struct_defs.get(struct_name).cloned() else {
+            return;
+        };
+        let llvm_struct_ty = format!("%{struct_name}");
+        for (field_idx, (_field_name, field_ty)) in struct_def.iter().enumerate() {
+            let gep = self.next_temp();
+            self.emit_line(&format!(
+                "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
+            ));
+            match field_ty {
+                MirType::Str | MirType::Array(_, _) => {
+                    let f = if matches!(field_ty, MirType::Str) {
+                        "kryos_string_retain_opt"
+                    } else {
+                        "kryos_array_retain_opt"
+                    };
+                    let fv = self.next_temp();
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call i64 @{f}(ptr {fv})"));
+                }
+                MirType::Map { .. } => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
+                    self.emit_line(&format!("  call i64 @kryos_map_retain_opt(i64 {fv})"));
+                }
+                MirType::Function { .. } | MirType::Shared(_) => {
+                    let fv = self.next_temp();
+                    self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_arc_retain(ptr {fv})"));
+                }
+                MirType::Struct(inner) if !self.copy_structs.contains(inner) => {
+                    let inner = inner.clone();
+                    self.emit_struct_share(&gep, &inner);
+                }
+                _ => {}
+            }
+        }
+    }
+
     #[allow(clippy::collapsible_match)]
     fn emit_struct_drop(&mut self, val: &str, struct_name: &str, _func: &MirFunction) {
         let struct_def = match self.struct_defs.get(struct_name).cloned() {

@@ -384,6 +384,31 @@ else
   fail=$((fail+1))
 fi
 
+# --- Struct-argument ownership (LEDGER item 3, closed 2026-10-07): callee owns
+# its struct param, caller borrows. Every escape shape that broke an earlier
+# attempt, on BOTH backends -- its conformance run only sees output. ---
+no_df_both() { # name file
+  local name="$1" f="$2" out
+  out="$(KRYOS_FREE_DIAG=1 timeout 60 "$KRYOS" run "$f" 2>&1)"
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+    echo "  DOUBLE-FREE  $name (jit)"
+    fail=$((fail+1))
+  fi
+  if "$KRYOS" build --release "$f" -o "$TMP/$name" >/dev/null 2>&1; then
+    if KRYOS_FREE_DIAG=1 timeout 60 "$TMP/$name" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+      echo "  DOUBLE-FREE  $name (aot)"
+      fail=$((fail+1))
+    fi
+  else
+    echo "  BUILD-FAIL   $name (aot)"
+    fail=$((fail+1))
+  fi
+}
+no_df_both struct_arg_ownership "$ROOT/tests/conformance/conf_struct_arg_ownership.kry"
+no_df_both closure_name_scope "$ROOT/tests/conformance/conf_closure_name_scope.kry"
+no_df_both struct_container_ownership "$ROOT/tests/conformance/conf_struct_container_ownership.kry"
+no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else

@@ -10,6 +10,126 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: item 3 CLOSED -- the callee owns its struct param; one owner-aware struct drop path; plus a closure-name silent-wrong-answer (2026-10-07, 2nd wave)
+
+### The model that ended ten attempts
+
+Every earlier attempt kept the struct param BORROWED in the callee and then
+patched each shape that let it escape (return self, rebind, push, map store,
+literal of its fields...). Each fix exposed the next shape. This wave inverted
+it: a shareable struct param (non-@copy, no Enum field anywhere -- see
+`struct_is_shareable`) is OWNED by the callee. It takes one owner at entry
+(`kryos_struct_share`, MIR pseudo-call `STRUCT_SHARE_FN`) and from then on is
+an ordinary local, so every existing owned-local rule (moves into push /
+return / literals, scope-end drop) applies unchanged. The caller borrows: it
+keeps its reference and drops it (`consume_call_args`). Correct by
+construction for every escape shape, instead of one patch per shape.
+
+Lowering of the share: Cranelift `kryos_struct_retain(box)`; LLVM retains each
+heap leaf of the inline aggregate (`emit_struct_share`), or the box when the
+local is a pointer; WASM no-op.
+
+### What it took besides the model (each measured, each needed)
+
+1. **One owner-aware struct drop path.** Cranelift's inline struct drop
+   (`emit_drop_for_value`, Struct arm) and LLVM's boxed-struct `Drop` freed
+   fields WITHOUT consulting the owner word -- only `__kryos_drop_<T>` did.
+   That is why the 10th attempt's retains were invisible. Both now call
+   `kryos_struct_release_shared` first.
+2. **CAS on the owner word.** `kryos_struct_release_shared` and `kryos_free`
+   did load-then-fetch_sub: two concurrent releasers both saw 1. Unit test
+   `concurrent_release_shared_has_exactly_one_last_owner` (barrier, 8
+   threads x 300 rounds) FAILS on the old logic, passes on the CAS.
+3. **A struct literal takes its own reference to every field.** Both backends
+   already clone str and dup array fields, so the MIR str/array retains on
+   aliased literal fields had no consumer (pure leak); removed. Nested
+   shareable struct fields: Cranelift already retained the box; LLVM now
+   shares the leaves (`emit_aggregate_struct`). Moving `a.inner` into a
+   literal therefore no longer suppresses `a`'s drop.
+4. **str/array/map field reads are not moves.** Both backends retain them, so
+   marking the source struct partially-moved leaked the whole struct
+   (`Bag { items: self.items, name: self.name }`: ~90MB/1M).
+5. **Unnamed struct temps drop at statement end** (`mk().size()` leaked
+   ~90MB/1M): call results and literals are drop candidates; borrows are
+   user-fn args, non-struct field reads, and fields of a non-@copy literal.
+   A runtime callee (push, kryos_array_set, map inserts) STORES a struct with
+   no owner of its own on LLVM, so it is an escape -- the census caught a
+   60x AOT double free on `slots[0] = Holder2 {..}` when it was a borrow.
+6. A struct-typed field read used only to reach a deeper field
+   (`len(ag.memory.w)`) no longer suppresses the struct's drop; a used
+   `push(..)` result temp is dropped after use (it holds the receiver retain).
+
+### Closure-name silent wrong answer (pre-existing, both backends, found by the shape matrix)
+
+`closure_locals` (name -> lambda direct-call shortcut) was never cleared
+between functions. `fn make(k: i64) -> fn() -> i64 { let f = || k * 2
+return f }` then `let f = make(21); f()` in main called make's lambda
+DIRECTLY with main's `f` (the closure value) as `k`: printed
+`7954478073816`, exit 0, both backends. A str capture printed a pointer; one
+shape failed to build on AOT ("Only PHI nodes may reference their own
+value"); `h = g; h()` still called the old lambda. FIX: clear the map at
+every function entry (a lambda body keeps its own freshly seeded frame via
+`keep_closure_locals_once`), and drop the entry on let-rebind and on
+reassignment. Pinned: tests/conformance/conf_closure_name_scope.kry (master:
+`CONF FAIL` on both backends).
+
+### Evidence (every number copied from real output)
+
+| | master | fixed |
+|---|---|---|
+| struct_arg_leak heap_field_method AOT @1M | 88MB | 4MB |
+| free_fn_scalar_ret AOT / JIT @1M | 89MB / 126MB | 3MB / 3MB |
+| method_chain AOT / JIT @1M | 279MB / 371MB | 3MB / 3MB |
+| move+borrow (`Ag { memory: a.memory, caps: a.caps }`) AOT @1M | 127MB + 60 double frees | 4MB, 0 |
+| conf_spinlock_seq / conf_spinlock_mutex JIT (naive borrow change) | rc 101 / 139 | PASS |
+| regression_lexer_reentrant_tokenize JIT (naive) | rc 101 | PASS, 0 df |
+| conf_struct_arg_ownership (12 escape shapes) | segfault, both backends | PASS, 0 df both |
+
+Gates on the final tree (after the review fixes): unit tests 328/328 (kryos-mir, both codegens,
+kryos-rt, wasm); `kryos-loop.sh gates 2` GREEN (28 gates, conformance 72/72);
+tests/mem_*.sh 7/7 incl. the new `mem_struct_arg_gate.sh` (FAILS on master:
+method_chain 279MB AOT / 371MB JIT); test_bootstrap.sh 16/16; census vs
+master: every pre-existing program x backend byte-identical with 0 double
+frees -- the only diffs are the two new conformance files (master fails).
+
+### Adversarial review (opus, ~85 programs, both backends) and what it changed
+
+The review found two regressions and no new double frees; both fixed, plus
+the same-family master bugs it surfaced:
+- R1 (JIT wrong answer): `let yi = arr[1].inner` was a non-owning alias that
+  dangled once the slot was overwritten. A `let` bound from a field/index read
+  of a shareable struct now takes its own owner. Sibling master bug (r11):
+  `let y = arr[0]; arr[0] = mk(5)` -- the overwrite released TWICE (Cranelift
+  compensating store retain + `retained_by_store`) even for slots filled by an
+  array literal that never took that retain. Now: a shareable struct stored
+  into a slot (index store, map insert, push) is SHARED by MIR, the source
+  keeps its own owner, the overwrite releases once, and Cranelift skips its
+  compensating retain for these types (enums keep it).
+- R2 (AOT leak): monomorphized generic instances (`gid___S`) were not in
+  `user_fn_names`, so call sites moved a struct the instance also shared.
+- `return self.name` / tail `self.name` excluded `self` from drops although
+  the read is retained (a trait method leaked the whole struct per call).
+- A discarded user-fn result (`id(mk(i))`, `label(i)` as a statement) was
+  assigned to a VOID temp and never dropped: str 127MB, array 151MB, struct
+  298MB per 1.6M on MASTER, 4MB now.
+- `let b = S { f: a.f }` marked `a` borrowed (never dropped) -- now only for
+  @copy literal targets.
+- `coop_spawn(work(s))`: the task runs after the spawning frame dropped `s`
+  (JIT printed another struct). Async callees get their struct/str/array/map
+  arguments shared/retained at the CALL site and own them in the body;
+  Cranelift's coop-spawn path retains struct boxes. Pinned by
+  tests/conformance/conf_struct_container_ownership.kry (master: CONF FAIL).
+
+Re-run of the reviewer's corpus vs master: 16 programs master gets wrong
+(double free / crash / wrong output) are clean now; none worse.
+
+### Residual, honestly
+
+- A struct type with an ENUM field anywhere inside keeps the older
+  move-at-call model (`struct_is_shareable` is false): it can leak, never
+  double-frees. LLVM stores enums inline in the arc allocator, with no leaf
+  retain yet. This is also exactly item 51's territory -- next wave.
+
 ## Wave: move-plus-borrow double free FIXED; census tool was reporting "no anomalies" on real anomalies (2026-10-07) -- item 3's call-boundary half still OPEN
 
 ### Finding 1: the census tool's verdict line was false
@@ -4111,7 +4231,7 @@ eight days later. Not investigated or fixed here (separate root causes,
 separate wave, would have blown this wave's scope) -- flagged per the
 ranking doctrine (leak) so it is not lost again. Needs its own triage wave.
 
-### 3. Struct-argument leak - ~86MB per 1M calls - DESIGN NOTE, NOT FIXED, fix REVERTED after new evidence (10th investigation, 9 attempts + this one now ruled out)
+### 3. Struct-argument leak - ~86MB per 1M calls - CLOSED 2026-10-07 (callee-owned struct params; see the 2026-10-07 2nd-wave entry at the top of this file). History below kept as the record.
 
 > **2026-10-06: NARROWED.** Most of this "leak" was not at the call boundary: an unbalanced struct field-READ retain (fixed, see the 2026-10-06 wave at the top of this file). What remains is the caller never dropping a struct it passed to a user fn: heap_field_method ~77MB/1M AOT. The census in that wave lists the 3 JIT alias shapes that block the remaining one-line fix -- start there, not below.
 `tests/mem/struct_arg_leak.kry`. Passing a struct with HEAP FIELDS across any

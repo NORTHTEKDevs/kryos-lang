@@ -329,8 +329,7 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
     // means "one owner", which is every box that predates struct sharing, so
     // a box nobody retained frees exactly as it always did.
     let rc = unsafe { &*(block.add(8) as *const std::sync::atomic::AtomicU64) };
-    if rc.load(std::sync::atomic::Ordering::Acquire) > 0 {
-        rc.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    if consume_extra_owner(rc) {
         return;
     }
     if box_diag() {
@@ -371,6 +370,30 @@ pub extern "C" fn kryos_free(ptr: *mut u8) {
 #[cfg(test)]
 mod pool_tests {
     use super::*;
+
+    #[test]
+    fn concurrent_release_shared_has_exactly_one_last_owner() {
+        for _round in 0..300 {
+            let b = kryos_calloc(1, 16) as usize;
+            let extra = 7;
+            for _ in 0..extra {
+                kryos_struct_retain(b as *mut u8);
+            }
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(extra + 1));
+            let handles: Vec<_> = (0..extra + 1)
+                .map(|_| {
+                    let gate = gate.clone();
+                    std::thread::spawn(move || {
+                        gate.wait();
+                        kryos_struct_release_shared(b as *mut u8)
+                    })
+                })
+                .collect();
+            let last = handles.into_iter().map(|h| h.join().unwrap()).filter(|r| *r == 0).count();
+            assert_eq!(last, 1, "exactly one releaser must be the last owner");
+            kryos_free(b as *mut u8);
+        }
+    }
 
     #[test]
     fn boxes_are_zeroed_and_recycled() {
@@ -688,13 +711,26 @@ pub extern "C" fn kryos_struct_release_shared(ptr: *mut u8) -> i64 {
     if box_diag() {
         box_diag_check(ptr, "kryos_struct_release_shared");
     }
-    unsafe {
-        let block = ptr.sub(HEADER);
-        let rc = &*(block.add(8) as *const std::sync::atomic::AtomicU64);
-        if rc.load(std::sync::atomic::Ordering::Acquire) > 0 {
-            rc.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
-            return 1;
-        }
+    let block = unsafe { ptr.sub(HEADER) };
+    let rc = unsafe { &*(block.add(8) as *const std::sync::atomic::AtomicU64) };
+    if consume_extra_owner(rc) {
+        return 1;
     }
     0
+}
+
+/// Take one EXTRA owner off a box header's owner word, if there is one.
+/// A single compare-exchange, not `load` then `fetch_sub`: with two steps two
+/// threads releasing concurrently both observed 1, both decremented, wrapped
+/// the count to u64::MAX, and neither became the last owner.
+fn consume_extra_owner(rc: &std::sync::atomic::AtomicU64) -> bool {
+    use std::sync::atomic::Ordering;
+    let mut cur = rc.load(Ordering::Acquire);
+    while cur > 0 {
+        match rc.compare_exchange_weak(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return true,
+            Err(seen) => cur = seen,
+        }
+    }
+    false
 }

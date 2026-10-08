@@ -281,6 +281,15 @@ jobs:
         # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
         run: bash tests/mem_struct_field_read_gate.sh
 
+      - name: Struct-argument memory gate (LEDGER item 3)
+        # Passing a heap-bearing struct to a function, and chaining
+        # struct-returning methods, must stay flat on BOTH backends. Pre-fix
+        # at 1M: method_chain 279MB AOT / 371MB JIT, free_fn_scalar_ret
+        # 89MB / 126MB; fixed ~4MB. Double-free direction:
+        # no_double_free.sh's struct_arg_ownership case.
+        # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
+        run: bash tests/mem_struct_arg_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

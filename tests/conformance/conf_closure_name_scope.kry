@@ -1,0 +1,69 @@
+// Conformance: a closure-holding NAME is scoped to its own function and its
+// own binding (2026-10-07). The direct-call shortcut for `let f = || ..` was
+// keyed by NAME and never cleared between functions, so `let f = make(21)`
+// in main followed by `f()` called make's lambda DIRECTLY with main's `f`
+// (the closure value itself) as the captured `k`: a garbage number on both
+// backends, with exit code 0. Rebinding or reassigning the name inside one
+// function hit the same stale entry (`h = g` then `h()` still called the old
+// lambda), and one shape failed to build on AOT outright ("Only PHI nodes may
+// reference their own value").
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn make(k: i64) -> fn() -> i64 {
+    let f = || k * 2
+    return f
+}
+
+fn make_len(s: str) -> fn() -> i64 {
+    let f = || len(s)
+    return f
+}
+
+fn make_copy(q: i64) -> fn() -> i64 {
+    let p = q
+    let f = || p + 1
+    return f
+}
+
+fn twice(k: i64) -> i64 {
+    let f = || k * 3
+    return f() + f()
+}
+
+fn main() {
+    let f = make(21)
+    expect(f() == 42, "closure returned from another fn, called by the same name")
+    let g = make(5)
+    expect(g() == 10, "second instance keeps its own capture")
+    let f2 = make_len("abcd")
+    expect(f2() == 4, "str capture survives the return")
+    let f = make_copy(41)
+    expect(f() == 42, "rebound name calls the NEW closure")
+    expect(twice(2) == 12, "in-function direct call still works")
+
+    let n = 10
+    let h1 = || n + 1
+    let mut h = || n + 3
+    expect(h() == 13, "closure local called directly")
+    h = h1
+    expect(h() == 11, "reassigned name calls the new value")
+
+    let mut x = 1
+    let peek = || x
+    x = 7
+    expect(peek() == 7, "read-only capture stays by-reference")
+
+    let fact = |m: i64| -> i64 {
+        if m <= 1 { return 1 }
+        return m * fact(m - 1)
+    }
+    expect(fact(5) == 120, "self-recursive closure")
+
+    println("conformance closure name scope: PASS")
+}
