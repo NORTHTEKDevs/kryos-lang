@@ -15,7 +15,7 @@
 #
 # Usage: tools/loop/ownership_census.sh <base-kryos> <cand-kryos> <out-dir>
 # Output: <out-dir>/summary.tsv, plus per-run .out/.err under <out-dir>/w.
-# Anomalies: grep -v -P '\tsame\tdf=0$' summary.tsv | grep -v 'base_rc=99'
+# Anomalies: printed at the end (any row not `same` + `df=0`).
 # (base_rc=99 cand_rc=99 = the program does not build on either binary).
 #
 # A few examples write fixture files into the current directory -- run this
@@ -59,4 +59,7 @@ for f in $CORPUS; do
   done
 done
 echo DONE >> "$SUM"
-grep -v -P '\tsame\tdf=0$' "$SUM" | grep -v 'base_rc=99	cand_rc=99' | grep -v '^DONE$' || echo "ownership-census: no anomalies"
+# awk, not `grep -P`: Git Bash's grep rejects -P outside a UTF-8 locale and
+# exits non-zero, which the `||` then reported as "no anomalies" (2026-10-07).
+awk -F'\t' 'NF >= 6 && ($5 != "same" || $6 != "df=0") && !($3 == "base_rc=99" && $4 == "cand_rc=99")' "$SUM" \
+  | grep . || echo "ownership-census: no anomalies"

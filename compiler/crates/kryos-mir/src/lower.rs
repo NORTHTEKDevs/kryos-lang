@@ -3400,6 +3400,7 @@ fn drop_unescaped_str_temps(
                 if func.ends_with("_release_if_ne"))
     });
     let mut to_drop: Vec<LocalId> = Vec::new();
+    let mut undo_reads: Vec<(LocalId, LocalId)> = Vec::new(); // (struct src, read temp)
     'cand: for id in candidates {
         // Type of THIS candidate, needed by the struct-literal arm below.
         let cand_ty = ctx
@@ -3846,11 +3847,41 @@ fn drop_unescaped_str_temps(
             // frees its other fields too) isn't left spuriously suppressed.
             // Only undo if this exact statement set it -- an earlier
             // statement's genuine move of a different field must stay
-            // suppressed.
+            // suppressed. Deferred to after the loop: see `undo_reads`.
             if !partial_moved_before.contains(&src.0) {
-                ctx.partial_moved_locals.remove(&src.0);
+                undo_reads.push((src, id));
             }
         }
+    }
+    // The SAME statement can also genuinely move another field out of `src`:
+    // `Ag { memory: a.memory, caps: a.caps }` moves the struct-typed `memory`
+    // (never a candidate here) and borrows `caps`. Undoing on `caps` alone
+    // erased `memory`'s mark, so `a`'s scope-end Drop freed `memory`'s heap
+    // fields under the literal that now owns them -- a double free on both
+    // backends (std::agent::agent_with_alignment, 3 per call). Undo only when
+    // every non-copy field read of `src` in this window was a borrowed temp.
+    let mut undo_srcs: Vec<LocalId> = Vec::new();
+    for (src, _) in &undo_reads {
+        let all_borrowed = ctx.current_instructions[inst_mark..].iter().all(|i| match i {
+            Instruction::Assign {
+                dest,
+                value: RValue::Field { object: Operand::Local(s), .. },
+            } if s == src => {
+                undo_reads.iter().any(|(_, t)| t == dest)
+                    || ctx
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *dest)
+                        .is_some_and(|l| is_copy_type(ctx, &l.ty))
+            }
+            _ => true,
+        });
+        if all_borrowed {
+            undo_srcs.push(*src);
+        }
+    }
+    for src in undo_srcs {
+        ctx.partial_moved_locals.remove(&src.0);
     }
     for id in to_drop {
         // Guard against a DOUBLE drop: this pass runs at the end of every

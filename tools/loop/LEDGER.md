@@ -10,6 +10,63 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: move-plus-borrow double free FIXED; census tool was reporting "no anomalies" on real anomalies (2026-10-07) -- item 3's call-boundary half still OPEN
+
+### Finding 1: the census tool's verdict line was false
+
+`ownership_census.sh` filtered anomalies with `grep -P`, which Git Bash's grep
+rejects outside a UTF-8 locale; the non-zero exit fell through `|| echo
+"ownership-census: no anomalies"`. The summary.tsv was always right -- only the
+printed verdict lied. Fixed (awk), verified both ways: it lists the 5 real rows
+of a broken candidate and still prints "no anomalies" on a clean summary.
+
+### Finding 2: the "wave14" census row was a PRE-EXISTING master double free, not the call-boundary change
+
+Re-ran the 10-06 naive call-boundary candidate (`MirType::Struct` in
+`consume_call_args`' borrow allowlist): breaks exactly the 4 listed programs.
+But conf_stdlib_wave14's `df=3` reproduces on the MASTER binary too (and on the
+installed 0.9.0): the census only runs the CANDIDATE under KRYOS_FREE_DIAG, so
+a base double free shows up as a candidate anomaly. The culprit is
+`std::agent::agent_with_alignment`, not `List.push`. Minimal repro (both
+backends):
+
+    let a = ag_new()
+    return Ag { memory: a.memory, caps: a.caps }   // memory: struct with a [str]
+
+Root cause (lower.rs `drop_unescaped_str_temps`): the struct-typed
+`a.memory` read is a genuine move into the literal and marks `a` partially
+moved; the array `a.caps` read is a borrowed temp, and its drop UNDID the
+partial-move mark "set by this statement" -- erasing `memory`'s mark too. So
+`a`'s scope-end Drop freed `memory.w` while the returned literal still owned
+it: a use-after-free on the caller's read, then a double free. FIX: undo only
+when every non-copy field read of that struct in the statement was itself a
+borrowed temp.
+
+Cost, measured honestly: `a` is now partially-moved (no scope-end drop), the
+same model b1-style `Ag { name: a.name, memory: a.memory }` already had, so
+`a`'s non-moved fields leak. AOT peak RSS on the move+borrow loop:
+master 8MB @250k / 127MB @1M (while double-freeing) -> fixed 73MB / 279MB.
+Memory corruption outranks a leak (this file's ranking), so it ships; the
+balanced fix (retain the moved nested struct and keep dropping `a`) needs the
+Cranelift nested-struct drop (`emit_drop_for_value`, Struct field arm) to
+consult `kryos_struct_release_shared` -- i.e. item 3's drop-path unification.
+
+Evidence: tests/no_double_free.sh gains `struct_field_move_plus_borrow` (JIT +
+AOT legs) and `std_agent_with_alignment`: master binary -> 3 DOUBLE-FREE, fixed
+-> clean. `kryos-loop.sh gates 2` GREEN (conformance 69/69), all 6
+tests/mem_*.sh gates PASS, test_bootstrap.sh 16/16, census master->fixed:
+302/302 runnable pairs byte-identical, 0 double frees (wave14 included).
+
+### Item 3 call-boundary half: re-confirmed, NOT attempted further this wave
+
+The real candidate breaks are 3 JIT-only programs: conf_spinlock_seq (rc 101),
+conf_spinlock_mutex (rc 139), regression_lexer_reentrant_tokenize (rc 101).
+Re-read at HEAD: Cranelift's `Instruction::Drop` for a Struct local and the
+Struct arm of `emit_drop_for_value` still free fields + box WITHOUT calling
+`kryos_struct_release_shared`; only the `__kryos_drop_<T>` helper checks the
+owner count. Any `kryos_struct_retain` added for `return self` stays invisible
+until those two paths consult the owner count -- start there.
+
 ## Wave: the struct leak was never at the call boundary -- unbalanced field-read retain FIXED, plus two JIT bugs it was masking (2026-10-06) -- items 3 + 51 NARROWED (not closed), honest residual below
 
 ### How this wave differed from the 10 before it: census first, patch second

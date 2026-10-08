@@ -350,6 +350,40 @@ no_df_file() {
 no_df_file selfhost_stage1_mini_parser "$ROOT/compiler/self-host" stage1_mini_parser.kry
 no_df_file selfhost_lexer_reentrant "$ROOT/compiler/self-host" regression_lexer_reentrant_tokenize.kry
 
+# --- One statement that MOVES a struct field and BORROWS a container field of
+# the same local (2026-10-07). `Ag { memory: a.memory, caps: a.caps }`: the
+# `caps` read's temp-drop un-marked `a`'s partial move, so `a`'s scope-end Drop
+# freed memory.w under the returned literal. Both backends; std::agent's
+# agent_with_alignment double-freed 3 arrays per call. AOT leg included because
+# the JIT-only legs above would pass half of this. ---
+MOVE_AND_BORROW='struct Mem { w: [str] }
+struct Ag { memory: Mem, caps: [str] }
+fn ag_new() -> Ag { return Ag { memory: Mem { w: [] }, caps: [] } }
+fn ag_with() -> Ag {
+    let a = ag_new()
+    return Ag { memory: a.memory, caps: a.caps }
+}
+fn main() {
+    let ag = ag_with()
+    println(to_string(len(ag.caps) + len(ag.memory.w)))
+}'
+no_df struct_field_move_plus_borrow "$MOVE_AND_BORROW"
+no_df std_agent_with_alignment 'use std::agent::{agent_with_alignment, ALIGNMENT_STRICT}
+fn main() {
+    let ag = agent_with_alignment("bot", "help", ALIGNMENT_STRICT)
+    println(ag.name)
+}'
+printf '%s' "$MOVE_AND_BORROW" > "$TMP/mab.kry"
+if "$KRYOS" build --release "$TMP/mab.kry" -o "$TMP/mab" >/dev/null 2>&1; then
+  if KRYOS_FREE_DIAG=1 timeout 30 "$TMP/mab" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+    echo "  DOUBLE-FREE  struct_field_move_plus_borrow (aot)"
+    fail=$((fail+1))
+  fi
+else
+  echo "  BUILD-FAIL   struct_field_move_plus_borrow (aot)"
+  fail=$((fail+1))
+fi
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else
