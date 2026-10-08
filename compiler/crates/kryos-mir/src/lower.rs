@@ -2385,24 +2385,62 @@ fn struct_is_shareable(ctx: &LoweringContext, name: &str) -> bool {
     if ctx.actor_defs.contains_key(name) {
         return false;
     }
-    fn walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
-        if depth > 32 {
-            return false;
-        }
-        let Some(fields) = ctx.struct_defs.get(name) else {
-            return false;
-        };
-        fields.iter().all(|(_, t)| match t {
+    shareable_struct_walk(ctx, name, 0)
+}
+
+/// Shared recursion for `struct_is_shareable` / `enum_is_shareable`: a
+/// struct field may be a shareable enum (LLVM shares its inline payload,
+/// Cranelift its box), an enum payload may be a shareable struct, but never
+/// another enum (LLVM's nested-enum boxes are outside the share).
+fn shareable_struct_walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
+    if depth > 32 || ctx.actor_defs.contains_key(name) {
+        return false;
+    }
+    let Some(fields) = ctx.struct_defs.get(name) else {
+        return false;
+    };
+    fields.iter().all(|(_, t)| match t {
+        MirType::Enum(n) => shareable_enum_walk(ctx, n, depth + 1),
+        MirType::Struct(n) => shareable_struct_walk(ctx, n, depth + 1),
+        _ => true,
+    })
+}
+
+fn shareable_enum_walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
+    if depth > 32 || ctx.generic_enum_templates.contains_key(name) {
+        return false;
+    }
+    let Some(variants) = ctx.enum_defs.get(name) else {
+        return false;
+    };
+    variants.iter().all(|v| {
+        v.fields.iter().all(|f| match f {
             MirType::Enum(_) => false,
-            MirType::Struct(n) => walk(ctx, n, depth + 1),
+            MirType::Struct(n) => {
+                !ctx.copy_structs.contains(n.as_str()) && shareable_struct_walk(ctx, n, depth + 1)
+            }
             _ => true,
         })
-    }
-    walk(ctx, name, 0)
+    })
 }
 
 /// A non-`@copy`, shareable struct type: its values are borrowed by calls,
 /// owned by whoever holds them, and dropped like a str/array/map handle.
+/// An enum whose values every backend can give one more owner: no Enum
+/// payload anywhere (LLVM's nested-enum boxes are released through an
+/// allocator the share does not cover) and every struct payload shareable.
+/// Cranelift: a kryos_calloc box (kryos_struct_retain); LLVM: an inline
+/// `{ tag, words.. }` aggregate (per-variant leaf retain).
+fn enum_is_shareable(ctx: &LoweringContext, name: &str) -> bool {
+    shareable_enum_walk(ctx, name, 0)
+}
+
+/// Enum values owned like a shareable struct's: borrowed by calls, owned by
+/// the callee param (one share at entry), dropped by whoever holds them.
+fn is_owned_enum_ty(ctx: &LoweringContext, ty: &MirType) -> bool {
+    matches!(ty, MirType::Enum(n) if enum_is_shareable(ctx, n))
+}
+
 fn is_owned_struct_ty(ctx: &LoweringContext, ty: &MirType) -> bool {
     matches!(ty, MirType::Struct(n)
         if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n))
@@ -2416,13 +2454,11 @@ fn is_owned_struct_ty(ctx: &LoweringContext, ty: &MirType) -> bool {
 /// for `@copy` structs (their drop is a no-op) and for a borrowed `holder`
 /// (it gets no scope-end drop to balance).
 fn emit_struct_share(ctx: &mut LoweringContext, holder: LocalId) {
-    let Some(MirType::Struct(name)) = ctx.locals.iter().find(|l| l.id == holder).map(|l| l.ty.clone())
-    else {
+    let Some(ty) = ctx.locals.iter().find(|l| l.id == holder).map(|l| l.ty.clone()) else {
         return;
     };
-    if ctx.copy_structs.contains(name.as_str())
-        || ctx.borrowed_locals.contains(&holder.0)
-        || !struct_is_shareable(ctx, &name)
+    if ctx.borrowed_locals.contains(&holder.0)
+        || !(is_owned_struct_ty(ctx, &ty) || is_owned_enum_ty(ctx, &ty))
     {
         return;
     }
@@ -2432,6 +2468,28 @@ fn emit_struct_share(ctx: &mut LoweringContext, holder: LocalId) {
         value: RValue::Call {
             func: STRUCT_SHARE_FN.to_string(),
             args: vec![Operand::Local(holder)],
+        },
+    });
+}
+
+/// One more owner of the struct/enum value in `local`, for a CONTAINER (array
+/// slot, map value, message, future) taking it -- unlike `emit_struct_share`,
+/// regardless of whether `local` itself is a borrowed alias: the new owner is
+/// the container, not the local. Skipping it for an alias (`let b = items[i];
+/// push(body, b)`) left two arrays owning one box with a single count.
+fn emit_value_share(ctx: &mut LoweringContext, local: LocalId) {
+    let Some(ty) = ctx.locals.iter().find(|l| l.id == local).map(|l| l.ty.clone()) else {
+        return;
+    };
+    if !(is_owned_struct_ty(ctx, &ty) || is_owned_enum_ty(ctx, &ty)) {
+        return;
+    }
+    let sink = ctx.alloc_temp(MirType::I64);
+    ctx.emit(Instruction::Assign {
+        dest: sink,
+        value: RValue::Call {
+            func: STRUCT_SHARE_FN.to_string(),
+            args: vec![Operand::Local(local)],
         },
     });
 }
@@ -2700,7 +2758,8 @@ pub fn lower_function(
             // escapes one at a time). Any other param: the caller owns it and
             // the callee must NOT drop/free it.
             let owned_struct = matches!(&ty, MirType::Struct(n)
-                if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n));
+                if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n))
+                || is_owned_enum_ty(ctx, &ty);
             // An async fn's str/array/map params are owned too: the call site
             // retained them for the future (consume_call_args).
             let async_owned = ctx.async_fn_names.contains(name)
@@ -2727,7 +2786,9 @@ pub fn lower_function(
     // taken at the call site (see consume_call_args), not here.
     if !ctx.async_fn_names.contains(name) {
         for p in &mir_params {
-            if matches!(p.ty, MirType::Struct(_)) && !ctx.param_locals.contains(&p.local.0) {
+            if matches!(p.ty, MirType::Struct(_) | MirType::Enum(_))
+                && !ctx.param_locals.contains(&p.local.0)
+            {
                 emit_struct_share(ctx, p.local);
             }
         }
@@ -3469,7 +3530,8 @@ fn drop_unescaped_str_temps(
         .filter(|l| {
             l.name.is_none()
                 && (matches!(l.ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
-                    || is_owned_struct_ty(ctx, &l.ty))
+                    || is_owned_struct_ty(ctx, &l.ty)
+                    || is_owned_enum_ty(ctx, &l.ty))
                 && !l.mutable
                 && escaping != Some(l.id.0)
         })
@@ -3626,9 +3688,10 @@ fn drop_unescaped_str_temps(
                     // ...but a STRUCT element read is an alias on both
                     // backends (Cranelift returns the element's box, LLVM loads
                     // a shallow aggregate copy) -- it owns nothing.
-                    RValue::Index { .. } => !matches!(cand_ty, MirType::Struct(_)),
-                    // A fresh struct literal: one owner, this temp.
+                    RValue::Index { .. } => !matches!(cand_ty, MirType::Struct(_) | MirType::Enum(_)),
+                    // A fresh struct literal / enum construction: one owner, this temp.
                     RValue::Struct { .. } => matches!(cand_ty, MirType::Struct(_)),
+                    RValue::EnumVariant { .. } => matches!(cand_ty, MirType::Enum(_)),
                     RValue::Call { func, .. } => {
                         func == "to_string"
                             || func == "kryos_string_concat"
@@ -3707,13 +3770,57 @@ fn drop_unescaped_str_temps(
                 // (A struct-typed field read is an unretained alias, not a
                 // borrowed-and-retained read: never a field_source drop.)
                 if let RValue::Field { object: Operand::Local(src), .. } = value {
-                    if matches!(cand_ty, MirType::Struct(_)) {
+                    if matches!(cand_ty, MirType::Struct(_) | MirType::Enum(_)) {
                         alias_field_source = Some(*src);
                     } else {
                         field_source = Some(*src);
                     }
                 }
                 continue; // its own definition consumes other values, not itself
+            }
+            // An ENUM temp is dropped only when its sole use is a borrowed
+            // user-fn argument (the callee owns its enum param); every other
+            // use stays an escape -- the enum paths have not been converted.
+            if matches!(cand_ty, MirType::Enum(_)) {
+                match value {
+                    // A non-@copy struct literal takes its own owner of a
+                    // shareable enum field (Cranelift kryos_struct_retain,
+                    // LLVM payload share), so the temp keeps and drops its own.
+                    RValue::Struct { name, fields }
+                        if fields.iter().any(|(_, op)| mentions(op, id))
+                            && !ctx.copy_structs.contains(name.as_str()) =>
+                    {
+                        continue;
+                    }
+                    RValue::Call { func, args } if args.iter().any(|a| mentions(a, id)) => {
+                        if func == STRUCT_SHARE_FN {
+                            continue;
+                        }
+                        let shared = ctx.current_instructions[inst_mark..].iter().any(|i| {
+                            matches!(i, Instruction::Assign { value: RValue::Call { func: f, args: a }, .. }
+                                if f == STRUCT_SHARE_FN && a.len() == 1 && mentions(&a[0], id))
+                        });
+                        let container_store = (func == "push" && args.len() == 2 && mentions(&args[1], id))
+                            || (matches!(
+                                func.as_str(),
+                                "kryos_array_set" | "kryos_map_insert" | "kryos_map_insert_str"
+                            ) && args.len() == 3
+                                && mentions(&args[2], id));
+                        if shared && container_store {
+                            continue;
+                        }
+                        if !(ctx.user_fn_names.contains(func) && !ctx.builtin_fn_names.contains(func)) {
+                            continue 'cand;
+                        }
+                        continue;
+                    }
+                    other => {
+                        if rvalue_mentions_local(other, id) {
+                            continue 'cand;
+                        }
+                        continue;
+                    }
+                }
             }
             let used_here: bool = match value {
                 RValue::StringConcat(parts) => parts.iter().any(|p| mentions(p, id)),
@@ -5365,10 +5472,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // release consumed an UNRELATED owner whenever the
                             // slot had been filled without that retain (an
                             // array literal), freeing a live `let y = arr[0]`.
-                            let owned_struct_store = is_owned_struct_ty(ctx, &val_ty);
+                            let owned_struct_store =
+                                is_owned_struct_ty(ctx, &val_ty) || is_owned_enum_ty(ctx, &val_ty);
                             if owned_struct_store {
                                 if let Operand::Local(vl) = &val_op {
-                                    emit_struct_share(ctx, *vl);
+                                    emit_value_share(ctx, *vl);
                                 }
                             }
                             if matches!(obj_ty, MirType::Map { .. }) {
@@ -5555,7 +5663,55 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // comparing. Left OPEN; see LEDGER item 49's
                             // residual entry and
                             // tests/mem/struct_field_enum_overwrite_leak.kry.
+                            //
+                            // CLOSED for shareable struct/enum fields (item
+                            // 51, 2026-10-08) without any compare: the struct
+                            // owns its field value, so the OLD one is read
+                            // and dropped after the store, and the new value
+                            // takes its own owner unless it is a fresh
+                            // allocation moving in. `h.v = h.v` stays
+                            // balanced (share, then drop). Each backend drops
+                            // in its own representation (Cranelift box with
+                            // the owner check, LLVM inline payload leaves).
+                            let owned_old = if is_owned_struct_ty(ctx, &field_ty)
+                                || is_owned_enum_ty(ctx, &field_ty)
+                            {
+                                let before = ctx.partial_moved_locals.clone();
+                                let old_tmp = ctx.alloc_temp(field_ty.clone());
+                                let obj_op = lower_expr_to_operand(ctx, object);
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: RValue::Field {
+                                        object: obj_op,
+                                        field: field.clone(),
+                                    },
+                                });
+                                // Reading it is not a move out of the struct.
+                                ctx.partial_moved_locals = before;
+                                if let Operand::Local(vl) = &val_op {
+                                    let fresh = ctx.locals.iter().any(|l| l.id == *vl && l.name.is_none())
+                                        && ctx.current_instructions.iter().rev().any(|i| {
+                                            matches!(i, Instruction::Assign { dest, value }
+                                                if dest == vl && matches!(value,
+                                                    RValue::EnumVariant { .. }
+                                                        | RValue::Struct { .. }
+                                                        | RValue::Call { .. }
+                                                        | RValue::CallIndirect { .. }))
+                                        });
+                                    if !fresh {
+                                        emit_struct_share(ctx, *vl);
+                                    }
+                                }
+                                Some(old_tmp)
+                            } else {
+                                None
+                            };
                             lower_nested_field_assign(ctx, object, field, val_op.clone());
+                            if let Some(old_tmp) = owned_old {
+                                drop_tag(ctx, "owned-field-overwrite");
+                                ctx.emit(Instruction::Drop { local: old_tmp });
+                                ctx.dropped_locals.insert(old_tmp.0);
+                            }
                             if let Some((rel, old_tmp)) = old_field {
                                 // TWO releases, both guarded by old != new.
                                 // Unlike the map/array paths there is no raw
@@ -5945,6 +6101,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     std::collections::HashSet::new()
                 };
             let scope_end = ctx.locals.len();
+            // Drops emitted for THIS return belong to this path only: the
+            // return ends it. Recording them in `dropped_locals` suppressed the
+            // same locals' drops on every lexically later path -- a callee
+            // with `match v { A => return .., B => return .. }` dropped `v`
+            // in the first arm only (an enum argument leaked ~96MB per 1M
+            // calls through the other arms).
+            let mut path_drops: Vec<u32> = Vec::new();
             for i in (0..scope_end).rev() {
                 if ctx.locals[i].name.is_some() {
                     let local_id = ctx.locals[i].id;
@@ -5963,8 +6126,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         drop_tag(ctx, "return-stmt-scope-end");
                         ctx.emit(Instruction::Drop { local: local_id });
                         ctx.dropped_locals.insert(local_id.0);
+                        path_drops.push(local_id.0);
                     }
                 }
+            }
+            for id in path_drops {
+                ctx.dropped_locals.remove(&id);
             }
             let next = ctx.alloc_block();
             ctx.finish_block(Terminator::Return(operand), next);
@@ -9728,10 +9895,15 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                     // freshly rebuilt independent box via
                     // `retain_struct_heap_fields`) keep the previous
                     // suppress-always behavior unchanged.
+                    // A shareable struct/enum payload is SHARED (one owner,
+                    // see below) and dropped per-arm like a str -- the old
+                    // field-by-field rebuild was never dropped (`Some(s) =>`
+                    // on an Option<S> leaked ~340MB per 1M matches).
                     let field_gets_independent_ref = matches!(
                         &field_type,
                         MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
-                    );
+                    ) || is_owned_struct_ty(ctx, &field_type)
+                        || is_owned_enum_ty(ctx, &field_type);
                     if !is_copy_type(ctx, &field_type) {
                         if field_gets_independent_ref {
                             arm_owned_payload_locals.push(local);
@@ -9799,6 +9971,9 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
                                 },
                             });
                         }
+                    }
+                    _ if is_owned_struct_ty(ctx, &field_type) || is_owned_enum_ty(ctx, &field_type) => {
+                        emit_struct_share(ctx, dest);
                     }
                     MirType::Struct(struct_name) if !is_copy_type(ctx, &field_type) => {
                         retain_struct_heap_fields(ctx, dest, struct_name.clone());
@@ -10073,7 +10248,8 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
             let borrowable_struct = matches!(&local_ty, MirType::Struct(n)
-                if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n));
+                if !ctx.copy_structs.contains(n.as_str()) && struct_is_shareable(ctx, n))
+                || is_owned_enum_ty(ctx, &local_ty);
             if user_fn_borrows_heap_args
                 && (borrowable_struct
                     || matches!(
@@ -10085,7 +10261,7 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 // takes its own owner of a struct argument NOW.
                 if ctx.async_fn_names.contains(func) {
                     if borrowable_struct {
-                        emit_struct_share(ctx, *local_id);
+                        emit_value_share(ctx, *local_id);
                     } else if let Some(rf) = retain_for_ty(&local_ty) {
                         let sink = ctx.alloc_temp(MirType::I64);
                         ctx.emit(Instruction::Assign {
@@ -10128,8 +10304,8 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 // instead left a NAMED source alive with no owner of its own,
                 // so dropping the array freed the box under it (JIT read an
                 // empty name, 7 double frees).
-                if is_owned_struct_ty(ctx, &local_ty) && !ctx.borrowed_locals.contains(&local_id.0) {
-                    emit_struct_share(ctx, *local_id);
+                if is_owned_struct_ty(ctx, &local_ty) || is_owned_enum_ty(ctx, &local_ty) {
+                    emit_value_share(ctx, *local_id);
                     continue;
                 }
             }
@@ -12233,7 +12409,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             if let Operand::Local(id) = a {
                                 let ty = ctx.locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone());
                                 match ty {
-                                    Some(t) if is_owned_struct_ty(ctx, &t) => emit_struct_share(ctx, *id),
+                                    Some(t) if is_owned_struct_ty(ctx, &t) || is_owned_enum_ty(ctx, &t) => {
+                                        emit_value_share(ctx, *id)
+                                    }
                                     Some(t) => {
                                         if let Some(rf) = retain_for_ty(&t) {
                                             let sink = ctx.alloc_temp(MirType::I64);
@@ -12660,10 +12838,8 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             MirType::Map { .. } => Some("kryos_map_retain"),
                             _ => None,
                         };
-                        let target_owns_struct_field = matches!(&ty, MirType::Struct(sn)
-                            if !ctx.copy_structs.contains(effective_name.as_str())
-                                && !ctx.copy_structs.contains(sn.as_str())
-                                && struct_is_shareable(ctx, sn));
+                        let target_owns_struct_field = !ctx.copy_structs.contains(effective_name.as_str())
+                            && (is_owned_struct_ty(ctx, &ty) || is_owned_enum_ty(ctx, &ty));
                         if target_owns_struct_field {
                             // Not a move: undo the partial-move mark this
                             // field read put on its source, so the source is

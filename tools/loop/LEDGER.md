@@ -10,6 +10,73 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: enums join the ownership model -- enum args, Option/Result args, match payload binds; item 51 CLOSED (2026-10-08)
+
+The item-3 model (callee owns, caller borrows, one share at entry, owner-aware
+drops) extended to enums. A SHAREABLE enum has no Enum payload (LLVM's
+nested-enum boxes are released through an allocator the share does not
+cover) and only shareable struct payloads; a struct is now shareable when its
+enum fields are (`shareable_struct_walk` / `shareable_enum_walk`).
+
+- Share lowering: Cranelift `kryos_struct_retain` on the enum box (enum boxes
+  are kryos_calloc'd with the struct header); LLVM `emit_enum_share_payload`
+  retains the ACTIVE variant's heap words of the inline `{ tag, words.. }`
+  (struct payload boxes take a box owner -- `__kryos_drop_<S>` checks it).
+  Cranelift's Enum drop arm and LLVM's boxed-enum drop now consult the owner
+  count, like the struct paths.
+- Enum temps are dropped at statement end only where their sole use is a
+  borrowed user-fn argument or a field of a non-@copy struct literal (which
+  takes its own owner); every other use stays an escape.
+- A match arm's struct/enum payload bind (`Some(s) =>`) is SHARED and dropped
+  per arm like a str payload. It was rebuilt field by field and never dropped.
+- Return drops no longer poison later paths: a `return` recorded the locals it
+  dropped in `dropped_locals`, so `match v { A => return .., B => return .. }`
+  dropped `v` in the first arm only -- a general leak, not enum-specific.
+- **Item 51 CLOSED**: an owned struct/enum FIELD store reads the old value and
+  drops it after the store; the new value takes its own owner unless it is a
+  fresh allocation moving in. No pointer compare needed, so the LLVM
+  aggregate problem that blocked two attempts does not arise; `h.v = h.v`
+  stays balanced (share, then drop).
+
+Measured (AOT, 1M unless noted), master -> fixed: enum arg 96 -> 4MB, enum temp
+arg 126 -> 4, Option<S> arg 433 -> 4, Result<S, str> arg 310 -> 4, match
+payload bind 402 -> 4, returned enum 128 -> 4, struct-with-enum arg 65 -> 4,
+item 51 repro (`h.v = Val.ListV(..)`) 279MB @3M -> 4MB.
+Pinned: tests/mem_enum_arg_gate.sh (8 modes x 2 backends, all 16 legs FAIL on
+master) and tests/conformance/conf_enum_arg_ownership.kry (also under
+KRYOS_FREE_DIAG in no_double_free.sh).
+
+Two latent master bugs the balanced enum ownership EXPOSED (minilisp gate,
+16 diag failures mid-wave; each had been masked by enum params leaking their
+entry owner): Cranelift's enum deep copy (`emit_enum_deep_copy`, behind
+`__kryos_enum_index_clone`) header-CLONED array payloads without retaining
+their elements -- the same bug the 10-06 wave fixed in the struct deep copy --
+now `kryos_array_dup`; and LLVM's `__kryos_enum_index_clone` was a pure
+passthrough whose aggregate copy shared every payload word, now a payload
+share for shareable enums. Also found the same way: a CONTAINER store of a
+borrowed alias (`let b = items[i]; body = push(body, b)`) took no owner
+because the share skipped borrowed holders; container stores now share via
+`emit_value_share` (the container is the new owner, not the alias), and
+Cranelift's compensating store retain is skipped for enums too when MIR
+shared (mem_enum_overwrite map JIT leg).
+
+## Wave: std::fmt::debug/display and std::test::assert_eq/assert_ne were silently wrong through `any` (2026-10-08)
+
+All four took `any` -- a bare i64 with no runtime tag (item 6). On master:
+`debug("abc")` printed a POINTER, `debug(true)` printed 1, `debug(2.5)` the
+raw f64 bits (the old body's `type_of(val) == "string"` could never be true:
+an erased slot is never typed str, and `type_of` says "str" anyway), and
+`assert_eq(s1, s2, ..)` compared two EQUAL strings by pointer and threw; the
+same program failed to build on AOT. They are generic now (`fn debug<T>`,
+`fn assert_eq<T>`): monomorphization gives each call its real type, so
+`type_of`/`to_string`/`==` are exact. Arrays/maps render as `<array>`/`<map>`
+(the documented `to_string` behavior); their old branches never worked
+through `any` either. Pinned: tests/conformance/conf_stdlib_generic_any.kry
+(master stdlib: JIT `CONF FAIL: debug quotes a string`, AOT build failure).
+Item 6 itself (a tagged `any` ABI) stays a design note: every remaining
+`any` shape that could misrender is now a compile error (E0110) or no
+longer routed through `any` in the stdlib.
+
 ## Wave: review leftovers that master also gets wrong -- closure block scope, struct globals, generic variant inference, actor struct args (2026-10-08)
 
 All found by the 2026-10-07 adversarial review and present on master; each
@@ -2908,7 +2975,7 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### 51. LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
+### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 
 > **2026-10-06:** the "read field X while reassigning X" leak this entry ends on was the unbalanced field-read retain, now FIXED (wave at the top of this file). This item's own repro is UNCHANGED (279.5MB at 3M): its read sits in a field-STORE window, which that fix deliberately leaves alone.
 

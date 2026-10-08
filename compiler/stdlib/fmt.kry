@@ -433,69 +433,19 @@ fn percent(ratio: f64, decimals: i64) -> str {
 
 /// Produce a debug representation of any value.
 /// Strings are quoted, arrays are bracketed, etc.
-fn debug(val: any) -> str {
-    let t = type_of(val)
-    if t == "string" {
-        return "\"" + _escape_string(val) + "\""
-    }
-    if t == "array" {
-        let mut parts = []
-        let vlen = len(val)
-        let mut i = 0
-        while i < vlen {
-            push(parts, debug(val[i]))
-            i = i + 1
-        }
-        return "[" + _join_parts(parts, ", ") + "]"
-    }
-    if t == "map" {
-        let keys = map_keys(val)
-        let mut parts = []
-        let klen = len(keys)
-        let mut i = 0
-        while i < klen {
-            let k = keys[i]
-            let v = val[k]
-            push(parts, debug(k) + ": " + debug(v))
-            i = i + 1
-        }
-        return "\{" + _join_parts(parts, ", ") + "\}"
-    }
-    if t == "bool" {
-        if val {
-            return "true"
-        }
-        return "false"
-    }
-    if t == "null" or t == "nil" {
-        return "nil"
+fn debug<T>(val: T) -> str {
+    // Generic, not `any`: `any` is erased to a bare i64 with no runtime tag,
+    // so the old body could never see a string (`type_of` of an erased slot
+    // is never "str") and printed a POINTER for every string, `1` for `true`
+    // and the raw bits of an f64. Monomorphization gives each call its real
+    // type, so `type_of` and `to_string` are exact (2026-10-08).
+    if type_of(val) == "str" {
+        return "\"" + _escape_string(to_string(val)) + "\""
     }
     return to_string(val)
 }
 
-/// Produce a human-readable display of any value.
-/// Unlike debug, strings are NOT quoted.
-fn display(val: any) -> str {
-    let t = type_of(val)
-    if t == "string" {
-        return val
-    }
-    if t == "array" {
-        let mut parts = []
-        let vlen = len(val)
-        let mut i = 0
-        while i < vlen {
-            push(parts, display(val[i]))
-            i = i + 1
-        }
-        return "[" + _join_parts(parts, ", ") + "]"
-    }
-    if t == "bool" {
-        if val {
-            return "true"
-        }
-        return "false"
-    }
+fn display<T>(val: T) -> str {
     return to_string(val)
 }
 

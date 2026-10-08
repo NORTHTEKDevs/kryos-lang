@@ -1,0 +1,76 @@
+// Conformance: enum arguments are BORROWED by the caller and OWNED by the
+// callee, like struct arguments (2026-10-08). A shareable enum (no enum
+// payload; struct payloads shareable) gets one owner at callee entry; the
+// caller keeps and drops its own. Master leaked every enum argument
+// (96-433MB per 1M calls incl. Option<S>/Result<S, str>) because callers
+// moved them and callees never dropped them; a match arm's struct payload
+// binding was rebuilt field by field and never dropped. tests/no_double_free.sh
+// runs this file under KRYOS_FREE_DIAG on both backends.
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+enum Val { StrV(str), ListV([i64]), NumV(i64), PairV(str, [str]) }
+struct S { name: str, xs: [i64] }
+struct H { v: Val, n: i64 }
+fn mkv(i: i64) -> Val {
+    if i % 4 == 0 { return Val.StrV("s{i}") }
+    if i % 4 == 1 { return Val.ListV([i, i + 1]) }
+    if i % 4 == 2 { return Val.NumV(i) }
+    return Val.PairV("p{i}", ["q{i}"])
+}
+fn vsig(v: Val) -> str {
+    match v {
+        Val.StrV(s) => { return "S" + s }
+        Val.ListV(xs) => { return "L" + to_string(len(xs)) + to_string(xs[0]) }
+        Val.NumV(n) => { return "N" + to_string(n) }
+        Val.PairV(a, b) => { return "P" + a + b[0] }
+    }
+}
+fn expect(c: bool, w: str) { if not c { println("FAIL {w}")  exit(1) } }
+fn same(v: Val) -> Val { return v }
+fn case1() { let mut i = 0
+  while i < 40 { let a = mkv(i)  let b = same(a)  expect(vsig(a) == vsig(mkv(i)) and vsig(b) == vsig(a), "ret")  i = i + 1 }
+   }
+fn keep(arr: [Val], v: Val) -> [Val] { return push(arr, v) }
+fn case2() { let mut arr: [Val] = []  let mut i = 0
+  while i < 40 { let a = mkv(i)  arr = keep(arr, a)  expect(vsig(a) == vsig(mkv(i)), "src")  i = i + 1 }
+  i = 0
+  while i < 40 { expect(vsig(arr[i]) == vsig(mkv(i)), "elem")  i = i + 1 }
+   }
+fn put(m: map<str, Val>, k: str, v: Val) { m[k] = v }
+fn case3() { let m: map<str, Val> = {}  let mut i = 0
+  while i < 40 { put(m, to_string(i), mkv(i))  i = i + 1 }
+  i = 0
+  while i < 40 { expect(vsig(m[to_string(i)]) == vsig(mkv(i)), "map")  i = i + 1 }
+   }
+fn some_s(i: i64) -> Option<S> { if i % 2 == 0 { return Some(S { name: "n{i}", xs: [i] }) } return None() }
+fn name_of(o: Option<S>) -> str { match o { Some(s) => { return s.name } None => { return "-" } } }
+fn res(i: i64) -> Result<S, str> { if i % 3 == 0 { return Err("e{i}") } return Ok(S { name: "r{i}", xs: [i, i] }) }
+fn rname(r: Result<S, str>) -> str { match r { Ok(s) => { return s.name } Err(e) => { return e } } }
+fn case4() { let mut i = 0
+  while i < 40 { let o = some_s(i)  let r = res(i)
+    expect(name_of(o) == name_of(o), "opt twice")
+    expect(rname(r) == rname(res(i)), "res")
+    i = i + 1 }
+   }
+fn wrap(v: Val) -> H { return H { v: v, n: 1 } }
+fn case5() { let mut i = 0
+  while i < 40 { let a = mkv(i)  let h = wrap(a)  expect(vsig(h.v) == vsig(a), "wrap")  i = i + 1 }
+   }
+fn chain(v: Val) -> str { return vsig(v) + vsig(v) }
+fn case6() { let mut i = 0  let mut t = 0
+  while i < 40 { t = t + len(chain(mkv(i))) + len(vsig(mkv(i)))  i = i + 1 }
+  expect(t == 504, "chain total") }
+fn rewrap(v: Val) -> Val { match v { Val.StrV(s) => { return Val.StrV(s + "!") } _ => { return v } } }
+fn case7() { let mut i = 0
+  while i < 40 { let a = mkv(i)  let b = rewrap(a)  expect(len(vsig(b)) >= len(vsig(a)), "rewrap")  i = i + 1 }
+   }
+fn main() {
+    case1()
+    case2()
+    case3()
+    case4()
+    case5()
+    case6()
+    case7()
+    println("conformance enum arg ownership: PASS")
+}

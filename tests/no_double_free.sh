@@ -408,6 +408,7 @@ no_df_both struct_arg_ownership "$ROOT/tests/conformance/conf_struct_arg_ownersh
 no_df_both closure_name_scope "$ROOT/tests/conformance/conf_closure_name_scope.kry"
 no_df_both struct_container_ownership "$ROOT/tests/conformance/conf_struct_container_ownership.kry"
 no_df_both struct_globals_actors "$ROOT/tests/conformance/conf_struct_globals_actors.kry"
+no_df_both enum_arg_ownership "$ROOT/tests/conformance/conf_enum_arg_ownership.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

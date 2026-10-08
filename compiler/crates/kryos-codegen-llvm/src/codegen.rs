@@ -5548,6 +5548,22 @@ impl LlvmCodegen {
                             let p = self.coerce_value(&val, &llvm_ty, "ptr");
                             self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {p})"));
                         }
+                    } else if let Some(MirType::Enum(name)) = mir_ty {
+                        let val = self.operand_to_llvm(&args[0], func);
+                        let llvm_ty = self.local_type(*src);
+                        if llvm_ty.starts_with('{') {
+                            // Inline `{ tag, words.. }`: retain the active
+                            // variant's heap payload words.
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {llvm_ty}"));
+                            self.emit_line(&format!("  store {llvm_ty} {val}, ptr {buf}"));
+                            self.emit_enum_share_payload(&buf, &name);
+                        } else {
+                            // Boxed enum: one more owner of the box (the boxed
+                            // enum drop checks it first).
+                            let p = self.coerce_value(&val, &llvm_ty, "ptr");
+                            self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {p})"));
+                        }
                     }
                 }
                 if is_mutable {
@@ -5742,6 +5758,24 @@ impl LlvmCodegen {
                     let val = self.operand_to_llvm(&args[0], func);
                     let val_ty = self.operand_type(&args[0], func);
                     let coerced = self.coerce_value(&val, &val_ty, &dest_ty);
+                    // A shareable enum's copy must OWN its payload: the
+                    // aggregate copy shares every heap word, and the caller
+                    // drops it (an env lookup's result in minilisp freed a
+                    // closure body the env map still held, once enum params
+                    // stopped leaking their entry owner). Mirror of the
+                    // Cranelift deep copy, via the payload share.
+                    let dest_enum = func.locals.iter().find(|l| l.id == dest).and_then(|l| match &l.ty {
+                        MirType::Enum(n) => Some(n.clone()),
+                        _ => None,
+                    });
+                    if let Some(en) = dest_enum {
+                        if dest_ty.starts_with('{') && self.enum_shareable(&en) {
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {dest_ty}"));
+                            self.emit_line(&format!("  store {dest_ty} {coerced}, ptr {buf}"));
+                            self.emit_enum_share_payload(&buf, &en);
+                        }
+                    }
                     if is_mutable {
                         self.emit_line(&format!(
                             "  store {dest_ty} {coerced}, ptr %_{}.addr",
@@ -9719,6 +9753,21 @@ impl LlvmCodegen {
             // struct field, like Cranelift's kryos_struct_retain at the same
             // site: the source (a local, a field read, a call temp) keeps its
             // reference and is dropped by its owner (MIR, 2026-10-07).
+            if let Some(MirType::Enum(inner)) = field_mir_tys.get(def_i) {
+                // Same contract for a shareable enum field (MIR treats the
+                // literal as taking its own owner; Cranelift retains the box).
+                if !self.copy_structs.contains(struct_name)
+                    && self.enum_shareable(inner)
+                    && expected_ty.starts_with('{')
+                    && coerced_val != "zeroinitializer"
+                {
+                    let inner = inner.clone();
+                    let buf = self.next_temp();
+                    self.emit_line(&format!("  {buf} = alloca {expected_ty}"));
+                    self.emit_line(&format!("  store {expected_ty} {coerced_val}, ptr {buf}"));
+                    self.emit_enum_share_payload(&buf, &inner);
+                }
+            }
             if let Some(MirType::Struct(inner)) = field_mir_tys.get(def_i) {
                 if !self.copy_structs.contains(struct_name)
                     && !self.copy_structs.contains(inner)
@@ -11139,20 +11188,42 @@ impl LlvmCodegen {
     /// with no Enum field (MIR's `struct_is_shareable`).
     /// Mirror of MIR's `struct_is_shareable`: no Enum field anywhere inside.
     fn struct_shareable(&self, name: &str) -> bool {
-        fn walk(defs: &HashMap<String, Vec<(String, MirType)>>, name: &str, depth: u32) -> bool {
-            if depth > 32 {
+        self.shareable_walk(name, false, 0)
+    }
+
+    /// Mirror of MIR's `shareable_enum_walk`: no Enum payload; struct
+    /// payloads shareable.
+    fn enum_shareable(&self, name: &str) -> bool {
+        self.shareable_walk(name, true, 0)
+    }
+
+    fn shareable_walk(&self, name: &str, is_enum: bool, depth: u32) -> bool {
+        if depth > 32 {
+            return false;
+        }
+        if is_enum {
+            let Some(variants) = self.enum_defs.get(name) else {
                 return false;
-            }
-            let Some(fields) = defs.get(name) else {
+            };
+            variants.iter().all(|v| {
+                v.fields.iter().all(|f| match f {
+                    MirType::Enum(_) => false,
+                    MirType::Struct(n) => {
+                        !self.copy_structs.contains(n) && self.shareable_walk(n, false, depth + 1)
+                    }
+                    _ => true,
+                })
+            })
+        } else {
+            let Some(fields) = self.struct_defs.get(name) else {
                 return false;
             };
             fields.iter().all(|(_, t)| match t {
-                MirType::Enum(_) => false,
-                MirType::Struct(n) => walk(defs, n, depth + 1),
+                MirType::Enum(n) => self.shareable_walk(n, true, depth + 1),
+                MirType::Struct(n) => self.shareable_walk(n, false, depth + 1),
                 _ => true,
             })
         }
-        walk(&self.struct_defs, name, 0)
     }
 
     fn emit_struct_share(&mut self, val: &str, struct_name: &str) {
@@ -11189,6 +11260,11 @@ impl LlvmCodegen {
                 MirType::Struct(inner) if !self.copy_structs.contains(inner) => {
                     let inner = inner.clone();
                     self.emit_struct_share(&gep, &inner);
+                }
+                // Inline `{ tag, words.. }` enum field.
+                MirType::Enum(inner) => {
+                    let inner = inner.clone();
+                    self.emit_enum_share_payload(&gep, &inner);
                 }
                 _ => {}
             }
@@ -11481,6 +11557,76 @@ impl LlvmCodegen {
         self.emit_enum_drop_inner(val, enum_name, func, /*free_buf=*/ true);
     }
 
+    /// Mirror of `emit_enum_drop_inner`'s payload walk for an inline enum at
+    /// `val` (ptr to `{ tag, words.. }`): one more reference on every heap word
+    /// of the ACTIVE variant. Struct payloads are kryos_calloc boxes freed by
+    /// the owner-aware `__kryos_drop_<S>`, so they take a box owner. Only
+    /// reached for MIR-shareable enums (no Enum payload).
+    fn emit_enum_share_payload(&mut self, val: &str, enum_name: &str) {
+        let Some(variants) = self.enum_defs.get(enum_name).cloned() else {
+            return;
+        };
+        let uid = self.temp_counter;
+        self.temp_counter += 1;
+        let done = format!("eshare_done_{uid}");
+        let tag = self.next_temp();
+        self.emit_line(&format!("  {tag} = load i64, ptr {val}"));
+        for (idx, v) in variants.iter().enumerate() {
+            let heap: Vec<(usize, MirType)> = v
+                .fields
+                .iter()
+                .cloned()
+                .enumerate()
+                .filter(|(_, f)| {
+                    matches!(
+                        f,
+                        MirType::Str
+                            | MirType::Array(_, _)
+                            | MirType::Map { .. }
+                            | MirType::Function { .. }
+                            | MirType::Shared(_)
+                            | MirType::Struct(_)
+                    )
+                })
+                .collect();
+            if heap.is_empty() {
+                continue;
+            }
+            let hit = format!("eshare_v{idx}_{uid}");
+            let next = format!("eshare_n{idx}_{uid}");
+            let cmp = self.next_temp();
+            self.emit_line(&format!("  {cmp} = icmp eq i64 {tag}, {idx}"));
+            self.emit_line(&format!("  br i1 {cmp}, label %{hit}, label %{next}"));
+            self.emit_line(&format!("{hit}:"));
+            for (fi, fty) in heap {
+                let gep = self.next_temp();
+                let w = self.next_temp();
+                self.emit_line(&format!("  {gep} = getelementptr i64, ptr {val}, i32 {}", fi + 1));
+                self.emit_line(&format!("  {w} = load i64, ptr {gep}"));
+                match fty {
+                    MirType::Map { .. } => {
+                        self.emit_line(&format!("  call i64 @kryos_map_retain_opt(i64 {w})"));
+                    }
+                    other => {
+                        let p = self.next_temp();
+                        self.emit_line(&format!("  {p} = inttoptr i64 {w} to ptr"));
+                        let line = match other {
+                            MirType::Str => format!("  call i64 @kryos_string_retain_opt(ptr {p})"),
+                            MirType::Array(_, _) => format!("  call i64 @kryos_array_retain_opt(ptr {p})"),
+                            MirType::Struct(_) => format!("  call ptr @kryos_struct_retain(ptr {p})"),
+                            _ => format!("  call void @kryos_arc_retain(ptr {p})"),
+                        };
+                        self.emit_line(&line);
+                    }
+                }
+            }
+            self.emit_line(&format!("  br label %{done}"));
+            self.emit_line(&format!("{next}:"));
+        }
+        self.emit_line(&format!("  br label %{done}"));
+        self.emit_line(&format!("{done}:"));
+    }
+
     fn emit_enum_drop_inner(
         &mut self,
         val: &str,
@@ -11502,6 +11648,21 @@ impl LlvmCodegen {
             "  br i1 {is_null}, label %{done_label}, label %{body_label}"
         ));
         self.emit_line(&format!("{body_label}:"));
+        if free_buf {
+            // A boxed enum (kryos_calloc) can have another owner (a
+            // callee-owned enum param's entry share): consume it and stop,
+            // or the payload is freed under that owner.
+            let sh = self.next_temp();
+            let is_sh = self.next_temp();
+            let owned_label = format!("enum_drop_owned_{}", self.temp_counter);
+            self.temp_counter += 1;
+            self.emit_line(&format!("  {sh} = call i64 @kryos_struct_release_shared(ptr {val})"));
+            self.emit_line(&format!("  {is_sh} = icmp ne i64 {sh}, 0"));
+            self.emit_line(&format!(
+                "  br i1 {is_sh}, label %{done_label}, label %{owned_label}"
+            ));
+            self.emit_line(&format!("{owned_label}:"));
+        }
 
         let variants = match self.enum_defs.get(enum_name).cloned() {
             Some(v) => v,

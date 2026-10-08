@@ -2843,15 +2843,28 @@ fn emit_enum_deep_copy_inner<M: Module>(
                         let call = builder.ins().call(clone_ref, &[field_val]);
                         builder.inst_results(call)[0]
                     }
-                    MirType::Array(_, _) => {
-                        let clone_ref = ensure_func_ref_with_args(
-                            "kryos_array_clone",
+                    MirType::Array(elem, _) => {
+                        // kryos_array_dup, not a header clone: a clone
+                        // SHARES the element handles without retaining them,
+                        // so dropping the copy (an env lookup's deep copy of
+                        // a closure) freed body elements the original still
+                        // held -- the same latent double free the 10-06 wave
+                        // fixed in the STRUCT deep copy. Masked until enum
+                        // params stopped leaking their entry owner.
+                        let elem_kind: i64 = match elem.as_ref() {
+                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                            MirType::Struct(_) | MirType::Enum(_) => 4,
+                            _ => 0,
+                        };
+                        let dup_ref = ensure_func_ref_with_args(
+                            "kryos_array_dup",
                             builder,
                             translator,
                             module,
-                            1,
+                            2,
                         )?;
-                        let call = builder.ins().call(clone_ref, &[field_val]);
+                        let k = builder.ins().iconst(types::I64, elem_kind);
+                        let call = builder.ins().call(dup_ref, &[field_val, k]);
                         builder.inst_results(call)[0]
                     }
                     MirType::Map { .. } => {
@@ -3636,7 +3649,7 @@ fn translate_instruction<M: Module>(
                         .mir_func
                         .locals
                         .iter()
-                        .any(|l| l.id == *id && matches!(l.ty, MirType::Struct(_))));
+                        .any(|l| l.id == *id && matches!(l.ty, MirType::Struct(_) | MirType::Enum(_))));
                     if is_struct {
                         let r = ensure_func_ref_with_args(
                             "kryos_struct_retain", builder, translator, module, 1,
@@ -5380,7 +5393,7 @@ fn translate_rvalue<M: Module>(
                     // Keyed on what MIR actually DID (a share of this local in
                     // this function), not a re-derived type rule: only MIR
                     // knows which struct names are actor handles.
-                    let mir_shared = matches!(&vty, Some(MirType::Struct(_)))
+                    let mir_shared = matches!(&vty, Some(MirType::Struct(_) | MirType::Enum(_)))
                         && translator.mir_func.blocks.iter().any(|b| {
                             b.instructions.iter().any(|i| {
                                 matches!(i, Instruction::Assign { value: RValue::Call { func, args }, .. }
@@ -8259,6 +8272,20 @@ fn emit_drop_for_value<M: Module>(
                 .brif(is_nonnull, enum_drop_block, &[], enum_after_block, &[]);
             builder.seal_block(enum_drop_block);
             builder.switch_to_block(enum_drop_block);
+
+            // Owner-count check, as in the Struct arm: an enum box another
+            // owner retained (a callee-owned enum param's entry share, a
+            // container store) must not have its payload freed here.
+            let release_ref =
+                ensure_func_ref_with_args("kryos_struct_release_shared", builder, translator, module, 1)?;
+            let rel = builder.ins().call(release_ref, &[val]);
+            let still_shared = builder.inst_results(rel)[0];
+            let enum_owned_block = builder.create_block();
+            builder
+                .ins()
+                .brif(still_shared, enum_after_block, &[], enum_owned_block, &[]);
+            builder.seal_block(enum_owned_block);
+            builder.switch_to_block(enum_owned_block);
 
             // Runtime variant-aware Drop: load the tag, dispatch on it,
             // and free heap-owning payload fields for the active variant.
