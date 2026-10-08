@@ -157,6 +157,11 @@ pub struct LoweringContext {
     try_catch_target: Option<TryCatchTarget>,
     /// Tracks locals that are closures with captures: local_name -> (func_name, capture_operands).
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    /// The local each `closure_locals` entry was bound to by its `let`. The
+    /// direct-call shortcut only applies while the NAME still resolves to that
+    /// local: a closure shadowed inside a loop body was otherwise still called
+    /// after the loop (`g(1)` ran the inner lambda: 31 instead of 4).
+    closure_local_ids: HashMap<String, u32>,
     /// Underlying lambda function names (e.g. `__lambda_0`) whose body
     /// mutates at least one of its captured variables. A mutating closure
     /// captures its state BY MOVE and must own a single persistent copy
@@ -504,6 +509,7 @@ impl LoweringContext {
             type_aliases: HashMap::new(),
             try_catch_target: None,
             closure_locals: HashMap::new(),
+            closure_local_ids: HashMap::new(),
             mutating_closures: HashSet::new(),
             pending_closure_regs: Vec::new(),
             actor_defs: HashMap::new(),
@@ -776,6 +782,7 @@ impl LoweringContext {
             loop_scope_starts: std::mem::take(&mut self.loop_scope_starts),
             hidden_locals: std::mem::take(&mut self.hidden_locals),
             closure_locals: std::mem::take(&mut self.closure_locals),
+            closure_local_ids: std::mem::take(&mut self.closure_local_ids),
             capture_boxes: std::mem::take(&mut self.capture_boxes),
             // A nested function body (lambda/spawn/monomorphized fn) must
             // NOT inherit the enclosing function's try context - its blocks
@@ -827,6 +834,7 @@ impl LoweringContext {
         self.loop_scope_starts = state.loop_scope_starts;
         self.hidden_locals = state.hidden_locals;
         self.closure_locals = state.closure_locals;
+        self.closure_local_ids = state.closure_local_ids;
         self.capture_boxes = state.capture_boxes;
         self.try_catch_target = state.try_catch_target;
         self.local_actor_types = state.local_actor_types;
@@ -851,6 +859,7 @@ struct FunctionState {
     loop_scope_starts: Vec<usize>,
     hidden_locals: HashSet<u32>,
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
+    closure_local_ids: HashMap<String, u32>,
     capture_boxes: HashMap<String, Vec<LocalId>>,
     try_catch_target: Option<TryCatchTarget>,
     local_actor_types: HashMap<u32, String>,
@@ -1853,6 +1862,9 @@ pub fn lower_module_with_lambda_params(
                 let mut handler_info = Vec::new();
                 for handler in handlers {
                     let mangled = format!("{name}__{}", handler.name);
+                    // A handler runs LATER on the actor's thread, like an async
+                    // body: its heap arguments are owned via the SEND site.
+                    ctx.async_fn_names.insert(mangled.clone());
                     let mir_ret = match &handler.ret_ty {
                         Some(ty) => ctx.resolve_type(ty),
                         None => MirType::Void,
@@ -2368,6 +2380,11 @@ fn emit_param_source_retain(ctx: &mut LoweringContext, holder: LocalId, src: Loc
 /// in it (LLVM stores enums in the arc allocator, with no leaf retain) keeps
 /// the older ownership-transfer treatment instead.
 fn struct_is_shareable(ctx: &LoweringContext, name: &str) -> bool {
+    // An ACTOR's value is an opaque i64 handle, not a struct box: sharing one
+    // (`d.wire(w)` sends an actor) called kryos_struct_retain on 0x4.
+    if ctx.actor_defs.contains_key(name) {
+        return false;
+    }
     fn walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
         if depth > 32 {
             return false;
@@ -2645,6 +2662,7 @@ pub fn lower_function(
     ctx.reset();
     if !std::mem::take(&mut ctx.keep_closure_locals_once) {
         ctx.closure_locals.clear();
+        ctx.closure_local_ids.clear();
     }
     ctx.cur_fn_name = name.to_string();
 
@@ -4440,6 +4458,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 if let Some((func_name, captures)) = closure_info {
                     ctx.closure_locals
                         .insert(name.clone(), (func_name, captures));
+                    ctx.closure_local_ids.insert(name.clone(), local.0);
                 } else {
                     // A rebinding SHADOWS any closure this name held: `f()`
                     // must call the new value, not the old lambda directly.
@@ -10440,7 +10459,16 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                 // lowering (find_enum_variant -> RValue::EnumVariant), else the
                 // temp holding the constructed value gets the wrong MIR type and
                 // is mis-passed (LLVM emitted `0` for it as a call argument).
-                if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
+                if let Some((enum_name, vidx)) = find_enum_variant(ctx, name) {
+                    // A GENERIC enum's variant (`Some(mk(8))` with no
+                    // annotation): bind its type params from the argument
+                    // types and type the value as the instance. Typed as the
+                    // raw template, the payload erased to i64 -- the JIT printed
+                    // a pointer for `s.name` and AOT failed to build
+                    // ("extractvalue operand must be aggregate type").
+                    if let Some(inst) = infer_generic_variant_instance(ctx, &enum_name, vidx, args) {
+                        return MirType::Enum(inst);
+                    }
                     return MirType::Enum(enum_name);
                 }
                 // Actor construction returns a handle typed as the actor struct.
@@ -11931,8 +11959,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 if is_fn_local {
                     // If this local is a tracked closure with captures,
                     // emit a direct call with captures prepended.
-                    if let Some((real_func, capture_ops)) =
-                        ctx.closure_locals.get(&func_name).cloned()
+                    let shortcut_stale = ctx.closure_local_ids.get(&func_name).is_some_and(|&lid| {
+                        find_local_by_name(ctx, &func_name).map(|l| l.0) != Some(lid)
+                    });
+                    if let Some((real_func, capture_ops)) = ctx
+                        .closure_locals
+                        .get(&func_name)
+                        .cloned()
+                        .filter(|_| !shortcut_stale)
                     {
                         let mut mir_args: Vec<Operand> = capture_ops;
                         for a in args {
@@ -12191,6 +12225,31 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         };
                         let send_args: Vec<Operand> =
                             args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                        // The handler runs after this frame may have dropped
+                        // its arguments (`a.take(s)` then `s` dropped: the
+                        // JIT handler segfaulted). Give the message its own
+                        // owner of every heap argument; the handler owns it.
+                        for a in &send_args {
+                            if let Operand::Local(id) = a {
+                                let ty = ctx.locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone());
+                                match ty {
+                                    Some(t) if is_owned_struct_ty(ctx, &t) => emit_struct_share(ctx, *id),
+                                    Some(t) => {
+                                        if let Some(rf) = retain_for_ty(&t) {
+                                            let sink = ctx.alloc_temp(MirType::I64);
+                                            ctx.emit(Instruction::Assign {
+                                                dest: sink,
+                                                value: RValue::Call {
+                                                    func: rf.to_string(),
+                                                    args: vec![Operand::Local(*id)],
+                                                },
+                                            });
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
                         ctx.emit(Instruction::ActorSend {
                             actor: actor_local,
                             handler_tag: (idx as u32) + 1,
@@ -16426,6 +16485,35 @@ fn monomorphize_struct(
 /// Monomorphize a generic enum template with concrete type arguments.
 ///
 /// Similar to monomorphize_struct, but for enum variants.
+/// Instance name for a generic enum variant constructed with `args`, when
+/// EVERY type parameter is bound by a payload field that is exactly that
+/// parameter (`Some(T)` binds T; `Ok(T)` alone leaves `E` open -> None, so the
+/// caller keeps the template type and an annotation stays required).
+fn infer_generic_variant_instance(
+    ctx: &mut LoweringContext,
+    enum_name: &str,
+    vidx: u32,
+    args: &[ast::Expr],
+) -> Option<String> {
+    let template = ctx.generic_enum_templates.get(enum_name)?.clone();
+    let variant = template.variants.get(vidx as usize)?;
+    let mut bound: HashMap<String, MirType> = HashMap::new();
+    for (fty, arg) in variant.fields.iter().zip(args.iter()) {
+        if let ast::TypeExpr::Simple { name, .. } = fty {
+            if template.generic_params.iter().any(|g| g == name) && !bound.contains_key(name) {
+                let at = infer_expr_type(ctx, arg);
+                if matches!(at, MirType::Void) {
+                    return None;
+                }
+                bound.insert(name.clone(), at);
+            }
+        }
+    }
+    let concrete: Option<Vec<MirType>> =
+        template.generic_params.iter().map(|g| bound.get(g).cloned()).collect();
+    Some(monomorphize_enum(ctx, enum_name, &concrete?))
+}
+
 fn monomorphize_enum(ctx: &mut LoweringContext, enum_name: &str, type_args: &[MirType]) -> String {
     // Retrieve the generic enum template.
     let template = ctx

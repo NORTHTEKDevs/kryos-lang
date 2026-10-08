@@ -5377,8 +5377,17 @@ fn translate_rvalue<M: Module>(
                     // A shareable struct is shared by MIR before this store
                     // (and its overwrite releases once), so no compensating
                     // retain here -- only enums and enum-bearing structs keep it.
-                    let mir_shared = matches!(&vty, Some(MirType::Struct(n))
-                        if !translator.copy_structs.contains(n) && cl_struct_shareable(translator, n));
+                    // Keyed on what MIR actually DID (a share of this local in
+                    // this function), not a re-derived type rule: only MIR
+                    // knows which struct names are actor handles.
+                    let mir_shared = matches!(&vty, Some(MirType::Struct(_)))
+                        && translator.mir_func.blocks.iter().any(|b| {
+                            b.instructions.iter().any(|i| {
+                                matches!(i, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                                    if func == kryos_mir::ir::STRUCT_SHARE_FN
+                                        && matches!(args.first(), Some(Operand::Local(l)) if l == vid))
+                            })
+                        });
                     let is_struct_or_enum =
                         matches!(vty, Some(MirType::Struct(_)) | Some(MirType::Enum(_)));
                     if is_struct_or_enum && !mir_shared {
@@ -6523,19 +6532,35 @@ fn translate_rvalue<M: Module>(
             } else {
                 // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
                 let func_ref = ensure_func_ref("kryos_string_concat", builder, translator, module)?;
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                // A non-str part (`"nm{i}"` -> str_concat("nm", i)) is
+                // converted to a FRESH string only this concat sees; free it
+                // once copied in. Unfreed, every interpolated number leaked its
+                // text (103MB per 1.6M evaluations).
+                let fresh0 = !is_string_operand(&parts[0], &translator.mir_func.locals);
+                let fresh1 = !is_string_operand(&parts[1], &translator.mir_func.locals);
                 let first = coerce_to_string(&parts[0], builder, translator, module)?;
                 let second = coerce_to_string(&parts[1], builder, translator, module)?;
                 let call = builder.ins().call(func_ref, &[first, second]);
                 let mut acc = builder.inst_results(call)[0];
-                let free_ref =
-                    ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                if fresh0 {
+                    builder.ins().call(free_ref, &[first]);
+                }
+                if fresh1 {
+                    builder.ins().call(free_ref, &[second]);
+                }
                 for part in &parts[2..] {
+                    let fresh = !is_string_operand(part, &translator.mir_func.locals);
                     let next_val = coerce_to_string(part, builder, translator, module)?;
                     let old_acc = acc;
                     let call = builder.ins().call(func_ref, &[acc, next_val]);
                     acc = builder.inst_results(call)[0];
                     // Free the intermediate concat result that was just replaced.
                     builder.ins().call(free_ref, &[old_acc]);
+                    if fresh {
+                        builder.ins().call(free_ref, &[next_val]);
+                    }
                 }
                 Ok(Some(acc))
             }
@@ -7933,24 +7958,6 @@ fn emit_deep_copy_struct<M: Module>(
 /// Emit a drop (free) for a single Cranelift value of the given MIR type.
 /// The caller is responsible for null-checking the value before calling this.
 #[allow(clippy::collapsible_match)]
-/// Mirror of MIR's `struct_is_shareable`: no Enum field anywhere inside.
-fn cl_struct_shareable(translator: &FuncTranslator, name: &str) -> bool {
-    fn walk(defs: &HashMap<String, Vec<(String, MirType)>>, name: &str, depth: u32) -> bool {
-        if depth > 32 {
-            return false;
-        }
-        let Some(fields) = defs.get(name) else {
-            return false;
-        };
-        fields.iter().all(|(_, t)| match t {
-            MirType::Enum(_) => false,
-            MirType::Struct(n) => walk(defs, n, depth + 1),
-            _ => true,
-        })
-    }
-    walk(translator.struct_defs, name, 0)
-}
-
 fn emit_drop_for_value<M: Module>(
     val: cranelift_codegen::ir::Value,
     ty: &MirType,

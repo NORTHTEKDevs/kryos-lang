@@ -1,0 +1,68 @@
+// Conformance (2026-10-08): struct values in GLOBALS, unannotated generic
+// enum construction, and struct arguments to ACTOR handlers. Master:
+//   - `let mut CUR: S = S {..}` with a str field segfaulted on AOT (the
+//     aggregate was squeezed into the global's raw i64 slot), and a field
+//     store through the global (`CUR.inner = ..`) did not persist on AOT.
+//   - `let o = Some(mk(8))` with no annotation typed the payload as i64: the
+//     JIT printed a pointer for `s.name`; AOT failed to build.
+//   - `a.take(s)` then `s` dropped: the handler ran later and the JIT
+//     segfaulted reading `s`.
+use std::option::{Option, Some, None}
+
+struct In { xs: [i64], t: str }
+struct S { name: str, inner: In }
+
+let mut CUR: S = S { name: "init", inner: In { xs: [], t: "" } }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> S { return S { name: "nm-{i}", inner: In { xs: [i, i], t: "t-{i}" } } }
+
+fn set_cur(p: S) { CUR = p }
+fn set_inner(p: S) { CUR.inner = p.inner }
+
+actor Sink {
+    total: i64
+    fn take(self, s: S, i: i64) {
+        sleep(2)
+        if s.name != "nm-{i}" or s.inner.t != "t-{i}" or len(s.inner.xs) != 2 {
+            println("CONF FAIL: actor handler lost its struct argument")
+            exit(1)
+        }
+        self.total = self.total + 1
+    }
+}
+
+fn send_one(a: Sink, i: i64) {
+    let s = mk(i)
+    a.take(s, i)
+}
+
+fn main() {
+    expect(CUR.name == "init", "struct global initializer")
+    set_cur(mk(1))
+    expect(CUR.name == "nm-1" and CUR.inner.t == "t-1", "struct global reassigned in a callee")
+    set_inner(mk(2))
+    expect(CUR.name == "nm-1" and CUR.inner.t == "t-2", "field store through a struct global persists")
+
+    let o = Some(mk(8))
+    let mut got = ""
+    match o {
+        Some(s) => { got = s.name }
+        None => { got = "none" }
+    }
+    expect(got == "nm-8", "unannotated Some(struct) keeps its payload type")
+
+    let a = Sink()
+    send_one(a, 3)
+    send_one(a, 4)
+    let mut k = 0
+    while k < 200 { let z = mk(k + 900)  k = k + len(z.name) - len(z.name) + 1 }
+    sleep(100)
+    println("conformance struct globals actors: PASS")
+}

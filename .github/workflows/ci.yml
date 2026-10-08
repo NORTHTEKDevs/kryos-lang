@@ -290,6 +290,12 @@ jobs:
         # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
         run: bash tests/mem_struct_arg_gate.sh
 
+      - name: String-interpolation memory gate
+        # `"nm{i}"` formatted the number into a fresh string that neither
+        # backend freed after the concat: master 102-103MB at 1.6M iterations
+        # on BOTH backends; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_string_interp_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

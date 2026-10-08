@@ -59,6 +59,21 @@ fn main() {
     x = 7
     expect(peek() == 7, "read-only capture stays by-reference")
 
+    // A closure shadowed inside a block must not outlive the block.
+    let g = |v: i64| v + 3
+    let k = 5
+    if true {
+        let g = |v: i64| v + k * 10
+        expect(g(1) == 51, "inner shadowing closure")
+    }
+    expect(g(1) == 4, "outer closure after the shadowing block")
+    let mut j = 0
+    while j < 3 {
+        let g = |v: i64| v + j * 100
+        j = j + 1
+    }
+    expect(g(1) == 4, "outer closure after a loop that shadowed it")
+
     let fact = |m: i64| -> i64 {
         if m <= 1 { return 1 }
         return m * fact(m - 1)

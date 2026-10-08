@@ -136,6 +136,9 @@ pub struct LlvmCodegen {
     /// no store-into-aggregate, no AddrOf, etc.).  Cleared and recomputed per
     /// function by `compute_stackable_locals`.
     stackable_locals: HashSet<u32>,
+    /// Struct locals loaded from a GLOBAL's heap box -> that box pointer, so a
+    /// field store (`CUR.inner = ..`) writes the global, not a local copy.
+    global_struct_ptrs: HashMap<u32, String>,
 }
 
 impl LlvmCodegen {
@@ -174,6 +177,7 @@ impl LlvmCodegen {
             current_fn_dbg_md: None,
             current_fn_loc_md: None,
             stackable_locals: HashSet::new(),
+            global_struct_ptrs: HashMap::new(),
         }
     }
 
@@ -3253,6 +3257,7 @@ impl LlvmCodegen {
         // in one match arm and consumed after the merge). Spilling it to an
         // `%_N.addr` alloca (store at def, load at each use) sidesteps dominance.
         self.mutable_locals.clear();
+        self.global_struct_ptrs.clear();
         let mut assign_counts: HashMap<u32, u32> = HashMap::new();
         let mut def_block: HashMap<u32, usize> = HashMap::new();
         let mut use_blocks: HashMap<u32, HashSet<usize>> = HashMap::new();
@@ -4678,6 +4683,9 @@ impl LlvmCodegen {
                 // IR that clang rejects. Heap structs (i64 handle) and ptr-typed
                 // objects still go through the load + inttoptr path.
                 let ptr_tmp = match object {
+                    Operand::Local(id) if self.global_struct_ptrs.contains_key(&id.0) => {
+                        self.global_struct_ptrs[&id.0].clone()
+                    }
                     Operand::Local(id)
                         if self.mutable_locals.contains(&id.0) && {
                             let lt = self.local_type(*id);
@@ -5549,6 +5557,28 @@ impl LlvmCodegen {
                 }
             }
 
+            // ----- Struct global read (`global_get_struct`): the slot holds
+            // a pointer to the heap box kryos_global_set's boxing made. -----
+            RValue::Call { func: fname, args }
+                if fname == "kryos_global_get" && args.len() == 1 && dest_ty.starts_with('%') =>
+            {
+                let name_val = self.operand_to_llvm(&args[0], func);
+                let name_ty = self.operand_type(&args[0], func);
+                let name_i64 = self.coerce_value(&name_val, &name_ty, "i64");
+                let raw = self.next_temp();
+                self.emit_line(&format!("  {raw} = call i64 @kryos_global_get(i64 {name_i64})"));
+                let p = self.next_temp();
+                self.emit_line(&format!("  {p} = inttoptr i64 {raw} to ptr"));
+                self.global_struct_ptrs.insert(dest.0, p.clone());
+                if is_mutable {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                    self.emit_line(&format!("  store {dest_ty} {v}, ptr %_{}.addr", dest.0));
+                } else {
+                    self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {p}", dest.0));
+                }
+            }
+
             // ----- Function call -----
             RValue::Call { func: fname, args } => {
                 // `type_of` is resolved at COMPILE TIME from the argument's
@@ -5785,8 +5815,15 @@ impl LlvmCodegen {
                         // (garbage size-class -> allocator panic at teardown on
                         // `arr[i] = Struct{..}`). Mirrors emit_aggregate_array's
                         // per-element boxing and the Cranelift heap-pointer model.
-                        let coerced = if fname == "kryos_array_set"
-                            && i == 2
+                        // A global slot is a raw i64 too: a struct global
+                        // (`let mut CUR: S = S {..}`) must be heap-boxed the
+                        // same way, or the aggregate was squeezed into the
+                        // slot and read back as garbage (AOT segfault at the
+                        // first `CUR.name`). kryos_global_get's struct load is
+                        // the matching half (see the STRUCT_SHARE_FN arm's
+                        // neighbour, `global_get_struct`).
+                        let coerced = if ((fname == "kryos_array_set" && i == 2)
+                            || (fname == "kryos_global_set" && i == 1 && actual_ty.starts_with('%')))
                             && (actual_ty.starts_with('{')
                                 || actual_ty.starts_with('[')
                                 || actual_ty.starts_with('%'))
@@ -5843,6 +5880,15 @@ impl LlvmCodegen {
                             heap_i64
                         } else {
                             self.coerce_value(&val, &actual_ty, &expected_ty)
+                        };
+                        // A boxed struct global is passed as the box's i64 handle.
+                        let expected_ty = if fname == "kryos_global_set"
+                            && i == 1
+                            && actual_ty.starts_with('%')
+                        {
+                            "i64".to_string()
+                        } else {
+                            expected_ty
                         };
                         arg_parts.push(format!("{expected_ty} {coerced}"));
                     }
@@ -8836,13 +8882,32 @@ impl LlvmCodegen {
                     }
                 } else {
                     // Fold: acc = concat(parts[0], parts[1]), acc = concat(acc, parts[2]), ...
+                    // A number/bool part is formatted into a FRESH string only
+                    // this concat sees (`"nm{i}"`); free it once copied in.
+                    // Unfreed, every interpolated number leaked its text
+                    // (~64B: 100MB per 1.6M evaluations).
+                    let fresh = |this: &Self, op: &Operand| {
+                        matches!(
+                            this.operand_type(op, func).as_str(),
+                            "i1" | "double" | "float" | "i64" | "i32" | "i16" | "i8"
+                        )
+                    };
+                    let fresh0 = fresh(self, &parts[0]);
+                    let fresh1 = fresh(self, &parts[1]);
                     let first = load_part_as_ptr(self, &parts[0]);
                     let second = load_part_as_ptr(self, &parts[1]);
                     let mut acc = self.next_temp();
                     self.emit_line(&format!(
                         "  {acc} = call ptr @kryos_string_concat(ptr {first}, ptr {second})"
                     ));
+                    if fresh0 {
+                        self.emit_line(&format!("  call void @kryos_string_free(ptr {first})"));
+                    }
+                    if fresh1 {
+                        self.emit_line(&format!("  call void @kryos_string_free(ptr {second})"));
+                    }
                     for part in &parts[2..] {
+                        let fresh_part = fresh(self, part);
                         let next_val = load_part_as_ptr(self, part);
                         let next_acc = self.next_temp();
                         self.emit_line(&format!(
@@ -8850,6 +8915,9 @@ impl LlvmCodegen {
                         ));
                         // Free the intermediate concat result that was just replaced.
                         self.emit_line(&format!("  call void @kryos_string_free(ptr {acc})"));
+                        if fresh_part {
+                            self.emit_line(&format!("  call void @kryos_string_free(ptr {next_val})"));
+                        }
                         acc = next_acc;
                     }
                     if is_mutable {

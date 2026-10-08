@@ -10,6 +10,45 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: review leftovers that master also gets wrong -- closure block scope, struct globals, generic variant inference, actor struct args (2026-10-08)
+
+All found by the 2026-10-07 adversarial review and present on master; each
+pinned by a conformance test that FAILS on the item-3 commit (aefc3b6d) and
+passes now, both backends.
+
+- **Closure shadowed in a block** (silent wrong answer, both backends):
+  `let g = |x| x + 3; if true { let g = |x| x + k*10 }; g(1)` printed 51
+  (the inner lambda), not 4. The name-keyed direct-call table now records the
+  local each entry was bound to (`closure_local_ids`) and the shortcut only
+  applies while the name still resolves to that local.
+- **Struct globals on AOT**: `let mut CUR: S = S { name: .. }` segfaulted --
+  the aggregate went into the global's raw i64 slot. LLVM now heap-boxes a
+  struct on `kryos_global_set` (like `kryos_array_set` already did) and loads
+  through the pointer on `kryos_global_get`; a field store through the global
+  (`CUR.inner = ..`) writes the box in place (`global_struct_ptrs`) -- it
+  silently updated a local copy before (b17: AOT 1680 vs JIT 1890).
+- **Unannotated generic variant**: `let o = Some(mk(8))` typed the payload as
+  i64 (JIT printed a pointer, AOT "extractvalue operand must be aggregate
+  type"). Inference now monomorphizes the enum from the argument types when
+  every type parameter is bound (`Ok(x)` alone still needs an annotation).
+- **Actor handler struct args** (JIT segfault): the handler runs later on the
+  actor thread. Like async callees, the send shares/retains each heap
+  argument and the handler owns it.
+
+Tests: conf_closure_name_scope.kry (extended), conf_struct_globals_actors.kry
+(new, also in no_double_free.sh on both backends).
+
+- **Interpolated numbers leaked** (both backends): `"nm{i}"` lowers to
+  `str_concat("nm", i)`; the number was formatted into a fresh string that the
+  concat never freed -- 102-103MB per 1.6M evaluations on master, 4MB now.
+  Pinned by tests/mem_string_interp_gate.sh (fails on master, both legs).
+- Caught by the gate ladder mid-wave and fixed before commit: the actor-send
+  share treated an ACTOR handle (`d.wire(w)`) as a struct box
+  (`kryos_struct_retain` on 0x4, conf_errors_concurrency JIT segfault).
+  `struct_is_shareable` now excludes actor types, and Cranelift skips its
+  container-store retain only where MIR actually emitted a share for that
+  local, instead of re-deriving shareability without knowing actor names.
+
 ## Wave: item 3 CLOSED -- the callee owns its struct param; one owner-aware struct drop path; plus a closure-name silent-wrong-answer (2026-10-07, 2nd wave)
 
 ### The model that ended ten attempts
