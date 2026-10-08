@@ -19,9 +19,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **JIT: Cranelift's struct deep copy shared array elements without retaining
   them**, so two copies of a `[Token]`-style field could free the same element
   twice. Latent until the first fix removed the leak that masked it.
-- Still open: a struct passed to a user function is not freed by the caller
-  (item 3's call-boundary half, ~77MB per 1M calls), and item 51's
-  field-overwrite repro. See tools/loop/LEDGER.md.
+- Item 3's call-boundary half and item 51 are now closed too (next section).
+
+### Fixed - struct and enum ownership across calls (LEDGER items 3 + 51 CLOSED)
+
+- **Passing a struct or enum to a function no longer leaks.** The callee now
+  owns its struct/enum parameter (it takes its own reference on entry) and the
+  caller keeps and frees its own, so returning, pushing, storing or capturing
+  the parameter is safe. Measured at 1M calls: struct methods 88MB -> 4MB,
+  method chains 279MB -> 3MB, `Option<S>` arguments 433MB -> 4MB,
+  `Result<S, str>` arguments 310MB -> 4MB.
+- **Overwriting a struct's enum field leaked the old value** (`h.v = ..` in a
+  loop: 279MB at 3M) -- item 51. Fixed.
+- **Double frees and wrong answers fixed along the way** (all present in
+  1.0.1): `Ag { memory: a.memory, caps: a.caps }` freed `memory` twice
+  (`std::agent::agent_with_alignment` hit it on every call); `let y = arr[0]`
+  read freed memory after `arr[0]` was overwritten (JIT); a struct pushed into
+  an array and later reused was freed when the array dropped (JIT); a
+  `coop_spawn`/actor task saw another struct's fields (JIT).
+- **Closures: a returned closure called through the same variable name in
+  another function ran the wrong lambda with garbage captures** (both
+  backends, exit 0), and a closure shadowed in a block was still called after
+  the block.
+- **Struct globals** (`let mut CUR: S = S { .. }` with a string field)
+  segfaulted on AOT, and a field store through one did not persist.
+- **`let o = Some(value)` without a type annotation** kept the payload type
+  (it printed a pointer on the JIT and failed to build on AOT).
+- **String interpolation of a number leaked the formatted text** on both
+  backends (~64 bytes per evaluation).
+- **`std::fmt::debug`/`display` and `std::test::assert_eq`/`assert_ne`** took
+  `any`: `debug("abc")` printed a pointer and `assert_eq` compared strings by
+  address. They are generic now.
+- **Runtime:** the struct owner count is now updated with a compare-and-swap,
+  so two threads releasing the same struct cannot both miss the last owner.
+- Remaining known limitation: an enum with an enum payload (enum nested
+  directly inside an enum), or a struct containing one, keeps the older
+  model -- it can leak, but never double-frees.
 
 ## [1.0.1] - 2026-10-06
 
