@@ -13,7 +13,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/loop_leak.kry"
 ITERS=1000000
 CEIL_MB=40
-MODES="named_iter call_iter keys_iter literal_iter break_iter nested match_enum match_str if_let"
+MODES="named_iter call_iter keys_iter literal_iter break_iter nested match_enum match_str if_let match_field"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-loop: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

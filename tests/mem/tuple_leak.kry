@@ -8,6 +8,7 @@
 //   reassign    `m = mk(1)` over a live tuple
 //   field_idx   `acc = p.tags[0]` (an assignment's field-read temp)
 //   call_arg    a tuple literal / named tuple passed to a function
+//   alias       `let u = t` (a non-owning alias kept `t` from being freed)
 //   closure     (not gated: a returned closure's captured tuple copy is not
 //               released with the closure yet -- see LEDGER)
 struct P { name: str, tags: [str] }
@@ -52,6 +53,10 @@ fn main() {
         } elif mode == "closure" {
             let f = cap((s, i))
             acc = to_string(f())
+        } elif mode == "alias" {
+            let t1 = mk(i)
+            let t2 = t1
+            acc = t2.0
         } elif mode == "field_idx" {
             let p = P { name: s, tags: ["t{i}"] }
             acc = p.tags[0]

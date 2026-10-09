@@ -39,6 +39,9 @@ fn main() {
             match mks(i) { "x" => { t = t + 1 } _ => { t = t + 2 } }
         } elif mode == "if_let" {
             if let Some(s) = mko(i) { t = t + len(s) }
+        } elif mode == "match_field" {
+            let p2 = mkarr(i)
+            match p2[0] { "zz" => { t = t + 1 } _ => { t = t + 2 } }
         } elif mode == "nested" {
             for row in [mkarr(i), mkarr(i + 1)] {
                 for s in row { t = t + len(s) }

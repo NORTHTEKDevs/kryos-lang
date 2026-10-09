@@ -95,6 +95,12 @@ pinned in conf_review3_fixes.kry (master fails to parse it):
 - Strings inside a formatted container are escaped (`\"`, `\`, `
 `).
 
+Leaks it found, fixed too: `let u = t` made `t` escape (never freed; JIT
+every iteration) -- an alias's uses now count as its source's
+(`strip_escaping_tuple_drops`, single-assignment sources only); `match
+p.name { .. }` / `match xs[i]` / `match m[k]` leaked the retained read.
+mem_tuple_gate.sh `alias` and mem_loop_gate.sh `match_field` legs pin them.
+
 Left as documented: `let u = t` of a tuple aliases on the JIT (copies on AOT),
 the same divergence class as gotcha 23; `match <call> { x => .. }` with a
 whole-subject binding still leaks the subject.

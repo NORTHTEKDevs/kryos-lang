@@ -3101,7 +3101,7 @@ pub fn lower_function(
         .collect();
     let user_fns = ctx.user_fn_names.clone();
     let unowned_tuples =
-        strip_escaping_tuple_drops(&mut blocks, &locals, &droppable_tuples, &user_fns);
+        strip_escaping_tuple_drops(&mut blocks, &locals, &droppable_tuples, &user_fns, &ctx.borrowed_locals);
 
     MirFunction {
         name: name.to_string(),
@@ -4477,6 +4477,7 @@ fn strip_escaping_tuple_drops(
     locals: &[MirLocal],
     droppable: &HashSet<u32>,
     user_fns: &HashSet<String>,
+    non_owned: &HashSet<u32>,
 ) -> Vec<u32> {
     use std::collections::BTreeSet;
     let tuples: HashSet<u32> = locals
@@ -4489,10 +4490,59 @@ fn strip_escaping_tuple_drops(
     }
     let mut unowned: HashSet<u32> =
         tuples.iter().copied().filter(|id| !droppable.contains(id)).collect();
+    // `let u = t` makes `u` a non-owning ALIAS of `t` (u is never dropped).
+    // Its uses count as `t`'s, so the copy is not by itself an escape -- as
+    // one, `let u = t` leaked `t` (JIT: every iteration). Only for a `t`
+    // assigned once: a reassignment releases the value the alias still reads.
+    let mut def_count: HashMap<u32, u32> = HashMap::new();
+    for b in blocks.iter() {
+        for inst in &b.instructions {
+            if let Instruction::Assign { dest, .. } = inst {
+                *def_count.entry(dest.0).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut alias_of: HashMap<u32, u32> = HashMap::new();
+    for b in blocks.iter() {
+        for inst in &b.instructions {
+            if let Instruction::Assign { dest, value: RValue::Use(Operand::Local(src)) } = inst {
+                if tuples.contains(&dest.0)
+                    && tuples.contains(&src.0)
+                    && non_owned.contains(&dest.0)
+                    && def_count.get(&dest.0) == Some(&1)
+                {
+                    alias_of.insert(dest.0, src.0);
+                }
+            }
+        }
+    }
+    let root = |mut id: u32| -> u32 {
+        let mut hops = 0;
+        while let Some(&up) = alias_of.get(&id) {
+            id = up;
+            hops += 1;
+            if hops > 64 {
+                break;
+            }
+        }
+        id
+    };
+    for (&alias, _) in alias_of.iter() {
+        unowned.insert(alias);
+        let r = root(alias);
+        if def_count.get(&r).copied().unwrap_or(0) != 1 {
+            unowned.insert(r);
+        }
+    }
     for b in blocks.iter() {
         for inst in &b.instructions {
             match inst {
                 Instruction::Drop { local } if tuples.contains(&local.0) => continue,
+                Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) }
+                    if alias_of.contains_key(&dest.0) =>
+                {
+                    continue;
+                }
                 Instruction::Assign { dest, value } => {
                     if tuples.contains(&dest.0)
                         && !matches!(
@@ -4522,6 +4572,7 @@ fn strip_escaping_tuple_drops(
             for u in uses {
                 if tuples.contains(&u.0) {
                     unowned.insert(u.0);
+                    unowned.insert(root(u.0));
                 }
             }
             if !matches!(inst, Instruction::Assign { .. }) {
@@ -4537,6 +4588,7 @@ fn strip_escaping_tuple_drops(
         for u in tu {
             if tuples.contains(&u.0) {
                 unowned.insert(u.0);
+                unowned.insert(root(u.0));
             }
         }
     }
@@ -9536,10 +9588,16 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
         subject,
         ast::Expr::FnCall { .. } | ast::Expr::MethodCall { .. } | ast::Expr::StaticMethodCall { .. }
     );
-    if fresh {
+    // A str/array/map read out of a field, element or map entry is retained
+    // too (`match p.name { "x" => .. }` leaked the read every time).
+    let retained_read = matches!(
+        subject,
+        ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. }
+    );
+    if fresh || retained_read {
         let sty = infer_expr_type(ctx, subject);
         let owned = matches!(sty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
-            || is_owned_enum_ty(ctx, &sty);
+            || (fresh && is_owned_enum_ty(ctx, &sty));
         let binds_whole = arms.iter().any(|a| {
             matches!(&a.pattern, ast::Pattern::Ident { name, .. }
                 if find_enum_variant(ctx, name).is_none())
