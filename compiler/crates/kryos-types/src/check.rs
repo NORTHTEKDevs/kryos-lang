@@ -7032,29 +7032,10 @@ impl TypeChecker {
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
                 }
-                // `==`/`!=` on a struct or enum lowers to a synthesized
-                // structural-equality helper (kryos-mir's
-                // `ensure_struct_eq_helper`/`ensure_enum_eq_helper`) that
-                // compares fields pairwise. Array/map fields don't have a
-                // cheap, unsurprising structural comparison implemented yet
-                // (elementwise array/map equality), so reject the comparison
-                // here with a clear message rather than let it through to
-                // codegen, where it would previously either silently compare
-                // handles (JIT) or fail to build (AOT).
-                if matches!(op, BinOp::Eq | BinOp::Neq) {
-                    let resolved = self.engine.resolve(&left_ty);
-                    let mut visited = std::collections::HashSet::new();
-                    if self.contains_array_or_map(&resolved, &mut visited) {
-                        let op_sym = if op == BinOp::Eq { "==" } else { "!=" };
-                        self.error(
-                            format!(
-                                "cannot apply `{op_sym}` to type `{resolved}`: it has an array or map field (directly or nested) -- structural equality for array/map fields is not supported; compare those fields explicitly"
-                            ),
-                            span,
-                        );
-                        return Type::Error;
-                    }
-                }
+                // `==`/`!=` on a struct, enum, tuple, array or map lowers to a
+                // synthesized structural-equality helper in kryos-mir
+                // (`ensure_struct_eq_helper`, `ensure_container_eq_helper`,
+                // ...) that compares contents, so every type compares by value.
                 // ORDERING (< > <= >=) is defined only for scalars and
                 // strings. On a struct/enum/array/map it type-checked clean
                 // and codegen compared the raw HANDLES -- two equal-valued

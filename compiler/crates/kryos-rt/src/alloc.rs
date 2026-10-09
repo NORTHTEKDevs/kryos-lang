@@ -315,10 +315,36 @@ pub extern "C" fn kryos_calloc(count: i64, size: i64) -> *mut u8 {
     }
 }
 
+/// Zeroed stand-in for a struct/enum box a container read did not find
+/// (`m["missing"]` of a `map<_, S>`): the all-zero value, like the LLVM
+/// backend's zero image. Every box entry point treats it as permanently
+/// shared, so it is never retained, released or freed.
+#[repr(C, align(16))]
+struct ZeroBox([u64; 2050]);
+static ZERO_BOX: ZeroBox = ZeroBox([0; 2050]);
+
+fn zero_box_payload() -> *mut u8 {
+    unsafe { (ZERO_BOX.0.as_ptr() as *mut u8).add(HEADER) }
+}
+
+fn is_zero_box(ptr: *mut u8) -> bool {
+    ptr == zero_box_payload()
+}
+
+/// A container read's box, or the zero box when the read found nothing.
+#[no_mangle]
+pub extern "C" fn kryos_box_or_zero(p: i64) -> i64 {
+    if p == 0 {
+        zero_box_payload() as i64
+    } else {
+        p
+    }
+}
+
 /// Free a box allocated by `kryos_calloc`. Null is a no-op.
 #[no_mangle]
 pub extern "C" fn kryos_free(ptr: *mut u8) {
-    if ptr.is_null() {
+    if ptr.is_null() || is_zero_box(ptr) {
         return;
     }
     if box_diag() {
@@ -675,7 +701,7 @@ fn box_diag_check(ptr: *mut u8, who: &str) {
 /// unaffected.
 #[no_mangle]
 pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
-    if ptr.is_null() {
+    if ptr.is_null() || is_zero_box(ptr) {
         return ptr;
     }
     if box_diag() {
@@ -705,7 +731,7 @@ pub extern "C" fn kryos_struct_retain(ptr: *mut u8) -> *mut u8 {
 /// first instead.
 #[no_mangle]
 pub extern "C" fn kryos_struct_release_shared(ptr: *mut u8) -> i64 {
-    if ptr.is_null() {
+    if ptr.is_null() || is_zero_box(ptr) {
         return 1;
     }
     if box_diag() {

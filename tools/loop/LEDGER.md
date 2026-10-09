@@ -60,6 +60,61 @@ because the share skipped borrowed holders; container stores now share via
 Cranelift's compensating store retain is skipped for enums too when MIR
 shared (mem_enum_overwrite map JIT leg).
 
+## Wave: tuples, structural equality, missing map keys, keys() ownership (2026-10-08)
+
+Pinned by conf_tuple_ownership.kry and conf_structural_eq_and_lookup.kry (both
+backends under KRYOS_FREE_DIAG; master double-frees or fails to build each)
+and mem_tuple_gate.sh (81c61df6: 10 of 12 legs over the ceiling; now 3-4MB).
+
+Tuples. Neither backend had a Tuple drop arm, so a tuple holding a str, array
+or struct was never freed, and a tuple element read was an unretained load the
+statement-end temp drop then freed (`println(q.0)` twice double-freed).
+- A str/array/map tuple element read in an EXPRESSION is retained in MIR
+  (FieldAccess lowering), like the backends retain struct field reads; pattern
+  bindings that only alias an element (match arms, `for (a, b) in ..`) take no
+  reference. `let a = t.N` / `acc = t.N` own the read without a second retain.
+- Tuple Drop: Cranelift releases each heap slot of the tuple's KryosArray and
+  the array; LLVM releases the inline aggregate's str/array/map and inline
+  struct elements.
+- A tuple keeps its Drop only where it has ONE owner (`strip_escaping_tuple_drops`):
+  a non-parameter local built fresh (literal or call result) of a type every
+  element of which both Drops release (scalars, str/array/map, shareable
+  structs, such tuples), afterwards only read through `t.N`. Anything else
+  keeps the never-freed model and is excluded from exception cleanup.
+- A returned tuple that is not freshly built (a parameter, a closure capture,
+  an element or field read, `return`ed or a body tail) is COPIED
+  (`emit_tuple_clone`): the caller frees what it gets, and the alias form
+  freed a capture (`wrap(t)()` twice read a freed tuple; master: 7 double
+  frees on five return shapes).
+- `let (a, b) = f()` releases the tuple after binding (struct elements take
+  their own owner, str elements are retained); `t = mk(..)` releases the
+  previous tuple; `return (p, p)` keeps the drop of the locals it packed.
+- An assignment's field-read temp (`acc = p.tags[0]`) is dropped: the
+  release-protocol guard holds back only reads the protocol itself involves.
+
+Structural equality. `==`/`!=` on arrays and maps was rejected directly but
+compiled to a HANDLE compare inside a generic (`same([1], [1])` false, so
+`assert_eq` on equal arrays failed). Arrays (same length, pairwise `==`) and
+maps (same size, every key present with an `==` value) now compare by content
+through synthesized helpers (`ensure_container_eq_helper`); structs, enums and
+tuples with array/map fields compare those fields too. Spec: section 3.0.
+
+Missing map keys. `m["missing"]` of a `map<_, Struct/Enum>` returns 0; AOT
+loaded the aggregate from address 0 (segfault) and the JIT handed out a null
+box the next field read dereferenced. AOT loads a zero image instead, the JIT
+gets the runtime's zero box (`kryos_box_or_zero`, never retained or freed),
+and a null `str` compares equal to "" (it already printed and measured as
+empty). Review residue u01/y3/y4 now agree across backends.
+
+keys(). `kryos_map_keys_str` handed out the map's own key strings without a
+reference while the keys array frees its elements: walking `keys(m)` twice and
+binding `let k = ks[i]` double-freed the map's keys. Each key is retained now.
+
+Still open (leak, not double free): a tuple passed to a call, stored in a
+container or struct, captured, or holding an enum element; a tuple literal
+passed directly as an argument; `for x in <call>`'s iterable temp; a
+`match <call> { .. }` scrutinee temp.
+
 ## Wave: recursive enums, literal elements, element reads, generic shadowing (2026-10-08)
 
 Follow-ups to the review-2 residue (q03, u03) and what fixing them exposed.

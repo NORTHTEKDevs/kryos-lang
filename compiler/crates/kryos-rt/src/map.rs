@@ -541,7 +541,18 @@ pub unsafe extern "C" fn kryos_map_keys(map: i64) -> i64 {
 /// Return all string keys as a KryosArray of KryosString handles.
 #[no_mangle]
 pub unsafe extern "C" fn kryos_map_keys_str(map: i64) -> i64 {
-    kryos_map_keys(map) // Same implementation — keys are i64 handles either way.
+    // The array owns its elements (its drop frees each string), so each key
+    // gets one more reference; the map keeps its own. Handing out the map's
+    // handles bare let `let ks = keys(m)`'s drop free the map's keys.
+    let arr = kryos_map_keys(map);
+    let a = arr as *mut crate::array::KryosArray;
+    if !a.is_null() && !(*a).data.is_null() {
+        let data = (*a).data as *const i64;
+        for i in 0..(*a).len as usize {
+            crate::string::kryos_string_retain_opt(*data.add(i) as *mut crate::string::KryosString);
+        }
+    }
+    arr
 }
 
 /// Clone a map — H20 (shift step 30) shares the underlying pointer.

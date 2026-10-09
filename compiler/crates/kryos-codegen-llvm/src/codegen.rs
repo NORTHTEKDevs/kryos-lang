@@ -1193,6 +1193,9 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
+        // Read-only zero image an unboxed aggregate loads from when its box
+        // pointer is null (a map read of a missing key returns 0).
+        self.emit_line("@__kryos_zero_box = internal constant [2048 x i64] zeroinitializer");
         self.emit_line("declare ptr @kryos_struct_retain(ptr)");
         self.emit_line("declare ptr @kryos_string_retain(ptr)");
         self.emit_line("declare i64 @kryos_string_retain_opt(ptr)");
@@ -4108,6 +4111,18 @@ impl LlvmCodegen {
                                 self.emit_line(&format!("  br label %sdrop_skip_{uid}"));
                                 self.emit_line(&format!("sdrop_skip_{uid}:"));
                             }
+                        }
+                    }
+                    Some(MirType::Tuple(elems)) => {
+                        // MIR keeps a tuple's Drop only where the tuple has
+                        // one owner (strip_escaping_tuple_drops).
+                        let local_llvm = self.local_type(*local);
+                        if local_llvm.starts_with('{') {
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {local_llvm}"));
+                            self.emit_line(&format!("  store {local_llvm} {val}, ptr {buf}"));
+                            let elems = elems.clone();
+                            self.emit_tuple_drop(&buf, &local_llvm, &elems, func);
                         }
                     }
                     Some(MirType::Enum(name)) => {
@@ -7260,12 +7275,21 @@ impl LlvmCodegen {
                                 ) && (dest_ty.starts_with('{')
                                     || dest_ty.starts_with('%'))
                                 {
+                                    // A missing key returns 0: read the
+                                    // all-zero value, not address 0 (AOT
+                                    // segfault; the JIT read a zero box).
                                     let p = self.next_temp();
                                     self.emit_line(&format!(
                                         "  {p} = inttoptr i64 {raw} to ptr"
                                     ));
+                                    let isnull = self.next_temp();
+                                    self.emit_line(&format!("  {isnull} = icmp eq ptr {p}, null"));
+                                    let src = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {src} = select i1 {isnull}, ptr @__kryos_zero_box, ptr {p}"
+                                    ));
                                     let v = self.next_temp();
-                                    self.emit_line(&format!("  {v} = load {dest_ty}, ptr {p}"));
+                                    self.emit_line(&format!("  {v} = load {dest_ty}, ptr {src}"));
                                     self.track_type(&v, &dest_ty);
                                     v
                                 } else {
@@ -10751,9 +10775,17 @@ impl LlvmCodegen {
                     Some(if to.contains(',') { 2 } else { 1 })
                 };
                 if nfields.map_or(true, |n| n > 1) {
+                    // A null box (`m["missing"]` of a struct/enum-valued map)
+                    // reads as the all-zero value instead of segfaulting.
                     let p = self.next_temp();
                     self.emit_line(&format!("  {p} = inttoptr i64 {value} to ptr"));
-                    self.emit_line(&format!("  {tmp} = load {to}, ptr {p}"));
+                    let isnull = self.next_temp();
+                    self.emit_line(&format!("  {isnull} = icmp eq ptr {p}, null"));
+                    let src = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {src} = select i1 {isnull}, ptr @__kryos_zero_box, ptr {p}"
+                    ));
+                    self.emit_line(&format!("  {tmp} = load {to}, ptr {src}"));
                     self.track_type(&tmp, to);
                 } else {
                     let f0ty = if let Some(name) = to.strip_prefix('%') {
@@ -11673,6 +11705,46 @@ impl LlvmCodegen {
     /// stack-allocated enum locals (alloca).
     fn emit_enum_drop_payload(&mut self, val: &str, enum_name: &str, func: &MirFunction) {
         self.emit_enum_drop_inner(val, enum_name, func, /*free_buf=*/ false);
+    }
+
+    /// Release the heap elements of an inline tuple at `buf` (ptr to
+    /// `llvm_ty`). Elements boxed into an i64 slot (an enum, or an aggregate
+    /// the tuple type erased) live in ARC boxes this cannot release, so they
+    /// are left alone -- a leak, never a free of something shared.
+    fn emit_tuple_drop(&mut self, buf: &str, llvm_ty: &str, elems: &[MirType], func: &MirFunction) {
+        let slots = split_aggregate_fields(llvm_ty);
+        for (i, ety) in elems.iter().enumerate() {
+            let Some(slot) = slots.get(i).cloned() else { continue };
+            let gep = self.next_temp();
+            self.emit_line(&format!("  {gep} = getelementptr {llvm_ty}, ptr {buf}, i32 0, i32 {i}"));
+            match ety {
+                MirType::Str if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_string_free(ptr {v})"));
+                }
+                MirType::Array(et, _) if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    let et = et.as_ref().clone();
+                    self.emit_array_drop(&v, &et, func);
+                }
+                MirType::Map { .. } if slot == "i64" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load i64, ptr {gep}"));
+                    self.emit_line(&format!("  call void @kryos_map_free(i64 {v})"));
+                }
+                MirType::Struct(n) if slot == format!("%{n}") && !self.copy_structs.contains(n) => {
+                    let n = n.clone();
+                    self.emit_struct_drop(&gep, &n, func);
+                }
+                MirType::Tuple(inner) if slot.starts_with('{') => {
+                    let inner = inner.clone();
+                    self.emit_tuple_drop(&gep, &slot, &inner, func);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn emit_enum_drop(&mut self, val: &str, enum_name: &str, func: &MirFunction) {

@@ -195,6 +195,10 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_free as *const u8,
         );
         jit_builder.symbol(
+            "kryos_box_or_zero",
+            kryos_rt::alloc::kryos_box_or_zero as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_array_free_elems",
             kryos_rt::array::kryos_array_free_elems as *const u8,
         );

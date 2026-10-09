@@ -317,6 +317,12 @@ jobs:
         # all 12 legs; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_element_read_gate.sh
 
+      - name: Tuple memory gate
+        # A singly-owned tuple releases its heap elements; destructuring and
+        # reassignment release the tuple they consume. 81c61df6 at 1M: 10 of
+        # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_tuple_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

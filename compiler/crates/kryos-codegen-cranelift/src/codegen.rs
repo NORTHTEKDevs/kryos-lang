@@ -3181,7 +3181,31 @@ fn translate_instruction<M: Module>(
 ) -> Result<(), CodegenError> {
     match instr {
         Instruction::Assign { dest, value } => {
-            let val = translate_rvalue(value, builder, translator, module, Some(*dest))?;
+            let mut val = translate_rvalue(value, builder, translator, module, Some(*dest))?;
+            // A map read of a struct/enum value that found nothing returns 0;
+            // hand out the runtime's zero box instead of a null box the next
+            // field read dereferences (`m["missing"].name` segfaulted).
+            if let RValue::Call { func, .. } = value {
+                if func == "kryos_map_get" || func == "kryos_map_get_str" {
+                    let agg = translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *dest)
+                        .is_some_and(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)));
+                    if let (true, Some(v)) = (agg, val) {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_box_or_zero",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let c = builder.ins().call(f, &[v]);
+                        val = Some(builder.inst_results(c)[0]);
+                    }
+                }
+            }
             if let Some(val) = val {
                 let var = translator.variables.get(&dest.0).copied().ok_or_else(|| {
                     CodegenError::Internal(format!("undefined local _{}", dest.0))
@@ -3454,6 +3478,9 @@ fn translate_instruction<M: Module>(
                             // catch-all below), so its header+entries buffer
                             // was never freed at all on this backend regardless
                             // of MIR-level drop-insertion correctness.
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
+                        }
+                        kryos_mir::ir::MirType::Tuple(_) => {
                             emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
                         _ => {}
@@ -5917,7 +5944,8 @@ fn translate_rvalue<M: Module>(
                 let get_ref =
                     ensure_func_ref_with_args("kryos_array_get", builder, translator, module, 2)?;
                 let call = builder.ins().call(get_ref, &[ptr, idx_val]);
-                return Ok(Some(builder.inst_results(call)[0]));
+                let elem = builder.inst_results(call)[0];
+                return Ok(Some(elem));
             }
 
             // Heuristic: when the object's type is opaque (e.g. MirType::I64 from
@@ -8305,6 +8333,46 @@ fn emit_drop_for_value<M: Module>(
             let free_ref =
                 ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
+        }
+        MirType::Tuple(ref elems) => {
+            // A tuple is a KryosArray of i64 slots. MIR only keeps a tuple's
+            // Drop where the tuple has one owner (strip_escaping_tuple_drops),
+            // so release each heap element, then the array itself.
+            let zero = builder.ins().iconst(types::I64, 0);
+            let nonnull = builder.ins().icmp(IntCC::NotEqual, val, zero);
+            let body = builder.create_block();
+            let done = builder.create_block();
+            builder.ins().brif(nonnull, body, &[], done, &[]);
+            builder.seal_block(body);
+            builder.switch_to_block(body);
+            for (i, ety) in elems.iter().enumerate() {
+                let heap = matches!(
+                    ety,
+                    MirType::Str
+                        | MirType::Array(_, _)
+                        | MirType::Map { .. }
+                        | MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Function { .. }
+                        | MirType::Shared(_)
+                );
+                if !heap {
+                    continue;
+                }
+                let get_ref =
+                    ensure_func_ref_with_args("kryos_array_get", builder, translator, module, 2)?;
+                let idx = builder.ins().iconst(types::I64, i as i64);
+                let c = builder.ins().call(get_ref, &[val, idx]);
+                let elem = builder.inst_results(c)[0];
+                emit_drop_for_value(elem, ety, builder, translator, module)?;
+            }
+            let free_ref =
+                ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
+            builder.ins().call(free_ref, &[val]);
+            builder.ins().jump(done, &[]);
+            builder.seal_block(done);
+            builder.switch_to_block(done);
         }
         MirType::Enum(ref enum_name) => {
             // Guard: an enum local can legitimately hold null - a callee

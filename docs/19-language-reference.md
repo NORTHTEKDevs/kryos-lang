@@ -184,6 +184,15 @@ except `**` (right) and the assignment `=` (right).
 | 12 | `as` (type cast), unary `-`, `+`, `!` |
 | 13 | `.` (field), `[]` (index), `()` (call) |
 
+### 3.0 Equality
+
+`==` and `!=` compare by value for every type: numbers and `bool` by value,
+`str` by content, structs, enums and tuples field by field, arrays element by
+element (same length, pairwise `==`), and maps by size plus every key of the
+left map present in the right with an `==` value. Nesting composes (`[[str]]`,
+a struct with an array field, `map<str, [i64]>`). The ordering operators
+`<`, `<=`, `>`, `>=` are defined only for numbers, `str`, `char` and `bool`.
+
 ### 3.1 Casts
 
 `expr as T` for primitive numeric and pointer conversions. There are no

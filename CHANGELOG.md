@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added - structural equality for arrays and maps
+
+- `==` and `!=` now compare arrays element by element and maps entry by entry,
+  directly and inside structs, enums, tuples and generics. Before, they were
+  rejected when written directly but silently compared handles inside a
+  generic function, so `assert_eq([1, 2], [1, 2], ..)` failed.
+
+### Fixed - tuples, missing map keys, keys()
+
+- **Reading a tuple element twice double-freed it** (`println(q.0)` twice), and
+  returning a parameter, captured or element-read tuple handed the caller an
+  alias it then freed (both backends).
+- **Tuples were never freed**: a tuple holding a string, array or struct
+  leaked every time. Built-and-read, destructured, reassigned and returned
+  tuples are freed now; a tuple passed to a function, stored, or captured still
+  leaks.
+- **Reading a missing key from a map of structs or enums crashed** (segfault on
+  AOT, and on the JIT at the next field read). It reads the zero value now.
+- **Walking `keys(m)` twice could double-free the map's keys** when an element
+  was bound with `let`.
+
 ### Fixed - recursive enums, container reads, and literal elements
 
 - **Recursive enums double-freed on AOT** (`enum T { N([T]), Nm(str, [T]) }`
@@ -22,8 +43,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A generic parameter named like a user type no longer resolves to that
   type**: with `enum T` in scope, `fn id<T>(x: T)` rejected `id(5)` and no
   generic stdlib function (`assert_eq`, ...) could be called.
-- Known gap: tuples holding strings, arrays or structs are never freed (see
-  LEDGER).
 
 ### Fixed - struct heap fields leaked whenever they were read (LEDGER items 3 + 51)
 
