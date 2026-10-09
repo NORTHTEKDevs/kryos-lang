@@ -417,6 +417,7 @@ no_df_both structural_eq_and_lookup "$ROOT/tests/conformance/conf_structural_eq_
 no_df_both loop_ownership "$ROOT/tests/conformance/conf_loop_ownership.kry"
 no_df_both to_string_aggregates "$ROOT/tests/conformance/conf_to_string_aggregates.kry"
 no_df_both review3_fixes "$ROOT/tests/conformance/conf_review3_fixes.kry"
+no_df_both reassign_ownership "$ROOT/tests/conformance/conf_reassign_ownership.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

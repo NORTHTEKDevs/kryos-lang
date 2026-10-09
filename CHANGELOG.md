@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - reassigning a struct or enum variable double-freed
+
+- **`best = p`** (an owned struct/enum local reassigned from another value,
+  e.g. a loop variable over an array) stored the value without taking its own
+  reference and released only the old value's fields, so the local's
+  scope-end drop freed a box the array still held. `std::probable`'s
+  `best_of` hit it on the JIT. The new value now takes its own reference and
+  the old value is released whole.
+
 ### Fixed - review findings: catch-all match arms, missing map keys, assert_eq, keys()
 
 - **`match e { other => other }` on an enum bound garbage** (JIT crash, AOT

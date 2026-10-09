@@ -5540,8 +5540,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 }
                                 _ => None,
                             };
+                            let owned_enum_dest = dest_ty.as_ref().is_some_and(|t| is_owned_enum_ty(ctx, t))
+                                && !ctx.borrowed_locals.contains(&dest.0)
+                                && !ctx.param_locals.contains(&dest.0);
                             let old_snapshot = match &dest_ty {
-                                Some(ty) if (release_fn.is_some() || dest_struct_name.is_some())
+                                Some(ty) if (release_fn.is_some() || dest_struct_name.is_some() || owned_enum_dest)
                                     && !ctx.dropped_locals.contains(&dest.0) =>
                                 {
                                     let t = ctx.alloc_temp(ty.clone());
@@ -5663,6 +5666,20 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // class). Non-container non-copy values (structs,
                             // enums) keep the move.
                             let mut retain_container_src: Option<&'static str> = None;
+                            // An OWNED shareable struct/enum local reassigned
+                            // from another value (`best = p` with `p` a loop
+                            // alias, `x = y`): the new value takes its own
+                            // owner and the old value is dropped whole. It
+                            // used to store the alias raw and release only the
+                            // old value's fields, so the local's scope-end
+                            // drop freed a box the array still held.
+                            let owned_agg_dest = dest_ty
+                                .as_ref()
+                                .is_some_and(|t| is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t))
+                                && !ctx.borrowed_locals.contains(&dest.0)
+                                && !ctx.param_locals.contains(&dest.0);
+                            let share_new = owned_agg_dest
+                                && matches!(&rvalue, RValue::Use(Operand::Local(src)) if *src != dest);
                             if let RValue::Use(Operand::Local(src)) = &rvalue {
                                 let src_ty = ctx
                                     .locals
@@ -5680,7 +5697,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 if src_is_retained_get {
                                 } else if let Some(rf) = retain_for_ty(&src_ty) {
                                     retain_container_src = Some(rf);
-                                } else if !is_copy_type(ctx, &src_ty) {
+                                } else if !is_copy_type(ctx, &src_ty) && !share_new {
                                     ctx.dropped_locals.insert(src.0);
                                 }
                             }
@@ -5743,6 +5760,15 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         ],
                                     },
                                 });
+                            } else if owned_agg_dest {
+                                if share_new {
+                                    emit_struct_share(ctx, dest);
+                                }
+                                if let Some(old) = old_snapshot {
+                                    drop_tag(ctx, "reassign-release-owned-agg");
+                                    ctx.emit(Instruction::Drop { local: old });
+                                    ctx.dropped_locals.insert(old.0);
+                                }
                             } else if let (Some(struct_name), Some(old)) =
                                 (&dest_struct_name, old_snapshot)
                             {
@@ -6154,6 +6180,28 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 None
                             };
                             lower_nested_field_assign(ctx, object, field, val_op.clone());
+                            // A NAMED str/array/map local stored into a field
+                            // stays live and is dropped at its own scope end,
+                            // so the field takes its own reference (a temp is
+                            // moved in). Without it `m.name = replacement`
+                            // freed the string twice on both backends.
+                            if let Operand::Local(vl) = &val_op {
+                                let named_ty = ctx
+                                    .locals
+                                    .iter()
+                                    .find(|l| l.id == *vl && l.name.is_some())
+                                    .map(|l| l.ty.clone());
+                                if let Some(rf) = named_ty.as_ref().and_then(retain_for_ty) {
+                                    let sink = ctx.alloc_temp(MirType::I64);
+                                    ctx.emit(Instruction::Assign {
+                                        dest: sink,
+                                        value: RValue::Call {
+                                            func: rf.to_string(),
+                                            args: vec![Operand::Local(*vl)],
+                                        },
+                                    });
+                                }
+                            }
                             if let Some(old_tmp) = owned_old {
                                 drop_tag(ctx, "owned-field-overwrite");
                                 ctx.emit(Instruction::Drop { local: old_tmp });

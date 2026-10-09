@@ -1,0 +1,76 @@
+// Conformance (2026-10-09): reassigning an owned struct/enum local from
+// another value. `best = p` (p a loop alias over an array of structs) stored
+// the alias raw and released only the OLD value's fields, so the local's
+// scope-end drop freed a box the array still held -- std::probable's best_of
+// double-freed on the JIT (tests/smoke/test_teardown_heap_integrity failed
+// on Linux/macOS CI). The new value takes its own owner and the old one is
+// dropped whole. Run under KRYOS_FREE_DIAG on both backends by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct Pr { value: str, confidence: f64, source: str }
+enum E { A(str), B([str]) }
+struct Bag { name: str, xs: [str] }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(v: str, c: f64) -> Pr { return Pr { value: v, confidence: c, source: "s{1}" } }
+
+fn best_of(ps: [Pr]) -> Pr {
+    let mut best = ps[0]
+    for p in ps {
+        if p.confidence > best.confidence {
+            best = p
+        }
+    }
+    return Pr { value: best.value, confidence: best.confidence, source: best.source }
+}
+
+fn pick(es: [E]) -> str {
+    let mut cur = es[0]
+    for e in es {
+        match e { E.B(xs) => { cur = e } E.A(s) => {} }
+    }
+    match cur { E.A(s) => { return s } E.B(xs) => { return xs[0] } }
+}
+
+fn main() {
+    let ps = [mk("a{1}", 0.5), mk("b{2}", 0.9), mk("c{3}", 0.7)]
+    let b1 = best_of(ps)
+    let b2 = best_of(ps)
+    expect(b1.value == "b2" and b2.value == "b2" and ps[1].value == "b2", "best_of over an array")
+
+    let mut x = mk("x{1}", 0.1)
+    let y = mk("y{2}", 0.2)
+    x = y
+    x = mk("z{3}", 0.3)
+    expect(x.value == "z3" and y.value == "y2", "reassign from a named struct, then a fresh one")
+
+    let es = [E.A("a{1}"), E.B(["b{2}"]), E.A("c{3}")]
+    expect(pick(es) == "b2" and pick(es) == "b2", "reassign an enum local from a loop alias")
+
+    let mut o: Option<str> = Some("o{1}")
+    let o2: Option<str> = Some("p{2}")
+    o = o2
+    let got = match o { Some(s) => s, None => "" }
+    expect(got == "p2", "reassign an Option local")
+
+    // A named str/array local stored into a field: the field takes its own
+    // reference (it was moved in and freed twice, both backends).
+    let mut h = Bag { name: "n{1}", xs: ["a{1}"] }
+    let nm = "m{2}"
+    let ys = ["b{2}"]
+    h.name = nm
+    h.xs = ys
+    expect(h.name == "m2" and nm == "m2" and h.xs[0] == "b2" and ys[0] == "b2", "field store from a named local")
+    let mut tp = ("t{1}", 1)
+    tp.0 = nm
+    expect(tp.0 == "m2" and nm == "m2", "tuple element store from a named local")
+
+    println("conformance reassign ownership: PASS")
+}
