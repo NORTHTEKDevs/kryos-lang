@@ -3275,6 +3275,12 @@ impl Parser {
                     },
                     span: merged,
                 })
+            } else if self.check(TokenKind::LBrace) {
+                // A `{ .. }` arm body ends at its `}`: parsed as a full
+                // expression, a next arm starting with `(` on the following
+                // line (`(1, x) => ..`) was taken as a CALL of the block and
+                // the match failed to parse.
+                Box::new(self.parse_map_or_block_expr())
             } else {
                 Box::new(self.parse_expr())
             };

@@ -18,6 +18,16 @@ fn with_opt(i: i64) -> (Option<str>, i64) { return (Some("o{i}"), i) }
 fn with_enum(i: i64) -> (E, str) { return (E.A("e{i}"), "x{i}") }
 fn ename(e: E) -> str { match e { E.A(s) => { return s } E.B(n) => { return to_string(n) } } }
 
+struct TH { pair: (str, i64), n: i64 }
+enum TE { T((str, i64)), N(i64) }
+fn tkeep_in(t: (str, i64), arr: [(str, i64)]) -> [(str, i64)] { return push(arr, t) }
+fn tbox(t: (str, i64)) -> TH { return TH { pair: t, n: 1 } }
+fn tenum(t: (str, i64)) -> TE { return TE.T(t) }
+fn tcap(t: (str, i64)) -> fn() -> str { return || t.0 }
+fn tlit(t: (str, i64)) -> [(str, i64)] { return [t, t] }
+fn tmap(t: (str, i64)) -> map<str, (str, i64)> { let m: map<str, (str, i64)> = {}  m["k"] = t  return m }
+fn tname(e: TE) -> str { match e { TE.T(t) => { return t.0 } TE.N(n) => { return "n" } } }
+fn tswap(t: (str, str)) -> (str, str) { return (t.1, t.0) }
 fn tident(t: (str, i64)) -> (str, i64) { t }
 fn tident2(t: (str, i64)) -> (str, i64) { return t }
 fn tfirst(xs: [(str, i64)]) -> (str, i64) { return xs[0] }
@@ -79,6 +89,43 @@ fn main() {
     let got = tident(t).0 + tident2(t).0 + tfirst(xs).0 + tfirst(xs).0 + tkeep(t).0 + cl().0 + cl().0
     if got + t.0 + xs[0].0 != "a1a1x1x1a1a1a1a1x1" {
         println("CONF FAIL: tuple returns: " + got)
+        exit(1)
+    }
+    // A tuple parameter a callee keeps (pushed, stored in a struct, an enum,
+    // a map, an array literal, captured by a returned closure) is shared or
+    // copied: the caller frees its own tuple after the call. Master: 20
+    // double frees on this block.
+    let mut kept: [(str, i64)] = []
+    let mut hs: [TH] = []
+    let mut es: [TE] = []
+    let mut fs: [fn() -> str] = []
+    let mut ls: [[(str, i64)]] = []
+    let mut ms: [map<str, (str, i64)>] = []
+    let mut k = 0
+    while k < 4 {
+        let tk = ("v{k}", k)
+        kept = tkeep_in(tk, kept)
+        hs = push(hs, tbox(tk))
+        es = push(es, tenum(tk))
+        fs = push(fs, tcap(tk))
+        ls = push(ls, tlit(tk))
+        ms = push(ms, tmap(tk))
+        k = k + 1
+    }
+    let mut acc3 = ""
+    k = 0
+    while k < 4 {
+        let fk = fs[k]
+        acc3 = acc3 + kept[k].0 + hs[k].pair.0 + tname(es[k]) + fk() + ls[k][1].0 + ms[k]["k"].0 + "|"
+        k = k + 1
+    }
+    if acc3 != "v0v0v0v0v0v0|v1v1v1v1v1v1|v2v2v2v2v2v2|v3v3v3v3v3v3|" {
+        println("CONF FAIL: kept tuple params: " + acc3)
+        exit(1)
+    }
+    let sw = tswap(("l{k}", "r{k}"))
+    if sw.0 + sw.1 != "r4l4" {
+        println("CONF FAIL: tuple literal argument")
         exit(1)
     }
     println("conformance tuple ownership: PASS")

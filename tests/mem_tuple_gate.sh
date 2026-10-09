@@ -13,7 +13,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/tuple_leak.kry"
 ITERS=1000000
 CEIL_MB=40
-MODES="literal destructure destruct_p ret_param reassign field_idx"
+MODES="literal destructure destruct_p ret_param reassign field_idx call_arg"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-tuple: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

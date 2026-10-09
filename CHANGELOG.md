@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - review findings: catch-all match arms, missing map keys, assert_eq, keys()
+
+- **`match e { other => other }` on an enum bound garbage** (JIT crash, AOT
+  wrong output).
+- **Reading a missing key from a map of structs, enums, tuples or Options**
+  now gives a real default value (`""`, `[]`, `{}`, `0`, `None`, nested
+  defaults); writes to it and nested field reads used to crash, and an
+  `Option` read as `Some`.
+- **`assert_eq` on arrays, maps, structs, enums or tuples** compares contents
+  (it compared handles, so equal arrays failed).
+- **`keys(m)` of an `int`-keyed map** is `[i64]` (was `[str]`; using a key as
+  a string crashed). **`let ((a, b), c) = ..`** binds correctly (bound 0).
+  **`t.0 = v`** on a tuple no longer double-frees. **A tuple-pattern match
+  arm after a `{ }` arm** parses. **Strings inside `to_string` of a
+  container** are escaped.
+
 ### Added - `to_string` and interpolation of arrays, maps, tuples, structs, enums
 
 - `to_string([1, 2])` is `[1, 2]` (was `<array>`), and `"{v}"` works for any
@@ -35,9 +51,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   returning a parameter, captured or element-read tuple handed the caller an
   alias it then freed (both backends).
 - **Tuples were never freed**: a tuple holding a string, array or struct
-  leaked every time. Built-and-read, destructured, reassigned and returned
-  tuples are freed now; a tuple passed to a function, stored, or captured still
-  leaks.
+  leaked every time. Built-and-read, destructured, reassigned, returned and
+  passed-to-a-function tuples are freed now; one stored inside an array,
+  struct, enum or map, or captured by a returned closure, still leaks.
+- **A function that kept a tuple argument (pushed it, stored it, captured it)
+  double-freed it** once the caller freed its own copy (both backends).
 - **Reading a missing key from a map of structs or enums crashed** (segfault on
   AOT, and on the JIT at the next field read). It reads the zero value now.
 - **Walking `keys(m)` twice could double-free the map's keys** when an element

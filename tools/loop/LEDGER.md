@@ -60,6 +60,73 @@ because the share skipped borrowed holders; container stores now share via
 Cranelift's compensating store retain is skipped for enums too when MIR
 shared (mem_enum_overwrite map JIT leg).
 
+## Wave: third adversarial review -- 1 regression + 10 pre-existing bugs fixed (2026-10-08)
+
+An opus reviewer ran 160+ probes against the loop/match/fmt wave (both
+backends, KRYOS_FREE_DIAG, every finding re-run on master). Fixed, each
+pinned in conf_review3_fixes.kry (master fails to parse it):
+
+- REGRESSION: `(t, u)` with `u` an alias of `t` double-freed on the JIT once
+  tuples gained a Drop. Closed by the tuple share wave (literal elements of
+  tuple type are shared).
+- `match e { other => other }` on an enum: the catch-all binding was never
+  assigned (JIT segfault, AOT wrong output). The enum switch path now binds
+  a non-variant ident arm to the subject.
+- `t.0 = v` on a tuple released the old element twice: the field-store
+  release pair balances a RETAINED read, and a raw tuple element read is not
+  retained; the protocol retains it for tuples now.
+- Missing map keys of struct/enum/tuple values: reading one now produces a
+  real default value (`__kryos_default_<T>`: "" / [] / {} / 0 fields, nested
+  defaults, an enum's payload-free variant such as `None`) instead of a zero
+  box / zero image -- writes to it, nested fields, `push` onto its arrays and
+  enums with struct payloads all crashed or diverged before, and
+  `Option` read as `Some(..)`.
+- The builtin `assert_eq(a, b)` stringifies only scalars: on arrays/maps/
+  structs/enums/tuples it compared handles. It compares structurally now and
+  reports both formatted values.
+- `keys(m)` was typed `[str]` for every map, so an int-keyed map's keys were
+  used as string pointers (segfault); typed by the key now.
+- Nested tuple destructuring (`let ((a, b), c) = ..`) bound 0.
+- A generic struct instantiated with a fixed-size array literal inside its
+  type argument made a second, mismatched instance (AOT "array is null");
+  array sizes are dropped from generic type arguments.
+- Parser: a `{ .. }` match-arm body followed by a `(`-pattern arm on the next
+  line was parsed as a call of the block (`(1, x) => ..` failed to parse).
+- Strings inside a formatted container are escaped (`\"`, `\`, `
+`).
+
+Left as documented: `let u = t` of a tuple aliases on the JIT (copies on AOT),
+the same divergence class as gotcha 23; `match <call> { x => .. }` with a
+whole-subject binding still leaks the subject.
+
+## Wave: tuple share -- tuples passed to calls, stored, captured (2026-10-08)
+
+The first tuple wave kept a tuple's Drop only when it never escaped, so a
+tuple passed to a function leaked (and on the JIT every tuple is a heap
+KryosArray, scalar ones included). Worse, master let a callee KEEP a borrowed
+tuple parameter by alias -- push it, store it in a struct/enum/map/array
+literal, capture it in a returned closure -- and freed it in the caller: 20
+double frees on the new conf_tuple_ownership block (31 on the whole file).
+
+- Tuples have a share operation now (STRUCT_SHARE_FN on a tuple): Cranelift
+  takes one more reference on the tuple's KryosArray (its Drop releases the
+  elements only at the last one), LLVM retains every heap leaf
+  (`emit_tuple_share`, the mirror of `emit_tuple_drop`).
+- Every place a struct/enum value takes an owner now covers shareable tuples
+  too (`is_owned_value_ty`): container stores, push, literals, enum payloads,
+  actor messages; a struct literal shares a tuple field (no backend copies
+  one); a closure captures a COPY of a tuple (`emit_tuple_clone`).
+- So a call is no longer an escape: a tuple argument is borrowed
+  (`consume_call_args`), a tuple temp passed to a user function is dropped
+  after the call, and `strip_escaping_tuple_drops` ignores user-function
+  arguments and shares.
+
+Still open (leak, not double free): an array, struct, enum or map holding a
+tuple never releases it (element/field drop arms for tuples need the array
+dup kinds to agree first); a returned closure's captured tuple copy is not
+released with the closure; a tuple with an enum or closure element is never
+freed.
+
 ## Wave: to_string / interpolation of aggregates, helper temps (2026-10-08)
 
 `to_string` of an array, tuple or map printed `<array>`/`<tuple>`/`<map>`, of a

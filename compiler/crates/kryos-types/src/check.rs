@@ -5095,7 +5095,7 @@ impl TypeChecker {
                             // for k in keys { m[k] }` idiom with a bogus E0100
                             // on the re-index (workaround was annotating
                             // `let keys: [str]`).
-                            if matches!(&callee_name_str, Some(n) if n == "map_keys") {
+                            if matches!(&callee_name_str, Some(n) if n == "map_keys" || n == "keys") {
                                 if let Some(arg0) = args.first() {
                                     let arg0_ty = self.infer_expr(arg0);
                                     let mt = self.engine.resolve(&arg0_ty);
@@ -8328,7 +8328,9 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // keys(m: any) -> [str] - get map keys
+    // keys(m: map<K, V>) -> [K] - get map keys. Declared opaque so the call
+    // site types the result from the map's KEY type (like map_keys): typed
+    // `[str]`, an int-keyed map's keys were used as string pointers.
     checker.env.define_function(FunctionSig {
         name: "keys".to_string(),
         generic_params: vec![],
@@ -8336,10 +8338,7 @@ fn type_check_with_lambda_params_inner(
         generic_cap_var_ids: vec![],
         own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::Error)],
-        ret: Type::Array {
-            element: Box::new(Type::Str),
-            size: None,
-        },
+        ret: Type::Error,
     });
 
     // sleep_ms(ms: i64) -> void - sleep for milliseconds

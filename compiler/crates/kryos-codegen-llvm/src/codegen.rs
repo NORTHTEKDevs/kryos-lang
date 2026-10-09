@@ -5621,6 +5621,17 @@ impl LlvmCodegen {
                             let p = self.coerce_value(&val, &llvm_ty, "ptr");
                             self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {p})"));
                         }
+                    } else if let Some(MirType::Tuple(elems)) = mir_ty.clone() {
+                        // Inline tuple: one more reference on every heap leaf
+                        // (the mirror of emit_tuple_drop).
+                        let val = self.operand_to_llvm(&args[0], func);
+                        let llvm_ty = self.local_type(*src);
+                        if llvm_ty.starts_with('{') {
+                            let buf = self.next_temp();
+                            self.emit_line(&format!("  {buf} = alloca {llvm_ty}"));
+                            self.emit_line(&format!("  store {llvm_ty} {val}, ptr {buf}"));
+                            self.emit_tuple_share(&buf, &llvm_ty, &elems);
+                        }
                     } else if let Some(MirType::Enum(name)) = mir_ty {
                         let val = self.operand_to_llvm(&args[0], func);
                         let llvm_ty = self.local_type(*src);
@@ -11758,6 +11769,46 @@ impl LlvmCodegen {
                 MirType::Tuple(inner) if slot.starts_with('{') => {
                     let inner = inner.clone();
                     self.emit_tuple_drop(&gep, &slot, &inner, func);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// One more reference on every heap leaf of an inline tuple at `buf`
+    /// (the elements `emit_tuple_drop` releases).
+    fn emit_tuple_share(&mut self, buf: &str, llvm_ty: &str, elems: &[MirType]) {
+        let slots = split_aggregate_fields(llvm_ty);
+        for (i, ety) in elems.iter().enumerate() {
+            let Some(slot) = slots.get(i).cloned() else { continue };
+            let gep = self.next_temp();
+            self.emit_line(&format!("  {gep} = getelementptr {llvm_ty}, ptr {buf}, i32 0, i32 {i}"));
+            match ety {
+                MirType::Str if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = call i64 @kryos_string_retain_opt(ptr {v})"));
+                }
+                MirType::Array(_, _) if slot == "ptr" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load ptr, ptr {gep}"));
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = call i64 @kryos_array_retain_opt(ptr {v})"));
+                }
+                MirType::Map { .. } if slot == "i64" => {
+                    let v = self.next_temp();
+                    self.emit_line(&format!("  {v} = load i64, ptr {gep}"));
+                    let t = self.next_temp();
+                    self.emit_line(&format!("  {t} = call i64 @kryos_map_retain_opt(i64 {v})"));
+                }
+                MirType::Struct(n) if slot == format!("%{n}") && !self.copy_structs.contains(n) => {
+                    let n = n.clone();
+                    self.emit_struct_share(&gep, &n);
+                }
+                MirType::Tuple(inner) if slot.starts_with('{') => {
+                    let inner = inner.clone();
+                    self.emit_tuple_share(&gep, &slot, &inner);
                 }
                 _ => {}
             }

@@ -4555,10 +4555,13 @@ fn translate_rvalue<M: Module>(
         RValue::Call { func, args } if func == kryos_mir::ir::STRUCT_SHARE_FN => {
             // Every Cranelift struct value is a kryos_calloc box, and every
             // struct drop path consults the owner count, so one more owner is
-            // one box retain.
+            // one box retain. A tuple is a KryosArray: one more reference on
+            // it (its Drop releases the elements only at the last one).
+            let is_tuple = matches!(&args[0], Operand::Local(id)
+                if translator.mir_func.locals.iter().any(|l| l.id == *id && matches!(l.ty, MirType::Tuple(_))));
             let val = translate_operand(&args[0], builder, translator, module)?;
-            let retain_ref =
-                ensure_func_ref_with_args("kryos_struct_retain", builder, translator, module, 1)?;
+            let retain_fn = if is_tuple { "kryos_array_retain_opt" } else { "kryos_struct_retain" };
+            let retain_ref = ensure_func_ref_with_args(retain_fn, builder, translator, module, 1)?;
             builder.ins().call(retain_ref, &[val]);
             Ok(Some(builder.ins().iconst(types::I64, 0)))
         }
@@ -8345,11 +8348,27 @@ fn emit_drop_for_value<M: Module>(
             // A tuple is a KryosArray of i64 slots. MIR only keeps a tuple's
             // Drop where the tuple has one owner (strip_escaping_tuple_drops),
             // so release each heap element, then the array itself.
+            // Elements are released by the LAST reference only (a shared
+            // tuple has a refcount above 1 until then).
             let zero = builder.ins().iconst(types::I64, 0);
             let nonnull = builder.ins().icmp(IntCC::NotEqual, val, zero);
+            let check = builder.create_block();
             let body = builder.create_block();
+            let free_only = builder.create_block();
             let done = builder.create_block();
-            builder.ins().brif(nonnull, body, &[], done, &[]);
+            builder.ins().brif(nonnull, check, &[], done, &[]);
+            builder.seal_block(check);
+            builder.switch_to_block(check);
+            let rc = builder.ins().load(types::I64, MemFlags::new(), val, 24);
+            let one = builder.ins().iconst(types::I64, 1);
+            let sole = builder.ins().icmp(IntCC::Equal, rc, one);
+            builder.ins().brif(sole, body, &[], free_only, &[]);
+            builder.seal_block(free_only);
+            builder.switch_to_block(free_only);
+            let free_ref0 =
+                ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
+            builder.ins().call(free_ref0, &[val]);
+            builder.ins().jump(done, &[]);
             builder.seal_block(body);
             builder.switch_to_block(body);
             for (i, ety) in elems.iter().enumerate() {
