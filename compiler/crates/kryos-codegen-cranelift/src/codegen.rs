@@ -1971,6 +1971,18 @@ pub fn compile_module_with_options(
                 func_ids.insert(rt_name.to_string(), id);
             }
         }
+        // `[T]` fields of drop helpers release their elements through this.
+        if !func_ids.contains_key("kryos_array_free_elems") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function(
+                "kryos_array_free_elems",
+                Linkage::Import,
+                &sig,
+            )?;
+            func_ids.insert("kryos_array_free_elems".to_string(), id);
+        }
     }
     for (func_name, (_, _, cap_types, _, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
@@ -2082,9 +2094,20 @@ pub fn compile_module_with_options(
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
+                            if let MirType::Array(elem, _) = field_ty {
+                                let field_val =
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                                emit_helper_array_field_free(
+                                    &mut builder,
+                                    &mut object_module,
+                                    &func_ids,
+                                    field_val,
+                                    elem,
+                                );
+                                continue;
+                            }
                             let free_fn = match field_ty {
                                 MirType::Str => Some("kryos_string_free"),
-                                MirType::Array(_, _) => Some("kryos_array_free"),
                                 MirType::Map { .. } => Some("kryos_map_free"),
                                 MirType::Function { .. } | MirType::Shared(_) => {
                                     Some("kryos_arc_release")
@@ -2174,9 +2197,18 @@ pub fn compile_module_with_options(
                         let offset = ((*field_idx + 1) * 8) as i32;
                         let field_val =
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        if let MirType::Array(elem, _) = *field_ty {
+                            emit_helper_array_field_free(
+                                &mut builder,
+                                &mut object_module,
+                                &func_ids,
+                                field_val,
+                                elem,
+                            );
+                            continue;
+                        }
                         let fn_name = match *field_ty {
                             MirType::Str => "kryos_string_free",
-                            MirType::Array(_, _) => "kryos_array_free",
                             MirType::Map { .. } => "kryos_map_free",
                             MirType::Function { .. } | MirType::Shared(_) => "kryos_arc_release",
                             MirType::Struct(ref n) | MirType::Enum(ref n) => {
@@ -2892,7 +2924,21 @@ fn emit_enum_deep_copy_inner<M: Module>(
                     // Nested @copy struct field: shared, not cloned (mirrors
                     // emit_struct_deep_copy's own H21 rule for nested Struct
                     // fields).
-                    MirType::Struct(_) => field_val,
+                    // The copy SHARES the struct payload's box: give it its own
+                    // owner (every struct drop path checks it). A raw share
+                    // let the copy and the source both free the box
+                    // (`let mut w = w0` of a W { v: E.A(S) } double-freed S).
+                    MirType::Struct(_) => {
+                        let retain_ref = ensure_func_ref_with_args(
+                            "kryos_struct_retain",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        builder.ins().call(retain_ref, &[field_val]);
+                        field_val
+                    }
                     MirType::Enum(ref inner_name) => {
                         emit_enum_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
                     }
@@ -6541,6 +6587,13 @@ fn translate_rvalue<M: Module>(
                 Ok(Some(val))
             } else if parts.len() == 1 {
                 let val = coerce_to_string(&parts[0], builder, translator, module)?;
+                // A single STR part (`"{s.name}"`) is the operand's own handle;
+                // the concat result is an owned temp that gets its own drop,
+                // so it needs its own reference or the string is freed twice.
+                if is_string_operand(&parts[0], &translator.mir_func.locals) {
+                    let r = ensure_func_ref_with_args("kryos_string_retain", builder, translator, module, 1)?;
+                    builder.ins().call(r, &[val]);
+                }
                 Ok(Some(val))
             } else {
                 // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
@@ -8517,4 +8570,41 @@ fn emit_exception_cleanup_drops<M: Module>(
     }
 
     Ok(())
+}
+
+/// Free a `[T]` field from inside a generated drop helper: the elements go
+/// through their own drop (`__kryos_drop_<T>` for a struct/enum, the runtime
+/// free for a str/array/map), released by the array's last reference.
+fn emit_helper_array_field_free<M: Module>(
+    builder: &mut FunctionBuilder,
+    object_module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    field_val: cranelift_codegen::ir::Value,
+    elem: &MirType,
+) {
+    let elem_fn = match elem {
+        MirType::Str => Some("kryos_string_free".to_string()),
+        MirType::Array(_, _) => Some("kryos_array_free".to_string()),
+        MirType::Map { .. } => Some("kryos_map_free".to_string()),
+        MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release".to_string()),
+        MirType::Struct(n) | MirType::Enum(n) => {
+            let dn = format!("__kryos_drop_{n}");
+            Some(if func_ids.contains_key(&dn) { dn } else { "kryos_free".to_string() })
+        }
+        _ => None,
+    };
+    match elem_fn.and_then(|n| func_ids.get(&n).copied()) {
+        Some(eid) => {
+            let eref = object_module.declare_func_in_func(eid, builder.func);
+            let addr = builder.ins().func_addr(types::I64, eref);
+            let fid = func_ids["kryos_array_free_elems"];
+            let fref = object_module.declare_func_in_func(fid, builder.func);
+            builder.ins().call(fref, &[field_val, addr]);
+        }
+        None => {
+            let fid = func_ids["kryos_array_free"];
+            let fref = object_module.declare_func_in_func(fid, builder.func);
+            builder.ins().call(fref, &[field_val]);
+        }
+    }
 }

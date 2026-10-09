@@ -409,6 +409,9 @@ no_df_both closure_name_scope "$ROOT/tests/conformance/conf_closure_name_scope.k
 no_df_both struct_container_ownership "$ROOT/tests/conformance/conf_struct_container_ownership.kry"
 no_df_both struct_globals_actors "$ROOT/tests/conformance/conf_struct_globals_actors.kry"
 no_df_both enum_arg_ownership "$ROOT/tests/conformance/conf_enum_arg_ownership.kry"
+no_df_both enum_ownership_review "$ROOT/tests/conformance/conf_enum_ownership_review.kry"
+no_df_both enum_recursive_ownership "$ROOT/tests/conformance/conf_enum_recursive_ownership.kry"
+no_df_both element_read_ownership "$ROOT/tests/conformance/conf_element_read_ownership.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

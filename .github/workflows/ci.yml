@@ -303,6 +303,20 @@ jobs:
         # Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_enum_arg_gate.sh
 
+      - name: Recursive-enum / literal-element memory gate
+        # A `[T]` inside a boxed enum releases its elements; a str moved into
+        # an enum on one branch is still dropped on the others; an array
+        # literal of a struct param/local owns one reference per slot.
+        # 81c61df6 at 1M: 64-367MB on 11 of 12 legs; fixed ~4MB.
+        # Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_enum_recursive_gate.sh
+
+      - name: Element-read memory gate
+        # `let a = p.name` / `xs[i]` / `m[k]` bind a value the read already
+        # retained; the binding must release it. 81c61df6 at 1M: ~100MB on
+        # all 12 legs; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_element_read_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

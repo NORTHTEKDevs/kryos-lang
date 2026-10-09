@@ -743,6 +743,14 @@ impl TypeChecker {
                 } else if let Some(ty) = Type::from_name(name) {
                     ty
                 } else {
+                    // An in-scope generic parameter (registered as a type
+                    // variable) shadows a same-named struct/enum: `fn id<T>(x:
+                    // T)` beside a user `enum T` resolved `x` to the enum, so
+                    // `id(5)` failed -- and any program defining `T` could not
+                    // call a generic stdlib fn (`assert_eq<T>`).
+                    if let Some(ty @ Type::Var(_)) = self.env.lookup_var(name) {
+                        return ty.clone();
+                    }
                     // Check if it's a known struct or enum name.
                     if self.env.lookup_struct(name).is_some() {
                         Type::Struct {

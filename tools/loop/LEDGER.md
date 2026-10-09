@@ -60,6 +60,99 @@ because the share skipped borrowed holders; container stores now share via
 Cranelift's compensating store retain is skipped for enums too when MIR
 shared (mem_enum_overwrite map JIT leg).
 
+## Wave: recursive enums, literal elements, element reads, generic shadowing (2026-10-08)
+
+Follow-ups to the review-2 residue (q03, u03) and what fixing them exposed.
+Every item fails on master and on 81c61df6; pinned by
+conf_enum_recursive_ownership.kry and conf_element_read_ownership.kry (both
+run under KRYOS_FREE_DIAG on both backends by no_double_free.sh) and by two
+new peak-RSS gates, mem_enum_recursive_gate.sh and mem_element_read_gate.sh
+(81c61df6: 23 of 24 legs over the 40MB ceiling, 64-367MB; now 3-4MB).
+
+- u03 recursive enum on AOT: `T.N([T.Nm(s, [])])` double-freed the Nm's str
+  and inner array. The enum's array payload is a kryos_array_dup that retains
+  each element box; the LLVM `__kryos_drop_<Enum>` helper was not owner-aware,
+  so both arrays freed one box's payload. It now consumes an extra owner first,
+  like the struct helper.
+- Drop helpers released a `[T]` field with a bare kryos_array_free: every
+  element of an inner array leaked (each box of `T.Nm(s, [T.L(1)])`). LLVM
+  reuses the inline element-aware array drop; Cranelift calls the new runtime
+  `kryos_array_free_elems(arr, drop_fn)` (rc-guarded, last reference releases).
+- Turning that on exposed a latent mistyping: enum payloads were registered
+  context-free, so `enum V { L([V]) }` bound `items` as `[Struct V]` and
+  `V.L(items) => return items[0]` skipped the enum index-clone (minilisp
+  `car` over-freed on the JIT). All `Struct(name)` references to enums in
+  struct_defs/enum_defs are retagged once every enum is known.
+- q03 `fn twice<T>(x: T) -> [T] { return [x, x] }`: an array/tuple literal
+  element from a param or borrowed alias took no reference (60 frees for 50
+  calls). Shareable struct/enum elements are shared, str/array/map retained,
+  for params and aliases too (`fn tw(x: str) -> [str] { return [x, x] }`
+  double-freed on both backends on master).
+- A str/array moved into an enum on one branch had its drop suppressed on
+  EVERY path, though both backends clone a str and dup an array payload: a
+  leak per iteration even when the branch never ran. Suppression now applies
+  only to payload slots that are not declared str/array.
+- `[p, p]` of a struct local was stack-promoted on AOT, and a stack array's
+  Drop is skipped entirely: its elements never released. Stack promotion is
+  limited to scalar elements.
+- `let a = p.name` / `xs[i]` / `m[k]` of a str/array/map: both backends retain
+  the read, but the binding was a non-owning alias and never released it (one
+  string per `let`, ~100MB/1M). It owns the read now (tuple element reads stay
+  aliases -- they are plain loads); `let a = m[k]` was additionally retained
+  twice.
+- A generic parameter now shadows a same-named struct/enum in signatures:
+  `fn id<T>(x: T)` beside `enum T` typed `x` as the enum, so a program
+  defining `T` could not call any generic stdlib fn (`assert_eq<T>`).
+
+Still open: tuples. A tuple with heap elements is never dropped (Cranelift
+stores it as a KryosArray, LLVM inline, neither has a Tuple drop arm), and a
+tuple element read is an unretained load that statement-end drops can free
+(`println(q.0)` twice on one tuple double-frees). Needs its own wave.
+
+## Wave: second adversarial review of the enum wave -- 5 regressions fixed, plus the latent bugs they exposed (2026-10-08)
+
+An opus reviewer ran ~80 programs against 81c61df6 and reproduced five
+regressions (four printed wrong output on normal builds). All fixed; each
+pinned in tests/conformance/conf_enum_ownership_review.kry (run under
+KRYOS_FREE_DIAG on both backends by no_double_free.sh; master and 81c61df6
+fail to BUILD it on AOT):
+
+- R1 `let q = Some(s)` emptied `s`: the unannotated generic variant was TYPED
+  as its instance (`Option___str`) but BUILT as the erased template (no payload
+  copy), so the instance-typed drop freed `s`. A heap-payload generic variant
+  is now constructed as its instance. Also: building an enum from a named
+  shareable struct/enum SHARES it (the source keeps its own) instead of
+  moving it -- `take(Some(ks)) + take(Some(ks))` gave two enums one struct.
+  That also fixes the reviewer's pre-existing `E.A(ks)` double free (w9).
+- One-part interpolation `"{s.name}"` returned the operand's own handle as a
+  fresh string (freed twice) -- a master bug (r07a) that leaked refcounts had
+  hidden; both backends now retain the single str part.
+- R2 `let t = h.v` then `h.v = ..` left `t` dangling: the let-from-field/index
+  owner rule and the return-of-field share now cover shareable enums.
+- R3 copying an owned struct param with an enum field: LLVM's
+  `deep_copy_struct_index_clone` skipped enum fields (now shares their
+  payload); Cranelift's enum deep copy shared a STRUCT payload box raw (now
+  retains it). `let x = <shareable struct>` now deep-clones (value semantics on
+  BOTH backends -- the JIT used to alias it and mutate the caller, a gotcha-23
+  divergence now closed for this case); a shareable enum binding is shared.
+  The owned field-store release only fires when the written struct is owned
+  (not a borrowed alias / param).
+- R4 escaping closure over an enum param: LLVM's env boxed the enum shallowly;
+  the env copy now owns the enum payload (and enum fields of a captured struct).
+- R5 generic `assert_eq` on structs did not build: not generic-specific -- a
+  `-> void` fn that used `!=` on structs and `throw` emitted `ret void 0`
+  because the synthesized `__kryos_eq_<T>` helper's return type leaked into the
+  outer function (`current_ret_ty` was not saved/restored). Fixed in
+  save/restore. Cosmetic: `to_string` of a generic instance prints `<Option>`,
+  not `<Option___S>`.
+
+Re-run of the reviewer's corpus vs master: 19 programs master gets wrong are
+clean now; the two the review called regressions-in-progress (q07, r07b) are
+clean and now AGREE across backends. Still bad on BOTH (pre-existing, filed):
+generic functions over enums (q03, double frees on both), a recursive enum
+`T { N([T]) }` on AOT (u03: master wrong output + df=60, now a crash), reading
+a map key before it exists (u01/y3/y4), `to_string(map)` prints a pointer.
+
 ## Wave: std::fmt::debug/display and std::test::assert_eq/assert_ne were silently wrong through `any` (2026-10-08)
 
 All four took `any` -- a bare i64 with no runtime tag (item 6). On master:

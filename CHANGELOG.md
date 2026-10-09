@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - recursive enums, container reads, and literal elements
+
+- **Recursive enums double-freed on AOT** (`enum T { N([T]), Nm(str, [T]) }`
+  with `T.N([T.Nm(s, [])])`), and the arrays inside boxed enum or struct values
+  never released their elements on either backend (65-367MB per 1M builds).
+- **`let a = p.name`, `let a = xs[i]` and `let a = m[k]` leaked one string or
+  array per binding** on both backends (~100MB per 1M). The binding now owns
+  the value it read.
+- **`[x, x]` of a parameter double-freed** (`fn twice<T>(x: T) -> [T]`, and
+  `fn tw(x: str) -> [str] { return [x, x] }` on master too); `[p, p]` of a
+  struct local leaked its elements on AOT.
+- **A string moved into an enum on one branch leaked on every path**, including
+  the paths that never built the enum.
+- **A generic parameter named like a user type no longer resolves to that
+  type**: with `enum T` in scope, `fn id<T>(x: T)` rejected `id(5)` and no
+  generic stdlib function (`assert_eq`, ...) could be called.
+- Known gap: tuples holding strings, arrays or structs are never freed (see
+  LEDGER).
+
 ### Fixed - struct heap fields leaked whenever they were read (LEDGER items 3 + 51)
 
 - **Reading an array or map field of a struct leaked that container on both

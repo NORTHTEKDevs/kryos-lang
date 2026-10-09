@@ -2382,6 +2382,30 @@ impl LlvmCodegen {
 
             let uid = self.temp_counter;
             self.temp_counter += 1;
+            // Shared-ownership bail-out, same as the struct helper. An
+            // array-of-enums dup (`T.N([T.Nm(..)])` copies its array payload
+            // with kryos_array_dup, kind 4) retains each element BOX, so two
+            // arrays own one box; without this both freed its payload.
+            {
+                let nck = self.next_temp();
+                self.emit_line(&format!("  {nck} = icmp eq ptr %ptr, null"));
+                self.emit_line(&format!(
+                    "  br i1 {nck}, label %edrop_ret_{uid}, label %edrop_chk_{uid}"
+                ));
+                self.emit_line(&format!("edrop_chk_{uid}:"));
+                let shared = self.next_temp();
+                self.emit_line(&format!(
+                    "  {shared} = call i64 @kryos_struct_release_shared(ptr %ptr)"
+                ));
+                let is_shared = self.next_temp();
+                self.emit_line(&format!("  {is_shared} = icmp ne i64 {shared}, 0"));
+                self.emit_line(&format!(
+                    "  br i1 {is_shared}, label %edrop_ret_{uid}, label %edrop_body_{uid}"
+                ));
+                self.emit_line(&format!("edrop_ret_{uid}:"));
+                self.emit_line("  ret void");
+                self.emit_line(&format!("edrop_body_{uid}:"));
+            }
             let tag_tmp = self.next_temp();
             self.emit_line(&format!("  {tag_tmp} = load i64, ptr %ptr"));
 
@@ -2438,9 +2462,22 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_string_free(ptr {fval})"));
                         }
-                        MirType::Array(_, _) => {
+                        MirType::Array(ref elem, _) => {
+                            // Element-aware, rc-guarded, like a local's array
+                            // drop: a bare kryos_array_free leaked every
+                            // element box of `T.Nm(s, [T.L(1)])`'s `[T]`.
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
-                            self.emit_line(&format!("  call void @kryos_array_free(ptr {fval})"));
+                            let dummy = MirFunction {
+                                name: String::new(),
+                                params: Vec::new(),
+                                ret_ty: MirType::I64,
+                                blocks: Vec::new(),
+                                locals: Vec::new(),
+                                attributes: MirAttributes::default(),
+                                source_file: None,
+                                source_line: 0,
+                            };
+                            self.emit_array_drop(&fval, elem, &dummy);
                         }
                         MirType::Map { .. } => {
                             self.emit_line(&format!("  {fval} = load i64, ptr {fgep}"));
@@ -3090,8 +3127,29 @@ impl LlvmCodegen {
         for local in &func.locals {
             let id = local.id.0;
             // Must be fixed-size array type.
+            // Scalar elements only: a stack array's Drop is skipped entirely,
+            // so heap elements (`[p, p]` of a struct, each slot holding its own
+            // reference) were never released.
             let n = match &local.ty {
-                MirType::Array(_, Some(n)) if *n <= 64 => *n,
+                MirType::Array(elem, Some(n))
+                    if *n <= 64
+                        && matches!(
+                            elem.as_ref(),
+                            MirType::I64
+                                | MirType::I32
+                                | MirType::I16
+                                | MirType::I8
+                                | MirType::U64
+                                | MirType::U32
+                                | MirType::U16
+                                | MirType::U8
+                                | MirType::F64
+                                | MirType::F32
+                                | MirType::Bool
+                        ) =>
+                {
+                    *n
+                }
                 _ => continue,
             };
             // Must be assigned exactly once with an Array literal.
@@ -8346,6 +8404,39 @@ impl LlvmCodegen {
                                     self.emit_line(&format!(
                                         "  store {cap_actual} {boxed_val}, ptr {buf}"
                                     ));
+                                    // The env's copy must own the enum payload
+                                    // words it shares with the captured value:
+                                    // the captured param/local is dropped when
+                                    // its frame ends, and an escaping closure
+                                    // then read freed payload (AOT double free,
+                                    // `return |x| .. sg(v) ..` over an enum
+                                    // param with a [str] payload).
+                                    match cap_mir_ty.as_ref() {
+                                        Some(MirType::Enum(en)) if self.enum_shareable(en) => {
+                                            let en = en.clone();
+                                            self.emit_enum_share_payload(&buf, &en);
+                                        }
+                                        Some(MirType::Struct(sn)) => {
+                                            let fields = self
+                                                .struct_defs
+                                                .get(sn)
+                                                .cloned()
+                                                .unwrap_or_default();
+                                            for (fi, (_, ft)) in fields.iter().enumerate() {
+                                                if let MirType::Enum(en) = ft {
+                                                    if self.enum_shareable(en) {
+                                                        let en = en.clone();
+                                                        let gep = self.next_temp();
+                                                        self.emit_line(&format!(
+                                                            "  {gep} = getelementptr {cap_actual}, ptr {buf}, i32 0, i32 {fi}"
+                                                        ));
+                                                        self.emit_enum_share_payload(&gep, &en);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        _ => {}
+                                    }
                                     let as_i64 = self.next_temp();
                                     self.emit_line(&format!(
                                         "  {as_i64} = ptrtoint ptr {buf} to i64"
@@ -8904,7 +8995,18 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  %_{} = inttoptr i64 0 to ptr", dest.0));
                     }
                 } else if parts.len() == 1 {
+                    // A single STR part (`"{s.name}"`) is the operand's own
+                    // handle, but the concat result is an owned temp with its
+                    // own drop: give it its own reference, or the string is
+                    // freed twice (the operand's drop and the result's).
+                    let str_part = !matches!(
+                        self.operand_type(&parts[0], func).as_str(),
+                        "i1" | "double" | "float" | "i64" | "i32" | "i16" | "i8"
+                    );
                     let val = load_part_as_ptr(self, &parts[0]);
+                    if str_part {
+                        self.emit_line(&format!("  call ptr @kryos_string_retain(ptr {val})"));
+                    }
                     if is_mutable {
                         self.emit_line(&format!("  store ptr {val}, ptr %_{}.addr", dest.0));
                     } else {
@@ -10918,6 +11020,7 @@ impl LlvmCodegen {
             | MirType::Function { .. }
             | MirType::Shared(_) => true,
             MirType::Struct(inner) => self.struct_has_heap_fields(inner),
+            MirType::Enum(inner) => self.enum_shareable(inner),
             _ => false,
         });
         if !needs_work {
@@ -10926,6 +11029,24 @@ impl LlvmCodegen {
         let mut cur = val.to_string();
         for (idx, (_, fty)) in fields.iter().enumerate() {
             let fty_ll = self.sig_ty_to_llvm(fty);
+            // A shareable enum field: the copy keeps the same payload words,
+            // so it needs its own reference to each (skipped before -- the
+            // copy and the source both freed the payload: `let w = w0;
+            // return w` double-freed on AOT).
+            if let MirType::Enum(inner) = fty {
+                if self.enum_shareable(inner) {
+                    let inner = inner.clone();
+                    let buf = self.next_temp();
+                    self.emit_line(&format!("  {buf} = alloca {dest_ty}"));
+                    self.emit_line(&format!("  store {dest_ty} {cur}, ptr {buf}"));
+                    let gep = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {gep} = getelementptr {dest_ty}, ptr {buf}, i32 0, i32 {idx}"
+                    ));
+                    self.emit_enum_share_payload(&gep, &inner);
+                }
+                continue;
+            }
             match fty {
                 MirType::Str => {
                     let fv = self.next_temp();
@@ -11040,6 +11161,7 @@ impl LlvmCodegen {
             | MirType::Function { .. }
             | MirType::Shared(_) => true,
             MirType::Struct(inner) => self.struct_has_heap_fields(inner),
+            MirType::Enum(inner) => self.enum_shareable(inner),
             _ => false,
         })
     }

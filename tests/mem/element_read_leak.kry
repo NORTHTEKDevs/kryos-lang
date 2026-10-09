@@ -1,0 +1,47 @@
+// Peak-RSS probe for tests/mem_element_read_gate.sh (2026-10-08): a value
+// read out of a container and bound by `let` is retained by the read, so the
+// binding must release it. Each mode leaked one string/array per iteration.
+//   field_str / field_arr   `let a = p.name` / `let b = p.xs`
+//   idx_str                 `let a = xs[0]`
+//   map_str                 `let a = m["k"]` (also retained twice)
+//   idx_field               `let a = ps[0].name`
+//   reassign                `let mut a = xs[0]` then `a = a + "x"`
+struct P { name: str, xs: [i64] }
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut tot = 0
+    while i < n {
+        let s = "n{i}" + "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        let p = P { name: s, xs: [i, 2, 3] }
+        let xs = [s, "b"]
+        let m: map<str, str> = {}
+        m["k"] = s
+        let ps = [p]
+        if mode == "field_str" {
+            let a = p.name
+            tot = tot + len(a)
+        } elif mode == "field_arr" {
+            let b = p.xs
+            tot = tot + len(b)
+        } elif mode == "idx_str" {
+            let a = xs[0]
+            tot = tot + len(a)
+        } elif mode == "map_str" {
+            let a = m["k"]
+            tot = tot + len(a)
+        } elif mode == "idx_field" {
+            let a = ps[0].name
+            tot = tot + len(a)
+        } elif mode == "reassign" {
+            let mut a = xs[0]
+            a = a + "x"
+            tot = tot + len(a)
+        }
+        i = i + 1
+    }
+    println(to_string(tot))
+}
