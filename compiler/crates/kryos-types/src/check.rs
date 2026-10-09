@@ -4510,6 +4510,9 @@ impl TypeChecker {
                         // std::tracked's explain()/to_json()). Reject it with a
                         // clear error. (A generic `T` is an unresolved Var here
                         // and is allowed; only concrete aggregates are caught.)
+                        // Arrays, tuples, maps, structs and enums (incl.
+                        // Option/Result) format their contents the same way
+                        // `to_string` does (kryos-mir `ensure_fmt_helper`).
                         let resolved = self.engine.resolve(&ty);
                         let interpolatable = matches!(
                             resolved,
@@ -4517,6 +4520,9 @@ impl TypeChecker {
                                 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
                                 | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Str
                                 | Type::USize | Type::ISize | Type::Var(_) | Type::Error
+                                | Type::Struct { .. } | Type::Enum { .. } | Type::Array { .. }
+                                | Type::Tuple { .. } | Type::Map { .. } | Type::Option { .. }
+                                | Type::Result { .. }
                         );
                         if !interpolatable {
                             let desc = match &resolved {

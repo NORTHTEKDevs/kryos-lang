@@ -7177,11 +7177,26 @@ fn lower_for(
     // routes Index through the dynamic-array path (kryos_array_get) instead
     // of treating an opaque i64 handle as a raw i64* buffer.
     let iter_local = ctx.alloc_temp(iter_type.clone());
+    // The iterable is not a statement of its own, so its intermediate temps
+    // (`"x{i}"` feeding `"x{i}" + s` in `for s in [..]`) get the statement-end
+    // cleanup here, before the loop's blocks exist.
+    let iter_inst_mark = ctx.current_instructions.len();
+    let iter_block_mark = ctx.next_block;
+    let iter_locals_mark = ctx.locals.len();
+    let iter_partial_before = ctx.partial_moved_locals.clone();
     let iter_rvalue = lower_expr_to_rvalue(ctx, iterable);
     ctx.emit(Instruction::Assign {
         dest: iter_local,
         value: iter_rvalue,
     });
+    drop_unescaped_str_temps(
+        ctx,
+        iter_inst_mark,
+        iter_block_mark,
+        iter_locals_mark,
+        &iter_partial_before,
+        None,
+    );
 
     let idx_local = ctx.alloc_local(Some("_idx".into()), MirType::I64, true);
     ctx.emit(Instruction::Assign {
@@ -7230,9 +7245,17 @@ fn lower_for(
         _ => "_anon".into(),
     };
     let elem_type_for_destructure = elem_type.clone();
+    // A str/array/map element read takes its own reference on both backends
+    // (LLVM retains, Cranelift clones a str), so that loop variable OWNS it
+    // and is released every iteration -- as a borrowed alias each iteration
+    // leaked one (`for s in xs { len(s) }`). Other elements stay aliases.
+    let loop_var_owned = matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+        && matches!(pattern, ast::Pattern::Ident { .. });
+    let loop_scope_start = ctx.locals.len();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
-    // Loop variable borrows from the array - must NOT be freed on scope exit.
-    ctx.borrowed_locals.insert(loop_var.0);
+    if !loop_var_owned {
+        ctx.borrowed_locals.insert(loop_var.0);
+    }
     ctx.emit(Instruction::Assign {
         dest: loop_var,
         value: RValue::Index {
@@ -7271,11 +7294,17 @@ fn lower_for(
     // never advances and the loop spins forever.
     ctx.loop_headers.push(increment_bb);
     ctx.loop_exits.push(exit_bb);
-    ctx.loop_scope_starts.push(ctx.locals.len());
+    // From the loop variable on: `break`/`continue` release an owned one.
+    ctx.loop_scope_starts.push(if loop_var_owned { loop_scope_start } else { ctx.locals.len() });
     lower_block_stmts(ctx, &body.stmts);
     ctx.loop_headers.pop();
     ctx.loop_exits.pop();
     ctx.loop_scope_starts.pop();
+    if loop_var_owned {
+        // The fallthrough path's release; then no later scope drop of it.
+        ctx.emit(Instruction::Drop { local: loop_var });
+        ctx.dropped_locals.insert(loop_var.0);
+    }
 
     // Fall through to increment block.
     ctx.finish_block(Terminator::Goto(increment_bb), increment_bb);
@@ -7290,6 +7319,20 @@ fn lower_for(
         },
     });
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
+    // A freshly produced iterable (`for k in keys(m)`, `for x in [..]`) was
+    // never released: every such loop leaked the array. Normal exit and
+    // `break` both land here.
+    if matches!(iter_type, MirType::Array(_, _))
+        && matches!(
+            iterable,
+            ast::Expr::FnCall { .. }
+                | ast::Expr::MethodCall { .. }
+                | ast::Expr::StaticMethodCall { .. }
+                | ast::Expr::ArrayLiteral { .. }
+        )
+    {
+        ctx.emit(Instruction::Drop { local: iter_local });
+    }
     hide_scope_locals(ctx, for_scope_start);
 }
 
@@ -9426,7 +9469,45 @@ fn infer_match_result_type(
         .unwrap_or(MirType::I64)
 }
 
+/// `match <call> { .. }` on a str/array/map or shareable enum: the call's
+/// result was never released (a leak per match). Bind it to a hidden local,
+/// match on that, and release it after the match (a `return` inside an arm
+/// releases it through the ordinary return-path drops). Not when an arm binds
+/// the WHOLE subject (`other => other` would alias what is released) or for a
+/// struct/tuple subject (their pattern bindings alias fields).
 fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
+    let fresh = matches!(
+        subject,
+        ast::Expr::FnCall { .. } | ast::Expr::MethodCall { .. } | ast::Expr::StaticMethodCall { .. }
+    );
+    if fresh {
+        let sty = infer_expr_type(ctx, subject);
+        let owned = matches!(sty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+            || is_owned_enum_ty(ctx, &sty);
+        let binds_whole = arms.iter().any(|a| {
+            matches!(&a.pattern, ast::Pattern::Ident { name, .. }
+                if find_enum_variant(ctx, name).is_none())
+        });
+        if owned && !binds_whole {
+            let n = ctx.locals.len();
+            let hidden = format!("__match_subj_{n}");
+            let v = lower_expr_to_operand(ctx, subject);
+            let subj = ctx.alloc_local(Some(hidden.clone()), sty, false);
+            ctx.emit(Instruction::Assign { dest: subj, value: RValue::Use(v) });
+            let ident = ast::Expr::Identifier { name: hidden, span: subject.span() };
+            let result = lower_match_inner(ctx, &ident, arms);
+            if !ctx.dropped_locals.contains(&subj.0) {
+                ctx.emit(Instruction::Drop { local: subj });
+            }
+            ctx.dropped_locals.insert(subj.0);
+            ctx.hidden_locals.insert(subj.0);
+            return result;
+        }
+    }
+    lower_match_inner(ctx, subject, arms)
+}
+
+fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
     // Normalize BARE enum-variant idents (`Red =>`, parsed as Pattern::Ident)
     // into the qualified `Pattern::Enum` shape before any dispatch decision.
     // The tag-switch machinery below chains SAME-TAG guarded arms correctly
@@ -10414,6 +10495,10 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             );
         }
 
+        let arm_inst_mark = ctx.current_instructions.len();
+        let arm_block_mark = ctx.next_block;
+        let arm_locals_mark = ctx.locals.len();
+        let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
         // If the arm body moves a non-copy local into the result, mark the
         // source as consumed so the scope cleanup won't double-drop it.
@@ -10449,6 +10534,17 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             dest: result_local,
             value: arm_rvalue,
         });
+        // The arm value's intermediate temps (`"A(" + s` feeding
+        // `"A(" + s + ")"`) get the statement-end cleanup an expression arm
+        // never had: one leaked string per evaluation of such an arm.
+        drop_unescaped_str_temps(
+            ctx,
+            arm_inst_mark,
+            arm_block_mark,
+            arm_locals_mark,
+            &arm_partial_before,
+            None,
+        );
         let next_bb = if i + 1 < arm_blocks.len() {
             arm_blocks[i + 1].0
         } else if let Some((db, _)) = default_arm {
@@ -12256,6 +12352,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         });
                     }
                     return RValue::Use(s);
+                }
+                // Arrays, tuples, maps, structs and enums with no
+                // `to_string` method of their own format their contents
+                // (`[1, 2]`, `("a", 1)`, `{"k": 1}`, `P { name: "x" }`,
+                // `Some(3)`) through a synthesized `__kryos_fmt_<T>` helper.
+                if let Some(helper) = ensure_fmt_helper(ctx, &aty) {
+                    let v = lower_expr_to_operand(ctx, &args[0]);
+                    return RValue::Call { func: helper, args: vec![v] };
                 }
                 let placeholder = match &aty {
                     MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{}>", n.split("___").next().unwrap_or(n))),
@@ -14406,11 +14510,30 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             });
                             return Operand::Local(tmp);
                         }
+                        if matches!(
+                            ety,
+                            MirType::Struct(_)
+                                | MirType::Enum(_)
+                                | MirType::Array(..)
+                                | MirType::Tuple(_)
+                                | MirType::Map { .. }
+                        ) {
+                            // Same formatting as `to_string(e)` (a user
+                            // `to_string` method, else the synthesized one).
+                            let call = ast::Expr::FnCall {
+                                callee: Box::new(ast::Expr::Identifier {
+                                    name: "to_string".to_string(),
+                                    span: e.span(),
+                                }),
+                                args: vec![e.as_ref().clone()],
+                                span: e.span(),
+                            };
+                            let rv = lower_expr_to_rvalue(ctx, &call);
+                            let tmp = ctx.alloc_temp(MirType::Str);
+                            ctx.emit(Instruction::Assign { dest: tmp, value: rv });
+                            return Operand::Local(tmp);
+                        }
                         let placeholder = match &ety {
-                            MirType::Struct(n) | MirType::Enum(n) => Some(format!("<{}>", n.split("___").next().unwrap_or(n))),
-                            MirType::Array(..) => Some("<array>".to_string()),
-                            MirType::Tuple(_) => Some("<tuple>".to_string()),
-                            MirType::Map { .. } => Some("<map>".to_string()),
                             MirType::Function { .. } => Some("<fn>".to_string()),
                             _ => None,
                         };
@@ -17382,6 +17505,7 @@ fn ensure_struct_eq_helper(ctx: &mut LoweringContext, struct_name: &str) -> Stri
     ctx.restore_function_state(saved);
     ctx.func_ret_types
         .insert(helper_name.clone(), MirType::Bool);
+    ctx.user_fn_names.insert(helper_name.clone());
     ctx.monomorphized_functions.push(mir_func);
 
     helper_name
@@ -17474,6 +17598,7 @@ fn ensure_tuple_eq_helper(ctx: &mut LoweringContext, elems: &[MirType]) -> Strin
     ctx.restore_function_state(saved);
     ctx.func_ret_types
         .insert(helper_name.clone(), MirType::Bool);
+    ctx.user_fn_names.insert(helper_name.clone());
     ctx.monomorphized_functions.push(mir_func);
 
     helper_name
@@ -17655,9 +17780,227 @@ fn ensure_container_eq_helper(ctx: &mut LoweringContext, ty: &MirType) -> String
     let mir_func = lower_function(ctx, &helper_name, &params, &ret_ty, &body);
     ctx.restore_function_state(saved);
     ctx.func_ret_types.insert(helper_name.clone(), MirType::Bool);
+    ctx.user_fn_names.insert(helper_name.clone());
     ctx.monomorphized_functions.push(mir_func);
 
     helper_name
+}
+
+/// `__kryos_fmt_<T>(v) -> str` for an array, tuple, map, struct or enum with
+/// no `to_string` of its own: `[1, 2]`, `("a", 1)`, `{"k": 1}`,
+/// `P { name: "x", n: 1 }`, `Some(3)`. Strings inside are quoted; every other
+/// element goes through `to_string` again, so nesting composes (and a nested
+/// struct's own `to_string` method is honored). Was `<array>` / `<P>`.
+fn ensure_fmt_helper(ctx: &mut LoweringContext, ty: &MirType) -> Option<String> {
+    match ty {
+        MirType::Array(..) | MirType::Tuple(_) | MirType::Map { .. } => {}
+        MirType::Struct(n) if ctx.struct_defs.contains_key(n) && !ctx.actor_defs.contains_key(n) => {}
+        MirType::Enum(n) if ctx.enum_defs.contains_key(n) => {}
+        _ => return None,
+    }
+    let ty = &match ty {
+        MirType::Array(e, _) => MirType::Array(e.clone(), None),
+        other => other.clone(),
+    };
+    let mangle: String = format!("{ty}")
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { '_' })
+        .collect();
+    let helper_name = format!("__kryos_fmt_{mangle}");
+    if ctx.synthesized_eq_helpers.contains(&helper_name) {
+        return Some(helper_name);
+    }
+    ctx.synthesized_eq_helpers.insert(helper_name.clone());
+
+    let span = kryos_errors::Span::DUMMY;
+    let id = |n: &str| ast::Expr::Identifier { name: n.to_string(), span };
+    let lit = |v: &str| ast::Expr::StringLiteral { value: v.to_string(), span };
+    let int = |v: i64| ast::Expr::IntLiteral { value: v, span };
+    let call = |f: &str, args: Vec<ast::Expr>| ast::Expr::FnCall {
+        callee: Box::new(ast::Expr::Identifier { name: f.to_string(), span }),
+        args,
+        span,
+    };
+    let add = |l: ast::Expr, r: ast::Expr| ast::Expr::BinaryOp {
+        op: ast::BinOp::Add,
+        left: Box::new(l),
+        right: Box::new(r),
+        span,
+    };
+    // One element's text: a str is quoted, anything else is `to_string`ed.
+    let fmt = |e: ast::Expr, t: &MirType| -> ast::Expr {
+        if matches!(t, MirType::Str) {
+            add(add(lit("\""), e), lit("\""))
+        } else {
+            call("to_string", vec![e])
+        }
+    };
+    let set_out = |v: ast::Expr| ast::Stmt::Assign {
+        target: id("__f_out"),
+        op: ast::AssignOp::Assign,
+        value: v,
+        span,
+    };
+    let let_ = |name: &str, mutable: bool, value: ast::Expr| ast::Stmt::Let {
+        name: name.to_string(),
+        mutable,
+        ty: None,
+        value: Some(value),
+        pattern: None,
+        span,
+    };
+    let ret = |v: ast::Expr| ast::Stmt::Return { value: Some(v), span };
+    let idx = |o: ast::Expr, i: ast::Expr| ast::Expr::IndexAccess {
+        object: Box::new(o),
+        index: Box::new(i),
+        span,
+    };
+    // A loop over `0..len(of)` appending `item` with ", " between items.
+    let sep_loop = |of: ast::Expr, item: ast::Expr| -> Vec<ast::Stmt> {
+        vec![
+            let_("__f_i", true, int(0)),
+            ast::Stmt::While {
+                condition: ast::Expr::BinaryOp {
+                    op: ast::BinOp::Lt,
+                    left: Box::new(id("__f_i")),
+                    right: Box::new(call("len", vec![of])),
+                    span,
+                },
+                body: ast::Block {
+                    stmts: vec![
+                        ast::Stmt::If {
+                            condition: ast::Expr::BinaryOp {
+                                op: ast::BinOp::Gt,
+                                left: Box::new(id("__f_i")),
+                                right: Box::new(int(0)),
+                                span,
+                            },
+                            then_block: ast::Block {
+                                stmts: vec![set_out(add(id("__f_out"), lit(", ")))],
+                                span,
+                            },
+                            elif_clauses: Vec::new(),
+                            else_block: None,
+                            span,
+                        },
+                        set_out(add(id("__f_out"), item)),
+                        ast::Stmt::Assign {
+                            target: id("__f_i"),
+                            op: ast::AssignOp::Assign,
+                            value: add(id("__f_i"), int(1)),
+                            span,
+                        },
+                    ],
+                    span,
+                },
+                span,
+            },
+        ]
+    };
+
+    let stmts: Vec<ast::Stmt> = match ty {
+        MirType::Array(e, _) => {
+            let mut v = vec![let_("__f_out", true, lit("["))];
+            v.extend(sep_loop(id("__f_v"), fmt(idx(id("__f_v"), id("__f_i")), e)));
+            v.push(ret(add(id("__f_out"), lit("]"))));
+            v
+        }
+        MirType::Map { key, value } => {
+            let mut v = vec![
+                let_("__f_out", true, lit("{")),
+                let_("__f_ks", false, call("keys", vec![id("__f_v")])),
+            ];
+            let k = idx(id("__f_ks"), id("__f_i"));
+            let item = add(
+                add(fmt(k.clone(), key), lit(": ")),
+                fmt(idx(id("__f_v"), k), value),
+            );
+            v.extend(sep_loop(id("__f_ks"), item));
+            v.push(ret(add(id("__f_out"), lit("}"))));
+            v
+        }
+        MirType::Tuple(es) => {
+            let mut acc = lit("(");
+            for (i, e) in es.iter().enumerate() {
+                if i > 0 {
+                    acc = add(acc, lit(", "));
+                }
+                let f = ast::Expr::FieldAccess {
+                    object: Box::new(id("__f_v")),
+                    field: i.to_string(),
+                    span,
+                };
+                acc = add(acc, fmt(f, e));
+            }
+            vec![ret(add(acc, lit(")")))]
+        }
+        MirType::Struct(n) => {
+            let fields = ctx.struct_defs.get(n).cloned().unwrap_or_default();
+            let shown = n.split("___").next().unwrap_or(n).to_string();
+            let mut acc = lit(&format!("{shown} {{"));
+            for (i, (fname, fty)) in fields.iter().enumerate() {
+                let sep = if i > 0 { ", " } else { " " };
+                acc = add(acc, lit(&format!("{sep}{fname}: ")));
+                let f = ast::Expr::FieldAccess {
+                    object: Box::new(id("__f_v")),
+                    field: fname.clone(),
+                    span,
+                };
+                acc = add(acc, fmt(f, fty));
+            }
+            acc = add(acc, lit(if fields.is_empty() { "}" } else { " }" }));
+            vec![ret(acc)]
+        }
+        MirType::Enum(n) => {
+            let variants = ctx.enum_defs.get(n).cloned().unwrap_or_default();
+            let mut arms = Vec::new();
+            for (vi, v) in variants.iter().enumerate() {
+                let names: Vec<String> =
+                    (0..v.fields.len()).map(|i| format!("__f_{vi}_{i}")).collect();
+                let pats: Vec<ast::Pattern> = names
+                    .iter()
+                    .map(|nm| ast::Pattern::Ident { name: nm.clone(), mutable: false, span })
+                    .collect();
+                let mut body = lit(&v.name);
+                if !v.fields.is_empty() {
+                    body = add(body, lit("("));
+                    for (i, fty) in v.fields.iter().enumerate() {
+                        if i > 0 {
+                            body = add(body, lit(", "));
+                        }
+                        body = add(body, fmt(id(&names[i]), fty));
+                    }
+                    body = add(body, lit(")"));
+                }
+                arms.push(ast::MatchArm {
+                    pattern: ast::Pattern::Enum {
+                        name: n.clone(),
+                        variant: v.name.clone(),
+                        fields: pats,
+                        span,
+                    },
+                    guard: None,
+                    body: Box::new(body),
+                    span,
+                });
+            }
+            vec![ret(ast::Expr::MatchExpr { subject: Box::new(id("__f_v")), arms, span })]
+        }
+        _ => return None,
+    };
+
+    let pty = mir_type_to_type_expr_spanned(ty, span);
+    let params = vec![ast::Param { name: "__f_v".to_string(), ty: Some(pty), default: None, span }];
+    let ret_ty = Some(ast::TypeExpr::Simple { name: "str".to_string(), span });
+    let body = ast::Block { stmts, span };
+    let saved = ctx.save_function_state();
+    let mir_func = lower_function(ctx, &helper_name, &params, &ret_ty, &body);
+    ctx.restore_function_state(saved);
+    ctx.func_ret_types.insert(helper_name.clone(), MirType::Str);
+    // A callee that BORROWS its argument: a temp passed to it is still dropped.
+    ctx.user_fn_names.insert(helper_name.clone());
+    ctx.monomorphized_functions.push(mir_func);
+    Some(helper_name)
 }
 
 fn ensure_enum_eq_helper(ctx: &mut LoweringContext, enum_name: &str) -> String {
@@ -17821,6 +18164,7 @@ fn ensure_enum_eq_helper(ctx: &mut LoweringContext, enum_name: &str) -> String {
     ctx.restore_function_state(saved);
     ctx.func_ret_types
         .insert(helper_name.clone(), MirType::Bool);
+    ctx.user_fn_names.insert(helper_name.clone());
     ctx.monomorphized_functions.push(mir_func);
 
     helper_name

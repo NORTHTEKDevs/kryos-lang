@@ -414,6 +414,8 @@ no_df_both enum_recursive_ownership "$ROOT/tests/conformance/conf_enum_recursive
 no_df_both element_read_ownership "$ROOT/tests/conformance/conf_element_read_ownership.kry"
 no_df_both tuple_ownership "$ROOT/tests/conformance/conf_tuple_ownership.kry"
 no_df_both structural_eq_and_lookup "$ROOT/tests/conformance/conf_structural_eq_and_lookup.kry"
+no_df_both loop_ownership "$ROOT/tests/conformance/conf_loop_ownership.kry"
+no_df_both to_string_aggregates "$ROOT/tests/conformance/conf_to_string_aggregates.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

@@ -60,6 +60,50 @@ because the share skipped borrowed holders; container stores now share via
 Cranelift's compensating store retain is skipped for enums too when MIR
 shared (mem_enum_overwrite map JIT leg).
 
+## Wave: to_string / interpolation of aggregates, helper temps (2026-10-08)
+
+`to_string` of an array, tuple or map printed `<array>`/`<tuple>`/`<map>`, of a
+struct or enum `<Name>`, and interpolating one was rejected (E0110). They now
+format their contents through synthesized `__kryos_fmt_<T>` helpers
+(`ensure_fmt_helper`): `[1, 2]`, `("a", 1)`, `{"k": 1}`, `P { name: "x",
+xs: [1] }`, `Some(3)`; strings inside are quoted, every other element goes
+through `to_string` again (a nested type's own method wins). Pinned by
+conf_to_string_aggregates.kry (master fails to build it).
+
+Found while leak-checking it: every synthesized helper (`__kryos_eq_*`,
+`__kryos_fmt_*`) was not a known user function, so a temp passed to one
+(`to_string([1, 2])`, `P {..} == P {..}`) was treated as consumed and never
+freed; they are registered as borrowing user functions now. And an
+expression match arm's intermediate temps (`"A(" + s` feeding `"A(" + s +
+")"`) never got the statement-end cleanup: one leaked string per evaluation.
+
+## Wave: for-loop ownership and nested arrays (2026-10-08)
+
+Every `for` over a str/array/map array leaked: the element read takes a
+reference on both backends (LLVM retains, Cranelift clones a str) but the loop
+variable was a borrowed alias that never released it -- one string per
+iteration of any `for line in lines`. A freshly produced iterable (`for k in
+keys(m)`, `for s in split(..)`, `for s in [..]`) was never released at all,
+and an array of arrays released its rows with a bare kryos_array_free, leaking
+every inner string. Pinned by conf_loop_ownership.kry (both backends under
+KRYOS_FREE_DIAG, incl. continue/break/return in the body) and
+mem_loop_gate.sh (81c61df6: all 12 legs over the ceiling; now 3-4MB).
+
+- A str/array/map loop variable owns its element: released at the end of each
+  iteration, by `continue`/`break` (the loop-exit drop scope now starts at the
+  loop variable) and by `return`. Struct/enum/tuple loop variables stay
+  aliases (their element reads take no reference).
+- A call / method call / array-literal iterable is released after the loop;
+  its own intermediate temps get the statement-end cleanup the iterable never
+  had (it is not a statement of its own).
+- An array whose elements are arrays drops each row element-wise (LLVM
+  recursive inline loop, Cranelift recursive emit_drop_for_value).
+- `match <call> { .. }` (and `if let .. = <call>`) on a str/array/map or
+  shareable enum releases the call's result after the match; an arm's
+  `return` releases it through the return-path drops. Not when an arm binds
+  the whole subject (`other => other`) or for a struct/tuple subject, whose
+  pattern bindings alias fields.
+
 ## Wave: tuples, structural equality, missing map keys, keys() ownership (2026-10-08)
 
 Pinned by conf_tuple_ownership.kry and conf_structural_eq_and_lookup.kry (both

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added - `to_string` and interpolation of arrays, maps, tuples, structs, enums
+
+- `to_string([1, 2])` is `[1, 2]` (was `<array>`), and `"{v}"` works for any
+  array, tuple, map, struct or enum (was a compile error): `("a", 1)`,
+  `{"k": 1}`, `P { name: "x" }`, `Some(3)`. A type's own `to_string` wins.
+
+### Fixed - `for` loops leaked every element
+
+- **Every `for` loop over strings or arrays leaked one value per iteration** on
+  both backends (`for line in lines { .. }`), a loop over a function result
+  (`for k in keys(m)`, `for s in split(..)`) leaked the whole array, and an
+  array of arrays leaked every inner element when freed. `match f() { .. }`
+  and `if let Some(x) = f()` leaked `f()`'s result the same way, and a
+  `match` arm computing a string (`A(s) => "A(" + s + ")"`) leaked an
+  intermediate string each time.
+
 ### Added - structural equality for arrays and maps
 
 - `==` and `!=` now compare arrays element by element and maps entry by entry,

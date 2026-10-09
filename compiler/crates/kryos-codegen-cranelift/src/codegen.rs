@@ -8315,9 +8315,16 @@ fn emit_drop_for_value<M: Module>(
                 let elem = builder
                     .ins()
                     .load(types::I64, MemFlags::new(), elem_addr, 0);
-                let elem_free_ref =
-                    ensure_func_ref_with_args(free_fn, builder, translator, module, 1)?;
-                builder.ins().call(elem_free_ref, &[elem]);
+                // An array of arrays releases each row element-wise too: a
+                // bare kryos_array_free on `[[str]]`'s rows leaked every string.
+                if matches!(elem_ty.as_ref(), MirType::Array(_, _)) {
+                    let ety = elem_ty.as_ref().clone();
+                    emit_drop_for_value(elem, &ety, builder, translator, module)?;
+                } else {
+                    let elem_free_ref =
+                        ensure_func_ref_with_args(free_fn, builder, translator, module, 1)?;
+                    builder.ins().call(elem_free_ref, &[elem]);
+                }
                 let i_next = builder.ins().iadd_imm(i, 1);
                 builder.ins().jump(loop_header, &[i_next]);
 

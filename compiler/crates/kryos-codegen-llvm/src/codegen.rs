@@ -11646,6 +11646,23 @@ impl LlvmCodegen {
             // For struct/enum elements, use named drop helpers that recursively
             // free nested heap fields. This breaks compile-time recursion since
             // the helpers are standalone functions that can call each other.
+            // An array of arrays releases each inner array element-wise too:
+            // a bare kryos_array_free on `[[str]]`'s rows leaked every string.
+            if let MirType::Array(inner, _) = elem_ty {
+                let fv = self.next_temp();
+                self.emit_line(&format!("  {fv} = load ptr, ptr {elem_gep}"));
+                let inner = inner.as_ref().clone();
+                self.emit_array_drop(&fv, &inner, _func);
+                self.emit_line(&format!("  br label %{tail_label}"));
+                self.emit_line(&format!("{tail_label}:"));
+                self.emit_line(&format!("  {i_next_name} = add i64 {i_name}, 1"));
+                self.emit_line(&format!("  br label %{hdr_label}"));
+                self.emit_line(&format!("{exit_label}:"));
+                self.emit_line(&format!("  br label %{skip_label}"));
+                self.emit_line(&format!("{skip_label}:"));
+                self.emit_line(&format!("  call void @kryos_array_free(ptr {val})"));
+                return;
+            }
             let (load_ty, free_call) = match elem_ty {
                 MirType::Str => (
                     "ptr".to_string(),

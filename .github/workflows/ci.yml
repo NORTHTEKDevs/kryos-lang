@@ -323,6 +323,13 @@ jobs:
         # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_tuple_gate.sh
 
+      - name: Loop memory gate
+        # A str/array/map `for` variable owns its element read (released each
+        # iteration); a freshly produced iterable and an array of arrays
+        # release their contents. 81c61df6 at 1M: all 12 legs over the
+        # ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_loop_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on
