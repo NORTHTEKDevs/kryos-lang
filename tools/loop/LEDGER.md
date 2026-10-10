@@ -91,6 +91,42 @@ after; pinned by `tests/mem_agg_ops_gate.sh`, double-free direction by
   a borrowed alias the tuple escape analysis sees through, and the switch
   path's tuple bindings follow the retain/borrow contract.
 
+- Pre-existing on master, both backends: a `map<K, S>` with STRUCT values
+  never released them when the map was freed -- both codegens passed value
+  kind 4 to `kryos_map_free_typed`, whose `free_entry_slot` had no arm for
+  it (the runtime cannot drop a struct by itself). New
+  `kryos_map_free_with(map, key_kind, value_drop)` releases each value
+  through a per-type callback: Cranelift's `__kryos_drop_<S>` (its map
+  values are owner-counted struct boxes, like array elements) and LLVM's new
+  `__kryos_mapval_drop_<S>` (its map values are ARC boxes holding a struct
+  copy: fields, then `kryos_arc_release` -- the sequence a map-slot overwrite
+  already used). Under KRYOS_FREE_DIAG the values are released too, so
+  `tests/conformance/conf_map_struct_values.kry` checks the double-free
+  direction. 218MB -> 4 at 1M (`mem_agg_ops_gate` map_struct). Enum values
+  in a map are not yet released (their map boxing is unaudited).
+- `let mut t = mkp(i); t.1 = ..` never released `t`: the tuple escape
+  analysis counted a `StoreField` into the tuple as an escape. An in-place
+  element store is not one (a tuple stored AS the value still is). Measured
+  6MB on the pre-batch binary, ~70MB/300k on this branch before the fix
+  (a branch-introduced leak), 4MB after (`mem_agg_ops_gate` tuple_store).
+- A struct/enum element read off a fresh tuple (`f().0 == p`,
+  `to_string(f().0)`, `let p = f().0`) kept the tuple forever: such a read is
+  an alias, now accepted when it is only lent within the statement (user fn
+  arg, clone/share, borrowing builtin, field read) or bound to a local that
+  shares itself. 772MB -> 4MB at 1M (`tuple_struct_elem`).
+- The missing-key default (31b7c15e) turned every struct-map read into a
+  has/default branch, and a statement that creates blocks was skipped whole
+  by the statement temp pass: `len(m[k].name)` leaked the name it read. A
+  statement's LAST block follows all of its branching and is never
+  re-entered, so its temps are now cleaned up as their own window.
+
+AOT throw from a struct-returning function (`test_throw_null_struct_drop`,
+the PR #5 CI parity failure on Linux/macOS -- `kryos panic: stack overflow`,
+exit 134/138): the throw path's `Return` stored `undef` into the sret slot,
+treating the value as dead; the caller binds it, sees the exception, and
+drops the binding, freeing stack garbage (Windows happened to read nulls).
+It now stores a zero aggregate.
+
 Still open from review4: D (a missing key of a `map<_, map<..>>` /
 `map<_, [T]>` reads a null handle, so writes to it vanish -- the read path's
 get+retain shape is pattern-matched by several ownership passes, so a branch

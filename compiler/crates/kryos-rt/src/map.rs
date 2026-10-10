@@ -31,7 +31,7 @@ struct MapEntry {
     occupied: bool,
 }
 
-/// Hash map header — stable allocation that serves as the external handle.
+/// Hash map header - stable allocation that serves as the external handle.
 /// Entries are stored in a separate allocation pointed to by `entries`.
 ///
 /// Step 37 production hardening: `ref_count` placed AFTER `entries` so the
@@ -555,9 +555,9 @@ pub unsafe extern "C" fn kryos_map_keys_str(map: i64) -> i64 {
     arr
 }
 
-/// Clone a map — H20 (shift step 30) shares the underlying pointer.
+/// Clone a map - H20 (shift step 30) shares the underlying pointer.
 ///
-/// Clone a map — refcount-based share (step 37 production hardening).
+/// Clone a map - refcount-based share (step 37 production hardening).
 ///
 /// Maps share entry tables across @copy struct clones via ref_count.
 /// Trade-off: mutation post-clone visible across all aliases. Stage-1
@@ -576,7 +576,7 @@ pub extern "C" fn kryos_map_clone(map: i64) -> i64 {
     map
 }
 
-/// Retain a map — increment ref_count, return same pointer.
+/// Retain a map - increment ref_count, return same pointer.
 #[no_mangle]
 pub extern "C" fn kryos_map_retain(map: i64) -> i64 {
     if map == 0 {
@@ -750,6 +750,87 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64,
                 if entry.occupied {
                     free_entry_slot(entry.key, key_kind, 0);
                     free_entry_slot(entry.value, value_kind, value_elem_kind);
+                }
+            }
+        }
+        let capacity = (*header).capacity as usize;
+        free_entries((*header).entries, capacity);
+        (*header).len = 0;
+        (*header).capacity = 0;
+        (*header).entries = std::ptr::null_mut();
+        rc_atomic(header).store(0, std::sync::atomic::Ordering::Release);
+        MAP_HDR_POOL.put(header as *mut u8);
+    }
+}
+
+/// Free a `map<K, S>` / `map<K, E>` whose values are struct or enum boxes:
+/// on the LAST reference, each value is released through `value_drop`, the
+/// value type's own `__kryos_drop_<T>` helper (owner-aware), and each key per
+/// `key_kind` as in `kryos_map_free_typed`. The type-erased runtime cannot
+/// drop a struct by itself, so `kryos_map_free_typed` left every struct/enum
+/// value behind (~200 bytes per one-entry map built and dropped). Under
+/// KRYOS_FREE_DIAG the values are released too (nothing is deallocated in
+/// that mode), so the diag harness sees an over-release here.
+#[no_mangle]
+pub extern "C" fn kryos_map_free_with(map: i64, key_kind: i64, value_drop: extern "C" fn(i64)) {
+    if map == 0 {
+        return;
+    }
+    if crate::leak_on_zero() {
+        return;
+    }
+    unsafe {
+        let header = map as *mut MapHeader;
+        let release_values = |header: *mut MapHeader| {
+            let capacity = (*header).capacity as usize;
+            let entries = (*header).entries;
+            for i in 0..capacity {
+                let entry = &*entries.add(i);
+                if entry.occupied && entry.value != 0 {
+                    value_drop(entry.value);
+                }
+            }
+        };
+        if crate::free_diag() {
+            let rc = rc_atomic(header).load(std::sync::atomic::Ordering::Relaxed);
+            if rc <= 0 {
+                crate::diag_report(&format!(
+                    "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
+                return;
+            }
+            if rc == 1 {
+                release_values(header);
+            }
+            rc_atomic(header).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        let a = rc_atomic(header);
+        let mut rc = a.load(std::sync::atomic::Ordering::Acquire);
+        loop {
+            if rc <= 0 {
+                return;
+            }
+            match a.compare_exchange_weak(
+                rc,
+                rc - 1,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(cur) => rc = cur,
+            }
+        }
+        if rc > 1 {
+            return;
+        }
+        release_values(header);
+        if key_kind != 0 {
+            let capacity = (*header).capacity as usize;
+            let entries = (*header).entries;
+            for i in 0..capacity {
+                let entry = &*entries.add(i);
+                if entry.occupied {
+                    free_entry_slot(entry.key, key_kind, 0);
                 }
             }
         }

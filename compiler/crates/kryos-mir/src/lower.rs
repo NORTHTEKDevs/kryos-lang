@@ -3408,6 +3408,15 @@ fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
     let partial_moved_before = ctx.partial_moved_locals.clone();
     lower_stmt_inner(ctx, stmt);
     drop_unescaped_str_temps(ctx, inst_mark, block_mark, locals_mark, &partial_moved_before, None);
+    // A statement that created blocks is skipped above (its temps need not
+    // dominate the end). Its LAST block, though, follows all of its branching
+    // and is never re-entered, so the temps DEFINED there are cleaned up as
+    // their own window -- e.g. everything after the missing-key branch of a
+    // struct map read (`len(m[k].name)` leaked the name it read).
+    if ctx.next_block != block_mark {
+        let tail_block_mark = ctx.next_block;
+        drop_unescaped_str_temps(ctx, 0, tail_block_mark, locals_mark, &partial_moved_before, None);
+    }
 }
 
 /// Calls that read a heap-typed argument and neither store nor free it --
@@ -3932,7 +3941,42 @@ fn drop_unescaped_str_temps(
                         let dropped_here = ctx.current_instructions[inst_mark..]
                             .iter()
                             .any(|i| matches!(i, Instruction::Drop { local } if *local == id));
-                        if readable && !dropped_here {
+                        // A struct/enum element read is an ALIAS into the
+                        // tuple; it is still fine to release the tuple at the
+                        // statement's end when the alias is only lent within
+                        // the statement -- to a user fn (which takes its own
+                        // owner), a clone/share, a borrowing builtin, or a
+                        // further field read (`to_string(mk(i).0)`, `mk(i).0
+                        // == p`).
+                        // (`let p = mk(i).0` binds the read and then SHARES
+                        // it: `p` owns itself, so it is lent too.)
+                        let dest_shared = ctx.current_instructions[inst_mark..].iter().any(|i| {
+                            matches!(i, Instruction::Assign { value: RValue::Call { func: f2, args: a2 }, .. }
+                                if f2 == STRUCT_SHARE_FN && a2.len() == 1 && mentions(&a2[0], *dest))
+                        });
+                        let alias_lent_only = ety.is_some_and(|t| matches!(t, MirType::Struct(_) | MirType::Enum(_)))
+                            && (dest_shared || ctx.locals.iter().any(|l| l.id == *dest && l.name.is_none()))
+                            && (dest_shared || ctx.current_instructions[inst_mark..].iter().all(|i| match i {
+                                Instruction::Assign { dest: d2, value: v2 } => {
+                                    if d2 == dest {
+                                        return true;
+                                    }
+                                    match v2 {
+                                        RValue::Call { func: f2, args: a2 } if a2.iter().any(|a| mentions(a, *dest)) => {
+                                            f2 == STRUCT_SHARE_FN
+                                                || f2 == "__kryos_struct_index_clone"
+                                                || f2 == "__kryos_enum_index_clone"
+                                                || BORROWING_CALL_ARGS.contains(&f2.as_str())
+                                                || (ctx.user_fn_names.contains(f2) && !ctx.builtin_fn_names.contains(f2))
+                                        }
+                                        RValue::Field { object: o2, .. } if mentions(o2, *dest) => true,
+                                        other2 => !rvalue_mentions_local(other2, *dest),
+                                    }
+                                }
+                                Instruction::Drop { .. } | Instruction::Nop | Instruction::DebugLine(_) => true,
+                                _ => false,
+                            }));
+                        if (readable || alias_lent_only) && !dropped_here {
                             continue;
                         }
                         continue 'cand;
@@ -4603,6 +4647,18 @@ fn strip_escaping_tuple_drops(
                 Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) }
                     if alias_of.contains_key(&dest.0) =>
                 {
+                    continue;
+                }
+                // `t.1 = v` mutates the tuple in place (the store's own release
+                // pair handles the old element): not an escape of `t`. A tuple
+                // STORED as the value still escapes.
+                Instruction::StoreField { object: Operand::Local(o), value, .. } if tuples.contains(&o.0) => {
+                    if let Operand::Local(v) = value {
+                        if tuples.contains(&v.0) {
+                            unowned.insert(v.0);
+                            unowned.insert(root(v.0));
+                        }
+                    }
                     continue;
                 }
                 Instruction::Assign { dest, value } => {
@@ -12738,7 +12794,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // they are released at scope end (as call arguments the
                     // `if`'s blocks kept the statement temp pass from
                     // dropping them: ~370 bytes leaked per assert).
-                    let mut bind = |ctx: &mut LoweringContext, e: ast::Expr| {
+                    let bind = |ctx: &mut LoweringContext, e: ast::Expr| {
                         let hidden = format!("__assert_str_{}", ctx.locals.len());
                         lower_stmt(
                             ctx,

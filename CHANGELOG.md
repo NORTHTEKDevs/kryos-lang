@@ -18,6 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`let s = if c { f() } else { g() }`** (and `match`) leaked the value.
 - **`len(make_pair().0)`** (an element read off a fresh tuple) and
   **`return t.0` / `return s.field`** of a struct leaked once per call.
+- **A `map<K, S>` with struct values** never released them when the map was
+  freed (on master too); **`len(m[k].name)`** leaked the field it read.
+- **A `continue` or `break` inside one match arm** leaked the subject and
+  bindings of every other arm; **`match f() { (a, b) => .. }`** never
+  released the tuple.
+
+### Fixed - a function that throws while returning a struct
+
+- On AOT the struct the caller received was uninitialized stack memory,
+  which the caller's cleanup then freed (a crash on Linux and macOS,
+  reported as a stack overflow). It is now zeroed.
 
 ### Fixed - reassigning a struct or enum variable double-freed
 

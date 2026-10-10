@@ -1590,6 +1590,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_fs_delete", kryos_rt::fs::kryos_fs_delete as *const u8);
         jit_builder.symbol("kryos_fs_exists", kryos_rt::fs::kryos_fs_exists as *const u8);
         jit_builder.symbol("kryos_map_free_typed", kryos_rt::map::kryos_map_free_typed as *const u8);
+        jit_builder.symbol("kryos_map_free_with", kryos_rt::map::kryos_map_free_with as *const u8);
         jit_builder.symbol("kryos_math_abs_f64", kryos_stdlib_native::math::kryos_math_abs_f64 as *const u8);
         jit_builder.symbol("kryos_math_abs_i64", kryos_stdlib_native::math::kryos_math_abs_i64 as *const u8);
         jit_builder.symbol("kryos_math_ceil", kryos_stdlib_native::math::kryos_math_ceil as *const u8);

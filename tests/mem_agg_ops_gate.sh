@@ -15,7 +15,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/agg_ops_leak.kry"
 ITERS=1000000
 CEIL_MB=40
-MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem"
+MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem tuple_store tuple_struct_elem map_struct"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-agg-ops: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

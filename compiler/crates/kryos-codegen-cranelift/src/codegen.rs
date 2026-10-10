@@ -8122,7 +8122,26 @@ fn emit_drop_for_value<M: Module>(
                 MirType::Array(elem, _) => kind_of(elem.as_ref()),
                 _ => 0,
             };
-            if key_kind == 0 && value_kind == 0 {
+            // Struct values are released through their type's drop helper
+            // (the same one an array element gets); the type-erased runtime
+            // free left every one behind. (Enum values: not yet audited.)
+            let value_drop_fn: Option<String> = match value.as_ref() {
+                MirType::Struct(n)
+                    if translator.struct_defs.contains_key(n) && !translator.copy_structs.contains(n) =>
+                {
+                    let d = format!("__kryos_drop_{n}");
+                    Some(if translator.func_ids.contains_key(&d) { d } else { "kryos_free".to_string() })
+                }
+                _ => None,
+            };
+            if let Some(drop_fn) = value_drop_fn {
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_map_free_with", builder, translator, module, 3)?;
+                let drop_ref = ensure_func_ref_with_args(&drop_fn, builder, translator, module, 1)?;
+                let drop_addr = builder.ins().func_addr(types::I64, drop_ref);
+                let key_kind_val = builder.ins().iconst(types::I64, key_kind);
+                builder.ins().call(free_ref, &[val, key_kind_val, drop_addr]);
+            } else if key_kind == 0 && value_kind == 0 {
                 let free_ref = ensure_func_ref_with_args(
                     "kryos_map_free",
                     builder,

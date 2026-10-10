@@ -887,6 +887,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_map_len(i64)");
         self.emit_line("declare void @kryos_map_free(i64)");
         self.emit_line("declare void @kryos_map_free_typed(i64, i64, i64, i64)");
+        self.emit_line("declare void @kryos_map_free_with(i64, i64, ptr)");
         self.emit_line("declare i64 @kryos_map_clone(i64)");
         self.emit_line("declare i64 @kryos_map_snapshot(i64, i64, i64)");
         self.emit_line("declare ptr @kryos_string_clone(ptr)");
@@ -2698,6 +2699,22 @@ impl LlvmCodegen {
             self.emit_line("  ret void");
             self.emit_line("}");
             self.emit_blank();
+            // A MAP's struct value is an arc box holding the struct (see the
+            // map-insert boxing); `kryos_map_free_with` releases each one
+            // through this: the fields, then the box -- the same sequence a
+            // map-slot overwrite (DropIfNe via_map) uses.
+            self.emit_line(&format!("define internal void @__kryos_mapval_drop_{name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+            self.emit_line("  %isnull = icmp eq ptr %ptr, null");
+            self.emit_line("  br i1 %isnull, label %done, label %body");
+            self.emit_line("body:");
+            self.emit_line(&format!("  call void @{drop_name}(ptr %ptr)"));
+            self.emit_line("  call void @kryos_arc_release(ptr %ptr)");
+            self.emit_line("  br label %done");
+            self.emit_line("done:");
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
         }
     }
 
@@ -4068,7 +4085,27 @@ impl LlvmCodegen {
                             MirType::Array(elem, _) => kind_of(elem.as_ref()),
                             _ => 0,
                         };
-                        if key_kind == 0 && value_kind == 0 {
+                        // Struct/enum values are released through their type's
+                        // drop helper (the same one an array element gets); the
+                        // type-erased runtime free left every one behind.
+                        // (Struct values only: an enum value's map boxing has
+                        // not been audited for this.)
+                        let value_drop_fn = match value.as_ref() {
+                            MirType::Struct(n)
+                                if self.struct_defs.contains_key(n)
+                                    && !self.enum_defs.contains_key(n)
+                                    && !self.copy_structs.contains(n)
+                                    && n != "Map" =>
+                            {
+                                Some(format!("__kryos_mapval_drop_{n}"))
+                            }
+                            _ => None,
+                        };
+                        if let Some(drop_fn) = value_drop_fn {
+                            self.emit_line(&format!(
+                                "  call void @kryos_map_free_with(i64 {val}, i64 {key_kind}, ptr @{drop_fn})"
+                            ));
+                        } else if key_kind == 0 && value_kind == 0 {
                             self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
                         } else {
                             self.emit_line(&format!(
@@ -10175,12 +10212,15 @@ impl LlvmCodegen {
                     // Mirror the scalar-return coercion logic. The operand type may
                     // not match the aggregate return type after a `kryos_exception_throw`
                     // fallthrough (void/i64 result feeds a Return in an aggregate-returning
-                    // function). The ret is dead code in that case - store undef to keep
-                    // the IR well-typed instead of emitting `store %Parser 0, ptr ...`.
+                    // function). The value is NOT dead: the caller binds it, sees the
+                    // pending exception, and drops the binding at scope end -- so store
+                    // a ZERO aggregate (null heap fields, which every drop guards), not
+                    // undef: an undef sret left stack garbage that the caller's drop
+                    // freed (test_throw_null_struct_drop crashed on Linux/macOS AOT).
                     if from_ty == agg {
                         self.emit_line(&format!("  store {agg} {val}, ptr %_sret"));
                     } else {
-                        self.emit_line(&format!("  store {agg} undef, ptr %_sret"));
+                        self.emit_line(&format!("  store {agg} zeroinitializer, ptr %_sret"));
                     }
                     self.emit_line("  ret void");
                 } else {

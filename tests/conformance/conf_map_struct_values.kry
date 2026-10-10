@@ -1,0 +1,84 @@
+// Conformance (2026-10-09): a map with STRUCT values releases them when the
+// map is freed (kryos_map_free_with + each struct's drop helper; they were
+// never released -- ~200 bytes per one-entry map on master). Every shape
+// below shares or aliases a map value; run under KRYOS_FREE_DIAG on both
+// backends by tests/no_double_free.sh.
+struct In { t: str }
+struct P { name: str, xs: [str], inner: In }
+struct Q { a: i64, b: f64 }
+@copy
+struct C { n: i64, s: str }
+struct Holder { m: map<str, P> }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> P { return P { name: "p{i}", xs: ["x{i}"], inner: In { t: "t{i}" } } }
+
+fn build(n: i64) -> map<str, P> {
+    let mut m: map<str, P> = {}
+    let mut i = 0
+    while i < n {
+        m["k{i}"] = mk(i)
+        i = i + 1
+    }
+    return m
+}
+
+fn total(m: map<str, P>) -> i64 {
+    let mut t = 0
+    for k in keys(m) { t = t + len(m[k].name) + len(m[k].xs) }
+    return t
+}
+
+fn pick(i: i64) -> P {
+    let m = build(3)
+    return m["k{i}"]
+}
+
+fn main() {
+    // A read taken before the map goes away keeps its own owner.
+    let mut kept: [P] = []
+    let mut i = 0
+    while i < 4 {
+        let m = build(2)
+        let p = m["k1"]
+        kept = push(kept, p)
+        let q = m["k0"]
+        expect(q.inner.t == "t0", "read from a live map")
+        i = i + 1
+    }
+    expect(len(kept) == 4 and kept[3].name == "p1" and kept[0].inner.t == "t1", "values read out of a dropped map")
+
+    // Returned out of a function whose map is dropped.
+    expect(pick(2).xs[0] == "x2" and pick(0).name == "p0", "value returned from a dropped map")
+
+    // Passed to and returned from functions; overwritten; deleted.
+    let mut m = build(3)
+    expect(total(m) == 9, "map passed to a function")
+    m["k1"] = mk(9)
+    m["k1"] = mk(8)
+    let alias = m["k2"]
+    m["k2"] = mk(7)
+    expect(alias.name == "p2" and m["k2"].name == "p7" and m["k1"].inner.t == "t8", "overwrite keeps an earlier read alive")
+    let m2 = build(2)
+    let m3 = m2
+    expect(len(m3) == 2 and m2["k0"].name == "p0", "map alias")
+
+    // A map inside a struct, all-scalar and @copy struct values, int keys.
+    let h = Holder { m: build(2) }
+    expect(h.m["k1"].name == "p1", "map field")
+    let mut mq: map<i64, Q> = {}
+    mq[1] = Q { a: 1, b: 2.0 }
+    mq[1] = Q { a: 3, b: 4.0 }
+    expect(mq[1].a == 3, "all-scalar struct values")
+    let mut mc: map<str, C> = {}
+    mc["c"] = C { n: 1, s: "c{1}" }
+    expect(mc["c"].s == "c1", "@copy struct values")
+
+    println("conformance map struct values: PASS")
+}

@@ -75,6 +75,18 @@ fn main() {
             acc = acc + match_tuple(i)
         } elif mode == "ret_elem" {
             acc = acc + len(first(mkp(i)).name)
+        } elif mode == "tuple_store" {
+            let mut t = mkp(i)
+            t.1 = "new{i}"
+            t.0.name = "nn{i}"
+            acc = acc + len(t.1) + len(t.0.name)
+        } elif mode == "tuple_struct_elem" {
+            let kept = mkp(i).0
+            if mkp(i).0 == kept { acc = acc + len(to_string(mkp(i).0)) + len(kept.name) }
+        } elif mode == "map_struct" {
+            let mut mm: map<i64, P> = {}
+            mm[i] = P { name: "m{i}", xs: [i] }
+            acc = acc + len(mm[i].name)
         }
         i = i + 1
     }

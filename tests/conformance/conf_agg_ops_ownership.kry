@@ -120,5 +120,19 @@ fn main() {
     let tp = mkp(9)
     expect(first(tp).name == "p9" and tp.0.name == "p9", "struct element returned from a borrowed tuple")
 
+    // Element stores into a `let mut` tuple (it is still released after).
+    let keep = "keep{1}"
+    let mut t1 = mkp(10)
+    t1.1 = "new{1}"
+    t1.0.name = "nn{1}"
+    let mut t2 = mk(11)
+    t2.0 = keep
+    t2.1 = [5]
+    expect(t1.1 == "new1" and t1.0.name == "nn1" and t2.0 == "keep1" and t2.1[0] == 5 and keep == "keep1", "tuple element stores")
+
+    // A struct element read off a fresh tuple, lent or bound.
+    let kept = mkp(12).0
+    expect(mkp(12).0 == kept and to_string(mkp(13).0) == "P {{ name: \"p13\", xs: [13] }}" and kept.xs[0] == 12, "struct element of a fresh tuple")
+
     println("conformance agg ops ownership: PASS")
 }
