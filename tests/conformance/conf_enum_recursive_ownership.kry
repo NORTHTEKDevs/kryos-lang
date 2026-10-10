@@ -1,0 +1,75 @@
+// Conformance (2026-10-08): recursive enums and array-literal element
+// ownership. Run under KRYOS_FREE_DIAG on both backends by
+// tests/no_double_free.sh -- every case here printed the right answer on
+// master and double-freed anyway.
+//   - `T.N([T.Nm(s, [])])`: the enum's array payload is a dup that retains
+//     each element box, but the AOT `__kryos_drop_T` helper was not
+//     owner-aware, so both arrays freed the Nm's str and inner array.
+//   - `[x, x]` of a param, `[p]` of a struct param, `(p, p)`: the slots took
+//     no reference of their own (60 double frees for 50 iterations).
+use std::test::{assert_eq}
+
+struct P { name: str, tags: [str] }
+enum T { L(i64), N([T]), Nm(str, [T]) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn sum(t: T) -> i64 {
+    match t {
+        T.L(n) => { return n }
+        T.N(ks) => { let mut s = 0  for k in ks { s = s + sum(k) }  return s }
+        T.Nm(nm, ks) => { let mut s = len(nm)  for k in ks { s = s + sum(k) }  return s }
+    }
+}
+
+fn build(d: i64) -> T {
+    if d == 0 { return T.L(1) }
+    return T.N([build(d - 1), T.Nm("n{d}", [build(d - 1), T.L(d)]), T.L(2)])
+}
+
+fn twice<U>(x: U) -> [U] { return [x, x] }
+fn wrap(p: P) -> [P] { return [p] }
+fn pair(p: P) -> (P, P) { return (p, p) }
+
+fn main() {
+    expect(sum(T.N([T.Nm("n{1}", [])])) == 2, "array of a boxed Nm element")
+    expect(sum(T.N([T.Nm("n{1}", [T.L(1)]), T.L(2)])) == 5, "nested Nm with children")
+    expect(sum(build(3)) == 47, "recursively built tree")
+    let x = T.N([T.Nm("n1", [])])
+    let y = x
+    expect(sum(x) + sum(y) == 4, "tree read through two names")
+
+    let s = "q{1}"
+    let mut built = 0
+    let mut i = 0
+    while i < 4 {
+        if i % 2 == 0 {
+            let e = T.Nm(s, [])
+            built = built + sum(e)
+        }
+        i = i + 1
+    }
+    expect(built == 4 and s == "q1", "str moved into an enum on one branch")
+
+    let p = P { name: "n{1}", tags: ["t{2}"] }
+    let mut tot = 0
+    i = 0
+    while i < 50 {
+        let a = twice(p)
+        let b = twice(T.Nm("e{i}", [T.L(i)]))
+        let c = pair(p)
+        let d = wrap(p)
+        let q = [p, p]
+        tot = tot + len(a) + len(b) + len(c.0.name) + len(d) + len(q)
+        i = i + 1
+    }
+    expect(tot == 450 and p.name == "n1" and p.tags[0] == "t2", "array literals of a struct param")
+    assert_eq(len(twice("s{1}")), 2, "twice of a str")
+
+    println("conformance enum recursive ownership: PASS")
+}

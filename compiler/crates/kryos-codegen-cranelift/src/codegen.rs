@@ -40,7 +40,7 @@ pub struct CodegenOptions {
 ///
 /// Compound types (arrays, tuples, structs) and strings are lowered to
 /// pointer-sized integers (addresses) because Cranelift is a scalar
-/// register-oriented IR — aggregate layout lives in the runtime / linker.
+/// register-oriented IR - aggregate layout lives in the runtime / linker.
 pub fn mir_type_to_cl(ty: &MirType) -> Result<Option<Type>, CodegenError> {
     match ty {
         MirType::I8 | MirType::U8 => Ok(Some(types::I8)),
@@ -340,7 +340,7 @@ pub fn compile_module_with_options(
         if mir_func.name == "main" {
             // Declare the user's main under an internal name. The exported
             // `int main()` C-runtime entry point is the wrapper synthesised
-            // below — it calls `_kryos_main`, ignores any user return value,
+            // below - it calls `_kryos_main`, ignores any user return value,
             // runs `kryos_spawn_wait_all`, and returns `0i32`.
             //
             // Both `fn main()` (void) and `fn main() -> i64` route through
@@ -632,7 +632,7 @@ pub fn compile_module_with_options(
         // and `kryos_free` read at `ptr - 8`. A box from libc `calloc` has no
         // such header, so the generated `__kryos_drop_<T>` preamble reads 8
         // bytes BEFORE the allocation and the matching free lands on a bogus
-        // block base — glibc then reports "corrupted size vs. prev_size" or
+        // block base - glibc then reports "corrupted size vs. prev_size" or
         // "double free or corruption" at teardown. The LLVM backend has always
         // used `kryos_calloc` here; this keeps the two backends on one layout.
         if !func_ids.contains_key("kryos_calloc") {
@@ -644,8 +644,8 @@ pub fn compile_module_with_options(
         // back to a generic `(i64, ...) -> i64` signature for names it has never
         // seen, and Cranelift rejects a later void re-declaration of the same
         // symbol ("signature ... is incompatible with previous declaration").
-        // Declaring it up front means every call site — helper bodies, thunks,
-        // droppers, and translated functions — resolves the same FuncId.
+        // Declaring it up front means every call site - helper bodies, thunks,
+        // droppers, and translated functions - resolves the same FuncId.
         if !func_ids.contains_key("kryos_free") {
             let mut void_sig = Signature::new(object_module.isa().default_call_conv());
             void_sig.params.push(AbiParam::new(types::I64));
@@ -675,7 +675,7 @@ pub fn compile_module_with_options(
         // and a (i64) -> i64 clone function pointer (same shape as
         // kryos_string_clone / __kryos_clone_<N>). Replaces the codegen-
         // emitted loops in emit_array_str_deep_clone / emit_array_struct_deep_clone
-        // — one call instead of an inline loop, reduces heap pressure.
+        // - one call instead of an inline loop, reduces heap pressure.
         let two_in_one_out = {
             let mut sig = Signature::new(call_conv);
             sig.params.push(AbiParam::new(types::I64));
@@ -851,7 +851,7 @@ pub fn compile_module_with_options(
 
             let msg = builder.block_params(block)[0];
 
-            // Get stderr FILE* — platform-specific.
+            // Get stderr FILE* - platform-specific.
             let stderr_ptr = if cfg!(target_os = "windows") {
                 // Windows UCRT: __acrt_iob_func(2) returns FILE* for stderr.
                 let iob_sig = {
@@ -913,7 +913,7 @@ pub fn compile_module_with_options(
     }
     let _ = exit_id;
 
-    // Import len() builtin — reads len field from any Kryos collection.
+    // Import len() builtin - reads len field from any Kryos collection.
     // Skip when the user defines their own top-level `fn len` (the self-host
     // compiler's runtime.kry does exactly this): declaring the C symbol as an
     // Import AND then defining a body under the same "len" name made Cranelift
@@ -932,7 +932,7 @@ pub fn compile_module_with_options(
         func_ids.insert("len".to_string(), len_id);
     }
 
-    // Import to_string() builtin — converts i64 to KryosString.
+    // Import to_string() builtin - converts i64 to KryosString.
     let to_string_sig = {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64)); // value
@@ -946,7 +946,7 @@ pub fn compile_module_with_options(
     )?;
     func_ids.insert("to_string".to_string(), to_string_id);
 
-    // Import f64_to_string — converts f64 to KryosString.
+    // Import f64_to_string - converts f64 to KryosString.
     let f64_to_string_sig = {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::F64)); // f64 value
@@ -960,7 +960,7 @@ pub fn compile_module_with_options(
     )?;
     func_ids.insert("kryos_f64_to_string".to_string(), f64_to_string_id);
 
-    // Import bool_to_string — converts i64 (0/nonzero) to "true"/"false" KryosString.
+    // Import bool_to_string - converts i64 (0/nonzero) to "true"/"false" KryosString.
     let bool_to_string_id = object_module.declare_function(
         "kryos_bool_to_string",
         Linkage::Import,
@@ -968,7 +968,7 @@ pub fn compile_module_with_options(
     )?;
     func_ids.insert("kryos_bool_to_string".to_string(), bool_to_string_id);
 
-    // Import ipow() builtin — integer exponentiation.
+    // Import ipow() builtin - integer exponentiation.
     let ipow_sig = {
         let mut sig = Signature::new(call_conv);
         sig.params.push(AbiParam::new(types::I64)); // base
@@ -1091,7 +1091,7 @@ pub fn compile_module_with_options(
 
     // NOTE: ARC runtime functions (kryos_arc_alloc, kryos_arc_retain,
     // kryos_arc_release) are declared above via kryos_arc_*_i64 wrappers.
-    // Do NOT re-declare them here — the i64 wrappers use the correct
+    // Do NOT re-declare them here - the i64 wrappers use the correct
     // 1-param signatures matching the codegen calling convention.
 
     // Declare C heap functions as imports.
@@ -1447,7 +1447,7 @@ pub fn compile_module_with_options(
     // For each async fn F, emit __kryos_poll_F(state: *mut u8) -> i32:
     //   1. Read parameter values from the state struct fields (those marked
     //      is_param in the AsyncPlan have known offsets via the struct layout).
-    //   2. Call F(params..., state_ptr) — when split-at-await has rewritten F,
+    //   2. Call F(params..., state_ptr) - when split-at-await has rewritten F,
     //      F itself is the dispatcher and returns KRYOS_PENDING (0) or
     //      KRYOS_READY (1). When split-at-await did not run (no awaits, or
     //      `KRYOS_DISABLE_AWAIT_SPLIT=1`), F's natural return value is the
@@ -1615,13 +1615,13 @@ pub fn compile_module_with_options(
                             // returned READY (1) the function is fully
                             // complete and we can stamp DONE. If the callee
                             // returns PENDING (0), the state field already
-                            // holds the resume index — do NOT overwrite it.
+                            // holds the resume index - do NOT overwrite it.
                             //
                             // We resolve this conservatively by inspecting
                             // the call result: if results[0] is non-zero,
                             // stamp done. For the non-split (legacy) path,
                             // results[0] is the user return value, which we
-                            // can't safely interpret as a status — so we keep
+                            // can't safely interpret as a status - so we keep
                             // the old eager DONE behaviour when there is no
                             // detectable split.
                             let function_was_split =
@@ -1971,6 +1971,18 @@ pub fn compile_module_with_options(
                 func_ids.insert(rt_name.to_string(), id);
             }
         }
+        // `[T]` fields of drop helpers release their elements through this.
+        if !func_ids.contains_key("kryos_array_free_elems") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function(
+                "kryos_array_free_elems",
+                Linkage::Import,
+                &sig,
+            )?;
+            func_ids.insert("kryos_array_free_elems".to_string(), id);
+        }
     }
     for (func_name, (_, _, cap_types, _, _)) in &closure_info {
         if let Some(&dropper_id) = dropper_ids.get(func_name.as_str()) {
@@ -2082,9 +2094,20 @@ pub fn compile_module_with_options(
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
+                            if let MirType::Array(elem, _) = field_ty {
+                                let field_val =
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                                emit_helper_array_field_free(
+                                    &mut builder,
+                                    &mut object_module,
+                                    &func_ids,
+                                    field_val,
+                                    elem,
+                                );
+                                continue;
+                            }
                             let free_fn = match field_ty {
                                 MirType::Str => Some("kryos_string_free"),
-                                MirType::Array(_, _) => Some("kryos_array_free"),
                                 MirType::Map { .. } => Some("kryos_map_free"),
                                 MirType::Function { .. } | MirType::Shared(_) => {
                                     Some("kryos_arc_release")
@@ -2174,9 +2197,18 @@ pub fn compile_module_with_options(
                         let offset = ((*field_idx + 1) * 8) as i32;
                         let field_val =
                             builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                        if let MirType::Array(elem, _) = *field_ty {
+                            emit_helper_array_field_free(
+                                &mut builder,
+                                &mut object_module,
+                                &func_ids,
+                                field_val,
+                                elem,
+                            );
+                            continue;
+                        }
                         let fn_name = match *field_ty {
                             MirType::Str => "kryos_string_free",
-                            MirType::Array(_, _) => "kryos_array_free",
                             MirType::Map { .. } => "kryos_map_free",
                             MirType::Function { .. } | MirType::Shared(_) => "kryos_arc_release",
                             MirType::Struct(ref n) | MirType::Enum(ref n) => {
@@ -2443,7 +2475,7 @@ pub fn compile_module_with_options(
             builder.seal_all_blocks();
             builder.finalize();
 
-            // Suppress unused-variable warning — sig_ref is consumed by the
+            // Suppress unused-variable warning - sig_ref is consumed by the
             // import but not explicitly referenced after; the builder owns it.
             let _ = callee_sig_ref;
         }
@@ -2515,14 +2547,14 @@ struct FuncTranslator<'a> {
     /// the same MIR block is a `kryos_exception_check` call (emitted by
     /// try/catch lowering right after every throwing call inside a try).
     /// The codegen's own post-call unwind safety net is skipped ONLY for
-    /// such calls — the MIR check routes to the catch block instead. All
+    /// such calls - the MIR check routes to the catch block instead. All
     /// other calls (including ones outside the try in the same function)
     /// keep the net, so a pending exception propagates immediately rather
     /// than being misattributed to a later unrelated try/catch.
     next_is_mir_exc_check: bool,
     /// Emit overflow checks for integer arithmetic.
     checked_arithmetic: bool,
-    /// Structs annotated with `@copy` — assignment deep-copies the struct.
+    /// Structs annotated with `@copy` - assignment deep-copies the struct.
     copy_structs: &'a HashSet<String>,
     /// Names of functions defined by the user (or imported user modules).
     /// Used to suppress builtin-name rewriting when a user fn shadows a
@@ -2843,15 +2875,28 @@ fn emit_enum_deep_copy_inner<M: Module>(
                         let call = builder.ins().call(clone_ref, &[field_val]);
                         builder.inst_results(call)[0]
                     }
-                    MirType::Array(_, _) => {
-                        let clone_ref = ensure_func_ref_with_args(
-                            "kryos_array_clone",
+                    MirType::Array(elem, _) => {
+                        // kryos_array_dup, not a header clone: a clone
+                        // SHARES the element handles without retaining them,
+                        // so dropping the copy (an env lookup's deep copy of
+                        // a closure) freed body elements the original still
+                        // held -- the same latent double free the 10-06 wave
+                        // fixed in the STRUCT deep copy. Masked until enum
+                        // params stopped leaking their entry owner.
+                        let elem_kind: i64 = match elem.as_ref() {
+                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                            MirType::Struct(_) | MirType::Enum(_) => 4,
+                            _ => 0,
+                        };
+                        let dup_ref = ensure_func_ref_with_args(
+                            "kryos_array_dup",
                             builder,
                             translator,
                             module,
-                            1,
+                            2,
                         )?;
-                        let call = builder.ins().call(clone_ref, &[field_val]);
+                        let k = builder.ins().iconst(types::I64, elem_kind);
+                        let call = builder.ins().call(dup_ref, &[field_val, k]);
                         builder.inst_results(call)[0]
                     }
                     MirType::Map { .. } => {
@@ -2879,7 +2924,21 @@ fn emit_enum_deep_copy_inner<M: Module>(
                     // Nested @copy struct field: shared, not cloned (mirrors
                     // emit_struct_deep_copy's own H21 rule for nested Struct
                     // fields).
-                    MirType::Struct(_) => field_val,
+                    // The copy SHARES the struct payload's box: give it its own
+                    // owner (every struct drop path checks it). A raw share
+                    // let the copy and the source both free the box
+                    // (`let mut w = w0` of a W { v: E.A(S) } double-freed S).
+                    MirType::Struct(_) => {
+                        let retain_ref = ensure_func_ref_with_args(
+                            "kryos_struct_retain",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        builder.ins().call(retain_ref, &[field_val]);
+                        field_val
+                    }
                     MirType::Enum(ref inner_name) => {
                         emit_enum_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
                     }
@@ -3001,14 +3060,14 @@ pub fn translate_function<M: Module>(
         } else if let MirType::Struct(sname) = &param.ty {
             // All-scalar @copy struct params: the JIT passes the caller's
             // heap pointer, so a field mutation inside the callee would alias
-            // the caller's value (pass-by-reference) — while the LLVM AOT
+            // the caller's value (pass-by-reference) - while the LLVM AOT
             // backend passes byval (a copy). Copy at entry so both backends
             // agree on pass-by-value semantics (gotcha #23).
             //
             // Restricted to structs with no heap-backed fields: heap-bearing
             // @copy structs keep the share-on-clone model (and the self-host
             // parser threads `Parser { tokens: [Token], .. }` through every
-            // p_* call — copying it at entry clones the token array millions
+            // p_* call - copying it at entry clones the token array millions
             // of times and OOMs stage-1). Non-@copy structs (e.g. the
             // self-host LowerCtx) intentionally keep aliasing.
             let all_scalar = translator.struct_defs.get(sname).is_some_and(|def| {
@@ -3122,7 +3181,31 @@ fn translate_instruction<M: Module>(
 ) -> Result<(), CodegenError> {
     match instr {
         Instruction::Assign { dest, value } => {
-            let val = translate_rvalue(value, builder, translator, module, Some(*dest))?;
+            let mut val = translate_rvalue(value, builder, translator, module, Some(*dest))?;
+            // A map read of a struct/enum value that found nothing returns 0;
+            // hand out the runtime's zero box instead of a null box the next
+            // field read dereferences (`m["missing"].name` segfaulted).
+            if let RValue::Call { func, .. } = value {
+                if func == "kryos_map_get" || func == "kryos_map_get_str" {
+                    let agg = translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .find(|l| l.id == *dest)
+                        .is_some_and(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)));
+                    if let (true, Some(v)) = (agg, val) {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_box_or_zero",
+                            builder,
+                            translator,
+                            module,
+                            1,
+                        )?;
+                        let c = builder.ins().call(f, &[v]);
+                        val = Some(builder.inst_results(c)[0]);
+                    }
+                }
+            }
             if let Some(val) = val {
                 let var = translator.variables.get(&dest.0).copied().ok_or_else(|| {
                     CodegenError::Internal(format!("undefined local _{}", dest.0))
@@ -3195,7 +3278,7 @@ fn translate_instruction<M: Module>(
             // function call.  If an exception is pending, return immediately
             // to propagate the unwind toward the nearest try/catch up the
             // call stack.  Skipped only when the MIR already placed its own
-            // check right after this call (throwing call inside a try) —
+            // check right after this call (throwing call inside a try) - 
             // that check routes to the catch block instead of returning.
             if !translator.next_is_mir_exc_check {
                 // `assert_eq` is only skipped when it matches the true
@@ -3260,7 +3343,7 @@ fn translate_instruction<M: Module>(
                     // Early-return block: drop live locals, emit trace_exit,
                     // and return a default value to propagate the exception
                     // up the call stack. In `main` there is nowhere left to
-                    // unwind to — report the uncaught exception instead.
+                    // unwind to - report the uncaught exception instead.
                     builder.switch_to_block(exc_return_block);
                     builder.seal_block(exc_return_block);
                     // LEDGER item 21: this early-return path is synthesized
@@ -3397,6 +3480,9 @@ fn translate_instruction<M: Module>(
                             // of MIR-level drop-insertion correctness.
                             emit_drop_for_value(val, ty, builder, translator, module)?;
                         }
+                        kryos_mir::ir::MirType::Tuple(_) => {
+                            emit_drop_for_value(val, ty, builder, translator, module)?;
+                        }
                         _ => {}
                     }
                 }
@@ -3495,6 +3581,12 @@ fn translate_instruction<M: Module>(
                     .find(|l| l.id == *id)
                     .and_then(|l| match &l.ty {
                         MirType::Tuple(_) => field.parse::<i64>().ok(),
+                        // `arr[i].0 = v` / `m[k].0 = v`: the element read is
+                        // typed Ptr(Tuple) and is the same tuple handle (the
+                        // store fell to the offset-0 path and was lost).
+                        MirType::Ptr(inner) if matches!(inner.as_ref(), MirType::Tuple(_)) => {
+                            field.parse::<i64>().ok()
+                        }
                         _ => None,
                     }),
                 _ => None,
@@ -3516,7 +3608,7 @@ fn translate_instruction<M: Module>(
             }
 
             // Determine the struct type from the object operand.
-            // Also handle Ptr(Struct(name)) — a heap box pointer to a struct
+            // Also handle Ptr(Struct(name)) - a heap box pointer to a struct
             // (e.g. an array element returned by kryos_array_get).
             let struct_name = match object {
                 Operand::Local(id) => translator
@@ -3606,7 +3698,7 @@ fn translate_instruction<M: Module>(
             // instead of `kryos_spawn`'s truly-parallel OS thread.
             if func.starts_with("__coopspawn_") {
                 // Pack ALL captures into a stack slot and pass (fn_ptr,
-                // args_ptr, count) — the coop executor copies them into an
+                // args_ptr, count) - the coop executor copies them into an
                 // owned Vec and unpacks by arity, same as kryos_spawn. The
                 // old path threaded only args[0], so a task capturing 2+
                 // variables got garbage for the rest (backlog #114).
@@ -3627,6 +3719,22 @@ fn translate_instruction<M: Module>(
                 let args_ptr = builder.ins().stack_addr(types::I64, slot, 0);
                 for (i, arg_op) in args.iter().enumerate() {
                     let val = translate_operand(arg_op, builder, translator, module)?;
+                    // The task runs later, inside coop_run(), after this frame
+                    // has dropped its locals: a struct box handed over raw was
+                    // freed before the task read it (`coop_spawn(work(s))`
+                    // printed another struct's fields). Give the task its own
+                    // owner now. (The OS-thread path below deep-copies.)
+                    let is_struct = matches!(arg_op, Operand::Local(id) if translator
+                        .mir_func
+                        .locals
+                        .iter()
+                        .any(|l| l.id == *id && matches!(l.ty, MirType::Struct(_) | MirType::Enum(_))));
+                    if is_struct {
+                        let r = ensure_func_ref_with_args(
+                            "kryos_struct_retain", builder, translator, module, 1,
+                        )?;
+                        builder.ins().call(r, &[val]);
+                    }
                     builder
                         .ins()
                         .store(MemFlags::new(), val, args_ptr, (i * 8) as i32);
@@ -4012,7 +4120,7 @@ fn translate_instruction<M: Module>(
         } => {
             // Load from state_ptr + field_offset * 8. State slots are 8 bytes;
             // load with the DEST's type so an f64 field reinterprets the slot
-            // as f64 (an I64 load fed `iadd` on f64 operands — verifier error).
+            // as f64 (an I64 load fed `iadd` on f64 operands - verifier error).
             let ptr_val = builder.use_var(translator.variables[&state_ptr.0]);
             let offset_bytes = (*field_offset as i32) * 8;
             let dest_is_f64 = translator
@@ -4221,7 +4329,7 @@ fn translate_rvalue<M: Module>(
             let is_float = is_float_type(lhs_ty);
             // Unsigned if either operand is an unsigned integer type. Drives
             // udiv/urem, unsigned comparison, logical shift-right, and
-            // zero-extension below — signed ops on a u64 above i64::MAX give
+            // zero-extension below - signed ops on a u64 above i64::MAX give
             // silently wrong results.
             let is_unsigned = is_unsigned_operand(left, &translator.mir_func.locals)
                 || is_unsigned_operand(right, &translator.mir_func.locals);
@@ -4380,7 +4488,7 @@ fn translate_rvalue<M: Module>(
             // div/rem instruction, which otherwise raises a hardware exception
             // (silent crash) on the trap cases. Signed division has TWO trap
             // cases (zero divisor AND `MIN / -1`); UNSIGNED division only
-            // traps on a zero divisor — the MIN/-1 overflow is a signed
+            // traps on a zero divisor - the MIN/-1 overflow is a signed
             // concept, and applying the signed guard to unsigned operands
             // would falsely trap legitimate divisions like 2^63 / (2^64-1).
             if !is_float && (*op == MirBinOp::Div || *op == MirBinOp::Mod) {
@@ -4448,6 +4556,20 @@ fn translate_rvalue<M: Module>(
 
             let result = translate_unop(*op, val, is_float, val_ty, builder)?;
             Ok(Some(result))
+        }
+
+        RValue::Call { func, args } if func == kryos_mir::ir::STRUCT_SHARE_FN => {
+            // Every Cranelift struct value is a kryos_calloc box, and every
+            // struct drop path consults the owner count, so one more owner is
+            // one box retain. A tuple is a KryosArray: one more reference on
+            // it (its Drop releases the elements only at the last one).
+            let is_tuple = matches!(&args[0], Operand::Local(id)
+                if translator.mir_func.locals.iter().any(|l| l.id == *id && matches!(l.ty, MirType::Tuple(_))));
+            let val = translate_operand(&args[0], builder, translator, module)?;
+            let retain_fn = if is_tuple { "kryos_array_retain_opt" } else { "kryos_struct_retain" };
+            let retain_ref = ensure_func_ref_with_args(retain_fn, builder, translator, module, 1)?;
+            builder.ins().call(retain_ref, &[val]);
+            Ok(Some(builder.ins().iconst(types::I64, 0)))
         }
 
         RValue::Call { func, args } => {
@@ -4598,7 +4720,7 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
-            // sleep_ms(millis: i64) — pass i64 directly.
+            // sleep_ms(millis: i64) - pass i64 directly.
             if func == "sleep_ms" && args.len() == 1 {
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let sleep_ref =
@@ -4732,7 +4854,7 @@ fn translate_rvalue<M: Module>(
             // Handle int() and float() conversions using Cranelift native instructions.
             if func == "int" && args.len() == 1 {
                 if is_string_operand(&args[0], &translator.mir_func.locals) {
-                    // int(str) — PARSE, don't numerically convert: the
+                    // int(str) - PARSE, don't numerically convert: the
                     // identity path below returned the string's heap
                     // POINTER as the integer (mirrors float(str) below).
                     let val = translate_operand(&args[0], builder, translator, module)?;
@@ -4755,12 +4877,12 @@ fn translate_rvalue<M: Module>(
                     let result = builder.ins().fcvt_to_sint_sat(types::I64, val);
                     return Ok(Some(result));
                 }
-                // Already an integer — identity.
+                // Already an integer - identity.
                 return Ok(Some(val));
             }
             if func == "float" && args.len() == 1 {
                 if is_string_operand(&args[0], &translator.mir_func.locals) {
-                    // float(str) — parse string as f64 via kryos_builtin_parse_float.
+                    // float(str) - parse string as f64 via kryos_builtin_parse_float.
                     // That function returns the f64 bits packed as i64; the assignment
                     // site will bitcast to F64.
                     let val = translate_operand(&args[0], builder, translator, module)?;
@@ -4777,7 +4899,7 @@ fn translate_rvalue<M: Module>(
                 let val = translate_operand(&args[0], builder, translator, module)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 if is_float_type(val_ty) {
-                    // Already float — identity.
+                    // Already float - identity.
                     return Ok(Some(val));
                 }
                 // i64 → f64: convert
@@ -4832,7 +4954,7 @@ fn translate_rvalue<M: Module>(
                     let call = builder.ins().call(bool_ref, &[v]);
                     return Ok(Some(builder.inst_results(call)[0]));
                 } else if is_unsigned_operand(&args[0], &translator.mir_func.locals) {
-                    // Unsigned narrow ints ZERO-extend here — the generic
+                    // Unsigned narrow ints ZERO-extend here - the generic
                     // fall-through widens call args with sextend, which
                     // would print u8 200 as -56. A 64-bit unsigned value must
                     // additionally use the UNSIGNED formatter so u64::MAX
@@ -4923,18 +5045,22 @@ fn translate_rvalue<M: Module>(
                 return Ok(None);
             }
 
-            // assert_eq(left, right) — stringify both args using the same
+            // assert_eq(left, right) - stringify both args using the same
             // type-aware to_string lowering used for `{x}` interpolation,
             // then forward the two KryosString handles to the runtime.
             // The runtime compares the strings and prints a diff on failure.
             if func == "assert_eq" && args.len() == 2 && !user_shadows_assert_family {
                 let mut handles: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(2);
+                // Strings this call allocates (a non-str argument's text) are
+                // freed after it; they leaked one or two per assert.
+                let mut owned: Vec<usize> = Vec::new();
                 for arg in args.iter() {
                     if is_string_operand(arg, &translator.mir_func.locals) {
                         let val = translate_operand(arg, builder, translator, module)?;
                         handles.push(val);
                         continue;
                     }
+                    owned.push(handles.len());
                     let val = translate_operand(arg, builder, translator, module)?;
                     if is_float_operand(arg, &translator.mir_func.locals) {
                         let f64_ref = ensure_func_ref_with_args(
@@ -4988,10 +5114,17 @@ fn translate_rvalue<M: Module>(
                     2,
                 )?;
                 builder.ins().call(assert_eq_ref, &handles);
+                if !owned.is_empty() {
+                    let free_ref =
+                        ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                    for i in owned {
+                        builder.ins().call(free_ref, &[handles[i]]);
+                    }
+                }
                 return Ok(None);
             }
 
-            // panic(msg: str) — abort the process with a user message.
+            // panic(msg: str) - abort the process with a user message.
             // Lowering: forward the single string argument to
             // kryos_builtin_panic, which never returns at runtime.
             if func == "panic" && !args.is_empty() && !user_shadows_assert_family {
@@ -5341,14 +5474,29 @@ fn translate_rvalue<M: Module>(
             ) && args.len() == 3
             {
                 if let Operand::Local(vid) = &args[2] {
-                    let is_struct_or_enum = translator
+                    let vty = translator
                         .mir_func
                         .locals
                         .iter()
                         .find(|l| l.id == *vid)
-                        .map(|l| matches!(l.ty, MirType::Struct(_) | MirType::Enum(_)))
-                        .unwrap_or(false);
-                    if is_struct_or_enum {
+                        .map(|l| l.ty.clone());
+                    // A shareable struct is shared by MIR before this store
+                    // (and its overwrite releases once), so no compensating
+                    // retain here -- only enums and enum-bearing structs keep it.
+                    // Keyed on what MIR actually DID (a share of this local in
+                    // this function), not a re-derived type rule: only MIR
+                    // knows which struct names are actor handles.
+                    let mir_shared = matches!(&vty, Some(MirType::Struct(_) | MirType::Enum(_)))
+                        && translator.mir_func.blocks.iter().any(|b| {
+                            b.instructions.iter().any(|i| {
+                                matches!(i, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                                    if func == kryos_mir::ir::STRUCT_SHARE_FN
+                                        && matches!(args.first(), Some(Operand::Local(l)) if l == vid))
+                            })
+                        });
+                    let is_struct_or_enum =
+                        matches!(vty, Some(MirType::Struct(_)) | Some(MirType::Enum(_)));
+                    if is_struct_or_enum && !mir_shared {
                         let retain_ref = ensure_func_ref_with_args(
                             "kryos_struct_retain",
                             builder,
@@ -5693,7 +5841,7 @@ fn translate_rvalue<M: Module>(
                         // storing. translate_operand emits Constant::Int as I64
                         // regardless of dest field width, so a narrow field (i32,
                         // i16, i8, bool) would receive an 8-byte store into a
-                        // 4/2/1-byte slot — overrunning past the calloc'd struct
+                        // 4/2/1-byte slot - overrunning past the calloc'd struct
                         // and corrupting adjacent heap. This mirrors the coercion
                         // already done in Instruction::StoreField and Instruction::Assign.
                         let val_ty = builder.func.dfg.value_type(stored_val);
@@ -5720,7 +5868,7 @@ fn translate_rvalue<M: Module>(
 
                 Ok(Some(ptr))
             } else {
-                // Unknown struct — fall back to a zero pointer.
+                // Unknown struct - fall back to a zero pointer.
                 let val = builder.ins().iconst(types::I64, 0);
                 Ok(Some(val))
             }
@@ -5798,7 +5946,7 @@ fn translate_rvalue<M: Module>(
             }
 
             // Tuple field access: tuples are stored as KryosArray at runtime.
-            // Field names are "0", "1", "2", ... — parse as integer index.
+            // Field names are "0", "1", "2", ... - parse as integer index.
             let tuple_idx = match object {
                 Operand::Local(id) => translator
                     .mir_func
@@ -5816,7 +5964,8 @@ fn translate_rvalue<M: Module>(
                 let get_ref =
                     ensure_func_ref_with_args("kryos_array_get", builder, translator, module, 2)?;
                 let call = builder.ins().call(get_ref, &[ptr, idx_val]);
-                return Ok(Some(builder.inst_results(call)[0]));
+                let elem = builder.inst_results(call)[0];
+                return Ok(Some(elem));
             }
 
             // Heuristic: when the object's type is opaque (e.g. MirType::I64 from
@@ -6436,7 +6585,7 @@ fn translate_rvalue<M: Module>(
 
                 Ok(Some(ptr))
             } else {
-                // No thunk generated — raw function pointer (built-in).
+                // No thunk generated - raw function pointer (built-in).
                 let func_ref = ensure_func_ref_with_args(
                     func_name,
                     builder,
@@ -6486,23 +6635,46 @@ fn translate_rvalue<M: Module>(
                 Ok(Some(val))
             } else if parts.len() == 1 {
                 let val = coerce_to_string(&parts[0], builder, translator, module)?;
+                // A single STR part (`"{s.name}"`) is the operand's own handle;
+                // the concat result is an owned temp that gets its own drop,
+                // so it needs its own reference or the string is freed twice.
+                if is_string_operand(&parts[0], &translator.mir_func.locals) {
+                    let r = ensure_func_ref_with_args("kryos_string_retain", builder, translator, module, 1)?;
+                    builder.ins().call(r, &[val]);
+                }
                 Ok(Some(val))
             } else {
                 // Fold: acc = concat(parts[0], parts[1]), then concat(acc, parts[2]), ...
                 let func_ref = ensure_func_ref("kryos_string_concat", builder, translator, module)?;
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                // A non-str part (`"nm{i}"` -> str_concat("nm", i)) is
+                // converted to a FRESH string only this concat sees; free it
+                // once copied in. Unfreed, every interpolated number leaked its
+                // text (103MB per 1.6M evaluations).
+                let fresh0 = !is_string_operand(&parts[0], &translator.mir_func.locals);
+                let fresh1 = !is_string_operand(&parts[1], &translator.mir_func.locals);
                 let first = coerce_to_string(&parts[0], builder, translator, module)?;
                 let second = coerce_to_string(&parts[1], builder, translator, module)?;
                 let call = builder.ins().call(func_ref, &[first, second]);
                 let mut acc = builder.inst_results(call)[0];
-                let free_ref =
-                    ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                if fresh0 {
+                    builder.ins().call(free_ref, &[first]);
+                }
+                if fresh1 {
+                    builder.ins().call(free_ref, &[second]);
+                }
                 for part in &parts[2..] {
+                    let fresh = !is_string_operand(part, &translator.mir_func.locals);
                     let next_val = coerce_to_string(part, builder, translator, module)?;
                     let old_acc = acc;
                     let call = builder.ins().call(func_ref, &[acc, next_val]);
                     acc = builder.inst_results(call)[0];
                     // Free the intermediate concat result that was just replaced.
                     builder.ins().call(free_ref, &[old_acc]);
+                    if fresh {
+                        builder.ins().call(free_ref, &[next_val]);
+                    }
                 }
                 Ok(Some(acc))
             }
@@ -6513,7 +6685,7 @@ fn translate_rvalue<M: Module>(
             end,
             inclusive,
         } => {
-            // Range layout: [start: i64, end: i64, inclusive: i64] — 24 bytes.
+            // Range layout: [start: i64, end: i64, inclusive: i64] - 24 bytes.
             // Heap-allocate so the pointer survives across function returns.
             let size_val = builder.ins().iconst(types::I64, 24);
             let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
@@ -6937,7 +7109,7 @@ fn translate_binop_int(
         }
         MirBinOp::Pow => {
             // Handled at call site via kryos_ipow runtime call.
-            // Should never reach here — Pow is intercepted before dispatch.
+            // Should never reach here - Pow is intercepted before dispatch.
             return Err(CodegenError::UnsupportedOperation(
                 "Pow should be handled at call site".to_string(),
             ));
@@ -7089,7 +7261,7 @@ fn translate_cast(
     }
 
     // Float -> Int. An unsigned destination saturates into the UNSIGNED range
-    // (0..=U::MAX), not the signed range — a signed saturating convert clamps
+    // (0..=U::MAX), not the signed range - a signed saturating convert clamps
     // an in-range value like 1.5e19 to i64::MAX instead of reaching it.
     if is_float_type(src_ty) && !is_float_type(dest_ty) {
         let dest_bits = dest_ty.bits();
@@ -7144,7 +7316,7 @@ fn translate_cast(
 // ---------------------------------------------------------------------------
 
 /// In `main`, report a pending uncaught exception (message to stderr +
-/// nonzero exit) before returning. No-op in every other function — there
+/// nonzero exit) before returning. No-op in every other function - there
 /// the pending exception keeps unwinding toward a try/catch.
 fn emit_report_uncaught_if_main<M: Module>(
     builder: &mut FunctionBuilder,
@@ -7314,7 +7486,7 @@ fn ensure_func_ref_with_args<M: Module>(
     let func_id = if let Some(id) = translator.func_ids.get(name) {
         *id
     } else {
-        // Unknown function — declare it as an import with a generic signature.
+        // Unknown function - declare it as an import with a generic signature.
         // We use I64 for all parameters and a single I64 return, which works
         // for runtime builtins like `range`, `len`, `print`, etc.
         let mut sig = Signature::new(module.isa().default_call_conv());
@@ -7498,7 +7670,7 @@ fn emit_trace_enter<M: Module>(
     let name_ptr = builder.ins().global_value(types::I64, name_gv);
     let name_len_val = builder.ins().iconst(types::I64, name_len as i64);
 
-    // Use source_file from MIR if present — the driver populates this from
+    // Use source_file from MIR if present - the driver populates this from
     // the AST span before codegen runs.
     let file_str: &str = mir_func.source_file.as_deref().unwrap_or("<unknown>");
     let file_data_name = format!(".trace_file.{}", translator.string_counter);
@@ -7723,7 +7895,7 @@ fn emit_array_str_deep_clone<M: Module>(
 /// with heap fields: shallow-clone the header + data via kryos_array_clone,
 /// then iterate the cloned buffer and replace each element pointer with an
 /// independent __kryos_clone_<N>(elem) result. Recursion is at the call
-/// boundary at runtime, not at compile time — avoids the b428325 cycle.
+/// boundary at runtime, not at compile time - avoids the b428325 cycle.
 ///
 /// Currently superseded by emit_array_clone_deep_call (runtime ABI variant)
 /// for active dispatch paths. Kept as historical reference for the codegen-
@@ -7950,7 +8122,27 @@ fn emit_drop_for_value<M: Module>(
                 MirType::Array(elem, _) => kind_of(elem.as_ref()),
                 _ => 0,
             };
-            if key_kind == 0 && value_kind == 0 {
+            // Struct/enum values are released through their type's drop
+            // helper (the same one an array element gets); the type-erased
+            // runtime free left every one behind.
+            let value_drop_fn: Option<String> = match value.as_ref() {
+                MirType::Struct(n) | MirType::Enum(n)
+                    if (translator.struct_defs.contains_key(n) || translator.enum_defs.contains_key(n))
+                        && !translator.copy_structs.contains(n) =>
+                {
+                    let d = format!("__kryos_drop_{n}");
+                    Some(if translator.func_ids.contains_key(&d) { d } else { "kryos_free".to_string() })
+                }
+                _ => None,
+            };
+            if let Some(drop_fn) = value_drop_fn {
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_map_free_with", builder, translator, module, 3)?;
+                let drop_ref = ensure_func_ref_with_args(&drop_fn, builder, translator, module, 1)?;
+                let drop_addr = builder.ins().func_addr(types::I64, drop_ref);
+                let key_kind_val = builder.ins().iconst(types::I64, key_kind);
+                builder.ins().call(free_ref, &[val, key_kind_val, drop_addr]);
+            } else if key_kind == 0 && value_kind == 0 {
                 let free_ref = ensure_func_ref_with_args(
                     "kryos_map_free",
                     builder,
@@ -7977,7 +8169,7 @@ fn emit_drop_for_value<M: Module>(
             }
         }
         MirType::Struct(ref name) => {
-            // Guard: a struct local can legitimately hold null — a callee that
+            // Guard: a struct local can legitimately hold null - a callee that
             // throws returns a scalar default 0 before the exception check
             // routes to catch, so the binding's drop at scope exit sees a null
             // pointer (same guard the Array arm has had all along). Loading
@@ -7994,6 +8186,21 @@ fn emit_drop_for_value<M: Module>(
             builder.ins().brif(is_nonnull, drop_block, &[], after_block, &[]);
             builder.seal_block(drop_block);
             builder.switch_to_block(drop_block);
+
+            // Owner-count check, the same one `__kryos_drop_<T>` makes. This
+            // inline path (local / param / nested-field drops) used to free
+            // fields unconditionally, so a `kryos_struct_retain` anywhere was
+            // invisible to it: an owner taken for `return self` or a container
+            // slot still had its fields freed by the first drop (LEDGER item
+            // 3, 10th investigation). One drop path, one owner model.
+            let release_ref =
+                ensure_func_ref_with_args("kryos_struct_release_shared", builder, translator, module, 1)?;
+            let rel = builder.ins().call(release_ref, &[val]);
+            let still_shared = builder.inst_results(rel)[0];
+            let owned_block = builder.create_block();
+            builder.ins().brif(still_shared, after_block, &[], owned_block, &[]);
+            builder.seal_block(owned_block);
+            builder.switch_to_block(owned_block);
 
             // Recursively free heap-allocated fields, then free the struct.
             if let Some(struct_def) = translator.struct_defs.get(name).cloned() {
@@ -8148,9 +8355,16 @@ fn emit_drop_for_value<M: Module>(
                 let elem = builder
                     .ins()
                     .load(types::I64, MemFlags::new(), elem_addr, 0);
-                let elem_free_ref =
-                    ensure_func_ref_with_args(free_fn, builder, translator, module, 1)?;
-                builder.ins().call(elem_free_ref, &[elem]);
+                // An array of arrays releases each row element-wise too: a
+                // bare kryos_array_free on `[[str]]`'s rows leaked every string.
+                if matches!(elem_ty.as_ref(), MirType::Array(_, _)) {
+                    let ety = elem_ty.as_ref().clone();
+                    emit_drop_for_value(elem, &ety, builder, translator, module)?;
+                } else {
+                    let elem_free_ref =
+                        ensure_func_ref_with_args(free_fn, builder, translator, module, 1)?;
+                    builder.ins().call(elem_free_ref, &[elem]);
+                }
                 let i_next = builder.ins().iadd_imm(i, 1);
                 builder.ins().jump(loop_header, &[i_next]);
 
@@ -8167,8 +8381,64 @@ fn emit_drop_for_value<M: Module>(
                 ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
+        MirType::Tuple(ref elems) => {
+            // A tuple is a KryosArray of i64 slots. MIR only keeps a tuple's
+            // Drop where the tuple has one owner (strip_escaping_tuple_drops),
+            // so release each heap element, then the array itself.
+            // Elements are released by the LAST reference only (a shared
+            // tuple has a refcount above 1 until then).
+            let zero = builder.ins().iconst(types::I64, 0);
+            let nonnull = builder.ins().icmp(IntCC::NotEqual, val, zero);
+            let check = builder.create_block();
+            let body = builder.create_block();
+            let free_only = builder.create_block();
+            let done = builder.create_block();
+            builder.ins().brif(nonnull, check, &[], done, &[]);
+            builder.seal_block(check);
+            builder.switch_to_block(check);
+            let rc = builder.ins().load(types::I64, MemFlags::new(), val, 24);
+            let one = builder.ins().iconst(types::I64, 1);
+            let sole = builder.ins().icmp(IntCC::Equal, rc, one);
+            builder.ins().brif(sole, body, &[], free_only, &[]);
+            builder.seal_block(free_only);
+            builder.switch_to_block(free_only);
+            let free_ref0 =
+                ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
+            builder.ins().call(free_ref0, &[val]);
+            builder.ins().jump(done, &[]);
+            builder.seal_block(body);
+            builder.switch_to_block(body);
+            for (i, ety) in elems.iter().enumerate() {
+                let heap = matches!(
+                    ety,
+                    MirType::Str
+                        | MirType::Array(_, _)
+                        | MirType::Map { .. }
+                        | MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Function { .. }
+                        | MirType::Shared(_)
+                );
+                if !heap {
+                    continue;
+                }
+                let get_ref =
+                    ensure_func_ref_with_args("kryos_array_get", builder, translator, module, 2)?;
+                let idx = builder.ins().iconst(types::I64, i as i64);
+                let c = builder.ins().call(get_ref, &[val, idx]);
+                let elem = builder.inst_results(c)[0];
+                emit_drop_for_value(elem, ety, builder, translator, module)?;
+            }
+            let free_ref =
+                ensure_func_ref_with_args("kryos_array_free", builder, translator, module, 1)?;
+            builder.ins().call(free_ref, &[val]);
+            builder.ins().jump(done, &[]);
+            builder.seal_block(done);
+            builder.switch_to_block(done);
+        }
         MirType::Enum(ref enum_name) => {
-            // Guard: an enum local can legitimately hold null — a callee
+            // Guard: an enum local can legitimately hold null - a callee
             // that throws returns a scalar default 0 before the exception
             // check routes to catch, so the binding's drop at scope exit
             // sees a null pointer (same guard as the Struct arm). Loading
@@ -8186,6 +8456,20 @@ fn emit_drop_for_value<M: Module>(
                 .brif(is_nonnull, enum_drop_block, &[], enum_after_block, &[]);
             builder.seal_block(enum_drop_block);
             builder.switch_to_block(enum_drop_block);
+
+            // Owner-count check, as in the Struct arm: an enum box another
+            // owner retained (a callee-owned enum param's entry share, a
+            // container store) must not have its payload freed here.
+            let release_ref =
+                ensure_func_ref_with_args("kryos_struct_release_shared", builder, translator, module, 1)?;
+            let rel = builder.ins().call(release_ref, &[val]);
+            let still_shared = builder.inst_results(rel)[0];
+            let enum_owned_block = builder.create_block();
+            builder
+                .ins()
+                .brif(still_shared, enum_after_block, &[], enum_owned_block, &[]);
+            builder.seal_block(enum_owned_block);
+            builder.switch_to_block(enum_owned_block);
 
             // Runtime variant-aware Drop: load the tag, dispatch on it,
             // and free heap-owning payload fields for the active variant.
@@ -8304,7 +8588,7 @@ fn emit_drop_for_value<M: Module>(
                     builder.switch_to_block(merge_block);
                 }
             }
-            // Enum box came from `kryos_calloc` — release it through the
+            // Enum box came from `kryos_calloc` - release it through the
             // matching header-aware free.
             let free_ref = ensure_func_ref_with_args("kryos_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
@@ -8417,4 +8701,41 @@ fn emit_exception_cleanup_drops<M: Module>(
     }
 
     Ok(())
+}
+
+/// Free a `[T]` field from inside a generated drop helper: the elements go
+/// through their own drop (`__kryos_drop_<T>` for a struct/enum, the runtime
+/// free for a str/array/map), released by the array's last reference.
+fn emit_helper_array_field_free<M: Module>(
+    builder: &mut FunctionBuilder,
+    object_module: &mut M,
+    func_ids: &HashMap<String, FuncId>,
+    field_val: cranelift_codegen::ir::Value,
+    elem: &MirType,
+) {
+    let elem_fn = match elem {
+        MirType::Str => Some("kryos_string_free".to_string()),
+        MirType::Array(_, _) => Some("kryos_array_free".to_string()),
+        MirType::Map { .. } => Some("kryos_map_free".to_string()),
+        MirType::Function { .. } | MirType::Shared(_) => Some("kryos_arc_release".to_string()),
+        MirType::Struct(n) | MirType::Enum(n) => {
+            let dn = format!("__kryos_drop_{n}");
+            Some(if func_ids.contains_key(&dn) { dn } else { "kryos_free".to_string() })
+        }
+        _ => None,
+    };
+    match elem_fn.and_then(|n| func_ids.get(&n).copied()) {
+        Some(eid) => {
+            let eref = object_module.declare_func_in_func(eid, builder.func);
+            let addr = builder.ins().func_addr(types::I64, eref);
+            let fid = func_ids["kryos_array_free_elems"];
+            let fref = object_module.declare_func_in_func(fid, builder.func);
+            builder.ins().call(fref, &[field_val, addr]);
+        }
+        None => {
+            let fid = func_ids["kryos_array_free"];
+            let fref = object_module.declare_func_in_func(fid, builder.func);
+            builder.ins().call(fref, &[field_val]);
+        }
+    }
 }

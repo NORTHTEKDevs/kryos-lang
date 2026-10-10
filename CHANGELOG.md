@@ -6,6 +6,151 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - try/catch in loops, map literals, AOT stack growth
+
+- **A local declared inside `try` after the call that threw** was released
+  again on the catch path (a double free in a loop); on AOT an
+  `Option`-returning function that throws inside `try` in a loop could
+  repeat the catch forever.
+- **A map literal with struct or enum values** (`{"a": P { .. }}`) crashed on
+  AOT, and with a local value (`{"a": p}`) freed it twice.
+- **Reassigning a tuple of structs in a loop** grew the stack every
+  iteration on AOT until it overflowed.
+- **`x = x`** on a struct or enum variable freed it; **`match f() { (s, p) =>
+  p }`** returned a freed struct; **`let p = m[k]`** of a struct leaked; a
+  nested tuple pattern with an enum element failed to build on AOT.
+
+### Fixed - memory leaks in common expressions
+
+- **`a and b` / `a or b`** leaked every heap temporary its operands built
+  (`p.name == q.name and ..`), and with it structural `==` of structs,
+  arrays and tuples.
+- **`to_string` / `"{v}"` of a struct or tuple** leaked two strings per
+  string field.
+- **`assert_eq`** leaked the text of every non-string argument (on master
+  too), and on aggregates the formatted values.
+- **`let s = if c { f() } else { g() }`** (and `match`) leaked the value.
+- **`len(make_pair().0)`** (an element read off a fresh tuple) and
+  **`return t.0` / `return s.field`** of a struct leaked once per call.
+- **A `map<K, S>` with struct, enum or `Option` values** never released them
+  when the map was freed (on master too); **`len(m[k].name)`** leaked the
+  field it read.
+- **Copying a tuple** (`let u = t`, `u = t`) and then reassigning either
+  side, or destructuring an existing tuple (`let (a, b) = t`), leaked it.
+- **A `continue` or `break` inside one match arm** leaked the subject and
+  bindings of every other arm; **`match f() { (a, b) => .. }`** never
+  released the tuple.
+
+### Fixed - a function that throws while returning a struct
+
+- On AOT the struct the caller received was uninitialized stack memory,
+  which the caller's cleanup then freed (a crash on Linux and macOS,
+  reported as a stack overflow). It is now zeroed.
+
+### Fixed - reassigning a struct or enum variable double-freed
+
+- **`best = p`** (an owned struct/enum local reassigned from another value,
+  e.g. a loop variable over an array) stored the value without taking its own
+  reference and released only the old value's fields, so the local's
+  scope-end drop freed a box the array still held. `std::probable`'s
+  `best_of` hit it on the JIT. The new value now takes its own reference and
+  the old value is released whole.
+- **`m.name = local`** (a named string/array/map variable stored into a
+  field) freed the value twice on both backends; the field now takes its own
+  reference.
+
+### Fixed - fourth review: tuples in containers, nested patterns, generics over maps
+
+- **A nested tuple pattern in `match`** (`((p, s), n) => ..`) over a borrowed
+  tuple freed the caller's elements.
+- **`map<f64, S>`** reads always returned the missing-key default on AOT.
+- **`assert_eq(f(), g())`** on arrays/structs/tuples evaluated its arguments
+  up to three times.
+- **`t.1.n = v` / `t.1 = P {..}`** on a `let mut` tuple holding a struct lost
+  the store and corrupted the value on AOT.
+- **`arr[i].0 = v` / `m[k].0 = v`** (a tuple inside an array or map) was
+  silently dropped on the JIT.
+- **`m[k].field = v` on a missing key** crashed; it now inserts the value
+  type's default first, like `m[k] = ..`.
+- **`for ((p, s), n) in xs`** bound nothing for the nested names (0, "" or a
+  crash).
+- **A `(..) =>` arm after an arm whose body is a struct literal, `if`, string
+  or `match`** was parsed as a call on that body (parse error).
+- **A generic over `map<K, V>`** bound K and V to `i64`: `keys(m)` of a str map
+  read as ints and a `-> V` result printed a pointer.
+
+### Fixed - review findings: catch-all match arms, missing map keys, assert_eq, keys()
+
+- **`match e { other => other }` on an enum bound garbage** (JIT crash, AOT
+  wrong output).
+- **Reading a missing key from a map of structs, enums, tuples or Options**
+  now gives a real default value (`""`, `[]`, `{}`, `0`, `None`, nested
+  defaults); writes to it and nested field reads used to crash, and an
+  `Option` read as `Some`.
+- **`assert_eq` on arrays, maps, structs, enums or tuples** compares contents
+  (it compared handles, so equal arrays failed).
+- **`keys(m)` of an `int`-keyed map** is `[i64]` (was `[str]`; using a key as
+  a string crashed). **`let ((a, b), c) = ..`** binds correctly (bound 0).
+  **`t.0 = v`** on a tuple no longer double-frees. **A tuple-pattern match
+  arm after a `{ }` arm** parses. **Strings inside `to_string` of a
+  container** are escaped.
+
+### Added - `to_string` and interpolation of arrays, maps, tuples, structs, enums
+
+- `to_string([1, 2])` is `[1, 2]` (was `<array>`), and `"{v}"` works for any
+  array, tuple, map, struct or enum (was a compile error): `("a", 1)`,
+  `{"k": 1}`, `P { name: "x" }`, `Some(3)`. A type's own `to_string` wins.
+
+### Fixed - `for` loops leaked every element
+
+- **Every `for` loop over strings or arrays leaked one value per iteration** on
+  both backends (`for line in lines { .. }`), a loop over a function result
+  (`for k in keys(m)`, `for s in split(..)`) leaked the whole array, and an
+  array of arrays leaked every inner element when freed. `match f() { .. }`
+  and `if let Some(x) = f()` leaked `f()`'s result the same way, and a
+  `match` arm computing a string (`A(s) => "A(" + s + ")"`) leaked an
+  intermediate string each time.
+
+### Added - structural equality for arrays and maps
+
+- `==` and `!=` now compare arrays element by element and maps entry by entry,
+  directly and inside structs, enums, tuples and generics. Before, they were
+  rejected when written directly but silently compared handles inside a
+  generic function, so `assert_eq([1, 2], [1, 2], ..)` failed.
+
+### Fixed - tuples, missing map keys, keys()
+
+- **Reading a tuple element twice double-freed it** (`println(q.0)` twice), and
+  returning a parameter, captured or element-read tuple handed the caller an
+  alias it then freed (both backends).
+- **Tuples were never freed**: a tuple holding a string, array or struct
+  leaked every time. Built-and-read, destructured, reassigned, returned and
+  passed-to-a-function tuples are freed now; one stored inside an array,
+  struct, enum or map, or captured by a returned closure, still leaks.
+- **A function that kept a tuple argument (pushed it, stored it, captured it)
+  double-freed it** once the caller freed its own copy (both backends).
+- **Reading a missing key from a map of structs or enums crashed** (segfault on
+  AOT, and on the JIT at the next field read). It reads the zero value now.
+- **Walking `keys(m)` twice could double-free the map's keys** when an element
+  was bound with `let`.
+
+### Fixed - recursive enums, container reads, and literal elements
+
+- **Recursive enums double-freed on AOT** (`enum T { N([T]), Nm(str, [T]) }`
+  with `T.N([T.Nm(s, [])])`), and the arrays inside boxed enum or struct values
+  never released their elements on either backend (65-367MB per 1M builds).
+- **`let a = p.name`, `let a = xs[i]` and `let a = m[k]` leaked one string or
+  array per binding** on both backends (~100MB per 1M). The binding now owns
+  the value it read.
+- **`[x, x]` of a parameter double-freed** (`fn twice<T>(x: T) -> [T]`, and
+  `fn tw(x: str) -> [str] { return [x, x] }` on master too); `[p, p]` of a
+  struct local leaked its elements on AOT.
+- **A string moved into an enum on one branch leaked on every path**, including
+  the paths that never built the enum.
+- **A generic parameter named like a user type no longer resolves to that
+  type**: with `enum T` in scope, `fn id<T>(x: T)` rejected `id(5)` and no
+  generic stdlib function (`assert_eq`, ...) could be called.
+
 ### Fixed - struct heap fields leaked whenever they were read (LEDGER items 3 + 51)
 
 - **Reading an array or map field of a struct leaked that container on both
@@ -19,9 +164,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **JIT: Cranelift's struct deep copy shared array elements without retaining
   them**, so two copies of a `[Token]`-style field could free the same element
   twice. Latent until the first fix removed the leak that masked it.
-- Still open: a struct passed to a user function is not freed by the caller
-  (item 3's call-boundary half, ~77MB per 1M calls), and item 51's
-  field-overwrite repro. See tools/loop/LEDGER.md.
+- Item 3's call-boundary half and item 51 are now closed too (next section).
+
+### Fixed - struct and enum ownership across calls (LEDGER items 3 + 51 CLOSED)
+
+- **Passing a struct or enum to a function no longer leaks.** The callee now
+  owns its struct/enum parameter (it takes its own reference on entry) and the
+  caller keeps and frees its own, so returning, pushing, storing or capturing
+  the parameter is safe. Measured at 1M calls: struct methods 88MB -> 4MB,
+  method chains 279MB -> 3MB, `Option<S>` arguments 433MB -> 4MB,
+  `Result<S, str>` arguments 310MB -> 4MB.
+- **Overwriting a struct's enum field leaked the old value** (`h.v = ..` in a
+  loop: 279MB at 3M) -- item 51. Fixed.
+- **Double frees and wrong answers fixed along the way** (all present in
+  1.0.1): `Ag { memory: a.memory, caps: a.caps }` freed `memory` twice
+  (`std::agent::agent_with_alignment` hit it on every call); `let y = arr[0]`
+  read freed memory after `arr[0]` was overwritten (JIT); a struct pushed into
+  an array and later reused was freed when the array dropped (JIT); a
+  `coop_spawn`/actor task saw another struct's fields (JIT).
+- **Closures: a returned closure called through the same variable name in
+  another function ran the wrong lambda with garbage captures** (both
+  backends, exit 0), and a closure shadowed in a block was still called after
+  the block.
+- **Struct globals** (`let mut CUR: S = S { .. }` with a string field)
+  segfaulted on AOT, and a field store through one did not persist.
+- **`let o = Some(value)` without a type annotation** kept the payload type
+  (it printed a pointer on the JIT and failed to build on AOT).
+- **String interpolation of a number leaked the formatted text** on both
+  backends (~64 bytes per evaluation).
+- **`std::fmt::debug`/`display` and `std::test::assert_eq`/`assert_ne`** took
+  `any`: `debug("abc")` printed a pointer and `assert_eq` compared strings by
+  address. They are generic now.
+- **Runtime:** the struct owner count is now updated with a compare-and-swap,
+  so two threads releasing the same struct cannot both miss the last owner.
+- Remaining known limitation: an enum with an enum payload (enum nested
+  directly inside an enum), or a struct containing one, keeps the older
+  model -- it can leak, but never double-frees.
 
 ## [1.0.1] - 2026-10-06
 

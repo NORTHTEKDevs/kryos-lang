@@ -743,6 +743,14 @@ impl TypeChecker {
                 } else if let Some(ty) = Type::from_name(name) {
                     ty
                 } else {
+                    // An in-scope generic parameter (registered as a type
+                    // variable) shadows a same-named struct/enum: `fn id<T>(x:
+                    // T)` beside a user `enum T` resolved `x` to the enum, so
+                    // `id(5)` failed -- and any program defining `T` could not
+                    // call a generic stdlib fn (`assert_eq<T>`).
+                    if let Some(ty @ Type::Var(_)) = self.env.lookup_var(name) {
+                        return ty.clone();
+                    }
                     // Check if it's a known struct or enum name.
                     if self.env.lookup_struct(name).is_some() {
                         Type::Struct {
@@ -4502,6 +4510,9 @@ impl TypeChecker {
                         // std::tracked's explain()/to_json()). Reject it with a
                         // clear error. (A generic `T` is an unresolved Var here
                         // and is allowed; only concrete aggregates are caught.)
+                        // Arrays, tuples, maps, structs and enums (incl.
+                        // Option/Result) format their contents the same way
+                        // `to_string` does (kryos-mir `ensure_fmt_helper`).
                         let resolved = self.engine.resolve(&ty);
                         let interpolatable = matches!(
                             resolved,
@@ -4509,6 +4520,9 @@ impl TypeChecker {
                                 | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
                                 | Type::F32 | Type::F64 | Type::Bool | Type::Char | Type::Str
                                 | Type::USize | Type::ISize | Type::Var(_) | Type::Error
+                                | Type::Struct { .. } | Type::Enum { .. } | Type::Array { .. }
+                                | Type::Tuple { .. } | Type::Map { .. } | Type::Option { .. }
+                                | Type::Result { .. }
                         );
                         if !interpolatable {
                             let desc = match &resolved {
@@ -5081,7 +5095,7 @@ impl TypeChecker {
                             // for k in keys { m[k] }` idiom with a bogus E0100
                             // on the re-index (workaround was annotating
                             // `let keys: [str]`).
-                            if matches!(&callee_name_str, Some(n) if n == "map_keys") {
+                            if matches!(&callee_name_str, Some(n) if n == "map_keys" || n == "keys") {
                                 if let Some(arg0) = args.first() {
                                     let arg0_ty = self.infer_expr(arg0);
                                     let mt = self.engine.resolve(&arg0_ty);
@@ -7024,29 +7038,10 @@ impl TypeChecker {
                 if let Err(diag) = self.engine.unify(&left_ty, &right_ty, span) {
                     self.diagnostics.push(diag);
                 }
-                // `==`/`!=` on a struct or enum lowers to a synthesized
-                // structural-equality helper (kryos-mir's
-                // `ensure_struct_eq_helper`/`ensure_enum_eq_helper`) that
-                // compares fields pairwise. Array/map fields don't have a
-                // cheap, unsurprising structural comparison implemented yet
-                // (elementwise array/map equality), so reject the comparison
-                // here with a clear message rather than let it through to
-                // codegen, where it would previously either silently compare
-                // handles (JIT) or fail to build (AOT).
-                if matches!(op, BinOp::Eq | BinOp::Neq) {
-                    let resolved = self.engine.resolve(&left_ty);
-                    let mut visited = std::collections::HashSet::new();
-                    if self.contains_array_or_map(&resolved, &mut visited) {
-                        let op_sym = if op == BinOp::Eq { "==" } else { "!=" };
-                        self.error(
-                            format!(
-                                "cannot apply `{op_sym}` to type `{resolved}`: it has an array or map field (directly or nested) -- structural equality for array/map fields is not supported; compare those fields explicitly"
-                            ),
-                            span,
-                        );
-                        return Type::Error;
-                    }
-                }
+                // `==`/`!=` on a struct, enum, tuple, array or map lowers to a
+                // synthesized structural-equality helper in kryos-mir
+                // (`ensure_struct_eq_helper`, `ensure_container_eq_helper`,
+                // ...) that compares contents, so every type compares by value.
                 // ORDERING (< > <= >=) is defined only for scalars and
                 // strings. On a struct/enum/array/map it type-checked clean
                 // and codegen compared the raw HANDLES -- two equal-valued
@@ -8333,7 +8328,9 @@ fn type_check_with_lambda_params_inner(
         ret: Type::F64,
     });
 
-    // keys(m: any) -> [str] - get map keys
+    // keys(m: map<K, V>) -> [K] - get map keys. Declared opaque so the call
+    // site types the result from the map's KEY type (like map_keys): typed
+    // `[str]`, an int-keyed map's keys were used as string pointers.
     checker.env.define_function(FunctionSig {
         name: "keys".to_string(),
         generic_params: vec![],
@@ -8341,10 +8338,7 @@ fn type_check_with_lambda_params_inner(
         generic_cap_var_ids: vec![],
         own_cap_var: checker.builtin_cap_var,
         params: vec![("m".to_string(), Type::Error)],
-        ret: Type::Array {
-            element: Box::new(Type::Str),
-            size: None,
-        },
+        ret: Type::Error,
     });
 
     // sleep_ms(ms: i64) -> void - sleep for milliseconds

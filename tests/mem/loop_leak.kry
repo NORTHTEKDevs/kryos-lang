@@ -1,0 +1,53 @@
+// Peak-RSS probe for tests/mem_loop_gate.sh (2026-10-08). A `for` over a
+// str/array element read retained (LLVM) or cloned (Cranelift) every element
+// into a loop variable that was never released, and a freshly produced
+// iterable (`for k in keys(m)`, `for s in mk()`, `for s in [..]`) was never
+// released at all. A `match <call>` / `if let .. = <call>` never released the
+// call's result either (match_enum, match_str, if_let).
+use std::option::{Option, Some, None}
+enum E { A(str), B(i64) }
+fn mke(i: i64) -> E { if i % 2 == 0 { return E.A("a{i}" + "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq") } return E.B(i) }
+fn mko(i: i64) -> Option<str> { if i % 2 == 0 { return Some("o{i}" + "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq") } return None }
+fn mks(i: i64) -> str { return "s{i}" + "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq" }
+fn mkarr(i: i64) -> [str] { return ["a{i}" + "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "b{i}"] }
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let m: map<str, i64> = {}
+    m["a{1}"] = 1
+    m["b{2}"] = 2
+    let mut t = 0
+    let mut i = 0
+    while i < n {
+        if mode == "named_iter" {
+            let a = mkarr(i)
+            for s in a { t = t + len(s) }
+        } elif mode == "call_iter" {
+            for s in mkarr(i) { t = t + len(s) }
+        } elif mode == "keys_iter" {
+            for k in keys(m) { t = t + m[k] }
+        } elif mode == "literal_iter" {
+            for s in ["x{i}" + "qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq", "y"] { t = t + len(s) }
+        } elif mode == "break_iter" {
+            let a = mkarr(i)
+            for s in a { if len(s) > 0 { break } }
+        } elif mode == "match_enum" {
+            match mke(i) { E.A(s) => { t = t + len(s) } E.B(k) => { t = t + k } }
+        } elif mode == "match_str" {
+            match mks(i) { "x" => { t = t + 1 } _ => { t = t + 2 } }
+        } elif mode == "if_let" {
+            if let Some(s) = mko(i) { t = t + len(s) }
+        } elif mode == "match_field" {
+            let p2 = mkarr(i)
+            match p2[0] { "zz" => { t = t + 1 } _ => { t = t + 2 } }
+        } elif mode == "nested" {
+            for row in [mkarr(i), mkarr(i + 1)] {
+                for s in row { t = t + len(s) }
+            }
+        }
+        i = i + 1
+    }
+    println(to_string(t))
+}

@@ -281,6 +281,62 @@ jobs:
         # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
         run: bash tests/mem_struct_field_read_gate.sh
 
+      - name: Struct-argument memory gate (LEDGER item 3)
+        # Passing a heap-bearing struct to a function, and chaining
+        # struct-returning methods, must stay flat on BOTH backends. Pre-fix
+        # at 1M: method_chain 279MB AOT / 371MB JIT, free_fn_scalar_ret
+        # 89MB / 126MB; fixed ~4MB. Double-free direction:
+        # no_double_free.sh's struct_arg_ownership case.
+        # Windows-only (PowerShell PeakWorkingSet64) -- SKIPs elsewhere.
+        run: bash tests/mem_struct_arg_gate.sh
+
+      - name: String-interpolation memory gate
+        # `"nm{i}"` formatted the number into a fresh string that neither
+        # backend freed after the concat: master 102-103MB at 1.6M iterations
+        # on BOTH backends; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_string_interp_gate.sh
+
+      - name: Enum-argument memory gate
+        # Enum arguments (incl. Option<S> / Result<S, str>) are owned by the
+        # callee; a match arm's struct payload binding is shared and dropped.
+        # Master at 1M: 96-433MB per mode on both backends; fixed ~4MB.
+        # Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_enum_arg_gate.sh
+
+      - name: Recursive-enum / literal-element memory gate
+        # A `[T]` inside a boxed enum releases its elements; a str moved into
+        # an enum on one branch is still dropped on the others; an array
+        # literal of a struct param/local owns one reference per slot.
+        # 81c61df6 at 1M: 64-367MB on 11 of 12 legs; fixed ~4MB.
+        # Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_enum_recursive_gate.sh
+
+      - name: Element-read memory gate
+        # `let a = p.name` / `xs[i]` / `m[k]` bind a value the read already
+        # retained; the binding must release it. 81c61df6 at 1M: ~100MB on
+        # all 12 legs; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_element_read_gate.sh
+
+      - name: Tuple memory gate
+        # A singly-owned tuple releases its heap elements; destructuring and
+        # reassignment release the tuple they consume. 81c61df6 at 1M: 10 of
+        # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_tuple_gate.sh
+
+      - name: Aggregate-operation memory gate
+        # Structural ==, to_string and assert_eq of structs/arrays/tuples, an
+        # `and` chain over field reads, an element read off a fresh tuple:
+        # each leaked per call (~90-370MB at 300k-1M); fixed ~4MB.
+        # Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_agg_ops_gate.sh
+
+      - name: Loop memory gate
+        # A str/array/map `for` variable owns its element read (released each
+        # iteration); a freshly produced iterable and an array of arrays
+        # release their contents. 81c61df6 at 1M: all 12 legs over the
+        # ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_loop_gate.sh
+
       - name: Enum-array/map overwrite memory gate (LEDGER item 49)
         # Container-slot OVERWRITE (`arr[i] = v` / `m[k] = v`) of an existing
         # Struct/Enum-valued slot must keep peak RSS under a hard ceiling on

@@ -1,0 +1,75 @@
+// Conformance (2026-10-08): `for` loop variables over str/array elements own
+// their element read (released per iteration, on `continue`, `break` and
+// `return` too), and a freshly produced iterable is released after the loop.
+// A `match <call>` releases its subject after the match (and on `return`,
+// `continue`, `break` out of an arm).
+// Run under KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+enum E { A(str), B(i64), C([str]) }
+fn mk(i: i64) -> E { if i % 3 == 0 { return E.A("a{i}") } if i % 3 == 1 { return E.B(i) } return E.C(["c{i}"]) }
+fn mko(i: i64) -> Option<str> { if i % 2 == 0 { return Some("o{i}") } return None }
+fn mkr(i: i64) -> Result<str, str> { if i % 2 == 0 { return Ok("r{i}") } return Err("e{i}") }
+fn mks(i: i64) -> str { return "s{i}" }
+fn first(i: i64) -> str {
+    match mko(i) { Some(s) => { return s } None => { return "none" } }
+}
+fn kind(i: i64) -> str {
+    let v = match mk(i) { E.A(s) => s, E.B(k) => to_string(k), E.C(xs) => xs[0] }
+    return v
+}
+fn find(xs: [str], want: str) -> str {
+    for s in xs {
+        if s == want { return "found " + s }
+    }
+    return "none"
+}
+fn main() {
+    let xs = ["a{1}", "b{2}", "c{3}", "d{4}"]
+    let mut acc = ""
+    for s in xs {
+        if s == "b2" { continue }
+        if s == "d4" { break }
+        acc = acc + s
+    }
+    for s in xs { if len(s) == 2 { continue } }
+    for s in xs { break }
+    let mut n = 0
+    for row in [xs, ["e{5}"]] {
+        for s in row { n = n + len(s) }
+    }
+    let got = acc + " " + find(xs, "c3") + " " + find(xs, "zz") + " " + to_string(n) + " " + xs[0] + xs[3]
+    if got != "a1c3 found c3 none 10 a1d4" {
+        println("CONF FAIL: loop ownership: " + got)
+        exit(1)
+    }
+    let m: map<str, i64> = {}
+    m["k{1}"] = 1
+    m["j{2}"] = 2
+    let mut t = 0
+    for k in keys(m) { t = t + m[k] }
+    for k in keys(m) { t = t + m[k] }
+    if t != 6 or m["k1"] != 1 {
+        println("CONF FAIL: loop over keys(m)")
+        exit(1)
+    }
+    let mut acc2 = ""
+    let mut j = 0
+    while j < 6 {
+        acc2 = acc2 + first(j) + kind(j)
+        match mkr(j) { Ok(r) => { acc2 = acc2 + r } Err(e) => { acc2 = acc2 + e } }
+        if let Some(o) = mko(j) { acc2 = acc2 + o }
+        match mk(j) {
+            E.A(a) => { if len(a) > 0 { j = j + 1  continue } }
+            E.B(b) => { acc2 = acc2 + "b" }
+            E.C(cs) => { acc2 = acc2 + cs[0] }
+        }
+        match mks(j) { "s5" => { break } _ => { acc2 = acc2 + "." } }
+        j = j + 1
+    }
+    if acc2 != "o0a0r0o0none1e1b.o2c2r2o2c2.nonea3e3o44r4o4b.nonec5e5c5" {
+        println("CONF FAIL: match on a call: " + acc2)
+        exit(1)
+    }
+    println("conformance loop ownership: PASS")
+}

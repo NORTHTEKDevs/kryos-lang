@@ -1,0 +1,76 @@
+// Conformance: struct arguments are BORROWED by the caller and OWNED by the
+// callee (LEDGER item 3, closed 2026-10-07). Each shape below is a way a
+// struct parameter (or a value built from it) outlives the call -- the shapes
+// that broke the ten earlier attempts one at a time. tests/no_double_free.sh
+// runs this file under KRYOS_FREE_DIAG on both backends: output alone cannot
+// see a double free.
+
+struct In { tag: str, xs: [str] }
+struct S { name: str, inner: In, items: [i64], n: i64 }
+struct W { s: S }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> S {
+    return S { name: "s" + to_string(i), inner: In { tag: "t" + to_string(i), xs: ["a" + to_string(i)] }, items: [i, i + 1], n: i }
+}
+
+fn ok(s: S, i: i64) -> bool {
+    return s.name == "s" + to_string(i) and s.inner.tag == "t" + to_string(i) and s.inner.xs[0] == "a" + to_string(i) and s.items[1] - s.items[0] == 1
+}
+
+fn same(p: S) -> S { return p }
+fn rebind(p: S) -> S { let mut np = p  np.n = np.n + 1  return np }
+fn inner_of(p: S) -> In { return p.inner }
+fn wrap(p: S) -> W { return W { s: p } }
+fn rebuild(p: S) -> S { return S { name: p.name, inner: p.inner, items: p.items, n: p.n + 1 } }
+fn add(arr: [S], p: S) -> [S] { return push(arr, p) }
+fn put(m: map<str, S>, k: str, p: S) { m[k] = p }
+fn pick(arr: [S], i: i64) -> S { let t = arr[i]  return t }
+fn deep(p: S) -> bool { return ok(p, p.n) }
+fn deeper(p: S) -> bool { return deep(p) and deep(p) }
+fn keep(p: S) -> fn() -> bool { let f = || ok(p, p.n)  return f }
+
+impl S {
+    fn me(self: S) -> S { return self }
+    fn named(self: S, nm: str) -> S { return S { name: nm, inner: self.inner, items: self.items, n: self.n } }
+}
+
+fn main() {
+    let mut arr: [S] = []
+    let m: map<str, S> = {}
+    let mut i = 0
+    while i < 30 {
+        let a = mk(i)
+        expect(ok(same(a), i) and ok(a, i), "return self")
+        let b = rebind(a)
+        expect(ok(b, i) and b.n == i + 1 and a.n == i, "param rebound to a local")
+        expect(len(inner_of(a).xs) == 1 and ok(a, i), "return a struct field of a param")
+        expect(ok(wrap(a).s, i) and ok(a, i), "param stored in a literal")
+        expect(ok(rebuild(a), i) and ok(a, i), "literal of a param's fields")
+        arr = add(arr, a)
+        put(m, to_string(i), a)
+        expect(deeper(a) and ok(a, i), "nested borrows")
+        let f = keep(a)
+        expect(f() and ok(a, i), "closure over a param, returned")
+        expect(ok(a.me().me(), i) and ok(a.named("s" + to_string(i)), i), "method chain")
+        i = i + 1
+    }
+    i = 0
+    while i < 30 {
+        expect(ok(arr[i], i), "param pushed into an array")
+        expect(ok(m[to_string(i)], i), "param stored into a map")
+        expect(ok(pick(arr, i), i), "element read into a named local, returned")
+        i = i + 1
+    }
+    let mut c = mk(7)
+    i = 0
+    while i < 30 { c = rebuild(c)  i = i + 1 }
+    expect(c.n == 37 and c.name == "s7", "x = f(x) reassignment")
+    println("conformance struct arg ownership: PASS")
+}

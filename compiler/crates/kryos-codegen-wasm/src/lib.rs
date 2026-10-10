@@ -3573,6 +3573,12 @@ impl<'a> FnEmitter<'a> {
             }
         }
 
+        // Struct share: v0.1 WASM frees nothing, so one more owner is a no-op.
+        if func == kryos_mir::ir::STRUCT_SHARE_FN {
+            self.wfunc.instruction(&W::I64Const(0));
+            return Ok(());
+        }
+
         // -------------------------------------------------------------
         // Runtime ARC: kryos_string_retain(packed) -> packed (no-op in WASM)
         // -------------------------------------------------------------
