@@ -134,5 +134,15 @@ fn main() {
     let kept = mkp(12).0
     expect(mkp(12).0 == kept and to_string(mkp(13).0) == "P {{ name: \"p13\", xs: [13] }}" and kept.xs[0] == 12, "struct element of a fresh tuple")
 
+    // Tuple copies own themselves; either side can be reassigned.
+    let mut ta = mk(20)
+    let tb = ta
+    ta = mk(21)
+    let mut tc = tb
+    tc = mk(22)
+    let tp2 = mkp(23)
+    let (dp, ds) = tp2
+    expect(tb.0 == "k20" and ta.0 == "k21" and tc.0 == "k22" and dp.name == "p23" and ds == "s23" and tp2.0.name == "p23", "tuple copies and destructuring a local")
+
     println("conformance agg ops ownership: PASS")
 }

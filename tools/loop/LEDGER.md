@@ -102,8 +102,11 @@ after; pinned by `tests/mem_agg_ops_gate.sh`, double-free direction by
   copy: fields, then `kryos_arc_release` -- the sequence a map-slot overwrite
   already used). Under KRYOS_FREE_DIAG the values are released too, so
   `tests/conformance/conf_map_struct_values.kry` checks the double-free
-  direction. 218MB -> 4 at 1M (`mem_agg_ops_gate` map_struct). Enum values
-  in a map are not yet released (their map boxing is unaudited).
+  direction. 218MB -> 4 at 1M (`mem_agg_ops_gate` map_struct). Enum and
+  Option values too (LLVM `__kryos_mapval_drop_<E>`: payload, then the arc
+  box -- the map-slot overwrite sequence): `map<str, E>` 249MB -> 4 AOT,
+  24MB JIT at 1M (a JIT residual, likely Cranelift's compensating retain on
+  an enum insert; neutralizing it in the free could steal an alias's unit).
 - `let mut t = mkp(i); t.1 = ..` never released `t`: the tuple escape
   analysis counted a `StoreField` into the tuple as an escape. An in-place
   element store is not one (a tuple stored AS the value still is). Measured
@@ -114,6 +117,14 @@ after; pinned by `tests/mem_agg_ops_gate.sh`, double-free direction by
   an alias, now accepted when it is only lent within the statement (user fn
   arg, clone/share, borrowing builtin, field read) or bound to a local that
   shares itself. 772MB -> 4MB at 1M (`tuple_struct_elem`).
+- Tuple copies: `let u = t` / `u = t` made `u` an owner-less alias (or a
+  move), so after either side was reassigned neither was ever freed. A copy
+  now SHARES (each element retained); the escape analysis exempts exactly
+  the copy instructions followed by that share. `let (a, b) = t` of an
+  existing local marks its copy a borrowed alias so `t` keeps its release.
+  679MB -> 4 at 1M (`tuple_alias`). Still open: `let u = if c { t } else
+  { mk() }` (an if-result tuple mixing a named and a fresh branch) and a
+  tuple stored in a struct field / array / map (never released).
 - The missing-key default (31b7c15e) turned every struct-map read into a
   has/default branch, and a statement that creates blocks was skipped whole
   by the statement temp pass: `len(m[k].name)` leaked the name it read. A

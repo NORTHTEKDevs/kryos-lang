@@ -18,8 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`let s = if c { f() } else { g() }`** (and `match`) leaked the value.
 - **`len(make_pair().0)`** (an element read off a fresh tuple) and
   **`return t.0` / `return s.field`** of a struct leaked once per call.
-- **A `map<K, S>` with struct values** never released them when the map was
-  freed (on master too); **`len(m[k].name)`** leaked the field it read.
+- **A `map<K, S>` with struct, enum or `Option` values** never released them
+  when the map was freed (on master too); **`len(m[k].name)`** leaked the
+  field it read.
+- **Copying a tuple** (`let u = t`, `u = t`) and then reassigning either
+  side, or destructuring an existing tuple (`let (a, b) = t`), leaked it.
 - **A `continue` or `break` inside one match arm** leaked the subject and
   bindings of every other arm; **`match f() { (a, b) => .. }`** never
   released the tuple.

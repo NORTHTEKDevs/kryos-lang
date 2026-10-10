@@ -4622,6 +4622,30 @@ fn strip_escaping_tuple_drops(
             }
         }
     }
+    // `u = t` (a `let` or a reassignment) followed in the same block by a
+    // share of `u` makes `u` an independent owner (each element retained):
+    // that copy is neither an escape of `t` nor an alias of it. Keyed by the
+    // instruction, so an unshared copy into the same local still counts.
+    let mut shared_copy_at: HashSet<(usize, usize)> = HashSet::new();
+    for (bi, b) in blocks.iter().enumerate() {
+        for (ii, inst) in b.instructions.iter().enumerate() {
+            if let Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) } = inst {
+                if !tuples.contains(&dest.0) {
+                    continue;
+                }
+                let shared_next = b.instructions[ii + 1..]
+                    .iter()
+                    .take_while(|j| !matches!(j, Instruction::Assign { dest: d2, value: v2 }
+                        if d2 == dest && !matches!(v2, RValue::Call { func, .. } if func == STRUCT_SHARE_FN)))
+                    .any(|j| matches!(j, Instruction::Assign { value: RValue::Call { func, args }, .. }
+                        if func == STRUCT_SHARE_FN && args.len() == 1
+                            && matches!(&args[0], Operand::Local(l) if l == dest)));
+                if shared_next {
+                    shared_copy_at.insert((bi, ii));
+                }
+            }
+        }
+    }
     let root = |mut id: u32| -> u32 {
         let mut hops = 0;
         while let Some(&up) = alias_of.get(&id) {
@@ -4640,12 +4664,12 @@ fn strip_escaping_tuple_drops(
             unowned.insert(r);
         }
     }
-    for b in blocks.iter() {
-        for inst in &b.instructions {
+    for (bi, b) in blocks.iter().enumerate() {
+        for (ii, inst) in b.instructions.iter().enumerate() {
             match inst {
                 Instruction::Drop { local } if tuples.contains(&local.0) => continue,
                 Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) }
-                    if alias_of.contains_key(&dest.0) =>
+                    if alias_of.contains_key(&dest.0) || shared_copy_at.contains(&(bi, ii)) =>
                 {
                     continue;
                 }
@@ -4998,6 +5022,18 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     })
                 }
                 let owned_tuple = is_owned_tuple_ty(ctx, &mir_ty) && simple_pats(elements);
+                // Destructuring an existing tuple (`let (a, b) = t`): the
+                // copy is an alias of `t` (the bindings take their own
+                // references), which lets the tuple escape analysis keep
+                // `t`'s own release -- as an owner-less copy it was an escape
+                // and `t` was never freed.
+                let rhs_is_local = matches!(
+                    rvalue_and_meta.as_ref().map(|(rv, _, _, _)| rv),
+                    Some(RValue::Use(Operand::Local(_)))
+                );
+                if rhs_is_local && !is_copy_type(ctx, &mir_ty) {
+                    ctx.borrowed_locals.insert(tmp.0);
+                }
                 if let Some((rvalue, _, _, _)) = rvalue_and_meta {
                     ctx.emit(Instruction::Assign {
                         dest: tmp,
@@ -5164,6 +5200,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     aggregate_clone = Some("__kryos_struct_index_clone");
                                 }
                                 t if is_owned_enum_ty(ctx, t) => {
+                                    ctx.pending_let_share = true;
+                                }
+                                // `let u = t`: the tuple share retains each
+                                // element, so `u` owns its own copy and either
+                                // can be reassigned or released independently
+                                // (as an alias, reassigning `t` left both
+                                // never freed).
+                                t if is_owned_tuple_ty(ctx, t) => {
                                     ctx.pending_let_share = true;
                                 }
                                 _ => {
@@ -5802,9 +5846,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // used to store the alias raw and release only the
                             // old value's fields, so the local's scope-end
                             // drop freed a box the array still held.
+                            // (A tuple too: `u = t` shares, so `u` owns a copy
+                            // and `t` keeps its own -- it was a move.)
                             let owned_agg_dest = dest_ty
                                 .as_ref()
-                                .is_some_and(|t| is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t))
+                                .is_some_and(|t| is_owned_struct_ty(ctx, t) || is_owned_enum_ty(ctx, t) || is_owned_tuple_ty(ctx, t))
                                 && !ctx.borrowed_locals.contains(&dest.0)
                                 && !ctx.param_locals.contains(&dest.0);
                             let share_new = owned_agg_dest

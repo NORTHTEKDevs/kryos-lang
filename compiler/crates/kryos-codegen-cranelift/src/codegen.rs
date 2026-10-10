@@ -8122,12 +8122,13 @@ fn emit_drop_for_value<M: Module>(
                 MirType::Array(elem, _) => kind_of(elem.as_ref()),
                 _ => 0,
             };
-            // Struct values are released through their type's drop helper
-            // (the same one an array element gets); the type-erased runtime
-            // free left every one behind. (Enum values: not yet audited.)
+            // Struct/enum values are released through their type's drop
+            // helper (the same one an array element gets); the type-erased
+            // runtime free left every one behind.
             let value_drop_fn: Option<String> = match value.as_ref() {
-                MirType::Struct(n)
-                    if translator.struct_defs.contains_key(n) && !translator.copy_structs.contains(n) =>
+                MirType::Struct(n) | MirType::Enum(n)
+                    if (translator.struct_defs.contains_key(n) || translator.enum_defs.contains_key(n))
+                        && !translator.copy_structs.contains(n) =>
                 {
                     let d = format!("__kryos_drop_{n}");
                     Some(if translator.func_ids.contains_key(&d) { d } else { "kryos_free".to_string() })

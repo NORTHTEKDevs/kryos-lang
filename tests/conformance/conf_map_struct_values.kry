@@ -1,14 +1,16 @@
-// Conformance (2026-10-09): a map with STRUCT values releases them when the
+// Conformance (2026-10-09): a map with STRUCT or ENUM values releases them when the
 // map is freed (kryos_map_free_with + each struct's drop helper; they were
 // never released -- ~200 bytes per one-entry map on master). Every shape
 // below shares or aliases a map value; run under KRYOS_FREE_DIAG on both
 // backends by tests/no_double_free.sh.
+use std::option::{Option, Some, None}
 struct In { t: str }
 struct P { name: str, xs: [str], inner: In }
 struct Q { a: i64, b: f64 }
 @copy
 struct C { n: i64, s: str }
 struct Holder { m: map<str, P> }
+enum E { A(P), B(str), N }
 
 fn expect(cond: bool, what: str) {
     if not cond {
@@ -79,6 +81,28 @@ fn main() {
     let mut mc: map<str, C> = {}
     mc["c"] = C { n: 1, s: "c{1}" }
     expect(mc["c"].s == "c1", "@copy struct values")
+
+    // Enum and Option values are released the same way.
+    let mut kept: [E] = []
+    let mut j = 0
+    while j < 3 {
+        let mut me: map<str, E> = {}
+        me["a"] = E.A(mk(j))
+        me["b"] = E.B("b{j}")
+        me["n"] = E.N
+        kept = push(kept, me["a"])
+        let bv = match me["b"] { E.B(s) => s, _ => "" }
+        expect(bv == "b{j}", "enum map value read")
+        j = j + 1
+    }
+    let k2 = match kept[2] { E.A(p) => p.inner.t, _ => "" }
+    expect(len(kept) == 3 and k2 == "t2", "enum value read out of a dropped map")
+    let mut mo: map<i64, Option<P>> = {}
+    mo[1] = Some(mk(1))
+    mo[2] = None()
+    mo[1] = Some(mk(3))
+    let o1 = match mo[1] { Some(p) => p.name, None => "" }
+    expect(o1 == "p3" and len(mo) == 2, "Option values")
 
     println("conformance map struct values: PASS")
 }

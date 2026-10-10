@@ -2716,6 +2716,24 @@ impl LlvmCodegen {
             self.emit_line("}");
             self.emit_blank();
         }
+        // The enum analog: a map's enum value is an arc box holding the
+        // inline `{ tag, words.. }`; released like a map-slot overwrite
+        // releases one (payload, then the box).
+        let enum_names: Vec<String> = self.enum_defs.keys().cloned().collect();
+        for name in enum_names {
+            self.emit_line(&format!("define internal void @__kryos_mapval_drop_{name}(ptr %ptr) {{"));
+            self.emit_line("entry:");
+            self.emit_line("  %isnull = icmp eq ptr %ptr, null");
+            self.emit_line("  br i1 %isnull, label %done, label %body");
+            self.emit_line("body:");
+            self.emit_enum_drop_payload("%ptr", &name, &dummy);
+            self.emit_line("  call void @kryos_arc_release(ptr %ptr)");
+            self.emit_line("  br label %done");
+            self.emit_line("done:");
+            self.emit_line("  ret void");
+            self.emit_line("}");
+            self.emit_blank();
+        }
     }
 
     // Main wrapper
@@ -4088,12 +4106,12 @@ impl LlvmCodegen {
                         // Struct/enum values are released through their type's
                         // drop helper (the same one an array element gets); the
                         // type-erased runtime free left every one behind.
-                        // (Struct values only: an enum value's map boxing has
-                        // not been audited for this.)
                         let value_drop_fn = match value.as_ref() {
+                            MirType::Struct(n) | MirType::Enum(n) if self.enum_defs.contains_key(n) => {
+                                Some(format!("__kryos_mapval_drop_{n}"))
+                            }
                             MirType::Struct(n)
                                 if self.struct_defs.contains_key(n)
-                                    && !self.enum_defs.contains_key(n)
                                     && !self.copy_structs.contains(n)
                                     && n != "Map" =>
                             {
