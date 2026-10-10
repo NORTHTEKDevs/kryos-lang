@@ -10,6 +10,37 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: fifth adversarial review of the ownership batch (2026-10-10)
+
+~75 probes (`~/scratch/kryos-cb/review5`), 8 regressions found before the
+batch reached master; all pinned in `tests/conformance/conf_review5_fixes.kry`
+(the pre-fix candidate and master both fail it):
+- R1 `x = x` on an owned struct/enum dropped the old value -- the same object
+  (owned-aggregate reassignment now skips a self-assignment).
+- R2 a try-body local declared after the call that threw was released on the
+  catch path with the previous loop iteration's value: try-body locals were
+  left to the enclosing scope's end. They are released at the end of the try
+  body (success path) now. This also fixed two PRE-EXISTING failures: a str
+  local in the same shape, and an AOT `Option`/enum-returning function that
+  throws inside `try` in a loop repeating the catch forever.
+- R3 `match f() { (s, p) => p }` with a struct element: the binding aliased
+  the hidden subject released after the match. Tuple subjects are released
+  only when every element is str/array/map/scalar.
+- R4 a map LITERAL `{"a": local}` of struct/enum values took no owner, and
+  the map now releases its values: the literal shares them (as an array
+  literal element does). Pre-existing on master too: ANY struct/enum-valued
+  map literal segfaulted on AOT -- the literal path coerced the aggregate to
+  its first FIELD instead of boxing it like `m[k] = v`.
+- R5 `let p = m[k]` of a struct leaked a reference per read: the missing-key
+  branch made the read a copy, so the let deep-cloned AND shared it. Still
+  open: a MISSING-key read of a struct-valued map allocates a default that
+  is never released (reads of present keys are flat).
+- R6 AOT stack overflow: `hoist_static_allocas` took `alloca { %P, %P }` for
+  a dynamic alloca (it split on the LAST comma, inside the type) and left
+  tuple scratch slots in loop bodies. Pre-existing for other tuple shapes.
+- R7 AOT invalid IR for `((s, p), E.A(q))`: the tuple element unboxing split
+  the aggregate type on every comma, shifting indexes past a nested tuple.
+
 ## Wave: PR #5 CI fix + fourth adversarial review (2026-10-09)
 
 CI on PR #5 failed only `tests/smoke/test_teardown_heap_integrity` (Linux and

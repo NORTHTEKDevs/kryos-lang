@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - try/catch in loops, map literals, AOT stack growth
+
+- **A local declared inside `try` after the call that threw** was released
+  again on the catch path (a double free in a loop); on AOT an
+  `Option`-returning function that throws inside `try` in a loop could
+  repeat the catch forever.
+- **A map literal with struct or enum values** (`{"a": P { .. }}`) crashed on
+  AOT, and with a local value (`{"a": p}`) freed it twice.
+- **Reassigning a tuple of structs in a loop** grew the stack every
+  iteration on AOT until it overflowed.
+- **`x = x`** on a struct or enum variable freed it; **`match f() { (s, p) =>
+  p }`** returned a freed struct; **`let p = m[k]`** of a struct leaked; a
+  nested tuple pattern with an enum element failed to build on AOT.
+
 ### Fixed - memory leaks in common expressions
 
 - **`a and b` / `a or b`** leaked every heap temporary its operands built

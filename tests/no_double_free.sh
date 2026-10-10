@@ -421,6 +421,7 @@ no_df_both reassign_ownership "$ROOT/tests/conformance/conf_reassign_ownership.k
 no_df_both review4_fixes "$ROOT/tests/conformance/conf_review4_fixes.kry"
 no_df_both agg_ops_ownership "$ROOT/tests/conformance/conf_agg_ops_ownership.kry"
 no_df_both map_struct_values "$ROOT/tests/conformance/conf_map_struct_values.kry"
+no_df_both review5_fixes "$ROOT/tests/conformance/conf_review5_fixes.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

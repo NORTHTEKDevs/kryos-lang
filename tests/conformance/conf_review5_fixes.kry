@@ -1,0 +1,106 @@
+// Conformance (2026-10-10): bugs a fifth adversarial review found in the
+// ownership batch, plus two pre-existing AOT failures it surfaced. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str }
+struct Q { name: str, xs: [str] }
+enum E { A(str), B }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn may(i: i64) -> i64 {
+    if i > 0 { throw "x{i}" }
+    return i
+}
+
+fn may_opt(i: i64) -> Option<P> {
+    if i > 0 { throw "o{i}" }
+    return Some(P { name: "s{i}" })
+}
+
+fn mk(i: i64) -> (str, P) { return ("s{i}", P { name: "p{i}" }) }
+fn part(i: i64) -> P {
+    return match mk(i) { (s, p) => p }
+}
+
+fn mkqq(i: i64) -> (Q, Q) { return (Q { name: "p{i}", xs: [] }, Q { name: "q", xs: [] }) }
+
+fn main() {
+    // `x = x` released the value it kept (struct and enum).
+    let mut best = P { name: "a{1}" }
+    best = best
+    let mut e = E.A("e{1}")
+    e = e
+    let es = match e { E.A(s) => s, E.B => "" }
+    expect(best.name == "a1" and es == "e1", "self-assignment")
+
+    // A try-body local declared after the call that threw, in a loop.
+    let mut log = ""
+    let mut i = 0
+    while i < 3 {
+        try {
+            let s = may(i)
+            let q = P { name: "q{i}" }
+            let arr = ["r{i}"]
+            log = log + q.name + arr[0] + "{s}"
+        } catch err { log = log + "!" + err }
+        i = i + 1
+    }
+    expect(log == "q0r00!x1!x2", "try-body locals after a throw, in a loop")
+
+    // An Option-returning function that throws, under try in a loop (AOT
+    // repeated the catch forever).
+    let mut caught = 0
+    let mut j = 0
+    while j < 3 {
+        try {
+            let o = may_opt(j)
+            match o { Some(p) => { log = log + p.name } None => {} }
+        } catch err { caught = caught + 1 }
+        j = j + 1
+    }
+    expect(caught == 2, "Option return that throws, in a loop")
+
+    // A struct binding used as the value of `match <tuple call>`.
+    let c = part(3)
+    let c2 = match mk(4) { (s, p) => p }
+    expect(c.name == "p3" and c2.name == "p4", "struct binding as a match value")
+
+    // Map literals with local struct/enum values (double free) and with
+    // struct values at all (AOT crash).
+    let lp = P { name: "lp{1}" }
+    let le = E.A("le{1}")
+    let m1: map<str, P> = {"a": lp, "b": P { name: "lit{2}" }}
+    let m2: map<str, E> = {"a": le}
+    let m2v = match m2["a"] { E.A(s) => s, E.B => "" }
+    expect(m1["a"].name == "lp1" and m1["b"].name == "lit2" and m2v == "le1" and lp.name == "lp1", "map literal values")
+
+    // Reassigning a tuple of structs in a loop (AOT stack overflow at scale).
+    let mut k = 0
+    let mut last = ""
+    while k < 2000 {
+        let t = mkqq(k)
+        let mut v = mkqq(k)
+        v = t
+        last = v.0.name
+        k = k + 1
+    }
+    expect(last == "p1999", "tuple of structs reassigned in a loop")
+
+    // A nested tuple pattern with an enum element (AOT build failure).
+    let nt = (("i", 1), E.A("ea"))
+    let mut nv = ""
+    match nt {
+        ((s, p), E.A(q)) => { nv = s + q }
+        ((s, p), E.B) => { nv = s }
+    }
+    expect(nv == "iea", "nested tuple pattern with an enum element")
+
+    println("conformance review5 fixes: PASS")
+}

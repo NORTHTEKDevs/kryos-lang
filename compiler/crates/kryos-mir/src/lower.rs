@@ -5242,6 +5242,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             func: marker.to_string(),
                             args: vec![op],
                         };
+                        // The clone is a fresh value the binding already owns;
+                        // an element-read share on top (`let p = m[k]`, whose
+                        // missing-key branch makes it a copy) was one owner too
+                        // many per read.
+                        ctx.pending_let_share = false;
                     }
                 }
                 // If initializer is a call, mark non-copy args consumed.
@@ -5855,6 +5860,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 && !ctx.param_locals.contains(&dest.0);
                             let share_new = owned_agg_dest
                                 && matches!(&rvalue, RValue::Use(Operand::Local(src)) if *src != dest);
+                            // `x = x`: nothing to release (the old value IS the
+                            // new one -- releasing it freed what `x` still held).
+                            let self_assign = matches!(&rvalue, RValue::Use(Operand::Local(src)) if *src == dest);
                             if let RValue::Use(Operand::Local(src)) = &rvalue {
                                 let src_ty = ctx
                                     .locals
@@ -5897,6 +5905,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // tuple is not singly owned (strip_escaping_tuple_drops).
                             if matches!(dest_ty, Some(MirType::Tuple(_)))
                                 && !ctx.dropped_locals.contains(&dest.0)
+                                && !self_assign
                             {
                                 ctx.emit(Instruction::Drop { local: dest });
                             }
@@ -5939,7 +5948,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 if share_new {
                                     emit_struct_share(ctx, dest);
                                 }
-                                if let Some(old) = old_snapshot {
+                                if let Some(old) = old_snapshot.filter(|_| !self_assign) {
                                     drop_tag(ctx, "reassign-release-owned-agg");
                                     ctx.emit(Instruction::Drop { local: old });
                                     ctx.dropped_locals.insert(old.0);
@@ -8371,11 +8380,15 @@ fn lower_try_catch(
     // Lower the try block body. The last expression is wrapped in Result::Ok.
     // After each statement, check the thread-local exception state so that
     // `throw` from a called function is caught immediately.
+    let mut tail_local: Option<LocalId> = None;
     for (i, stmt) in try_block.stmts.iter().enumerate() {
         if i == try_block.stmts.len() - 1 {
             // Wrap last expression in Result::Ok.
             if let ast::Stmt::Expr { expr, .. } = stmt {
                 let val = lower_expr_to_operand(ctx, expr);
+                if let Operand::Local(l) = &val {
+                    tail_local = Some(*l);
+                }
                 // Pin a bare constant tail into a typed temp: the LLVM
                 // backend miscompiles EnumVariant("Result") construction
                 // with a Constant payload (AOT segfault on `try { 7 }`);
@@ -8412,6 +8425,9 @@ fn lower_try_catch(
                 // (`match` at tail position is already Stmt::Expr{MatchExpr},
                 // so it was covered; only `if` commits to Stmt::If.)
                 let val = lower_expr_to_operand(ctx, &if_expr);
+                if let Operand::Local(l) = &val {
+                    tail_local = Some(*l);
+                }
                 let val = match val {
                     Operand::Constant(_) => {
                         let ty = infer_expr_type(ctx, &if_expr);
@@ -8450,6 +8466,20 @@ fn lower_try_catch(
             emit_exception_check(ctx, result_local, check_bb);
         }
     }
+
+    // Release the try body's own named locals here, on the success path. Left
+    // to the enclosing scope's end -- which the catch path reaches too -- a
+    // local declared AFTER the statement that threw still held the previous
+    // loop iteration's (already released) value there: a double free. On
+    // the throw path a local assigned before the throw is not released (a
+    // leak on the exceptional path only). The tail value moves into the
+    // result.
+    if let Some(t) = tail_local {
+        if ctx.locals.iter().position(|l| l.id == t).is_some_and(|i| i >= try_scope_start) {
+            ctx.dropped_locals.insert(t.0);
+        }
+    }
+    emit_named_scope_drops(ctx, try_scope_start);
 
     // If try block is empty, produce Ok(0).
     if try_block.stmts.is_empty() {
@@ -9917,7 +9947,13 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
             || (fresh && is_owned_enum_ty(ctx, &sty))
             // A fresh tuple: its pattern bindings retain str/array/map
             // elements, so it can go after the match (it leaked per match).
-            || (fresh && is_owned_tuple_ty(ctx, &sty));
+            // Not with a struct/enum element: that binding is an alias, and
+            // used as the match's VALUE it outlived the released subject.
+            || (fresh
+                && is_owned_tuple_ty(ctx, &sty)
+                && matches!(&sty, MirType::Tuple(es) if es.iter().all(|e| {
+                    matches!(e, MirType::Str | MirType::Array(_, _) | MirType::Map { .. }) || is_copy_type(ctx, e)
+                })));
         let binds_whole = arms.iter().any(|a| {
             matches!(&a.pattern, ast::Pattern::Ident { name, .. }
                 if find_enum_variant(ctx, name).is_none())
@@ -15204,7 +15240,25 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
         ast::Expr::MapLiteral { entries, .. } => {
             let mir_entries: Vec<(Operand, Operand)> = entries
                 .iter()
-                .map(|(k, v)| (lower_expr_to_operand(ctx, k), lower_expr_to_operand(ctx, v)))
+                .map(|(k, v)| {
+                    let kop = lower_expr_to_operand(ctx, k);
+                    let before = ctx.partial_moved_locals.clone();
+                    let vop = lower_expr_to_operand(ctx, v);
+                    // A struct/enum VALUE takes its own owner, as an array
+                    // literal element does: the map releases its values when
+                    // freed, so `{"a": e}` with a live local `e` freed it
+                    // twice.
+                    let vty = infer_expr_type(ctx, v);
+                    if (is_owned_struct_ty(ctx, &vty) || is_owned_enum_ty(ctx, &vty))
+                        && retain_or_move_literal_element(ctx, v, &vop)
+                    {
+                        let added: Vec<u32> = ctx.partial_moved_locals.difference(&before).copied().collect();
+                        for a in added {
+                            ctx.partial_moved_locals.remove(&a);
+                        }
+                    }
+                    (kop, vop)
+                })
                 .collect();
             RValue::Map(mir_entries)
         }

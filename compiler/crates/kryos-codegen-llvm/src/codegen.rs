@@ -3914,12 +3914,25 @@ impl LlvmCodegen {
                     .filter(|_| trimmed.starts_with('%'))
                 {
                     // Static allocas only: a dynamic count (`alloca i8, i64 %n`)
-                    // references an SSA value and must stay put.
-                    let dynamic = rest
-                        .rsplit_once(',')
-                        .map(|(_, tail)| tail.contains('%'))
-                        .unwrap_or(false)
-                        && !rest.trim_start().starts_with('%');
+                    // references an SSA value and must stay put. Only a comma
+                    // OUTSIDE the type's brackets starts an operand: the comma
+                    // inside `{ %P, %P }` made every literal-struct alloca look
+                    // dynamic, so tuple scratch slots stayed in loop bodies and
+                    // grew the stack every iteration (AOT stack overflow).
+                    let mut depth = 0i32;
+                    let mut operand: Option<&str> = None;
+                    for (ci, ch) in rest.char_indices() {
+                        match ch {
+                            '{' | '[' | '<' | '(' => depth += 1,
+                            '}' | ']' | '>' | ')' => depth -= 1,
+                            ',' if depth == 0 => {
+                                operand = Some(&rest[ci + 1..]);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    let dynamic = operand.is_some_and(|o| o.contains('%'));
                     // (`alloca %Struct` has '%' as the TYPE; only a trailing
                     // `, <ty> %reg` operand makes it dynamic.)
                     if !dynamic {
@@ -7661,14 +7674,29 @@ impl LlvmCodegen {
                 // (obj_ty "%Foo") store inline aggregates, where extractvalue
                 // already yields the aggregate -- so gate strictly on an anon
                 // "{..}" object whose extracted slot is i64.
+                // Split at TOP-LEVEL commas only: a nested element type
+                // (`{ { ptr, i64 }, i64 }`) shifted every later index, so the
+                // enum slot of `((s, p), E.A(q))` was not unboxed (invalid IR).
                 let field_slot_ty = obj_ty
                     .strip_prefix('{')
                     .and_then(|s| s.strip_suffix('}'))
                     .map(|inner| {
-                        inner
-                            .split(',')
-                            .map(|p| p.trim().to_string())
-                            .collect::<Vec<_>>()
+                        let mut parts = Vec::new();
+                        let mut depth = 0i32;
+                        let mut start = 0usize;
+                        for (ci, ch) in inner.char_indices() {
+                            match ch {
+                                '{' | '[' | '<' | '(' => depth += 1,
+                                '}' | ']' | '>' | ')' => depth -= 1,
+                                ',' if depth == 0 => {
+                                    parts.push(inner[start..ci].trim().to_string());
+                                    start = ci + 1;
+                                }
+                                _ => {}
+                            }
+                        }
+                        parts.push(inner[start..].trim().to_string());
+                        parts
                     })
                     .and_then(|parts| parts.get(field_idx).cloned());
                 let dest_is_aggregate = dest_ty.starts_with('{')
@@ -8664,7 +8692,24 @@ impl LlvmCodegen {
                     let val_val = self.operand_to_llvm(v, func);
                     let val_ty = self.operand_type(v, func);
                     let key_i64 = self.coerce_value(&key_val, &key_ty, "i64");
-                    let val_i64 = self.coerce_value(&val_val, &val_ty, "i64");
+                    // A struct/enum VALUE is boxed (kryos_arc_alloc_i64), as
+                    // `m[k] = v` boxes it: the aggregate->i64 coercion took
+                    // the first FIELD, so `{"a": P { .. }}` stored a string
+                    // pointer as the struct box (AOT segfault on any read).
+                    let val_i64 = if val_ty.starts_with('{') || val_ty.starts_with('%') {
+                        let size_ptr = self.next_temp();
+                        self.emit_line(&format!("  {size_ptr} = getelementptr {val_ty}, ptr null, i32 1"));
+                        let size_i64 = self.next_temp();
+                        self.emit_line(&format!("  {size_i64} = ptrtoint ptr {size_ptr} to i64"));
+                        let heap_i64 = self.next_temp();
+                        self.emit_line(&format!("  {heap_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_i64})"));
+                        let heap_ptr = self.next_temp();
+                        self.emit_line(&format!("  {heap_ptr} = inttoptr i64 {heap_i64} to ptr"));
+                        self.emit_line(&format!("  store {val_ty} {val_val}, ptr {heap_ptr}"));
+                        heap_i64
+                    } else {
+                        self.coerce_value(&val_val, &val_ty, "i64")
+                    };
                     // Use string-aware insert for string keys (content hashing).
                     let is_string_key = Self::operand_is_string(k, func);
                     let insert_fn = if is_string_key {
