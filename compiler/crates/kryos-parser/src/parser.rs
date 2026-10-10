@@ -201,6 +201,31 @@ impl Parser {
         self.tokens[idx].kind
     }
 
+    /// At a `(`: is its balanced group followed by `=>` or `if`? That shape
+    /// can only be a match-arm pattern (a call is never followed by either).
+    fn paren_group_starts_arm(&self) -> bool {
+        let mut depth = 0usize;
+        let mut i = self.pos;
+        while i < self.tokens.len() {
+            match self.tokens[i].kind {
+                TokenKind::LParen | TokenKind::LBracket | TokenKind::LBrace => depth += 1,
+                TokenKind::RParen | TokenKind::RBracket | TokenKind::RBrace => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        return matches!(
+                            self.tokens.get(i + 1).map(|t| t.kind),
+                            Some(TokenKind::FatArrow) | Some(TokenKind::If)
+                        );
+                    }
+                }
+                TokenKind::Eof => return false,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
+    }
+
     fn at_end(&self) -> bool {
         self.peek_kind() == TokenKind::Eof
     }
@@ -2236,6 +2261,12 @@ impl Parser {
             }
 
             if kind == TokenKind::LParen && POSTFIX_BP >= min_bp {
+                // A fresh line `(..) =>` (or `(..) if guard =>`) is the NEXT
+                // match arm's tuple pattern, never a call on this arm's body
+                // (`(0, _) => P { .. }` then `(_, n) => ..` was a parse error).
+                if self.peek().newline_before && self.paren_group_starts_arm() {
+                    break;
+                }
                 if !seen_lparen_chain && self.peek().newline_before {
                     self.warn_asi_trap(
                         self.peek().span,

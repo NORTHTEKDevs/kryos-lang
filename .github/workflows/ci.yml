@@ -323,6 +323,13 @@ jobs:
         # 12 legs over the ceiling; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_tuple_gate.sh
 
+      - name: Aggregate-operation memory gate
+        # Structural ==, to_string and assert_eq of structs/arrays/tuples, an
+        # `and` chain over field reads, an element read off a fresh tuple:
+        # each leaked per call (~90-370MB at 300k-1M); fixed ~4MB.
+        # Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_agg_ops_gate.sh
+
       - name: Loop memory gate
         # A str/array/map `for` variable owns its element read (released each
         # iteration); a freshly produced iterable and an array of arrays

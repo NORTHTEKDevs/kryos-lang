@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - memory leaks in common expressions
+
+- **`a and b` / `a or b`** leaked every heap temporary its operands built
+  (`p.name == q.name and ..`), and with it structural `==` of structs,
+  arrays and tuples.
+- **`to_string` / `"{v}"` of a struct or tuple** leaked two strings per
+  string field.
+- **`assert_eq`** leaked the text of every non-string argument (on master
+  too), and on aggregates the formatted values.
+- **`let s = if c { f() } else { g() }`** (and `match`) leaked the value.
+- **`len(make_pair().0)`** (an element read off a fresh tuple) and
+  **`return t.0` / `return s.field`** of a struct leaked once per call.
+
 ### Fixed - reassigning a struct or enum variable double-freed
 
 - **`best = p`** (an owned struct/enum local reassigned from another value,
@@ -14,6 +27,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   scope-end drop freed a box the array still held. `std::probable`'s
   `best_of` hit it on the JIT. The new value now takes its own reference and
   the old value is released whole.
+- **`m.name = local`** (a named string/array/map variable stored into a
+  field) freed the value twice on both backends; the field now takes its own
+  reference.
+
+### Fixed - fourth review: tuples in containers, nested patterns, generics over maps
+
+- **A nested tuple pattern in `match`** (`((p, s), n) => ..`) over a borrowed
+  tuple freed the caller's elements.
+- **`map<f64, S>`** reads always returned the missing-key default on AOT.
+- **`assert_eq(f(), g())`** on arrays/structs/tuples evaluated its arguments
+  up to three times.
+- **`t.1.n = v` / `t.1 = P {..}`** on a `let mut` tuple holding a struct lost
+  the store and corrupted the value on AOT.
+- **`arr[i].0 = v` / `m[k].0 = v`** (a tuple inside an array or map) was
+  silently dropped on the JIT.
+- **`m[k].field = v` on a missing key** crashed; it now inserts the value
+  type's default first, like `m[k] = ..`.
+- **`for ((p, s), n) in xs`** bound nothing for the nested names (0, "" or a
+  crash).
+- **A `(..) =>` arm after an arm whose body is a struct literal, `if`, string
+  or `match`** was parsed as a call on that body (parse error).
+- **A generic over `map<K, V>`** bound K and V to `i64`: `keys(m)` of a str map
+  read as ints and a `-> V` result printed a pointer.
 
 ### Fixed - review findings: catch-all match arms, missing map keys, assert_eq, keys()
 

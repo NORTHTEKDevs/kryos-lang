@@ -1,0 +1,82 @@
+// Peak-RSS probe for aggregate operations (tests/mem_agg_ops_gate.sh).
+// Each mode runs LEAK_ITERS iterations of one shape that leaked per call:
+// structural ==, to_string/interpolation and assert_eq of aggregates (the
+// synthesized helpers' and-chains and replace chains), a short-circuit
+// and-chain over field reads, and an element read off a fresh tuple.
+struct P { name: str, xs: [i64] }
+
+fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
+fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", xs: [i] }, "s{i}") }
+enum E { A(P), B(str), C }
+fn mke(i: i64) -> E {
+    if i % 3 == 0 { return E.A(P { name: "e{i}", xs: [i] }) }
+    if i % 3 == 1 { return E.B("b{i}") }
+    return E.C
+}
+// A `continue` / `break` in one arm released the subject only on that path
+// and suppressed the release on every other.
+fn match_exits(n: i64) -> i64 {
+    let mut i = 0
+    let mut a = 0
+    while i < n {
+        match mke(i) {
+            E.A(p) => {
+                a = a + len(p.name)
+                i = i + 1
+                continue
+            }
+            E.B(s) => { if i > 3 { break } }
+            E.C => { a = a + 1 }
+        }
+        i = i + 1
+    }
+    return a
+}
+fn first(t: (P, str)) -> P { return t.0 }
+fn match_tuple(i: i64) -> i64 {
+    match mk(i) {
+        (s, xs) if len(xs) > 0 => { return len(s) }
+        _ => { return 0 }
+    }
+}
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        let p = P { name: "q{i}", xs: [i] }
+        let q = P { name: "q{i}", xs: [i] }
+        if mode == "eqstruct" {
+            if p == q { acc = acc + 1 }
+        } elif mode == "eqarr" {
+            if [p] == [q] { acc = acc + 1 }
+        } elif mode == "eqtuple" {
+            if mk(i) == mk(i) { acc = acc + 1 }
+        } elif mode == "andchain" {
+            let b = p.name == q.name and len(p.xs) == len(q.xs)
+            if b { acc = acc + 1 }
+        } elif mode == "tostr" {
+            acc = acc + len(to_string(p)) + len("{mk(i)}")
+        } elif mode == "assert" {
+            assert_eq(p, q)
+            assert_eq(mk(i), mk(i))
+            acc = acc + 1
+        } elif mode == "tuple_elem" {
+            acc = acc + len(mkp(i).1) + len(mk(i).0)
+        } elif mode == "let_if" {
+            let s = if i % 2 == 0 { "a{i}" } else { to_string(p) }
+            acc = acc + len(s)
+        } elif mode == "match_exit" {
+            acc = acc + match_exits(6)
+        } elif mode == "match_tuple" {
+            acc = acc + match_tuple(i)
+        } elif mode == "ret_elem" {
+            acc = acc + len(first(mkp(i)).name)
+        }
+        i = i + 1
+    }
+    println("{acc}")
+}

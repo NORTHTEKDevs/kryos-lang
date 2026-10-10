@@ -4861,6 +4861,22 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  store {fty} {narrow}, ptr {field_ptr}"));
                         }
                     }
+                    _ if ptr_tmp.ends_with(".addr") && self.tuple_elem_llvm_ty(object, field_idx, func).is_some() => {
+                        // `t.1 = v` on a `let mut` tuple: the tuple is an inline
+                        // aggregate in its alloca, so address the element by
+                        // the tuple's own layout and store it whole. The i64-
+                        // stride fallback boxed a struct element and wrote the
+                        // box pointer over the struct's first field.
+                        let (tuple_ty, elem_ty) = self.tuple_elem_llvm_ty(object, field_idx, func).unwrap();
+                        self.emit_line(&format!(
+                            "  {field_ptr} = getelementptr {tuple_ty}, ptr {ptr_tmp}, i32 0, i32 {field_idx}"
+                        ));
+                        let val_ty = self
+                            .actual_type(&val)
+                            .unwrap_or_else(|| self.operand_type(value, func));
+                        let coerced = self.coerce_value(&val, &val_ty, &elem_ty);
+                        self.emit_line(&format!("  store {elem_ty} {coerced}, ptr {field_ptr}"));
+                    }
                     _ => {
                         // Unknown struct (heap handle without a resolvable type):
                         // fall back to the legacy i64-stride store.
@@ -6649,6 +6665,15 @@ impl LlvmCodegen {
                                 "  call i64 @kryos_builtin_assert_eq(i64 {}, i64 {})",
                                 handles[0], handles[1]
                             ));
+                            // Free the strings this call allocated (a non-str
+                            // argument's text); they leaked one or two per assert.
+                            for (arg, h) in args.iter().zip(handles.iter()) {
+                                if self.operand_type(arg, func) != "ptr" {
+                                    let p = self.next_temp();
+                                    self.emit_line(&format!("  {p} = inttoptr i64 {h} to ptr"));
+                                    self.emit_line(&format!("  call void @kryos_string_free(ptr {p})"));
+                                }
+                            }
                         }
                         "assert" if !self.func_param_types.contains_key("assert") => {
                             // assert(condition: bool, message: str) -> void
@@ -10453,6 +10478,19 @@ impl LlvmCodegen {
         found
     }
 
+    /// `(tuple type, element type)` for element `idx` of a tuple-typed local
+    /// whose LLVM type is the plain inline aggregate of its elements.
+    fn tuple_elem_llvm_ty(&self, object: &Operand, idx: usize, func: &MirFunction) -> Option<(String, String)> {
+        let Operand::Local(id) = object else { return None };
+        let ty = &func.locals.iter().find(|l| l.id == *id)?.ty;
+        let MirType::Tuple(elems) = ty else { return None };
+        let tuple_ty = mir_type_to_llvm(ty);
+        if self.local_type(*id) != tuple_ty {
+            return None;
+        }
+        Some((tuple_ty, mir_type_to_llvm(elems.get(idx)?)))
+    }
+
     /// Get the LLVM type for a local from the cached map.
     fn local_type(&self, id: LocalId) -> String {
         self.local_types
@@ -12432,7 +12470,10 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         "kryos_string_retain_opt" | "kryos_array_retain_opt" => Some(vec!["ptr".into()]),
         "kryos_array_dup" => Some(vec!["ptr".into(), "i64".into()]),
         "kryos_map_retain_opt" => Some(vec!["i64".into()]),
-        "kryos_map_delete_str" | "kryos_map_has_str" => {
+        // An f64 key is passed as its raw bits, like kryos_map_get/insert
+        // (without this a `map<f64, S>` read always took the missing-key
+        // default on AOT).
+        "kryos_map_delete_str" | "kryos_map_has_str" | "kryos_map_has" | "kryos_map_delete" => {
             Some(vec!["i64".into(), "i64".into()])
         }
         "kryos_map_keys_str" => Some(vec!["i64".into()]),

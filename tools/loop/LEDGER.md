@@ -10,6 +10,94 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: PR #5 CI fix + fourth adversarial review (2026-10-09)
+
+CI on PR #5 failed only `tests/smoke/test_teardown_heap_integrity` (Linux and
+macOS): `std::probable`'s `best_of` does `best = p` with `p` a loop alias over
+an array of structs. Identifier reassignment of an owned struct/enum local
+stored the alias raw and released only the old value's FIELDS, so the
+local's scope-end drop freed a box the array still held (JIT double free,
+present since 81c61df6). The new value now takes its own owner
+(`emit_struct_share`) and the old value is dropped whole. Pinned by
+`tests/conformance/conf_reassign_ownership.kry`.
+
+The smoke suite had never been run under KRYOS_FREE_DIAG; doing so found
+`m.name = local` (a named str/array/map local stored into a field) double
+freeing on BOTH backends on master (`test_ownership_matrix_a` A6). The field
+now takes its own reference. Lesson: run `tests/smoke/*.kry` under the diag
+harness after an ownership change -- CI runs them only for output.
+
+Fourth review (68 probes, `~/scratch/kryos-cb/review4`): 2 regressions + 1
+new-feature defect + 6 pre-existing bugs fixed, all pinned in
+`tests/conformance/conf_review4_fixes.kry`:
+- G (regression): `bind_tuple_pattern` bound a nested tuple pattern's names
+  raw, so the arm's scope end freed a borrowed tuple's elements. Bindings now
+  follow the `let (a, b) = t` contract (str/array/map retained, struct/enum
+  borrowed).
+- I (regression): LLVM `runtime_param_types` had no entry for
+  `kryos_map_has`/`kryos_map_delete`, so an f64 key was value-converted, not
+  bit-cast -- the new missing-key default path made every `map<f64, S>` read
+  return the default.
+- J: the `assert_eq` aggregate rewrite cloned its argument expressions; each
+  non-variable argument is now bound to a hidden `let` first.
+- A: LLVM `StoreField` on a `let mut` tuple (an inline aggregate alloca) fell
+  to the i64-stride fallback, boxing a struct element and writing the box
+  pointer over its first field. Tuple aggregates now use a typed GEP.
+- H: Cranelift `StoreField` recognised only `Tuple` locals, not the
+  `Ptr(Tuple)` an `arr[i]`/`m[k]` element read produces -- the store went to
+  offset 0 and was lost.
+- C: `m[k].f = v` on a missing key wrote through a null entry; a plain map +
+  simple key now inserts the value type's default first.
+- F: `for` tuple patterns bound only top-level names; nested ones recurse.
+- B: a fresh-line `(..)` group followed by `=>`/`if` is now never a call
+  continuation (`Parser::paren_group_starts_arm`).
+- E: `extract_type_bindings` had no `map<K, V>` case, so generics over maps
+  instantiated with K = V = i64.
+
+Leaks review4 measured, closed in the same wave (AOT peak at 300k, before ->
+after; pinned by `tests/mem_agg_ops_gate.sh`, double-free direction by
+`tests/conformance/conf_agg_ops_ownership.kry`):
+- A short-circuit `and`/`or` creates blocks, so the enclosing statement's
+  temp pass bailed and every heap temp an operand built leaked -- including
+  the synthesized struct `==` helpers' field reads. Each operand is now its
+  own cleanup window (its value is a bool, so nothing escapes through it).
+  Struct/array/tuple `==` 89-96MB -> 4MB; `p.name == q.name and ..` 96 -> 4.
+- `replace` was missing from `BORROWING_CALL_ARGS`, so the `to_string`
+  helpers' escape chain (`replace(replace(replace(s, ..)))`) leaked two
+  strings per string field: struct/tuple `to_string` 57-59MB -> 4.
+- The builtin `assert_eq` lowering stringified a non-str argument and never
+  freed the string (both backends; master 129-164MB at 300k for ints); its
+  str arguments were not borrowing either. The aggregate rewrite's two
+  formatted strings are hidden `let`s. 41-372MB -> 4.
+- `let s = if c { f(i) } else { g(i) }` (and `match`) retained the result
+  slot as if it aliased something, leaking one value per execution (master
+  41MB at 300k). When every branch tail is fresh (a call, literal or
+  concatenation -- `branch_value_is_fresh`) the binding now takes it over; a
+  branch yielding a param/local/alias keeps the retain.
+- An element read off a fresh tuple (`len(mkp(i).1)`) kept the tuple alive
+  forever: a str/array/map or scalar element read is now an allowed use of a
+  tuple temp. 56MB -> 4.
+- `return t.0` / `return s.field` of a struct: the return path deep-cloned
+  the value AND shared the clone, one reference too many per call. 46-50MB
+  -> 4.
+- `break` / `continue` released the loop-body locals AND marked them in the
+  path-insensitive `dropped_locals`, which suppressed their release on every
+  sibling path: a `continue` in one match arm leaked the subject and the
+  bindings of every other arm (`drop_loop_exit_locals` no longer marks; the
+  code after a jump is unreachable). 40MB -> 4 AOT; JIT 250MB -> 35MB at 1M
+  (a small JIT-only residual, ~5 bytes/match, not yet traced).
+- `match <call>` on a tuple never released the subject: the hidden subject
+  now takes the call result directly, the sequential path's pinned copy is
+  a borrowed alias the tuple escape analysis sees through, and the switch
+  path's tuple bindings follow the retain/borrow contract.
+
+Still open from review4: D (a missing key of a `map<_, map<..>>` /
+`map<_, [T]>` reads a null handle, so writes to it vanish -- the read path's
+get+retain shape is pattern-matched by several ownership passes, so a branch
+there needs its own wave); the minor `match ml["q"]` on a missing key of an
+enum with no payload-free variant (JIT segfault; such a value cannot be built
+finitely).
+
 ## Wave: enums join the ownership model -- enum args, Option/Result args, match payload binds; item 51 CLOSED (2026-10-08)
 
 The item-3 model (callee owns, caller borrows, one share at entry, owner-aware

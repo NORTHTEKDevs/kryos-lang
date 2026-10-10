@@ -1,0 +1,111 @@
+// Conformance (2026-10-09): bugs a fourth adversarial review found. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh. Master gets
+// each one wrong (double free, crash, wrong output, or a parse error).
+struct P { name: str, n: i64 }
+struct In { t: str }
+struct Q { name: str, n: i64, inner: In }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// A nested tuple pattern in `match` over a borrowed tuple freed the
+// caller's elements.
+fn nested_pat(t: ((P, str), i64)) -> str {
+    match t {
+        ((p, s), n) => { return p.name + s + "{n}" }
+    }
+}
+
+// A `(..) =>` arm after a struct literal / if / match arm body parsed as a
+// call on that body.
+fn arms(t: (i64, i64)) -> str {
+    let p = match t {
+        (0, _) => P { name: "a", n: 0 }
+        (_, n) => P { name: "b{n}", n: n }
+    }
+    let q = match t {
+        (1, _) => if t.1 > 2 { "hi" } else { "lo" }
+        (_, _) => match t.0 { 0 => "zero", _ => "other" }
+    }
+    return p.name + q
+}
+
+fn sumv<K>(m: map<K, i64>) -> i64 {
+    let mut n = 0
+    for k in keys(m) { n = n + m[k] }
+    return n
+}
+
+fn get<V>(m: map<str, V>, k: str) -> V {
+    return m[k]
+}
+
+fn noisy(tag: str, seen: map<str, i64>) -> [i64] {
+    seen[tag] = seen[tag] + 1
+    return [1]
+}
+
+fn main() {
+    let t = ((P { name: "a{1}", n: 1 }, "x{2}"), 3)
+    expect(nested_pat(t) == "a1x23" and nested_pat(t) == "a1x23" and t.0.0.name == "a1", "nested tuple pattern on a borrowed tuple")
+
+    // A struct-valued map with f64 keys read the default on AOT.
+    let mut mf: map<f64, P> = {}
+    mf[1.5] = P { name: "f{1}", n: 1 }
+    expect(mf[1.5].name == "f1" and contains(mf, 1.5) and not contains(mf, 2.5), "map<f64, struct> read")
+
+    // assert_eq evaluated its arguments up to three times.
+    let seen: map<str, i64> = {}
+    assert_eq(noisy("a", seen), noisy("b", seen))
+    expect(seen["a"] == 1 and seen["b"] == 1, "assert_eq evaluates each argument once")
+
+    // A struct element of a `let mut` tuple: stores were lost on AOT.
+    let mut tp = (1, P { name: "x", n: 1 })
+    tp.1.n = 9
+    expect(tp.1.name == "x" and tp.1.n == 9, "store through a tuple's struct element")
+    tp.1 = P { name: "z", n: 4 }
+    expect(tp.1.name == "z" and tp.1.n == 4, "store a tuple's struct element")
+
+    // Element stores into a tuple inside an array or map were lost on JIT.
+    let mut arr = [("a{1}", 1)]
+    arr[0].0 = "A{2}"
+    arr[0].1 = 5
+    let mut mt: map<str, (str, i64)> = {}
+    mt["k"] = ("v{1}", 1)
+    mt["k"].0 = "V{2}"
+    mt["k"].1 = 7
+    expect(arr[0].0 == "A2" and arr[0].1 == 5 and mt["k"].0 == "V2" and mt["k"].1 == 7, "tuple element store in a container")
+
+    // A field store through a missing map key crashed; it inserts a default.
+    let mut mq: map<str, Q> = {}
+    mq["y"].n = 5
+    mq["w"].inner.t = "ww{2}"
+    expect(len(mq) == 2 and mq["y"].n == 5 and mq["y"].name == "" and mq["w"].inner.t == "ww2", "field store through a missing key")
+
+    // Nested destructuring in a `for` pattern bound nothing.
+    let pairs = [((P { name: "p{1}", n: 0 }, "s"), 1), ((P { name: "q{1}", n: 0 }, "t"), 2)]
+    let mut acc = ""
+    for ((p, s), y) in pairs { acc = acc + p.name + s + "{y}" }
+    let nums = [((1, 2), 3), ((4, 5), 6)]
+    let mut tot = 0
+    for ((a, b), c) in nums { tot = tot + a * 100 + b * 10 + c }
+    expect(acc == "p1s1q1t2" and tot == 579, "nested for-pattern destructuring")
+
+    expect(arms((0, 1)) + arms((1, 3)) + arms((2, 0)) == "azerob3hib0other", "tuple-pattern arm after an expression arm")
+
+    // A generic over map<K, V> bound K and V to i64.
+    let mut ms: map<str, i64> = {}
+    ms["x"] = 5
+    ms["y"] = 6
+    let mut mi: map<i64, i64> = {}
+    mi[1] = 10
+    let mut mstr: map<str, str> = {}
+    mstr["q"] = "w{1}"
+    expect(sumv(ms) == 11 and sumv(mi) == 10 and get(mstr, "q") == "w1", "generic map<K, V> parameter")
+
+    println("conformance review4 fixes: PASS")
+}

@@ -3581,6 +3581,12 @@ fn translate_instruction<M: Module>(
                     .find(|l| l.id == *id)
                     .and_then(|l| match &l.ty {
                         MirType::Tuple(_) => field.parse::<i64>().ok(),
+                        // `arr[i].0 = v` / `m[k].0 = v`: the element read is
+                        // typed Ptr(Tuple) and is the same tuple handle (the
+                        // store fell to the offset-0 path and was lost).
+                        MirType::Ptr(inner) if matches!(inner.as_ref(), MirType::Tuple(_)) => {
+                            field.parse::<i64>().ok()
+                        }
                         _ => None,
                     }),
                 _ => None,
@@ -5045,12 +5051,16 @@ fn translate_rvalue<M: Module>(
             // The runtime compares the strings and prints a diff on failure.
             if func == "assert_eq" && args.len() == 2 && !user_shadows_assert_family {
                 let mut handles: Vec<cranelift_codegen::ir::Value> = Vec::with_capacity(2);
+                // Strings this call allocates (a non-str argument's text) are
+                // freed after it; they leaked one or two per assert.
+                let mut owned: Vec<usize> = Vec::new();
                 for arg in args.iter() {
                     if is_string_operand(arg, &translator.mir_func.locals) {
                         let val = translate_operand(arg, builder, translator, module)?;
                         handles.push(val);
                         continue;
                     }
+                    owned.push(handles.len());
                     let val = translate_operand(arg, builder, translator, module)?;
                     if is_float_operand(arg, &translator.mir_func.locals) {
                         let f64_ref = ensure_func_ref_with_args(
@@ -5104,6 +5114,13 @@ fn translate_rvalue<M: Module>(
                     2,
                 )?;
                 builder.ins().call(assert_eq_ref, &handles);
+                if !owned.is_empty() {
+                    let free_ref =
+                        ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
+                    for i in owned {
+                        builder.ins().call(free_ref, &[handles[i]]);
+                    }
+                }
                 return Ok(None);
             }
 
