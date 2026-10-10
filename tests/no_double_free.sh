@@ -350,6 +350,80 @@ no_df_file() {
 no_df_file selfhost_stage1_mini_parser "$ROOT/compiler/self-host" stage1_mini_parser.kry
 no_df_file selfhost_lexer_reentrant "$ROOT/compiler/self-host" regression_lexer_reentrant_tokenize.kry
 
+# --- One statement that MOVES a struct field and BORROWS a container field of
+# the same local (2026-10-07). `Ag { memory: a.memory, caps: a.caps }`: the
+# `caps` read's temp-drop un-marked `a`'s partial move, so `a`'s scope-end Drop
+# freed memory.w under the returned literal. Both backends; std::agent's
+# agent_with_alignment double-freed 3 arrays per call. AOT leg included because
+# the JIT-only legs above would pass half of this. ---
+MOVE_AND_BORROW='struct Mem { w: [str] }
+struct Ag { memory: Mem, caps: [str] }
+fn ag_new() -> Ag { return Ag { memory: Mem { w: [] }, caps: [] } }
+fn ag_with() -> Ag {
+    let a = ag_new()
+    return Ag { memory: a.memory, caps: a.caps }
+}
+fn main() {
+    let ag = ag_with()
+    println(to_string(len(ag.caps) + len(ag.memory.w)))
+}'
+no_df struct_field_move_plus_borrow "$MOVE_AND_BORROW"
+no_df std_agent_with_alignment 'use std::agent::{agent_with_alignment, ALIGNMENT_STRICT}
+fn main() {
+    let ag = agent_with_alignment("bot", "help", ALIGNMENT_STRICT)
+    println(ag.name)
+}'
+printf '%s' "$MOVE_AND_BORROW" > "$TMP/mab.kry"
+if "$KRYOS" build --release "$TMP/mab.kry" -o "$TMP/mab" >/dev/null 2>&1; then
+  if KRYOS_FREE_DIAG=1 timeout 30 "$TMP/mab" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+    echo "  DOUBLE-FREE  struct_field_move_plus_borrow (aot)"
+    fail=$((fail+1))
+  fi
+else
+  echo "  BUILD-FAIL   struct_field_move_plus_borrow (aot)"
+  fail=$((fail+1))
+fi
+
+# --- Struct-argument ownership (LEDGER item 3, closed 2026-10-07): callee owns
+# its struct param, caller borrows. Every escape shape that broke an earlier
+# attempt, on BOTH backends -- its conformance run only sees output. ---
+no_df_both() { # name file
+  local name="$1" f="$2" out
+  out="$(KRYOS_FREE_DIAG=1 timeout 60 "$KRYOS" run "$f" 2>&1)"
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+    echo "  DOUBLE-FREE  $name (jit)"
+    fail=$((fail+1))
+  fi
+  if "$KRYOS" build --release "$f" -o "$TMP/$name" >/dev/null 2>&1; then
+    if KRYOS_FREE_DIAG=1 timeout 60 "$TMP/$name" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+      echo "  DOUBLE-FREE  $name (aot)"
+      fail=$((fail+1))
+    fi
+  else
+    echo "  BUILD-FAIL   $name (aot)"
+    fail=$((fail+1))
+  fi
+}
+no_df_both struct_arg_ownership "$ROOT/tests/conformance/conf_struct_arg_ownership.kry"
+no_df_both closure_name_scope "$ROOT/tests/conformance/conf_closure_name_scope.kry"
+no_df_both struct_container_ownership "$ROOT/tests/conformance/conf_struct_container_ownership.kry"
+no_df_both struct_globals_actors "$ROOT/tests/conformance/conf_struct_globals_actors.kry"
+no_df_both enum_arg_ownership "$ROOT/tests/conformance/conf_enum_arg_ownership.kry"
+no_df_both enum_ownership_review "$ROOT/tests/conformance/conf_enum_ownership_review.kry"
+no_df_both enum_recursive_ownership "$ROOT/tests/conformance/conf_enum_recursive_ownership.kry"
+no_df_both element_read_ownership "$ROOT/tests/conformance/conf_element_read_ownership.kry"
+no_df_both tuple_ownership "$ROOT/tests/conformance/conf_tuple_ownership.kry"
+no_df_both structural_eq_and_lookup "$ROOT/tests/conformance/conf_structural_eq_and_lookup.kry"
+no_df_both loop_ownership "$ROOT/tests/conformance/conf_loop_ownership.kry"
+no_df_both to_string_aggregates "$ROOT/tests/conformance/conf_to_string_aggregates.kry"
+no_df_both review3_fixes "$ROOT/tests/conformance/conf_review3_fixes.kry"
+no_df_both reassign_ownership "$ROOT/tests/conformance/conf_reassign_ownership.kry"
+no_df_both review4_fixes "$ROOT/tests/conformance/conf_review4_fixes.kry"
+no_df_both agg_ops_ownership "$ROOT/tests/conformance/conf_agg_ops_ownership.kry"
+no_df_both map_struct_values "$ROOT/tests/conformance/conf_map_struct_values.kry"
+no_df_both review5_fixes "$ROOT/tests/conformance/conf_review5_fixes.kry"
+no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
+
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
 else

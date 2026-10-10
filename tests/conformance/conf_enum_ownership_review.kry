@@ -1,0 +1,106 @@
+// Conformance (2026-10-08): shapes found by the second adversarial review of
+// the enum-ownership wave, plus the latent bugs they exposed. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh -- several of
+// these print the right answer and corrupt the heap anyway.
+//   - `let q = Some(s)` built the erased Option template (no payload copy) but
+//     typed/dropped it as Option___str: the drop freed `s` (printed empty).
+//   - `Some(ks)` twice / `E.A(ks)` from one named struct: two enums owned ONE
+//     struct (shared now, the source keeps its own).
+//   - `"{s.name}"` (one-part interpolation) returned the operand's own handle
+//     as a fresh string: freed twice.
+//   - `let t = h.v` then `h.v = ..` left `t` dangling (enum field alias).
+//   - `let w = w0  return w` of a struct with an enum field: AOT deep copy
+//     shared the enum payload; the closure env of an escaping closure over an
+//     enum param shared it too.
+//   - a `-> void` fn using `!=` on structs and `throw` emitted `ret void 0`
+//     (the eq helper's return type leaked into the outer function).
+use std::option::{Option, Some, None}
+use std::test::{assert_eq}
+
+enum E { A(str, [str]), B(i64) }
+struct P { name: str }
+struct H { v: E, w: E }
+struct W { v: E, n: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn sg(e: E) -> str {
+    match e {
+        E.A(s, t) => { return s + t[0] }
+        E.B(n) => { return to_string(n) }
+    }
+}
+
+fn take(o: Option<P>) -> i64 {
+    match o { Some(p) => { return len(p.name) } None => { return 0 } }
+}
+
+fn idw(w0: W) -> W {
+    let w = w0
+    return w
+}
+
+fn mkf(v: E) -> fn(i64) -> i64 {
+    return |x: i64| x + len(sg(v))
+}
+
+impl W {
+    fn bump(self: W) -> W { let mut w = self  w.n = w.n + 1  return w }
+}
+
+fn chk(a: P, b: P) -> void {
+    if a != b {
+        throw "differ"
+    }
+}
+
+fn main() {
+    let s = "abc{7}"
+    let xs = [10, 20, 30]
+    let mut i = 0
+    while i < 3 {
+        let q = Some(s)
+        let r = Some(xs)
+        i = i + 1
+    }
+    expect(s == "abc7" and xs[1] == 20 and len(xs) == 3, "Some(local) leaves the local intact")
+
+    let ks = P { name: "k{7}" }
+    expect(take(Some(ks)) + take(Some(ks)) == 4, "two Some(ks) from one struct")
+    expect("{ks.name}" == "k7", "one-part interpolation of a field")
+
+    let mut h = H { v: E.A("x{1}", ["a"]), w: E.B(2) }
+    let t = h.v
+    h.v = E.B(3)
+    expect(sg(t) == "x1a" and sg(h.v) == "3", "enum field read survives the field's overwrite")
+    let tmp = h.v
+    h.v = h.w
+    h.w = tmp
+    expect(sg(h.v) == "2" and sg(h.w) == "3", "swap two enum fields")
+
+    let w = W { v: E.A("a{4}", ["b"]), n: 0 }
+    let w2 = idw(w)
+    expect(sg(w2.v) == "a4b" and sg(w.v) == "a4b", "copy of a param with an enum field")
+
+    // `let mut w = self` is a COPY on both backends now; the JIT used to alias
+    // a struct with an enum field and mutate the caller (gotcha 23).
+    let wb = W { v: E.B(1), n: 0 }
+    let wb2 = wb.bump()
+    expect(wb.n == 0 and wb2.n == 1, "let mut copy of self does not mutate the caller")
+
+    let f = mkf(E.A("p{4}", ["q{4}"]))
+    expect(f(1) == 5, "closure over an enum param outlives the param")
+
+    let mut threw = false
+    try { chk(P { name: "x" + "y" }, P { name: "xy" }) } catch e { threw = true }
+    expect(not threw, "struct != in a void fn that throws")
+    try { assert_eq(P { name: "x" + "y" }, P { name: "xy" }, "structs") } catch e { threw = true }
+    expect(not threw, "generic assert_eq on structs")
+
+    println("conformance enum ownership review: PASS")
+}

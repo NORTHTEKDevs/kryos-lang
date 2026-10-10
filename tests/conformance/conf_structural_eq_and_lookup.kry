@@ -1,0 +1,77 @@
+// Conformance (2026-10-08): structural equality for arrays and maps, map
+// reads of missing keys, and `keys()` ownership. Run under KRYOS_FREE_DIAG
+// on both backends by tests/no_double_free.sh.
+//   - `==` on arrays/maps was rejected directly but compiled to a HANDLE
+//     compare inside a generic (`same([1], [1])` was false), so
+//     `assert_eq` on two equal arrays failed.
+//   - `m["missing"]` of a `map<_, Struct/Enum>` read address 0: a segfault on
+//     AOT and on the JIT's next field read. It reads the all-zero value now.
+//   - `keys(m)` handed out the map's own key strings unretained, so dropping
+//     the keys array freed the map's keys (a second walk double-freed them).
+use std::test::{assert_eq, assert_ne}
+
+struct P { name: str, xs: [i64] }
+enum E { A([str]), B(i64) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn same<T>(a: T, b: T) -> bool { return a == b }
+
+fn count_keys(m: map<str, i64>, stop: str) -> i64 {
+    let ks = keys(m)
+    let mut i = 0
+    while i < len(ks) {
+        let k = ks[i]
+        if k == stop { return i }
+        i = i + 1
+    }
+    return i
+}
+
+fn sig(e: E) -> str {
+    match e { E.A(xs) => { return "A" + to_string(len(xs)) } E.B(n) => { return "B" + to_string(n) } }
+}
+
+fn main() {
+    expect([1, 2, 3] == [1, 2, 3] and [1, 2] != [1, 3] and [1] != [1, 1], "array ==")
+    expect(same([1, 2], [1, 2]) and same(["x{1}"], ["x1"]) and same([[1], [2]], [[1], [2]]), "array == through a generic")
+    expect(P { name: "n", xs: [1] } == P { name: "n", xs: [1] }, "struct with an array field")
+    expect(P { name: "n", xs: [1] } != P { name: "n", xs: [2] }, "struct with a different array field")
+    expect(E.A(["a"]) == E.A(["a"]) and E.A(["a"]) != E.A(["b"]) and E.A(["a"]) != E.B(1), "enum with an array payload")
+    let m: map<str, i64> = {}
+    m["a"] = 1
+    m["b"] = 2
+    let n: map<str, i64> = {}
+    n["b"] = 2
+    n["a"] = 1
+    expect(m == n, "maps with the same entries in another order")
+    n["a"] = 3
+    expect(m != n, "maps with a different value")
+    let e1: [i64] = []
+    let e2: [i64] = []
+    expect(e1 == e2, "empty arrays")
+    expect(([1], "s") == ([1], "s"), "tuple with an array element")
+    assert_eq([1, 2], [1, 2], "assert_eq on arrays")
+    assert_ne([1, 2], [2, 1], "assert_ne on arrays")
+
+    let ps: map<str, P> = {}
+    let p = ps["missing"]
+    expect(p.name == "" and len(p.xs) == 0, "missing struct key reads the zero value")
+    let es: map<str, E> = {}
+    expect(sig(es["missing"]) == "A0", "missing enum key reads the zero value")
+    es["k"] = es["k"]
+    expect(len(es) == 1, "store of a missing key's read")
+
+    let w: map<str, i64> = {}
+    w["x{1}"] = 1
+    w["y{2}"] = 2
+    expect(count_keys(w, "zz") == 2 and count_keys(w, "zz") == 2, "keys walked twice")
+    expect(w["x1"] == 1 and w["y2"] == 2, "keys survive the walks")
+
+    println("conformance structural eq and lookup: PASS")
+}

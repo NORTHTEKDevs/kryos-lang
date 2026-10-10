@@ -1,0 +1,105 @@
+// Conformance (2026-10-08): bugs a third adversarial review found around the
+// ownership waves. Run under KRYOS_FREE_DIAG on both backends by
+// tests/no_double_free.sh. Master gets every one of these wrong (crash, wrong
+// output, a double free, or a parse/compile failure).
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64, xs: [str] }
+struct In { t: str }
+struct Q { inner: In }
+struct Bx<T> { v: T }
+enum E { A(str), B([str]) }
+enum F { S(P), N(i64) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> E { if i % 2 == 0 { return E.A("a{i}") } return E.B(["b{i}"]) }
+fn g(i: i64) -> E {
+    match mk(i) {
+        E.A(s) => { return E.A(s + "!") }
+        x => { return x }
+    }
+}
+fn h(i: i64) -> E {
+    let r = match mk(i) { E.A(s) => E.B([s]), other => other }
+    return r
+}
+fn mkb(i: i64) -> Bx<(str, [str])> { return Bx { v: ("a{i}", ["b{i}"]) } }
+
+fn main() {
+    // A tuple literal of two aliases of one tuple.
+    let t = ("v{1}", 1)
+    let u = t
+    let w = (t, u)
+    expect(w.0.0 == "v1" and w.1.0 == "v1", "tuple of tuple aliases")
+
+    // A catch-all `name => ..` arm on an enum subject bound garbage.
+    expect("{g(0)} {g(1)} {h(0)} {h(1)}" == "A(\"a0!\") B([\"b1\"]) B([\"a0\"]) B([\"b1\"])", "catch-all binding")
+
+    // Assigning a tuple element released the old one twice.
+    let mut tt = ("a{1}", 1)
+    tt.0 = "c{2}"
+    expect(tt.0 == "c2", "tuple element store")
+
+    // A missing key of a struct/enum/tuple/Option map reads a default value.
+    let m: map<str, P> = {}
+    let mut q = m["missing"]
+    q.n = 5
+    q.xs = push(q.xs, "x")
+    expect(q.n == 5 and len(q.xs) == 1 and q.name == "", "missing struct key then writes")
+    let mq: map<str, Q> = {}
+    expect(mq["no"].inner.t == "", "missing key, nested struct field")
+    let mf: map<str, F> = {}
+    let fv = mf["no"]
+    let fname = match fv { F.S(p) => p.name, F.N(n) => "n" }
+    expect(fname == "", "missing key, enum with a struct payload")
+    let mo: map<str, Option<str>> = {}
+    let ov = mo["missing"]
+    let isnone = match ov { Some(x) => false, None => true }
+    expect(isnone, "missing Option key reads None")
+    let mt: map<str, (str, [str])> = {}
+    expect(len(mt["no"].1) == 0, "missing tuple key")
+
+    // The builtin assert_eq compares aggregates structurally.
+    assert_eq([1, 2], [1, 2])
+    let ma: map<str, i64> = {}
+    let mb: map<str, i64> = {}
+    assert_eq(ma, mb)
+    assert_eq([[1]], [[1]])
+
+    // keys() of an int-keyed map is typed by the key.
+    let mi: map<i64, str> = {}
+    mi[3] = "c"
+    mi[4] = "d"
+    let mut ksum = 0
+    for k in keys(mi) { ksum = ksum + k }
+    expect(ksum == 7, "keys of an int-keyed map")
+
+    // Nested tuple destructuring bound 0.
+    let ((a, b), c) = (("x", "y"), "z")
+    let ((p1, p2), p3) = ((1, 2), 3)
+    expect(a + b + c == "xyz" and p1 + p2 + p3 == 6, "nested tuple destructuring")
+
+    // A generic struct with a fixed-size array literal inside its type arg.
+    expect(mkb(2).v.1[0] == "b2", "generic struct, sized array type arg")
+
+    // Tuple-pattern arms after a block-bodied arm parse.
+    let tp = (1, 2)
+    let mut which = ""
+    match tp {
+        (1, x) => { which = "a{x}" }
+        (y, 2) => { which = "b{y}" }
+        _ => { which = "c" }
+    }
+    expect(which == "a2", "tuple pattern arm after a block arm")
+
+    // Strings inside a formatted container are escaped.
+    expect(to_string(["q\"uote\n"]) == "[\"q\\\"uote\\n\"]", "escaped string in a container")
+
+    println("conformance review3 fixes: PASS")
+}

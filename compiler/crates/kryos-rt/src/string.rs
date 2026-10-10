@@ -198,16 +198,17 @@ pub unsafe extern "C" fn kryos_string_hash(s: *const KryosString) -> i64 {
 #[no_mangle]
 pub unsafe extern "C" fn kryos_string_eq(a: *const KryosString, b: *const KryosString) -> bool {
     crate::fault::hang_tick();
-    if a.is_null() && b.is_null() {
+    // A null handle is the empty string everywhere else (len, concat,
+    // printing): a zero-valued `str` field (`m["missing"].name`) must equal "".
+    let la = if a.is_null() { 0 } else { (*a).len };
+    let lb = if b.is_null() { 0 } else { (*b).len };
+    if la != lb {
+        return false;
+    }
+    if la == 0 {
         return true;
     }
-    if a.is_null() || b.is_null() {
-        return false;
-    }
-    if (*a).len != (*b).len {
-        return false;
-    }
-    let len = (*a).len as usize;
+    let len = la as usize;
     if len == 0 {
         return true;
     }

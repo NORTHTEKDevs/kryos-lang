@@ -1,0 +1,67 @@
+// Peak-RSS probe for tests/mem_tuple_gate.sh (2026-10-08). Tuples holding
+// heap values were never freed on either backend (no Tuple drop arm); each
+// mode below built one per iteration.
+//   literal     `let q = (s, 1)` read twice
+//   destructure `let (a, b) = mk(i)`
+//   destruct_p  `let (p, s) = mkp(i)` (a struct element)
+//   ret_param   `pair(p)` returning `(p, p)` of a struct param
+//   reassign    `m = mk(1)` over a live tuple
+//   field_idx   `acc = p.tags[0]` (an assignment's field-read temp)
+//   call_arg    a tuple literal / named tuple passed to a function
+//   alias       `let u = t` (a non-owning alias kept `t` from being freed)
+//   closure     (not gated: a returned closure's captured tuple copy is not
+//               released with the closure yet -- see LEDGER)
+struct P { name: str, tags: [str] }
+
+fn mk(i: i64) -> (str, i64) { return ("v{i}", i) }
+fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", tags: ["t{i}"] }, "s{i}") }
+fn pair(p: P) -> (P, P) { return (p, p) }
+fn swap(t: (str, str)) -> (str, str) { return (t.1, t.0) }
+fn len0(t: (str, i64)) -> i64 { return len(t.0) }
+fn cap(t: (str, i64)) -> fn() -> i64 { return || len(t.0) }
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut acc = ""
+    while i < n {
+        let s = "n{i}" + "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        if mode == "literal" {
+            let q = (s, 1)
+            acc = q.0 + q.0
+        } elif mode == "destructure" {
+            let (a, b) = mk(i)
+            acc = a + to_string(b)
+        } elif mode == "destruct_p" {
+            let (p, t) = mkp(i)
+            acc = p.name + p.tags[0] + t
+        } elif mode == "ret_param" {
+            let p = P { name: s, tags: ["t{i}"] }
+            let c = pair(p)
+            acc = c.1.name
+        } elif mode == "reassign" {
+            let mut m = mk(0)
+            m = mk(1)
+            m = mk(2)
+            acc = m.0
+        } elif mode == "call_arg" {
+            let sw = swap((s, "r{i}"))
+            let q = (s, i)
+            acc = sw.0 + to_string(len0(q))
+        } elif mode == "closure" {
+            let f = cap((s, i))
+            acc = to_string(f())
+        } elif mode == "alias" {
+            let t1 = mk(i)
+            let t2 = t1
+            acc = t2.0
+        } elif mode == "field_idx" {
+            let p = P { name: s, tags: ["t{i}"] }
+            acc = p.tags[0]
+        }
+        i = i + 1
+    }
+    println(acc)
+}

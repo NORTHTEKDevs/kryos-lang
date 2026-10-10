@@ -164,7 +164,7 @@ fn transfer_instruction(inst: &Instruction, live: &mut BTreeSet<LocalId>) {
 }
 
 /// Compute (defs, uses) for an instruction.
-fn inst_defs_uses(inst: &Instruction) -> (Vec<LocalId>, Vec<LocalId>) {
+pub(crate) fn inst_defs_uses(inst: &Instruction) -> (Vec<LocalId>, Vec<LocalId>) {
     let mut defs: Vec<LocalId> = Vec::new();
     let mut uses: Vec<LocalId> = Vec::new();
     match inst {
@@ -324,7 +324,7 @@ fn rvalue_uses(rv: &RValue, out: &mut Vec<LocalId>) {
 }
 
 /// Fold the local uses from a terminator into `out`.
-fn terminator_uses(term: &Terminator, out: &mut BTreeSet<LocalId>) {
+pub(crate) fn terminator_uses(term: &Terminator, out: &mut BTreeSet<LocalId>) {
     match term {
         Terminator::Return(Some(op)) => {
             if let Operand::Local(id) = op {

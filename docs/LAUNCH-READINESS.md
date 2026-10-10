@@ -1,5 +1,18 @@
 # Kryos Launch Readiness - Re-Adjudication (2026-08-16, dogfooding closeout addendum; 2026-08-17 universal-claim addendum; **2026-08-29 1.0.0 cut addendum, read first**)
 
+
+> ## 2026-10-08 - ownership update (branch `fix/item3-call-boundary`)
+>
+> Items **3** (struct-argument leak) and **51** (struct enum-field overwrite
+> leak) are **CLOSED**: struct and enum parameters are owned by the callee and
+> borrowed by the caller, every struct/enum drop path honors the owner count,
+> and container/field stores take their own owner. Every "Item 3 ... NOT
+> FIXED" line further down is a dated snapshot, kept as history. Item 6 (`any`
+> has no runtime tag) remains an ABI design note; the stdlib no longer routes
+> values through `any` in `std::fmt`/`std::test`. Remaining known limitation:
+> an enum nested directly inside an enum keeps the older move model (can leak,
+> never double-frees). Evidence: tools/loop/LEDGER.md, top three entries.
+
 > ## 2026-08-29 - v1.0.0 WAS CUT. This document's §1 verdict was NOT met; it was WAIVED.
 >
 > §1 below reads **"NOT YET 1.0"**, and its reasoning was never a defect list - 

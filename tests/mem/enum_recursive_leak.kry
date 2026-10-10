@@ -1,0 +1,53 @@
+// Peak-RSS probe for tests/mem_enum_recursive_gate.sh (2026-10-08).
+// Each mode built and dropped LEAK_ITERS times; a leak grows RSS linearly.
+//   rec_build  `T.N([T.Nm(s, [T.L(1)]), T.L(2)])`: the inner `[T]` of a boxed
+//              element was released with a bare array free (element boxes leaked)
+//   rec_sum    the same tree walked recursively by a borrowing fn
+//   cond_str   a str local moved into an enum on ONE branch: its drop was
+//              suppressed on every path, though the enum clones the str
+//   skip_str   the same, taking the branch that never builds the enum
+//   dup_param  `[x, x]` of a generic param, `[p]` of a struct param
+//   dup_local  `[p, p]` of a struct local (was stack-promoted: elements never freed)
+struct P { name: str, tags: [str] }
+enum T { L(i64), N([T]), Nm(str, [T]) }
+
+fn sum(t: T) -> i64 {
+    match t {
+        T.L(n) => { return n }
+        T.N(ks) => { let mut s = 0  for k in ks { s = s + sum(k) }  return s }
+        T.Nm(nm, ks) => { let mut s = len(nm)  for k in ks { s = s + sum(k) }  return s }
+    }
+}
+
+fn twice<U>(x: U) -> [U] { return [x, x] }
+fn wrap(p: P) -> [P] { return [p] }
+
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut tot = 0
+    while i < n {
+        let s = "n{i}" + "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+        if mode == "rec_build" {
+            let x = T.N([T.Nm(s, [T.L(1)]), T.L(2)])
+        } elif mode == "rec_sum" {
+            let x = T.N([T.Nm(s, [T.L(1), T.N([T.L(3)])]), T.L(2)])
+            tot = tot + sum(x)
+        } elif mode == "cond_str" {
+            let x = T.Nm(s, [])
+        } elif mode == "dup_param" {
+            let p = P { name: s, tags: ["t{i}"] }
+            let a = twice(p)
+            let d = wrap(p)
+            tot = tot + len(a) + len(d)
+        } elif mode == "dup_local" {
+            let p = P { name: s, tags: ["t{i}"] }
+            let q = [p, p]
+            tot = tot + len(q)
+        }
+        i = i + 1
+    }
+    println(to_string(tot))
+}

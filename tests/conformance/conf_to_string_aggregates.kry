@@ -1,0 +1,41 @@
+// Conformance (2026-10-08): `to_string` and `"{v}"` interpolation of arrays,
+// tuples, maps, structs and enums format their contents (they printed
+// `<array>`, `<P>` and the like; interpolating one was a compile error).
+// A type's own `to_string` method still wins, also when nested. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str, xs: [i64] }
+struct Q { p: P, n: i64 }
+struct W { v: i64 }
+impl W { fn to_string(self: W) -> str { return "W<" + to_string(self.v) + ">" } }
+enum E { A(str), B(i64, bool), C }
+
+fn expect(got: str, want: str) {
+    if got != want {
+        println("CONF FAIL: got [" + got + "] want [" + want + "]")
+        exit(1)
+    }
+}
+
+fn main() {
+    expect(to_string([1, 2, 3]), "[1, 2, 3]")
+    expect(to_string(["a", "b{1}"]), "[\"a\", \"b1\"]")
+    expect(to_string([[1], [2, 3]]), "[[1], [2, 3]]")
+    let empty: [i64] = []
+    expect(to_string(empty), "[]")
+    expect(to_string(("x", 2, true)), "(\"x\", 2, true)")
+    let m: map<str, i64> = {}
+    m["k"] = 1
+    expect(to_string(m), "{{\"k\": 1}}")
+    expect(to_string(P { name: "n", xs: [1, 2] }), "P {{ name: \"n\", xs: [1, 2] }}")
+    expect(to_string(Q { p: P { name: "q", xs: [] }, n: 7 }), "Q {{ p: P {{ name: \"q\", xs: [] }}, n: 7 }}")
+    expect(to_string([W { v: 1 }, W { v: 2 }]), "[W<1>, W<2>]")
+    expect(to_string(E.A("s")) + " " + to_string(E.B(1, true)) + " " + to_string(E.C), "A(\"s\") B(1, true) C")
+    let o: Option<str> = Some("v")
+    expect(to_string(o), "Some(\"v\")")
+    let xs = [1, 2]
+    let p = P { name: "z", xs: [] }
+    expect("xs={xs} p={p}", "xs=[1, 2] p=P {{ name: \"z\", xs: [] }}")
+    println("conformance to_string aggregates: PASS")
+}

@@ -1,4 +1,4 @@
-//! KryosArray — heap-allocated, bounds-checked dynamic array.
+//! KryosArray - heap-allocated, bounds-checked dynamic array.
 //!
 //! Layout: `{ len: i64, cap: i64, elem_size: i64, ref_count: i64, data: *mut u8 }`.
 //! Elements are stored as i64-sized values (8 bytes each) for uniform
@@ -307,7 +307,7 @@ pub unsafe extern "C" fn kryos_array_concat(
     result
 }
 
-/// Clone a KryosArray — allocate a new independent array with the same elements
+/// Clone a KryosArray - allocate a new independent array with the same elements
 /// (shallow element copy, `ref_count` initialized to 1).
 ///
 /// Used by `@copy` struct field semantics to give each copy its own buffer.
@@ -419,7 +419,7 @@ pub unsafe extern "C" fn kryos_array_clone_deep(
     result
 }
 
-/// Retain a KryosArray — increment its reference count and return the same pointer.
+/// Retain a KryosArray - increment its reference count and return the same pointer.
 ///
 /// Used when a non-copy struct literal copies an array field: both the source
 /// and destination structs share the same heap allocation.  `kryos_array_free`
@@ -443,7 +443,7 @@ pub unsafe extern "C" fn kryos_array_retain_opt(arr: *mut KryosArray) -> i64 {
     0
 }
 
-/// Free a KryosArray — decrement reference count and deallocate when it reaches zero.
+/// Free a KryosArray - decrement reference count and deallocate when it reaches zero.
 ///
 /// H4 INSTRUMENTATION (shift kryos-self-compile step 22, 2026-05-20):
 /// Live arrays always have ref_count >= 1. If we observe ref_count <= 0
@@ -451,7 +451,7 @@ pub unsafe extern "C" fn kryos_array_retain_opt(arr: *mut KryosArray) -> i64 {
 /// with a diagnostic so we can locate the source. To keep the sentinel
 /// observable on the next free, we skip the header dealloc -- the
 /// header (~40 bytes) leaks intentionally. Revert before production.
-/// Free an array — forgiving refcount that tolerates over-free.
+/// Free an array - forgiving refcount that tolerates over-free.
 ///
 /// Step 39 production hardening: codegen has multiple unbalanced
 /// `kryos_array_free` emission paths (more frees than retains for the
@@ -531,7 +531,7 @@ pub unsafe extern "C" fn kryos_array_free(arr: *mut KryosArray) {
         return; // other owners remain
     }
     // rc was 1 -> we performed the 1 -> 0 transition and own the value.
-    // Last reference — deallocate the data buffer AND the header.
+    // Last reference - deallocate the data buffer AND the header.
     let cap = (*arr).cap as usize;
     if !(*arr).data.is_null() && cap > 0 {
         crate::alloc::pool_free((*arr).data, cap * ELEM_SIZE);
@@ -647,6 +647,30 @@ pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind:
     ARR_HDR_POOL.put(arr as *mut u8);
 }
 
+/// Release an array whose elements need a per-element drop (`drop_fn`), from
+/// a context with no inline loop -- a generated `__kryos_drop_<T>` helper
+/// freeing a `[T]` field. Same contract as a local's inline array drop: the
+/// LAST reference releases the elements, then `kryos_array_free` handles the
+/// count. A bare `kryos_array_free` there leaked every element (each box of
+/// `T.Nm(s, [T.L(1)])`'s inner array, every string of a `[str]` field).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_free_elems(arr: *mut KryosArray, drop_fn: extern "C" fn(i64)) {
+    if arr.is_null() || crate::leak_on_zero() {
+        return;
+    }
+    if rc_atomic(arr).load(Ordering::Acquire) == 1 && !(*arr).data.is_null() {
+        let len = (*arr).len as usize;
+        let data = (*arr).data as *const i64;
+        for i in 0..len {
+            let h = *data.add(i);
+            if h != 0 {
+                drop_fn(h);
+            }
+        }
+    }
+    kryos_array_free(arr);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -722,7 +746,7 @@ mod tests {
         }
     }
 
-    // out_of_bounds and null_safety tests removed — these now abort via
+    // out_of_bounds and null_safety tests removed - these now abort via
     // kryos_panic instead of returning silent defaults.
 
     #[test]

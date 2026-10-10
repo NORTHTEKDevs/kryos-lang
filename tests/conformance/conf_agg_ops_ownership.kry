@@ -1,0 +1,148 @@
+// Conformance (2026-10-09): ownership of the shapes the aggregate-operation
+// leak fixes touch -- `and`/`or` chains over field reads, structural ==,
+// to_string and assert_eq of aggregates, element reads off a fresh tuple,
+// and `let x = if/match ..` whose branches are fresh values OR existing
+// bindings (a param, a named local, a loop alias), which must keep their
+// own owners. Run under KRYOS_FREE_DIAG on both backends by
+// tests/no_double_free.sh; tests/mem_agg_ops_gate.sh is the leak direction.
+struct P { name: str, xs: [i64] }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
+fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", xs: [i] }, "s{i}") }
+fn f(i: i64) -> str { return "f{i}" }
+
+fn pick(a: str, c: bool) -> str {
+    let s = if c { a } else { f(1) }
+    return s + "!"
+}
+
+fn pick_arr(a: [i64], c: bool) -> i64 {
+    let v = if c { a } else { [7, 8, 9] }
+    return len(v)
+}
+
+fn same(a: P, b: P) -> bool {
+    return a.name == b.name and a.xs == b.xs
+}
+
+enum E { A(P), B(str), C }
+fn mke(i: i64) -> E {
+    if i % 3 == 0 { return E.A(P { name: "e{i}", xs: [i] }) }
+    if i % 3 == 1 { return E.B("b{i}") }
+    return E.C
+}
+
+// `continue` / `break` inside match arms over a fresh subject.
+fn match_exits(n: i64) -> str {
+    let mut i = 0
+    let mut out = ""
+    while i < n {
+        match mke(i) {
+            E.A(p) => {
+                out = out + p.name
+                i = i + 1
+                continue
+            }
+            E.B(s) => {
+                if i > 3 { break }
+                out = out + s
+            }
+            E.C => { out = out + "c" }
+        }
+        i = i + 1
+    }
+    return out
+}
+
+// A fresh tuple subject: bindings outlive the released subject.
+fn first_of(i: i64) -> str {
+    let v = match mk(i) { (s, xs) => s }
+    return v
+}
+fn guarded(i: i64) -> i64 {
+    match mk(i) {
+        (s, xs) if len(xs) > 0 => { return len(s) }
+        _ => { return 0 }
+    }
+}
+fn take_p(i: i64) -> P {
+    match mkp(i) {
+        (q, s) => { return q }
+    }
+}
+fn first(t: (P, str)) -> P { return t.0 }
+
+fn main() {
+    let p = P { name: "q{1}", xs: [1] }
+    let q = P { name: "q{1}", xs: [1] }
+    let r = P { name: "r{1}", xs: [2] }
+
+    expect(p == q and not (p == r) and same(p, q) and not same(p, r), "struct ==")
+    expect([p, q] == [q, p] and not ([p] == [r]), "array of structs ==")
+    expect(mk(1) == mk(1) and not (mk(1) == mk(2)), "tuple ==")
+    let both = p.name == q.name and len(p.xs) == len(q.xs)
+    let either = p.name == r.name or len(r.name) == 2
+    expect(both and either, "and/or over field reads")
+    expect(to_string(p) == "P {{ name: \"q1\", xs: [1] }}" and "{mk(3)}" == "(\"k3\", [3, 3])", "to_string of aggregates")
+    assert_eq(p, q)
+    assert_eq(mk(4), mk(4))
+    assert_eq(p.name, q.name)
+    assert_eq(len(p.xs), 1)
+    expect(len(mkp(5).1) == 2 and mk(6).0 == "k6" and len(mk(7).1) == 2, "element read off a fresh tuple")
+
+    // A branch that yields an existing binding keeps that binding's owner.
+    let base = "b{1}"
+    expect(pick(base, true) == "b1!" and pick(base, false) == "f1!" and base == "b1", "let-if over a param")
+    let arr = [1, 2]
+    expect(pick_arr(arr, true) == 2 and pick_arr(arr, false) == 3 and len(arr) == 2, "let-if over an array param")
+    let named = "n{1}"
+    let s1 = if len(named) == 2 { named } else { f(2) }
+    expect(s1 == "n1" and named == "n1", "let-if over a named local")
+    let mut seen = ""
+    for w in ["w{1}", "x{1}"] {
+        let s2 = if w == "w1" { w } else { "other" }
+        seen = seen + s2
+    }
+    expect(seen == "w1other", "let-if over a loop alias")
+    let s3 = match len(base) { 2 => f(3), _ => base }
+    let s4 = match len(base) { 9 => f(4), _ => "lit" }
+    expect(s3 == "f3" and s4 == "lit" and base == "b1", "let-match over fresh and bound values")
+
+    expect(match_exits(8) == "e0b1ce3", "break/continue inside match arms")
+    expect(first_of(5) == "k5" and guarded(6) == 2 and take_p(7).name == "p7" and first(mkp(8)).name == "p8", "match over a fresh tuple")
+    let tp = mkp(9)
+    expect(first(tp).name == "p9" and tp.0.name == "p9", "struct element returned from a borrowed tuple")
+
+    // Element stores into a `let mut` tuple (it is still released after).
+    let keep = "keep{1}"
+    let mut t1 = mkp(10)
+    t1.1 = "new{1}"
+    t1.0.name = "nn{1}"
+    let mut t2 = mk(11)
+    t2.0 = keep
+    t2.1 = [5]
+    expect(t1.1 == "new1" and t1.0.name == "nn1" and t2.0 == "keep1" and t2.1[0] == 5 and keep == "keep1", "tuple element stores")
+
+    // A struct element read off a fresh tuple, lent or bound.
+    let kept = mkp(12).0
+    expect(mkp(12).0 == kept and to_string(mkp(13).0) == "P {{ name: \"p13\", xs: [13] }}" and kept.xs[0] == 12, "struct element of a fresh tuple")
+
+    // Tuple copies own themselves; either side can be reassigned.
+    let mut ta = mk(20)
+    let tb = ta
+    ta = mk(21)
+    let mut tc = tb
+    tc = mk(22)
+    let tp2 = mkp(23)
+    let (dp, ds) = tp2
+    expect(tb.0 == "k20" and ta.0 == "k21" and tc.0 == "k22" and dp.name == "p23" and ds == "s23" and tp2.0.name == "p23", "tuple copies and destructuring a local")
+
+    println("conformance agg ops ownership: PASS")
+}

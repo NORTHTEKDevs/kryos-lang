@@ -5,7 +5,7 @@ this commit. Lighter than a formal standard, more rigorous than a tutorial.
 
 > Numbered chapters (`01-...` through `15-...`) are tutorial-style; this
 > file is the **reference**. When tutorials and reference disagree, the
-> reference wins. When the reference and compiler disagree, that's a bug —
+> reference wins. When the reference and compiler disagree, that's a bug - 
 > please file it.
 
 ## Table of contents
@@ -42,14 +42,14 @@ extends the current expression as far as the grammar allows, then starts a
 new statement. Two consequences follow:
 
 - **A trailing binary operator, comma, or open bracket (`(`, `[`, `{`)
-  continues the expression onto the next line** — this is how you break a
+  continues the expression onto the next line** - this is how you break a
   long expression across lines.
 - **A new line that *begins* with an infix operator also continues the
   previous line** (the ASI-class trap): `let a = 5` followed by a line
   `+ 3` parses as `let a = 5 + 3`. Never begin a line with a binary
   operator, unary `-`, `(`, or `[` unless you intend continuation. Because
   boundaries are grammar-driven, a single space can also separate two
-  complete statements on one physical line (`let a = 1  let b = 2`) — legal
+  complete statements on one physical line (`let a = 1  let b = 2`) - legal
   but avoid it for readability.
 
 The lexer emits a hint if it sees a `;`:
@@ -119,9 +119,18 @@ position.
 
 ### 2.2 Compound types
 
-- **Array**: `[T]` — heap-allocated, dynamically sized.
-- **Map**: `map<K, V>` — hash map, K must be hashable.
-- **Tuple**: `(T1, T2, ...)` — fixed-arity, heap-allocated.
+- **Array**: `[T]` - heap-allocated, dynamically sized.
+- **Map**: `map<K, V>` - hash map, K must be hashable. Reading a missing key
+  `m[k]` gives V's default value (`0`, `""`, `false`, `[]`, `{}`, a struct of
+  defaults, an enum's payload-free variant such as `None`) without inserting
+  it; test presence with `contains(m, k)`. A field store through a missing
+  key (`m[k].f = v`) inserts the default first, like `m[k] = ..`. Residual: a
+  missing key of an array- or map-valued map reads a null handle, so writes
+  to the value read (`let mut inner = mm[k]; inner[x] = 1`) are lost --
+  check `contains` first.
+- **Tuple**: `(T1, T2, ...)` - fixed-arity, heap-allocated. Destructured by
+  `let (a, (b, c)) = t`, in `for (a, b) in xs`, and in match patterns, at any
+  nesting depth.
 - **Struct**: nominal record with named fields. Declared with `struct`.
 - **Enum**: tagged union with named variants. Declared with `enum`.
 - **Option<T>**: `Option::Some(T)` or `Option::None`.
@@ -137,7 +146,7 @@ async fn(str) -> Result<str>  // async function
 ### 2.4 References
 
 `&T` is a shared reference; `&mut T` is exclusive. Reference lifetimes
-are inferred — there is no explicit lifetime syntax (today).
+are inferred - there is no explicit lifetime syntax (today).
 
 ### 2.5 Generics
 
@@ -183,6 +192,15 @@ except `**` (right) and the assignment `=` (right).
 | 11 | `**` (power) |
 | 12 | `as` (type cast), unary `-`, `+`, `!` |
 | 13 | `.` (field), `[]` (index), `()` (call) |
+
+### 3.0 Equality
+
+`==` and `!=` compare by value for every type: numbers and `bool` by value,
+`str` by content, structs, enums and tuples field by field, arrays element by
+element (same length, pairwise `==`), and maps by size plus every key of the
+left map present in the right with an `==` value. Nesting composes (`[[str]]`,
+a struct with an array field, `map<str, [i64]>`). The ordering operators
+`<`, `<=`, `>`, `>=` are defined only for numbers, `str`, `char` and `bool`.
 
 ### 3.1 Casts
 
@@ -360,11 +378,11 @@ extern "C" {
 
 Calling an extern is capability-gated (`E0506`): a `kryos_*` name requires the
 capability of the builtin it backs, so declaring one is free but calling it
-demands authority. Prefer the documented builtin (`env_get("PATH")`) — a
+demands authority. Prefer the documented builtin (`env_get("PATH")`) - a
 hand-declared `kryos_*` extern with a `str`/heap signature bypasses the
 str-handle marshalling and will crash.
 
-All `extern` functions are implicitly `unsafe` — calling them requires
+All `extern` functions are implicitly `unsafe` - calling them requires
 an `unsafe` block.
 
 ---
@@ -415,18 +433,18 @@ it.
     `f32`, `f64`, `bool`, ...) are `Copy`.
 2.  Passing a value to a function or assigning to another binding
     **shares** it for ARC-backed types (a refcount bump) or duplicates it
-    for `Copy` types. Neither is a destructive move — the source binding
+    for `Copy` types. Neither is a destructive move - the source binding
     stays valid and can be reused.
 3.  The compiler runs an advisory ownership/borrow analyzer after type
     checking. It may surface `E0300: use of moved value` as a
     diagnostic when a value is passed and then read again, but this is
-    a **lint, not a hard error** — it does not block compilation, and
+    a **lint, not a hard error** - it does not block compilation, and
     programs that pass then reuse an ARC-backed value compile and run
     correctly on both backends.
 4.  References (`&T`, `&mut T`) are parsed and type-checked, and tracked
     through MIR with mutability preserved. Full borrow-checker
     enforcement (any number of `&T` *or* exactly one `&mut T` at a time)
-    is not yet implemented — ARC is what provides memory safety today.
+    is not yet implemented - ARC is what provides memory safety today.
 
 ### 7.2 Copy types
 
@@ -463,7 +481,7 @@ Drop semantics for compound types:
 
 ### 7.4 Mutability
 
-`let x = 0` is **immutable** — reassigning the BARE BINDING itself (`x = 1`)
+`let x = 0` is **immutable** - reassigning the BARE BINDING itself (`x = 1`)
 is rejected with `E0302`. Use `let mut x = 0` for a mutable binding when you
 need to reassign the variable itself.
 
@@ -474,10 +492,10 @@ conformance-tested part of the language (regression: `conf_ownership
 mutate_pair`) — `let p = Point{x: 1, y: 2}` then `p.x = 9` compiles and runs,
 mutating `p` in place, with no `mut` on `p`. The same holds for a
 struct-typed function PARAMETER's `self.field = v` inside a method or free
-function — parameters are never `mut`-annotated in Kryos, and mutating their
+function - parameters are never `mut`-annotated in Kryos, and mutating their
 fields is the normal way methods mutate `self`. (An earlier draft of this
 page claimed the opposite; it was aspirational and contradicted the
-language's own tests. Do not extend `E0302` to compound targets — this is a
+language's own tests. Do not extend `E0302` to compound targets - this is a
 documentation correction, not a request to change the checker.)
 
 ---
@@ -648,7 +666,7 @@ exits with **status 101**. Causes:
 - Array index out of bounds (exit 98).
 - Division by zero (exit 98).
 - `checked_*` overflow.
-- Stack overflow — see note below.
+- Stack overflow - see note below.
 - Explicit `panic("message")` (exit 101).
 
 Each panic frame includes the source file and line.
@@ -674,11 +692,11 @@ What "implemented" means in v1.0.0:
 | Generics                    | Monomorphized       |
 | Traits + impls              | Implemented         |
 | Pattern matching            | Implemented         |
-| Ownership (ARC + advisory move/borrow lint) | Implemented — advisory, does not block reuse-after-pass |
-| Borrow checking (`&T`/`&mut T` enforcement) | Not yet — references parse/type-check, exclusivity not enforced |
+| Ownership (ARC + advisory move/borrow lint) | Implemented - advisory, does not block reuse-after-pass |
+| Borrow checking (`&T`/`&mut T` enforcement) | Not yet - references parse/type-check, exclusivity not enforced |
 | Drop order                  | Reverse declaration |
 | Integer overflow builtins   | Implemented         |
-| Stack overflow detection    | Partial — Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
+| Stack overflow detection    | Partial - Cranelift: compiler bug (no clean handler); LLVM: OS SIGSEGV |
 | Channels (unbounded MPMC)   | Implemented         |
 | `spawn` (OS threads)        | Implemented         |
 | `async` / `await`           | Non-blocking I/O (blocking ops yield; async tasks overlap I/O) + cooperative CPU interleaving. Both backends. |

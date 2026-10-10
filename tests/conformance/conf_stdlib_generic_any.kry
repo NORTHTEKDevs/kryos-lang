@@ -1,0 +1,33 @@
+// Conformance (2026-10-08): std::fmt::debug/display and std::test::assert_eq/
+// assert_ne took `any`, which is erased to a bare i64 with no runtime type
+// tag. On master: debug("abc") printed a POINTER, debug(true) printed 1,
+// debug(2.5) printed the f64's raw bits, and assert_eq(s1, s2, ..) compared
+// two equal strings by POINTER and threw; the program did not even build on
+// AOT. They are generic now: each call is monomorphized with its real type.
+use std::fmt::{debug, display}
+use std::test::{assert_eq, assert_ne}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn main() {
+    let s1 = "ab" + "c"
+    let s2 = "a" + "bc"
+    expect(debug(s1) == "\"abc\"", "debug quotes a string")
+    expect(display(s2) == "abc", "display of a string is the string")
+    expect(debug(42) == "42" and debug(true) == "true" and debug(2.5) == "2.5", "debug of scalars")
+    let mut threw = false
+    try { assert_eq(s1, s2, "equal strings by content") } catch e { threw = true }
+    expect(not threw, "assert_eq compares strings by content")
+    threw = false
+    try { assert_eq(s1, "zzz", "different") } catch e { threw = true }
+    expect(threw, "assert_eq throws on different strings")
+    threw = false
+    try { assert_ne(1.5, 2.5, "different floats") } catch e { threw = true }
+    expect(not threw, "assert_ne on different floats")
+    println("conformance stdlib generic any: PASS")
+}

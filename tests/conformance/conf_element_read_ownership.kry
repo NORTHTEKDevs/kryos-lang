@@ -1,0 +1,65 @@
+// Conformance (2026-10-08): ownership of values read out of containers.
+// Run under KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh.
+//   - `let a = p.name` / `xs[i]` / `m[k]`: the read is retained, so the
+//     binding owns a reference (it leaked one per `let` as an alias); it must
+//     survive the container slot being overwritten.
+//   - `enum V { L([V]) }`: the payload registered as `[Struct V]`, so
+//     `V.L(items) => return items[0]` skipped the enum index-clone and the
+//     caller freed a box the list still owned (minilisp's `car`).
+struct P { name: str, xs: [i64] }
+enum V { I(i64), L([V]), S(str) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn car(a: V) -> V {
+    match a {
+        V.L(items) => { return items[0] }
+        _ => { return V.I(0) }
+    }
+}
+
+fn val(v: V) -> i64 {
+    match v {
+        V.I(n) => { return n }
+        V.L(items) => { return len(items) }
+        V.S(s) => { return len(s) }
+    }
+}
+
+fn main() {
+    let mut p = P { name: "n{1}", xs: [1, 2, 3] }
+    let a = p.name
+    let b = p.xs
+    p.name = "other"
+    p.xs = [9]
+    expect(a == "n1" and len(b) == 3 and b[2] == 3, "field reads survive the field's overwrite")
+
+    let mut ss = ["s{1}", "t"]
+    let c = ss[0]
+    ss[0] = "u"
+    expect(c == "s1" and ss[0] == "u", "array read survives the slot's overwrite")
+
+    let m: map<str, str> = {}
+    m["k"] = "v{2}"
+    let d = m["k"]
+    m["k"] = "w"
+    expect(d == "v2" and m["k"] == "w", "map read survives the entry's overwrite")
+
+    let mut e = ss[1]
+    e = e + "!"
+    expect(e == "t!" and ss[1] == "t", "reassigned read leaves the container alone")
+
+    let l = V.L([V.I(4), V.S("ab{1}")])
+    let x = car(l)
+    let y = car(l)
+    expect(val(x) + val(y) + val(l) == 10, "element returned from a match-bound list")
+    let nested = V.L([l, V.L([])])
+    expect(val(car(nested)) == 2, "nested list element")
+
+    println("conformance element read ownership: PASS")
+}

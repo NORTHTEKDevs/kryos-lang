@@ -1,0 +1,24 @@
+// Probe for the interpolated-number leak (2026-10-08): `"nm{i}"` formats i
+// into a fresh string inside str_concat that was never freed on AOT (~64B per
+// evaluation, 100MB at 1.6M). Modes: interp / concat / tostr (controls).
+@capabilities(process)
+fn main() {
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+        if mode == "interp" {
+            let s = "nm{i}"
+            acc = acc + len(s)
+        } elif mode == "concat" {
+            let s = "nm" + to_string(i)
+            acc = acc + len(s)
+        } else {
+            let s = to_string(i)
+            acc = acc + len(s)
+        }
+        i = i + 1
+    }
+    println(to_string(acc))
+}

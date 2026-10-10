@@ -1,4 +1,4 @@
-//! MIR data structures — instructions, basic blocks, control flow graph.
+//! MIR data structures - instructions, basic blocks, control flow graph.
 //!
 //! The MIR is a low-level representation that sits between the AST and codegen
 //! backends (Cranelift / LLVM). It uses a control-flow graph of basic blocks
@@ -57,6 +57,12 @@ pub struct TraitMethodSig {
 // ---------------------------------------------------------------------------
 // Types (MIR-level, decoupled from AST TypeExpr)
 // ---------------------------------------------------------------------------
+
+/// Pseudo-call `RValue::Call { func: STRUCT_SHARE_FN, args: [s] }`: give the
+/// struct value in local `s` one more owner. Not a runtime symbol -- every
+/// backend lowers it: Cranelift to `kryos_struct_retain(box)`, LLVM to a
+/// retain of each heap leaf of the inline aggregate, WASM to nothing.
+pub const STRUCT_SHARE_FN: &str = "kryos_struct_share";
 
 /// MIR-level type representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -338,7 +344,7 @@ pub struct MirFunction {
     pub source_line: u32,
 }
 
-/// A formal parameter — refers to a local slot.
+/// A formal parameter - refers to a local slot.
 #[derive(Debug, Clone)]
 pub struct MirParam {
     pub local: LocalId,
@@ -529,7 +535,7 @@ pub enum RValue {
         args: Vec<Operand>,
     },
 
-    /// Indirect function call (callee is a runtime value — function pointer).
+    /// Indirect function call (callee is a runtime value - function pointer).
     CallIndirect {
         callee: Operand,
         args: Vec<Operand>,
@@ -644,7 +650,7 @@ pub enum RValue {
     },
 }
 
-/// An operand — either a local reference or an inline constant.
+/// An operand - either a local reference or an inline constant.
 #[derive(Debug, Clone)]
 pub enum Operand {
     Local(LocalId),
@@ -701,7 +707,7 @@ pub enum MirUnOp {
 // Terminators
 // ---------------------------------------------------------------------------
 
-/// Block terminator — always the last "instruction" of a basic block.
+/// Block terminator - always the last "instruction" of a basic block.
 #[derive(Debug, Clone)]
 pub enum Terminator {
     /// Return from the function.

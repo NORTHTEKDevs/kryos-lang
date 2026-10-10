@@ -1,0 +1,55 @@
+// Probe for enum-argument ownership (2026-10-08). Modes (master, AOT, 1M):
+// enum_arg 96MB, enum_temp_arg 126MB, opt_arg 433MB, res_arg 310MB,
+// match_bind 402MB, ret 128MB, struct_with_enum_arg 65MB, field_overwrite
+// (LEDGER item 51) 96MB. Fixed: ~4MB each.
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+enum Val { StrV(str), ListV([i64]), NumV(i64) }
+struct S { name: str, xs: [i64] }
+struct H { v: Val, n: i64 }
+fn hlen(h: H) -> i64 { return vlen(h.v) + h.n }
+fn vlen(v: Val) -> i64 {
+    match v {
+        Val.StrV(s) => { return len(s) }
+        Val.ListV(xs) => { return len(xs) }
+        Val.NumV(n) => { return n }
+    }
+}
+fn olen(o: Option<S>) -> i64 { match o { Some(s) => { return len(s.name) } None => { return 0 } } }
+fn rlen(r: Result<S, str>) -> i64 { match r { Ok(s) => { return len(s.xs) } Err(e) => { return len(e) } } }
+fn same(v: Val) -> Val { return v }
+@capabilities(process)
+fn main() {
+    let mode = env_get("LEAK_MODE")
+    let n = parse_int(env_get("LEAK_ITERS"))
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+        if mode == "enum_arg" {
+            let v = Val.ListV([i, i + 1, i + 2])
+            acc = acc + vlen(v)
+        } elif mode == "enum_temp_arg" {
+            acc = acc + vlen(Val.StrV("x{i}"))
+        } elif mode == "opt_arg" {
+            acc = acc + olen(Some(S { name: "n{i}", xs: [i] }))
+        } elif mode == "res_arg" {
+            let r: Result<S, str> = Ok(S { name: "n", xs: [i, i] })
+            acc = acc + rlen(r)
+        } elif mode == "struct_with_enum_arg" {
+            let h = H { v: Val.StrV("x{i}"), n: 1 }
+            acc = acc + hlen(h)
+        } elif mode == "field_overwrite" {
+            let mut h = H { v: Val.NumV(0), n: 0 }
+            h.v = Val.ListV([i, i + 1, i + 2])
+            acc = acc + vlen(h.v)
+        } elif mode == "match_bind" {
+            let o: Option<S> = Some(S { name: "n{i}", xs: [i] })
+            match o { Some(s) => { acc = acc + len(s.name) } None => { acc = acc + 0 } }
+        } else {
+            let v = same(Val.StrV("y{i}"))
+            acc = acc + vlen(v)
+        }
+        i = i + 1
+    }
+    println(to_string(acc))
+}

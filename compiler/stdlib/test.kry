@@ -25,14 +25,14 @@ fn assert(condition: bool, msg: str) -> void {
 }
 
 /// Assert that two values are equal.
-fn assert_eq(actual: any, expected: any, msg: str) -> void {
+fn assert_eq<T>(actual: T, expected: T, msg: str) -> void {
     if actual != expected {
         throw "assertion failed: " + msg + " -- expected " + to_string(expected) + " but got " + to_string(actual)
     }
 }
 
 /// Assert that two values are not equal.
-fn assert_ne(actual: any, expected: any, msg: str) -> void {
+fn assert_ne<T>(actual: T, expected: T, msg: str) -> void {
     if actual == expected {
         throw "assertion failed: " + msg + " -- expected values to differ but both are " + to_string(actual)
     }

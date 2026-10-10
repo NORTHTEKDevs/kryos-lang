@@ -1,0 +1,73 @@
+// Conformance: struct values in and out of containers and deferred tasks
+// (2026-10-07, found by adversarial review of the item 3 model). Master got
+// each of these wrong on the JIT:
+//   - `let y = arr[0]` then `arr[0] = mk(5)`: y read the NEXT allocation. The
+//     slot overwrite released twice (a compensating store retain the array
+//     literal never took), consuming y's owner.
+//   - `let yi = arr[1].inner` then overwriting arr[1]: same, one level down.
+//   - `arr = push(arr, s)`, then the array dropped while `s` is still used:
+//     the push MOVED s, so dropping the array freed s's box (empty name).
+//   - `coop_spawn(work(s))`: the task runs inside coop_run(), after the
+//     spawning frame dropped `s`; it printed another struct's fields.
+// tests/no_double_free.sh also runs this file under KRYOS_FREE_DIAG.
+
+struct In { xs: [i64], t: str }
+struct S { name: str, inner: In }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mk(i: i64) -> S {
+    return S { name: "nm-{i}", inner: In { xs: [i, i], t: "t-{i}" } }
+}
+
+fn keep_after_push() -> str {
+    let s = mk(9)
+    let mut tmp: [S] = []
+    tmp = push(tmp, s)
+    tmp = push(tmp, s)
+    return s.name
+}
+
+async fn work(p: S, i: i64) {
+    expect(p.name == "nm-{i}" and p.inner.t == "t-{i}" and len(p.inner.xs) == 2, "deferred task keeps its struct argument")
+    println("task {i} ok")
+}
+
+fn sched(i: i64) {
+    let s = mk(i)
+    coop_spawn(work(s, i))
+}
+
+fn main() {
+    let mut arr = [mk(3), mk(4)]
+    let y = arr[0]
+    let yi = arr[1].inner
+    arr[0] = mk(5)
+    arr[1] = mk(6)
+    let z = mk(7)
+    expect(y.name == "nm-3" and y.inner.t == "t-3", "element read survives its slot's overwrite")
+    expect(yi.t == "t-4" and len(yi.xs) == 2, "nested field read survives its slot's overwrite")
+    expect(arr[0].name == "nm-5" and arr[1].inner.t == "t-6" and z.name == "nm-7", "new slot values")
+
+    let m: map<str, S> = {}
+    m["k"] = mk(10)
+    let mv = m["k"].inner
+    m["k"] = mk(11)
+    expect(mv.t == "t-10", "map value field read survives the key's overwrite")
+
+    expect(keep_after_push() == "nm-9", "struct pushed twice stays valid after the array drops")
+
+    coop_reset()
+    sched(1)
+    sched(2)
+    let mut k = 0
+    while k < 300 { let w = mk(k)  k = k + len(w.name) - len(w.name) + 1 }
+    coop_run()
+
+    println("conformance struct container ownership: PASS")
+}
