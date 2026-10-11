@@ -26,6 +26,42 @@ unsafe fn rc_atomic(arr: *mut KryosArray) -> &'static AtomicI64 {
     AtomicI64::from_ptr(std::ptr::addr_of_mut!((*arr).ref_count))
 }
 
+/// Release a TUPLE (a KryosArray of i64 slots) held in a struct field, from
+/// a generated struct drop helper: on the sole reference, release each
+/// element whose kind (4 bits per element, element 0 lowest: 1 str, 2 array,
+/// 3 map, 0 none) is heap, then the tuple itself (a struct holding a tuple
+/// leaked it). Struct/enum elements are not released here.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_tuple_release(t: *mut KryosArray, kinds: i64) {
+    if t.is_null() {
+        return;
+    }
+    if rc_atomic(t).load(Ordering::Relaxed) == 1 {
+        let len = (*t).len.min(16);
+        for i in 0..len {
+            let k = (kinds >> (i * 4)) & 0xF;
+            if k == 0 {
+                continue;
+            }
+            let v = kryos_array_get(t, i);
+            match k {
+                1 => crate::string::kryos_string_free(v as *mut crate::string::KryosString),
+                2 => kryos_array_free(v as *mut KryosArray),
+                3 => crate::map::kryos_map_free(v),
+                _ => {}
+            }
+        }
+    }
+    kryos_array_free(t);
+}
+
+/// Set an array's refcount (see `map::fresh_empty_container`).
+pub(crate) unsafe fn kryos_array_set_refcount(arr: *mut KryosArray, rc: i64) {
+    if !arr.is_null() {
+        rc_atomic(arr).store(rc, Ordering::Relaxed);
+    }
+}
+
 /// Heap-allocated dynamic array with explicit length and capacity.
 #[repr(C)]
 pub struct KryosArray {
@@ -141,7 +177,7 @@ pub unsafe extern "C" fn kryos_array_push(arr: *mut KryosArray, val: i64) {
         //
         // KRYOS_USE_ALLOC_LEAK=1 reinstates the old alloc+copy+leak grow path
         // (leaks the old buffer, but is forgiving of overruns in neighbouring
-        // blocks) as a diagnostic for any FUTURE corruption regression — if
+        // blocks) as a diagnostic for any FUTURE corruption regression - if
         // HeapReAlloc ever crashes again here, flip the env var and you can
         // separate "real codegen bug elsewhere" from "realloc misuse here".
         // H26 (shift step 36): default to alloc-copy-leak grow path.
@@ -684,6 +720,22 @@ pub unsafe extern "C" fn kryos_array_free_elems(arr: *mut KryosArray, drop_fn: e
 pub unsafe extern "C" fn kryos_array_release_if_ne(old: *mut KryosArray, new: *mut KryosArray) -> i64 {
     if !old.is_null() && old != new {
         kryos_array_free(old);
+    }
+    0
+}
+
+/// `kryos_array_release_if_ne` for an array whose elements are str/array/map
+/// (`elem_kind` as in `kryos_array_free_typed`): the last reference also
+/// releases the elements, which the plain release left behind on every
+/// overwrite (`xs = [..]`, `xs[i] = [..]`, `m[k] = [..]`).
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_typed_release_if_ne(
+    old: *mut KryosArray,
+    new: *mut KryosArray,
+    elem_kind: i64,
+) -> i64 {
+    if !old.is_null() && old != new {
+        kryos_array_free_typed(old, elem_kind);
     }
     0
 }

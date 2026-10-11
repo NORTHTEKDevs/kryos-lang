@@ -6,6 +6,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - enums inside enums, copies of struct arrays
+
+- **An enum holding another enum** (`Out.W(In.X(s))`) could be freed while
+  still in use once it was passed on and reused, and read back another
+  value's contents. It is now shared like any other enum.
+- **`let mut b = a` of an array of structs or enums** freed every element
+  twice when both arrays were dropped.
+
+### Fixed - dyn calls, nested missing-key writes, closures in containers
+
+- **A `dyn Trait` method called as a statement** (`s.show()`) never ran.
+- **`m[a][b][c] = v`** with a missing middle key, and **`s.m[k][x] = v`**
+  through a struct field, silently lost the write.
+- **A struct field typed `(i32, i32, str)`** built from a tuple literal
+  failed to compile with `--release`.
+- **A closure stored twice in an array** (`[g, g]`), **stored in a struct
+  field and returned**, or **read back out of an array** was released too
+  often or never, depending on the backend; a closure reassigning a captured
+  struct lost the new value on `kryos run`.
+
+### Fixed - writes through a missing map key, and leaks in closures, void functions, tuples
+
+- **`let mut inner = mm[k]; inner[x] = v; mm[k] = inner`** on a missing key
+  of a map of maps (or of arrays) silently lost the write: the read returned
+  a null handle. It now returns an empty map/array; `mm[k][x] = v` inserts
+  the inner map first.
+- **Every struct passed to a function with no return value** was never
+  freed (on master too).
+- **Closures leaked what they captured**: a string, struct or tuple captured
+  by a closure, a closure passed inline to `map`/`filter`, the elements
+  `map` passed to its closure, and a counter mutated by a closure.
+- **Tuples stored in struct fields or map values** and **maps of maps**
+  were never released, and overwriting a tuple-valued map key leaked
+  the old tuple.
+- **`let u = if c { t } else { .. }`** leaked a value every time it ran
+  (strings, arrays, tuples, enums; on master too), and returning a tuple
+  parameter from an if-expression could read freed memory.
+- **Overwriting an array of strings** (`xs = [..]`, `xs[i] = [..]`,
+  `m[k] = [..]`) freed the old array but not its strings (on master too).
+
 ### Fixed - try/catch in loops, map literals, AOT stack growth
 
 - **A local declared inside `try` after the call that threw** was released

@@ -137,6 +137,14 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_release_if_ne as *const u8,
         );
         jit_builder.symbol(
+            "kryos_array_typed_release_if_ne",
+            kryos_rt::array::kryos_array_typed_release_if_ne as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_tuple_handle_release_if_ne",
+            kryos_rt::map::kryos_tuple_handle_release_if_ne as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_map_release_if_ne",
             kryos_rt::map::kryos_map_release_if_ne as *const u8,
         );
@@ -230,6 +238,9 @@ impl JitCompiler {
             "kryos_map_get_str",
             kryos_rt::map::kryos_map_get_str as *const u8,
         );
+        jit_builder.symbol("kryos_map_get_or_empty", kryos_rt::map::kryos_map_get_or_empty as *const u8);
+        jit_builder.symbol("kryos_tuple_release", kryos_rt::array::kryos_tuple_release as *const u8);
+        jit_builder.symbol("kryos_map_get_str_or_empty", kryos_rt::map::kryos_map_get_str_or_empty as *const u8);
         jit_builder.symbol("kryos_map_len", kryos_rt::map::kryos_map_len as *const u8);
         jit_builder.symbol("kryos_map_has", kryos_rt::map::kryos_map_has as *const u8);
         jit_builder.symbol(
@@ -1545,6 +1556,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_arc_ref_count", kryos_rt::arc::kryos_arc_ref_count as *const u8);
         jit_builder.symbol("kryos_arc_release", kryos_rt::arc::kryos_arc_release as *const u8);
         jit_builder.symbol("kryos_arc_retain", kryos_rt::arc::kryos_arc_retain as *const u8);
+        jit_builder.symbol("kryos_fn_retain", kryos_rt::builtins::kryos_fn_retain as *const u8);
         jit_builder.symbol("kryos_arc_set_drop", kryos_rt::arc::kryos_arc_set_drop as *const u8);
         jit_builder.symbol("kryos_arr_to_ptr", kryos_rt::builtins::kryos_arr_to_ptr as *const u8);
         jit_builder.symbol("kryos_array_null_panic", kryos_rt::array::kryos_array_null_panic as *const u8);
@@ -1591,6 +1603,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_fs_exists", kryos_rt::fs::kryos_fs_exists as *const u8);
         jit_builder.symbol("kryos_map_free_typed", kryos_rt::map::kryos_map_free_typed as *const u8);
         jit_builder.symbol("kryos_map_free_with", kryos_rt::map::kryos_map_free_with as *const u8);
+        jit_builder.symbol("kryos_map_free_tuple_values", kryos_rt::map::kryos_map_free_tuple_values as *const u8);
         jit_builder.symbol("kryos_math_abs_f64", kryos_stdlib_native::math::kryos_math_abs_f64 as *const u8);
         jit_builder.symbol("kryos_math_abs_i64", kryos_stdlib_native::math::kryos_math_abs_i64 as *const u8);
         jit_builder.symbol("kryos_math_ceil", kryos_stdlib_native::math::kryos_math_ceil as *const u8);
@@ -2328,6 +2341,9 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_map_insert_str", "kryos_map_insert_str", sig(3));
     decl!("kryos_map_get", "kryos_map_get", sig(2));
     decl!("kryos_map_get_str", "kryos_map_get_str", sig(2));
+    decl!("kryos_map_get_or_empty", "kryos_map_get_or_empty", sig(3));
+    decl!("kryos_tuple_release", "kryos_tuple_release", sig(2));
+    decl!("kryos_map_get_str_or_empty", "kryos_map_get_str_or_empty", sig(3));
     decl!("kryos_map_len", "kryos_map_len", sig(1));
     decl!("kryos_map_free", "kryos_map_free", sig(1));
     decl!("kryos_map_clone", "kryos_map_clone", sig(1));

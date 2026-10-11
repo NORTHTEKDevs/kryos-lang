@@ -367,6 +367,44 @@ pub extern "C" fn kryos_map_has(map: i64, key: i64) -> i64 {
     }
 }
 
+/// A fresh empty container for a missing-key read of an array-valued
+/// (`kind == 1`) or map-valued (`kind == 2`) map. Its refcount is 0: the
+/// compiler retains every container read immediately (borrow-to-own), which
+/// makes the reader its sole owner -- so writes through it are real and the
+/// reader's drop frees it.
+fn fresh_empty_container(kind: i64) -> i64 {
+    unsafe {
+        if kind == 2 {
+            let m = kryos_map_new();
+            rc_atomic(m as *mut MapHeader).store(0, std::sync::atomic::Ordering::Relaxed);
+            m
+        } else {
+            let a = crate::array::kryos_array_new(8, 0);
+            crate::array::kryos_array_set_refcount(a, 0);
+            a as i64
+        }
+    }
+}
+
+/// `m[k]` of an array- or map-valued map: the entry, or (missing key) a fresh
+/// empty container -- not a null handle, through which writes were lost.
+#[no_mangle]
+pub extern "C" fn kryos_map_get_or_empty(map: i64, key: i64, kind: i64) -> i64 {
+    if kryos_map_has(map, key) != 0 {
+        return kryos_map_get(map, key);
+    }
+    fresh_empty_container(kind)
+}
+
+/// String-keyed twin of `kryos_map_get_or_empty`.
+#[no_mangle]
+pub extern "C" fn kryos_map_get_str_or_empty(map: i64, key: i64, kind: i64) -> i64 {
+    if kryos_map_has_str(map, key) != 0 {
+        return kryos_map_get_str(map, key);
+    }
+    fresh_empty_container(kind)
+}
+
 /// Check if a string key exists in the map. Returns 1 if found, 0 otherwise.
 #[no_mangle]
 pub extern "C" fn kryos_map_has_str(map: i64, key: i64) -> i64 {
@@ -717,6 +755,21 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64,
                     "map DOUBLE-FREE rc={rc} len={} cap={}", (*header).len, (*header).capacity));
                 return;
             }
+            // The last reference releases its entries' heap keys/values here
+            // too (the releases only decrement in this mode), so an
+            // over-release of a key, value or inner map is REPORTED instead of
+            // never exercised.
+            if rc == 1 {
+                let capacity = (*header).capacity as usize;
+                let entries = (*header).entries;
+                for i in 0..capacity {
+                    let entry = &*entries.add(i);
+                    if entry.occupied {
+                        free_entry_slot(entry.key, key_kind, 0);
+                        free_entry_slot(entry.value, value_kind, value_elem_kind);
+                    }
+                }
+            }
             rc_atomic(header).fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
@@ -773,6 +826,62 @@ pub extern "C" fn kryos_map_free_typed(map: i64, key_kind: i64, value_kind: i64,
 /// that mode), so the diag harness sees an over-release here.
 #[no_mangle]
 pub extern "C" fn kryos_map_free_with(map: i64, key_kind: i64, value_drop: extern "C" fn(i64)) {
+    map_free_releasing(map, key_kind, &|v| value_drop(v));
+}
+
+/// A `map<K, (..)>` with TUPLE values: release each value's str/array/map
+/// elements (`kinds`: 4 bits per element, element 0 lowest -- 1 str, 2 array,
+/// 3 map), then the value itself. `boxed` 1 = the LLVM layout (an arc box
+/// holding the inline tuple, every element one 8-byte slot -- the compiler
+/// only selects this for such tuples), 0 = the Cranelift layout (a tuple
+/// KryosArray handle). Tuple values were never released.
+#[no_mangle]
+pub extern "C" fn kryos_map_free_tuple_values(map: i64, key_kind: i64, kinds: i64, boxed: i64) {
+    map_free_releasing(map, key_kind, &|v| unsafe {
+        if boxed == 1 {
+            release_tuple_box(v, kinds);
+        } else {
+            crate::array::kryos_tuple_release(v as *mut crate::array::KryosArray, kinds);
+        }
+    });
+}
+
+/// One reference to an LLVM tuple map value (arc box, inline 8-byte slots):
+/// the elements go with the last reference.
+unsafe fn release_tuple_box(v: i64, kinds: i64) {
+    if crate::arc::kryos_arc_ref_count(v as *mut u8) <= 1 {
+        let slots = v as *const i64;
+        for i in 0..16 {
+            let k = (kinds >> (i * 4)) & 0xF;
+            if k != 0 {
+                free_entry_slot(*slots.add(i), k, 0);
+            }
+        }
+    }
+    crate::arc::kryos_arc_release(v as *mut u8);
+}
+
+/// The value a tuple-valued map slot held before `m[k] = v` replaced it:
+/// release it unless the store put the same handle back. LLVM layout (arc
+/// box); `kryos_tuple_handle_release_if_ne` is the Cranelift one. MIR emits
+/// the handle name and the LLVM backend renames it.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_tuple_box_release_if_ne(old: i64, new: i64, kinds: i64) -> i64 {
+    if old != 0 && old != new {
+        release_tuple_box(old, kinds);
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn kryos_tuple_handle_release_if_ne(old: i64, new: i64, kinds: i64) -> i64 {
+    if old != 0 && old != new {
+        crate::array::kryos_tuple_release(old as *mut crate::array::KryosArray, kinds);
+    }
+    0
+}
+
+fn map_free_releasing(map: i64, key_kind: i64, value_release: &dyn Fn(i64)) {
     if map == 0 {
         return;
     }
@@ -787,7 +896,7 @@ pub extern "C" fn kryos_map_free_with(map: i64, key_kind: i64, value_drop: exter
             for i in 0..capacity {
                 let entry = &*entries.add(i);
                 if entry.occupied && entry.value != 0 {
-                    value_drop(entry.value);
+                    value_release(entry.value);
                 }
             }
         };
@@ -864,7 +973,17 @@ unsafe fn free_entry_slot(handle: i64, kind: i64, elem_kind: i64) {
                 crate::array::kryos_array_free(handle as *mut crate::array::KryosArray)
             }
         }
-        3 => kryos_map_free(handle),
+        // A map-valued entry: `elem_kind` packs the inner map's key kind
+        // (high nibble) and value kind (low nibble), so its own heap keys and
+        // values are released too (a `map<str, map<str, T>>` leaked every
+        // inner key).
+        3 => {
+            if elem_kind != 0 {
+                kryos_map_free_typed(handle, (elem_kind >> 4) & 0xF, elem_kind & 0xF, 0)
+            } else {
+                kryos_map_free(handle)
+            }
+        }
         _ => {}
     }
 }

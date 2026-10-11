@@ -1,0 +1,65 @@
+// Conformance (2026-10-10): enums whose payload is another enum are owned
+// like any shareable value (shared on copy, released by the last owner) --
+// they used the older move model, which on master printed another value's
+// payload and double freed once such a value was passed on and reused.
+// Also `let mut b = a` of a struct/enum array (a dup that shared every
+// element box with one owner). Run under KRYOS_FREE_DIAG on both backends
+// by tests/no_double_free.sh.
+enum In { X(str), Y(i64), Z }
+enum Out { W(In), V(In, str), U }
+struct B1 { o: Out, tag: str }
+struct S { c: str }
+enum Expr { Num(i64), Neg(Expr), Add(Expr, Expr) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn eval(e: Expr) -> i64 {
+    return match e { Expr.Num(n) => n, Expr.Neg(x) => 0 - eval(x), Expr.Add(a, b) => eval(a) + eval(b) }
+}
+fn inner_s(o: Out) -> str {
+    return match o {
+        Out.W(i) => match i { In.X(s) => s, In.Y(n) => "y{n}", In.Z => "z" },
+        Out.V(i, t) => t,
+        Out.U => "u",
+    }
+}
+fn put(m: map<str, Out>, k: str, o: Out) { m[k] = o }
+fn mk(i: i64) -> Out { return Out.V(In.X("vx{i}"), "vt{i}") }
+fn pass(o: Out) -> Out { return o }
+
+fn main() {
+    let o = Out.W(In.X("inner{1}"))
+    let o2 = o
+    let m: map<str, Out> = {}
+    put(m, "k", o)
+    put(m, "k", Out.W(In.X("st{2}")))
+    put(m, "j", o2)
+    let arr = [o, mk(3), Out.U]
+    let mut arr2 = arr
+    arr2 = push(arr2, pass(o))
+    let b = B1 { o: o, tag: "t" }
+    let b2 = b
+    let got = m["j"]
+    let missing = m["nope"]
+    let e = Expr.Add(Expr.Num(2), Expr.Neg(Expr.Num(5)))
+    let o3 = if len(arr) > 1 { mk(4) } else { o }
+    let sa = [S { c: "c{1}" }]
+    let mut sa2 = sa
+    sa2 = push(sa2, S { c: "d{2}" })
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 100 {
+        junk = push(junk, "junk{j}")
+        j = j + 1
+    }
+    expect(inner_s(o) == "inner1" and inner_s(o2) == "inner1" and inner_s(m["k"]) == "st2" and inner_s(got) == "inner1", "nested enum copies")
+    expect(inner_s(arr[1]) == "vt3" and inner_s(arr2[3]) == "inner1" and inner_s(b2.o) == "inner1" and inner_s(missing) == "u", "nested enum in containers")
+    expect(eval(e) == -3 and inner_s(o3) == "vt4", "recursive enum and if-value")
+    expect(sa[0].c == "c1" and sa2[0].c == "c1" and sa2[1].c == "d2" and len(sa) == 1, "struct array dup")
+    println("conformance nested enum ownership: PASS")
+}

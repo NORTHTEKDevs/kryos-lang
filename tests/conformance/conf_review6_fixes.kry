@@ -1,0 +1,88 @@
+// Conformance (2026-10-10): the wrong answers and double releases found by
+// the sixth adversarial review (~/scratch/kryos-cb/review6), all present on
+// master. Run under KRYOS_FREE_DIAG on both backends by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str }
+struct H { f: fn() -> i64 }
+struct Cfg { m: map<str, map<str, i64>>, tag: str }
+struct N { b: (i32, i32, str), a: (bool, str) }
+trait Show {
+    fn show(self: Self)
+    fn tag(self: Self) -> str
+}
+impl Show for P {
+    fn show(self: P) { println("show {self.name}") }
+    fn tag(self: P) -> str { return "t" + self.name }
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn vd(s: dyn Show) {
+    s.show()
+}
+fn bump(c: Cfg, k: str) { c.m[k]["n"] = 1 }
+fn mk_h() -> H {
+    let s = "abc{1}"
+    let f = || len(s)
+    return H { f: f }
+}
+fn mk_counter() -> H {
+    let mut p = P { name: "p" }
+    let f = || {
+        p = P { name: p.name + "!" }
+        return len(p.name)
+    }
+    return H { f: f }
+}
+fn twice(f: fn() -> i64) -> [fn() -> i64] { return [f, f] }
+fn callit(f: fn() -> i64) -> i64 { return f() }
+
+// Calls through fn values need the fail-closed `all` grant.
+@capabilities(all)
+fn main() {
+    // A `dyn Trait` method call used as a statement was dropped from MIR.
+    let p = P { name: "dyn" }
+    vd(p)
+    let d: dyn Show = P { name: "d2" }
+    d.show()
+    expect(d.tag() == "td2", "dyn method value")
+
+    // Writes through a missing MIDDLE key, and through a struct field.
+    let mut m3: map<str, map<str, map<str, i64>>> = {}
+    m3["a"]["e"]["c"] = 3
+    m3["a"]["b"]["d"] = 2
+    let c = Cfg { m: {}, tag: "t" }
+    c.m["x"]["y"] = 5
+    bump(c, "z")
+    expect(len(m3) == 1 and len(m3["a"]) == 2 and m3["a"]["e"]["c"] == 3, "missing middle key")
+    expect(len(c.m) == 2 and c.m["x"]["y"] == 5 and c.m["z"]["n"] == 1, "missing key through a field")
+
+    // A tuple literal stored into a narrower tuple field (AOT build failure).
+    let n = N { b: (1, 2, "b{1}"), a: (true, "a{1}") }
+    expect(n.b.2 == "b1" and n.b.1 == 2 and n.a.1 == "a1", "narrow tuple fields")
+
+    // Closures stored twice / in struct fields / read back out of arrays.
+    let s = "loc{1}"
+    let g = || len(s)
+    let fs = [g, g]
+    let hs = twice(g)
+    let h = mk_h()
+    let ctr = mk_counter()
+    let a1 = ctr.f()
+    let a2 = ctr.f()
+    let f0 = fs[0]
+    let held = H { f: fs[1] }
+    let more = [fs[0]]
+    expect(fs[1]() == 4 and hs[0]() == 4 and h.f() == 4 and f0() == 4 and callit(fs[0]) == 4, "closure values")
+    expect(held.f() == 4 and more[0]() == 4 and g() == 4 and s == "loc1", "closure value copies")
+    expect(a1 == 2 and a2 == 3, "mutated struct capture persists")
+
+    println("conformance review6 fixes: PASS")
+}

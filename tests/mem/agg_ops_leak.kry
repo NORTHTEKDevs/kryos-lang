@@ -1,3 +1,4 @@
+use std::iter::{map}
 // Peak-RSS probe for aggregate operations (tests/mem_agg_ops_gate.sh).
 // Each mode runs LEAK_ITERS iterations of one shape that leaked per call:
 // structural ==, to_string/interpolation and assert_eq of aggregates (the
@@ -33,6 +34,16 @@ fn match_exits(n: i64) -> i64 {
     return a
 }
 fn first(t: (P, str)) -> P { return t.0 }
+enum Ek { Ka(str), Kb }
+enum Nin { Nx(str), Nz }
+enum Nout { Nw(Nin), Nv(Nin, str), Nu }
+struct Hf { f: fn(i64) -> i64 }
+struct Ptf { name: str, t: (str, i64) }
+fn show_p(p: P) {
+    if len(p.name) == 99 { println(p.name) }
+}
+fn use_f(f: fn(i64) -> i64) -> i64 { return f(1) }
+
 fn match_tuple(i: i64) -> i64 {
     match mk(i) {
         (s, xs) if len(xs) > 0 => { return len(s) }
@@ -40,7 +51,7 @@ fn match_tuple(i: i64) -> i64 {
     }
 }
 
-@capabilities(process)
+@capabilities(all)
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
     let mode = env_get("LEAK_MODE")
@@ -98,6 +109,68 @@ fn main() {
             let tp = mkp(i)
             let (p2, s2) = tp
             acc = acc + len(u.0) + len(t.0) + len(w.0) + len(pp.name) + len(p2.name) + len(xs) + len(ss) + len(s2)
+        } elif mode == "map_container" {
+            let mut mm: map<str, map<str, i64>> = {}
+            mm["k{i % 3}"]["n"] = i
+            let mut inner = mm["j"]
+            inner["x"] = 1
+            mm["j"] = inner
+            let mut ma: map<i64, [str]> = {}
+            acc = acc + len(mm) + len(ma[i]) + len(mm["miss"])
+        } elif mode == "tuple_containers" {
+            // Tuple STRUCT fields. Arrays of tuples still leak their
+            // elements (array copies share them without a retain).
+            let s1 = Ptf { name: "n{i}", t: ("t{i}", i) }
+            let s2 = s1
+            acc = acc + len(s2.t.0)
+        } elif mode == "closures" {
+            let cap = "c{i}"
+            let f = |k: i64| k + len(cap) + len(p.name)
+            let names = map(["u{i}", "v{i}"], |x: str| x + p.name)
+            let mut cnt = 0
+            let bump = || { cnt = cnt + len(q.name) }
+            bump()
+            acc = acc + f(1) + len(names) + use_f(|k: i64| k + len(cap)) + cnt
+        } elif mode == "map_tuple" {
+            let mut mt: map<str, (str, i64)> = {}
+            mt["k"] = ("m{i}", i)
+            let nt = ("n{i}", i)
+            mt["n"] = nt
+            mt["k"] = ("o{i}", i)
+            acc = acc + len(mt["k"].0) + len(nt.0)
+        } elif mode == "if_value" {
+            let ts = "s{i}"
+            let u = if i % 2 == 0 { ts } else { "e{i}" }
+            let tt = ("t{i}", i)
+            let v = if i % 2 == 0 { tt } else { ("f{i}", i) }
+            let w = if i % 2 == 0 { Ek.Ka("k{i}") } else { Ek.Kb }
+            let mut xs = ["a{i}"]
+            xs = ["b{i}"]
+            let r = match w { _ => 1 }
+            acc = acc + len(u) + len(v.0) + r + len(xs)
+        } elif mode == "fn_values" {
+            let fc = "f{i}"
+            let fg = |k: i64| k + len(fc)
+            let fvs = [fg, fg]
+            let fh = Hf { f: fg }
+            let fe = fvs[0]
+            let fk = Hf { f: fvs[1] }
+            acc = acc + fvs[1](1) + fh.f(1) + fe(1) + fk.f(1) + use_f(fvs[0])
+        } elif mode == "nested_enum" {
+            let no = Nout.Nw(Nin.Nx("o{i}"))
+            let no2 = no
+            let nm: map<str, Nout> = {}
+            nm["k"] = no
+            nm["k"] = Nout.Nv(Nin.Nx("v{i}"), "t{i}")
+            let na = [no, no2]
+            let mut na2 = na
+            let sa = [P { name: "s{i}", xs: [] }]
+            let mut sa2 = sa
+            acc = acc + len(na2) + len(nm) + len(sa2)
+        } elif mode == "void_param" {
+            show_p(p)
+            show_p(P { name: "v{i}", xs: [i] })
+            acc = acc + 1
         } elif mode == "map_struct" {
             let mut mm: map<i64, P> = {}
             mm[i] = P { name: "m{i}", xs: [i] }

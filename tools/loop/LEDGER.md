@@ -10,6 +10,196 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: real-free AOT checks -- what KRYOS_FREE_DIAG hid (2026-10-10)
+
+KRYOS_FREE_DIAG quarantines memory instead of freeing it, so a
+use-after-free whose memory is never reused looks clean under it. The
+review harness (`~/scratch/kryos-cb/review/t2.sh`) now also runs each AOT
+binary with real frees and fails on any output difference. It found, all
+in this batch's own changes (fixed before merge):
+- A closure reassigning a captured struct (the rewrite above) still got the
+  callee-owned-param entry share and exit drop on the capture. On AOT those
+  retain the field values present at entry and release the ones present at
+  exit -- after a field store, the NEW value the env still holds (`00`
+  instead of `2 3 4`). An env-owned capture (`mutated_capture_ptr_slots`)
+  now gets neither.
+- `let t = m[k]` of a tuple-valued map shared the tuple's strings with no
+  reference; overwriting `m[k]` (now released) freed them under `t`. A
+  tuple read out of a map takes its own share, like a struct/enum read.
+- `push` of a closure took no reference while the array's drop releases
+  function elements; a field read (`reg(fs, b.f)` with `reg` pushing its
+  param) was released twice (60 diag reports + an AOT segfault in review
+  round 6's f05). `push` of a function value now retains it (the source
+  keeps its own reference), the escape analysis counts that push as a
+  non-escape, a closure temp passed to `push`/`kryos_fn_retain` is dropped
+  after, and a closure temp owns its env even without captures.
+The WASM backend did not know the calls this batch emits
+(`kryos_array_typed_release_if_ne` failed `wordscope`'s wasm build in
+`run_examples_e2e.sh`); it treats the releases as no-ops and
+`kryos_fn_retain` as identity, like the existing retain/release calls. The
+same gate's JIT `task_api` leg never started on master either: the script
+passed `--port` without the `--` the CLI requires.
+Also seen, on master too and still open: a closure returned from a function
+that captures an ARRAY of strings (`return || xs[1]`) reads empty on AOT
+with real frees (review6 R32); `fs = f(fs, v)` where `f` returns
+`push(param, v)` leaks the array per call (96MB / 1M, master the same).
+
+## Wave: nested enums join the shared-owner model; struct-array dup (2026-10-10)
+
+Pinned in `tests/conformance/conf_nested_enum_ownership.kry` (master fails
+it: prints another value's payload) and the `nested_enum` mode of
+`tests/mem_agg_ops_gate.sh`:
+- An enum whose payload is another enum (`enum Out { W(In) }`) used the
+  older move-at-call model: passing one on and reusing it -- e.g. storing
+  it in a map through a void fn and overwriting the key (review round 6
+  v06) -- freed it under the caller; on master a 1M-iteration loop of such
+  values double-freed hundreds of boxes and grew to 247MB on the JIT.
+  `shareable_enum_walk` (MIR) and `shareable_walk` (LLVM) now accept a
+  non-recursive nested enum: LLVM's nested payload is a kryos_calloc box
+  (owner-counted), so the payload share retains it
+  (`emit_enum_share_payload`) and its drop helper already releases the
+  contents only at the last owner; Cranelift shares the outer box. A
+  RECURSIVE enum (`Expr { Add(Expr, Expr) }`, or two enums containing each
+  other -- `enum_reaches`) stays on the move model: the walk would branch
+  on every self-reference.
+- `let mut b = a` of an array of structs/enums duplicated it with dup kind
+  2 (an arc retain), a no-op on kryos_calloc element boxes, so both arrays
+  owned every element once -- double freed at teardown (master; review
+  round 6 `ra`). Struct/enum elements now use kind 4 (`kryos_struct_retain`).
+
+## Wave: review round 6 -- master bugs it surfaced (2026-10-10)
+
+`~/scratch/kryos-cb/review6` (~90 probes) also found bugs present on master;
+these are fixed and pinned in `tests/conformance/conf_review6_fixes.kry`
+(master fails it) and the `fn_values` mode of `tests/mem_agg_ops_gate.sh`
+(master 156MB AOT / 187MB JIT at 1M -> 4 / 4):
+- SILENT WRONG ANSWER: a `dyn Trait` method call used as a statement
+  (`s.show()` inside `fn vd(s: dyn Show)`) was dropped from MIR -- the
+  method never ran. `Stmt::Expr` now emits `RValue::VtableCall` like a
+  direct or indirect call.
+- SILENT WRONG ANSWER: `m3["a"]["e"]["c"] = 3` with a missing middle key,
+  and `c.m[k]["x"] = v` through a struct field, lost the write. The
+  missing-key insert now applies to any side-effect-free place (variable,
+  field chain, nested index with simple keys); the inserted `coll[k] = {}`
+  recurses through the same path.
+- A tuple literal stored into a narrower tuple field (`b: (i32, i32,
+  str)` = `(1, 2, s)`) failed the AOT build (`{ i64, i64, ptr }` vs `{ i32,
+  i32, ptr }`). `coerce_value` now converts aggregate to aggregate element
+  by element.
+- Function values: an array literal (`[g, g]`) and a struct literal (`H {
+  f: f }`) stored a closure without a reference while the container's drop
+  releases it -- released twice (and with `return H { f: f }`, the env was
+  freed under the caller). Both now take a reference (`kryos_fn_retain`,
+  new: arc retain returning its argument, the shape a discarded MIR call
+  is declared with). Reading a closure out of an array was retained on the
+  JIT only and never released (leak) while AOT took no reference (a
+  release-after-free once the read was passed on): both backends now
+  retain the read, `let f = fs[i]` owns it, and a read used only as a
+  callee (`fs[1]()`) is dropped after the call.
+- A closure reassigning a whole captured struct (`p = P { .. }`) dropped
+  the new value at the lambda's exit while the env still held it, and the
+  JIT did not persist it (`2 2` vs AOT `2 3`). The assignment is rewritten
+  into field stores on the env's box (`rewrite_struct_capture_assigns_*`),
+  which persist on both backends.
+
+## Wave: residual ownership items -- missing map keys, tuples in containers, closures, void fns (2026-10-10)
+
+The open list left by PR #5, plus three general leaks found while measuring
+them. Each pinned in `tests/mem_agg_ops_gate.sh` (mode, master at 1M ->
+now, both backends) and the double-free direction in
+`tests/conformance/conf_residual_ownership.kry` (master fails it):
+- D (silent wrong answer): a missing key of a `map<_, map<..>>` / `map<_,
+  [T]>` read a NULL handle, so `let mut inner = mm[k]; inner[x] = 1; mm[k] =
+  inner` lost the write. The container read now calls
+  `kryos_map_get(_str)_or_empty(map, key, kind)`, which returns a fresh
+  empty container with refcount 0 for a missing key -- the read's existing
+  retain makes the reader its sole owner (no leak, no insert). `mm[k][x] =
+  v` on a missing `k` inserts the empty inner map first.
+- Nested maps: `kryos_map_free_typed` freed a map-VALUED entry untyped, so
+  every inner map's keys leaked (281MB / 1.5M on master). The codegens now
+  pack the inner key/value kinds into `value_elem_kind`. Under
+  KRYOS_FREE_DIAG the typed free now walks its entries on the last
+  reference too, so an over-release of a key or value is reported.
+  (`map_container` 158MB -> 4.)
+- Tuples in containers: struct drops had
+  none (LLVM inline `emit_tuple_drop`; Cranelift drop helpers call the new
+  `kryos_tuple_release(t, kinds)`), struct share/deep copy did not cover
+  tuple fields, and a pushed fresh tuple's own reference was never released
+  (a container store of a SHARED tuple is not an escape).
+  (`tuple_containers`, struct tuple fields, 403MB -> 4.) Arrays of tuples
+  STILL LEAK their elements: a tuple-element release at array drop was
+  tried and backed out after review round 6 (`~/scratch/kryos-cb/review6`)
+  found array copies -- struct copy, `let mut` dup, `let it = h.items`, an
+  enum payload copy, an AOT closure snapshot -- share the elements without
+  a retain, so it double-freed and AOT printed another value's string
+  (R12-R31, pinned in `conf_residual_ownership.kry`). Closing it needs an
+  element share at every array-copy site on both backends (LLVM tuple
+  elements are plain calloc boxes, not refcounted).
+- Tuple MAP values: a map drop never released them. The new
+  `kryos_map_free_tuple_values(map, key_kind, kinds, boxed)` releases each
+  value's str/array/map elements and the value (LLVM: the arc box of an
+  inline tuple, only selected when every element is one 8-byte slot;
+  Cranelift: the tuple handle). Overwriting a key (`m[k] = (..)`) released
+  nothing either: MIR now reads the old value, re-reads the slot after the
+  store and calls `kryos_tuple_handle_release_if_ne` (LLVM renames it to the
+  box variant). (`map_tuple` 161MB at 300k on master -> 4.)
+- Overwritten arrays (general, master too): `xs = [..]`, `xs[i] = [..]` and
+  `m[k] = [..]` released the old array's buffer but not its str/array/map
+  elements (`kryos_array_release_if_ne` is untyped) -- ~20MB per 300k
+  overwrites of a `[str]`. A final MIR pass rewrites those calls to
+  `kryos_array_typed_release_if_ne(old, new, elem_kind)`, which frees the
+  elements with the last reference.
+- If-expression values (general, master too): `let u = if c { t } else {
+  "b{i}" }` with `t` an outer local marked `t` MOVED for the whole function
+  (`dropped_locals` is function-wide), so `t` was never dropped on either
+  path while the binding still retained -- one leaked value per execution
+  (97MB / 1M for str). A branch tail naming an ENCLOSING local now gives
+  the result its own reference (retain, or a tuple/enum share through the
+  result slot) and the local keeps its drop (`take_tail_identifier`); only
+  a local the branch itself declared moves. A fresh tuple/enum branch
+  value (`if c { (..) } else { (..) }`, `if c { E.A(..) } else { E.B }`)
+  was shared by the binding and the hidden result slot never released --
+  the slot is now dropped right after the share -- and a branch tail never
+  ran the statement temp pass, so the payload temp of `E.A("s{i}")` leaked.
+  Pre-existing use-after-free fixed by the same change:
+  `fn pick(c, a: (str, i64), b: (str, i64)) -> (str, i64) { return if c {
+  a } else { b } }` printed another value's string on master. The
+  "whole-subject catch-all match" leak was this, not the match.
+  (`if_value` 133MB AOT / 193MB JIT at 300k on master -> 5 / 4.)
+- Still open: a MISSING-key read of a struct-valued map (`m["nope"]`) leaks
+  its default value on the JIT only (~30 bytes per read; AOT defaults are
+  inline). Releasing it needs a drop conditional on the missing branch that
+  agrees with how each consumer takes ownership.
+- Review round 6 leaks left (master same or worse):
+  overwriting a tuple field, `let t = p.t`, a fn value pushed into an array
+  inside a user fn, a struct passed into a HOF, an enum-in-enum argument.
+- Closures (general, master too): a captured heap value leaked per closure.
+  (a) lambdas were not registered as user fns, so the direct-call fast path
+  `__lambda_N(s, k)` moved the captured `s`; (b) LLVM/Cranelift closure
+  droppers freed a struct/enum capture's BOX only (now its fields too), had
+  no tuple case, and Cranelift declared no dropper for a map/tuple-only
+  capture; LLVM never registered a tuple capture's dropper; (c) an inline
+  closure passed to a HOF (`map(xs, |x| ..)`) was never dropped
+  (function-typed temps are now statement-temp candidates, user-fn args
+  only); (d) function values passed to user fns were treated as moved; (e)
+  arguments of an indirect call (`f(arr[i])` inside `map`) were treated as
+  moved; (f) a mutated-capture box was a temp nobody released.
+  (`closures` 893MB -> 4.) (c)+(d) made a closure passed to a user fn that
+  STORES it (`fs = keep(fs, |x| ..)`, `keep` pushes it) a dangling env --
+  a container store takes no reference of a function value. Found because
+  `kryos run` of the conformance test segfaulted without KRYOS_FREE_DIAG
+  (diag quarantines frees, and `no_double_free.sh` only matched
+  DOUBLE-FREE, not the RETAIN-AFTER-FREE diag printed). A module-level MIR
+  pass now computes which fn-typed params ESCAPE (any use other than a
+  call through it, a drop, or a pass to another non-escaping param;
+  fixpoint) and removes the caller's drop of a function value passed to an
+  escaping param or to an indirect call -- a leak there, never a dangling
+  env. `no_double_free.sh` now also fails on `AFTER-FREE`.
+- Void functions (general, master too): a function that falls off its end
+  never dropped its callee-OWNED struct/enum params (shared at entry), so
+  every struct passed to a void function was never freed. (`void_param`
+  311MB -> 4.)
+
 ## Wave: fifth adversarial review of the ownership batch (2026-10-10)
 
 ~75 probes (`~/scratch/kryos-cb/review5`), 8 regressions found before the

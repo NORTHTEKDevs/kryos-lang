@@ -307,7 +307,7 @@ else
                     echo "  BUILD FAIL task_api"; fail=1
                 fi
             else
-                ( timeout 90 "$KRYOS" run "$src" --port 7981 --max 30 >"$TMP/task_api_jit.log" 2>&1 & )
+                ( timeout 90 "$KRYOS" run "$src" -- --port 7981 --max 30 >"$TMP/task_api_jit.log" 2>&1 & )
             fi
             for _ in $(seq 1 60); do
                 curl -s --max-time 2 http://127.0.0.1:7981/health >/dev/null 2>&1 && break
