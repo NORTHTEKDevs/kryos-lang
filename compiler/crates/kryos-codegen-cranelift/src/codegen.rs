@@ -8188,13 +8188,22 @@ fn emit_drop_for_value<M: Module>(
             // kind is needed so the runtime frees heap-typed elements (e.g.
             // `map<K, [str]>`) instead of only the array's flat buffer +
             // header -- see `kryos_map_free_typed`'s doc comment (kryos-rt).
-            let value_elem_kind = match value.as_ref() {
-                MirType::Array(elem, _) => kind_of(elem.as_ref()),
-                // A map-valued map: the inner map's key/value kinds, packed
-                // (see `free_entry_slot` in kryos-rt).
-                MirType::Map { key: ik, value: iv } => (kind_of(ik.as_ref()) << 4) | kind_of(iv.as_ref()),
-                _ => 0,
-            };
+            // A map-valued map: the inner map's key/value kinds, packed, and
+            // its own value's element kind above them, 8 bits per level (see
+            // `free_entry_slot` in kryos-rt) -- with one level only, every map
+            // below the second was freed untyped and leaked its keys.
+            fn elem_kind_of(t: &MirType, kind_of: &dyn Fn(&MirType) -> i64, depth: u32) -> i64 {
+                match t {
+                    MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                    MirType::Map { key: ik, value: iv } if depth < 6 => {
+                        (elem_kind_of(iv.as_ref(), kind_of, depth + 1) << 8)
+                            | (kind_of(ik.as_ref()) << 4)
+                            | kind_of(iv.as_ref())
+                    }
+                    _ => 0,
+                }
+            }
+            let value_elem_kind = elem_kind_of(value.as_ref(), &kind_of, 0);
             // Struct/enum values are released through their type's drop
             // helper (the same one an array element gets); the type-erased
             // runtime free left every one behind.

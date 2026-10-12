@@ -39,6 +39,15 @@ enum Nin { Nx(str), Nz }
 enum Nout { Nw(Nin), Nv(Nin, str), Nu }
 struct Hf { f: fn(i64) -> i64 }
 struct Ptf { name: str, t: (str, i64) }
+struct Pc { inner: P, n: i64, tag: str }
+trait Lg {
+    fn log(self: Self, msg: str)
+}
+struct Lgr { n: i64 }
+impl Lg for Lgr {
+    fn log(self: Lgr, msg: str) { if len(msg) == 999 { println(msg) } }
+}
+fn dlg(d: dyn Lg, i: i64) { d.log("m{i}") }
 fn show_p(p: P) {
     if len(p.name) == 99 { println(p.name) }
 }
@@ -55,6 +64,16 @@ fn match_tuple(i: i64) -> i64 {
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
     let mode = env_get("LEAK_MODE")
+    // cap_struct: a closure mutating a captured struct, called every iteration
+    // (field stores and a whole reassignment, rewritten into field stores).
+    let mut cs = Pc { inner: P { name: "c", xs: [] }, n: 0, tag: "t" }
+    let step = |k: i64| {
+        cs.tag = "s{k}"
+        cs.inner = P { name: "i{k}", xs: [k] }
+        cs = Pc { inner: P { name: "w{k}", xs: [k] }, n: cs.n + 1, tag: cs.tag + "w" }
+        return cs.n
+    }
+    let dl: dyn Lg = Lgr { n: 1 }
     let mut i = 0
     let mut acc = 0
     while i < iters {
@@ -175,6 +194,46 @@ fn main() {
             let mut mm: map<i64, P> = {}
             mm[i] = P { name: "m{i}", xs: [i] }
             acc = acc + len(mm[i].name)
+        } elif mode == "for_read" {
+            // A loop over a container READ never released the read's
+            // reference (master too); a missing key's empty array leaked
+            // on every loop.
+            let mut fm: map<str, [i64]> = {}
+            fm["k"] = [i, i]
+            let g = [[i], [i, i]]
+            for x in fm["k"] { acc = acc + x }
+            for x in fm["no"] { acc = acc + x }
+            for x in p.xs { acc = acc + x }
+            for x in g[1] { acc = acc + x }
+        } elif mode == "map3" {
+            // Three levels: the innermost map was freed untyped.
+            let mut m3: map<str, map<str, map<str, i64>>> = {}
+            m3["a"]["b"]["c"] = i
+            m3["a"]["d"]["e"] = i
+            acc = acc + len(m3["a"])
+        } elif mode == "dyn_arg" {
+            // A `dyn` method call as a statement leaked its argument.
+            dlg(dl, i)
+            dl.log("n{i}")
+        } elif mode == "cap_struct" {
+            acc = acc + step(i)
+        } elif mode == "cap_array" {
+            // A closure built per iteration over a struct with a [str]
+            // field, replacing it once called (master: 96MB at 1M).
+            let mut ca = P { name: "a{i}", xs: [i, i] }
+            let mut cb = Ptf { name: "b{i}", t: ("t{i}", i) }
+            let swap = |k: i64| {
+                ca.xs = [k]
+                cb.name = "n{k}"
+                return len(ca.xs) + len(cb.name)
+            }
+            acc = acc + swap(i) + len(ca.xs)
+        } elif mode == "tuple_field" {
+            // `let t = s.t` owns a share that was never released.
+            let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }
+            let tt = sf.t
+            sf = Ptf { name: "g{i}", t: ("u{i}", i) }
+            acc = acc + len(tt.0) + len(sf.t.0)
         }
         i = i + 1
     }

@@ -439,6 +439,7 @@ no_df_both review5_fixes "$ROOT/tests/conformance/conf_review5_fixes.kry"
 no_df_both residual_ownership "$ROOT/tests/conformance/conf_residual_ownership.kry"
 no_df_both review6_fixes "$ROOT/tests/conformance/conf_review6_fixes.kry"
 no_df_both nested_enum "$ROOT/tests/conformance/conf_nested_enum_ownership.kry"
+no_df_both review7_fixes "$ROOT/tests/conformance/conf_review7_fixes.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

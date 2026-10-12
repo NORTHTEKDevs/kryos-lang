@@ -295,6 +295,15 @@ pub struct LoweringContext {
     /// value-snapshot capture (see `capture_boxes`). Never sees a nested
     /// lambda: the Lambda arm resets it before lowering its own body.
     pending_box_scalar_captures: bool,
+    /// Names of the struct captures a lambda body mutates, set by the Lambda
+    /// arm just before it lowers that body and taken by `lower_function`. The
+    /// closure env owns such a capture (LLVM: the param aliases the env's
+    /// storage; Cranelift: the env's box), so the body only borrows it.
+    pending_env_owned_captures: HashSet<String>,
+    /// The param locals of those captures in the function being lowered. Also
+    /// in `borrowed_locals`; kept apart because the env does own the struct,
+    /// so a field store through one still releases the field's old value.
+    env_owned_locals: HashSet<u32>,
     /// Set by `Stmt::Let` just before lowering a Lambda-valued initializer
     /// (`let name = |...| { ... }` -- also what a nested/local named
     /// `fn name(...) { ... }` desugars to in the parser), immediately before
@@ -534,6 +543,8 @@ impl LoweringContext {
             partial_moved_locals: HashSet::new(),
             capture_boxes: HashMap::new(),
             pending_box_scalar_captures: false,
+            pending_env_owned_captures: HashSet::new(),
+            env_owned_locals: HashSet::new(),
             pending_self_recursive_name: None,
             keep_closure_locals_once: false,
             pending_let_share: false,
@@ -762,6 +773,7 @@ impl LoweringContext {
         // first. Every other per-function set is cleared right here; this one
         // was simply missed.
         self.borrowed_locals.clear();
+        self.env_owned_locals.clear();
         self.try_catch_target = None;
         self.local_actor_types.clear();
     }
@@ -821,6 +833,7 @@ impl LoweringContext {
             // function is lowered mid-function, and the WaitGroup smoke
             // tests segfault when those marks are lost).
             borrowed_locals: std::mem::take(&mut self.borrowed_locals),
+            env_owned_locals: std::mem::take(&mut self.env_owned_locals),
             param_locals: std::mem::take(&mut self.param_locals),
             partial_moved_locals: std::mem::take(&mut self.partial_moved_locals),
         }
@@ -848,12 +861,14 @@ impl LoweringContext {
         self.param_locals = state.param_locals;
         self.partial_moved_locals = state.partial_moved_locals;
         self.borrowed_locals = state.borrowed_locals;
+        self.env_owned_locals = state.env_owned_locals;
     }
 }
 
 /// Saved per-function lowering state (used during monomorphization).
 struct FunctionState {
     borrowed_locals: std::collections::HashSet<u32>,
+    env_owned_locals: HashSet<u32>,
     locals: Vec<MirLocal>,
     blocks: Vec<BasicBlock>,
     current_instructions: Vec<Instruction>,
@@ -2963,6 +2978,7 @@ pub fn lower_function(
     ret_ty: &Option<ast::TypeExpr>,
     body: &ast::Block,
 ) -> MirFunction {
+    let env_owned = std::mem::take(&mut ctx.pending_env_owned_captures);
     ctx.reset();
     if !std::mem::take(&mut ctx.keep_closure_locals_once) {
         ctx.closure_locals.clear();
@@ -3012,6 +3028,18 @@ pub fn lower_function(
                 && matches!(ty, MirType::Str | MirType::Array(_, _) | MirType::Map { .. });
             if !owned_struct && !async_owned {
                 ctx.param_locals.insert(local.0);
+            }
+            // A struct capture the lambda body mutates is owned by the closure
+            // env, which outlives the call: the body BORROWS it -- no entry
+            // share (emit_struct_share skips a borrowed holder), no exit drop,
+            // and a value leaving the body (return, push, store) takes its
+            // own reference. Owner semantics here (an entry share and exit
+            // drops) released field values a field store had already
+            // replaced; dropping only those shares and drops handed the env's
+            // reference to whatever `return p` / `push(arr, p)` moved it into.
+            if owned_struct && matches!(ty, MirType::Struct(_)) && env_owned.contains(&p.name) {
+                ctx.borrowed_locals.insert(local.0);
+                ctx.env_owned_locals.insert(local.0);
             }
             // If the param's declared type names an actor, `resolve_type` just
             // erased `ty` to a bare `I64` handle (actor VALUES are opaque
@@ -3154,6 +3182,30 @@ pub fn lower_function(
                             | ast::Expr::IndexAccess { .. }
                     ) {
                         tail_val = Operand::Local(emit_tuple_clone(ctx, src, &t));
+                    }
+                }
+            }
+            // A BORROWED struct/enum local (a closure's env-owned capture, an
+            // alias) has no reference of its own to hand the caller: give it
+            // an independent copy, as the `return` statement does.
+            if let (ast::Expr::Identifier { name: id_name, .. }, Operand::Local(src)) = (expr, tail_val.clone()) {
+                if find_local_by_name(ctx, id_name).is_some_and(|l| ctx.borrowed_locals.contains(&l.0)) {
+                    let clone_fn = match infer_expr_type(ctx, expr) {
+                        MirType::Struct(ref s) if ctx.struct_defs.contains_key(s) => {
+                            Some(("__kryos_struct_index_clone", MirType::Struct(s.clone())))
+                        }
+                        MirType::Enum(ref e) if ctx.enum_defs.contains_key(e) => {
+                            Some(("__kryos_enum_index_clone", MirType::Enum(e.clone())))
+                        }
+                        _ => None,
+                    };
+                    if let Some((f, ty)) = clone_fn {
+                        let cloned = ctx.alloc_temp(ty);
+                        ctx.emit(Instruction::Assign {
+                            dest: cloned,
+                            value: RValue::Call { func: f.to_string(), args: vec![Operand::Local(src)] },
+                        });
+                        tail_val = Operand::Local(cloned);
                     }
                 }
             }
@@ -4340,6 +4392,12 @@ fn drop_unescaped_str_temps(
                 RValue::CallIndirect { callee, args } if !mentions(callee, id) => {
                     args.iter().any(|a| mentions(a, id))
                 }
+                // Same for a `dyn` method call: the method is a user fn
+                // (`d.log("m{i}")` as a statement leaked every message). The
+                // receiver is not an argument.
+                RValue::VtableCall { object, args, .. } if !mentions(object, id) => {
+                    args.iter().any(|a| mentions(a, id))
+                }
                 RValue::Call { func, args } => {
                     if args.iter().any(|a| mentions(a, id)) {
                         // `push` MOVES a struct value into the array (no retain
@@ -4969,11 +5027,13 @@ fn strip_escaping_tuple_drops(
     // `u = t` (a `let` or a reassignment) followed in the same block by a
     // share of `u` makes `u` an independent owner (each element retained):
     // that copy is neither an escape of `t` nor an alias of it. Keyed by the
-    // instruction, so an unshared copy into the same local still counts.
+    // instruction, so an unshared copy into the same local still counts. The
+    // same for `u = s.t`, a tuple FIELD read the binding shares
+    // (owns_element): stripping its drop leaked the share.
     let mut shared_copy_at: HashSet<(usize, usize)> = HashSet::new();
     for (bi, b) in blocks.iter().enumerate() {
         for (ii, inst) in b.instructions.iter().enumerate() {
-            if let Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) } = inst {
+            if let Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) | RValue::Field { .. } } = inst {
                 if !tuples.contains(&dest.0) {
                     continue;
                 }
@@ -5030,6 +5090,9 @@ fn strip_escaping_tuple_drops(
                 Instruction::Assign { dest, value: RValue::Use(Operand::Local(_)) }
                     if alias_of.contains_key(&dest.0) || shared_copy_at.contains(&(bi, ii)) =>
                 {
+                    continue;
+                }
+                Instruction::Assign { value: RValue::Field { .. }, .. } if shared_copy_at.contains(&(bi, ii)) => {
                     continue;
                 }
                 // `t.1 = v` mutates the tuple in place (the store's own release
@@ -5331,13 +5394,23 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // partial-move mark from this read is undone.
                 // A tuple read out of a MAP too: tuple map values are released
                 // on overwrite and at the map's drop, so `let t = m[k]` needs
-                // its own reference to the elements.
+                // its own reference to the elements. Likewise a tuple FIELD of
+                // a struct or tuple (`let t = s.t`, `arr[0].t`, `w.inner.t`):
+                // the struct's drop releases it, so an alias read freed
+                // elements once the struct was overwritten (AOT).
                 let owns_element = reads_element
                     && (is_owned_struct_ty(ctx, &mir_ty)
                         || is_owned_enum_ty(ctx, &mir_ty)
                         || (is_owned_tuple_ty(ctx, &mir_ty)
-                            && matches!(expr, ast::Expr::IndexAccess { object, .. }
-                                if matches!(infer_expr_type(ctx, object), MirType::Map { .. }))));
+                            && match expr {
+                                ast::Expr::IndexAccess { object, .. } => {
+                                    matches!(infer_expr_type(ctx, object), MirType::Map { .. })
+                                }
+                                ast::Expr::FieldAccess { object, .. } => {
+                                    matches!(infer_expr_type(ctx, object), MirType::Struct(_) | MirType::Tuple(_))
+                                }
+                                _ => false,
+                            }));
                 if owns_element {
                     let added: Vec<u32> =
                         ctx.partial_moved_locals.difference(&partial_before_rhs).copied().collect();
@@ -6830,7 +6903,15 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     }
                                 }
                             }
+                            let partial_before_val = ctx.partial_moved_locals.clone();
                             let val_op = lower_expr_to_operand(ctx, value);
+                            // A struct/enum/tuple FIELD read marks its source
+                            // partially moved; when the store below shares the
+                            // value instead of moving it, the source keeps its
+                            // drop (`p.inner = tmp.inner` leaked all of `tmp`).
+                            let val_moved_marks: Vec<u32> =
+                                ctx.partial_moved_locals.difference(&partial_before_val).copied().collect();
+                            let mut val_shared = false;
                             // dyn Trait coercion when the FIELD is dyn-typed
                             // (`h.shape = Circle { .. }`): wrap the concrete
                             // struct in a trait fat-pointer, or the later
@@ -6930,11 +7011,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             while let ast::Expr::FieldAccess { object: inner, .. } = root {
                                 root = inner.as_ref();
                             }
+                            // A closure's env-owned capture counts as owned:
+                            // the env's struct drops the field's new value.
                             let root_owned = match root {
                                 ast::Expr::Identifier { name, .. } => find_local_by_name(ctx, name)
                                     .is_some_and(|l| {
-                                        !ctx.borrowed_locals.contains(&l.0)
-                                            && !ctx.param_locals.contains(&l.0)
+                                        ctx.env_owned_locals.contains(&l.0)
+                                            || (!ctx.borrowed_locals.contains(&l.0)
+                                                && !ctx.param_locals.contains(&l.0))
                                     }),
                                 _ => false,
                             };
@@ -6965,6 +7049,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         });
                                     if !fresh {
                                         emit_struct_share(ctx, *vl);
+                                        val_shared = true;
                                     }
                                 }
                                 Some(old_tmp)
@@ -6992,10 +7077,22 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                             args: vec![Operand::Local(*vl)],
                                         },
                                     });
-                                } else if named_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t)) {
+                                } else if named_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
+                                    || (matches!(value, ast::Expr::FieldAccess { .. } | ast::Expr::IndexAccess { .. })
+                                        && is_owned_tuple_ty(ctx, &field_ty))
+                                {
                                     // A tuple field releases its tuple when the
-                                    // struct is dropped: the field takes its own.
+                                    // struct is dropped: the field takes its own
+                                    // -- also of a tuple read out of another
+                                    // place (`s.t = o.t`, `s.t = m[k]`), which
+                                    // that place still owns and releases.
                                     emit_value_share(ctx, *vl);
+                                    val_shared = true;
+                                }
+                            }
+                            if val_shared {
+                                for id in &val_moved_marks {
+                                    ctx.partial_moved_locals.remove(id);
                                 }
                             }
                             if let Some(old_tmp) = owned_old {
@@ -8297,7 +8394,11 @@ fn lower_for(
     ctx.finish_block(Terminator::Goto(header_bb), exit_bb);
     // A freshly produced iterable (`for k in keys(m)`, `for x in [..]`) was
     // never released: every such loop leaked the array. Normal exit and
-    // `break` both land here.
+    // `break` both land here. Same for a container READ (`m[k]`, `s.items`,
+    // `g[0]`): the read hands the loop its own reference (borrow-to-own),
+    // and nothing released it -- the whole array leaked once its owner
+    // dropped (master too), and a missing map key's fresh empty array leaked
+    // on every loop.
     if matches!(iter_type, MirType::Array(_, _))
         && matches!(
             iterable,
@@ -8305,6 +8406,8 @@ fn lower_for(
                 | ast::Expr::MethodCall { .. }
                 | ast::Expr::StaticMethodCall { .. }
                 | ast::Expr::ArrayLiteral { .. }
+                | ast::Expr::IndexAccess { .. }
+                | ast::Expr::FieldAccess { .. }
         )
     {
         ctx.emit(Instruction::Drop { local: iter_local });
@@ -15453,6 +15556,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             };
 
             ctx.keep_closure_locals_once = true;
+            ctx.pending_env_owned_captures = struct_capture_fields.keys().cloned().collect();
             let mut mir_func =
                 lower_function(ctx, &lambda_name, &all_params, effective_ret, &body_block);
             ctx.restore_function_state(saved);
@@ -15682,29 +15786,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     if let Some(idx) = captures.iter().position(|c| c == cap) {
                         let cap_ty = mir_func.params.get(idx).map(|p| p.ty.clone());
                         if matches!(cap_ty, Some(MirType::Struct(_))) {
+                            // The body borrowed this capture from the env
+                            // (`pending_env_owned_captures`).
                             mir_func.attributes.mutated_capture_ptr_slots.push(idx as u32);
-                            // The env owns this capture (the body works on its
-                            // slot), so the callee-owned-param entry share and
-                            // exit drops do not apply: on AOT they retain the
-                            // field values at entry and release the ones present
-                            // at exit -- after a field store, a release of the
-                            // NEW value the env still holds.
-                            let pl = mir_func.params[idx].local;
-                            for b in mir_func.blocks.iter_mut() {
-                                for inst in b.instructions.iter_mut() {
-                                    let drop_it = match inst {
-                                        Instruction::Drop { local } => *local == pl,
-                                        Instruction::Assign { value: RValue::Call { func, args }, .. } => {
-                                            func == STRUCT_SHARE_FN
-                                                && matches!(args.as_slice(), [Operand::Local(l)] if *l == pl)
-                                        }
-                                        _ => false,
-                                    };
-                                    if drop_it {
-                                        *inst = Instruction::Nop;
-                                    }
-                                }
-                            }
                         }
                     }
                 }
@@ -16595,7 +16679,10 @@ fn is_boxable_scalar(ty: &MirType) -> bool {
 /// See `struct_capture_fields` in the Lambda arm: `p = v` on a mutated struct
 /// capture `p` becomes `{ let __capassign_N = v  p.f = __capassign_N.f .. }`.
 /// Walks the statement forms a closure body uses (blocks, if/elif/else,
-/// loops, try/catch); an assignment nested anywhere else is left as is.
+/// match arms, loops, try/catch, and the value of a let / return /
+/// assignment); an assignment nested anywhere else is left as is. Missed
+/// there, the capture -- borrowed from the env -- was rebound to a value it
+/// did not own (a match arm: double frees on the JIT).
 fn rewrite_struct_capture_assigns_expr(
     e: &mut ast::Expr,
     caps: &HashMap<String, Vec<String>>,
@@ -16609,6 +16696,11 @@ fn rewrite_struct_capture_assigns_expr(
                 rewrite_struct_capture_assigns_block(b, caps, n);
             }
         }
+        ast::Expr::MatchExpr { arms, .. } => {
+            for arm in arms.iter_mut() {
+                rewrite_struct_capture_assigns_expr(arm.body.as_mut(), caps, n);
+            }
+        }
         _ => {}
     }
 }
@@ -16618,24 +16710,30 @@ fn rewrite_struct_capture_assigns_block(
     caps: &HashMap<String, Vec<String>>,
     n: &mut usize,
 ) {
-    for stmt in block.stmts.iter_mut() {
-        match stmt {
+    // The statements are spliced into this block, not wrapped in a nested
+    // `{ .. }`: a statement-position block never dropped its own lets, so
+    // `__capassign_N` leaked the whole new value per reassignment. Here it
+    // is a local of the enclosing block, dropped at its end (or a return).
+    let old = std::mem::take(&mut block.stmts);
+    let mut out = Vec::with_capacity(old.len());
+    for mut stmt in old {
+        match &mut stmt {
             ast::Stmt::Assign { target: ast::Expr::Identifier { name, .. }, op: ast::AssignOp::Assign, value, span }
                 if caps.contains_key(name.as_str()) =>
             {
                 let sp = *span;
                 let tmp = format!("__capassign_{}", *n);
                 *n += 1;
-                let mut stmts = vec![ast::Stmt::Let {
+                out.push(ast::Stmt::Let {
                     name: tmp.clone(),
                     mutable: false,
                     ty: None,
                     value: Some(value.clone()),
                     pattern: None,
                     span: sp,
-                }];
+                });
                 for f in &caps[name.as_str()] {
-                    stmts.push(ast::Stmt::Assign {
+                    out.push(ast::Stmt::Assign {
                         target: ast::Expr::FieldAccess {
                             object: Box::new(ast::Expr::Identifier { name: name.clone(), span: sp }),
                             field: f.clone(),
@@ -16650,10 +16748,7 @@ fn rewrite_struct_capture_assigns_block(
                         span: sp,
                     });
                 }
-                *stmt = ast::Stmt::Expr {
-                    expr: ast::Expr::Block { block: ast::Block { stmts, span: sp }, span: sp },
-                    span: sp,
-                };
+                continue;
             }
             ast::Stmt::If { then_block, elif_clauses, else_block, .. } => {
                 rewrite_struct_capture_assigns_block(then_block, caps, n);
@@ -16672,9 +16767,14 @@ fn rewrite_struct_capture_assigns_block(
                 rewrite_struct_capture_assigns_block(catch_block, caps, n);
             }
             ast::Stmt::Expr { expr, .. } => rewrite_struct_capture_assigns_expr(expr, caps, n),
+            ast::Stmt::Let { value: Some(v), .. }
+            | ast::Stmt::Return { value: Some(v), .. }
+            | ast::Stmt::Assign { value: v, .. } => rewrite_struct_capture_assigns_expr(v, caps, n),
             _ => {}
         }
+        out.push(stmt);
     }
+    block.stmts = out;
 }
 
 fn find_mutated_captures(body: &ast::Expr, capture_names: &[String]) -> Vec<String> {

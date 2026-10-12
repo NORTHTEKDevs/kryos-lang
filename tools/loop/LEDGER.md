@@ -10,6 +10,75 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: review round 7 -- what the round-6 fixes broke, and the classes around them (2026-10-11)
+
+`~/scratch/kryos-cb/review7` (~87 probes, both backends, real-free AOT runs,
+every anomaly re-run on master) found 6 regressions and 3 new leaks in this
+batch before merge. Fixed and pinned in
+`tests/conformance/conf_review7_fixes.kry` (fails on master and on the
+pre-round candidate) and the `for_read`, `map3`, `dyn_arg`, `cap_struct`,
+`cap_array`, `tuple_field` modes of `tests/mem_agg_ops_gate.sh` (96-403MB
+at 1M on the pre-round candidate or master -> 4MB):
+- Env-owned captures (R1-R3, double frees / use-after-frees): the round-6
+  fix turned EVERY share and drop of a mutated struct capture into a nop --
+  also the share a `push(arr, p)` takes, and a `return p` still moved out the
+  only reference, which the env held. The capture param is now BORROWED from
+  the start (`pending_env_owned_captures` -> `borrowed_locals` +
+  `env_owned_locals`): no entry share or exit drop, a return or tail return
+  hands out an independent copy (value semantics on both backends; the JIT
+  aliased, `a = f(); b = f()` printed `2 2`), container stores share, and a
+  field store through it still releases the field's old value.
+- The whole-reassignment rewrite walked if/while/for/try only: in a `match`
+  arm the capture was rebound to a value it did not own (JIT double frees;
+  master printed a heap pointer as an int, and read freed memory on AOT). It
+  now walks match arms and let / return / assignment values too. Its temp
+  `__capassign_N` sat in a statement-position block, which never drops its
+  lets: every reassignment leaked the new value (311MB / 1M). The statements
+  are spliced into the enclosing block. A struct/enum/tuple field read stored
+  into a field also marked its source partially moved when the store SHARED
+  it, so the source was never dropped; the store undoes those marks now.
+- Found while fixing the above (the leaks had masked it; on the pre-round
+  candidate too, not master): LLVM's copy of a captured struct
+  (`clone_struct_heap_fields`) copied an array field with
+  `kryos_array_clone`, a buffer copy that takes no reference to the
+  elements, so `p.xs = [..]` in the closure -- whose release is element-
+  aware since this batch -- freed strings the OUTER struct's array still
+  held. The copy uses `kryos_array_dup` with the element kind now (also
+  for `@copy` struct copies). The `cap_array` gate mode (a closure built per
+  iteration over a struct with an array field; master 96MB / 1M) and
+  `conf_review7_fixes.kry` pin it.
+- Tuple fields (R5/R6): struct drops release tuple fields since this batch,
+  but `let t = s.t` (also `arr[i].t`, `m[k].t`, `w.inner.t`) kept an alias and
+  `s.t = o.t` / `s.t = m[k]` stored one -- freed elements read on AOT
+  (`KRYOS_FREE_DIAG` showed nothing for the read: only the real-free run
+  did) and double frees. A tuple field read takes its own share (`owns_element`), a
+  tuple field store from a place shares, and `strip_escaping_tuple_drops`
+  keeps the drop of a field read followed by a share (stripping it leaked
+  the share: 155MB / 1M).
+- `for x in <container read>` (`m[k]`, `s.items`, `g[0]`) never released the
+  read's reference -- master too, 82-92MB / 1M with a fresh container per
+  iteration -- and with this batch a missing key's fresh empty array leaked
+  on every loop (96MB / 1M). A read iterable is released after the loop like
+  a fresh one.
+- A map freed through a THREE-level map freed its innermost maps untyped
+  (their keys leaked): the typed free carried kind info one level down.
+  `value_elem_kind` packs each level's kinds 8 bits apart now and
+  `free_entry_slot` passes the rest down (master leaked 495MB / 1M here).
+- A `dyn` method call's argument temps never counted as borrowed in the
+  statement-end temp pass (a closure call's did): `d.log("m{i}")` leaked each
+  message (127MB / 1M) once round 6 made the statement call run.
+- Still open: on the JIT, a closure's whole reassignment of a captured
+  struct is visible through anything it was shared into earlier in that
+  closure (R4; in place, like a field store -- CLAUDE.md gotcha 23);
+  overwriting a tuple field leaks the old tuple (with a heap element, master
+  403MB / 192MB at 1M, now 156MB / 66MB); a struct coerced to `dyn Trait`
+  leaks per coercion (143MB / 1M, master the same); a tuple literal with
+  narrower or wider elements than its declared type at a return / array /
+  map / enum site reads the wrong bytes on AOT (master the same; only the
+  struct-field store coerces); a missing-middle-key write whose key is not
+  a variable or literal (`m[f()]["y"] = v`) still loses the write (master
+  the same); the review's P4-P14 (master the same).
+
 ## Wave: real-free AOT checks -- what KRYOS_FREE_DIAG hid (2026-10-10)
 
 KRYOS_FREE_DIAG quarantines memory instead of freeing it, so a
@@ -22,7 +91,9 @@ in this batch's own changes (fixed before merge):
   retain the field values present at entry and release the ones present at
   exit -- after a field store, the NEW value the env still holds (`00`
   instead of `2 3 4`). An env-owned capture (`mutated_capture_ptr_slots`)
-  now gets neither.
+  now gets neither. (Review round 7, above: removing them after the fact
+  also removed the shares escapes needed; the capture is borrowed from the
+  start instead.)
 - `let t = m[k]` of a tuple-valued map shared the tuple's strings with no
   reference; overwriting `m[k]` (now released) freed them under `t`. A
   tuple read out of a map takes its own share, like a struct/enum read.

@@ -4174,13 +4174,23 @@ impl LlvmCodegen {
                         // heap-typed elements (e.g. `map<K, [str]>`) instead
                         // of only the array's flat buffer + header -- see
                         // `kryos_map_free_typed`'s doc comment (kryos-rt).
-                        let value_elem_kind = match value.as_ref() {
-                            MirType::Array(elem, _) => kind_of(elem.as_ref()),
-                            // A map-valued map: the inner map's key/value kinds, packed
-                            // (see `free_entry_slot` in kryos-rt).
-                            MirType::Map { key: ik, value: iv } => (kind_of(ik.as_ref()) << 4) | kind_of(iv.as_ref()),
-                            _ => 0,
-                        };
+                        // A map-valued map: the inner map's key/value kinds,
+                        // packed, and its own value's element kind above them,
+                        // 8 bits per level (see `free_entry_slot` in kryos-rt)
+                        // -- with one level only, every map below the second
+                        // was freed untyped and leaked its keys.
+                        fn elem_kind_of(t: &MirType, kind_of: &dyn Fn(&MirType) -> i64, depth: u32) -> i64 {
+                            match t {
+                                MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                                MirType::Map { key: ik, value: iv } if depth < 6 => {
+                                    (elem_kind_of(iv.as_ref(), kind_of, depth + 1) << 8)
+                                        | (kind_of(ik.as_ref()) << 4)
+                                        | kind_of(iv.as_ref())
+                                }
+                                _ => 0,
+                            }
+                        }
+                        let value_elem_kind = elem_kind_of(value.as_ref(), &kind_of, 0);
                         // Struct/enum values are released through their type's
                         // drop helper (the same one an array element gets); the
                         // type-erased runtime free left every one behind.
@@ -11253,18 +11263,29 @@ impl LlvmCodegen {
             let fty_ll = self.sig_ty_to_llvm(fty);
             match fty {
                 MirType::Str | MirType::Array(_, _) => {
-                    let clone_fn = if matches!(fty, MirType::Str) {
-                        "kryos_string_clone"
-                    } else {
-                        "kryos_array_clone"
-                    };
                     let fv = self.next_temp();
                     self.emit_line(&format!(
                         "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
                     ));
                     let fp = self.coerce_value(&fv, &fty_ll, "ptr");
                     let cl = self.next_temp();
-                    self.emit_line(&format!("  {cl} = call ptr @{clone_fn}(ptr {fp})"));
+                    if let MirType::Array(elem, _) = fty {
+                        // The copy's array must own its elements: a plain
+                        // `kryos_array_clone` copies the buffer only, so the
+                        // copy's element-aware release (a closure assigning
+                        // the captured struct's array field) freed strings
+                        // the original array still held (AOT, real frees).
+                        // Kinds as `array_elem_dup_kind` in kryos-mir.
+                        let kind = match elem.as_ref() {
+                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+                            MirType::Struct(_) | MirType::Enum(_) => 4,
+                            MirType::Shared(_) => 2,
+                            _ => 0,
+                        };
+                        self.emit_line(&format!("  {cl} = call ptr @kryos_array_dup(ptr {fp}, i64 {kind})"));
+                    } else {
+                        self.emit_line(&format!("  {cl} = call ptr @kryos_string_clone(ptr {fp})"));
+                    }
                     let back = self.coerce_value(&cl, "ptr", &fty_ll);
                     let nv = self.next_temp();
                     self.emit_line(&format!(

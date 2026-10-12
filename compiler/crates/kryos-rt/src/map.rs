@@ -974,12 +974,14 @@ unsafe fn free_entry_slot(handle: i64, kind: i64, elem_kind: i64) {
             }
         }
         // A map-valued entry: `elem_kind` packs the inner map's key kind
-        // (high nibble) and value kind (low nibble), so its own heap keys and
+        // (bits 4-7) and value kind (bits 0-3), so its own heap keys and
         // values are released too (a `map<str, map<str, T>>` leaked every
-        // inner key).
+        // inner key), and above them, from bit 8, the inner map's own
+        // `value_elem_kind` -- one level per 8 bits, so a third level down is
+        // freed typed as well (it leaked every key).
         3 => {
             if elem_kind != 0 {
-                kryos_map_free_typed(handle, (elem_kind >> 4) & 0xF, elem_kind & 0xF, 0)
+                kryos_map_free_typed(handle, (elem_kind >> 4) & 0xF, elem_kind & 0xF, elem_kind >> 8)
             } else {
                 kryos_map_free(handle)
             }

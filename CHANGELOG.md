@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - closures that change a captured struct, loops over container reads
+
+- **A closure that changes a struct it captured** freed field values it
+  still held (a string field set inside the closure read back empty with
+  `--release`), and a whole reassignment of the struct (`p = P { .. }`) did
+  not persist across calls on `kryos run` (also inside a `match` arm). A
+  struct returned from such a closure is now an independent copy on both
+  backends (`kryos run` returned the closure's own copy, so a later call
+  changed values already returned).
+- **`for x in m[k]`, `for x in s.items`, `for x in g[0]`** never released
+  the array they iterated, which leaked it once its owner was dropped.
+- **A map of maps of maps** leaked the keys of its innermost maps.
+
 ### Fixed - enums inside enums, copies of struct arrays
 
 - **An enum holding another enum** (`Out.W(In.X(s))`) could be freed while
@@ -23,8 +36,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   failed to compile with `--release`.
 - **A closure stored twice in an array** (`[g, g]`), **stored in a struct
   field and returned**, or **read back out of an array** was released too
-  often or never, depending on the backend; a closure reassigning a captured
-  struct lost the new value on `kryos run`.
+  often or never, depending on the backend.
 
 ### Fixed - writes through a missing map key, and leaks in closures, void functions, tuples
 
@@ -40,7 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `map` passed to its closure, and a counter mutated by a closure.
 - **Tuples stored in struct fields or map values** and **maps of maps**
   were never released, and overwriting a tuple-valued map key leaked
-  the old tuple.
+  the old tuple; a tuple read out of a struct field (`let t = s.t`) is now
+  an owned copy that stays valid after the struct is overwritten.
 - **`let u = if c { t } else { .. }`** leaked a value every time it ran
   (strings, arrays, tuples, enums; on master too), and returning a tuple
   parameter from an if-expression could read freed memory.
