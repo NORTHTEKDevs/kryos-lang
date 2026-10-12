@@ -1,0 +1,28 @@
+// Regression pin (LEDGER, residual ownership wave, item D on wasm): a missing
+// key of a map whose values are maps or arrays reads a fresh EMPTY container
+// natively (`kryos_map_get(_str)_or_empty`). The wasm backend lowered that
+// getter to the plain host map read, which returns handle 0 for a missing
+// key, so the first write through it (`inner["k"] = 3`) or `len()` of it
+// threw in the JS host while native printed the right answer -- a program
+// that compiles to wasm and disagrees with native, the one outcome the wasm
+// contract rules out. Native output: 3 0 4 0 5 0
+fn main() {
+    let mut mm: map<str, map<str, i64>> = {}
+    let mut inner = mm["a"]
+    inner["k"] = 3
+    mm["a"] = inner
+    println(mm["a"]["k"])
+    println(len(mm["q"]))
+    mm["b"]["z"] = 4
+    println(mm["b"]["z"])
+
+    let ma: map<str, [i64]> = {}
+    println(len(ma["none"]))
+
+    let mut mi: map<i64, map<i64, i64>> = {}
+    let mut row = mi[1]
+    row[2] = 5
+    mi[1] = row
+    println(mi[1][2])
+    println(len(mi[9]))
+}

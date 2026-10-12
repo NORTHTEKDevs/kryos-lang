@@ -3650,12 +3650,44 @@ impl<'a> FnEmitter<'a> {
             self.wfunc.instruction(&W::Call(self.cg.map_insert_str_idx));
             return Ok(());
         }
-        // A container-valued map read (MIR's missing-key-safe getter): the
-        // host map read; the kind argument only matters natively.
-        if func == "kryos_map_get_str_or_empty" && args.len() == 3 {
+        // A container-valued map read (MIR's missing-key-safe getter): a
+        // missing key reads a fresh empty container, as natively (kind 1 =
+        // array, 2 = map). The plain host read returns handle 0 there, and a
+        // write through it (`let mut inner = mm[k]; inner[x] = v`) threw in
+        // the host.
+        if (func == "kryos_map_get_str_or_empty" || func == "kryos_map_get_or_empty")
+            && args.len() == 3
+        {
+            let (has_idx, get_idx) = if func == "kryos_map_get_str_or_empty" {
+                (self.cg.map_has_str_idx, self.cg.map_get_str_idx)
+            } else {
+                (self.cg.map_has_idx, self.cg.map_get_idx)
+            };
+            let make_map = match &args[2] {
+                Operand::Constant(Constant::Int(2)) => true,
+                Operand::Constant(Constant::Int(1)) => false,
+                _ => {
+                    return Err(WasmCodegenError::unsupported(
+                        "a container-valued map read with a non-constant kind",
+                    ))
+                }
+            };
             self.emit_operand(&args[0])?;
             self.emit_operand(&args[1])?;
-            self.wfunc.instruction(&W::Call(self.cg.map_get_str_idx));
+            self.wfunc.instruction(&W::Call(has_idx));
+            self.wfunc.instruction(&W::I64Eqz);
+            self.wfunc.instruction(&W::If(BlockType::Result(ValType::I64)));
+            if make_map {
+                self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
+            } else {
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+            }
+            self.wfunc.instruction(&W::Else);
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(get_idx));
+            self.wfunc.instruction(&W::End);
             return Ok(());
         }
         if (func == "kryos_map_get_str" || func == "map_get_str") && args.len() == 2 {
@@ -3676,12 +3708,6 @@ impl<'a> FnEmitter<'a> {
             self.emit_operand(&args[1])?; // i64 key
             self.emit_operand(&args[2])?; // value
             self.wfunc.instruction(&W::Call(self.cg.map_insert_idx));
-            return Ok(());
-        }
-        if func == "kryos_map_get_or_empty" && args.len() == 3 {
-            self.emit_operand(&args[0])?;
-            self.emit_operand(&args[1])?;
-            self.wfunc.instruction(&W::Call(self.cg.map_get_idx));
             return Ok(());
         }
         if (func == "kryos_map_get" || func == "map_get") && args.len() == 2 {

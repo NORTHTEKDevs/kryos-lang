@@ -37,6 +37,13 @@ The WASM backend did not know the calls this batch emits
 (`kryos_array_typed_release_if_ne` failed `wordscope`'s wasm build in
 `run_examples_e2e.sh`); it treats the releases as no-ops and
 `kryos_fn_retain` as identity, like the existing retain/release calls. The
+missing-key container getters (item D) build the empty container in wasm
+code (`has ? get : map_new / array_new(0)`): lowered to the plain host read,
+a missing key gave handle 0 and the first write through it, or `len()` of
+it, threw in the JS host (master too) -- a program that compiles to wasm and
+disagrees with native, the outcome the wasm contract rules out. Pinned in
+the `wasm_differential` corpus by
+`tests/harden-probes/probe_wasm_missing_key_container.kry`. The
 same gate's JIT `task_api` leg never started on master either: the script
 passed `--port` without the `--` the CLI requires.
 Also seen, on master too and still open: a closure returned from a function

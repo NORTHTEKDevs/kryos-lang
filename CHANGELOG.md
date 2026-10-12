@@ -31,7 +31,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`let mut inner = mm[k]; inner[x] = v; mm[k] = inner`** on a missing key
   of a map of maps (or of arrays) silently lost the write: the read returned
   a null handle. It now returns an empty map/array; `mm[k][x] = v` inserts
-  the inner map first.
+  the inner map first. With `--backend wasm` the same read crashed the JS
+  host; it returns an empty map/array there too.
 - **Every struct passed to a function with no return value** was never
   freed (on master too).
 - **Closures leaked what they captured**: a string, struct or tuple captured
