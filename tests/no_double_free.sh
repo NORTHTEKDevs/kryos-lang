@@ -25,7 +25,10 @@ no_df() {
   #                                                   slipping past BOTH gates on 2026-08-17 --
   #                                                   the minilisp demo printed three of them
   #                                                   while every gate stayed green)
-  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+  #   "... RETAIN-AFTER-FREE / RELEASE-AFTER-FREE ..." (an arc block touched after its
+  #                                                   last release -- a dangling closure env
+  #                                                   slipped past this gate on 2026-10-10)
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free|AFTER-FREE"; then
     echo "  DOUBLE-FREE  $name"
     fail=$((fail+1))
   fi
@@ -342,7 +345,7 @@ fn main() {
 no_df_file() {
   local name="$1" dir="$2" file="$3" out
   out="$(cd "$dir" && KRYOS_FREE_DIAG=1 timeout 120 "$KRYOS" run "$file" 2>&1)"
-  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free|AFTER-FREE"; then
     echo "  DOUBLE-FREE  $name"
     fail=$((fail+1))
   fi
@@ -375,7 +378,7 @@ fn main() {
 }'
 printf '%s' "$MOVE_AND_BORROW" > "$TMP/mab.kry"
 if "$KRYOS" build --release "$TMP/mab.kry" -o "$TMP/mab" >/dev/null 2>&1; then
-  if KRYOS_FREE_DIAG=1 timeout 30 "$TMP/mab" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+  if KRYOS_FREE_DIAG=1 timeout 30 "$TMP/mab" 2>&1 | grep -qiE "DOUBLE-FREE|double free|AFTER-FREE"; then
     echo "  DOUBLE-FREE  struct_field_move_plus_borrow (aot)"
     fail=$((fail+1))
   fi
@@ -390,13 +393,24 @@ fi
 no_df_both() { # name file
   local name="$1" f="$2" out
   out="$(KRYOS_FREE_DIAG=1 timeout 60 "$KRYOS" run "$f" 2>&1)"
-  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free"; then
+  if printf '%s' "$out" | grep -qiE "DOUBLE-FREE|double free|AFTER-FREE"; then
     echo "  DOUBLE-FREE  $name (jit)"
     fail=$((fail+1))
   fi
   if "$KRYOS" build --release "$f" -o "$TMP/$name" >/dev/null 2>&1; then
-    if KRYOS_FREE_DIAG=1 timeout 60 "$TMP/$name" 2>&1 | grep -qiE "DOUBLE-FREE|double free"; then
+    if KRYOS_FREE_DIAG=1 timeout 60 "$TMP/$name" 2>&1 | grep -qiE "DOUBLE-FREE|double free|AFTER-FREE"; then
       echo "  DOUBLE-FREE  $name (aot)"
+      fail=$((fail+1))
+    fi
+    # KRYOS_FREE_DIAG quarantines memory instead of freeing it, which hides a
+    # use-after-free whose memory is never reused. The same binary with real
+    # frees must print the same thing (2026-10-10: two AOT use-after-frees
+    # passed every diag check).
+    local diag_out real_out
+    diag_out="$(KRYOS_FREE_DIAG=1 timeout 60 "$TMP/$name" 2>/dev/null)"
+    real_out="$(timeout 60 "$TMP/$name" 2>/dev/null)"
+    if [ "$diag_out" != "$real_out" ]; then
+      echo "  REAL-FREE MISMATCH  $name (aot)"
       fail=$((fail+1))
     fi
   else
@@ -422,6 +436,13 @@ no_df_both review4_fixes "$ROOT/tests/conformance/conf_review4_fixes.kry"
 no_df_both agg_ops_ownership "$ROOT/tests/conformance/conf_agg_ops_ownership.kry"
 no_df_both map_struct_values "$ROOT/tests/conformance/conf_map_struct_values.kry"
 no_df_both review5_fixes "$ROOT/tests/conformance/conf_review5_fixes.kry"
+no_df_both residual_ownership "$ROOT/tests/conformance/conf_residual_ownership.kry"
+no_df_both review6_fixes "$ROOT/tests/conformance/conf_review6_fixes.kry"
+no_df_both nested_enum "$ROOT/tests/conformance/conf_nested_enum_ownership.kry"
+no_df_both review7_fixes "$ROOT/tests/conformance/conf_review7_fixes.kry"
+no_df_both review8_fixes "$ROOT/tests/conformance/conf_review8_fixes.kry"
+no_df_both review9_fixes "$ROOT/tests/conformance/conf_review9_fixes.kry"
+no_df_both review11_fixes "$ROOT/tests/conformance/conf_review11_fixes.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

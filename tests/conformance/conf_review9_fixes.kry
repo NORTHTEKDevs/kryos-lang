@@ -1,0 +1,207 @@
+// Conformance (2026-10-13): what the ninth adversarial review
+// (~/scratch/kryos-cb/review9) found: a closure's captured struct as a
+// statement-position block tail (an LLVM build failure), a tuple or struct
+// field read used as an enum payload (a use-after-free once the source was
+// overwritten), and the ownership of a struct-valued if/match result; and
+// what the tenth review found in an earlier version of that last fix. Run
+// under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+struct S { t: (str, i64), inner: P, n: i64 }
+enum E { A((str, i64)), B }
+enum W { Has(P), No }
+struct G2 { inner: P, n: i64 }
+enum Tree { Leaf(i64), Node(Tree, Tree) }
+struct TH { t: Tree, n: i64 }
+struct ST { p: P, th: TH }
+enum EP { Pair(P, TH), Nil }
+
+let mut GQ: G2 = G2 { inner: P { name: "gi1", n: 1 }, n: 1 }
+
+fn mkp(v: i64) -> P { return P { name: "m{v}", n: v } }
+
+fn normalize(p: P) -> P {
+    let mut r = if p.n < 0 { P { name: p.name, n: 0 } } else { p }
+    r.n = r.n + 1
+    return r
+}
+
+fn gread(i: i64) -> i64 {
+    let mut v = P { name: "y{i}", n: 0 }
+    v = GQ.inner
+    return v.n + 1
+}
+
+fn tsum(t: Tree) -> i64 {
+    return match t {
+        Tree.Leaf(v) => v,
+        Tree.Node(a, b) => tsum(a) + tsum(b),
+    }
+}
+
+fn build_pair(k: i64) -> EP {
+    let s = ST { p: P { name: "p{k}", n: 1 }, th: TH { t: Tree.Node(Tree.Leaf(1), Tree.Leaf(2)), n: 1 } }
+    let e = EP.Pair(s.p, s.th)
+    churn(k)
+    return e
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mk(c: str) -> S { return S { t: ("{c}1", 1), inner: P { name: "{c}i", n: 2 }, n: 1 } }
+
+fn pick(c: bool, a: P) -> P {
+    let r = if c { a } else { P { name: "no", n: 0 } }
+    return r
+}
+
+fn pm(o: Option<P>) -> P {
+    let r = match o {
+        Some(v) => v,
+        None => P { name: "z", n: 0 },
+    }
+    return r
+}
+
+@capabilities(all)
+fn main() {
+    // A closure's captured struct as the tail of a statement-position block.
+    let mut sp = P { name: "sp", n: 0 }
+    let blk = |k: i64| -> i64 {
+        {
+            sp.n = k
+            sp
+        }
+        unsafe {
+            sp.n = sp.n + 1
+            sp
+        }
+        return sp.n
+    }
+    expect(blk(2) == 3 and blk(5) == 6 and sp.n == 0, "captured struct as a statement block tail")
+
+    // A field read used as an enum payload owns its value.
+    let mut s = mk("e")
+    let e = E.A(s.t)
+    let o = Some(s.inner)
+    let w = W.Has(s.inner)
+    s = mk("z")
+    churn(1)
+    let et = match e {
+        E.A(t) => t.0,
+        E.B => "B",
+    }
+    let on = match o {
+        Some(p) => p.name,
+        None => "none",
+    }
+    let wn = match w {
+        W.Has(p) => p.name,
+        W.No => "no",
+    }
+    expect(et == "e1" and on == "ei" and wn == "ei" and s.t.0 == "z1", "field read as an enum payload")
+
+    // A struct-valued if/match bound by `let`: owned locals, a param, a
+    // match binding, a loop variable, a closure's capture, a literal.
+    let a = P { name: "a{1}", n: 1 }
+    let b = P { name: "b{2}", n: 2 }
+    let r1 = if true { a } else { b }
+    let r2 = if false { a } else { b }
+    let p = pick(true, P { name: "p{3}", n: 3 })
+    let m1 = pm(Some(P { name: "m{4}", n: 4 }))
+    let m2 = pm(None)
+    churn(2)
+    expect(r1.name == "a1" and r2.name == "b2" and a.name == "a1" and b.name == "b2", "if over owned locals")
+    expect(p.name == "p3" and m1.name == "m4" and m2.name == "z", "if over a param, match over a binding")
+    let xs = [P { name: "l{5}", n: 5 }]
+    for x in xs {
+        let r = if x.n > 0 { x } else { P { name: "neg", n: -1 } }
+        churn(3)
+        expect(r.name == "l5" and xs[0].name == "l5", "if over a loop variable")
+    }
+    let mut q = P { name: "q", n: 0 }
+    let fq = |k: i64| -> P {
+        q.n = q.n + 1
+        q.name = "q{q.n}"
+        let r = if k >= 0 { q } else { P { name: "neg", n: -1 } }
+        let t = match k {
+            1 => q,
+            _ => r,
+        }
+        return t
+    }
+    let q1 = fq(1)
+    let q2 = fq(2)
+    churn(4)
+    expect(q1.name == "q1" and q2.name == "q2" and q.name == "q", "if/match over a closure's capture")
+    let x = P { name: "x{7}", n: 7 }
+    if true { x } else { P { name: "y", n: 0 } }
+    churn(5)
+    expect(x.name == "x7", "statement-position if over an owned local")
+
+    // Review 10 (regressions of an earlier version of this round). An if
+    // value is a COPY: mutating the binding leaves the source alone.
+    let na = P { name: "a", n: 5 }
+    let nb = normalize(na)
+    let mut lx = P { name: "x", n: 1 }
+    let mut lr = if true { lx } else { P { name: "y", n: 0 } }
+    lr.n = 9
+    expect(nb.n == 6 and na.n == 5 and lx.n == 1 and lr.n == 9, "copying an if value")
+
+    // A match arm naming an enclosing struct, in a loop.
+    let dz = "dflt"
+    let default = P { name: "{dz}", n: 0 }
+    let mut names = ""
+    for i in range(0, 4) {
+        let chosen = match i % 2 {
+            0 => mkp(i),
+            _ => default,
+        }
+        names = names + chosen.name + " "
+    }
+    churn(6)
+    expect(names == "m0 dflt m2 dflt " and default.name == "dflt", "match arm naming an enclosing struct")
+
+    // A loop variable shadowing a struct's name, then the struct as an if value.
+    let fk = 1
+    let fp = P { name: "out{fk}", n: 1 }
+    let fps = [P { name: "x{fk}", n: 2 }]
+    let mut fsum = 0
+    for fp in fps {
+        fsum = fsum + fp.n
+    }
+    let fr = if fk > 0 { fp } else { P { name: "no", n: 0 } }
+    churn(7)
+    expect(fr.name == "out1" and fp.name == "out1" and fsum == 2, "loop variable shadowing a struct")
+
+    // A global's field read by reassignment, and an enum payload pairing a
+    // shared field with a recursive-enum field.
+    expect(gread(0) == 2 and gread(1) == 2 and gread(2) == 2 and GQ.inner.name == "gi1", "global field by reassignment")
+    let pe = build_pair(8)
+    churn(9)
+    let pt = match pe {
+        EP.Pair(pp, th) => tsum(th.t),
+        EP.Nil => -1,
+    }
+    expect(pt == 3, "enum payload with a recursive-enum field")
+
+    println("conformance review9 fixes: PASS")
+}

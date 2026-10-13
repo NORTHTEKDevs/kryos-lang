@@ -3597,7 +3597,8 @@ impl<'a> FnEmitter<'a> {
         // -------------------------------------------------------------
         if (func == "kryos_string_retain_opt"
             || func == "kryos_array_retain_opt"
-            || func == "kryos_map_retain_opt")
+            || func == "kryos_map_retain_opt"
+            || func == "kryos_fn_retain")
             && args.len() == 1
         {
             self.emit_operand(&args[0])?;
@@ -3630,6 +3631,13 @@ impl<'a> FnEmitter<'a> {
             self.wfunc.instruction(&W::I64Const(0));
             return Ok(());
         }
+        // The element-aware / tuple variants (old, new, kinds): same no-op.
+        if matches!(func, "kryos_array_typed_release_if_ne" | "kryos_tuple_handle_release_if_ne")
+            && args.len() == 3
+        {
+            self.wfunc.instruction(&W::I64Const(0));
+            return Ok(());
+        }
 
         // -------------------------------------------------------------
         // Map runtime builtins (str-keyed). The MIR lowers `m[k]=v` / `m[k]` /
@@ -3640,6 +3648,46 @@ impl<'a> FnEmitter<'a> {
             self.emit_operand(&args[1])?; // packed key
             self.emit_operand(&args[2])?; // value
             self.wfunc.instruction(&W::Call(self.cg.map_insert_str_idx));
+            return Ok(());
+        }
+        // A container-valued map read (MIR's missing-key-safe getter): a
+        // missing key reads a fresh empty container, as natively (kind 1 =
+        // array, 2 = map). The plain host read returns handle 0 there, and a
+        // write through it (`let mut inner = mm[k]; inner[x] = v`) threw in
+        // the host.
+        if (func == "kryos_map_get_str_or_empty" || func == "kryos_map_get_or_empty")
+            && args.len() == 3
+        {
+            let (has_idx, get_idx) = if func == "kryos_map_get_str_or_empty" {
+                (self.cg.map_has_str_idx, self.cg.map_get_str_idx)
+            } else {
+                (self.cg.map_has_idx, self.cg.map_get_idx)
+            };
+            let make_map = match &args[2] {
+                Operand::Constant(Constant::Int(2)) => true,
+                Operand::Constant(Constant::Int(1)) => false,
+                _ => {
+                    return Err(WasmCodegenError::unsupported(
+                        "a container-valued map read with a non-constant kind",
+                    ))
+                }
+            };
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(has_idx));
+            self.wfunc.instruction(&W::I64Eqz);
+            self.wfunc.instruction(&W::If(BlockType::Result(ValType::I64)));
+            if make_map {
+                self.wfunc.instruction(&W::Call(self.cg.map_new_idx));
+            } else {
+                self.wfunc.instruction(&W::I32Const(0));
+                self.wfunc.instruction(&W::Call(self.cg.array_new_idx));
+            }
+            self.wfunc.instruction(&W::Else);
+            self.emit_operand(&args[0])?;
+            self.emit_operand(&args[1])?;
+            self.wfunc.instruction(&W::Call(get_idx));
+            self.wfunc.instruction(&W::End);
             return Ok(());
         }
         if (func == "kryos_map_get_str" || func == "map_get_str") && args.len() == 2 {

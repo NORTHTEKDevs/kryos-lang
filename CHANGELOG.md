@@ -6,6 +6,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - closures that change a captured struct, loops over container reads
+
+- **A closure that changes a struct it captured** freed field values it
+  still held (a string field set inside the closure read back empty with
+  `--release`), and a whole reassignment of the struct (`p = P { .. }`) did
+  not persist across calls on `kryos run` (also inside a `match` arm or an
+  `unsafe` / `deny!` block). A struct returned from such a closure, also as
+  its tail value or a `match` arm, is now an independent copy on both
+  backends (`kryos run` returned the closure's own copy, so a later call
+  changed values already returned).
+- **Every closure call returning a struct leaked** a small heap box with
+  `--release`, also for a closure that captures nothing.
+- **`let r = if c { P { .. } } else { P { .. } }`** (or a `match`) leaked a
+  struct every time it ran, and so did such a `match` used as a statement.
+- **`Some(s.inner)`** read freed memory once `s` was overwritten, and
+  **`v = G.inner`**, a reassignment from a field of a global, corrupted the
+  global on `kryos run`.
+- **A struct holding an array of closures or of enums with a heap payload**
+  (`PA { es: [E.A(s)] }`, `PF { fs: [|x| x + k] }`) crashed or freed the
+  elements twice (enums with `--release`, closures with `kryos run`), also
+  when the struct was copied.
+- **A map parameter stored in a struct** (`PM { m: m }`) was released twice.
+- **A value read out of a struct field, an array element or a map value**
+  -- then stored into a variable, a struct, an array, a map or an enum,
+  returned (also through `if` / `match` or a function's last expression),
+  or used as an `if` / `match` value -- could read freed memory once its
+  source was overwritten or dropped. A generated matrix (11 value types,
+  12 kinds of source, 22 kinds of use, both backends) found about 200 such
+  cases on master; 192 print the right value on every backend now
+  (`tools/loop/ownership_matrix/`).
+- **`for x in m[k]`, `for x in s.items`, `for x in g[0]`** never released
+  the array they iterated, which leaked it once its owner was dropped.
+- **A map of maps of maps** leaked the keys of its innermost maps.
+
+### Fixed - enums inside enums, copies of struct arrays
+
+- **An enum holding another enum** (`Out.W(In.X(s))`) could be freed while
+  still in use once it was passed on and reused, and read back another
+  value's contents. It is now shared like any other enum.
+- **`let mut b = a` of an array of structs or enums** freed every element
+  twice when both arrays were dropped.
+
+### Fixed - dyn calls, nested missing-key writes, closures in containers
+
+- **A `dyn Trait` method called as a statement** (`s.show()`) never ran.
+- **`m[a][b][c] = v`** with a missing middle key, and **`s.m[k][x] = v`**
+  through a struct field, silently lost the write.
+- **A struct field typed `(i32, i32, str)`** built from a tuple literal
+  failed to compile with `--release`.
+- **A closure stored twice in an array** (`[g, g]`), **stored in a struct
+  field and returned**, or **read back out of an array** was released too
+  often or never, depending on the backend.
+
+### Fixed - writes through a missing map key, and leaks in closures, void functions, tuples
+
+- **`let mut inner = mm[k]; inner[x] = v; mm[k] = inner`** on a missing key
+  of a map of maps (or of arrays) silently lost the write: the read returned
+  a null handle. It now returns an empty map/array; `mm[k][x] = v` inserts
+  the inner map first. With `--backend wasm` the same read crashed the JS
+  host; it returns an empty map/array there too.
+- **Every struct passed to a function with no return value** was never
+  freed (on master too).
+- **Closures leaked what they captured**: a string, struct or tuple captured
+  by a closure, a closure passed inline to `map`/`filter`, the elements
+  `map` passed to its closure, and a counter mutated by a closure.
+- **Tuples stored in struct fields or map values** and **maps of maps**
+  were never released, and overwriting a tuple-valued map key leaked
+  the old tuple; a tuple read out of a struct field (`let t = s.t`) is now
+  an owned copy that stays valid after the struct is overwritten.
+- **`let u = if c { t } else { .. }`** leaked a value every time it ran
+  (strings, arrays, tuples, enums; on master too), and returning a tuple
+  parameter from an if-expression could read freed memory.
+- **Overwriting an array of strings** (`xs = [..]`, `xs[i] = [..]`,
+  `m[k] = [..]`) freed the old array but not its strings (on master too).
+
 ### Fixed - try/catch in loops, map literals, AOT stack growth
 
 - **A local declared inside `try` after the call that threw** was released

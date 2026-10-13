@@ -1,0 +1,138 @@
+// Conformance (2026-10-10): ownership of the shapes the residual-leak wave
+// changed -- tuple-valued maps, container-valued map reads for a missing key (a fresh empty
+// container, writes no longer lost), nested maps, tuples inside arrays and
+// struct fields, closure captures (str/struct/tuple, inline closures passed
+// to HOFs, mutating closures, function values passed to and stored by user
+// fns), and struct params of void functions. Run under KRYOS_FREE_DIAG on
+// both backends by tests/no_double_free.sh; tests/mem_agg_ops_gate.sh is the
+// leak direction.
+use std::iter::{map, filter}
+
+struct P { name: str, xs: [str], t: (str, i64) }
+struct Box2 { f: fn(i64) -> i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+enum Opt2 { Has(str), Nothing }
+struct H2 { items: [(str, i64)] }
+fn mk_tup_closure() -> fn() -> str {
+    let xs = [("cap{1}", 1), ("cap{2}", 2)]
+    return || xs[1].0
+}
+fn pick_t(c: bool, a: (str, i64), b: (str, i64)) -> (str, i64) { return if c { a } else { b } }
+fn mkp(i: i64) -> P { return P { name: "p{i}", xs: ["x{i}"], t: ("t{i}", i) } }
+fn show(p: P, log: map<str, i64>) { log[p.name] = len(p.t.0) }
+fn wrap(f: fn(i64) -> i64) -> Box2 { return Box2 { f: f } }
+fn keep(fs: [fn(i64) -> i64], f: fn(i64) -> i64) -> [fn(i64) -> i64] { return push(fs, f) }
+fn adder(p: P) -> fn(i64) -> str { return |k: i64| p.name + "{k}" + p.t.0 }
+
+// Calls through fn values (`(b.f)(1)`, `fs[0](1)`) need the fail-closed
+// `all` grant under the default inferred mode.
+@capabilities(all)
+fn main() {
+    // A missing key of a map/array-valued map reads a fresh empty container.
+    let mut mm: map<str, map<str, i64>> = {}
+    let mut inner = mm["a"]
+    inner["k"] = 3
+    mm["a"] = inner
+    mm["b"]["z"] = 4
+    let mut ma: map<i64, [str]> = {}
+    let mut xs = ma[1]
+    xs = push(xs, "v{1}")
+    ma[1] = xs
+    expect(len(mm) == 2 and mm["a"]["k"] == 3 and mm["b"]["z"] == 4 and len(inner) == 1, "map of maps, missing key")
+    expect(len(ma[1]) == 1 and ma[1][0] == "v1" and len(ma[7]) == 0 and len(mm["q"]) == 0, "map of arrays, missing key")
+
+    // Tuples inside arrays and struct fields.
+    let mut tl: [(str, i64)] = []
+    tl = push(tl, ("a{1}", 1))
+    let named = ("n{2}", 2)
+    tl = push(tl, named)
+    let lit = [("b{3}", 3), named]
+    let p1 = mkp(1)
+    let p2 = p1
+    let mut p3 = mkp(3)
+    p3.t = named
+    let arr = [p1, mkp(4)]
+    expect(tl[0].0 == "a1" and tl[1].0 == "n2" and lit[1].0 == "n2" and named.0 == "n2", "tuples in arrays")
+    expect(p2.t.0 == "t1" and p3.t.0 == "n2" and arr[1].t.0 == "t4" and arr[0].t.0 == "t1", "tuple struct fields")
+
+    // Tuple-valued maps: overwrite, a named tuple stored then reused.
+    let mut mt: map<str, (str, [str])> = {}
+    mt["a"] = ("x{1}", ["e{1}"])
+    let nt = ("n{2}", ["f{2}"])
+    mt["b"] = nt
+    mt["a"] = ("y{3}", ["g{3}"])
+    let got = mt["b"]
+    expect(mt["a"].0 == "y3" and got.0 == "n2" and nt.1[0] == "f2" and len(mt) == 2, "tuple map values")
+
+    // Copies of an ARRAY of tuples share its elements (review round 6:
+    // releasing tuple elements at array drop double-freed these).
+    let h = H2 { items: [("a{1}", 1)] }
+    let h2 = h
+    let it = h.items
+    let mut tc = [("c{1}", 1)]
+    let tc2 = tc
+    let rf = mk_tup_closure()
+    let mut junk: [(str, i64)] = []
+    let mut jj = 0
+    while jj < 50 {
+        junk = push(junk, ("JUNK-{jj}", jj))
+        jj = jj + 1
+    }
+    expect(it[0].0 == "a1" and h.items[0].0 == "a1" and h2.items[0].0 == "a1" and tc2[0].0 == "c1" and rf() == "cap2", "array of tuples copies")
+
+    // Closures: captures, inline HOF closures, mutation, function values.
+    let s = "cap{1}"
+    let add = |x: i64| x + len(s)
+    let b = wrap(add)
+    let b2 = wrap(|x: i64| x * 2 + len(s))
+    let mut fs: [fn(i64) -> i64] = []
+    fs = keep(fs, add)
+    fs = keep(fs, |x: i64| x - len(s))
+    let names = map(["a{1}", "bb{2}"], |x: str| x + s)
+    let long = filter(names, |x: str| len(x) > len(p1.t.0) + 4)
+    let f = adder(mkp(5))
+    let tup = ("tp{1}", ["q{1}"])
+    let g = |k: i64| len(tup.0) + len(tup.1) + k
+    let mut cnt = 0
+    let bump = || { cnt = cnt + len(p1.name) }
+    bump()
+    bump()
+    expect((b.f)(1) == 5 and (b2.f)(1) == 6 and fs[0](1) == 5 and fs[1](1) == -3, "function values")
+    expect(len(names) == 2 and names[1] == "bb2cap1" and len(long) == 1 and f(7) == "p57t5" and g(1) == 5, "closure captures")
+
+    // If-expression values: an outer local as a branch tail keeps its own
+    // reference (it used to be marked moved on every path); fresh tuple /
+    // enum branch values are owned by the binding.
+    let tq = ("q{1}", 1)
+    let ts = "ts{1}"
+    let mut tails: [str] = []
+    let mut k = 0
+    while k < 4 {
+        let a = if k % 2 == 0 { ts } else { "e{k}" }
+        let b = if k % 2 == 0 { tq } else { ("f{k}", k) }
+        let c = if k == 1 { Opt2.Has("h{k}") } else { Opt2.Nothing }
+        let mut d = ["d{k}"]
+        d = ["g{k}"]
+        tails = push(tails, a + b.0 + d[0])
+        let r = match c { Opt2.Has(h) => h, _ => "-" }
+        tails = push(tails, r)
+        k = k + 1
+    }
+    expect(tails[0] == "ts1q1g0" and tails[2] == "e1f1g1" and tails[3] == "h1" and tails[5] == "-" and ts == "ts1" and tq.0 == "q1", "if-expression values")
+    expect(pick_t(false, tq, ("p{2}", 2)).0 == "p2" and pick_t(true, tq, ("p{3}", 3)).0 == "q1", "if-expression tuple params")
+
+    // A struct passed to a void function stays valid for the caller.
+    let log: map<str, i64> = {}
+    show(p1, log)
+    show(mkp(6), log)
+    expect(log["p1"] == 2 and log["p6"] == 2 and p1.name == "p1", "void function struct params")
+
+    println("conformance residual ownership: PASS")
+}

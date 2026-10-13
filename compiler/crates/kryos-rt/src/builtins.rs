@@ -1024,6 +1024,15 @@ pub extern "C" fn kryos_arc_retain_i64(ptr: i64) {
     crate::arc::kryos_arc_retain(ptr as *mut u8);
 }
 
+/// One more reference to a function value (a closure env, or a static
+/// function pointer, which the arc guard ignores), returning it: the shape
+/// the backends declare for a MIR call whose result is discarded.
+#[no_mangle]
+pub extern "C" fn kryos_fn_retain(ptr: i64) -> i64 {
+    crate::arc::kryos_arc_retain(ptr as *mut u8);
+    ptr
+}
+
 /// Decrement the reference count of an ARC-managed object.
 /// When count reaches zero, calls the drop function and deallocates.
 #[no_mangle]

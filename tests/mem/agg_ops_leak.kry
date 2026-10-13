@@ -1,3 +1,4 @@
+use std::iter::{map}
 // Peak-RSS probe for aggregate operations (tests/mem_agg_ops_gate.sh).
 // Each mode runs LEAK_ITERS iterations of one shape that leaked per call:
 // structural ==, to_string/interpolation and assert_eq of aggregates (the
@@ -33,6 +34,25 @@ fn match_exits(n: i64) -> i64 {
     return a
 }
 fn first(t: (P, str)) -> P { return t.0 }
+enum Ek { Ka(str), Kb }
+enum Nin { Nx(str), Nz }
+enum Nout { Nw(Nin), Nv(Nin, str), Nu }
+struct Hf { f: fn(i64) -> i64 }
+struct Ptf { name: str, t: (str, i64) }
+struct Pc { inner: P, n: i64, tag: str }
+trait Lg {
+    fn log(self: Self, msg: str)
+}
+struct Lgr { n: i64 }
+impl Lg for Lgr {
+    fn log(self: Lgr, msg: str) { if len(msg) == 999 { println(msg) } }
+}
+fn dlg(d: dyn Lg, i: i64) { d.log("m{i}") }
+fn show_p(p: P) {
+    if len(p.name) == 99 { println(p.name) }
+}
+fn use_f(f: fn(i64) -> i64) -> i64 { return f(1) }
+
 fn match_tuple(i: i64) -> i64 {
     match mk(i) {
         (s, xs) if len(xs) > 0 => { return len(s) }
@@ -40,10 +60,50 @@ fn match_tuple(i: i64) -> i64 {
     }
 }
 
-@capabilities(process)
+@capabilities(all)
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
     let mode = env_get("LEAK_MODE")
+    // cap_struct: a closure mutating a captured struct, called every iteration
+    // (field stores and a whole reassignment, rewritten into field stores).
+    let mut cs = Pc { inner: P { name: "c", xs: [] }, n: 0, tag: "t" }
+    let step = |k: i64| {
+        cs.tag = "s{k}"
+        cs.inner = P { name: "i{k}", xs: [k] }
+        cs = Pc { inner: P { name: "w{k}", xs: [k] }, n: cs.n + 1, tag: cs.tag + "w" }
+        return cs.n
+    }
+    // cap_escape: the captured struct pushed, stored into a field, and
+    // returned as the closure's tail value, every iteration.
+    let mut ce = P { name: "e", xs: [] }
+    let esc = |k: i64| -> i64 {
+        ce.name = "e{k}"
+        let mut arr: [P] = []
+        arr = push(arr, ce)
+        let mut hold = Pc { inner: P { name: "h", xs: [] }, n: 0, tag: "t" }
+        hold.inner = ce
+        return len(arr) + hold.n
+    }
+    let tailv = |k: i64| -> P {
+        ce.name = "t{k}"
+        ce
+    }
+    // if_struct: a closure's captured struct as an if/match value. (A local
+    // named as a match arm's value, and temporaries in a `_` arm, are still
+    // known leaks -- LEDGER -- so neither appears here.)
+    let mut cf = P { name: "f", xs: [] }
+    let pickc = |k: i64| -> P {
+        cf.name = "c{k}"
+        let r = if k % 2 == 0 { cf } else { P { name: "o{k}", xs: [k] } }
+        if k % 3 == 0 { cf } else { P { name: "s", xs: [] } }
+        let m = match k % 3 {
+            0 => cf,
+            1 => P { name: "p{k}", xs: [len(r.name)] },
+            _ => cf,
+        }
+        return m
+    }
+    let dl: dyn Lg = Lgr { n: 1 }
     let mut i = 0
     let mut acc = 0
     while i < iters {
@@ -98,10 +158,131 @@ fn main() {
             let tp = mkp(i)
             let (p2, s2) = tp
             acc = acc + len(u.0) + len(t.0) + len(w.0) + len(pp.name) + len(p2.name) + len(xs) + len(ss) + len(s2)
+        } elif mode == "map_container" {
+            let mut mm: map<str, map<str, i64>> = {}
+            mm["k{i % 3}"]["n"] = i
+            let mut inner = mm["j"]
+            inner["x"] = 1
+            mm["j"] = inner
+            let mut ma: map<i64, [str]> = {}
+            acc = acc + len(mm) + len(ma[i]) + len(mm["miss"])
+        } elif mode == "tuple_containers" {
+            // Tuple STRUCT fields. Arrays of tuples still leak their
+            // elements (array copies share them without a retain).
+            let s1 = Ptf { name: "n{i}", t: ("t{i}", i) }
+            let s2 = s1
+            acc = acc + len(s2.t.0)
+        } elif mode == "closures" {
+            let cap = "c{i}"
+            let f = |k: i64| k + len(cap) + len(p.name)
+            let names = map(["u{i}", "v{i}"], |x: str| x + p.name)
+            let mut cnt = 0
+            let bump = || { cnt = cnt + len(q.name) }
+            bump()
+            acc = acc + f(1) + len(names) + use_f(|k: i64| k + len(cap)) + cnt
+        } elif mode == "map_tuple" {
+            let mut mt: map<str, (str, i64)> = {}
+            mt["k"] = ("m{i}", i)
+            let nt = ("n{i}", i)
+            mt["n"] = nt
+            mt["k"] = ("o{i}", i)
+            acc = acc + len(mt["k"].0) + len(nt.0)
+        } elif mode == "if_value" {
+            let ts = "s{i}"
+            let u = if i % 2 == 0 { ts } else { "e{i}" }
+            let tt = ("t{i}", i)
+            let v = if i % 2 == 0 { tt } else { ("f{i}", i) }
+            let w = if i % 2 == 0 { Ek.Ka("k{i}") } else { Ek.Kb }
+            let mut xs = ["a{i}"]
+            xs = ["b{i}"]
+            let r = match w { _ => 1 }
+            acc = acc + len(u) + len(v.0) + r + len(xs)
+        } elif mode == "fn_values" {
+            let fc = "f{i}"
+            let fg = |k: i64| k + len(fc)
+            let fvs = [fg, fg]
+            let fh = Hf { f: fg }
+            let fe = fvs[0]
+            let fk = Hf { f: fvs[1] }
+            acc = acc + fvs[1](1) + fh.f(1) + fe(1) + fk.f(1) + use_f(fvs[0])
+        } elif mode == "nested_enum" {
+            let no = Nout.Nw(Nin.Nx("o{i}"))
+            let no2 = no
+            let nm: map<str, Nout> = {}
+            nm["k"] = no
+            nm["k"] = Nout.Nv(Nin.Nx("v{i}"), "t{i}")
+            let na = [no, no2]
+            let mut na2 = na
+            let sa = [P { name: "s{i}", xs: [] }]
+            let mut sa2 = sa
+            acc = acc + len(na2) + len(nm) + len(sa2)
+        } elif mode == "void_param" {
+            show_p(p)
+            show_p(P { name: "v{i}", xs: [i] })
+            acc = acc + 1
         } elif mode == "map_struct" {
             let mut mm: map<i64, P> = {}
             mm[i] = P { name: "m{i}", xs: [i] }
             acc = acc + len(mm[i].name)
+        } elif mode == "for_read" {
+            // A loop over a container READ never released the read's
+            // reference (master too); a missing key's empty array leaked
+            // on every loop.
+            let mut fm: map<str, [i64]> = {}
+            fm["k"] = [i, i]
+            let g = [[i], [i, i]]
+            for x in fm["k"] { acc = acc + x }
+            for x in fm["no"] { acc = acc + x }
+            for x in p.xs { acc = acc + x }
+            for x in g[1] { acc = acc + x }
+        } elif mode == "map3" {
+            // Three levels: the innermost map was freed untyped.
+            let mut m3: map<str, map<str, map<str, i64>>> = {}
+            m3["a"]["b"]["c"] = i
+            m3["a"]["d"]["e"] = i
+            acc = acc + len(m3["a"])
+        } elif mode == "dyn_arg" {
+            // A `dyn` method call as a statement leaked its argument.
+            dlg(dl, i)
+            dl.log("n{i}")
+        } elif mode == "cap_struct" {
+            acc = acc + step(i)
+        } elif mode == "cap_escape" {
+            acc = acc + esc(i) + len(tailv(i).name)
+        } elif mode == "if_struct" {
+            // A struct-valued if/match over fresh values, bound by `let` or
+            // discarded: the binding copied the hidden result slot and the
+            // slot leaked; a closure's capture as one.
+            let r2 = if i % 3 == 0 { P { name: "c{i}", xs: [] } } else { P { name: "d", xs: [i] } }
+            let r3 = match i % 2 {
+                0 => P { name: "m{i}", xs: [i] },
+                1 => P { name: "n", xs: [] },
+                _ => P { name: "x", xs: [] },
+            }
+            if i % 2 == 0 { P { name: "s{i}", xs: [i] } } else { P { name: "t", xs: [] } }
+            match (i + 1) % 2 {
+                0 => P { name: "u{i}", xs: [i] },
+                1 => P { name: "v", xs: [] },
+                _ => P { name: "x", xs: [] },
+            }
+            acc = acc + len(r2.xs) + len(r3.name) + len(pickc(i).name)
+        } elif mode == "cap_array" {
+            // A closure built per iteration over a struct with a [str]
+            // field, replacing it once called (master: 96MB at 1M).
+            let mut ca = P { name: "a{i}", xs: [i, i] }
+            let mut cb = Ptf { name: "b{i}", t: ("t{i}", i) }
+            let swap = |k: i64| {
+                ca.xs = [k]
+                cb.name = "n{k}"
+                return len(ca.xs) + len(cb.name)
+            }
+            acc = acc + swap(i) + len(ca.xs)
+        } elif mode == "tuple_field" {
+            // `let t = s.t` owns a share that was never released.
+            let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }
+            let tt = sf.t
+            sf = Ptf { name: "g{i}", t: ("u{i}", i) }
+            acc = acc + len(tt.0) + len(sf.t.0)
         }
         i = i + 1
     }

@@ -97,6 +97,21 @@ fn type_of_operand_hint(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -
     }
 }
 
+/// `kryos_array_dup`'s element kind for an array of `elem`: 1 retains a
+/// str/array/map header, 4 a struct or enum box (`kryos_struct_retain`), 2 an
+/// arc box (a closure, `Shared`); 0 copies the buffer only. The array drop
+/// releases every one of those element types (a closure through
+/// `kryos_arc_release`), so a dup that skips them leaves two arrays owning
+/// one reference. As `array_elem_dup_kind` in kryos-mir.
+fn array_dup_kind(elem: &MirType) -> i64 {
+    match elem {
+        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+        MirType::Struct(_) | MirType::Enum(_) => 4,
+        MirType::Function { .. } | MirType::Shared(_) => 2,
+        _ => 0,
+    }
+}
+
 /// Returns true if a type is a floating-point type.
 fn is_float_type(ty: Type) -> bool {
     ty == types::F32 || ty == types::F64
@@ -529,6 +544,8 @@ pub fn compile_module_with_options(
     {
         let call_conv = object_module.isa().default_call_conv();
         for (func_name, (_, _, cap_types, _, _)) in &closure_info {
+            // (Map and Tuple captures need a dropper too: a closure capturing
+            // only a map or a tuple got none and leaked it.)
             let has_heap_caps = cap_types.iter().any(|ct| {
                 matches!(
                     ct,
@@ -538,6 +555,8 @@ pub fn compile_module_with_options(
                         | Some(MirType::Shared(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
+                        | Some(MirType::Map { .. })
+                        | Some(MirType::Tuple(_))
                 )
             });
             if has_heap_caps {
@@ -567,6 +586,7 @@ pub fn compile_module_with_options(
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::Tuple(_)
                 )
             })
         };
@@ -1971,6 +1991,14 @@ pub fn compile_module_with_options(
                 func_ids.insert(rt_name.to_string(), id);
             }
         }
+        // Tuple fields of drop helpers are released through this.
+        if !func_ids.contains_key("kryos_tuple_release") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_tuple_release", Linkage::Import, &sig)?;
+            func_ids.insert("kryos_tuple_release".to_string(), id);
+        }
         // `[T]` fields of drop helpers release their elements through this.
         if !func_ids.contains_key("kryos_array_free_elems") {
             let mut sig = Signature::new(call_conv);
@@ -2004,6 +2032,36 @@ pub fn compile_module_with_options(
                 // Free each heap-typed capture at offset (i+1)*8.
                 for (i, cap_ty) in cap_types.iter().enumerate() {
                     let offset = ((i + 1) * 8) as i32;
+                    // A tuple capture is the fresh copy MIR made for the env:
+                    // release its str/array/map elements and the tuple.
+                    if let Some(MirType::Tuple(tes)) = cap_ty {
+                        let kinds = tes.iter().take(16).enumerate().fold(0i64, |acc, (k, t)| {
+                            let kind = match t {
+                                MirType::Str => 1,
+                                MirType::Array(_, _) => 2,
+                                MirType::Map { .. } => 3,
+                                _ => 0,
+                            };
+                            acc | (kind << (k * 4))
+                        });
+                        let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
+                        let kv = builder.ins().iconst(types::I64, kinds);
+                        let fid = func_ids["kryos_tuple_release"];
+                        let fref = object_module.declare_func_in_func(fid, builder.func);
+                        builder.ins().call(fref, &[val, kv]);
+                        continue;
+                    }
+                    // A struct/enum capture is a deep copy (see RValue::Closure):
+                    // its type's drop helper releases its fields and the box --
+                    // a bare kryos_free released only the box, leaking the
+                    // fields of every captured struct.
+                    let helper_name = match cap_ty {
+                        Some(MirType::Struct(n)) | Some(MirType::Enum(n)) => {
+                            let dn = format!("__kryos_drop_{n}");
+                            func_ids.contains_key(&dn).then_some(dn)
+                        }
+                        _ => None,
+                    };
                     let rt_fn_name = match cap_ty {
                         Some(MirType::Str) => Some("kryos_string_free"),
                         Some(MirType::Array(_, _)) => Some("kryos_array_free"),
@@ -2014,7 +2072,7 @@ pub fn compile_module_with_options(
                         Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("kryos_free"),
                         _ => None,
                     };
-                    if let Some(fn_name) = rt_fn_name {
+                    if let Some(fn_name) = helper_name.as_deref().or(rt_fn_name) {
                         let val = builder
                             .ins()
                             .load(types::I64, MemFlags::new(), env_ptr, offset);
@@ -2094,6 +2152,24 @@ pub fn compile_module_with_options(
                             .find(|(n, _, _)| n == field_name)
                             .map(|(_, off, _)| *off as i32);
                         if let Some(offset) = field_offset {
+                            if let MirType::Tuple(tes) = field_ty {
+                                let kinds = tes.iter().take(16).enumerate().fold(0i64, |acc, (i, t)| {
+                                    let k = match t {
+                                        MirType::Str => 1,
+                                        MirType::Array(_, _) => 2,
+                                        MirType::Map { .. } => 3,
+                                        _ => 0,
+                                    };
+                                    acc | (k << (i * 4))
+                                });
+                                let field_val =
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
+                                let kv = builder.ins().iconst(types::I64, kinds);
+                                let fid = func_ids["kryos_tuple_release"];
+                                let fref = object_module.declare_func_in_func(fid, builder.func);
+                                builder.ins().call(fref, &[field_val, kv]);
+                                continue;
+                            }
                             if let MirType::Array(elem, _) = field_ty {
                                 let field_val =
                                     builder.ins().load(types::I64, MemFlags::new(), ptr, offset);
@@ -2646,11 +2722,7 @@ fn emit_struct_deep_copy_inner<M: Module>(
                 // (a plain clone of `[Token]` let one copy's drop consume the
                 // owner count another copy still relied on). Same elem_kind
                 // encoding as the struct-literal dup above and the LLVM backend.
-                let elem_kind: i64 = match elem.as_ref() {
-                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                    MirType::Struct(_) | MirType::Enum(_) => 4,
-                    _ => 0,
-                };
+                let elem_kind = array_dup_kind(elem.as_ref());
                 let dup_ref =
                     ensure_func_ref_with_args("kryos_array_dup", builder, translator, module, 2)?;
                 let k = builder.ins().iconst(types::I64, elem_kind);
@@ -2726,6 +2798,15 @@ fn emit_struct_deep_copy_inner<M: Module>(
             // via the existing `emit_enum_deep_copy` sibling helper.
             Some(MirType::Enum(inner_name)) => {
                 emit_enum_deep_copy(inner_name, field_val, builder, translator, module, visiting)?
+            }
+            // A tuple field (a refcounted KryosArray handle): the copy shares
+            // it with its own reference; the struct drop's tuple release is
+            // refcount-guarded, so each copy releases one.
+            Some(MirType::Tuple(_)) => {
+                let retain_ref =
+                    ensure_func_ref_with_args("kryos_array_retain_opt", builder, translator, module, 1)?;
+                builder.ins().call(retain_ref, &[field_val]);
+                field_val
             }
             Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                 let retain_ref =
@@ -2883,11 +2964,7 @@ fn emit_enum_deep_copy_inner<M: Module>(
                         // held -- the same latent double free the 10-06 wave
                         // fixed in the STRUCT deep copy. Masked until enum
                         // params stopped leaking their entry owner.
-                        let elem_kind: i64 = match elem.as_ref() {
-                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                            MirType::Struct(_) | MirType::Enum(_) => 4,
-                            _ => 0,
-                        };
+                        let elem_kind = array_dup_kind(elem.as_ref());
                         let dup_ref = ensure_func_ref_with_args(
                             "kryos_array_dup",
                             builder,
@@ -5774,11 +5851,7 @@ fn translate_rvalue<M: Module>(
                                     // chain), causing the underlying map to be freed one
                                     // reference early and its header recycled/wiped
                                     // before a later legitimate read.
-                                    let elem_kind: i64 = match elem.as_ref() {
-                                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                                        MirType::Struct(_) | MirType::Enum(_) => 4,
-                                        _ => 0,
-                                    };
+                                    let elem_kind = array_dup_kind(elem.as_ref());
                                     let dup_ref = ensure_func_ref_with_args(
                                         "kryos_array_dup",
                                         builder,
@@ -6261,11 +6334,7 @@ fn translate_rvalue<M: Module>(
                         // `env: [map<str, Value>]` field is exactly an Array-of-Map
                         // payload, under-retained on construction, freed one owner
                         // early, later read as an empty/wiped map ("unbound symbol").
-                        let elem_kind: i64 = match elem.as_ref() {
-                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                            MirType::Struct(_) | MirType::Enum(_) => 4,
-                            _ => 0,
-                        };
+                        let elem_kind = array_dup_kind(elem.as_ref());
                         let dup_ref = ensure_func_ref_with_args(
                             "kryos_array_dup",
                             builder,
@@ -8118,10 +8187,22 @@ fn emit_drop_for_value<M: Module>(
             // kind is needed so the runtime frees heap-typed elements (e.g.
             // `map<K, [str]>`) instead of only the array's flat buffer +
             // header -- see `kryos_map_free_typed`'s doc comment (kryos-rt).
-            let value_elem_kind = match value.as_ref() {
-                MirType::Array(elem, _) => kind_of(elem.as_ref()),
-                _ => 0,
-            };
+            // A map-valued map: the inner map's key/value kinds, packed, and
+            // its own value's element kind above them, 8 bits per level (see
+            // `free_entry_slot` in kryos-rt) -- with one level only, every map
+            // below the second was freed untyped and leaked its keys.
+            fn elem_kind_of(t: &MirType, kind_of: &dyn Fn(&MirType) -> i64, depth: u32) -> i64 {
+                match t {
+                    MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                    MirType::Map { key: ik, value: iv } if depth < 6 => {
+                        (elem_kind_of(iv.as_ref(), kind_of, depth + 1) << 8)
+                            | (kind_of(ik.as_ref()) << 4)
+                            | kind_of(iv.as_ref())
+                    }
+                    _ => 0,
+                }
+            }
+            let value_elem_kind = elem_kind_of(value.as_ref(), &kind_of, 0);
             // Struct/enum values are released through their type's drop
             // helper (the same one an array element gets); the type-erased
             // runtime free left every one behind.
@@ -8135,7 +8216,25 @@ fn emit_drop_for_value<M: Module>(
                 }
                 _ => None,
             };
-            if let Some(drop_fn) = value_drop_fn {
+            // Tuple values are tuple handles: release each one's str/array/map
+            // elements and the tuple itself.
+            let tuple_value_kinds = match value.as_ref() {
+                MirType::Tuple(tes) if tes.len() <= 16 && tes.iter().any(|t| kind_of(t) != 0 && kind_of(t) != 4) => {
+                    Some(tes.iter().enumerate().fold(0i64, |acc, (k, t)| {
+                        let kd = kind_of(t);
+                        acc | (if kd == 4 { 0 } else { kd } << (k * 4))
+                    }))
+                }
+                _ => None,
+            };
+            if let Some(kinds) = tuple_value_kinds.filter(|_| value_drop_fn.is_none()) {
+                let free_ref =
+                    ensure_func_ref_with_args("kryos_map_free_tuple_values", builder, translator, module, 4)?;
+                let key_kind_val = builder.ins().iconst(types::I64, key_kind);
+                let kinds_val = builder.ins().iconst(types::I64, kinds);
+                let boxed_val = builder.ins().iconst(types::I64, 0);
+                builder.ins().call(free_ref, &[val, key_kind_val, kinds_val, boxed_val]);
+            } else if let Some(drop_fn) = value_drop_fn {
                 let free_ref =
                     ensure_func_ref_with_args("kryos_map_free_with", builder, translator, module, 3)?;
                 let drop_ref = ensure_func_ref_with_args(&drop_fn, builder, translator, module, 1)?;
@@ -8222,6 +8321,7 @@ fn emit_drop_for_value<M: Module>(
                                 | MirType::Map { .. }
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
+                                | MirType::Tuple(_)
                                 | MirType::Shared(_) => {
                                     let field_val = builder.ins().load(
                                         types::I64,
@@ -8289,6 +8389,11 @@ fn emit_drop_for_value<M: Module>(
                         Some("kryos_free".to_string())
                     }
                 }
+                // Tuple elements are NOT released (an array of tuples leaks
+                // them, as on master): array copies -- a struct copy, a `let
+                // mut` dup, a field read, an enum payload or closure snapshot
+                // -- share the tuple elements without retaining them, so
+                // releasing them here double-freed (review round 6, R12-R31).
                 _ => None,
             };
 
