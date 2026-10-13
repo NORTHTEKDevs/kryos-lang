@@ -1,0 +1,153 @@
+// Conformance (2026-10-12): what the eighth adversarial review
+// (~/scratch/kryos-cb/review8) found in the seventh-review fix round: the
+// reassignment form of a tuple field read, a closure's tail return and field
+// stores of its captured struct, and the reassignment rewrite inside
+// `unsafe`/`deny!` blocks. Run under KRYOS_FREE_DIAG on both backends, and
+// on AOT with real frees, by tests/no_double_free.sh.
+
+struct P { name: str, n: i64 }
+struct L { inner: P, k: i64 }
+struct S { t: (str, i64), n: i64 }
+struct W { inner: S, k: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+// `u = s.t` (a reassignment, not a `let`) owns its tuple: it outlives the
+// struct, also once pushed into an array or stored in a map.
+fn pushed(i: i64) -> [(str, i64)] {
+    let mut s = S { t: ("p{i}", i), n: i }
+    let mut u = ("z{0}", 0)
+    u = s.t
+    let mut ts: [(str, i64)] = []
+    ts = push(ts, u)
+    s = S { t: ("x{i}", 0), n: 0 }
+    return ts
+}
+
+fn reread(i: i64) -> (str, i64) {
+    let mut w = W { inner: S { t: ("w{i}", i), n: i }, k: i }
+    let mut u = ("z{0}", 0)
+    u = w.inner.t
+    w = W { inner: S { t: ("y{i}", 0), n: 0 }, k: 0 }
+    return u
+}
+
+@capabilities(all)
+fn main() {
+    let ps = pushed(1)
+    churn(1)
+    expect(ps[0].0 == "p1", "tuple field reassigned then pushed")
+
+    let mut sm = S { t: ("m{1}", 1), n: 1 }
+    let mut u = ("z{0}", 0)
+    u = sm.t
+    let mm: map<str, (str, i64)> = {}
+    mm["k"] = u
+    sm = S { t: ("q{2}", 2), n: 2 }
+    churn(2)
+    expect(mm["k"].0 == "m1" and u.0 == "m1", "tuple field reassigned then stored in a map")
+
+    let rr = reread(3)
+    churn(3)
+    expect(rr.0 == "w3", "nested tuple field reassigned then returned")
+
+    // A closure's tail value that is its captured struct (a bare tail, an
+    // if-expression arm) is an independent copy.
+    let mut cp = P { name: "c", n: 0 }
+    let ct = |k: i64| -> P {
+        cp.n = k
+        cp.name = "c{k}"
+        cp
+    }
+    let r1 = ct(1)
+    let r2 = ct(2)
+    churn(4)
+    expect(r1.name == "c1" and r1.n == 1 and r2.name == "c2" and r2.n == 2, "captured struct as the tail value")
+
+    let mut cq = P { name: "d", n: 0 }
+    let cif = |k: i64| -> P {
+        cq.n = k
+        cq.name = "d{k}"
+        if k > 0 { cq } else { P { name: "neg", n: -1 } }
+    }
+    let q1 = cif(1)
+    let q2 = cif(2)
+    churn(5)
+    expect(q1.name == "d1" and q2.name == "d2" and q2.n == 2, "captured struct as an if-arm tail")
+
+    let mut cm = P { name: "m", n: 0 }
+    let cmatch = |k: i64| -> P {
+        cm.n = cm.n + 1
+        cm.name = "m{cm.n}"
+        match k {
+            0 => cm,
+            _ => cm,
+        }
+    }
+    let m1 = cmatch(0)
+    churn(8)
+    let m2 = cmatch(1)
+    churn(9)
+    expect(m1.name == "m1" and m1.n == 1 and m2.name == "m2" and cm.name == "m", "captured struct as a match-arm value")
+
+    // Storing the captured struct into another struct's field or a tuple
+    // element gives that field its own copy.
+    let mut lp = P { name: "l{0}", n: 0 }
+    let store = |k: i64| {
+        lp.n = k
+        lp.name = "l{k}"
+        let mut loc = L { inner: P { name: "z", n: 0 }, k: 0 }
+        loc.inner = lp
+        let mut t = (P { name: "z{0}", n: 0 }, 1)
+        t.0 = lp
+        return "{loc.inner.name} {t.0.n}"
+    }
+    let s1 = store(1)
+    let s2 = store(2)
+    churn(6)
+    expect(s1 == "l1 1" and s2 == "l2 2" and lp.name == "l0", "captured struct stored into a field")
+
+    // The rewrite's own temp never shadows a user binding, and whole
+    // reassignments inside unsafe / deny! blocks persist.
+    let mut wp = P { name: "W0", n: 0 }
+    let shadow = |k: i64| {
+        let __capassign_0 = "user{k}"
+        wp = P { name: "W{k - 6}", n: k }
+        return "{__capassign_0} {wp.name}"
+    }
+    let sh = shadow(7)
+    expect(sh == "user7 W1", "rewrite temp shadowing a user binding")
+
+    let mut ap = P { name: "a", n: 0 }
+    let blocks = |k: i64| {
+        unsafe {
+            ap = P { name: ap.name + "!", n: ap.n + 1 }
+        }
+        deny!(net) {
+            ap = P { name: ap.name + "?", n: ap.n + 1 }
+        }
+        return "{ap.name} {ap.n}"
+    }
+    let b1 = blocks(1)
+    let b2 = blocks(2)
+    churn(7)
+    expect(b1 == "a!? 2" and b2 == "a!?!? 4", "reassignment inside unsafe / deny! blocks")
+
+    println("conformance review8 fixes: PASS")
+}

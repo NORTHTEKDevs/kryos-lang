@@ -10,6 +10,251 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: review round 11 and a source-by-consumer matrix -- regressions the batch had all along (2026-10-13)
+
+`~/scratch/kryos-cb/review11` (161 probe modes, 15 minimal repros, 40 leak
+modes) found 13 regressions against master: 6 from round 10, the rest older
+(the tuple-param one since the batch's tuple release, 10-10). Every review
+since round 6 had probed shapes, so the next step was systematic: three
+generators (`tools/loop/ownership_matrix/gen1.py`, `gen2.py`, `gen3.py`;
+329 programs; `run.sh` per binary, then `compare.py <master_out>
+<cand_out>`) write one program per value type and source -- types str, array,
+map, closure, struct, tuple, `Option`, struct-with-tuple, `[struct]`,
+`Option<tuple>`, nested struct; sources a local, a param, a capture, a
+field, a nested field, a field of a temporary / of an immutable global / of
+a mutable global / of an array element, an index of a local / of a
+temporary, a map value -- with one function per consumer (let,
+reassignment, struct literal, array literal, push, map store, enum payload,
+tuple literal, field store, return, if / match value, `return if`, index
+store, element field store, nested literal, block value, implicit tail,
+tail if, `return match`), overwrites the source, reuses the freed memory,
+and runs JIT / LLVM / Cranelift with KRYOS_FREE_DIAG and with real frees.
+`compare.py` counts a regression only where master is clean on that backend
+(a real-free output differing from master's where master itself
+double-frees is allocation noise). Fixed (`conf_review11_fixes.kry`: fails
+on the round-10 state; two of its checks -- a struct-with-tuple stored into
+an element's field on the JIT / Cranelift, a temporary's closure field
+returned on LLVM -- fail on master too):
+- N1: `take_tail_identifier` found the tail name with a plain `rposition`,
+  which sees an out-of-scope binding of the same name (an earlier match
+  arm's, a finished loop's): a closure's capture as an if value was not
+  copied, and the `let` released the env's struct. It skips
+  `hidden_locals` now, as lowering's own lookup does; so does the
+  enum-argument loop in `suppress_enum_field_arg_drops`.
+- N2-N4: a param or borrowed tuple, map or closure stored in a struct
+  literal took no reference, though the struct drop releases those fields
+  -- a tuple param (`PT { t: t }`, real frees: a crash on `kryos run`) since
+  the batch's tuple release, a map param already on master, and the
+  round-9/10 slot drop exposed all three through if/match literals. The
+  literal retains / shares them (not for an `@copy` struct).
+- A TUPLE field of a temporary (`E.A(mk(i).t)`, `u = mk(i).t`) or of an
+  immutable global (inlined as a temporary: N8 `E.A(GI.t)`, N9 `u = GI.t`)
+  aliased a tuple the temporary's drop released; a tuple map value as an
+  enum payload (`W.Has(m[k])`) aliased one the next overwrite of the key
+  released. Each takes its own owner.
+- L1/L2: `suppress_enum_field_arg_drops` shared one argument before it knew
+  another one moves; the source then kept its partial-move mark and was
+  never dropped, so the share leaked (`EP.Pair(s.p, s.th)` above master).
+  It decides first: if any argument moves, none is shared (master's way).
+- N5-N7 (codegen): LLVM's struct copy skipped a nested struct whose only
+  heap field is a tuple (`struct_has_heap_fields` ignored tuples), and
+  array copies gave enum elements (LLVM deep copy, struct literal) and
+  closure elements (every dup site, both backends) element kind 0, so the
+  copy and the source both released them. One `array_dup_kind` per backend:
+  1 str/array/map, 4 struct/enum, 2 closure/`Shared`. Master crashed on the
+  plain literal forms (`PA { es: [E.A(s)] }` on LLVM, `PFA { fs: [|x| ..] }`
+  on `kryos run`).
+- From the matrix (master right, the batch not -- mostly since the tuple
+  and closure-field releases): a named struct/enum local or a struct /
+  enum / tuple read stored into a field reached through an index or a
+  borrowed root (`y[0].f = x`, `y[0].f = h.f`) took no reference; a value
+  branch reading out of a temporary (`if c { mk(i).t } ..`,
+  `mkxs(i)[0]`) aliased what the branch's own temp-drop released -- the
+  branch shares it now (`share_temp_read_tail`, all five tail sites) and
+  the `let` treats that slot as owned (`struct_value_owned`,
+  `branch_value_is_fresh_in`); `return if/match ..` handed the caller the
+  unshared result slot after the function's locals were released -- it is
+  lowered as one `return` per branch (`return_per_branch`), and so is an
+  implicit tail if/match, while an implicit tail field / index read takes
+  the `return` path; a closure field read returned or stored into an array
+  literal or element (`return mkh(i).f`, `[hs[0].f]`) is retained before
+  the struct is released.
+- Matrix result on 329 programs x 3 backends: no regression against master
+  and no new crash (compare.py); 715 legs clean on both, 173 legs master gets
+  wrong are clean here, 99 legs are unclean on both (master's own
+  use-after-frees, the open items below).
+- Still open: L3 -- a mutable global's field as a payload (`Some(G.inner)`)
+  owns its value now (master double-freed it once the enum was dropped),
+  but overwriting a global's field never releases the old value (master
+  too), so after `G.inner = ..` that reference leaks: 94MB / 1M. L4 --
+  `push(xs, if c { cap } else { P { .. } })` in a closure leaks the slot,
+  more than master (a copy instead of a count). R1 -- a bare index read as
+  a payload aliases the element (master the same), and a struct / `Option`
+  index read (`xs[0]`) put into an array or struct literal or a map, or
+  pushed, reads freed memory on some backend once the element is
+  overwritten (master too). A closure field read of
+  a temporary or of an array element (`mkh(i).f`, `hs[0].f`) still
+  double-frees bound by `let` or a reassignment, stored into a map, a
+  payload or a field, or (`hs[0].f`) as an if / match value -- master the
+  same, the matrix's both-unclean rows; the returned / array forms are
+  fixed. The spawn-argument array copy uses the drop-side
+  kind numbering (2 for an array, 3 for a map) in both backends (master
+  too; not touched).
+
+## Wave: review round 10 -- what the round-9 fixes broke (2026-10-13)
+
+`~/scratch/kryos-cb/review10` (41 correctness probes, 8 leak probes with 63
+modes, every anomaly re-run on the previous state and on master, then a
+full second sweep) found 8 regressions in round 9 and 3 related bugs master
+has. Fixed and pinned in the review-10 part of
+`tests/conformance/conf_review9_fixes.kry` (fails on the round-9 state):
+- F1: `let mut r = if c { x } else { .. }`, then mutating `r`, changed `x`
+  -- a caller's argument too: the slot takeover held a share of an
+  enclosing local, param or loop variable, not a copy. F2: a match arm
+  naming an enclosing struct (`_ => default`) is moved by arm lowering, and
+  the takeover or the discard drop then freed it (wrong answers,
+  use-after-free). F3: hiding a value branch's names (round 9's scoping
+  fix) made `take_tail_identifier` pick a hidden loop variable of the same
+  name (double free). `struct_value_owned` now accepts only fresh values
+  and a closure's captured struct, and the scoping fix is reverted (open
+  again, see the round-9 wave).
+- F4: `v = G.inner`, a reassignment from a field of a mutable global, took
+  no share once `owns_read` required a local root: the JIT freed the
+  global's field (`2 2 1 g=y2`, master the same). `rooted_at_local`
+  accepts a mutable global as the root.
+- F5: `E.Pair(s.p, s.th)` undid every argument's partial-move mark once one
+  argument was shared, so the moved recursive-enum field `s.th` was freed
+  under the enum on LLVM. The marks are undone only when no argument moved.
+- F6: `push(xs, { p.n = k  p })` in a closure leaked the copy: the block's
+  struct temp hid the fresh clone from `consume_call_args`.
+  `is_fresh_struct_clone` follows `Use` chains (8 hops, unnamed temps
+  only). F8: nested statement blocks ending in a capture (`{ { p.n = k
+  p } }`) leaked the copy the same way; the discard drop uses it too.
+- F7: an enum payload read from a temporary, a missing key or a variant
+  (`Some(mk(i).inner)`, `Some(m["no"])`, `Some(E.C)`) took a share nothing
+  released. Only a field read of a named place is shared now.
+- Still open (master the same): `Some(ss[0].t)` leaks the shared tuple,
+  ~155MB / 1M on Cranelift and ~95MB on LLVM -- an enum's drop never
+  releases a tuple payload, and round 9's share is what removed the
+  use-after-free. A bare index read as a payload (`Some(xs[0])`,
+  `Some(m[k])`) aliases the element, so overwriting the element frees it
+  under the enum (round 9 shared it, and shared a missing key's fresh
+  default too: F7). P1-P3: a value-branch `let` shadowing an outer str /
+  array / map, a binding of another type, or a mutable global gives later
+  reads of the outer name the inner binding (wrong values, see the round-9
+  wave).
+- Still open, NOT master's symptom (since the batch's first commit): P1 in
+  a loop, `let v = if c { let xs = [..]  xs } else { xs }` -- the else
+  branch reads the then branch's `xs` from an earlier iteration; master
+  reads it because master leaked it, the batch frees it with `v`, so the
+  read is a use-after-free (`review10/g4_shadow_else.kry`'s `fc`; both are
+  wrong values). The fix is the scoping one: hide a value branch's names
+  and make the name lookups that skip `hidden_locals` (take_tail_identifier,
+  infer_expr_type's Identifier arm, the local-vs-global `.any(..)` checks,
+  ~17 sites) respect it.
+
+## Wave: review round 9 -- the round-8 fixes and their neighbours (2026-10-13)
+
+`~/scratch/kryos-cb/review9` (74 probes, ~240 leak legs) found 4 regressions
+of the round-8 fixes and 1 the batch had. Fixed and pinned in
+`tests/conformance/conf_review9_fixes.kry` (fails on master and on the
+previous state) and the `if_struct` mode of `tests/mem_agg_ops_gate.sh`
+(master 928MB / 780MB at 1M -> 5 / 4):
+- A closure's captured struct as the tail of a statement-position block
+  (`{ p.n = 1  p }`, `unsafe { .. p }`) failed the LLVM build: the block
+  returned its copy as an un-materialized call that landed in an i64 sink.
+  The copy is a struct temp now, dropped when discarded.
+- `owns_read` shared any field-access right-hand side, so `e = E.C` (a
+  variant spelled as a field access) and `u = mk(i).inner` (a field of a
+  temporary) leaked. Only a read of a named place owns its value now.
+- A tuple or struct field read used as an enum payload (`E.A(s.t)`,
+  `Some(s.inner)`, `Ok(arr[0].t)`) aliased a value its source still
+  released: a use-after-free once the source was overwritten (a struct
+  field: master too). The payload takes its own owner and the read's
+  partial-move mark is undone.
+- A struct-valued if/match bound by `let` copied the hidden result slot and
+  never released it (master: 142-232MB / 1M on Cranelift for two fresh
+  values or a closure's capture, also outside closures). `let` takes the
+  slot over when every branch hands it a fresh value or a closure's
+  captured struct (`struct_value_owned`), and such a match used as a
+  statement drops it (a statement-position if never builds the value).
+  Round 9 first also took over branches naming an
+  enclosing local, a param or a loop variable; review 10 showed that
+  unsound (F1-F3), so those still leak, master the same.
+- Still open, a silent wrong answer on master too (both backends): a name
+  declared inside an if/match VALUE branch stays visible after it, so a
+  later read of an outer binding of the same name gets the inner one (`let
+  s = ..  let r = if c { let s = ..  s } else { .. }` then `s`). Round 9
+  made `lower_block_as_value` hide its block's names, as the statement form
+  does; review 10 found name lookups that ignore `hidden_locals`
+  (`take_tail_identifier`'s `rposition`, `infer_expr_type`'s Identifier
+  arm, the global check) and turned that into double frees, so it was
+  reverted until those are hidden-aware.
+- Still open (master the same): an enclosing local named directly as a
+  match arm's value (`0 => a`) is marked moved for the whole function -- it
+  leaks on the other paths and suppresses drops elsewhere in the function;
+  temporaries created in a match's `_` arm (a block or not) are never
+  dropped -- the other arms of a switch-lowered match drop theirs; a
+  field read of a temporary (`mk(i).inner`) leaks the temporary on
+  Cranelift. Review 9's P1/P2 (a capture leaving through a try/catch tail,
+  or through a match binding that aliases it: double frees), P4 (on LLVM, a
+  closure's enum match falls through a failed guard to `_` instead of the
+  next same-tag arm: a silent wrong answer), P5 (a closure's whole
+  reassignment of a captured tuple or enum never persists), P6
+  (`std::iter::find` returning a struct element double-frees), P7 (a
+  self-recursive local fn returning a struct fails the LLVM build), P8 (a
+  scalar field of a local struct as the return value leaks the struct), P9
+  (a struct-returning call used directly as an argument or a match subject
+  leaks; a discarded closure call returning an aggregate leaks its box on
+  LLVM), P10 (a false E0300 after `return e` in a closure).
+
+## Wave: review round 8 -- the round-7 fixes and their neighbours (2026-10-12)
+
+`~/scratch/kryos-cb/review8` (76 probes, ~130 leak legs, a Cranelift
+real-free leg added) found 4 regressions of the round-7 fixes and 4 the
+batch had all along. Fixed and pinned in
+`tests/conformance/conf_review8_fixes.kry` (fails on master and on the
+previous commit) and the `cap_escape` mode of `tests/mem_agg_ops_gate.sh`
+(master 188MB / 218MB at 1M -> 4):
+- `u = s.t` -- a REASSIGNMENT from a tuple field read, not a `let` -- took
+  no share, and round 7's exception in `strip_escaping_tuple_drops` (a field
+  read followed by a share keeps its drop) counted a later container's share
+  (`push(ts, u)`, `m[k] = u`) as the binding's own: use-after-frees and
+  double frees, visible only with real frees. The reassignment owns its read
+  like `let` (`owns_read`), and only a share right after the read counts.
+- A closure's captured struct leaving by value through a block tail, an if
+  arm or a match arm (`|| { p.n = 1  p }` is lowered as `return <block>`;
+  `match k { 0 => p, _ => p }`) was moved out of the env: double frees, and
+  on the JIT a value already returned changed on the next call. Every such
+  path hands out a copy now (`env_owned_copy`).
+- The captured struct stored into another struct's field or a tuple element
+  (`loc.inner = p`, `t.0 = p`) took no reference: `emit_struct_share` skips a
+  borrowed value, but the field is a new owner (`emit_value_share`).
+- The rewrite's temp shadowed a user binding named `__capassign_0`; it is
+  `__capassign$N` now, which no identifier can spell. The rewrite also walks
+  `unsafe { }` and `deny!(..) { }` (a reassignment there did not persist on
+  the JIT; master also read freed memory on AOT).
+- `push(arr, p)` of a borrowed struct also shared the fresh copy push makes
+  of it, leaking one per push (97MB / 1M). An enum's copy keeps the share:
+  `__kryos_enum_index_clone` does not own its payload on the JIT, and
+  dropping the share there made `conf_json_int` read a JSON value back as
+  another variant (caught by the conformance gate before commit).
+- Found while measuring, master too: LLVM's closure thunk boxes an aggregate
+  return and the call site never freed the box, so every closure call
+  returning a struct leaked it (66MB / 1M, also with no captures). The call
+  site releases the box after unboxing (`kryos_arc_release`, raw box only).
+- Still open (master the same): a captured struct put into a tuple literal
+  (`let t = (p, 1)`) or copied (`let q = p`) leaks (96MB at 1M on
+  Cranelift, 66MB on LLVM); review 8's pre-existing P1-P7 (a captured
+  struct's `[E]` / `[fn]` field replaced inside the closure, a capture after
+  a shadowing inner `let`, a recursive-enum alias returned, a self-recursive
+  local fn mutating a capture, `p.inner.xs = push(..)` visible in the outer
+  struct on AOT) and its pre-existing leaks (a `throw` inside a loop over a
+  container read, overwriting a map-of-maps entry, the innermost struct /
+  enum / tuple values of nested maps, struct / tuple / closure arguments of
+  a `dyn` call, field stores from a chain, into a loop variable or from a
+  temporary's field).
+
 ## Wave: review round 7 -- what the round-6 fixes broke, and the classes around them (2026-10-11)
 
 `~/scratch/kryos-cb/review7` (~87 probes, both backends, real-free AOT runs,

@@ -1,0 +1,243 @@
+// Conformance (2026-10-13): what the eleventh adversarial review
+// (~/scratch/kryos-cb/review11) and the source-by-consumer matrix after it
+// (tools/loop/ownership_matrix) found: a closure's capture named like an
+// out-of-scope binding, a param or borrowed tuple / map / closure stored in a
+// struct literal, a tuple field of a temporary or an immutable global, a
+// tuple map value used as an enum payload, copies of structs with a nested
+// tuple, an enum array or a closure array, a struct stored into an element's
+// field, a temporary read as an if value, `return if` and a tail index read
+// of a place the function drops, and a temporary's closure field returned.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+struct PT { t: (str, i64), n: i64 }
+struct HT { f: PT, n: i64 }
+struct HF { f: fn(i64) -> str, n: i64 }
+struct PM { m: map<str, i64>, n: i64 }
+struct PF { f: fn(i64) -> i64, n: i64 }
+struct S { t: (str, i64), inner: P, n: i64 }
+struct In2 { t: (str, i64) }
+struct P2 { inner: In2, n: i64 }
+enum E { A((str, i64)), B(P), C }
+enum EA { A(str), C }
+struct PA { es: [EA], n: i64 }
+struct PFA { fs: [fn(i64) -> i64], n: i64 }
+enum W { Has((str, i64)), No }
+
+let GI: S = S { t: ("it", 1), inner: P { name: "ii", n: 1 }, n: 1 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mk(i: i64) -> S { return S { t: ("t{i}", i), inner: P { name: "i{i}", n: i }, n: i } }
+
+fn wrap(t: (str, i64)) -> str {
+    let r = PT { t: t, n: 1 }
+    return r.t.0
+}
+
+fn mkpt(t: (str, i64)) -> PT { return PT { t: t, n: 1 } }
+
+fn mapif(m: map<str, i64>, c: bool) -> i64 {
+    let r = if c { PM { m: m, n: 1 } } else { PM { m: {}, n: 0 } }
+    return r.n + m["k"]
+}
+
+fn fnif(f: fn(i64) -> i64, c: bool) -> i64 {
+    let r = if c { PF { f: f, n: 1 } } else { PF { f: |x: i64| x, n: 0 } }
+    return f(1) + r.n
+}
+
+fn nested(i: i64) -> str {
+    let r = if i >= 0 { P2 { inner: In2 { t: ("nt{i}", i) }, n: 1 } } else { P2 { inner: In2 { t: ("no", 0) }, n: 0 } }
+    churn(i)
+    return r.inner.t.0
+}
+
+fn enumarr(i: i64) -> str {
+    let r = if i >= 0 { PA { es: [EA.A("ea{i}")], n: 1 } } else { PA { es: [], n: 0 } }
+    churn(i)
+    return match r.es[0] {
+        EA.A(s) => s,
+        EA.C => "C",
+    }
+}
+
+fn fnarr(i: i64) -> i64 {
+    let k = i + 10
+    let r = if i >= 0 { PFA { fs: [|x: i64| x + k], n: 1 } } else { PFA { fs: [], n: 0 } }
+    churn(i)
+    let g = r.fs[0]
+    return g(1)
+}
+
+fn global_payload() -> str {
+    let e = E.A(GI.t)
+    return match e {
+        E.A(t) => t.0,
+        _ => "x",
+    }
+}
+
+fn global_reassign(i: i64) -> str {
+    let mut u = ("u{i}", 0)
+    u = GI.t
+    return u.0
+}
+
+fn temp_reads(i: i64) -> str {
+    let b = E.A(mk(i).t)
+    let mut u = ("u", 0)
+    u = mk(i + 1).t
+    churn(i)
+    let bn = match b {
+        E.A(t) => t.0,
+        _ => "x",
+    }
+    return bn + " " + u.0
+}
+
+fn mkht(i: i64) -> HT { return HT { f: PT { t: ("v{i}", i), n: i }, n: i } }
+
+fn mkfn(i: i64) -> fn(i64) -> str {
+    let s = "f{i}"
+    return |x: i64| s
+}
+
+fn mkhf(i: i64) -> HF { return HF { f: mkfn(i), n: i } }
+
+fn elem_field_store(i: i64) -> str {
+    let mut x = PT { t: ("v{i}", i), n: i }
+    let mut y = [HT { f: PT { t: ("d", 0), n: 0 }, n: 0 }]
+    y[0].f = x
+    x = PT { t: ("w{i}", i), n: i }
+    churn(i)
+    return y[0].f.t.0
+}
+
+fn temp_if_value(i: i64) -> str {
+    let y = if i > 0 { mkht(i).f.t } else { ("d", 0) }
+    churn(i)
+    return y.0
+}
+
+fn return_if_map(i: i64) -> (str, i64) {
+    let mut m: map<str, (str, i64)> = {}
+    m["k"] = ("v{i}", i)
+    return if i > 0 { m["k"] } else { m["k"] }
+}
+
+fn tail_index(i: i64) -> PT {
+    let xs = [PT { t: ("v{i}", i), n: i }]
+    xs[0]
+}
+
+fn ret_fn_field(i: i64) -> fn(i64) -> str {
+    return mkhf(i).f
+}
+
+fn map_tuple_payload(i: i64) -> str {
+    let mut m: map<str, (str, i64)> = {}
+    m["k"] = ("v{i}", i)
+    let y = W.Has(m["k"])
+    m["k"] = ("v{i + 100}", i + 100)
+    churn(i)
+    return match y {
+        W.Has(v) => v.0,
+        W.No => "no",
+    }
+}
+
+@capabilities(all)
+fn main() {
+    // A closure's mutated capture as an if value, after a match arm bound
+    // the same name: the stale binding was copied, the capture released.
+    let mut cap = P { name: "cap", n: 0 }
+    let f = |k: i64| -> str {
+        cap.n = cap.n + 1
+        let o = Some(P { name: "o{k}", n: k })
+        let s = match o {
+            Some(cap) => cap.n,
+            None => 0,
+        }
+        let r = if k >= 0 { cap } else { P { name: "no", n: 0 } }
+        churn(k)
+        return r.name + " " + cap.name + " {cap.n} {s}"
+    }
+    let f0 = f(0)
+    let f1 = f(1)
+    expect(f0 == "cap cap 1 0" and f1 == "cap cap 2 1" and cap.n == 0, "capture named like an earlier binding")
+
+    // Param tuple / map / closure stored in a struct literal.
+    let t = ("t{4}", 4)
+    let a = wrap(t)
+    churn(1)
+    let b = wrap(t)
+    let pt = mkpt(t)
+    churn(2)
+    expect(a == "t4" and b == "t4" and pt.t.0 == "t4" and t.0 == "t4", "tuple param in a struct literal")
+    let mut m: map<str, i64> = {}
+    m["k"] = 3
+    let ma = mapif(m, true)
+    churn(3)
+    let mb = mapif(m, true)
+    expect(ma == 4 and mb == 4 and m["k"] == 3, "map param in an if literal")
+    let q = 10
+    let fq = |x: i64| x + q
+    let fa = fnif(fq, true)
+    churn(4)
+    let fb = fnif(fq, true)
+    expect(fa == 12 and fb == 12 and fq(2) == 12, "closure param in an if literal")
+
+    // Copies of a struct holding a nested tuple, an enum array, a closure array.
+    expect(nested(1) == "nt1" and nested(2) == "nt2", "nested tuple field copy")
+    expect(enumarr(1) == "ea1" and enumarr(2) == "ea2", "enum array field copy")
+    expect(fnarr(1) == 12 and fnarr(2) == 13 and fnarr(3) == 14, "closure array field copy")
+
+    // A tuple field of a temporary or of an immutable global, and a tuple
+    // map value, as an enum payload or a reassigned value.
+    let g1 = global_payload()
+    churn(5)
+    let g2 = global_payload()
+    expect(g1 == "it" and g2 == "it" and global_reassign(1) == "it" and global_reassign(2) == "it" and GI.t.0 == "it", "immutable global tuple field")
+    expect(temp_reads(2) == "t2 t3" and temp_reads(4) == "t4 t5", "tuple field of a temporary")
+    expect(map_tuple_payload(1) == "v1" and map_tuple_payload(2) == "v2", "tuple map value as an enum payload")
+
+    // A struct stored into an array element's field, a temporary's field as
+    // an if value, `return if` of a map value, a tail index read, and a
+    // temporary's closure field returned -- each read from a place that is
+    // overwritten or dropped right after.
+    expect(elem_field_store(1) == "v1" and elem_field_store(2) == "v2", "struct stored into an element's field")
+    expect(temp_if_value(1) == "v1" and temp_if_value(2) == "v2", "temporary's field as an if value")
+    let r1 = return_if_map(1)
+    churn(6)
+    let r2 = return_if_map(2)
+    expect(r1.0 == "v1" and r2.0 == "v2", "return if of a map value")
+    let t1 = tail_index(1)
+    churn(7)
+    let t2 = tail_index(2)
+    expect(t1.t.0 == "v1" and t2.t.0 == "v2", "tail index read")
+    let g1 = ret_fn_field(1)
+    churn(8)
+    let g2 = ret_fn_field(2)
+    expect(g1(0) == "f1" and g2(0) == "f2", "temporary's closure field returned")
+
+    println("conformance review11 fixes: PASS")
+}

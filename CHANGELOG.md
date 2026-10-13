@@ -11,10 +11,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A closure that changes a struct it captured** freed field values it
   still held (a string field set inside the closure read back empty with
   `--release`), and a whole reassignment of the struct (`p = P { .. }`) did
-  not persist across calls on `kryos run` (also inside a `match` arm). A
-  struct returned from such a closure is now an independent copy on both
+  not persist across calls on `kryos run` (also inside a `match` arm or an
+  `unsafe` / `deny!` block). A struct returned from such a closure, also as
+  its tail value or a `match` arm, is now an independent copy on both
   backends (`kryos run` returned the closure's own copy, so a later call
   changed values already returned).
+- **Every closure call returning a struct leaked** a small heap box with
+  `--release`, also for a closure that captures nothing.
+- **`let r = if c { P { .. } } else { P { .. } }`** (or a `match`) leaked a
+  struct every time it ran, and so did such a `match` used as a statement.
+- **`Some(s.inner)`** read freed memory once `s` was overwritten, and
+  **`v = G.inner`**, a reassignment from a field of a global, corrupted the
+  global on `kryos run`.
+- **A struct holding an array of closures or of enums with a heap payload**
+  (`PA { es: [E.A(s)] }`, `PF { fs: [|x| x + k] }`) crashed or freed the
+  elements twice (enums with `--release`, closures with `kryos run`), also
+  when the struct was copied.
+- **A map parameter stored in a struct** (`PM { m: m }`) was released twice.
+- **A value read out of a struct field, an array element or a map value**
+  -- then stored into a variable, a struct, an array, a map or an enum,
+  returned (also through `if` / `match` or a function's last expression),
+  or used as an `if` / `match` value -- could read freed memory once its
+  source was overwritten or dropped. A generated matrix (11 value types,
+  12 kinds of source, 22 kinds of use, both backends) found about 200 such
+  cases on master; 192 print the right value on every backend now
+  (`tools/loop/ownership_matrix/`).
 - **`for x in m[k]`, `for x in s.items`, `for x in g[0]`** never released
   the array they iterated, which leaked it once its owner was dropped.
 - **A map of maps of maps** leaked the keys of its innermost maps.

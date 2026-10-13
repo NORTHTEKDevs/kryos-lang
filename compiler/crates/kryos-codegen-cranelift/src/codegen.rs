@@ -97,6 +97,21 @@ fn type_of_operand_hint(operand: &Operand, locals: &[kryos_mir::ir::MirLocal]) -
     }
 }
 
+/// `kryos_array_dup`'s element kind for an array of `elem`: 1 retains a
+/// str/array/map header, 4 a struct or enum box (`kryos_struct_retain`), 2 an
+/// arc box (a closure, `Shared`); 0 copies the buffer only. The array drop
+/// releases every one of those element types (a closure through
+/// `kryos_arc_release`), so a dup that skips them leaves two arrays owning
+/// one reference. As `array_elem_dup_kind` in kryos-mir.
+fn array_dup_kind(elem: &MirType) -> i64 {
+    match elem {
+        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+        MirType::Struct(_) | MirType::Enum(_) => 4,
+        MirType::Function { .. } | MirType::Shared(_) => 2,
+        _ => 0,
+    }
+}
+
 /// Returns true if a type is a floating-point type.
 fn is_float_type(ty: Type) -> bool {
     ty == types::F32 || ty == types::F64
@@ -2707,11 +2722,7 @@ fn emit_struct_deep_copy_inner<M: Module>(
                 // (a plain clone of `[Token]` let one copy's drop consume the
                 // owner count another copy still relied on). Same elem_kind
                 // encoding as the struct-literal dup above and the LLVM backend.
-                let elem_kind: i64 = match elem.as_ref() {
-                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                    MirType::Struct(_) | MirType::Enum(_) => 4,
-                    _ => 0,
-                };
+                let elem_kind = array_dup_kind(elem.as_ref());
                 let dup_ref =
                     ensure_func_ref_with_args("kryos_array_dup", builder, translator, module, 2)?;
                 let k = builder.ins().iconst(types::I64, elem_kind);
@@ -2953,11 +2964,7 @@ fn emit_enum_deep_copy_inner<M: Module>(
                         // held -- the same latent double free the 10-06 wave
                         // fixed in the STRUCT deep copy. Masked until enum
                         // params stopped leaking their entry owner.
-                        let elem_kind: i64 = match elem.as_ref() {
-                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                            MirType::Struct(_) | MirType::Enum(_) => 4,
-                            _ => 0,
-                        };
+                        let elem_kind = array_dup_kind(elem.as_ref());
                         let dup_ref = ensure_func_ref_with_args(
                             "kryos_array_dup",
                             builder,
@@ -5844,11 +5851,7 @@ fn translate_rvalue<M: Module>(
                                     // chain), causing the underlying map to be freed one
                                     // reference early and its header recycled/wiped
                                     // before a later legitimate read.
-                                    let elem_kind: i64 = match elem.as_ref() {
-                                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                                        MirType::Struct(_) | MirType::Enum(_) => 4,
-                                        _ => 0,
-                                    };
+                                    let elem_kind = array_dup_kind(elem.as_ref());
                                     let dup_ref = ensure_func_ref_with_args(
                                         "kryos_array_dup",
                                         builder,
@@ -6331,11 +6334,7 @@ fn translate_rvalue<M: Module>(
                         // `env: [map<str, Value>]` field is exactly an Array-of-Map
                         // payload, under-retained on construction, freed one owner
                         // early, later read as an empty/wiped map ("unbound symbol").
-                        let elem_kind: i64 = match elem.as_ref() {
-                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                            MirType::Struct(_) | MirType::Enum(_) => 4,
-                            _ => 0,
-                        };
+                        let elem_kind = array_dup_kind(elem.as_ref());
                         let dup_ref = ensure_func_ref_with_args(
                             "kryos_array_dup",
                             builder,

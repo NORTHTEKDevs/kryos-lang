@@ -73,6 +73,36 @@ fn main() {
         cs = Pc { inner: P { name: "w{k}", xs: [k] }, n: cs.n + 1, tag: cs.tag + "w" }
         return cs.n
     }
+    // cap_escape: the captured struct pushed, stored into a field, and
+    // returned as the closure's tail value, every iteration.
+    let mut ce = P { name: "e", xs: [] }
+    let esc = |k: i64| -> i64 {
+        ce.name = "e{k}"
+        let mut arr: [P] = []
+        arr = push(arr, ce)
+        let mut hold = Pc { inner: P { name: "h", xs: [] }, n: 0, tag: "t" }
+        hold.inner = ce
+        return len(arr) + hold.n
+    }
+    let tailv = |k: i64| -> P {
+        ce.name = "t{k}"
+        ce
+    }
+    // if_struct: a closure's captured struct as an if/match value. (A local
+    // named as a match arm's value, and temporaries in a `_` arm, are still
+    // known leaks -- LEDGER -- so neither appears here.)
+    let mut cf = P { name: "f", xs: [] }
+    let pickc = |k: i64| -> P {
+        cf.name = "c{k}"
+        let r = if k % 2 == 0 { cf } else { P { name: "o{k}", xs: [k] } }
+        if k % 3 == 0 { cf } else { P { name: "s", xs: [] } }
+        let m = match k % 3 {
+            0 => cf,
+            1 => P { name: "p{k}", xs: [len(r.name)] },
+            _ => cf,
+        }
+        return m
+    }
     let dl: dyn Lg = Lgr { n: 1 }
     let mut i = 0
     let mut acc = 0
@@ -217,6 +247,25 @@ fn main() {
             dl.log("n{i}")
         } elif mode == "cap_struct" {
             acc = acc + step(i)
+        } elif mode == "cap_escape" {
+            acc = acc + esc(i) + len(tailv(i).name)
+        } elif mode == "if_struct" {
+            // A struct-valued if/match over fresh values, bound by `let` or
+            // discarded: the binding copied the hidden result slot and the
+            // slot leaked; a closure's capture as one.
+            let r2 = if i % 3 == 0 { P { name: "c{i}", xs: [] } } else { P { name: "d", xs: [i] } }
+            let r3 = match i % 2 {
+                0 => P { name: "m{i}", xs: [i] },
+                1 => P { name: "n", xs: [] },
+                _ => P { name: "x", xs: [] },
+            }
+            if i % 2 == 0 { P { name: "s{i}", xs: [i] } } else { P { name: "t", xs: [] } }
+            match (i + 1) % 2 {
+                0 => P { name: "u{i}", xs: [i] },
+                1 => P { name: "v", xs: [] },
+                _ => P { name: "x", xs: [] },
+            }
+            acc = acc + len(r2.xs) + len(r3.name) + len(pickc(i).name)
         } elif mode == "cap_array" {
             // A closure built per iteration over a struct with a [str]
             // field, replacing it once called (master: 96MB at 1M).

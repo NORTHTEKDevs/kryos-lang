@@ -2687,11 +2687,7 @@ impl LlvmCodegen {
                             ));
                         }
                         MirType::Array(elem_ty, _) => {
-                            let elem_kind: i64 = match elem_ty.as_ref() {
-                                MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                                MirType::Struct(_) | MirType::Enum(_) => 4,
-                                _ => 0,
-                            };
+                            let elem_kind = array_dup_kind(elem_ty.as_ref());
                             if elem_kind == 0 {
                                 self.emit_line(&format!(
                                     "  {cloned} = call ptr @kryos_array_clone(ptr {fval})"
@@ -7645,6 +7641,12 @@ impl LlvmCodegen {
                     } else {
                         self.emit_line(&format!("  %_{} = load {dest_ty}, ptr {p}", dest.0));
                     }
+                    // The box is the thunk's own fresh kryos_arc_alloc (see
+                    // emit_closure_thunks); the value now lives in the dest, so
+                    // the box goes -- it leaked one per call (a closure
+                    // returning a struct: 66MB / 1M on master). The release
+                    // frees the raw box only, never the value's fields.
+                    self.emit_line(&format!("  call void @kryos_arc_release(ptr {p})"));
                 } else {
                     let raw = self.next_temp();
                     self.emit_line(&format!(
@@ -8316,11 +8318,7 @@ impl LlvmCodegen {
                                 val = cl;
                             }
                             Some(MirType::Array(elem_ty, _)) if val_ty == "ptr" => {
-                                let elem_kind: i64 = match elem_ty.as_ref() {
-                                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                                    MirType::Struct(_) | MirType::Enum(_) => 4,
-                                    _ => 0,
-                                };
+                                let elem_kind = array_dup_kind(elem_ty.as_ref());
                                 let cl = self.next_temp();
                                 if elem_kind == 0 {
                                     self.emit_line(&format!(
@@ -10123,17 +10121,13 @@ impl LlvmCodegen {
             }
             if let Some(MirType::Array(elem_ty, _)) = field_mir_tys.get(def_i) {
                 if coerced_val != "null" && coerced_val != "zeroinitializer" {
-                    let elem_kind: i64 = match elem_ty.as_ref() {
-                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                        // A STRUCT element is shared by a header clone too, so
-                        // it needs its own owner. Without this, `struct Tree {
-                        // kids: [Tree] }` corrupted the heap: the struct
-                        // literal cloned the array, then the source array's
-                        // drop freed the element boxes the new field still
-                        // pointed at.
-                        MirType::Struct(_) => 4,
-                        _ => 0,
-                    };
+                    // A STRUCT element is shared by a header clone too, so it
+                    // needs its own owner. Without this, `struct Tree { kids:
+                    // [Tree] }` corrupted the heap: the struct literal cloned
+                    // the array, then the source array's drop freed the
+                    // element boxes the new field still pointed at. (Enum and
+                    // closure elements the same way: array_dup_kind.)
+                    let elem_kind = array_dup_kind(elem_ty.as_ref());
                     let cl = self.next_temp();
                     if elem_kind == 0 {
                         self.emit_line(&format!("  {cl} = call ptr @kryos_array_clone(ptr {coerced_val})"));
@@ -11276,12 +11270,7 @@ impl LlvmCodegen {
                         // the captured struct's array field) freed strings
                         // the original array still held (AOT, real frees).
                         // Kinds as `array_elem_dup_kind` in kryos-mir.
-                        let kind = match elem.as_ref() {
-                            MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                            MirType::Struct(_) | MirType::Enum(_) => 4,
-                            MirType::Shared(_) => 2,
-                            _ => 0,
-                        };
+                        let kind = array_dup_kind(elem.as_ref());
                         self.emit_line(&format!("  {cl} = call ptr @kryos_array_dup(ptr {fp}, i64 {kind})"));
                     } else {
                         self.emit_line(&format!("  {cl} = call ptr @kryos_string_clone(ptr {fp})"));
@@ -11441,17 +11430,14 @@ impl LlvmCodegen {
                     // refcounted elements (str/array/map) that need their
                     // own retain, 0 for scalars (kryos_array_dup degenerates
                     // to a plain header clone in that case).
-                    let elem_kind: i64 = match elem_ty.as_ref() {
-                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
-                        // A STRUCT element is shared by a header clone too, so
-                        // it needs its own owner. Without this, `struct Tree {
-                        // kids: [Tree] }` corrupted the heap: the struct
-                        // literal cloned the array, then the source array's
-                        // drop freed the element boxes the new field still
-                        // pointed at.
-                        MirType::Struct(_) => 4,
-                        _ => 0,
-                    };
+                    // A STRUCT element is shared by a header clone too, so it
+                    // needs its own owner. Without this, `struct Tree { kids:
+                    // [Tree] }` corrupted the heap: the struct literal cloned
+                    // the array, then the source array's drop freed the
+                    // element boxes the new field still pointed at. An enum
+                    // or closure element too: a copy of `PA { es: [E.A(s)]
+                    // }` left the copy's elements to the source's drop.
+                    let elem_kind = array_dup_kind(elem_ty.as_ref());
                     let cl = self.next_temp();
                     self.emit_line(&format!(
                         "  {cl} = call ptr @kryos_array_dup(ptr {fp}, i64 {elem_kind})"
@@ -11529,6 +11515,10 @@ impl LlvmCodegen {
             | MirType::Shared(_) => true,
             MirType::Struct(inner) => self.struct_has_heap_fields(inner),
             MirType::Enum(inner) => self.enum_shareable(inner),
+            // A tuple field (as deep_copy_struct_index_clone's own check): a
+            // nested struct whose only heap field was a tuple was copied bit
+            // for bit, so both copies released the tuple's elements.
+            MirType::Tuple(_) => true,
             _ => false,
         })
     }
@@ -12546,6 +12536,21 @@ const TYPE_OF_NAMES: &[&str] = &[
 /// because `type_of` was routed to a runtime `kryos_builtin_type_of(i64)` that
 /// only saw the erased i64 slot, reporting "i64" for a concretely-typed
 /// array/struct/str on AOT while the JIT returned the real tag.
+/// `kryos_array_dup`'s element kind for an array of `elem`: 1 retains a
+/// str/array/map header, 4 a struct or enum box (`kryos_struct_retain`), 2 an
+/// arc box (a closure, `Shared`); 0 copies the buffer only. The array drop
+/// releases every one of those element types, so a dup that skips them
+/// leaves two arrays owning one reference. As `array_elem_dup_kind` in
+/// kryos-mir.
+fn array_dup_kind(elem: &MirType) -> i64 {
+    match elem {
+        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
+        MirType::Struct(_) | MirType::Enum(_) => 4,
+        MirType::Function { .. } | MirType::Shared(_) => 2,
+        _ => 0,
+    }
+}
+
 fn mir_type_name_of_operand(op: &Operand, func: &MirFunction) -> &'static str {
     match op {
         Operand::Local(id) => func
