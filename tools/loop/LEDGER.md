@@ -10,7 +10,7 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
-## Wave: value-branch scoping -- a name ends with its block (2026-10-14)
+## Wave: value-branch scoping -- a name ends with its block (2026-10-13)
 
 The last silent wrong answer the ownership batch left open (review 10's
 P1-P3; master too, both backends): a name declared inside an if/match VALUE

@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-13
+
+Memory-safety release. Most entries below fix values that were freed twice,
+read after being freed, or leaked, on both backends. Two are additions:
+`to_string` and interpolation of arrays, maps, tuples, structs and enums,
+and `==` on arrays and maps.
+
+Upgrade notes:
+
+- `keys(m)` of an `int`-keyed map is `[i64]` now. It was `[str]`, and using
+  a key as a string crashed.
+- `std::fmt::debug` / `display` and `std::test::assert_eq` / `assert_ne`
+  are generic instead of taking `any`.
+
+### Known limitations shipped with 1.1.0
+
+Master had all of these too; they are tracked in `tools/loop/LEDGER.md`.
+
+- A struct or `Option` read out of an array (`xs[0]`) and put into an array
+  or struct literal or a map, or pushed, can read freed memory on some
+  backend once the element is overwritten.
+- A closure read out of a struct field of a temporary or of an array
+  element (`mk(i).f`, `hs[0].f`) is freed twice when it is bound with
+  `let`, reassigned, or stored in a map, an enum payload or a field.
+- Overwriting a global struct's field does not release the old value. A
+  tuple stored inside an array, struct, enum or map, or captured by a
+  returned closure, still leaks.
+- Recursive enums (`enum Expr { Add(Expr, Expr) }`) keep the older
+  move-at-call model rather than the shared one other enums use.
+
 ### Fixed - names declared in an if/match value branch
 
 - **A variable declared inside an `if` or `match` branch used as a value**
@@ -281,9 +311,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   address. They are generic now.
 - **Runtime:** the struct owner count is now updated with a compare-and-swap,
   so two threads releasing the same struct cannot both miss the last owner.
-- Remaining known limitation: an enum with an enum payload (enum nested
-  directly inside an enum), or a struct containing one, keeps the older
-  model -- it can leak, but never double-frees.
 
 ## [1.0.1] - 2026-10-06
 
