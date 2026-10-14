@@ -1033,6 +1033,17 @@ pub extern "C" fn kryos_fn_retain(ptr: i64) -> i64 {
     ptr
 }
 
+/// Reassignment release for a function value: release `old` unless it is the
+/// SAME handle as `new` (re-storing it is a no-op). Like kryos_fn_retain, a
+/// static function pointer is ignored by the arc guard.
+#[no_mangle]
+pub extern "C" fn kryos_fn_release_if_ne(old: i64, new: i64) -> i64 {
+    if old != 0 && old != new {
+        crate::arc::kryos_arc_release(old as *mut u8);
+    }
+    0
+}
+
 /// Decrement the reference count of an ARC-managed object.
 /// When count reaches zero, calls the drop function and deallocates.
 #[no_mangle]

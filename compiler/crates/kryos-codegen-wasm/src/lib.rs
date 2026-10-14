@@ -3626,6 +3626,7 @@ impl<'a> FnEmitter<'a> {
             "kryos_string_release_if_ne"
                 | "kryos_array_release_if_ne"
                 | "kryos_map_release_if_ne"
+                | "kryos_fn_release_if_ne"
         ) && args.len() == 2
         {
             self.wfunc.instruction(&W::I64Const(0));

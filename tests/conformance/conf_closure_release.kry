@@ -1,0 +1,95 @@
+// Conformance (2026-10-14): reassigning a closure variable and overwriting a
+// closure field release the old closure (they leaked it: 250MB / 127MB per
+// 1M in tests/mem/agg_ops_leak.kry's fn_reassign / fn_field_store), so every
+// copy of a closure must hold its own reference: a `let` copy, a struct
+// literal, a field store, an array literal, a push, a map store, an enum
+// payload, a tuple, a closure that captures it, and a closure stored in a
+// container (which snapshots its captures). Each is read after the closure
+// it copied was released and the memory reused.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+
+struct H { f: fn(i64) -> str, n: i64 }
+enum W { Has(fn(i64) -> str), No }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mkf(tag: str) -> fn(i64) -> str {
+    let s = tag
+    return |x: i64| s
+}
+
+fn wcall(w: W) -> str {
+    return match w {
+        W.Has(f) => f(0),
+        W.No => "no",
+    }
+}
+
+fn copies(i: i64) -> str {
+    let mut f = mkf("a{i}")
+    let g = f
+    let h = H { f: f, n: 1 }
+    let mut y = H { f: mkf("x"), n: 0 }
+    y.f = f
+    let arr = [f]
+    let mut pushed: [fn(i64) -> str] = []
+    pushed = push(pushed, f)
+    let mut m: map<str, fn(i64) -> str> = {}
+    m["k"] = f
+    let w = W.Has(f)
+    let t = (f, 1)
+    f = mkf("b{i}")
+    churn(i)
+    let mf = m["k"]
+    return g(0) + " " + h.f(0) + " " + y.f(0) + " " + arr[0](0) + " " + pushed[0](0) + " " + mf(0) + " " + wcall(w) + " " + t.0(0) + " " + f(0)
+}
+
+fn captures(i: i64) -> str {
+    let mut f = mkf("c{i}")
+    let reads = || f(0)
+    let stored = [|| f(0)]
+    f = mkf("d{i}")
+    churn(i)
+    return reads() + " " + stored[0]()
+}
+
+fn overwrites(i: i64) -> str {
+    let mut h = H { f: mkf("e{i}"), n: 1 }
+    let kept = h.f
+    h.f = mkf("f{i}")
+    let mut r = mkf("g{i}")
+    let kept2 = r
+    r = h.f
+    churn(i)
+    return kept(0) + " " + h.f(0) + " " + kept2(0) + " " + r(0)
+}
+
+@capabilities(all)
+fn main() {
+    expect(copies(1) == "a1 a1 a1 a1 a1 a1 a1 a1 b1", "copies of a closure, first pass")
+    expect(copies(2) == "a2 a2 a2 a2 a2 a2 a2 a2 b2", "copies of a closure, second pass")
+    let c1 = captures(1)
+    let c2 = captures(2)
+    // A reading closure sees the new closure; one stored in an array keeps
+    // the snapshot it took (gotcha 11).
+    expect(c1 == "d1 c1" and c2 == "d2 c2", "closures capturing a reassigned closure")
+    expect(overwrites(1) == "e1 f1 g1 f1" and overwrites(2) == "e2 f2 g2 f2", "overwritten closure field and variable")
+    println("conformance closure release: PASS")
+}

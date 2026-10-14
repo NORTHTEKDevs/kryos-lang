@@ -1195,6 +1195,7 @@ impl LlvmCodegen {
         self.emit_line("declare void @kryos_arc_release_i64(i64)");
         self.emit_line("declare void @kryos_arc_retain_i64(i64)");
         self.emit_line("declare i64 @kryos_fn_retain(i64)");
+        self.emit_line("declare i64 @kryos_fn_release_if_ne(i64, i64)");
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
@@ -12780,6 +12781,7 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
     match fname {
         "kryos_array_typed_release_if_ne" => Some(vec!["ptr".into(), "ptr".into(), "i64".into()]),
         "kryos_fn_retain" => Some(vec!["i64".into()]),
+        "kryos_fn_release_if_ne" => Some(vec!["i64".into(), "i64".into()]),
         "kryos_tuple_box_release_if_ne" => Some(vec!["i64".into(), "i64".into(), "i64".into()]),
         // kryos_array_set(ptr arr, i64 idx, i64 val) -> void
         // Values are stored as raw i64 bits (floats bitcast to i64).

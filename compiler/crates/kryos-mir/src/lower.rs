@@ -2603,6 +2603,10 @@ fn retain_for_ty(ty: &MirType) -> Option<&'static str> {
         MirType::Str => Some("kryos_string_retain_opt"),
         MirType::Array(_, _) => Some("kryos_array_retain_opt"),
         MirType::Map { .. } => Some("kryos_map_retain_opt"),
+        // A closure is shared like a str / array / map: a copy of a named
+        // one (`let g = f`, `S { f: f }`, `m[k] = f`, ..) takes its own
+        // reference, so a reassignment can release the old closure.
+        MirType::Function { .. } => Some("kryos_fn_retain"),
         _ => None,
     }
 }
@@ -4015,6 +4019,7 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "kryos_map_release_if_ne",
     "kryos_array_typed_release_if_ne",
     "kryos_fn_retain",
+    "kryos_fn_release_if_ne",
     "kryos_tuple_handle_release_if_ne",
 ];
 
@@ -6063,6 +6068,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             && value.as_ref().is_some_and(|v| {
                                 matches!(v, ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
                                     && branch_value_is_fresh(v)
+                                    || matches!(src_ty, MirType::Function { .. })
+                                        && matches!(
+                                            v,
+                                            ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. } | ast::Expr::Block { .. }
+                                        )
+                                        && fn_value_owned(ctx, v)
                             })
                         {
                             // `let s = if c { f(i) } else { g(i) }`: every
@@ -6671,6 +6682,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 Some(MirType::Str) => Some("kryos_string_release_if_ne"),
                                 Some(MirType::Array(..)) => Some("kryos_array_release_if_ne"),
                                 Some(MirType::Map { .. }) => Some("kryos_map_release_if_ne"),
+                                // A closure local that owns its value: the old
+                                // closure was never released (`f = mk(i)` in a
+                                // loop leaked one per iteration). Not a param,
+                                // an alias or a closure's own capture, which
+                                // do not own theirs.
+                                Some(MirType::Function { .. })
+                                    if !ctx.param_locals.contains(&dest.0)
+                                        && !ctx.borrowed_locals.contains(&dest.0)
+                                        && !ctx.env_owned_locals.contains(&dest.0)
+                                        && !ctx.partial_moved_locals.contains(&dest.0) =>
+                                {
+                                    Some("kryos_fn_release_if_ne")
+                                }
                                 _ => None,
                             };
                             // A non-copy STRUCT dest also needs its previous
@@ -6944,12 +6968,14 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             } else if let Some(src) = param_src {
                                 emit_param_source_retain(ctx, dest, src);
                             } else if matches!(dest_ty, Some(MirType::Function { .. }))
-                                && matches!(value, ast::Expr::FieldAccess { .. })
-                                && !is_variant_expr(ctx, value)
+                                && (matches!(value, ast::Expr::FieldAccess { .. }) && !is_variant_expr(ctx, value)
+                                    || matches!(value, ast::Expr::IndexAccess { object, .. }
+                                        if matches!(infer_expr_type(ctx, object), MirType::Map { .. })))
                             {
-                                // `f = h.f`: the closure field read takes its
-                                // own reference, as `let f = h.f` does; the
-                                // source keeps its drop.
+                                // `f = h.f` / `f = m[k]`: the closure read takes
+                                // its own reference, as `let f = h.f` does; the
+                                // source keeps its drop. (An array element read
+                                // is retained by the read itself.)
                                 let sink = ctx.alloc_temp(MirType::I64);
                                 ctx.emit(Instruction::Assign {
                                     dest: sink,
@@ -7111,13 +7137,22 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 },
                                 _ => val_ty.clone(),
                             };
-                            let val_retain = retain_for_ty(&val_ty);
                             // A closure FIELD read stored into an array
                             // element (`a[i] = mkh(k).f`): the struct drop
                             // releases function fields, so the array takes
                             // its own reference (applied in the array branch).
                             let fn_field_val = matches!(val_ty, MirType::Function { .. })
                                 && matches!(value, ast::Expr::FieldAccess { .. });
+                            // A closure the slot COPIES (a named one, a field
+                            // read) takes its own reference; a fresh one (a
+                            // call, a lambda, an element read, which the read
+                            // itself retains) is the slot's as is -- a retain
+                            // there leaked one closure per store.
+                            let val_retain = match val_ty {
+                                MirType::Function { .. } => (matches!(value, ast::Expr::Identifier { .. }) || fn_field_val)
+                                    .then_some("kryos_fn_retain"),
+                                _ => retain_for_ty(&val_ty),
+                            };
                             let val_op_for_release = val_op.clone();
                             // Overwriting an occupied slot REPLACES the stored
                             // handle. The runtime cannot release the previous
@@ -7129,7 +7164,17 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // first, then release it after the store, guarded
                             // by pointer inequality so re-storing the SAME
                             // handle is a no-op.
-                            let old_slot = release_if_ne_fn(&val_ty).map(|rel| {
+                            // An overwritten closure ELEMENT (`fs[i] = g`) is
+                            // released too: the array owned it, and an element
+                            // read retains what it reads. Not a map value yet:
+                            // a map read of a closure is not retained, so its
+                            // readers would lose it.
+                            let old_slot = release_if_ne_fn(&val_ty)
+                                .or_else(|| {
+                                    (matches!(val_ty, MirType::Function { .. }) && matches!(obj_ty, MirType::Array(..)))
+                                        .then_some("kryos_fn_release_if_ne")
+                                })
+                                .map(|rel| {
                                 let old_tmp = ctx.alloc_temp(val_ty.clone());
                                 let read = if matches!(obj_ty, MirType::Map { .. }) {
                                     let idx_ty = infer_expr_type(ctx, index);
@@ -7510,6 +7555,22 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // no-op) -- the same treatment `m[k] = v` and
                             // `a[i] = v` get above.
                             let obj_is_tuple = matches!(infer_expr_type(ctx, object), MirType::Tuple(_));
+                            // A closure field's old closure was never released
+                            // either (`h.f = mk(i)` in a loop leaked one per
+                            // store). Read it now; released once after the
+                            // store -- unlike a str / array / map field read, a
+                            // closure field read takes no reference of its own.
+                            let old_fn_field = if matches!(field_ty, MirType::Function { .. }) && !obj_is_tuple {
+                                let old_tmp = ctx.alloc_temp(field_ty.clone());
+                                let obj_op = lower_expr_to_operand(ctx, object);
+                                ctx.emit(Instruction::Assign {
+                                    dest: old_tmp,
+                                    value: RValue::Field { object: obj_op, field: field.clone() },
+                                });
+                                Some(old_tmp)
+                            } else {
+                                None
+                            };
                             let old_field = release_if_ne_fn(&field_ty).map(|rel| {
                                 let old_tmp = ctx.alloc_temp(field_ty.clone());
                                 let obj_op = lower_expr_to_operand(ctx, object);
@@ -7641,6 +7702,17 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 None
                             };
                             lower_nested_field_assign(ctx, object, field, val_op.clone());
+                            if let Some(old) = old_fn_field {
+                                let sink = ctx.alloc_temp(MirType::I64);
+                                ctx.emit(Instruction::Assign {
+                                    dest: sink,
+                                    value: RValue::Call {
+                                        func: "kryos_fn_release_if_ne".to_string(),
+                                        args: vec![Operand::Local(old), val_op.clone()],
+                                    },
+                                });
+                                ctx.dropped_locals.insert(old.0);
+                            }
                             // A NAMED str/array/map local stored into a field
                             // stays live and is dropped at its own scope end,
                             // so the field takes its own reference (a temp is
@@ -17455,6 +17527,16 @@ fn suppress_enum_field_arg_drops(
                     // backends double-freed it) and made any later use of
                     // `ks` a use-after-free.
                     emit_value_share(ctx, id);
+                } else if matches!(lty, MirType::Function { .. }) {
+                    // A named closure: the enum takes its own reference (the
+                    // backends copy a closure payload as is) and the local
+                    // keeps its drop, so reassigning the local -- which
+                    // releases its old closure -- leaves the payload alive.
+                    let sink = ctx.alloc_temp(MirType::I64);
+                    ctx.emit(Instruction::Assign {
+                        dest: sink,
+                        value: RValue::Call { func: "kryos_fn_retain".to_string(), args: vec![Operand::Local(id)] },
+                    });
                 } else if matches!(lty, MirType::Map { .. })
                     && (ctx.param_locals.contains(&id.0) || ctx.borrowed_locals.contains(&id.0))
                 {
