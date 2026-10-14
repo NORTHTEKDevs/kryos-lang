@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - names declared in an if/match value branch
+
+- **A variable declared inside an `if` or `match` branch used as a value**
+  stayed visible after the branch (both backends). A later read of an outer
+  variable with the same name got the inner one -- in a loop, a value freed
+  on an earlier iteration -- an outer variable of another type was read
+  with the inner variable's type (`--release` failed to build), and a
+  branch variable named like a global hid the global.
+
 ### Fixed - closures that change a captured struct, loops over container reads
 
 - **A closure that changes a struct it captured** freed field values it
