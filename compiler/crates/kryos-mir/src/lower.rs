@@ -3285,11 +3285,7 @@ pub fn lower_function(
                 None
             } else if let ast::Expr::FieldAccess { object, .. } = expr {
                 if let ast::Expr::Identifier { name, .. } = object.as_ref() {
-                    ctx.locals
-                        .iter()
-                        .rev()
-                        .find(|l| l.name.as_deref() == Some(name.as_str()))
-                        .map(|l| l.id.0)
+                    visible_local(ctx, name).map(|l| l.id.0)
                 } else {
                     None
                 }
@@ -3780,6 +3776,13 @@ fn lower_block_as_value(ctx: &mut LoweringContext, stmts: &[ast::Stmt], result_l
         // normally - it doesn't produce a value.
         other => lower_stmt(ctx, other),
     }
+    // The block's own names end with it: `let r = if c { let s = ..  s }
+    // else { .. }` left the inner `s` visible, so every later read of an
+    // outer `s` got the inner one (master too, both backends; in a loop it
+    // read a value freed on the previous iteration). Statement blocks
+    // already hide their names; every lookup of a source name skips hidden
+    // locals (visible_local).
+    hide_scope_locals(ctx, scope_start);
 }
 
 fn lower_stmt(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
@@ -6239,10 +6242,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // ("assign target local not found"). Resolve a bare name that
                 // matches a field of the actor currently being lowered to the
                 // same ActorStateStore path as `self.field`.
-                let is_local = ctx
-                    .locals
-                    .iter()
-                    .any(|l| l.name.as_deref() == Some(name.as_str()));
+                let is_local = visible_local(ctx, name).is_some();
                 if !is_local {
                     ctx.current_actor.clone().and_then(|aname| {
                         let fty = ctx
@@ -6393,10 +6393,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // Mutable module-level global: route the write
                             // through the runtime registry instead of
                             // assigning to a (non-existent) local.
-                            let is_local = ctx
-                                .locals
-                                .iter()
-                                .any(|l| l.name.as_deref() == Some(name.as_str()));
+                            let is_local = visible_local(ctx, name).is_some();
                             if !is_local && ctx.mutable_globals.contains_key(name.as_str()) {
                                 // ARC bookkeeping for a heap-owning global being
                                 // overwritten wholesale (ledger item 2b).
@@ -7557,10 +7554,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         // Compound assignment (+=, -=, etc.) - desugar to bin-op + assign.
                         if let ast::Expr::Identifier { name, .. } = target {
                             // Mutable module-level global: load, op, store.
-                            let is_local = ctx
-                                .locals
-                                .iter()
-                                .any(|l| l.name.as_deref() == Some(name.as_str()));
+                            let is_local = visible_local(ctx, name).is_some();
                             if !is_local {
                                 if let Some((mir_ty, _)) =
                                     ctx.mutable_globals.get(name.as_str()).cloned()
@@ -7940,11 +7934,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 None
             } else if let Some(ast::Expr::FieldAccess { object, .. }) = value.as_ref() {
                     if let ast::Expr::Identifier { name, .. } = object.as_ref() {
-                        ctx.locals
-                            .iter()
-                            .rev()
-                            .find(|l| l.name.as_deref() == Some(name.as_str()))
-                            .map(|l| l.id.0)
+                        visible_local(ctx, name).map(|l| l.id.0)
                     } else {
                         None
                     }
@@ -7976,11 +7966,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // took its OWN reference in the literal
                             // (retain_or_move_literal_element), so the local
                             // keeps its drop; skipping it leaked the local.
-                            ast::Expr::Identifier { name, .. } => ctx
-                                .locals
-                                .iter()
-                                .rev()
-                                .find(|l| l.name.as_deref() == Some(name.as_str()))
+                            ast::Expr::Identifier { name, .. } => visible_local(ctx, name)
                                 .filter(|l| {
                                     !matches!(
                                         l.ty,
@@ -12629,6 +12615,13 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             if let Some((enum_name, _)) = find_enum_variant(ctx, name) {
                 return MirType::Enum(enum_name);
             }
+            // The local the name refers to -- before a global of the same
+            // name, as lowering resolves it, and never one whose scope has
+            // ended (that typed an outer `p` as an inner `let p` of another
+            // type: a raw pointer printed as a name, an LLVM type mismatch).
+            if let Some(local_ty) = visible_local(ctx, name).map(|l| l.ty.clone()) {
+                return local_ty;
+            }
             // Check if it's a mutable module-level global.
             if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()) {
                 return mir_ty.clone();
@@ -12636,16 +12629,6 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             // Check if it's a top-level constant.
             if let Some((mir_ty, _)) = ctx.const_defs.get(name.as_str()) {
                 return mir_ty.clone();
-            }
-            // Look up the local's MIR type.
-            if let Some(local_ty) = ctx
-                .locals
-                .iter()
-                .rev()
-                .find(|l| l.name.as_deref() == Some(name))
-                .map(|l| l.ty.clone())
-            {
-                return local_ty;
             }
             // Check if it's a function name used as a value.
             if let Some(ret_ty) = ctx.func_ret_types.get(name.as_str()) {
@@ -12893,12 +12876,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
                     return ret_ty;
                 }
                 // Check if callee is a function-typed local (indirect call).
-                if let Some(local) = ctx
-                    .locals
-                    .iter()
-                    .rev()
-                    .find(|l| l.name.as_deref() == Some(name.as_str()))
-                {
+                if let Some(local) = visible_local(ctx, name) {
                     if let MirType::Function { ret, .. } = &local.ty {
                         return *ret.clone();
                     }
@@ -13591,10 +13569,7 @@ fn lower_expr_to_operand(ctx: &mut LoweringContext, expr: &ast::Expr) -> Operand
             if name == "null" {
                 return Operand::Constant(Constant::Int(0));
             }
-            let is_local = ctx
-                .locals
-                .iter()
-                .any(|l| l.name.as_deref() == Some(name.as_str()));
+            let is_local = visible_local(ctx, name).is_some();
             // Mutable module-level global: emit a real runtime load.
             if !is_local {
                 if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()).cloned() {
@@ -13730,7 +13705,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     fields: vec![],
                 };
             }
-            let is_local = ctx.locals.iter().any(|l| l.name.as_deref() == Some(name));
+            let is_local = visible_local(ctx, name).is_some();
             // Mutable module-level global: emit a real runtime load.
             if !is_local {
                 if let Some((mir_ty, _)) = ctx.mutable_globals.get(name.as_str()).cloned() {
@@ -14434,11 +14409,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
 
             // Check if the callee is a local with function type (indirect call).
             if func_name != "<closure>" {
-                let is_fn_local = ctx
-                    .locals
-                    .iter()
-                    .rev()
-                    .find(|l| l.name.as_deref() == Some(&func_name))
+                let is_fn_local = visible_local(ctx, &func_name)
                     .map(|l| {
                         // A local whose MIR type is Function is obviously an
                         // indirect callee. But a lambda param whose function type
@@ -15827,7 +15798,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let struct_capture_fields: HashMap<String, Vec<String>> = mutated_captures
                 .iter()
                 .filter_map(|c| {
-                    let l = ctx.locals.iter().rev().find(|l| l.name.as_deref() == Some(c.as_str()))?;
+                    let l = visible_local(ctx, c)?;
                     let MirType::Struct(sn) = &l.ty else { return None };
                     if ctx.copy_structs.contains(sn.as_str()) {
                         return None;
@@ -15903,12 +15874,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             let mut all_params: Vec<ast::Param> = captures
                 .iter()
                 .map(|name| {
-                    let ty = ctx
-                        .locals
-                        .iter()
-                        .rev()
-                        .find(|l| l.name.as_deref() == Some(name.as_str()))
-                        .and_then(|l| mir_type_to_type_expr(&l.ty));
+                    let ty = visible_local(ctx, name).and_then(|l| mir_type_to_type_expr(&l.ty));
                     ast::Param {
                         name: name.clone(),
                         ty,
@@ -16980,11 +16946,19 @@ fn emit_global_store(ctx: &mut LoweringContext, name: &str, value: Operand) {
 
 /// Look up a local by name. Returns `Some(id)` if found, `None` otherwise.
 fn find_local_by_name(ctx: &LoweringContext, name: &str) -> Option<LocalId> {
+    visible_local(ctx, name).map(|l| l.id)
+}
+
+/// The local a NAME refers to here: the newest binding of it whose scope has
+/// not ended (an ended scope's names are in `hidden_locals`). Every lookup of
+/// a source name goes through this -- one that also matched hidden locals
+/// read an out-of-scope binding (a finished loop's variable, a value branch's
+/// `let`) instead of the outer one, or took a global for a local.
+fn visible_local<'a>(ctx: &'a LoweringContext, name: &str) -> Option<&'a MirLocal> {
     ctx.locals
         .iter()
         .rev()
         .find(|l| l.name.as_deref() == Some(name) && !ctx.hidden_locals.contains(&l.id.0))
-        .map(|l| l.id)
 }
 
 /// Infer the type name of an expression (for method call resolution).
@@ -17701,13 +17675,9 @@ fn collect_identifiers(
 ) {
     match expr {
         ast::Expr::Identifier { name, .. } => {
-            if !bound.contains(name)
-                && !seen.contains(name)
-                && ctx
-                    .locals
-                    .iter()
-                    .any(|l| l.name.as_deref() == Some(name.as_str()))
-            {
+            // Only a name in scope here is a capture: one matching just an
+            // ended scope's local is a global or a function.
+            if !bound.contains(name) && !seen.contains(name) && visible_local(ctx, name).is_some() {
                 seen.insert(name.clone());
                 free_vars.push(name.clone());
             }

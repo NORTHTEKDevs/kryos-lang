@@ -1,0 +1,130 @@
+// Conformance (2026-10-14): a name declared inside a block ends with the
+// block -- also in an if/match VALUE branch, where it stayed visible after
+// the branch (master, both backends): a later read of an outer binding of the
+// same name got the inner one (a wrong value; in a loop, a value freed on an
+// earlier iteration), a binding of another type was read with the inner type
+// (a pointer printed as a name, an LLVM build failure), and a global was
+// read as the branch's local. Run under KRYOS_FREE_DIAG on both backends,
+// and on AOT with real frees, by tests/no_double_free.sh.
+struct P { name: str, n: i64 }
+
+let mut GL: str = "gl1"
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn same_type(k: i64) -> str {
+    let w = "w{k}"
+    let v = if k > 5 {
+        let w = "in{k}"
+        w
+    } else {
+        w
+    }
+    churn(k)
+    return v + "/" + w
+}
+
+fn in_loop(k: i64) -> i64 {
+    let xs = [1, 2, k + 2]
+    let mut total = 0
+    let mut i = 0
+    while i < 2 {
+        let v = if i == 0 {
+            let xs = [9]
+            xs
+        } else {
+            xs
+        }
+        churn(i)
+        total = total + len(v)
+        i = i + 1
+    }
+    return total
+}
+
+fn other_type(k: i64) -> str {
+    let p = P { name: "out{k}", n: 1 }
+    let r = if k > 0 {
+        let p = "inner{k}"
+        len(p)
+    } else {
+        0
+    }
+    return p.name + " {r}"
+}
+
+fn statement_scope(k: i64) -> str {
+    let p = P { name: "out{k}", n: 1 }
+    let mut i = 0
+    while i < 1 {
+        let p = "w{i}"
+        i = i + len(p)
+    }
+    return p.name
+}
+
+fn global_shadow(k: i64) -> str {
+    let t = if k > 0 {
+        let GL = "local{k}"
+        GL
+    } else {
+        "none"
+    }
+    return t + "/" + GL
+}
+
+fn match_branch(k: i64) -> str {
+    let s = "outer"
+    let r = match k {
+        1 => {
+            let s = "inner"
+            s
+        },
+        _ => "x",
+    }
+    return r + "/" + s
+}
+
+fn nested(k: i64) -> str {
+    let a = "a{k}"
+    let r = if k > 0 {
+        let a = "b{k}"
+        if k > 1 {
+            let a = "c{k}"
+            a
+        } else {
+            a
+        }
+    } else {
+        a
+    }
+    return r + "/" + a
+}
+
+@capabilities(all)
+fn main() {
+    expect(same_type(1) == "w1/w1" and same_type(7) == "in7/w7", "same-type name in a value branch")
+    expect(in_loop(1) == 4 and in_loop(5) == 4, "value branch name in a loop")
+    expect(other_type(1) == "out1 6", "other-type name in a value branch")
+    expect(statement_scope(3) == "out3", "other-type name in a statement block")
+    expect(global_shadow(1) == "local1/gl1" and GL == "gl1", "a branch-local named like a global")
+    expect(match_branch(1) == "inner/outer" and match_branch(2) == "x/outer", "match arm block")
+    expect(nested(2) == "c2/a2" and nested(1) == "b1/a1" and nested(0) == "a0/a0", "nested value branches")
+    println("conformance value-branch scope: PASS")
+}

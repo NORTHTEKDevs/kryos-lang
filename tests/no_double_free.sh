@@ -443,6 +443,7 @@ no_df_both review7_fixes "$ROOT/tests/conformance/conf_review7_fixes.kry"
 no_df_both review8_fixes "$ROOT/tests/conformance/conf_review8_fixes.kry"
 no_df_both review9_fixes "$ROOT/tests/conformance/conf_review9_fixes.kry"
 no_df_both review11_fixes "$ROOT/tests/conformance/conf_review11_fixes.kry"
+no_df_both value_branch_scope "$ROOT/tests/conformance/conf_value_branch_scope.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then

@@ -10,6 +10,32 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: value-branch scoping -- a name ends with its block (2026-10-14)
+
+The last silent wrong answer the ownership batch left open (review 10's
+P1-P3; master too, both backends): a name declared inside an if/match VALUE
+branch stayed visible after the branch -- `lower_block_as_value` never hid
+its names, unlike a statement block. A later read of an outer binding of the
+same name got the inner one (in a loop, `let v = if c { let xs = [..]  xs }
+else { xs }` read a value freed on an earlier iteration), an outer binding
+of another type was read with the inner type (a raw pointer printed as a
+name, an LLVM build failure), and a branch-local named like a global hid the
+global after the branch. Round 9 added the hide alone and broke code,
+because 15 name lookups ignored `hidden_locals`: `take_tail_identifier`,
+`infer_expr_type`'s Identifier arm (which also checked globals before
+locals), the local-vs-global checks in identifier lowering and in plain,
+compound and actor-state assignment, the indirect-call check, lambda
+capture collection and capture types, and the return / tail source
+lookups. Every one now goes through `visible_local` (the newest binding of
+the name whose scope has not ended), and `lower_block_as_value` hides its
+block's names.
+- Review 10's 15 scoping probes are right on all six legs (master 6 of 15;
+  the one still marked failing, g1, has a wrong EXPECT: `tail=in3/p3/p3` is
+  the right output). The ownership matrix (329 programs) is unchanged: no
+  regression against master. Pinned by
+  `tests/conformance/conf_value_branch_scope.kry` (fails on master; the LLVM
+  build fails there).
+
 ## Wave: review round 11 and a source-by-consumer matrix -- regressions the batch had all along (2026-10-13)
 
 `~/scratch/kryos-cb/review11` (161 probe modes, 15 minimal repros, 40 leak
@@ -142,8 +168,9 @@ has. Fixed and pinned in the review-10 part of
   default too: F7). P1-P3: a value-branch `let` shadowing an outer str /
   array / map, a binding of another type, or a mutable global gives later
   reads of the outer name the inner binding (wrong values, see the round-9
-  wave).
-- Still open, NOT master's symptom (since the batch's first commit): P1 in
+  wave). CLOSED 10-14 (value-branch scoping wave).
+- (CLOSED 10-14, value-branch scoping wave.) Still open, NOT master's
+  symptom (since the batch's first commit): P1 in
   a loop, `let v = if c { let xs = [..]  xs } else { xs }` -- the else
   branch reads the then branch's `xs` from an earlier iteration; master
   reads it because master leaked it, the batch frees it with `v`, so the
@@ -181,7 +208,8 @@ previous state) and the `if_struct` mode of `tests/mem_agg_ops_gate.sh`
   Round 9 first also took over branches naming an
   enclosing local, a param or a loop variable; review 10 showed that
   unsound (F1-F3), so those still leak, master the same.
-- Still open, a silent wrong answer on master too (both backends): a name
+- (CLOSED 10-14, value-branch scoping wave.) Still open, a silent wrong
+  answer on master too (both backends): a name
   declared inside an if/match VALUE branch stays visible after it, so a
   later read of an outer binding of the same name gets the inner one (`let
   s = ..  let r = if c { let s = ..  s } else { .. }` then `s`). Round 9
