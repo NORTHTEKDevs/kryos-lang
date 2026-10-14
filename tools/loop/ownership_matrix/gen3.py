@@ -66,6 +66,8 @@ for tk, td in TYPES.items():
     C = td['ctor']
     K = C.replace('{i}', '{i + 100}').replace('(i)', '(i + 100)').replace(', i)', ', i + 100)').replace('n: i }', 'n: i + 100 }')
     G = C.replace('{i}', 'g').replace('(i)', '(7)').replace(', i)', ', 7)').replace('n: i }', 'n: 7 }')
+    if C == 'mkm(i)':
+        G = '{"k": "v7"}'
     M = {'@C': C, '@K': K, '@T': T}
     for sk, sv in SOURCES.items():
         if tk == 'fn' and sk in ('fldconst', 'gmut'):

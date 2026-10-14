@@ -411,13 +411,18 @@ fn conditional_move_warning() {
     );
 }
 
-// ── Test: Struct partial move detection ─────────────────────────
+// -- Test: a struct field read is a share, not a partial move ----
+//
+// Since da597df3 (2026-07-19) a plain field read SHARES the field under the
+// ARC value model; the struct and the field stay usable, so a second read
+// raises no E0303. This test asserted the old partial-move error and had
+// been failing since (CI did not run this crate).
 
 #[test]
-fn struct_partial_move() {
+fn struct_field_read_is_a_share() {
     // let p = Point { x: 1, y: 2 }
-    // let a = p.x           ← partial move
-    // use(p.x)              ← error: field was moved
+    // let a = p.x           <- a share
+    // use(p.x)              <- fine
     let module = module_with_fn(vec![
         let_move(
             "p",
@@ -443,11 +448,11 @@ fn struct_partial_move() {
     ]);
     let result = analyze_ownership(&module);
     assert!(
-        result
+        !result
             .errors
             .iter()
             .any(|e| e.message.contains("partially moved")),
-        "expected partial move error, got: {:?}",
+        "a field read is a share, not a partial move, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }
@@ -1485,16 +1490,15 @@ fn copy_struct_field_then_other_field() {
     );
 }
 
-// ── Regression: Non-@copy struct partial move IS still detected ─
+// -- Regression: a non-@copy struct's field read is a share too --
 //
-// Companion to the test above — ensures the @copy carve-out did
-// not break the original partial-move detection for plain structs.
-// (Mirrors `struct_partial_move` above, but adds an explicit
-// non-@copy struct *declaration* so the checker takes the same
-// code path as the @copy tests above, only with `is_copy = false`.)
+// Companion to the @copy tests above, with an explicit non-@copy struct
+// declaration so the checker takes the same path with `is_copy = false`.
+// It asserted the partial-move error a field read raised before da597df3;
+// a read now shares the field (see `struct_field_read_is_a_share`).
 
 #[test]
-fn non_copy_struct_partial_move_still_detected() {
+fn non_copy_struct_field_read_is_a_share() {
     let module = Module {
         name: "test".into(),
         declarations: vec![
@@ -1503,9 +1507,8 @@ fn non_copy_struct_partial_move_still_detected() {
                 generics: vec![],
                 fields: vec![StructField {
                     name: "buf".into(),
-                    // BigBuf is unknown to the ownership analyzer
-                    // → treated as non-copy, so field access genuinely
-                    // moves the field out of the parent.
+                    // BigBuf is unknown to the ownership analyzer, so
+                    // the field is non-copy.
                     ty: TypeExpr::Simple {
                         name: "BigBuf".into(),
                         span: dummy_span(),
@@ -1543,7 +1546,7 @@ fn non_copy_struct_partial_move_still_detected() {
                             pattern: None,
                             span: Span::new(0, 0, 10),
                         },
-                        // partial move: pull `buf` out by move
+                        // a read of `buf`: shares it
                         let_move(
                             "b",
                             Expr::FieldAccess {
@@ -1552,7 +1555,7 @@ fn non_copy_struct_partial_move_still_detected() {
                                 span: Span::new(0, 11, 15),
                             },
                         ),
-                        // re-read same field → partially-moved error expected
+                        // re-read the same field: still usable
                         expr_stmt(Expr::FieldAccess {
                             object: Box::new(ident("o")),
                             field: "buf".into(),
@@ -1571,12 +1574,14 @@ fn non_copy_struct_partial_move_still_detected() {
         span: dummy_span(),
     };
     let result = analyze_ownership(&module);
+    // Not @copy and of a type the analysis does not know: still a share
+    // (see struct_field_read_is_a_share); a destructive move is `move o.buf`.
     assert!(
-        result
+        !result
             .errors
             .iter()
             .any(|e| e.message.contains("partially moved")),
-        "non-@copy struct must still raise partial-move, got: {:?}",
+        "a field read of a non-@copy struct is a share too, got: {:?}",
         result.errors.iter().map(|e| &e.message).collect::<Vec<_>>()
     );
 }

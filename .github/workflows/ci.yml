@@ -799,7 +799,9 @@ jobs:
         #   - kryos-linker: command-line construction, including the
         #     MSVC /DEBUG flag toggle and the LTO-gated-off-for-MSVC
         #     regression tests.
-        run: cargo test --release -j 2 -p kryos-driver -p kryos-mir -p kryos-codegen-llvm -p kryos-linker
+        #   - kryos-ownership: the advisory move analysis (its tests ran
+        #     nowhere, so two went stale for three months unnoticed).
+        run: cargo test --release -j 2 -p kryos-driver -p kryos-mir -p kryos-codegen-llvm -p kryos-linker -p kryos-ownership
 
       - name: Native test runner (JIT + LLVM --release end-to-end)
         working-directory: compiler
