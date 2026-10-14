@@ -102,3 +102,21 @@ planned unified ownership pass lands.
   new PAT (Marketplace -> Manage), `gh secret set VSCE_PAT`, then dispatch
   `publish-vscode.yml` with `tag=v1.0.1`. Marketplace is still at `0.4.0`.
 - OPEN (owner): the announcement (step 4).
+
+## v1.1.0 (2026-10-13)
+
+- Memory-safety release (the ownership batch, PRs #6 and #7) plus two
+  additions, `to_string` of aggregates and `==` on arrays and maps, so a
+  minor version. Prep PR #8 (CI green), tagged on the merge commit
+  `93bc070d`. A stale local-only `v1.1.0` from the abandoned numbering
+  (tag object `f0772991` -> commit `84921128`, 2026-05-15, never on the
+  remote) was deleted first, as the stale `v1.0.0` was in step 1.
+- Release workflow green; `releases/latest` and the installers' filter both
+  resolve to `v1.1.0`. All four platform archives, their `.sha256`, the vsix
+  and the zed wasm are attached. The Windows asset passes its `.sha256`,
+  reports `kryos 1.1.0`, and runs the fresh-user flow (`new` -> `run` ->
+  `test` -> `build --release` -> run the binary, plus a stdlib import) from
+  its bundled stdlib. Installer fallback floor bumped to `v1.1.0`.
+- The vsix is still `1.0.0` (no extension change since v1.0.1), and
+  `publish-vscode.yml` is dispatch-only; the Marketplace publish stays the
+  OPEN owner action above (`VSCE_PAT` expired).
