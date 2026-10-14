@@ -10,6 +10,72 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: the matrix's last failures, one use per program (2026-10-13)
+
+The matrix programs that were unclean on master AND on the batch (51
+backend legs: `fn_fldidx`, `fn_fldtmp`, `map_param`, `str` / `arr` / `parr`
+params, `st_idx`, `st_idxtmp`, `opt_idx`, `opt_idxtmp`, `st_mapval`,
+`opt_mapval`) were split into one program per consumer (138 programs) and
+triaged on `kryos run` with diag and real frees. Every failing shape was a
+value the consumer kept while its source released it. Fixed in `lower.rs`:
+- A str / array / map PARAM or mutable global as a function's last
+  expression took the tail path, which handed the caller the borrowed value;
+  the caller's release of its argument freed what it had just been returned
+  (`fn f(x: str) -> str { x }`, all backends). The function body rewrites
+  such a tail to `return x`, whose param retain was already right.
+- `y = xs[i]` of a struct / enum element (`owns_read` in the reassignment
+  arm) and `W.Has(xs[i])` (`suppress_enum_field_arg_drops`, `array_elem`)
+  take their own owner, as `let y = xs[i]` already did. A struct map value
+  as a payload gets its own copy (`__kryos_struct_index_clone`, as `let`),
+  an enum map value its own owner, and a map param payload a retain (moving
+  a param moved nothing). `suppress_enum_field_arg_drops` takes the
+  operands mutably so a read can be replaced by its copy.
+- A closure field read (`h.f`, `hs[i].f`, `mk(i).f`): `let`
+  (`pending_let_fn_retain`) and reassignment retain it and own it, undoing
+  the read's partial-move mark (the struct keeps its drop); so do a map
+  store, a field / element-field store and a payload. An if / match value
+  retains it in the branch (`share_temp_read_tail`, now also for a named
+  place), and so does a block value (`{ h.f }`); the `let` takes the slot
+  over when every branch hands it an owned closure (`fn_value_owned`: a
+  call or a closure field read) instead of aliasing it, which leaked the
+  retain.
+- Found writing the pin: `os[i] = None()` on `[Option<S>]` crashed (`ud2`)
+  once a reader held the old element (master too). A bare `None()` has no
+  payload to pick the instance from, so it is typed as the generic
+  `Option`; the index store took that type for the share, the store and the
+  old element's release, which then ignored the element's owner count. The
+  store now types the value by the slot's element instance
+  (`mono_base_name`).
+- Generators: gen1 / gen2 param helpers referenced `i` without taking it,
+  and a map global called `mkm()` at top level (rule 8), so 9 programs
+  never compiled; fixed. Matrix on 329 programs: 0 unclean legs (master:
+  51), 0 regressions (`compare.py`). Pinned by
+  `tests/conformance/conf_residual_reads.kry` (fails on master on all three
+  backends), registered in `no_double_free.sh`.
+- Leaks (`~/scratch/kryos-cb/r16/lk3.kry`, 21 modes, peak MB at 300k):
+  every mode computes the right total now (master: 0 for most, reading
+  freed memory). Where the candidate's peak is above master's, master was
+  freeing the value early; the candidate's retained value then leaks
+  exactly as a FRESH value of that shape already does on master (an
+  `Option<S>` enum payload, 40MB; a closure field overwrite, 41MB; a
+  closure map value, 38MB; a map local used as a payload, 40MB).
+  Those container-release gaps are the open leak items below.
+- `kryos-ownership`'s `struct_partial_move` and
+  `non_copy_struct_partial_move_still_detected` asserted the E0303 a field
+  read raised before `da597df3` (2026-07-19); they had failed since, and
+  no CI job ran the crate. Updated to the share semantics; the Windows
+  job's cargo tests now include `-p kryos-ownership`.
+- Still open: a nested match on an `Option<S>` enum payload (`WO.Has(o) =>
+  match o { Some(p) => p.name, .. }`) fails the LLVM build ("could not
+  determine struct type for field access") -- non-generic enum variant
+  fields are lowered with `lower_type_expr`, so the payload is the generic
+  `Option` and `p` an i64 (master too; `kryos run` is fine; matching
+  through a function taking `Option<S>` works). The same erasure is why an
+  `Option<S>` payload leaks its struct. Leaks: a closure field or a
+  reassigned closure variable never releases the old closure; a
+  `map<_, fn>` never releases its closures; L3 / L4, recursive enums, the
+  spawn-argument kind numbering as before.
+
 ## Wave: value-branch scoping -- a name ends with its block (2026-10-13)
 
 The last silent wrong answer the ownership batch left open (review 10's

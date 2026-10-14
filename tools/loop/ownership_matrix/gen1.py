@@ -73,6 +73,8 @@ for tk, td in TYPES.items():
     K = C.replace('{i}', '{i + 100}').replace('(i)', '(i + 100)').replace(', i)', ', i + 100)').replace('n: i }', 'n: i + 100 }')
     D = C.replace('{i}', 'd').replace('(i)', '(0)').replace(', i)', ', 0)').replace('n: i }', 'n: 0 }')
     G = C.replace('{i}', 'g').replace('(i)', '(7)').replace(', i)', ', 7)').replace('n: i }', 'n: 7 }')
+    if C == 'mkm(i)':
+        G = '{"k": "v7"}'
     M = {'@C': C, '@K': K, '@D': D, '@T': T}
     for sk, sv in SOURCES.items():
         if tk == 'fn' and sk == 'fldconst':
@@ -95,15 +97,15 @@ for tk, td in TYPES.items():
             fn = f'c_{c}'
             if sk in ('param', 'cap'):
                 if c == 'ret':
-                    L += [f'fn {fn}_in(x: {T}) -> {T} {{', '    return x', '}']
-                    L += [f'fn {fn}(i: i64) -> str {{', f'    let mut a = {C}', f'    let y = {fn}_in(a)', f'    a = {K}', '    churn(i)',
+                    L += [f'fn {fn}_in(i: i64, x: {T}) -> {T} {{', '    return x', '}']
+                    L += [f'fn {fn}(i: i64) -> str {{', f'    let mut a = {C}', f'    let y = {fn}_in(i, a)', f'    a = {K}', '    churn(i)',
                           '    return show(y) + "/" + show(a)', '}']
                 else:
                     b, r = consume(c, 'x')
                     rt = sub([RT[c]], M)[0]
                     if sk == 'param':
-                        L += [f'fn {fn}_in(x: {T}) -> {rt} {{'] + ['    ' + l for l in sub(b, M)] + ['    return y', '}']
-                        L += [f'fn {fn}(i: i64) -> str {{', f'    let mut a = {C}', f'    let y = {fn}_in(a)', f'    a = {K}', '    churn(i)',
+                        L += [f'fn {fn}_in(i: i64, x: {T}) -> {rt} {{'] + ['    ' + l for l in sub(b, M)] + ['    return y', '}']
+                        L += [f'fn {fn}(i: i64) -> str {{', f'    let mut a = {C}', f'    let y = {fn}_in(i, a)', f'    a = {K}', '    churn(i)',
                               f'    return {r}', '}']
                     else:
                         L += [f'fn {fn}(i: i64) -> str {{', f'    let mut x = {C}', f'    let g = || -> {rt} {{'] + ['        ' + l for l in sub(b, M)] + \

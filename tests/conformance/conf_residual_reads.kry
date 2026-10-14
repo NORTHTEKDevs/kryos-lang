@@ -1,0 +1,221 @@
+// Conformance (2026-10-13): values read out of a place that the place
+// releases again -- found splitting the ownership matrix's last failures
+// (tools/loop/ownership_matrix) one consumer per program, master too, all
+// three backends: a str / array / map parameter or a mutable global as a
+// function's last expression, a struct or Option array element reassigned
+// into a variable or used as an enum payload, a struct or Option map value
+// as a payload, a map parameter as a payload, and a closure read out of a
+// struct field (of a local, an array element or a temporary) bound with
+// `let`, reassigned, used as an if / match / block value, stored into a
+// field, an element's field or a map, or used as a payload.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+struct H { f: fn(i64) -> str, n: i64 }
+enum W { Has(P), No }
+enum WO { Has(Option<P>), No }
+enum WM { Has(map<str, str>), No }
+enum WF { Has(fn(i64) -> str), No }
+
+let mut G: [str] = []
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mkf(i: i64) -> fn(i64) -> str {
+    let s = "f{i}"
+    return |x: i64| s
+}
+
+fn mkh(i: i64) -> H { return H { f: mkf(i), n: i } }
+
+fn mkxs(i: i64) -> [P] { return [P { name: "v{i}", n: i }] }
+
+fn wname(w: W) -> str {
+    return match w {
+        W.Has(p) => p.name,
+        W.No => "no",
+    }
+}
+
+fn oname(o: Option<P>) -> str {
+    return match o {
+        Some(p) => p.name,
+        None() => "none",
+    }
+}
+
+fn woname(w: WO) -> str {
+    return match w {
+        WO.Has(o) => oname(o),
+        WO.No => "no",
+    }
+}
+
+fn wfcall(w: WF) -> str {
+    return match w {
+        WF.Has(f) => f(0),
+        WF.No => "no",
+    }
+}
+
+// A parameter or a mutable global as the last expression.
+fn tail_str(x: str) -> str {
+    x
+}
+
+fn tail_arr(a: [i64]) -> [i64] {
+    a
+}
+
+fn tail_map(m: map<str, str>) -> map<str, str> {
+    m
+}
+
+fn tail_global() -> [str] {
+    G
+}
+
+fn tails(i: i64) -> str {
+    let mut s = "s{i}"
+    let mut a = [i, i + 1]
+    let mut m: map<str, str> = {}
+    m["k"] = "m{i}"
+    G = ["g{i}"]
+    let ts = tail_str(s)
+    let ta = tail_arr(a)
+    let tm = tail_map(m)
+    let tg = tail_global()
+    s = "x"
+    a = [0]
+    m = {}
+    G = ["h"]
+    churn(i)
+    return ts + " " + to_string(ta[1]) + " " + tm["k"] + " " + tg[0]
+}
+
+// A struct or Option array element reassigned into a variable.
+fn elem_reassign(i: i64) -> str {
+    let mut xs = [P { name: "v{i}", n: i }]
+    let mut y = P { name: "d", n: 0 }
+    y = xs[0]
+    xs[0] = P { name: "w{i}", n: i }
+    let mut os = [Some(P { name: "o{i}", n: i })]
+    let mut z: Option<P> = None()
+    z = os[0]
+    os[0] = None()
+    churn(i)
+    return y.name + " " + oname(z)
+}
+
+// A struct or Option element, of an array or of a temporary array, and a
+// struct or Option map value, as an enum payload.
+fn elem_payloads(i: i64) -> str {
+    let mut xs = [P { name: "a{i}", n: i }]
+    let w1 = W.Has(xs[0])
+    xs[0] = P { name: "x", n: 0 }
+    let w2 = W.Has(mkxs(i)[0])
+    let mut os = [Some(P { name: "b{i}", n: i })]
+    let w3 = WO.Has(os[0])
+    os[0] = None()
+    let mut m: map<str, P> = {}
+    m["k"] = P { name: "c{i}", n: i }
+    let w4 = W.Has(m["k"])
+    m["k"] = P { name: "y", n: 0 }
+    let mut mo: map<str, Option<P>> = {}
+    mo["k"] = Some(P { name: "d{i}", n: i })
+    let w5 = WO.Has(mo["k"])
+    mo["k"] = None()
+    churn(i)
+    return wname(w1) + " " + wname(w2) + " " + woname(w3) + " " + wname(w4) + " " + woname(w5)
+}
+
+// A map parameter as an enum payload.
+fn wrap_map(m: map<str, str>) -> WM {
+    return WM.Has(m)
+}
+
+fn map_param_payload(i: i64) -> str {
+    let mut m: map<str, str> = {}
+    m["k"] = "m{i}"
+    let w = wrap_map(m)
+    m = {}
+    churn(i)
+    return match w {
+        WM.Has(mm) => mm["k"],
+        WM.No => "no",
+    }
+}
+
+// A closure read out of a struct field, kept after the struct is
+// overwritten or dropped.
+fn fn_field_reads(i: i64) -> str {
+    let mut h = mkh(i)
+    let a = h.f
+    h = mkh(i + 100)
+    let mut hs = [mkh(i)]
+    let b = hs[0].f
+    let c = mkh(i).f
+    let mut d = mkf(0)
+    d = hs[0].f
+    let e = if i > 0 { hs[0].f } else { mkf(0) }
+    let f = match i % 2 {
+        0 => hs[0].f,
+        _ => hs[0].f,
+    }
+    let g = {
+        mkh(i).f
+    }
+    hs[0] = mkh(i + 100)
+    churn(i)
+    return a(0) + " " + b(0) + " " + c(0) + " " + d(0) + " " + e(0) + " " + f(0) + " " + g(0)
+}
+
+// A closure field read stored into a field, an element's field, a map, or
+// used as an enum payload.
+fn fn_field_stores(i: i64) -> str {
+    let mut hs = [mkh(i)]
+    let mut y = H { f: mkf(0), n: 0 }
+    y.f = hs[0].f
+    let mut ys = [H { f: mkf(0), n: 0 }]
+    ys[0].f = hs[0].f
+    let mut m: map<str, fn(i64) -> str> = {}
+    m["k"] = hs[0].f
+    let w = WF.Has(hs[0].f)
+    hs[0] = mkh(i + 100)
+    churn(i)
+    let mf = m["k"]
+    return y.f(0) + " " + ys[0].f(0) + " " + mf(0) + " " + wfcall(w)
+}
+
+@capabilities(all)
+fn main() {
+    let t1 = tails(1)
+    let t2 = tails(2)
+    expect(t1 == "s1 2 m1 g1" and t2 == "s2 3 m2 g2", "parameter or global as the last expression")
+    expect(elem_reassign(1) == "v1 o1" and elem_reassign(2) == "v2 o2", "array element reassigned into a variable")
+    expect(elem_payloads(1) == "a1 v1 b1 c1 d1" and elem_payloads(2) == "a2 v2 b2 c2 d2", "element or map value as a payload")
+    expect(map_param_payload(1) == "m1" and map_param_payload(2) == "m2", "map parameter as a payload")
+    let r1 = fn_field_reads(1)
+    let r2 = fn_field_reads(2)
+    expect(r1 == "f1 f1 f1 f1 f1 f1 f1" and r2 == "f2 f2 f2 f2 f2 f2 f2", "closure field read kept after its struct")
+    expect(fn_field_stores(1) == "f1 f1 f1 f1" and fn_field_stores(2) == "f2 f2 f2 f2", "closure field read stored")
+    println("conformance residual reads: PASS")
+}

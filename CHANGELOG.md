@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - values read out of a place that released them
+
+Found by splitting the ownership matrix's last failures one use per program.
+All of these were in 1.1.0 and earlier, on every backend. The matrix (329
+programs, three backends) now has no failing case; 1.1.0 had 51.
+
+- **A function whose last expression is a `str`, array or map parameter**
+  (`fn f(x: str) -> str { x }`), or a mutable global, returned a value the
+  caller then freed together with its own argument. `return x` was right.
+- **`y = xs[i]`, reassigning a struct or `Option` element of an array**, and
+  **`W.Has(xs[i])`, using one as an enum payload** (also of a temporary
+  array), read freed memory once the element was overwritten. So did a
+  struct or `Option` map value used as a payload (`W.Has(m[k])`), and a map
+  parameter used as a payload.
+- **A closure read out of a struct field** (`h.f`, `hs[i].f`, `mk(i).f`)
+  was freed with the struct. Bound with `let`, reassigned, used as an
+  `if` / `match` / block value, stored into a field, an element's field or a
+  map, or used as an enum payload, it called freed memory once the struct
+  was overwritten or dropped.
+- **`os[i] = None()` on an array of `Option<S>` crashed** when something
+  still held the old element. A bare `None()` was typed as the generic
+  `Option`, so the old element was released without regard to its other
+  owners.
+- Two `kryos-ownership` unit tests still asserted the partial-move error a
+  field read raised before 2026-07-19. CI never ran that crate, so they had
+  been failing since. They now assert the share semantics, and CI runs the
+  crate.
+
 ## [1.1.0] - 2026-10-13
 
 Memory-safety release. Most entries below fix values that were freed twice,
