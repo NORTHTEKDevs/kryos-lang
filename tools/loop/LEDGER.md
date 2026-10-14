@@ -10,6 +10,31 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: enum payloads of a generic instance type (2026-10-14)
+
+The open item from the residual-reads wave. A NON-generic enum's variant
+fields were registered in the pre-pass with the context-free
+`lower_type_expr`, so a generic instance payload (`enum WO { Has(Option<P>)
+}`, `Result<P, str>`, `[Option<P>]`, `Bx<str>`) was the type-erased stub
+(`Option`, all-i64 fields). A match on the payload bound `Some(p)` as an i64
+-- `p.name` failed the LLVM build ("could not determine struct type for
+field access", master too; `kryos run` happened to work) -- and the enum's
+drop called the stub's drop helper, which never released the struct inside
+(an `Option<P>` payload leaked 36MB over 300k values). After the pre-pass,
+when every template is registered, the fields that name a generic instance
+(top level or inside an array / tuple) are re-resolved with `resolve_type`,
+which monomorphizes them (`Option___P`); the retag pass after it then turns
+any `Struct(name)` of an enum into `Enum(name)` as before.
+- Pinned by `tests/conformance/conf_enum_payload_instances.kry` (the LLVM
+  build fails on master), registered in `no_double_free.sh`.
+- Leak: the fresh `Option<P>` payload mode goes from 40MB to 4MB at 300k.
+- Combined with the residual-reads wave: matrix 0 unclean legs, 0
+  regressions; the `Option<P>` element / map value payload modes, which
+  leaked once their read was owned, are flat too (34MB / 41MB -> 4MB).
+- Still open (master too): a `map<..>` enum payload leaks its entries
+  (`WM.Has(mkm(i))`, ~37MB over 300k) -- the enum drop frees the map with
+  the untyped `kryos_map_free`.
+
 ## Wave: the matrix's last failures, one use per program (2026-10-13)
 
 The matrix programs that were unclean on master AND on the batch (51

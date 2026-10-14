@@ -1939,6 +1939,48 @@ pub fn lower_module_with_lambda_params(
         }
     }
 
+    // A non-generic enum's payload of a generic INSTANCE type (`enum WO {
+    // Has(Option<P>) }`) was registered context-free above, as the
+    // type-erased stub (`Option`): a match on it bound `Some(p)` as an i64
+    // (the LLVM build failed on `p.name`) and the enum's drop never released
+    // the struct inside. Every template is registered by now, so those
+    // fields resolve to their instance (`Option___P`).
+    {
+        fn names_instance(ctx: &LoweringContext, t: &ast::TypeExpr) -> bool {
+            match t {
+                ast::TypeExpr::Generic { name, args, .. } => {
+                    ctx.generic_enum_templates.contains_key(name)
+                        || ctx.generic_struct_templates.contains_key(name)
+                        || args.iter().any(|a| names_instance(ctx, a))
+                }
+                ast::TypeExpr::Array { element, .. } => names_instance(ctx, element),
+                ast::TypeExpr::Tuple { elements, .. } => elements.iter().any(|e| names_instance(ctx, e)),
+                _ => false,
+            }
+        }
+        let mut fixes: Vec<(String, usize, usize, ast::TypeExpr)> = Vec::new();
+        for decl in &module.declarations {
+            if let ast::Decl::Enum { name, generics, variants, .. } = decl {
+                if !generics.is_empty() {
+                    continue;
+                }
+                for (vi, v) in variants.iter().enumerate() {
+                    for (fi, f) in v.fields.iter().enumerate() {
+                        if names_instance(&ctx, f) {
+                            fixes.push((name.clone(), vi, fi, f.clone()));
+                        }
+                    }
+                }
+            }
+        }
+        for (name, vi, fi, f) in fixes {
+            let t = ctx.resolve_type(&f);
+            if let Some(slot) = ctx.enum_defs.get_mut(&name).and_then(|vs| vs.get_mut(vi)).and_then(|v| v.fields.get_mut(fi)) {
+                *slot = t;
+            }
+        }
+    }
+
     // Enum payload types are registered context-free (`lower_type_expr`), and a
     // struct field naming an enum declared LATER resolves before that enum
     // exists -- both leave the enum typed `Struct(name)`. Retag every such

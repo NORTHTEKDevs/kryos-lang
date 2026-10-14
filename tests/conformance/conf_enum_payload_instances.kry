@@ -1,0 +1,95 @@
+// Conformance (2026-10-14): a non-generic enum whose payload is a generic
+// instance (`Option<P>`, `Result<P, str>`, `[Option<P>]`, a generic struct).
+// Its variant fields were registered as the type-erased stub (`Option`), so
+// a match on the payload bound `Some(p)` as an i64 -- the LLVM build failed
+// on `p.name` -- and the enum's drop never released the struct inside the
+// payload (a leak per value). The payload is the instance (`Option___P`) now.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+
+struct P { name: str, n: i64 }
+struct Bx<T> { v: T, n: i64 }
+enum WO { Has(Option<P>), No }
+enum WR { Has(Result<P, str>), No }
+enum WA { Has([Option<P>]), No }
+enum WB { Has(Bx<str>), No }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn wo(w: WO) -> str {
+    return match w {
+        WO.Has(o) => match o {
+            Some(p) => p.name,
+            None() => "none",
+        },
+        WO.No => "no",
+    }
+}
+
+fn wr(w: WR) -> str {
+    return match w {
+        WR.Has(r) => match r {
+            Ok(p) => p.name,
+            Err(e) => "err " + e,
+        },
+        WR.No => "no",
+    }
+}
+
+fn wa(w: WA) -> str {
+    return match w {
+        WA.Has(xs) => {
+            let mut out = ""
+            for o in xs {
+                out = out + match o {
+                    Some(p) => p.name,
+                    None() => "-",
+                }
+            }
+            out
+        },
+        WA.No => "no",
+    }
+}
+
+fn wb(w: WB) -> str {
+    return match w {
+        WB.Has(b) => b.v,
+        WB.No => "no",
+    }
+}
+
+fn run(i: i64) -> str {
+    let a = WO.Has(Some(P { name: "a{i}", n: i }))
+    let b = WO.Has(None())
+    let c = WR.Has(Ok(P { name: "c{i}", n: i }))
+    let d = WR.Has(Err("e{i}"))
+    let e = WA.Has([Some(P { name: "x{i}", n: i }), None(), Some(P { name: "y{i}", n: i })])
+    let f = WB.Has(Bx { v: "b{i}", n: i })
+    churn(i)
+    return wo(a) + " " + wo(b) + " " + wr(c) + " " + wr(d) + " " + wa(e) + " " + wb(f)
+}
+
+fn main() {
+    expect(run(1) == "a1 none c1 err e1 x1-y1 b1", "generic instance payloads, first pass")
+    expect(run(2) == "a2 none c2 err e2 x2-y2 b2", "generic instance payloads, second pass")
+    println("conformance enum payload instances: PASS")
+}
