@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - enum payloads of a generic instance type
+
+- **A non-generic enum whose payload is a generic instance** (`enum W {
+  Has(Option<P>) }`, `Result<P, str>`, `[Option<P>]`, a generic struct)
+  stored that payload as the type-erased generic. A `match` on it bound
+  `Some(p)` as an integer, so `p.name` failed the `--release` build, and
+  dropping the enum never released the struct inside (36MB over 300k
+  values). The payload now has its real type.
+
 ### Fixed - values read out of a place that released them
 
 Found by splitting the ownership matrix's last failures one use per program.

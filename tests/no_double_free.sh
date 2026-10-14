@@ -445,6 +445,7 @@ no_df_both review9_fixes "$ROOT/tests/conformance/conf_review9_fixes.kry"
 no_df_both review11_fixes "$ROOT/tests/conformance/conf_review11_fixes.kry"
 no_df_both value_branch_scope "$ROOT/tests/conformance/conf_value_branch_scope.kry"
 no_df_both residual_reads "$ROOT/tests/conformance/conf_residual_reads.kry"
+no_df_both enum_payload_instances "$ROOT/tests/conformance/conf_enum_payload_instances.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 
 if [ "$fail" -eq 0 ]; then
