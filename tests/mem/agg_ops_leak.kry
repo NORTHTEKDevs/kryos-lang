@@ -60,6 +60,12 @@ fn match_tuple(i: i64) -> i64 {
     }
 }
 
+struct Hfs { f: fn(i64) -> str }
+fn mkfn(i: i64) -> fn(i64) -> str {
+    let s = "c{i}"
+    return |x: i64| s
+}
+
 @capabilities(all)
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
@@ -277,6 +283,23 @@ fn main() {
                 return len(ca.xs) + len(cb.name)
             }
             acc = acc + swap(i) + len(ca.xs)
+        } elif mode == "fn_reassign" {
+            // Reassigning a closure variable never released the old closure.
+            let mut fr = mkfn(i)
+            fr = mkfn(i + 1)
+            let hr = Hfs { f: mkfn(i + 2) }
+            fr = hr.f
+            acc = acc + len(fr(0))
+        } elif mode == "fn_field_store" {
+            // Neither did overwriting a closure field.
+            let mut hfs = Hfs { f: mkfn(i) }
+            hfs.f = mkfn(i + 1)
+            acc = acc + len(hfs.f(0))
+        } elif mode == "fn_slot_overwrite" {
+            // Nor overwriting a closure element.
+            let mut fso = [mkfn(i)]
+            fso[0] = mkfn(i + 1)
+            acc = acc + len(fso[0](0))
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }

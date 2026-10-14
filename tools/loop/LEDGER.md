@@ -10,6 +10,44 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: closure reassignment and field overwrite leaks (2026-10-14)
+
+From the residual-reads wave's open leaks. `f = g` of an owned closure
+local and `h.f = g` never released the old closure (`release_fn` /
+`release_if_ne_fn` had no Function arm), nor did `fs[i] = g`: 250MB /
+127MB / 125MB per 1M (`tests/mem/agg_ops_leak.kry` modes `fn_reassign` /
+`fn_field_store` / `fn_slot_overwrite`, now in `mem_agg_ops_gate.sh`). A new runtime call `kryos_fn_release_if_ne(old,
+new)` (kryos-rt builtins, wired into the JIT symbols, the LLVM declarations
+and the wasm no-op list) releases the old closure after the store -- for a
+local only when it owns its value (not a param, alias, closure capture or
+moved local), for a field once (a closure field read takes no reference).
+- Releasing exposed every alias of a named closure (matrix: `fn_local`,
+  `fn_param`, `fn_cap` let / reassign / literals / if / match / block /
+  payload consumers read the released closure). A closure is now shared
+  like a str / array / map: `retain_for_ty` covers `Function`
+  (`kryos_fn_retain`), so a copy takes its own reference and the source
+  keeps its drop -- except that an array / map slot store retains only a
+  closure it copies (a named one, a field read): a fresh one (a call, a
+  lambda, an element read, which the read retains) is the slot's as is, and
+  retaining it leaked one per store (71MB at 300k); a named closure as an
+  enum payload is retained
+  (`suppress_enum_field_arg_drops`); `f = m[k]` retains the read; a `let`
+  of an if / match / block whose branches all hand over an owned closure
+  takes the slot over (`fn_value_owned`) instead of retaining it again.
+- Matrix (329 programs): 0 unclean legs, 0 regressions. Leak modes: the
+  closure reassignment / field-store / element-field-store modes are flat
+  (36-42MB -> 4MB at 300k). Pinned by
+  `tests/conformance/conf_closure_release.kry` (every kind of copy read
+  after the original is reassigned and the memory reused; registered in
+  `no_double_free.sh`).
+- An overwritten closure ELEMENT is released (an element read retains what
+  it reads); an overwritten closure MAP VALUE is not -- releasing it broke
+  every reader in the matrix's `fn_mapval` (a map read of a closure is not
+  retained), so it stays a leak until map reads of closures own their read.
+- Still open: a `map<_, fn>` never releases its closures, on overwrite or
+  drop (39MB / 300k), and a `map<..>` enum payload leaks its entries
+  (untyped `kryos_map_free`).
+
 ## Wave: enum payloads of a generic instance type (2026-10-14)
 
 The open item from the residual-reads wave. A NON-generic enum's variant

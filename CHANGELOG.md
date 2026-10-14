@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - reassigned closures leaked
+
+- **Reassigning a closure variable** (`f = make_handler(i)` in a loop),
+  **overwriting a closure field** (`h.on_event = ..`) and **overwriting a
+  closure element** (`handlers[i] = ..`) never released the old closure:
+  250MB, 127MB and 125MB per million. All three release it now. A
+  copy of a closure therefore holds its own reference, as a copy of a string
+  already did. That covers a `let` copy, a struct literal, a field store, an
+  array literal, `push`, a map store, an enum payload and a tuple, so the
+  copy stays valid after the original is reassigned.
+
 ### Fixed - enum payloads of a generic instance type
 
 - **A non-generic enum whose payload is a generic instance** (`enum W {
