@@ -1,4 +1,4 @@
-//! `kryos` — the Kryos programming language compiler CLI.
+//! `kryos` - the Kryos programming language compiler CLI.
 //!
 //! Entry point that parses arguments with `clap` and delegates to
 //! the appropriate command module.
@@ -172,7 +172,13 @@ enum Commands {
     },
 
     /// Interactive REPL
-    Repl,
+    Repl {
+        /// Capabilities the session may use, comma-separated (e.g.
+        /// `--allow fs:read,net:http`). A session starts with none, like an
+        /// unannotated `main`; `:allow <cap>` grants more at the prompt.
+        #[arg(long, value_delimiter = ',')]
+        allow: Vec<String>,
+    },
 
     /// Run tests in the current project
     Test {
@@ -214,8 +220,8 @@ enum Commands {
         strict_capabilities: bool,
 
         /// Capability enforcement mode: `permissive`, `inferred`, or `strict`.
-        /// Defaults to `inferred` — the same deny-by-default `check`/`run`/
-        /// `build` use — so `kryos test` catches capability regressions.
+        /// Defaults to `inferred` - the same deny-by-default `check`/`run`/
+        /// `build` use - so `kryos test` catches capability regressions.
         #[arg(long, value_name = "MODE")]
         capabilities_mode: Option<String>,
     },
@@ -784,7 +790,7 @@ fn real_main() {
             commands::eval_cmd::from_argv(expr, show_source),
         ),
 
-        Commands::Repl => commands::repl::execute(),
+        Commands::Repl { allow } => commands::repl::execute(allow),
 
         Commands::Test {
             filter_pos,
@@ -1119,7 +1125,19 @@ mod tests {
     #[test]
     fn parse_repl() {
         let cli = Cli::try_parse_from(["kryos", "repl"]).unwrap();
-        assert!(matches!(cli.command, super::Commands::Repl));
+        match cli.command {
+            super::Commands::Repl { allow } => assert!(allow.is_empty()),
+            _ => panic!("expected Repl"),
+        }
+    }
+
+    #[test]
+    fn parse_repl_allow() {
+        let cli = Cli::try_parse_from(["kryos", "repl", "--allow", "fs:read,net:http"]).unwrap();
+        match cli.command {
+            super::Commands::Repl { allow } => assert_eq!(allow, vec!["fs:read", "net:http"]),
+            _ => panic!("expected Repl"),
+        }
     }
 
     #[test]

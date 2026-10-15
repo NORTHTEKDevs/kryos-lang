@@ -58,7 +58,7 @@ Every `kryos` subcommand at a glance. For full options, run `kryos <command> --h
 | `kryos doc-serve [files]` | Generate HTML docs and serve them on http://127.0.0.1:8088 (separate top-level command, NOT `kryos doc serve`) |
 | `kryos explain <Exxx>` | rustc-style long-form explanation for any diagnostic code |
 | `kryos bindgen <header.h>` | Generate Kryos `extern` declarations from a C header |
-| `kryos repl` | Interactive REPL with persistent `~/.kryos_history` |
+| `kryos repl [--allow <caps>]` | Interactive REPL with persistent `~/.kryos_history`. Capability-checked: a session starts with none; `--allow fs:read,...` or `:allow <cap>` grants, `:caps` shows the grant |
 
 ## Diagnostics
 
@@ -74,15 +74,15 @@ The full per-release detail lives in [`CHANGELOG.md`](../CHANGELOG.md). The high
 
 | Tag | Theme |
 | --- | --- |
-| v3.0 | Production hardening — 34/34 LLVM↔Cranelift parity, GPG-attested releases, tier-1 macOS-14 + Windows |
-| v3.1 | LSP depth — document symbols, references, rename, signature help, inlay hints, code actions, semantic tokens |
-| v3.2 | Stdlib breadth — datetime full UTC math + RFC3339, re find/capture/replace, base64 (new), uuid v4 (new) |
-| v3.3 | Learn-Kryos — 4 cookbook recipes, common-errors reference, cheatsheet |
+| v3.0 | Production hardening - 34/34 LLVM↔Cranelift parity, GPG-attested releases, tier-1 macOS-14 + Windows |
+| v3.1 | LSP depth - document symbols, references, rename, signature help, inlay hints, code actions, semantic tokens |
+| v3.2 | Stdlib breadth - datetime full UTC math + RFC3339, re find/capture/replace, base64 (new), uuid v4 (new) |
+| v3.3 | Learn-Kryos - 4 cookbook recipes, common-errors reference, cheatsheet |
 | v3.4 | `kryos bench` + `@bench` attribute |
 | v3.5 | `kryos lint` (4 lints) + `kryos audit` (capability + extern + 13 secret patterns) |
 | v3.6 | `kryos new` scaffolder with 4 templates |
 | v3.7 | `kryos trace` execution tracing |
-| v3.8 | Perf — 0-alloc TraceFrame, ~13.3ns/fn-call median |
+| v3.8 | Perf - 0-alloc TraceFrame, ~13.3ns/fn-call median |
 | v3.9 | `kryos watch` + `kryos clean` + REPL persistent history |
 | v3.10 | 5 first-party packages under `packages/` + `kryos pkg list-local` |
 | v3.11 | `kryos profile` + 3 showcase examples |
@@ -95,8 +95,8 @@ The full per-release detail lives in [`CHANGELOG.md`](../CHANGELOG.md). The high
 
 ## Cookbook & learning path
 
-- [docs/learn/README.md](./learn/README.md) — the 30-minute tour
-- [docs/learn/cookbook/](./learn/cookbook) — 10 task-oriented recipes
-- [docs/learn/common-errors.md](./learn/common-errors.md) — top-20 errors and fixes
-- [docs/learn/cheatsheet.md](./learn/cheatsheet.md) — syntax at a glance
-- [docs/19-language-reference.md](./19-language-reference.md) — the spec
+- [docs/learn/README.md](./learn/README.md) - the 30-minute tour
+- [docs/learn/cookbook/](./learn/cookbook) - 10 task-oriented recipes
+- [docs/learn/common-errors.md](./learn/common-errors.md) - top-20 errors and fixes
+- [docs/learn/cheatsheet.md](./learn/cheatsheet.md) - syntax at a glance
+- [docs/19-language-reference.md](./19-language-reference.md) - the spec

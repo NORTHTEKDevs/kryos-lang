@@ -907,5 +907,18 @@ else
     tail -5 "$TMP/a2a_nc" | sed 's/^/    /'; fail=1
 fi
 
+# The item-41 experiment switch must be inert in a default build: it re-opens
+# escape_status rows 41a/41b, and one environment variable on a build machine
+# used to be enough (the switch now needs the item41-experiment feature).
+if KRYOS_NO_HOTPARAM_ALL=1 "$K" check tests/security/attack_realprogram_deny_blocks_builtin_exfil.kry >"$TMP/hp" 2>&1; then
+    echo "  FAIL: KRYOS_NO_HOTPARAM_ALL=1 weakens this build: 41a's escape compiled"
+    fail=1
+elif grep -q "denied in this block\|requires" "$TMP/hp"; then
+    echo "  ok   KRYOS_NO_HOTPARAM_ALL is inert in a default build (41a still rejected)"
+else
+    echo "  FAIL: 41a rejected with the switch set, but not for the capability reason:"
+    tail -3 "$TMP/hp" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail
