@@ -39,7 +39,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 export KRYOS_STDLIB_DIR="${KRYOS_STDLIB_DIR:-$ROOT/compiler/stdlib}"
-K="$ROOT/compiler/target/release/kryos.exe"; [ -x "$K" ] || K="$ROOT/compiler/target/release/kryos"
+# Honor KRYOS_BIN like security_gate.sh, so a caller comparing two binaries
+# (candidate vs master) is not silently measuring the same one twice.
+K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
@@ -151,6 +153,36 @@ gen() {
               for ((i=0; i<depth; i++)); do printf '{x}'; done
               printf '"\n println(to_string(len(s)))\n}\n'
             } > "$out" ;;
+        # An `elif let` chain. Recursion runs parse_if_rest -> parse_if_let ->
+        # parse_if_let_else -> parse_if_rest, and each body's parse_block
+        # charged AND RELEASED its own depth, so the chain itself accumulated
+        # nothing and overflowed the native stack (rc 253, no diagnostic) at
+        # ~50k clauses. tests/security/attack_parser_elif_let_chain_stack_overflow.kry
+        eliflet)
+            { printf 'fn main() {\n let v: i64 = 0\n if let 1 = v { println("a") }\n'
+              for ((i=0; i<depth; i++)); do printf ' elif let %d = v { println("b") }\n' $((i+2)); done
+              printf ' else { println("z") }\n}\n'
+            } > "$out" ;;
+        # The same chain in EXPRESSION position (a `let` initializer), which
+        # recurses through parse_if_expr / parse_if_expr_after_if.
+        # tests/security/attack_expr_if_elif_chain_stack_overflow.kry
+        elifexpr)
+            { printf 'fn main() {\n let a: bool = false\n let x: i64 = if a { 0 }\n'
+              for ((i=0; i<depth; i++)); do printf ' elif a { %d }\n' "$i"; done
+              printf ' else { -1 }\n println(to_string(x))\n}\n'
+            } > "$out" ;;
+        # Nested interpolation deep enough to overflow the LEXER, which runs
+        # before the parser's guard can see a token: scan_string recurses into
+        # scan_token on the nested literal
+        # (tests/security/resource_dos_lexer_nested_interp_stack_overflow.kry,
+        # 3 MB, rc 253 with no output).
+        deepinterp)
+            { printf 'fn main() {\n let s: str = "'
+              for ((i=0; i<depth; i++)); do printf '{ "'; done
+              printf 'x'
+              for ((i=0; i<depth; i++)); do printf '" }'; done
+              printf '"\n println(s)\n}\n'
+            } > "$out" ;;
     esac
 }
 
@@ -168,6 +200,58 @@ gen flatchain    10000 "$TMP/flatchain.kry";     check_bounded "long flat operat
 gen stringinterp   550 "$TMP/stringinterp.kry";  check_bounded "nested string interpolation @550"  "$TMP/stringinterp.kry"
 gen wideinterp    8000 "$TMP/wideinterp.kry";    check_bounded "wide string interpolation @8000"   "$TMP/wideinterp.kry"
 gen semicolons    6000 "$TMP/semicolons.kry";    check_bounded "flat semicolon-recovery chain @6000 (LEDGER item 14)" "$TMP/semicolons.kry"
+
+# --- Part 1b: the three unguarded recursions (2026-10-15). Each one
+# stack-overflowed `kryos check` natively (rc 253) with NO diagnostic at the
+# depths below; each must now be bounded AND rejected with E0010, and a
+# legitimate shallow chain of the same shape must still be ACCEPTED.
+echo "-- part 1b: elif-let / elif-expr / deep-interpolation recursion --"
+for shape in eliflet elifexpr deepinterp; do
+    case $shape in
+        eliflet)    deep=20000; shallow=20;  label="elif-let chain" ;;
+        elifexpr)   deep=20000; shallow=20;  label="elif chain in expression position" ;;
+        # The LEXER overflow needs a quarter-million levels, far past where a
+        # generated file is practical in bash and past the parser's own cap,
+        # so this leg runs the committed 3 MB probe (rc 253 with no output
+        # before the lexer gained its own depth counter) and generates only
+        # the shallow control.
+        deepinterp) deep=committed; shallow=8; label="nested interpolation" ;;
+    esac
+    if [ "$deep" = committed ]; then
+        src=tests/security/resource_dos_lexer_nested_interp_stack_overflow.kry
+        cp "$src" "$TMP/$shape.kry"
+    else
+        gen "$shape" "$deep" "$TMP/$shape.kry"
+    fi
+    check_bounded "$label @$deep" "$TMP/$shape.kry"
+    rc_deep=$?
+    out_deep="$TMP/$shape.kry.out"
+    if [ "$rc_deep" -ne 0 ] && grep -q "E0010" "$out_deep"; then
+        echo "  ok   $label @$deep rejected with E0010 (no native overflow)"
+    else
+        echo "  FAIL: $label @$deep was not cleanly rejected with E0010 (rc=$rc_deep)"
+        head -3 "$out_deep" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+    # The output must stay bounded too: one error on a multi-megabyte line
+    # used to render the whole line plus a caret padded to its column.
+    sz=$(wc -c < "$out_deep")
+    if [ "$sz" -le 262144 ]; then
+        echo "  ok   $label @$deep diagnostic output bounded (${sz}B)"
+    else
+        echo "  FAIL: $label @$deep printed ${sz}B of diagnostics"
+        fail=1
+    fi
+    gen "$shape" "$shallow" "$TMP/${shape}_ok.kry"
+    check_bounded "$label @$shallow (legitimate)" "$TMP/${shape}_ok.kry"
+    if [ $? -eq 0 ]; then
+        echo "  ok   $label @$shallow accepted (no false positive)"
+    else
+        echo "  FAIL: $label @$shallow rejected -- the guard over-rejects"
+        head -3 "$TMP/${shape}_ok.kry.out" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+done
 
 # --- Part 2: no false-positive rejection just under the true ceiling.
 echo "-- part 2: flat chain just under the ceiling must be ACCEPTED --"
