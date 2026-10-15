@@ -1,0 +1,13 @@
+// LEDGER item 56. The select `timeout <expr>` DURATION expression is evaluated at run time but no
+// capability walker visits it. Must be REJECTED (E0505) under inferred and strict.
+fn main() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout len(to_string(file_write("marker_select_timeout_duration.txt", "duration-expr-executed"))) => {
+            println("timed out")
+        }
+    }
+}

@@ -1,0 +1,25 @@
+struct Plugin {
+    run: fn() -> str,
+}
+
+fn safe_one() -> str {
+    return "one"
+}
+
+@capabilities(fs:read)
+fn make_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+@capabilities(fs:read)
+fn main() {
+    let ps = [Plugin { run: safe_one }, Plugin { run: make_reader() }]
+    deny!(net:http) {
+        let mut i = 0
+        while i < len(ps) {
+            let p = ps[i]
+            println(p.run())
+            i = i + 1
+        }
+    }
+}

@@ -1261,10 +1261,21 @@ impl CapabilityChecker {
                 Self::walk_calls_block(catch_block, out);
             }
             Stmt::Throw { expr, .. } => Self::walk_calls_expr(expr, out),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     Self::walk_calls_expr(&branch.channel, out);
                     Self::walk_calls_block(&branch.body, out);
+                }
+                // The timeout is a branch like any other: its body runs, and
+                // its duration is an expression that can call anything. All
+                // four Select arms in this file destructured `{ branches, .. }`
+                // and dropped it, so nothing in the capability pass ever saw
+                // either -- a gated builtin in a `timeout N => { }` body ran
+                // with no capability declared anywhere, in all three modes
+                // (tests/security/attack_select_timeout_body_zero_cap.kry).
+                if let Some(t) = timeout {
+                    Self::walk_calls_expr(&t.duration_ms, out);
+                    Self::walk_calls_block(&t.body, out);
                 }
             }
             Stmt::DenyBlock { body, .. } => Self::walk_calls_block(body, out),
@@ -1468,10 +1479,14 @@ impl CapabilityChecker {
                 Self::walk_container_calls_block(catch_block, out);
             }
             Stmt::Throw { expr, .. } => Self::walk_container_calls_expr(expr, out),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     Self::walk_container_calls_expr(&branch.channel, out);
                     Self::walk_container_calls_block(&branch.body, out);
+                }
+                if let Some(t) = timeout {
+                    Self::walk_container_calls_expr(&t.duration_ms, out);
+                    Self::walk_container_calls_block(&t.body, out);
                 }
             }
             Stmt::DenyBlock { body, .. } => Self::walk_container_calls_block(body, out),
@@ -2533,6 +2548,16 @@ impl CapabilityChecker {
                 }
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
                     self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals)
+                }
+                // A select arm body, and the timeout body nothing walked at
+                // all, bind names like any other block.
+                Stmt::Select { branches, timeout, .. } => {
+                    for branch in branches {
+                        self.build_local_closure_caps_block(&branch.body, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
+                    if let Some(t) = timeout {
+                        self.build_local_closure_caps_block(&t.body, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
                 }
                 Stmt::TryCatch {
                     try_block,
@@ -4423,10 +4448,14 @@ impl CapabilityChecker {
                 b(catch_block, &mut acc);
             }
             Stmt::Throw { expr, .. } => e(expr, &mut acc),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     e(&branch.channel, &mut acc);
                     b(&branch.body, &mut acc);
+                }
+                if let Some(t) = timeout {
+                    e(&t.duration_ms, &mut acc);
+                    b(&t.body, &mut acc);
                 }
             }
             Stmt::DenyBlock { body, .. } => b(body, &mut acc),
@@ -5267,10 +5296,14 @@ impl CapabilityChecker {
             Stmt::Throw { expr, .. } => {
                 self.check_expr(expr);
             }
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     self.check_expr(&branch.channel);
                     self.check_block(&branch.body);
+                }
+                if let Some(t) = timeout {
+                    self.check_expr(&t.duration_ms);
+                    self.check_block(&t.body);
                 }
             }
             Stmt::DenyBlock { denied, body, span } => {

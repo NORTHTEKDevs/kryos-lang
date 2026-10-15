@@ -1,0 +1,26 @@
+struct Plugin {
+    run: fn() -> str,
+}
+
+fn safe_one() -> str {
+    return "one"
+}
+
+fn safe_two() -> str {
+    return "two"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let a = Plugin { run: safe_one }
+    let b = Plugin { run: safe_two }
+    let ps = [a, b]
+    deny!(fs:read) {
+        let mut i = 0
+        while i < len(ps) {
+            let p = ps[i]
+            println(p.run())
+            i = i + 1
+        }
+    }
+}

@@ -28,6 +28,27 @@ files="
 10c|attack_wrap_closure_impl_method
 10d|attack_wrap_closure_inference_bypass
 10e|cap_escape_closure_wraps_closure
+55|attack_select_timeout_body_zero_cap
+55b|attack_select_timeout_transitive_zero_cap_main
+55c|attack_select_timeout_inside_deny
+55d|attack_select_timeout_rawmem_ffi_gate
+56|attack_select_timeout_duration_zero_cap
+57|attack_select_arm_shadow_closure_deny
+58|attack_spawn_lambda_shadow_closure_deny
+59|attack_for_binder_shadow_closure_deny
+60|assault_round2_strip_reassigned_local_deny
+61|attack_deny_bare_closure_reassign_escape
+62|attack_reassign_local_defeats_hotparam
+63|attack_round3_trycatch_deny_narrowed_catch
+64|attack_deny_double_indirection_wrapper_local
+65|attack_match_bound_var_field_invoke
+66|attack_realprogram_registry_list_wrapper
+67|attack_realprogram_registry_foreach
+68|attack_index_field_invoke_factory_element_deny
+69|attack_map_param_alias_invoke_deny
+70|attack_array_param_alias_invoke_deny
+71|attack_actor_explicit_self_swapped_params_deny
+72|assault_r1_real_program_plugin_platform_nopool
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

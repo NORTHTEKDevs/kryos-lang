@@ -1,0 +1,14 @@
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn zero_cap_tool(reader: fn() -> str) -> str {
+    return reader()
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    println(zero_cap_tool(reader))
+}
