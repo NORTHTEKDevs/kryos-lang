@@ -9,7 +9,7 @@ fn main() {
                 println("received")
             }
             timeout 50 => {
-                println(file_read("tests/security/secret_for_closure_launder.txt"))
+                println("SELECT-TIMEOUT-DENY LEAK: " + file_read("tests/security/secret_for_closure_launder.txt"))
             }
         }
     }

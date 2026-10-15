@@ -7,7 +7,7 @@ fn main() {
             println("received")
         }
         timeout len(to_string(file_write("marker_select_timeout_duration.txt", "duration-expr-executed"))) => {
-            println("timed out")
+            println("SELECT-TIMEOUT-DURATION LEAK: the duration expression ran")
         }
     }
 }
