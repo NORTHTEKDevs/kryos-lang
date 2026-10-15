@@ -15,8 +15,10 @@
 //
 // By default it binds 127.0.0.1:8080 and serves a fixed number
 // of requests before exiting cleanly (so it terminates in CI).
-// Pass `forever` as a CLI arg to run indefinitely:
+// Pass `forever` as a CLI arg to run indefinitely, `--max <N>` to
+// change the request budget, `--port <N>` to bind another port:
 //     kryos run web_server.kry forever
+//     kryos run web_server.kry -- --port 8090
 //
 // run-expect: serving 3 requests on 127.0.0.1:8080
 // ============================================================
@@ -153,6 +155,7 @@ fn handle_one(client_fd: i64, count: i64) {
 fn main() {
     let argv = args()
     let mut max_requests = MAX_REQUESTS_DEFAULT
+    let mut port = 8080
     let mut forever = false
     let argc = len(argv)
     let mut i = 1
@@ -166,20 +169,26 @@ fn main() {
             if i < argc {
                 max_requests = parse_int(argv[i])
             }
+        } elif a == "--port" {
+            i = i + 1
+            if i < argc {
+                port = parse_int(argv[i])
+            }
         }
         i = i + 1
     }
 
-    let listen_fd = tcp_listen("127.0.0.1", 8080)
+    let addr = "127.0.0.1:" + to_string(port)
+    let listen_fd = tcp_listen("127.0.0.1", port)
     if listen_fd < 0 {
-        eprintln("tcp_listen failed (is port 8080 already in use?)")
+        eprintln("tcp_listen failed (is port " + to_string(port) + " already in use?)")
         exit(1)
     }
 
     if forever {
-        println("serving forever on 127.0.0.1:8080 (Ctrl-C to stop)")
+        println("serving forever on " + addr + " (Ctrl-C to stop)")
     } else {
-        println("serving " + to_string(max_requests) + " requests on 127.0.0.1:8080")
+        println("serving " + to_string(max_requests) + " requests on " + addr)
     }
 
     let mut served = 0
