@@ -12496,6 +12496,9 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             }
             ctx.emit(Instruction::Assign { dest: bound, value: RValue::Use(subj_op.clone()) });
         }
+        let arm_inst_mark = ctx.current_instructions.len();
+        let arm_block_mark = ctx.next_block;
+        let arm_locals_mark = ctx.locals.len();
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
@@ -12520,6 +12523,16 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             value: arm_rvalue,
         });
         share_temp_read_tail(ctx, body, result_local, &arm_partial_before);
+        // The same statement-end cleanup the case arms get: a `_` arm computing
+        // `"y{i}" + "z"` leaked the interpolated string on every evaluation.
+        drop_unescaped_str_temps(
+            ctx,
+            arm_inst_mark,
+            arm_block_mark,
+            arm_locals_mark,
+            &arm_partial_before,
+            None,
+        );
         ctx.finish_block(Terminator::Goto(merge_bb), merge_bb);
     }
 

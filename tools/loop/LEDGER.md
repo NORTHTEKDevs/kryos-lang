@@ -10,6 +10,32 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a switch-lowered match's default arm drops its temps (2026-10-14)
+
+The probe-hygiene note from the review rounds ("a switch-lowered match's
+`_` arm never drops its temps, master too"): `lower_match`'s case arms run
+`drop_unescaped_str_temps` over their own window after storing the arm
+value, the default arm did not, so `_ => "y{i}" + "z"` leaked the
+interpolated string per evaluation (45MB / 1M). The default arm takes the
+same window (marks before its body, the cleanup after the store).
+`mem_agg_ops_gate.sh` mode `default_arm` (master 45MB at 1M, now 4MB on
+both backends); a param passthrough arm (`0 => s`), concat temps and a
+block arm with a local are right on all six legs.
+- Measured while here, all on master too (1M iterations, LLVM / Cranelift):
+  - Arrays of tuples: 188 / 311MB for a literal, 96 / 155MB for a push --
+    still the review-round-6 blocker (LLVM boxes array tuple elements with a
+    plain `kryos_calloc`, so a copy cannot share them).
+  - `dyn Trait` coercion: 127 / 32MB passing a struct to a `dyn` param,
+    202 / 141MB for `let s: dyn T = S {..}`. A DynTrait value is never
+    dropped (no drop arm): the fat box and the data slot leak, and the data
+    slot is a shallow copy of the struct, so dropping it needs the struct
+    shared at coercion plus a drop the vtable can reach.
+  - L4, narrowed: `let p = if c { cap } else { P {..} }` inside a closure
+    whose struct capture arrives as a callee-owned param: 65 / 96MB.
+    `take_tail_identifier` moves the param into the branch slot (its drop
+    is suppressed), but `struct_value_owned` counts only env-owned captures
+    as owned, so the `let` clones the slot without releasing it.
+
 ## Wave: map closure values and map payload entries (2026-10-14)
 
 The closure-release wave's open leaks.

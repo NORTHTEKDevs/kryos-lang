@@ -320,6 +320,13 @@ fn main() {
             let wmh = Wmh.Has(mkmh(i))
             let smh = Smh { m: mkmh(i + 1) }
             acc = acc + wmh_len(wmh) + len(smh.m)
+        } elif mode == "default_arm" {
+            // A switch-lowered match's `_` arm never dropped its temps.
+            let da = match i % 3 {
+                0 => "x",
+                _ => "y{i}" + "z",
+            }
+            acc = acc + len(da)
         } elif mode == "fn_slot_overwrite" {
             // Nor overwriting a closure element.
             let mut fso = [mkfn(i)]
