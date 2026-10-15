@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - a `match` catch-all arm leaked its temporaries
+
+- **The `_` arm of a match on a number or string** (`_ => "y{i}" + "z"`)
+  never released the intermediate values it computed: 45MB per million
+  evaluations. The other arms already did.
+
 ### Fixed - maps leaked their closures and nested maps leaked entries
 
 - **A map of closures** (`map<str, fn(..)>`) never released them, neither
