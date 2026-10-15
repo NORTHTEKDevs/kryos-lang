@@ -158,6 +158,13 @@ jobs:
         # does not cascade ffi onto ordinary callers.
         run: bash tests/security_gate.sh
 
+      - name: REPL capability gate (a session holds only what it was granted)
+        # `kryos repl` ran every gated builtin at the prompt with no check: its
+        # wrapper fn was an unannotated interior helper. Asserts bare calls,
+        # calls inside any fn and env_get are rejected with no grant, and that
+        # --allow / :allow grant exactly what they name.
+        run: bash tests/repl_capability_gate.sh
+
       - name: UTF-8 invalid-string gate (text ops fail loudly, not silently)
         # A substr() call that splits a multibyte codepoint (byte-indexed,
         # nothing stops landing mid-codepoint) produced a KryosString holding
@@ -890,6 +897,13 @@ jobs:
         # "in principle" is exactly the assumption this repo keeps disproving
         # by actually measuring.
         run: bash tests/security_gate.sh
+
+      - name: REPL capability gate -- Windows
+        shell: bash
+        env:
+          KRYOS: ${{ github.workspace }}/compiler/target/release/kryos.exe
+          KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
+        run: bash tests/repl_capability_gate.sh
 
       - name: Stdlib compiles + CLI smoke -- Windows
         shell: bash
