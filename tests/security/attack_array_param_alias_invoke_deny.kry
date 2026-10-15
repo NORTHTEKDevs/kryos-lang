@@ -1,0 +1,13 @@
+// LEDGER item 70 minimal (array form). Must be REJECTED (E0110 and/or E0507) under inferred and strict.
+fn run_it(reg: [fn() -> str]) {
+    let f = reg[1]
+    println("M3: " + f())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg: [fn() -> str] = [|| "pure", || file_read("tests/security/secret_for_closure_launder.txt")]
+    deny!(fs:read) {
+        run_it(reg)
+    }
+}

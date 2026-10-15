@@ -1,0 +1,32 @@
+@capabilities(fs:read)
+fn make_secret_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn pure_tool() -> str {
+    return "pure result"
+}
+
+fn build_registry() -> map<str, fn() -> str> {
+    return {
+        "pure": pure_tool,
+        "secret": make_secret_reader(),
+    }
+}
+
+actor ZeroCapDispatcher {
+    fn run_it(self, name: str, reg: map<str, fn() -> str>) {
+        let out = reg[name]()
+        println("A-DIRECT-SWAPPED-DENY: " + out)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg = build_registry()
+    let d = ZeroCapDispatcher()
+    deny!(fs:read) {
+        d.run_it("secret", reg)
+    }
+    sleep(100)
+}

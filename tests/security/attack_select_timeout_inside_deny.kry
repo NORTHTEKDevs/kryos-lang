@@ -1,0 +1,16 @@
+// LEDGER item 55 variant. deny!(fs:read) around a select whose timeout body reads a file: both the
+// capability walker and the kryos-types Select arm skip it. Must be REJECTED (E0505 and/or E0110).
+@capabilities(fs:read)
+fn main() {
+    let ch = chan()
+    deny!(fs:read) {
+        select {
+            v ch => {
+                println("received")
+            }
+            timeout 50 => {
+                println("SELECT-TIMEOUT-DENY LEAK: " + file_read("tests/security/secret_for_closure_launder.txt"))
+            }
+        }
+    }
+}

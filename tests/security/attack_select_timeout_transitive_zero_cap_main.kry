@@ -1,0 +1,19 @@
+// LEDGER item 55 variant. Inference also skips the timeout body, so `helper` is INFERRED pure and even an
+// explicit `@capabilities()` main (strict mode too) accepts the call. Must be REJECTED (E0507 inferred, E0505 strict).
+fn helper() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout 5 => {
+            let r = file_write("marker_select_timeout_transitive.txt", "via-helper")
+            println("SELECT-TIMEOUT-TRANSITIVE LEAK: wrote " + to_string(r))
+        }
+    }
+}
+
+@capabilities()
+fn main() {
+    helper()
+}

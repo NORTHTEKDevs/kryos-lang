@@ -1,4 +1,4 @@
-//! Capability checker — walks the AST and enforces capability rules.
+//! Capability checker - walks the AST and enforces capability rules.
 //!
 //! Rules enforced:
 //! 1. Functions using stdlib modules must declare matching capabilities.
@@ -20,23 +20,23 @@ use crate::model::{
 /// How strictly capabilities are enforced. The three modes form a hierarchy
 /// `Permissive < Inferred < Strict`:
 ///
-/// - **Permissive** — the historical default. Only functions that carry an
+/// - **Permissive** - the historical default. Only functions that carry an
 ///   explicit `@capabilities(...)` annotation are checked (plus attenuation
 ///   between annotated scopes). An unannotated function may call any gated
 ///   builtin. Capabilities are advisory.
 ///
-/// - **Inferred** — deny-by-default at the *boundary*, with interior
+/// - **Inferred** - deny-by-default at the *boundary*, with interior
 ///   inference. Every function's effective capability set is computed: an
 ///   annotated function's set is its declaration (a ceiling); an unannotated
 ///   interior function's set is *inferred* as the union of what it and its
 ///   callees require (no annotation needed on helpers). Enforcement then
-///   requires that `main` — and any explicitly annotated function — actually
+///   requires that `main` - and any explicitly annotated function - actually
 ///   holds every capability its body transitively uses. So an unannotated
 ///   `main` that (directly or through helpers) writes a file is rejected:
 ///   the program must declare `@capabilities(fs:write)` on `main`. Reading
 ///   `main`'s annotation tells you the program's entire authority.
 ///
-/// - **Strict** — every function is treated as annotated with exactly its
+/// - **Strict** - every function is treated as annotated with exactly its
 ///   declaration (empty if unannotated). Every gated builtin call from an
 ///   unannotated function is an error. This is `--strict-capabilities`:
 ///   maximally explicit, every function auditable in isolation.
@@ -73,9 +73,19 @@ impl CapabilityMode {
 /// declaring NO capabilities passes `--strict-capabilities` and still reads
 /// any string in the host process via `str_to_ptr` + `ptr_byte_at`
 /// (tests/security/cap_escape_raw_memory.kry).
+///
+/// The pass runs in [`CapabilityMode::Strict`] so EVERY function of the
+/// scanned module is charged for its own raw-memory calls. It ran in
+/// `Inferred` before, which checks only `main` and annotated functions, so
+/// moving the same two calls into an unannotated helper in the same file
+/// passed every mode and read arbitrary memory (`tests/security/
+/// cap_escape_raw_memory_helper.kry`). Strict does not make the requirement
+/// propagate: a CALL to a function that needs `ffi` raises E0507, whose
+/// message names the callee rather than a builtin, and the filter below keeps
+/// only diagnostics that name a raw-memory builtin.
 pub fn check_raw_memory_direct(module: &Module) -> Vec<Diagnostic> {
     let diags = crate::model::with_raw_memory_gate(|| {
-        check_capabilities_mode(module, CapabilityMode::Inferred)
+        check_capabilities_mode(module, CapabilityMode::Strict)
     });
     // Report ONLY the raw-memory findings. Every other diagnostic from this
     // extra pass is a duplicate of the real check that runs on the merged
@@ -132,7 +142,7 @@ enum ClosureCapsResult {
     /// The value's exact required capability set is known statically.
     Known(CapabilitySet),
     /// The value IS one of the current function's own fn-typed parameters
-    /// (or resolves transitively to one) — its real requirement depends on
+    /// (or resolves transitively to one) - its real requirement depends on
     /// whatever the CALLER of the current function supplies, so it must not
     /// be charged to the current function itself; `hot_params` propagation
     /// defers the charge to the current function's own call sites instead.
@@ -148,12 +158,12 @@ enum ClosureCapsResult {
 /// One step of a field/index access chain rooted at a parameter, used to
 /// close the CONTAINER residual of the closure-laundering fix (a closure
 /// stored in a struct field / array element / map value, read back out and
-/// invoked by code that never held the capability it carries — see LEDGER
+/// invoked by code that never held the capability it carries - see LEDGER
 /// item 1). `Field(name)` is a precise, per-name struct field access
 /// (`reg.reader`); `Index` is an array-element or map-value access, which is
 /// deliberately name/index-INSENSITIVE (arrays and maps have no static
 /// per-slot tracking, so a path ending in `Index` matches ANY element/value
-/// written into that container — conservative, matching the same stance
+/// written into that container - conservative, matching the same stance
 /// `ClosureCapsResult::Unknown` already documents for other unresolvable
 /// shapes).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -165,7 +175,7 @@ enum PathStep {
 /// A capability scope entry on the stack.
 ///
 /// Tracks both the capability set and whether this scope was explicitly
-/// annotated with `@capabilities(...)`. Unannotated scopes are "ambient" —
+/// annotated with `@capabilities(...)`. Unannotated scopes are "ambient" - 
 /// they don't enforce builtin or cross-function capability checks.
 #[derive(Debug, Clone)]
 struct CapabilityScope {
@@ -180,7 +190,7 @@ struct CapabilityChecker {
     /// the current enclosing scope (function, actor, etc.).
     scope_stack: Vec<CapabilityScope>,
     /// `scope_stack.len()` immediately after the CURRENT function/actor's own
-    /// boundary scope was pushed (`check_function` / `check_actor`) —
+    /// boundary scope was pushed (`check_function` / `check_actor`) - 
     /// i.e., the depth BEFORE any `deny!` block nested inside its body has
     /// pushed a further, NARROWER scope. Only meaningful during the
     /// enforcement walk (`check_decl`'s traversal); the inference passes
@@ -195,11 +205,11 @@ struct CapabilityChecker {
     /// call sites the way an un-narrowed forward can. The call site that
     /// supplies the parameter's real value is checked against THIS
     /// function's own (wider) ENTRY scope, not against the narrower scope
-    /// actually in effect at the point of invocation — confirmed live: `fn
+    /// actually in effect at the point of invocation - confirmed live: `fn
     /// outer(reader: fn()->str) -> str { deny!(fs:read) { return
     /// zero_cap_tool(reader) } }`, called from an `@capabilities(fs:read)`
     /// caller, compiled clean and printed the secret from inside the denied
-    /// scope pre-fix, with NO decoy or generic involved at all — a plain,
+    /// scope pre-fix, with NO decoy or generic involved at all - a plain,
     /// direct forward. `scope_stack.len() > current_fn_entry_scope_depth` at
     /// the point of the invocation detects exactly this: a deny! (or any
     /// future scope-narrowing construct) is active between this function's
@@ -302,7 +312,7 @@ struct CapabilityChecker {
     /// misread as an unresolvable closure invocation.
     enum_variant_names: std::collections::HashSet<String>,
     /// Every function/method's parameter LIST, keyed by bare name (same
-    /// keying convention as `fn_capabilities` — a name shared by two impls'
+    /// keying convention as `fn_capabilities` - a name shared by two impls'
     /// methods collides, a pre-existing modeling simplification this reuses
     /// rather than widens). Used to find which parameter INDEX is fn-typed
     /// and to map a forwarded-argument index back to a parameter name.
@@ -314,7 +324,7 @@ struct CapabilityChecker {
     /// Every actor MESSAGE HANDLER name. Unlike a struct `impl` method (which
     /// the language requires to declare an EXPLICIT `self: T` as its own
     /// `params[0]`), an actor handler's `params` list has NO implicit or
-    /// explicit receiver slot — `w.run(x)` maps argument 0 straight to
+    /// explicit receiver slot - `w.run(x)` maps argument 0 straight to
     /// `run`'s `params[0]`, not `params[1]`. Dispatch-index translation
     /// (`compute_hot_params` propagation, `accumulate_hot_extra_caps`) must
     /// use a zero offset for these names even though the call syntax is
@@ -323,7 +333,7 @@ struct CapabilityChecker {
     actor_handler_names: HashSet<String>,
     /// Every struct's field list, keyed by struct NAME, as `(field_name,
     /// declared_type)` pairs. Feeds `is_fn_bearing_type`/`resolve_type_path`
-    /// — the container-closure-laundering fix (LEDGER item 1) needs to know
+    /// - the container-closure-laundering fix (LEDGER item 1) needs to know
     /// whether a parameter typed as a struct actually carries a
     /// function-typed field somewhere in its shape.
     struct_field_types: HashMap<String, Vec<(String, TypeExpr)>>,
@@ -331,6 +341,23 @@ struct CapabilityChecker {
     /// (`struct List<T> { .. }` -> `["T"]`). Feeds `struct_fields_for`'s
     /// generic-argument substitution.
     struct_generic_params: HashMap<String, Vec<String>>,
+    /// Every FIELD NAME declared with a function type by any struct in the
+    /// module (`struct Box { f: fn() -> str }` -> `f`).
+    ///
+    /// `resolve_method_field_invoke_caps` can resolve `b.f()` only when it
+    /// can name `b`'s struct literal or its static type. For a receiver it
+    /// cannot (one bound by a match arm, a lambda's own parameter, a
+    /// for-loop variable, an element read out of a wrapper) it fell off the
+    /// end and returned EMPTY -- "I could not resolve this" answered with
+    /// "this needs no authority", which is how a privileged closure stored
+    /// in such a field ran inside a `deny!` block that forbade its
+    /// capability. This set makes the distinction the checker lacks a type
+    /// for: a `method` that is ALSO a declared fn-typed field name may be a
+    /// closure invocation, so an unresolvable receiver fails closed to
+    /// `all`; an ordinary method name (no struct declares a fn-typed field
+    /// of that name) is unaffected, which is what keeps the precision cost
+    /// of this bounded.
+    fn_field_names: std::collections::HashSet<String>,
     /// For every user-defined method whose receiver is literally named
     /// `self` and whose every return path decomposes to the SAME
     /// self-rooted field/index chain, the method NAME -> that self-relative
@@ -340,20 +367,20 @@ struct CapabilityChecker {
     /// recognized as reaching the same slot `list.data[i]` would, instead of
     /// being invisible because `decompose_container_path` only understands
     /// direct field/index syntax, not a call through a helper method.
-    /// Keyed by `(struct name, method name)`, NOT bare method name — unlike
+    /// Keyed by `(struct name, method name)`, NOT bare method name - unlike
     /// `fn_params`/`fn_capabilities`'s pre-existing bare-name-collision
     /// tolerance, a name collision here would be actively WRONG rather than
     /// just imprecise: `std::collections::List.get` and `Dict.get` both
     /// exist in the SAME stdlib module and return DIFFERENT self-relative
     /// paths (`[data, Index]` vs `[store, Index]`), so a bare-name map would
     /// let one clobber the other and silently stop recognizing the loser's
-    /// accessor — verified live during development (this exact collision
+    /// accessor - verified live during development (this exact collision
     /// initially broke `List<fn() -> str>.get()` detection because `Dict`'s
     /// `get` is declared later in the file and won the collision).
     transparent_accessor_paths: HashMap<(String, String), Vec<PathStep>>,
-    /// For each function name, for each PARAMETER INDEX that is invoked —
+    /// For each function name, for each PARAMETER INDEX that is invoked - 
     /// either DIRECTLY as a bare `p(...)` call, or by drilling into a
-    /// CONTAINER value (`p.field(...)`, `p[i](...)`, or a chain of these) —
+    /// CONTAINER value (`p.field(...)`, `p[i](...)`, or a chain of these) - 
     /// the set of field/index PATHS (see `PathStep`) from the parameter's
     /// own value down to the invoked slot. A bare direct call records the
     /// EMPTY path (the parameter's own value IS the closure). Populated
@@ -378,12 +405,12 @@ struct CapabilityChecker {
     /// This is the SOLE relief mechanism for a caller-supplied lambda that
     /// only forwards its own bound parameter (`|f| f(10)` passed as the
     /// callback to `map`/`filter`/`reduce`/... or a user-written HOF fitting
-    /// the same shape) — see `accumulate_hot_extra_caps`'s `DependsOnParam`
+    /// the same shape) - see `accumulate_hot_extra_caps`'s `DependsOnParam`
     /// handling. It is deliberately NOT a repeat of the shape-based
     /// `find_companion_container_arg` heuristic four rounds of this file's
     /// history proved unsound (matching a callback parameter's DECLARED
     /// element type against another parameter's DECLARED container type,
-    /// first match wins — defeated by an empty decoy of the same declared
+    /// first match wins - defeated by an empty decoy of the same declared
     /// shape, confirmed live). This instead traces the CALLEE'S OWN, FIXED
     /// function body: the companion is whatever parameter its actual source
     /// code passes into the callback invocation, a property of the
@@ -392,7 +419,7 @@ struct CapabilityChecker {
     /// found here. A position with disagreeing or unresolvable call sites
     /// (multiple internal invocations of the same callback that decompose
     /// differently, or don't decompose to another own-parameter at all)
-    /// records `None` at that slot — resolved the same as an unresolvable
+    /// records `None` at that slot - resolved the same as an unresolvable
     /// value elsewhere in this file: `Capability::All`, never a guess.
     /// Populated once by `compute_hot_param_companions`, alongside
     /// `hot_params`.
@@ -407,7 +434,7 @@ struct CapabilityChecker {
     /// expression (see `collect_return_exprs`) agrees on the SAME
     /// struct/array/map LITERAL (directly, or via a `let`-bound local
     /// literal traced within that function's own body), the literal
-    /// template itself — see `compute_fn_return_container_lits`. Lets
+    /// template itself - see `compute_fn_return_container_lits`. Lets
     /// `build_local_container_lits` splice `let registry = build_registry()`
     /// in as if `registry` had been bound to the literal directly, so the
     /// EXISTING literal-tracing machinery resolves the REAL, PRECISE
@@ -427,7 +454,7 @@ struct CapabilityChecker {
     /// to the CURRENT function's own call sites rather than requiring `all`
     /// inside a function that merely forwards its own callback parameter.
     current_fn_typed_params: HashSet<String>,
-    /// A best-effort, flat (not scope-precise — see `build_local_closure_caps`)
+    /// A best-effort, flat (not scope-precise - see `build_local_closure_caps`)
     /// map from each `let`-bound local in the function currently being
     /// checked to the resolved authority of its initializer, when that
     /// initializer is plausibly a function value (a lambda literal, a
@@ -447,16 +474,16 @@ struct CapabilityChecker {
     /// **Closes the container-BY-LOCAL-VARIABLE residual of the closure/
     /// fn-value laundering fix (see LEDGER item 1's ASSAULT round 3
     /// finding).** `current_local_container_lits` only tracks a local bound
-    /// to a struct/array/map LITERAL (or a bare alias of one) — a local
+    /// to a struct/array/map LITERAL (or a bare alias of one) - a local
     /// bound to a FACTORY FUNCTION's return value (`let registry =
     /// build_registry()`) has no literal to snapshot (the literal lives
     /// inside `build_registry`'s own body), so it is invisible there and
     /// `resolve_method_field_invoke_caps` fell through to `empty()` rather
     /// than the sound fail-closed default. This map records that local's
-    /// STATICALLY KNOWN TYPE instead — from an explicit `let` annotation,
+    /// STATICALLY KNOWN TYPE instead - from an explicit `let` annotation,
     /// or (the common unannotated case) the declared return type of a
     /// directly-called named function, or an alias of another tracked
-    /// local — which is enough to positively confirm (via
+    /// local - which is enough to positively confirm (via
     /// `resolve_type_path`, same mechanism `hot_params`' Seed B already
     /// uses for a container-typed PARAMETER) that a later `.field()` access
     /// reaches a genuine fn-typed field/element, without needing to trace
@@ -472,12 +499,12 @@ struct CapabilityChecker {
     /// local struct literal (`current_local_container_lits`, whose value is
     /// pinned to source visible within THIS function), there is no sound way
     /// to trace which value a `self.<field>` call site actually holds at
-    /// runtime — the write could come from any handler, any message, in any
+    /// runtime - the write could come from any handler, any message, in any
     /// order. `resolve_method_field_invoke_caps` intentionally returns empty
     /// for this shape (its precise struct-literal tracking never covers
     /// `self`, since `self` is never a locally-tracked container literal),
     /// and ordinary method-call handling ALSO contributes nothing because no
-    /// function or handler is actually named after the field — the two gaps
+    /// function or handler is actually named after the field - the two gaps
     /// compounded into an unresolvable call being attributed EMPTY authority
     /// instead of the sound fail-closed default. `self.<name>()` where `name`
     /// is in this set is therefore always charged `Capability::All`
@@ -489,10 +516,10 @@ struct CapabilityChecker {
     /// Locals bound DIRECTLY to a `self.<path>` expression inside the
     /// current actor handler (`let x = self.b`), mapped to the actor state
     /// field the binding's path starts with (`Some("b")`), or `None` when
-    /// the path starts with an unnameable step (`self.arr[i]` — an `Index`
+    /// the path starts with an unnameable step (`self.arr[i]` - an `Index`
     /// step; fails closed unconditionally rather than being silently
     /// dropped). Deliberately narrow and syntactic (one hop, no chained
-    /// alias-of-an-alias tracking) — this exists ONLY to close the specific
+    /// alias-of-an-alias tracking) - this exists ONLY to close the specific
     /// residual `resolve_method_field_invoke_caps`'s literal-only tracking
     /// leaves open: a fn-bearing state field aliased into a local BEFORE
     /// being invoked (`let x = self.b; x.f()`), where the ordinary
@@ -500,7 +527,7 @@ struct CapabilityChecker {
     /// otherwise attribute the call empty authority because `x` is not a
     /// tracked struct literal. See `resolve_actor_self_field_invoke_caps`.
     /// A broader fix (consulting the general `local_caps` provenance map
-    /// for ANY unresolved method-call root) was tried and reverted — it
+    /// for ANY unresolved method-call root) was tried and reverted - it
     /// over-rejected ordinary code broadly; see that function's doc for the
     /// measured cost. Populated per-actor-handler by `check_actor`, cleared
     /// after each handler is checked.
@@ -528,6 +555,7 @@ impl CapabilityChecker {
             actor_handler_names: HashSet::new(),
             struct_field_types: HashMap::new(),
             struct_generic_params: HashMap::new(),
+            fn_field_names: std::collections::HashSet::new(),
             transparent_accessor_paths: HashMap::new(),
             hot_params: HashMap::new(),
             hot_param_companions: HashMap::new(),
@@ -616,12 +644,12 @@ impl CapabilityChecker {
 
     /// Record every struct's field list (name -> [(field_name, field_type)])
     /// AND its generic parameter names in declaration order (name ->
-    /// ["T", ...]). Feeds `is_fn_bearing_type` / `resolve_type_path` — the
+    /// ["T", ...]). Feeds `is_fn_bearing_type` / `resolve_type_path` - the
     /// container-closure-laundering fix needs to know whether a struct type
     /// carries a function-typed field somewhere in its shape, INCLUDING when
     /// that field's declared type is a generic parameter (`List<T>`'s
     /// `data: [T]`) that a specific reference instantiates with a function
-    /// type (`List<fn() -> str>`) — see `struct_fields_for`. Actor state
+    /// type (`List<fn() -> str>`) - see `struct_fields_for`. Actor state
     /// fields are deliberately NOT included: an actor is a message-passing
     /// boundary, not a value ever passed around and drilled into like an
     /// ordinary struct (see `check_actor`'s own, separate handling).
@@ -634,6 +662,11 @@ impl CapabilityChecker {
                 );
                 self.struct_generic_params
                     .insert(name.clone(), generics.iter().map(|g| g.name.clone()).collect());
+                for f in fields {
+                    if matches!(f.ty, TypeExpr::Function { .. }) {
+                        self.fn_field_names.insert(f.name.clone());
+                    }
+                }
             }
         }
     }
@@ -644,7 +677,7 @@ impl CapabilityChecker {
     /// `[fn() -> str]`, not the raw declared `[T]`. Falls back to the
     /// UNSUBSTITUTED field list when the struct has no generic parameters,
     /// `type_args` is empty (a bare non-generic reference), or the arity
-    /// doesn't line up (a partially-applied/malformed reference — `zip`
+    /// doesn't line up (a partially-applied/malformed reference - `zip`
     /// simply stops at the shorter side, so this degrades gracefully rather
     /// than panicking).
     fn struct_fields_for(&self, struct_name: &str, type_args: &[TypeExpr]) -> Option<Vec<(String, TypeExpr)>> {
@@ -727,7 +760,7 @@ impl CapabilityChecker {
     }
 
     /// Whether a type could carry a function VALUE somewhere within its
-    /// shape, reachable by field/index access — i.e. whether it is worth
+    /// shape, reachable by field/index access - i.e. whether it is worth
     /// treating a parameter of this type as a "container candidate" for the
     /// `hot_params` container-invocation seed pass. `Function` itself
     /// qualifies (the pre-existing direct case); so does an array whose
@@ -746,7 +779,7 @@ impl CapabilityChecker {
         }
     }
 
-    /// Exhaustive over `TypeExpr` (structural guarantee — no wildcard arm;
+    /// Exhaustive over `TypeExpr` (structural guarantee - no wildcard arm;
     /// see `docs/capability-soundness.md` §3 "the structural guarantee").
     /// Adding a new `TypeExpr` variant to the AST fails this match at
     /// compile time until someone explicitly decides whether it can carry a
@@ -761,19 +794,19 @@ impl CapabilityChecker {
         if depth > 8 {
             // Recursion-depth bound, reached on a self-/mutually-recursive
             // struct graph (`struct Node { next: Node }`, `struct Tree {
-            // kids: [Tree] }`) — these are common, legitimate, and almost
+            // kids: [Tree] }`) - these are common, legitimate, and almost
             // always NOT fn-bearing, so unlike every other branch in this
             // match, "false" here is the historically-measured-safe
             // default, not a soundness gap: a cycle that never crosses a
             // `Function` within 8 levels of DECLARED-type nesting (not
-            // runtime depth — this walks the type graph, so a self-
+            // runtime depth - this walks the type graph, so a self-
             // referential type re-enters at the SAME logical depth on every
             // recursive field) has no way to introduce one at level 9 that
             // it didn't already have at level 8. Flipping this to `true`
             // was tried and reverted: it makes every self-referential
             // struct type "fn-bearing" purely from the depth cap, which
             // would force `all` on any actor state field of a recursive
-            // struct type regardless of whether it holds a closure —
+            // struct type regardless of whether it holds a closure - 
             // measured as a large, unjustified false-positive class, not a
             // real closure escape.
             return false;
@@ -810,13 +843,13 @@ impl CapabilityChecker {
     /// chain) starting from `ty`. Returns `None` if the path doesn't
     /// correspond to a real field/index chain on this type (an ordinary
     /// method call that happens to share a field's name, an index into a
-    /// non-container, a drill through an opaque/unmodeled type, ...) — used
+    /// non-container, a drill through an opaque/unmodeled type, ...) - used
     /// to distinguish a genuine container-closure invocation from an
     /// ordinary method call before marking a parameter hot.
     ///
     /// A `Field(fname)` step that does NOT name a genuine struct field falls
     /// back to checking whether `fname` is a TRANSPARENT ACCESSOR METHOD
-    /// (`transparent_accessor_paths` — `List.get`, `Stack.peek`,
+    /// (`transparent_accessor_paths` - `List.get`, `Stack.peek`,
     /// `Queue.front`, `Deque`'s accessors, and any user method shaped the
     /// same way): if so, that method's own self-relative path is spliced in
     /// and resolution continues against the SAME `ty` with the combined
@@ -881,10 +914,10 @@ impl CapabilityChecker {
     /// (see `collect_return_exprs`) decomposes to the SAME self-rooted
     /// field/index chain, `(the method's OWN struct name, method name) ->`
     /// that self-relative `PathStep` chain (an accompanying branch that
-    /// never returns — a bounds-check `throw` — is fine; every path that
+    /// never returns - a bounds-check `throw` - is fine; every path that
     /// DOES return must agree). This is what lets a call through a
     /// `std::collections`-style accessor method (`list.get(i)`,
-    /// `stack.peek()`, `queue.front()`, `deque.back()` — all of which are,
+    /// `stack.peek()`, `queue.front()`, `deque.back()` - all of which are,
     /// in their entirety modulo a bounds guard, a bare
     /// `return self.<field>[...]` / `return self.<field>`) be recognized by
     /// `resolve_type_path` as reaching the same slot the field access it
@@ -892,12 +925,12 @@ impl CapabilityChecker {
     ///
     /// Deliberately walks `Decl::Impl` directly (each method paired with its
     /// OWN `target` struct name) instead of reusing `fn_params`/
-    /// `collect_functions` (both keyed by bare method name — the
+    /// `collect_functions` (both keyed by bare method name - the
     /// pre-existing modeling simplification `hot_params`/`fn_capabilities`
     /// already accept). A bare-name key here would be actively WRONG, not
     /// just imprecise: `List.get` and `Dict.get` both live in the SAME
     /// stdlib module and return DIFFERENT self-relative paths (`[data,
-    /// Index]` vs `[store, Index]`) — verified live during development that
+    /// Index]` vs `[store, Index]`) - verified live during development that
     /// a bare-name map lets `Dict.get` (declared later in the file) clobber
     /// `List.get`, silently breaking detection for `List<fn() -> str>`
     /// specifically, the flagship shape this fix targets.
@@ -965,7 +998,7 @@ impl CapabilityChecker {
     /// Decompose an expression into `(root identifier name, path of
     /// field/index accesses from the root to `expr` itself)`, when `expr` is
     /// a chain of `FieldAccess`/`IndexAccess` rooted at a bare `Identifier`.
-    /// `None` for any other shape (a call, a literal, a binary op, ...) —
+    /// `None` for any other shape (a call, a literal, a binary op, ...) - 
     /// those are not "a value read out of a container reachable from a bare
     /// name", so the container-invocation heuristic does not apply.
     fn decompose_container_path(expr: &Expr) -> Option<(&str, Vec<PathStep>)> {
@@ -1047,10 +1080,10 @@ impl CapabilityChecker {
     /// Every call site reachable inside `expr`: `(callee_bare_name, args,
     /// is_method_or_static)`. `args` never includes a method/static
     /// receiver, matching how `MethodCall`/`StaticMethodCall` already store
-    /// them — callers translate an arg index to a `fn_params` index by
+    /// them - callers translate an arg index to a `fn_params` index by
     /// adding 1 (for the leading `self`) when `is_method_or_static` is true.
     /// Used only for the STRUCTURAL hot-parameter analysis (which parameter
-    /// POSITIONS are invoked/forwarded) — not for capability values.
+    /// POSITIONS are invoked/forwarded) - not for capability values.
     fn walk_calls_expr<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, &'a [Expr], bool)>) {
         match expr {
             Expr::FnCall { callee, args, .. } => {
@@ -1228,10 +1261,21 @@ impl CapabilityChecker {
                 Self::walk_calls_block(catch_block, out);
             }
             Stmt::Throw { expr, .. } => Self::walk_calls_expr(expr, out),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     Self::walk_calls_expr(&branch.channel, out);
                     Self::walk_calls_block(&branch.body, out);
+                }
+                // The timeout is a branch like any other: its body runs, and
+                // its duration is an expression that can call anything. All
+                // four Select arms in this file destructured `{ branches, .. }`
+                // and dropped it, so nothing in the capability pass ever saw
+                // either -- a gated builtin in a `timeout N => { }` body ran
+                // with no capability declared anywhere, in all three modes
+                // (tests/security/attack_select_timeout_body_zero_cap.kry).
+                if let Some(t) = timeout {
+                    Self::walk_calls_expr(&t.duration_ms, out);
+                    Self::walk_calls_block(&t.body, out);
                 }
             }
             Stmt::DenyBlock { body, .. } => Self::walk_calls_block(body, out),
@@ -1241,7 +1285,7 @@ impl CapabilityChecker {
 
     /// Every CONTAINER-shaped invocation anywhere in `expr`, reduced to
     /// `(root identifier the access chain is rooted at, the field/index PATH
-    /// from that root to the invoked slot)` — see `decompose_container_path`
+    /// from that root to the invoked slot)` - see `decompose_container_path`
     /// / `PathStep`. Mirrors `walk_calls_expr`'s full traversal (so no call
     /// site is missed) but reconstructs the WHOLE access chain instead of a
     /// bare callee name, which is what lets `compute_hot_params` check,
@@ -1251,7 +1295,7 @@ impl CapabilityChecker {
     /// treated as a trailing `Field` step) because the parser cannot
     /// distinguish `reg.reader()` (a struct field holding a closure) from an
     /// ordinary `reg.some_method()` at parse time (see the parser's own
-    /// comment on this ambiguity) — `resolve_type_path` rejects the ones
+    /// comment on this ambiguity) - `resolve_type_path` rejects the ones
     /// that don't actually resolve to a function-typed slot, so an ordinary
     /// method call never gets misclassified as hot.
     fn walk_container_calls_expr<'a>(expr: &'a Expr, out: &mut Vec<(&'a str, Vec<PathStep>)>) {
@@ -1435,10 +1479,14 @@ impl CapabilityChecker {
                 Self::walk_container_calls_block(catch_block, out);
             }
             Stmt::Throw { expr, .. } => Self::walk_container_calls_expr(expr, out),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     Self::walk_container_calls_expr(&branch.channel, out);
                     Self::walk_container_calls_block(&branch.body, out);
+                }
+                if let Some(t) = timeout {
+                    Self::walk_container_calls_expr(&t.duration_ms, out);
+                    Self::walk_container_calls_block(&t.body, out);
                 }
             }
             Stmt::DenyBlock { body, .. } => Self::walk_container_calls_block(body, out),
@@ -1448,7 +1496,7 @@ impl CapabilityChecker {
 
     /// Append every actor message handler's `(name, false, body)` so the
     /// STRUCTURAL closure-flow passes (`compute_hot_params`,
-    /// `compute_fn_return_closure_caps`) see handler bodies too — a handler
+    /// `compute_fn_return_closure_caps`) see handler bodies too - a handler
     /// with a fn-typed parameter that it invokes must mark that parameter
     /// hot exactly like an ordinary function, or a closure laundered through
     /// an actor message is invisible to the fix (see
@@ -1458,7 +1506,7 @@ impl CapabilityChecker {
     /// also feeds `compute_inferred_capabilities`, which has its own,
     /// separate, already-correct handling of actor ceilings (`check_actor`
     /// checks each handler body directly against the actor's OWN declared
-    /// scope) — adding handlers there would let a handler's inferred set
+    /// scope) - adding handlers there would let a handler's inferred set
     /// leak into `fn_capabilities` and risk widening actor call-site checks
     /// unrelated to this fix. This helper's `false` "not annotated" tag is
     /// meaningful ONLY to the two structural passes above, which don't
@@ -1478,10 +1526,10 @@ impl CapabilityChecker {
 
     /// Compute, for every function name, the set of PARAMETER INDICES that
     /// are invoked anywhere in the whole program, each mapped to the set of
-    /// field/index PATHS (see `PathStep`) through which they are invoked —
+    /// field/index PATHS (see `PathStep`) through which they are invoked - 
     /// either DIRECTLY (`p(...)`, empty path) or via a CONTAINER drill
-    /// (`p.field(...)`, `p[i](...)`, or a chain of these — non-empty path,
-    /// the residual this closes, LEDGER item 1) — or by being FORWARDED as a
+    /// (`p.field(...)`, `p[i](...)`, or a chain of these - non-empty path,
+    /// the residual this closes, LEDGER item 1) - or by being FORWARDED as a
     /// bare argument into another (transitively) hot parameter position of a
     /// different call. A monotone fixed point over a finite lattice
     /// (function x parameter-index x path triples, drawn from the finite set
@@ -1493,7 +1541,7 @@ impl CapabilityChecker {
     /// positions (and, for containers, which paths) in the call graph a
     /// closure gets invoked. `std::iter::map`'s callback parameter is hot
     /// (its body calls it directly); `map` itself still requires nothing
-    /// extra — only a CALL to `map` with a SPECIFIC closure argument does
+    /// extra - only a CALL to `map` with a SPECIFIC closure argument does
     /// (see `accumulate_hot_extra_caps`), which is what keeps ordinary HOF
     /// usage annotation-free instead of cascading.
     fn compute_hot_params(
@@ -1506,7 +1554,7 @@ impl CapabilityChecker {
 
         let mut hot: HashMap<String, HashMap<usize, HashSet<Vec<PathStep>>>> = HashMap::new();
 
-        // Seed A: a function's own fn-typed parameter invoked DIRECTLY —
+        // Seed A: a function's own fn-typed parameter invoked DIRECTLY - 
         // records the EMPTY path (the parameter's own value IS the closure).
         for (name, _annotated, body, params) in &fns {
             let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
@@ -1530,7 +1578,7 @@ impl CapabilityChecker {
 
         // Seed B: a function's own CONTAINER-typed parameter (struct field /
         // array element / map value / nested combination) whose contents are
-        // invoked via a field/index access chain — the residual this closes.
+        // invoked via a field/index access chain - the residual this closes.
         for (name, _annotated, body, params) in &fns {
             let mut occurrences: Vec<(&str, Vec<PathStep>)> = Vec::new();
             Self::walk_container_calls_block(body, &mut occurrences);
@@ -1569,7 +1617,7 @@ impl CapabilityChecker {
                         // An actor handler's `MethodCall`-shaped dispatch has
                         // NO receiver slot in its own `params` (unlike a
                         // struct `impl` method, which requires an explicit
-                        // `self` as `params[0]`) — see `actor_handler_names`.
+                        // `self` as `params[0]`) - see `actor_handler_names`.
                         let has_self_offset =
                             *is_method && !self.actor_handler_names.contains(*cname);
                         let offset = if has_self_offset { 1usize } else { 0usize };
@@ -1689,7 +1737,7 @@ impl CapabilityChecker {
     /// Every RETURN-position expression in `block`: explicit `return expr`
     /// statements (recursing through if/for/while/try-catch so a return
     /// nested in a branch still counts), plus the block's own trailing tail
-    /// expression (a best-effort implicit-return heuristic — nested tail
+    /// expression (a best-effort implicit-return heuristic - nested tail
     /// positions inside a branch used as the function's overall value, e.g.
     /// a trailing `if/else` with no final `return`, are NOT covered; explicit
     /// `return` is the documented/preferred style, so this is a deliberately
@@ -1758,17 +1806,17 @@ impl CapabilityChecker {
     /// - A `let`-bound local resolves through `local_caps` (see
     ///   `build_local_closure_caps`).
     /// - One of the CURRENT function's own fn-typed parameters resolves to
-    ///   `DependsOnParam` — deferred to the current function's own call
+    ///   `DependsOnParam` - deferred to the current function's own call
     ///   sites (see `hot_params`), never charged here.
     /// - A reference to a NAMED function/builtin hands out that function's
-    ///   own (declared/inferred) capability set — the existing rule already
+    ///   own (declared/inferred) capability set - the existing rule already
     ///   enforced at the reference site by `check_builtin_value_ref`.
     /// - A call to a function with a known `fn_return_closure_caps` entry
     ///   resolves through it (recursing into the ACTUAL argument when the
-    ///   callee's return depends on one of ITS OWN parameters — a simple
+    ///   callee's return depends on one of ITS OWN parameters - a simple
     ///   passthrough function).
     /// - Everything else (array/map/struct-field reads, method calls,
-    ///   conditionals, ...) is `Unknown` — the sound, conservative default.
+    ///   conditionals, ...) is `Unknown` - the sound, conservative default.
     #[allow(clippy::too_many_arguments)]
     fn resolve_closure_caps(
         &self,
@@ -1783,7 +1831,7 @@ impl CapabilityChecker {
             // NOTE: passes an empty container-literal map for the lambda's
             // OWN body, not the enclosing function's `local_container_lits`.
             // A lambda literal's body is a single EXPRESSION (no `let`
-            // statements of its own — see `Expr::Lambda`), so there is
+            // statements of its own - see `Expr::Lambda`), so there is
             // nothing new to build here; the narrow gap this leaves (an
             // inline lambda argument's body itself drilling into an
             // ENCLOSING container local, e.g. `zero_cap_tool(|| reg.reader())`)
@@ -1855,34 +1903,34 @@ impl CapabilityChecker {
                     }
                 }
                 // CAPTURED-HOT-PARAMETER CASE (closes LEDGER item 10, the
-                // "wrapper closure" trust-model bypass — see
+                // "wrapper closure" trust-model bypass - see
                 // `tests/security/cap_escape_closure_wraps_closure.kry` and
                 // `docs/capability-soundness.md` invariant 7-captured). A
                 // lambda literal that is itself RETURNED from an enclosing
                 // function and directly calls one of THAT function's own
                 // fn-typed parameters (captured by closure, not one of the
-                // lambda's OWN params — `fn wrap_once(inner: fn()->str) ->
+                // lambda's OWN params - `fn wrap_once(inner: fn()->str) ->
                 // fn()->str { return || inner() }`) used to fall straight
                 // through to the generic `collect_caps_expr` fallback below.
                 // `collect_caps_expr` computes "what does running this code
                 // require", where a call to a fn-typed OWN parameter is
-                // correctly deferred to zero (`hot_params`'s whole point —
+                // correctly deferred to zero (`hot_params`'s whole point - 
                 // `wrap_once` itself must stay capability-free so ordinary
                 // HOF wrapping isn't blanket-denied). That deferral is sound
                 // for code that runs INLINE as part of the enclosing
-                // function's own call — but this body does NOT run inline:
+                // function's own call - but this body does NOT run inline:
                 // it is captured into a fresh closure VALUE that escapes
                 // (returned, then invoked independently at a wholly
                 // separate call site later). Treating that escaping value's
                 // own requirement as the same "zero, deferred" answer
-                // silently drops the deferral's other half — nothing ever
+                // silently drops the deferral's other half - nothing ever
                 // resolves it against the real argument, because the
                 // eventual call site (`wrapped()`) has no syntactic link
                 // back to `wrap_once(reader)`'s argument at all. Fix:
                 // recognize this shape explicitly and resolve to
                 // `DependsOnParam` against the ENCLOSING function's own
                 // parameter, exactly like the lambda's-own-param case above
-                // — `resolve_closure_caps`'s `FnCall` arm already knows how
+                // - `resolve_closure_caps`'s `FnCall` arm already knows how
                 // to follow a `DependsOnParam` result back through
                 // `fn_params`/the actual call-site argument (this is what
                 // makes `wrap_once(reader)` correctly resolve to `reader`'s
@@ -1909,7 +1957,7 @@ impl CapabilityChecker {
                     // authority AND some additional statically-known
                     // capability. `ClosureCapsResult` has no variant that
                     // represents "Known(X) unioned with a deferred
-                    // DependsOnParam" — rather than silently dropping
+                    // DependsOnParam" - rather than silently dropping
                     // either half (which is exactly the class of bug this
                     // fix closes), fail closed: unknown must mean `all`,
                     // never a guess (invariant 22).
@@ -2017,13 +2065,13 @@ impl CapabilityChecker {
                     Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
                         self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, local_container_lits, own_params)
                     }
-                    // Exhaustive over `Expr` — every OTHER shape a call's
+                    // Exhaustive over `Expr` - every OTHER shape a call's
                     // callee sub-expression could syntactically be
                     // (`(cond ? f1 : f2)()`, `arr[pick()]()` reached via a
                     // non-Identifier root, a literal used nonsensically as
                     // a callee, ...) has no special resolution here and
                     // falls to the sound default. See the structural-
-                    // guarantee note on the outer match below — this list
+                    // guarantee note on the outer match below - this list
                     // is deliberately spelled out rather than a wildcard so
                     // a new `Expr` variant fails to compile here until
                     // someone decides it.
@@ -2072,7 +2120,7 @@ impl CapabilityChecker {
             // form, ...) and it is capable of producing or laundering a
             // function value, this match FAILS TO COMPILE until a human
             // explicitly adds an arm and decides whether it needs a real
-            // resolver or is safe to leave on the fail-closed default —
+            // resolver or is safe to leave on the fail-closed default - 
             // converting "we forgot a shape" from a silent security hole
             // into a build error. Do not collapse this back into `_ => ...`
             // even though the RUNTIME behavior would be identical today;
@@ -2146,29 +2194,29 @@ impl CapabilityChecker {
     }
 
     /// Resolve the statically-known authority carried by the value reached
-    /// by walking `path` (a field/index access chain — see `PathStep`) into
+    /// by walking `path` (a field/index access chain - see `PathStep`) into
     /// `expr`. This is the CONTAINER counterpart of `resolve_closure_caps`
-    /// (which it delegates to once `path` is exhausted — at that point
+    /// (which it delegates to once `path` is exhausted - at that point
     /// `expr` denotes the closure value itself, the pre-existing case).
     ///
     /// - A `StructLiteral` + a leading `Field(name)` step descends into the
     ///   named field's expression (or `Unknown` if the literal doesn't
-    ///   explicitly write that field — a defaulted field's value can't be
+    ///   explicitly write that field - a defaulted field's value can't be
     ///   read back statically).
     /// - An `ArrayLiteral`/`MapLiteral` + a leading `Index` step is
     ///   INDEX-INSENSITIVE by design (see `PathStep::Index`): it unions the
     ///   result over EVERY element/value in the literal, so any write
     ///   contributes and an empty literal resolves to `Known(empty)` (no
-    ///   element can ever be invoked at runtime — it would panic first).
+    ///   element can ever be invoked at runtime - it would panic first).
     /// - An `Identifier` resolves through `local_container_lits` (a `let
     ///   reg = Registry { .. }` binding, see `build_local_container_lits`),
     ///   or to `DependsOnParam` if it names one of the CURRENT function's own
     ///   parameters (the container was itself received as a parameter and is
-    ///   being read/forwarded — deferred to this function's own call sites,
+    ///   being read/forwarded - deferred to this function's own call sites,
     ///   mirroring the direct fn-typed-parameter case).
     /// - Anything else (a function call returning a container, a
     ///   conditionally-selected container, a container read out of ANOTHER
-    ///   container, ...) is `Unknown` — the same sound, documented fallback
+    ///   container, ...) is `Unknown` - the same sound, documented fallback
     ///   used for every other unresolvable shape; see LEDGER item 1 for why
     ///   these particular shapes are out of scope (the container must be
     ///   built from a LITERAL, directly or via a local alias, to be traced).
@@ -2187,16 +2235,16 @@ impl CapabilityChecker {
             return self.resolve_closure_caps(expr, working, fn_return_caps, local_caps, local_container_lits, own_params);
         };
         // STRUCTURAL GUARANTEE (see docs/capability-soundness.md §3 "the
-        // structural guarantee"): exhaustive over `Expr`, no wildcard arm —
+        // structural guarantee"): exhaustive over `Expr`, no wildcard arm - 
         // same rationale as `resolve_closure_caps`'s outer match. `head`
-        // (a `PathStep`, a 2-variant internal helper type — not itself an
+        // (a `PathStep`, a 2-variant internal helper type - not itself an
         // AST form a program can add to) is handled as a nested condition
         // WITHIN the three container-literal arms rather than as a second
         // dimension of the outer match, so this stays a genuine per-`Expr`-
         // variant enumeration instead of a much larger, less legible cross
         // product; an unmatched `(head, expr)` COMBINATION (e.g. an `Index`
         // step into a `StructLiteral`, or a `Field` step into an
-        // `ArrayLiteral`/`MapLiteral` — not a valid program shape, but not
+        // `ArrayLiteral`/`MapLiteral` - not a valid program shape, but not
         // provably unreachable from this function's own signature either)
         // still falls to `Unknown`, explicitly, inside the relevant arm.
         match expr {
@@ -2243,7 +2291,7 @@ impl CapabilityChecker {
             // root/intermediate (a function-call return, a conditionally-
             // selected container, a tuple/struct-literal field that isn't a
             // struct-literal-shaped sub-expression, ...) has no precise
-            // resolver and falls to the sound `Unknown` default — spelled
+            // resolver and falls to the sound `Unknown` default - spelled
             // out explicitly rather than a wildcard, per the structural
             // guarantee above.
             Expr::IntLiteral { .. }
@@ -2282,7 +2330,7 @@ impl CapabilityChecker {
 
     /// Fold an iterator of per-element/per-value `ClosureCapsResult`s into
     /// one combined result via `merge_closure_caps`, treating an EMPTY
-    /// iterator (an empty array/map literal) as `Known(empty)` — no element
+    /// iterator (an empty array/map literal) as `Known(empty)` - no element
     /// exists to carry any authority, and none could ever be invoked at
     /// runtime without panicking first.
     fn merge_all(results: impl Iterator<Item = ClosureCapsResult>) -> ClosureCapsResult {
@@ -2314,6 +2362,26 @@ impl CapabilityChecker {
         let mut locals = HashMap::new();
         self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, &mut locals);
         locals
+    }
+
+    /// Union a binding's authority into `name`'s entry.
+    ///
+    /// The map is flat and flow-insensitive, so a name can hold any of the
+    /// values bound to it anywhere in the function; a later binding must not
+    /// be able to hide behind an earlier one, and an earlier one must not be
+    /// replaced by a later one either. `merge_closure_caps` unions two known
+    /// sets and falls to `Unknown` (which this file maps to `all`) for any
+    /// pair it cannot represent.
+    fn record_local_caps(
+        locals: &mut HashMap<String, ClosureCapsResult>,
+        name: &str,
+        r: ClosureCapsResult,
+    ) {
+        let merged = match locals.remove(name) {
+            Some(prev) => Self::merge_closure_caps(prev, r),
+            None => r,
+        };
+        locals.insert(name.to_string(), merged);
     }
 
     fn build_local_closure_caps_block(
@@ -2414,7 +2482,55 @@ impl CapabilityChecker {
                         }
                         _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, local_container_lits, own_params),
                     };
-                    locals.insert(name.clone(), r);
+                    Self::record_local_caps(locals, name, r);
+                }
+                // A plain reassignment of a name this map already holds.
+                //
+                // The map is keyed by bare name and written ONLY by `let`, so
+                // a reassignment used to be invisible: the entry from the
+                // initializer was a snapshot, trusted at every later call
+                // site of that name. `let f = <pure>` followed by
+                // `f = <privileged>` therefore charged the PURE set at `f()`,
+                // which is how a closure holding `fs:read` ran inside a
+                // `deny!(fs:read)` block (four shapes of this one root:
+                // tests/security/attack_deny_bare_closure_reassign_escape.kry,
+                // assault_round2_strip_reassigned_local_deny.kry,
+                // attack_reassign_local_defeats_hotparam.kry,
+                // attack_round3_trycatch_deny_narrowed_catch.kry).
+                //
+                // Every binding of a name now UNIONS into its entry, which is
+                // the sound reading of a flat flow-insensitive map: a call
+                // through the name is charged for any closure the name can
+                // hold at that point. Union rather than Unknown deliberately
+                // -- charging `all` for any reassigned name over-rejects an
+                // ordinary registry of pure closures (measured: 7 of the 259
+                // ecosystem programs and two of this gate's own no-cascade
+                // controls), while a union keeps a pure-only name pure.
+                Stmt::Assign {
+                    target: Expr::Identifier { name, .. },
+                    value,
+                    ..
+                } => {
+                    let r = self.resolve_closure_caps(
+                        value,
+                        working,
+                        fn_return_caps,
+                        &*locals,
+                        local_container_lits,
+                        own_params,
+                    );
+                    Self::record_local_caps(locals, name, r);
+                }
+                // A `deny!` body is where a laundered closure is USED, so a
+                // binding made inside one has to be visible: `let mut f =
+                // <pure>` outside, `f = reader` INSIDE the block, then `f()`
+                // charged the pure set because this builder never walked
+                // into the block (tests/security/
+                // attack_deny_bare_closure_reassign_escape.kry). The block's
+                // own narrowing is enforced elsewhere (check_deny_block);
+                // this map only needs to know what the name can hold.
+                Stmt::DenyBlock { body, .. } => {
+                    self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 Stmt::If {
                     then_block,
@@ -2432,6 +2548,16 @@ impl CapabilityChecker {
                 }
                 Stmt::For { body, .. } | Stmt::While { body, .. } => {
                     self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals)
+                }
+                // A select arm body, and the timeout body nothing walked at
+                // all, bind names like any other block.
+                Stmt::Select { branches, timeout, .. } => {
+                    for branch in branches {
+                        self.build_local_closure_caps_block(&branch.body, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
+                    if let Some(t) = timeout {
+                        self.build_local_closure_caps_block(&t.body, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
                 }
                 Stmt::TryCatch {
                     try_block,
@@ -2473,23 +2599,23 @@ impl CapabilityChecker {
     /// collection of every `let name = expr` binding whose initializer is a
     /// struct/array/map LITERAL (or a bare alias of another already-tracked
     /// container local), within `block`, processed in textual order. Feeds
-    /// `resolve_container_path_caps`'s `Identifier` arm — lets `let reg =
+    /// `resolve_container_path_caps`'s `Identifier` arm - lets `let reg =
     /// Registry { reader: r }` / `zero_cap_tool(reg)` trace back to the
     /// literal `reg` was built from. Purely syntactic (no capability
-    /// resolution here — that happens lazily, at USE time, in
+    /// resolution here - that happens lazily, at USE time, in
     /// `resolve_container_path_caps`, once the specific field/index path
     /// being invoked is known), so unlike `build_local_closure_caps` this
     /// needs no `working`/`fn_return_caps`/`own_params` context.
     ///
     /// **MUTATION TRACKING (closes the live bypass a prior session's fix
-    /// left open — see LEDGER, "closure into a container via push / map
+    /// left open - see LEDGER, "closure into a container via push / map
     /// insert"):** the ORIGINAL version of this function only ever looked at
     /// `Stmt::Let`, so a container built by `let mut tools = []` then
     /// POPULATED afterward (`tools = push(tools, reader)`, `m["k"] = reader`,
     /// `arr[i] = reader`, `r.field = reader`) kept the STALE initial snapshot
     /// forever. That snapshot was usually an EMPTY literal (`[]`/`{}`), and
     /// `resolve_container_path_caps`'s index-insensitive union over zero
-    /// elements resolves to `Known(empty)` — not `Unknown`. So a mutated
+    /// elements resolves to `Known(empty)` - not `Unknown`. So a mutated
     /// container didn't just fall through the documented conservative
     /// `Unknown` -> `Capability::All` fallback (which the report's "requires
     /// `Capability::All`" claim assumed); it actively asserted "this
@@ -2511,14 +2637,14 @@ impl CapabilityChecker {
     ///   through a field/index PATH (`r.field = v`, `arr[i] = v`,
     ///   `m[k] = v`, and nested combinations like `hs[i].handler = v`) is
     ///   rebuilt via `rebuild_container_write`, splicing `v` in at the
-    ///   reached point (index writes are index-INSENSITIVE — appended to
-    ///   the union — matching the read side's existing design).
+    ///   reached point (index writes are index-INSENSITIVE - appended to
+    ///   the union - matching the read side's existing design).
     ///
-    /// Every OTHER assignment shape reaching a tracked name — an
+    /// Every OTHER assignment shape reaching a tracked name - an
     /// unrecognized reassignment (`X = some_function()`, `X = other_arr`
     /// where `other_arr` isn't itself tracked), a compound assignment
     /// (`+=` and friends), or a field/index write whose path can't be
-    /// resolved against the literal's actual current shape — INVALIDATES
+    /// resolved against the literal's actual current shape - INVALIDATES
     /// (removes) that name's tracked entry instead of leaving it stale, so a
     /// later read correctly falls through to `Unknown` -> `Capability::All`
     /// (fail CLOSED) rather than silently keeping a snapshot that is now
@@ -2548,7 +2674,7 @@ impl CapabilityChecker {
         }
         match target {
             Expr::Identifier { name, .. } => {
-                // `X = push(X, v)` — in-place append (see CLAUDE.md's push
+                // `X = push(X, v)` - in-place append (see CLAUDE.md's push
                 // aliasing gotcha: `push` grows the shared buffer and
                 // returns the handle, so `X = push(X, v)` is the canonical,
                 // and by far the most common, idiom for this).
@@ -2571,7 +2697,7 @@ impl CapabilityChecker {
                                     } else {
                                         // Not currently tracked as an array
                                         // literal (unknown prior content, or
-                                        // never tracked at all) — appending
+                                        // never tracked at all) - appending
                                         // one MORE element on top of an
                                         // unknown base would UNDER-report
                                         // whatever authority the unknown
@@ -2584,7 +2710,7 @@ impl CapabilityChecker {
                         }
                     }
                 }
-                // `X = Y` — alias to another tracked container local (same
+                // `X = Y` - alias to another tracked container local (same
                 // rule as the `Let` arm below).
                 if let Expr::Identifier { name: src, .. } = value {
                     match locals.get(src).cloned() {
@@ -2597,7 +2723,7 @@ impl CapabilityChecker {
                     }
                     return;
                 }
-                // `X = <fresh literal>` — overwrite with the new snapshot.
+                // `X = <fresh literal>` - overwrite with the new snapshot.
                 match value {
                     Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
                         locals.insert(name.clone(), value.clone());
@@ -2605,7 +2731,7 @@ impl CapabilityChecker {
                     _ => {
                         // Anything else we can't characterize (a function
                         // call result, an arithmetic/ternary expression, a
-                        // read out of another container, ...) — invalidate
+                        // read out of another container, ...) - invalidate
                         // rather than keep a now-stale snapshot.
                         locals.remove(name);
                     }
@@ -2660,11 +2786,11 @@ impl CapabilityChecker {
 
     /// Walk `path` into literal `lit`, then splice `value` in at the point
     /// reached via `leaf_step` (a `Field` write overwrites/inserts the named
-    /// field; an `Index` write is index-INSENSITIVE and appends — matching
+    /// field; an `Index` write is index-INSENSITIVE and appends - matching
     /// `resolve_container_path_caps`'s read-side union semantics). Returns
     /// `None` when the path can't be resolved against `lit`'s actual shape
     /// (a container-of-unknown-provenance element, a struct field write
-    /// through a type that isn't tracked, ...) — the caller treats `None` as
+    /// through a type that isn't tracked, ...) - the caller treats `None` as
     /// "invalidate the whole root", never as "leave the old snapshot".
     fn rebuild_container_write(
         lit: &Expr,
@@ -2769,7 +2895,7 @@ impl CapabilityChecker {
                     }
                     // `let x = f()` where `f` is a bare, ZERO-ARGUMENT call
                     // to a function whose return literal is known (see
-                    // `fn_return_container_lits`'s doc) — splice that
+                    // `fn_return_container_lits`'s doc) - splice that
                     // template in as if `x` had been bound to the literal
                     // directly, so the ordinary literal-tracing machinery
                     // resolves the REAL capability of what a no-arg factory
@@ -2847,18 +2973,18 @@ impl CapabilityChecker {
     /// `build_local_container_lits`) map of every `let name = expr`
     /// binding's STATICALLY KNOWN type, when resolvable:
     /// - an explicit type annotation on the `let` itself;
-    /// - otherwise (the common case — CLAUDE.md hard rule 6: local `let` may
+    /// - otherwise (the common case - CLAUDE.md hard rule 6: local `let` may
     ///   infer), the DECLARED RETURN TYPE of a directly-called NAMED
     ///   function (`let registry = build_registry()`), via `fn_ret_ty`;
     /// - an alias of another already-tracked local (`let x = y`).
     /// Unlike `build_local_container_lits`, a variable's STATIC type never
-    /// changes after its `let` (Kryos is statically typed — a later
+    /// changes after its `let` (Kryos is statically typed - a later
     /// `Stmt::Assign` can only write a value of the SAME declared/inferred
     /// type), so there is no assignment-invalidation counterpart to
     /// `apply_container_assign` here: once resolved, a local's type entry
     /// stays valid for the rest of the block. Anything else (a method call,
     /// a conditional, an arithmetic expression, a read out of another
-    /// container, ...) is simply absent — callers must treat a miss as
+    /// container, ...) is simply absent - callers must treat a miss as
     /// "type unknown", never as "not fn-bearing".
     fn build_local_container_types(&self, block: &kryos_ast::Block) -> HashMap<String, TypeExpr> {
         let mut locals = HashMap::new();
@@ -2941,7 +3067,7 @@ impl CapabilityChecker {
     /// purely syntactic scan of `handler`'s body for `let name =
     /// self.<path>` bindings, recording the FIRST step of `<path>` (the
     /// actor state field actually being aliased) against `name`. A `let x =
-    /// self` (path empty — aliasing the whole receiver, not a specific
+    /// self` (path empty - aliasing the whole receiver, not a specific
     /// field) is not recorded: nothing to name, and it is not the shape
     /// this closes. Recurses into nested blocks the same way its sibling
     /// container-literal tracker does, for the same reason (a binding
@@ -3013,17 +3139,17 @@ impl CapabilityChecker {
     }
 
     /// See `fn_return_container_lits`'s doc. Purely structural (no
-    /// capability dependency) — computed once, alongside `hot_params`.
+    /// capability dependency) - computed once, alongside `hot_params`.
     /// Restricted to ZERO-PARAMETER functions specifically to avoid
     /// splicing a literal whose field values reference the FACTORY
     /// function's OWN parameters into a CALLER's `local_container_lits` map
     /// (those names would then be resolved against the CALLER's scope, not
-    /// the factory's — wrong; a parameterized factory falls through to the
+    /// the factory's - wrong; a parameterized factory falls through to the
     /// type-based fail-closed fallback instead, same as any other
     /// unresolvable construction). `None`/absent for anything else (a
     /// function with params, multiple disagreeing return literals, a
     /// non-literal return, a return built through further indirection,
-    /// ...) — callers must treat a miss as "unknown", never as "empty".
+    /// ...) - callers must treat a miss as "unknown", never as "empty".
     fn compute_fn_return_container_lits(decls: &[Decl]) -> HashMap<String, Expr> {
         let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
         Self::collect_functions(decls, &mut fns);
@@ -3034,7 +3160,7 @@ impl CapabilityChecker {
                 continue;
             }
             // Deliberately NO splicing here (empty map): single-hop only,
-            // to keep this computation non-self-referential/bounded — see
+            // to keep this computation non-self-referential/bounded - see
             // this function's own doc.
             let local_lits = Self::build_local_container_lits(body, &HashMap::new());
             let mut return_exprs: Vec<&Expr> = Vec::new();
@@ -3074,7 +3200,7 @@ impl CapabilityChecker {
                     // once spliced into a CALLER's `local_container_lits`,
                     // so a bare `Identifier` reference is inlined with a
                     // clone of ITS OWN bound expression here (a small,
-                    // bounded-depth local substitution — NOT full constant
+                    // bounded-depth local substitution - NOT full constant
                     // propagation), so a downstream resolver sees the real
                     // expression (e.g. `make_secret_reader(path)`, a
                     // NAME-KEYED call resolvable via `fn_return_closure_caps`
@@ -3083,7 +3209,7 @@ impl CapabilityChecker {
                     // ITSELF a literal or a bare named-function reference
                     // resolves precisely; anything routed through an
                     // intermediate local falls back to the coarser `all`
-                    // charge at the call site — sound, but a needless
+                    // charge at the call site - sound, but a needless
                     // false-rejection on otherwise-benign code of that
                     // narrower shape (measured live, see LEDGER item 1).
                     let flat_lets = Self::collect_flat_let_bindings(body);
@@ -3097,7 +3223,7 @@ impl CapabilityChecker {
 
     /// Flat (last-`let`-wins, same non-lexical-scope-precise model used
     /// throughout this file), UNFILTERED map of every `let name = expr`
-    /// binding's RAW initializer expression within `block` — unlike
+    /// binding's RAW initializer expression within `block` - unlike
     /// `build_local_container_lits`, this keeps EVERY binding regardless of
     /// shape (a call, a literal, an arithmetic expression, ...), since it
     /// feeds `substitute_container_lit_identifiers`'s local-inlining, not
@@ -3158,7 +3284,7 @@ impl CapabilityChecker {
     /// Recursively inline a bare `Identifier` reference to one of
     /// `bindings`' own names with a clone of its bound expression, within a
     /// struct/array/map LITERAL's field/element values (never at the top
-    /// level — a top-level `Identifier` is handled by the caller). Bounded
+    /// level - a top-level `Identifier` is handled by the caller). Bounded
     /// depth (4 hops) guards against a pathological alias chain; ordinary
     /// code never chains this deep. See
     /// `compute_fn_return_container_lits`'s call site for why this exists.
@@ -3274,9 +3400,9 @@ impl CapabilityChecker {
     /// `hot_params` / `PathStep`), resolve the ACTUAL argument expression
     /// passed at this call, walk it down that path, and require whatever
     /// authority the reached value carries. This is what attributes
-    /// `zero_cap_tool(reader)`'s real `fs:read` requirement (path: empty —
+    /// `zero_cap_tool(reader)`'s real `fs:read` requirement (path: empty - 
     /// the direct fn-typed-parameter case) and `zero_cap_tool(reg)`'s (path:
-    /// `[Field("reader")]` — the container residual, LEDGER item 1) to the
+    /// `[Field("reader")]` - the container residual, LEDGER item 1) to the
     /// CALL, not to `zero_cap_tool`'s own (legitimately empty, like any HOF)
     /// declaration.
     #[allow(clippy::too_many_arguments)]
@@ -3302,7 +3428,7 @@ impl CapabilityChecker {
             let arg_idx = if has_self_offset {
                 match i.checked_sub(1) {
                     Some(v) => v,
-                    None => continue, // hot index 0 is `self` for a method — never a caller-supplied arg
+                    None => continue, // hot index 0 is `self` for a method - never a caller-supplied arg
                 }
             } else {
                 i
@@ -3486,12 +3612,12 @@ impl CapabilityChecker {
     /// fn-value.** Every enforcement path up to this fix (`hot_params` /
     /// `accumulate_hot_extra_caps`) only ever attributed authority to a CALL
     /// SITE that names a known FUNCTION/METHOD (so its callee could be looked
-    /// up in `hot_params` by name) — a call whose callee is a bare local
+    /// up in `hot_params` by name) - a call whose callee is a bare local
     /// variable, an unnamed parameter, or a field/index chain into one (`r()`,
     /// `arr[0]()`, `m["k"][0]()`) was never resolved AT ALL: `hot_params.get`
     /// on a non-function name is always `None`, so the whole mechanism
     /// silently contributed nothing, no matter what the invoked value
-    /// actually carried. This was true even with NO indirection whatsoever —
+    /// actually carried. This was true even with NO indirection whatsoever - 
     /// verified live: a closure built and called in the SAME function, with
     /// no parameter/argument passing step in between, was uncatchable by any
     /// of the three prior enumeration rounds because none of them checked the
@@ -3502,13 +3628,13 @@ impl CapabilityChecker {
     /// resolve what `callee` denotes via the SAME closure/container resolvers
     /// already used for argument attribution, and require it exactly like a
     /// named function's own declaration would be. The three outcomes:
-    /// - `Known(c)`: the value's exact capability set — require it.
+    /// - `Known(c)`: the value's exact capability set - require it.
     /// - `DependsOnParam(_)`: `callee` is (or resolves to) one of the CURRENT
-    ///   function's own fn-typed parameters — its real value is supplied by
+    ///   function's own fn-typed parameters - its real value is supplied by
     ///   THIS function's caller, so `hot_params`/Seed A/B already defer the
     ///   charge to that caller; nothing to require here (charging it here too
-    ///   would double-count AND would force every ordinary user-written HOF —
-    ///   `fn apply(f: fn()->str) -> str { f() }` — to require `all`) --
+    ///   would double-count AND would force every ordinary user-written HOF - 
+    ///   `fn apply(f: fn()->str) -> str { f() }` - to require `all`) --
     ///   UNLESS this direct invocation is already inside a `deny!` block
     ///   narrower than this function's own entry scope (see
     ///   `current_fn_entry_scope_depth`'s doc), in which case the deferral is
@@ -3518,9 +3644,9 @@ impl CapabilityChecker {
     ///   fn()->str) -> str { deny!(fs:read) { return r() } }` called from an
     ///   `@capabilities(fs:read)` caller compiled clean and printed the
     ///   secret from inside the denied scope, pre-fix.
-    /// - `Unknown`: genuinely unresolvable provenance — the same conservative
+    /// - `Unknown`: genuinely unresolvable provenance - the same conservative
     ///   stance used everywhere else in this file: require `Capability::All`.
-    ///   Unknown must mean deny, not "this call needs nothing" — see
+    ///   Unknown must mean deny, not "this call needs nothing" - see
     ///   `docs/capability-roadmap.md` for why enumerating shapes here instead
     ///   (three rounds of it) does not converge.
     /// The correct resolution for a `ClosureCapsResult::DependsOnParam` whose
@@ -3552,8 +3678,15 @@ impl CapabilityChecker {
     ///
     /// Default is OFF: fail-closed remains the shipped behaviour until the
     /// experiment justifies otherwise.
+    ///
+    /// The switch only exists in a compiler built with the
+    /// `item41-experiment` feature (`cargo build --release --features
+    /// kryos-capabilities/item41-experiment`). It used to be read by every
+    /// release build, so whoever set one environment variable on a build
+    /// machine re-opened the two escapes it guards (escape_status.sh rows
+    /// 41a/41b) with nothing visible in the source, kryos.toml or the CLI.
     fn hotparam_all_disabled(&self) -> bool {
-        std::env::var("KRYOS_NO_HOTPARAM_ALL").is_ok()
+        cfg!(feature = "item41-experiment") && std::env::var("KRYOS_NO_HOTPARAM_ALL").is_ok()
     }
 
     /// Fail-closed fallback for unresolvable fn-value provenance in argument
@@ -3720,22 +3853,22 @@ impl CapabilityChecker {
     /// FIELD being read and invoked (`reg.reader()`), not a genuine
     /// method/trait dispatch. Engages in either of two ways, both requiring
     /// `method` to be POSITIVELY confirmed as a real fn-typed field/element
-    /// — never a blanket guess, so an ordinary method call
+    /// - never a blanket guess, so an ordinary method call
     /// (`p.distance(other)`) is never misclassified as an unresolvable
     /// field read (which would otherwise force every method call in the
     /// language to require `all`):
     /// 1. `object`'s root is a locally-tracked struct/array/map LITERAL
-    ///    (`local_container_lits`) that explicitly writes the field — the
+    ///    (`local_container_lits`) that explicitly writes the field - the
     ///    precise, pre-existing case, which traces the actual value.
     /// 2. `object`'s root has a STATICALLY KNOWN TYPE (`local_container_types`
-    ///    — see its doc; closes the container-BY-LOCAL-VARIABLE residual,
+    /// - see its doc; closes the container-BY-LOCAL-VARIABLE residual,
     ///    LEDGER item 1's ASSAULT round 3 finding: `let registry =
     ///    build_registry()` has no literal to trace, since the literal lives
     ///    inside `build_registry`'s own body) whose shape, walked via
     ///    `resolve_type_path`, resolves `method` to a genuine `fn(...)->...`
     ///    field/element. Unlike case 1, the actual runtime value can't be
     ///    traced from here, so this fails closed to `all` rather than
-    ///    resolving a precise set — the same sound "Unknown must mean all"
+    ///    resolving a precise set - the same sound "Unknown must mean all"
     ///    default used everywhere else in this file, just reached through a
     ///    type-positive confirmation instead of an unresolvable-root guess.
     ///
@@ -3748,23 +3881,23 @@ impl CapabilityChecker {
     /// resolved to `Unknown` there. This is UNSOUND-BY-OVER-REJECTION:
     /// `build_local_closure_caps_block` inserts an `Unknown` entry for
     /// ANY `let name = f(..)` binding where `f` is a plain (non-fn-
-    /// returning) user function with no tracked return-closure entry —
+    /// returning) user function with no tracked return-closure entry - 
     /// i.e. the overwhelming majority of ordinary local bindings in real
     /// code, completely unrelated to fn-bearing containers. Wiring that
     /// into every `MethodCall`'s fallback broke conformance/generics/actor
     /// examples broadly (measured live: conf_generics, conf_errors_
     /// concurrency, examples/actors.kry, and 2 type-soundness + 2 inferred-
-    /// soundness probes all false-positived under this change — see
+    /// soundness probes all false-positived under this change - see
     /// `tools/loop/LEDGER.md`). Case 2 above does NOT repeat this mistake:
     /// it never fires on an unresolvable root alone, only when the root's
-    /// type POSITIVELY confirms `method` is a real fn-typed field/element —
+    /// type POSITIVELY confirms `method` is a real fn-typed field/element - 
     /// the same positive-confirmation discipline case 1 already uses, and
     /// the same `resolve_type_path` mechanism `hot_params`' Seed B already
     /// uses (and has been measured safe) for a container-typed PARAMETER.
     /// Reverted in favor of the narrow, precisely- scoped
     /// `current_actor_state_alias_locals` mechanism below, which only
     /// tracks LOCALS BOUND DIRECTLY TO A `self.<path>` EXPRESSION inside an
-    /// actor handler — see `resolve_actor_self_field_invoke_caps` and
+    /// actor handler - see `resolve_actor_self_field_invoke_caps` and
     /// `check_actor`'s `build_actor_state_alias_locals` for where that
     /// residual (`let x = self.b; x.f()`) is actually closed.
     #[allow(clippy::too_many_arguments)]
@@ -3811,7 +3944,7 @@ impl CapabilityChecker {
             };
         }
         // Case 2: no literal tracked for `root` (built from a factory
-        // function's return, not a literal in this function's own body) —
+        // function's return, not a literal in this function's own body) - 
         // but if its STATIC TYPE positively confirms `method` names a real
         // fn-typed field/element reachable via `path`, this is still a
         // genuine container-closure invocation whose actual content we just
@@ -3832,11 +3965,11 @@ impl CapabilityChecker {
     /// **FAIL-CLOSED default for a call rooted at `self` inside an actor
     /// handler, at ANY access depth, when the access crosses one of the
     /// actor's own FN-BEARING state fields** (closes LEDGER item 18 AND its
-    /// nested-container residual — see `docs/capability-soundness.md`
+    /// nested-container residual - see `docs/capability-soundness.md`
     /// invariant 4-actor). See `current_actor_fn_state_fields`'s doc for the
     /// full rationale: a state field's value can be written by ANY handler
     /// at ANY prior dispatch, so there is no sound way to trace which
-    /// closure a given self-rooted call site actually holds —
+    /// closure a given self-rooted call site actually holds - 
     /// `resolve_method_field_invoke_caps`'s precise struct-literal tracking
     /// never covers `self` (it is not a locally-tracked container literal),
     /// so without this, the call would be attributed EMPTY authority
@@ -3861,12 +3994,12 @@ impl CapabilityChecker {
     /// rather than requiring a bare `self` object. If the chain's root is
     /// `self`, the state field actually being touched is the FIRST step of
     /// the path (`self.b.f()` touches `b`; `self.b.c.f()` still touches
-    /// `b` — we cannot trace past the actor-state boundary, only detect
+    /// `b` - we cannot trace past the actor-state boundary, only detect
     /// that the access crosses it), or `method` itself when the path is
     /// empty (the original `self.f()` case). An `Index` first step
     /// (`self.arr[i].f()`) cannot even be named, so it fails closed
     /// unconditionally rather than falling through as "not a state
-    /// access" — this is deliberate: `self` is never eligible for the
+    /// access" - this is deliberate: `self` is never eligible for the
     /// ordinary "not positively confirmed => not a field call, charge
     /// nothing" stance any other receiver gets (see
     /// `resolve_method_field_invoke_caps`), because actor state is the one
@@ -3911,7 +4044,7 @@ impl CapabilityChecker {
     /// Whether `lit` (a container literal reachable via `local_container_lits`)
     /// explicitly writes a field named `field` at the position `path` walks
     /// to. Used ONLY to confirm the `obj.method(...)` shape is really a field
-    /// read before treating it as one — a `false` result means "not a field
+    /// read before treating it as one - a `false` result means "not a field
     /// access we can positively identify", so the caller falls back to
     /// ordinary method-call handling rather than a false-positive `Unknown`.
     fn literal_field_exists(expr: &Expr, path: &[PathStep], field: &str) -> bool {
@@ -3943,7 +4076,7 @@ impl CapabilityChecker {
     /// resolved from a DIRECT fn-value invocation rather than a named
     /// function's own declaration. Pushed as its own diagnostic (not folded
     /// into `enforce_callee_name`) because there is no callee NAME to name in
-    /// the message — the note instead explains that this is a closure/fn-value
+    /// the message - the note instead explains that this is a closure/fn-value
     /// call, not a function declaration mismatch.
     fn require_direct_invoke_caps(&mut self, required: &CapabilitySet, call_span: Span) {
         if required.is_empty() {
@@ -4079,7 +4212,7 @@ impl CapabilityChecker {
     /// than making the caller look it up later via `self.fn_params.get(name)`)
     /// because `fn_params` is keyed by BARE NAME and several stdlib modules
     /// declare same-named functions (`std::iter::find`, `std::re::find`,
-    /// `std::string::find` all collide on "find") — looking a name back up
+    /// `std::string::find` all collide on "find") - looking a name back up
     /// after the fact can silently return a DIFFERENT declaration's params
     /// than the one actually being processed, which (since this file's
     /// fail-closed default now requires `all` for any parameter it fails to
@@ -4121,7 +4254,7 @@ impl CapabilityChecker {
     /// stdlib paths) and the sets of the functions it calls. Terminating: the
     /// lattice is the finite powerset of the capability enum and each step only
     /// adds capabilities (monotone union), so the result is the least set that
-    /// covers all direct uses — an *over*-approximation, never an under one.
+    /// covers all direct uses - an *over*-approximation, never an under one.
     ///
     /// Soundness note: an unresolved single-segment call (not a gated builtin,
     /// not a known function) contributes nothing. That is sound under Kryos's
@@ -4315,10 +4448,14 @@ impl CapabilityChecker {
                 b(catch_block, &mut acc);
             }
             Stmt::Throw { expr, .. } => e(expr, &mut acc),
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     e(&branch.channel, &mut acc);
                     b(&branch.body, &mut acc);
+                }
+                if let Some(t) = timeout {
+                    e(&t.duration_ms, &mut acc);
+                    b(&t.body, &mut acc);
                 }
             }
             Stmt::DenyBlock { body, .. } => b(body, &mut acc),
@@ -4394,7 +4531,7 @@ impl CapabilityChecker {
                     // CLOSURE-LAUNDERING FIX: if this call's callee has hot
                     // (invoked) fn-typed parameters, the SPECIFIC argument
                     // supplied at THIS call site carries its own authority
-                    // that this function's inferred set must also cover —
+                    // that this function's inferred set must also cover - 
                     // otherwise a helper that forwards a resolvable
                     // privileged closure into a hot call would silently
                     // under-report its own requirement. See
@@ -4624,14 +4761,14 @@ impl CapabilityChecker {
         self.build_fn_capability_map(&module.declarations);
 
         // Pass 1a: STRUCTURAL closure-laundering analysis. Computed in EVERY
-        // mode (including Strict and Permissive) — the escape this closes
+        // mode (including Strict and Permissive) - the escape this closes
         // (`tests/security/cap_escape_closure_launder.kry`) defeats
         // `--strict-capabilities` exactly as much as the default inferred
         // mode, because both route enforcement through `enforce_callee_name`
         // / `check_expr`, which this feeds regardless of mode.
         //
         // `hot_params` is purely structural (which fn-typed parameter
-        // POSITIONS are invoked, directly or via forwarding — no capability
+        // POSITIONS are invoked, directly or via forwarding - no capability
         // values involved), so it has no dependency on the inferred map.
         // `fn_return_closure_caps` (which functions return closures, and
         // what those closures require) DOES need a capability map to resolve
@@ -4816,7 +4953,7 @@ impl CapabilityChecker {
                 // A top-level `let`/`let mut` initializer (Decl::Const) runs
                 // at program startup and can call gated builtins
                 // (file_write, env_get, http_get, ...). It was never checked
-                // — a full capability bypass in every mode (backlog #24).
+                // - a full capability bypass in every mode (backlog #24).
                 // A const has no annotation site of its own, but it is part
                 // of the program whose authority ceiling is `main`'s
                 // declaration. Check the initializer against `main`'s
@@ -4837,7 +4974,7 @@ impl CapabilityChecker {
                 self.check_expr(value);
                 self.scope_stack.pop();
             }
-            // Struct, Enum, TypeAlias — no capability concerns.
+            // Struct, Enum, TypeAlias - no capability concerns.
             _ => {}
         }
     }
@@ -4880,10 +5017,10 @@ impl CapabilityChecker {
         // Choose the effective capability set this function's body is checked
         // against, and whether the per-call guards fire (`annotated`):
         //
-        // - Permissive: unchanged — only explicitly annotated functions enforce.
+        // - Permissive: unchanged - only explicitly annotated functions enforce.
         // - Strict: every function enforces against its declaration (empty if
         //   unannotated), so every gated builtin call must be declared.
-        // - Inferred: `main` and annotated functions are BOUNDARIES — they
+        // - Inferred: `main` and annotated functions are BOUNDARIES - they
         //   enforce against their DECLARATION (empty `main` => deny-by-default,
         //   annotation => ceiling). Every other (interior) function enforces
         //   against its INFERRED set, so helpers need no annotation yet their
@@ -5015,7 +5152,7 @@ impl CapabilityChecker {
                 );
             }
         } else {
-            // Top-level extern — check against module-level (no scope = no caps).
+            // Top-level extern - check against module-level (no scope = no caps).
             // Extern at top level is only valid if there's an enclosing scope with ffi.
             // At module level we allow it (it's a declaration, not an invocation).
             // The actual *use* of extern functions inside capability-scoped code
@@ -5047,7 +5184,7 @@ impl CapabilityChecker {
         let denied_caps: Vec<Capability> =
             denied.iter().filter_map(|s| Capability::from_str(s)).collect();
         // A deny that names no recognized capability (typo) would silently narrow
-        // nothing — warn rather than no-op.
+        // nothing - warn rather than no-op.
         if denied_caps.is_empty() {
             self.diagnostics.push(
                 Diagnostic::warning(format!(
@@ -5159,10 +5296,14 @@ impl CapabilityChecker {
             Stmt::Throw { expr, .. } => {
                 self.check_expr(expr);
             }
-            Stmt::Select { branches, .. } => {
+            Stmt::Select { branches, timeout, .. } => {
                 for branch in branches {
                     self.check_expr(&branch.channel);
                     self.check_block(&branch.body);
+                }
+                if let Some(t) = timeout {
+                    self.check_expr(&t.duration_ms);
+                    self.check_block(&t.body);
                 }
             }
             Stmt::DenyBlock { denied, body, span } => {
@@ -5231,7 +5372,7 @@ impl CapabilityChecker {
                     &self.current_fn_typed_params,
                 ));
                 // FAIL-CLOSED: `self.<field>()` invoking one of the current
-                // actor's own FN-TYPED state fields — see
+                // actor's own FN-TYPED state fields - see
                 // `resolve_actor_self_field_invoke_caps`'s doc (LEDGER item
                 // 18). No-op outside an actor handler body (the tracked set
                 // is empty there).
@@ -5249,7 +5390,7 @@ impl CapabilityChecker {
                 // Same call-site propagation for `Type::method()` static
                 // dispatch. The parser turns ANY `Ident::name(args)` into a
                 // StaticMethodCall, and the checker/MIR lower an unknown
-                // `type_name` to a bare call to `name` — so
+                // `type_name` to a bare call to `name` - so
                 // `NotAType::file_write(..)` actually invokes the builtin.
                 // If `method` is a gated builtin name, gate it (backlog #38):
                 // pass is_builtin_name so the E0505 builtin gate fires, just
@@ -5410,14 +5551,14 @@ impl CapabilityChecker {
                 }
             }
             // A bare identifier that names a gated builtin, evaluated as a
-            // VALUE (let/assign/return/array/struct/pipe/arg — anywhere that is
+            // VALUE (let/assign/return/array/struct/pipe/arg - anywhere that is
             // not the direct callee of a call), delegates that builtin's
             // authority and must be declared. The FnCall arm deliberately does
             // not recurse into a bare-name callee, so this never double-fires.
             Expr::Identifier { span, .. } => {
                 self.check_builtin_value_ref(expr, *span);
             }
-            // Literals — no capability concerns.
+            // Literals - no capability concerns.
             Expr::IntLiteral { .. }
             | Expr::FloatLiteral { .. }
             | Expr::StringLiteral { .. }
@@ -5462,7 +5603,7 @@ impl CapabilityChecker {
         if segments.len() == 1 {
             // CLOSURE-LAUNDERING FIX: attribute the authority of whatever
             // closure/fn-value is ACTUALLY passed at this call site into any
-            // hot (invoked) fn-typed parameter position — see
+            // hot (invoked) fn-typed parameter position - see
             // `compute_hot_extra_caps`.
             let extra = self.compute_hot_extra_caps(&segments[0], args, false);
             self.enforce_callee_name(&segments[0], call_span, true, &extra);
@@ -5539,7 +5680,7 @@ impl CapabilityChecker {
         extra
     }
 
-    /// Enforce the capability requirements of a call to `name` — a bare
+    /// Enforce the capability requirements of a call to `name` - a bare
     /// function name (`FnCall`) or a method name (`MethodCall` /
     /// `StaticMethodCall`). Two checks, both gated on the caller being an
     /// enforcing scope (strict mode, or any annotated/inferred scope):
@@ -5592,7 +5733,7 @@ impl CapabilityChecker {
             }
         }
 
-        // Calls to extern-declared functions are the raw FFI surface — gate
+        // Calls to extern-declared functions are the raw FFI surface - gate
         // them like the builtin they wrap (`kryos_*`) or on `ffi` (anything
         // else). Declaring an extern is free; CALLING it demands authority.
         if let Some(required_cap) = self.required_capability_for_extern(name) {
@@ -5613,7 +5754,7 @@ impl CapabilityChecker {
         }
 
         // Union in the call-site-specific authority carried by any hot
-        // fn-typed argument (see `compute_hot_extra_caps`) — this is what
+        // fn-typed argument (see `compute_hot_extra_caps`) - this is what
         // makes `zero_cap_tool(reader)` require `fs:read` at THIS call,
         // even though `zero_cap_tool` itself has (correctly, like any HOF)
         // no capability of its own in `fn_capabilities`.
@@ -5769,14 +5910,14 @@ impl CapabilityChecker {
     /// When spawning, the spawned entity's capabilities must not exceed
     /// the current scope's capabilities.
     fn check_spawn_expr(&mut self, expr: &Expr, span: Span) {
-        // The spawn itself is checked — any function/actor being spawned
+        // The spawn itself is checked - any function/actor being spawned
         // will have its capabilities checked via attenuation rules.
         // Here we flag the spawn site if there's no enclosing capability scope.
         self.check_expr(expr);
 
         // Additional: if spawning a struct literal (actor), check annotations would
         // apply at the actor declaration site (already handled by check_actor).
-        // This is here for completeness — spawn-site checks are structural.
+        // This is here for completeness - spawn-site checks are structural.
         let _ = span;
     }
 
@@ -6011,7 +6152,7 @@ mod tests {
             span: span(),
         };
 
-        // Inner function declared inside actor scope — we test this by
+        // Inner function declared inside actor scope - we test this by
         // building a module with just the outer function, and pushing a
         // manual scope to demonstrate. Instead, let's use the public API properly:
         // Module-level functions don't have a parent scope, so attenuation
@@ -6021,7 +6162,7 @@ mod tests {
             declarations: vec![actor],
             span: span(),
         };
-        // This should pass — the actor has `net` and the handler uses nothing.
+        // This should pass - the actor has `net` and the handler uses nothing.
         let diags = check_capabilities(&module, false);
         assert!(diags.is_empty());
     }
@@ -6168,7 +6309,7 @@ mod tests {
 
     #[test]
     fn nonstrict_unannotated_with_file_write_is_ok() {
-        // Same module as above, but with strict=false — the existing
+        // Same module as above, but with strict=false - the existing
         // opt-in behaviour. No errors should be raised.
         let module = Module {
             name: "test".into(),
@@ -6192,7 +6333,7 @@ mod tests {
     #[test]
     fn strict_unannotated_with_no_gated_calls_is_ok() {
         // Unannotated function that touches nothing capability-gated.
-        // Strict mode must NOT error — we only deny gated builtins, not
+        // Strict mode must NOT error - we only deny gated builtins, not
         // every function definition.
         let module = Module {
             name: "test".into(),
@@ -6209,7 +6350,7 @@ mod tests {
     #[test]
     fn strict_annotated_with_matching_cap_is_ok() {
         // Annotated @capabilities(io) function calling file_write.
-        // Strict mode must accept this — the annotation grants exactly
+        // Strict mode must accept this - the annotation grants exactly
         // what the call needs.
         let module = Module {
             name: "test".into(),

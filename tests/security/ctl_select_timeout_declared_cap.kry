@@ -1,0 +1,13 @@
+@capabilities(fs:write)
+fn main() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout 20 => {
+            let r = file_write("marker_ctl_declared.txt", "ok")
+            println("wrote " + to_string(r))
+        }
+    }
+}

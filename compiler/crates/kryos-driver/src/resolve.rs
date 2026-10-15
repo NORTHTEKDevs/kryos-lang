@@ -1,4 +1,4 @@
-//! Module resolution — resolves `use foo` to a file path on disk.
+//! Module resolution - resolves `use foo` to a file path on disk.
 //!
 //! Resolution order for `use foo` when the importing file is `/path/to/main.kry`:
 //! 1. `/path/to/foo.kry`         (sibling file)
@@ -665,6 +665,55 @@ fn collect_selection_unions(
     }
 }
 
+/// Every module in `module`'s import graph that is NOT the stdlib, parsed.
+///
+/// The stdlib is the trusted computing base for the raw-memory gate (it is
+/// built on those primitives); a user module and a package dependency are
+/// not, so the gate has to see them. Resolution and parse errors are skipped
+/// here and surface in the real import pass.
+pub fn user_modules_in_import_graph(
+    module: &Module,
+    importing_file: &Path,
+) -> Vec<(PathBuf, Module)> {
+    let stdlib = find_stdlib_dir(importing_file).map(|d| fs::canonicalize(&d).unwrap_or(d));
+    let mut out = Vec::new();
+    let mut visited = HashSet::new();
+    collect_user_modules(
+        module,
+        importing_file,
+        stdlib.as_deref(),
+        &mut visited,
+        &mut out,
+    );
+    out
+}
+
+fn collect_user_modules(
+    module: &Module,
+    importing_file: &Path,
+    stdlib: Option<&Path>,
+    visited: &mut HashSet<PathBuf>,
+    out: &mut Vec<(PathBuf, Module)>,
+) {
+    for (import_path, _span) in extract_imports(module) {
+        let Ok(module_path) = resolve_module_path(&import_path.segments, importing_file) else {
+            continue;
+        };
+        let canonical = fs::canonicalize(&module_path).unwrap_or_else(|_| module_path.clone());
+        if !visited.insert(canonical.clone()) {
+            continue;
+        }
+        if stdlib.is_some_and(|s| canonical.starts_with(s)) {
+            continue; // trusted, and it never imports user code
+        }
+        let Ok((imported, _sm)) = parse_module_file(&module_path) else {
+            continue;
+        };
+        collect_user_modules(&imported, &module_path, stdlib, visited, out);
+        out.push((module_path, imported));
+    }
+}
+
 pub fn resolve_imports(
     module: &Module,
     importing_file: &Path,
@@ -718,7 +767,7 @@ fn resolve_imports_inner(
 
         // Cycle detection.
         if visited.contains(&canonical) {
-            // Already processed this module — skip (not an error, just already imported).
+            // Already processed this module - skip (not an error, just already imported).
             continue;
         }
         visited.insert(canonical.clone());
@@ -766,7 +815,7 @@ fn resolve_imports_inner(
         // Collect non-import declarations from the imported module.
         // When selective import is used (`use foo::{a, b}`), include:
         //   1. All non-Function decls (types, traits, impls, constants,
-        //      externs) — these are cheap and often referenced silently
+        //      externs) - these are cheap and often referenced silently
         //      by selected functions' parameter / return types.
         //   2. Functions whose names are in the transitive closure of
         //      `import_path.items` over identifier / FnCall references.
@@ -913,7 +962,7 @@ fn resolve_imports_inner(
             // function bodies. Seeded with the program-wide selection UNION
             // (every name any importer selected). New names that resolve to
             // functions in this module get added; missing names (builtins,
-            // types, helpers from other modules) are ignored — the
+            // types, helpers from other modules) are ignored - the
             // type-checker will resolve / diagnose them later.
             let union_selected = effective_selected.unwrap_or_default();
             let selected_names: HashSet<String> = union_selected.clone();
@@ -1012,7 +1061,7 @@ fn resolve_imports_inner(
     for (idx, decl) in resolved_decls.iter().enumerate() {
         if let Some(name) = decl_name_of(decl) {
             if let Some(&prev_idx) = seen.get(&name) {
-                // Skip duplicate Decl::Const — constants from the same module
+                // Skip duplicate Decl::Const - constants from the same module
                 // can appear multiple times when re-exported through different
                 // selective imports. Only flag non-const duplicates, or const
                 // duplicates that are truly conflicting (different values).
@@ -1079,7 +1128,7 @@ fn decl_name_of(decl: &Decl) -> Option<String> {
 /// Collect every identifier name appearing inside a decl's body. Used by
 /// selective-import resolution: a function selected via `use foo::{bar}`
 /// transitively pulls in any other in-module function whose name appears
-/// in its body. Conservative — we collect ALL identifier names, including
+/// in its body. Conservative - we collect ALL identifier names, including
 /// local variables. Non-function names get filtered out at the call site.
 fn collect_idents_in_decl(d: &Decl, out: &mut HashSet<String>) {
     match d {

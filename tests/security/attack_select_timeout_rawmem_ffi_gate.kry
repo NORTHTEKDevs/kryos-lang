@@ -1,0 +1,15 @@
+// LEDGER item 55 variant. The always-on raw-memory ffi gate (check_raw_memory_direct, enforced even in
+// permissive mode) walks the same check_stmt, so a select timeout body bypasses it too.
+// Must be REJECTED (E0505 requires `ffi`) under inferred, strict AND permissive.
+fn main() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout 5 => {
+            let p = str_to_ptr("hello")
+            println("SELECT-TIMEOUT-RAWMEM LEAK: byte0=" + to_string(ptr_byte_at(p, 0)))
+        }
+    }
+}
