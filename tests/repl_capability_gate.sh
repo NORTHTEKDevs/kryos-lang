@@ -53,10 +53,19 @@ out="$(printf 'println(40 + 2)\n:quit\n' | repl)"
 if grep -qx "42" <<<"$(tr -d '\r' <<<"$out")"; then ok "control: ungated expression runs"
 else bad "control: the REPL did not evaluate 40 + 2"; fi
 
-# 5. control: --allow grants exactly what it names
+# 5. control: the --allow FLAG grants, and grants only what it names. Checked
+#    on stdout (env_get under `process`) rather than through the filesystem,
+#    so the check does not depend on the platform's temp-dir behaviour; the
+#    file-writing variant follows it and prints the REPL's own output when it
+#    disagrees, which is how a platform difference becomes diagnosable
+#    instead of just red.
+out="$(printf '%s\n:quit\n' "$ENVPROG" | repl --allow process)"
+if grep -q "^ENV=." <<<"$out"; then ok "control: --allow process lets env_get run"
+else bad "control: --allow process did not grant env_get"; printf '%s\n' "$out" | sed 's/^/      /' | head -6; fi
+
 out="$(printf 'file_write("%s", "granted")\n:quit\n' "$T" | repl --allow fs:write)"
 if [[ "$(cat "$W/out.txt" 2>/dev/null)" == "granted" ]]; then ok "control: --allow fs:write lets file_write run"
-else bad "control: --allow fs:write did not grant file_write"; fi
+else bad "control: --allow fs:write did not grant file_write (target $T)"; printf '%s\n' "$out" | sed 's/^/      /' | head -8; fi
 rm -f "$W/out.txt"
 out="$(printf '%s\n:quit\n' "$ENVPROG" | repl --allow fs:write)"
 if ! grep -q "^ENV=." <<<"$out"; then ok "--allow fs:write does not grant process"
