@@ -1,0 +1,9 @@
+// Imported module for cap_escape_raw_memory_import.kry. Not a program: it is
+// the user-written module whose unannotated `pub fn` used to carry the whole
+// raw-memory surface past the gate. Checking this file on its own is also
+// rejected (E0505) -- the gate charges every function of a user module.
+
+pub fn peek(s: str) -> i64 {
+    let p: i64 = str_to_ptr(s)
+    return ptr_byte_at(p, 1)
+}
