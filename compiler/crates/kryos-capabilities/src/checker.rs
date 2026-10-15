@@ -341,6 +341,23 @@ struct CapabilityChecker {
     /// (`struct List<T> { .. }` -> `["T"]`). Feeds `struct_fields_for`'s
     /// generic-argument substitution.
     struct_generic_params: HashMap<String, Vec<String>>,
+    /// Every FIELD NAME declared with a function type by any struct in the
+    /// module (`struct Box { f: fn() -> str }` -> `f`).
+    ///
+    /// `resolve_method_field_invoke_caps` can resolve `b.f()` only when it
+    /// can name `b`'s struct literal or its static type. For a receiver it
+    /// cannot (one bound by a match arm, a lambda's own parameter, a
+    /// for-loop variable, an element read out of a wrapper) it fell off the
+    /// end and returned EMPTY -- "I could not resolve this" answered with
+    /// "this needs no authority", which is how a privileged closure stored
+    /// in such a field ran inside a `deny!` block that forbade its
+    /// capability. This set makes the distinction the checker lacks a type
+    /// for: a `method` that is ALSO a declared fn-typed field name may be a
+    /// closure invocation, so an unresolvable receiver fails closed to
+    /// `all`; an ordinary method name (no struct declares a fn-typed field
+    /// of that name) is unaffected, which is what keeps the precision cost
+    /// of this bounded.
+    fn_field_names: std::collections::HashSet<String>,
     /// For every user-defined method whose receiver is literally named
     /// `self` and whose every return path decomposes to the SAME
     /// self-rooted field/index chain, the method NAME -> that self-relative
@@ -538,6 +555,7 @@ impl CapabilityChecker {
             actor_handler_names: HashSet::new(),
             struct_field_types: HashMap::new(),
             struct_generic_params: HashMap::new(),
+            fn_field_names: std::collections::HashSet::new(),
             transparent_accessor_paths: HashMap::new(),
             hot_params: HashMap::new(),
             hot_param_companions: HashMap::new(),
@@ -644,6 +662,11 @@ impl CapabilityChecker {
                 );
                 self.struct_generic_params
                     .insert(name.clone(), generics.iter().map(|g| g.name.clone()).collect());
+                for f in fields {
+                    if matches!(f.ty, TypeExpr::Function { .. }) {
+                        self.fn_field_names.insert(f.name.clone());
+                    }
+                }
             }
         }
     }
@@ -2326,6 +2349,26 @@ impl CapabilityChecker {
         locals
     }
 
+    /// Union a binding's authority into `name`'s entry.
+    ///
+    /// The map is flat and flow-insensitive, so a name can hold any of the
+    /// values bound to it anywhere in the function; a later binding must not
+    /// be able to hide behind an earlier one, and an earlier one must not be
+    /// replaced by a later one either. `merge_closure_caps` unions two known
+    /// sets and falls to `Unknown` (which this file maps to `all`) for any
+    /// pair it cannot represent.
+    fn record_local_caps(
+        locals: &mut HashMap<String, ClosureCapsResult>,
+        name: &str,
+        r: ClosureCapsResult,
+    ) {
+        let merged = match locals.remove(name) {
+            Some(prev) => Self::merge_closure_caps(prev, r),
+            None => r,
+        };
+        locals.insert(name.to_string(), merged);
+    }
+
     fn build_local_closure_caps_block(
         &self,
         block: &kryos_ast::Block,
@@ -2424,7 +2467,55 @@ impl CapabilityChecker {
                         }
                         _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, local_container_lits, own_params),
                     };
-                    locals.insert(name.clone(), r);
+                    Self::record_local_caps(locals, name, r);
+                }
+                // A plain reassignment of a name this map already holds.
+                //
+                // The map is keyed by bare name and written ONLY by `let`, so
+                // a reassignment used to be invisible: the entry from the
+                // initializer was a snapshot, trusted at every later call
+                // site of that name. `let f = <pure>` followed by
+                // `f = <privileged>` therefore charged the PURE set at `f()`,
+                // which is how a closure holding `fs:read` ran inside a
+                // `deny!(fs:read)` block (four shapes of this one root:
+                // tests/security/attack_deny_bare_closure_reassign_escape.kry,
+                // assault_round2_strip_reassigned_local_deny.kry,
+                // attack_reassign_local_defeats_hotparam.kry,
+                // attack_round3_trycatch_deny_narrowed_catch.kry).
+                //
+                // Every binding of a name now UNIONS into its entry, which is
+                // the sound reading of a flat flow-insensitive map: a call
+                // through the name is charged for any closure the name can
+                // hold at that point. Union rather than Unknown deliberately
+                // -- charging `all` for any reassigned name over-rejects an
+                // ordinary registry of pure closures (measured: 7 of the 259
+                // ecosystem programs and two of this gate's own no-cascade
+                // controls), while a union keeps a pure-only name pure.
+                Stmt::Assign {
+                    target: Expr::Identifier { name, .. },
+                    value,
+                    ..
+                } => {
+                    let r = self.resolve_closure_caps(
+                        value,
+                        working,
+                        fn_return_caps,
+                        &*locals,
+                        local_container_lits,
+                        own_params,
+                    );
+                    Self::record_local_caps(locals, name, r);
+                }
+                // A `deny!` body is where a laundered closure is USED, so a
+                // binding made inside one has to be visible: `let mut f =
+                // <pure>` outside, `f = reader` INSIDE the block, then `f()`
+                // charged the pure set because this builder never walked
+                // into the block (tests/security/
+                // attack_deny_bare_closure_reassign_escape.kry). The block's
+                // own narrowing is enforced elsewhere (check_deny_block);
+                // this map only needs to know what the name can hold.
+                Stmt::DenyBlock { body, .. } => {
+                    self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 Stmt::If {
                     then_block,
