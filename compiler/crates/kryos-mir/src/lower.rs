@@ -4039,6 +4039,7 @@ fn is_retained_container_get(instructions: &[Instruction], src: LocalId) -> bool
         "kryos_array_retain_opt",
         "kryos_map_retain",
         "kryos_map_retain_opt",
+        "kryos_fn_retain",
     ];
     let mut defined_by_map_get = false;
     let mut retained = false;
@@ -5876,7 +5877,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // element read of a function value.
                 let owns_fn_read = matches!(mir_ty, MirType::Function { .. })
                     && matches!(expr, ast::Expr::IndexAccess { object, .. }
-                        if matches!(infer_expr_type(ctx, object), MirType::Array(..)));
+                        if matches!(infer_expr_type(ctx, object), MirType::Array(..) | MirType::Map { .. }));
                 // `let f = h.f` / `hs[i].f` / `mk(i).f`: a struct drop releases
                 // its closure fields, so the binding retains the closure (the
                 // read does not) and owns it; the source keeps its drop. As a
@@ -6968,14 +6969,13 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             } else if let Some(src) = param_src {
                                 emit_param_source_retain(ctx, dest, src);
                             } else if matches!(dest_ty, Some(MirType::Function { .. }))
-                                && (matches!(value, ast::Expr::FieldAccess { .. }) && !is_variant_expr(ctx, value)
-                                    || matches!(value, ast::Expr::IndexAccess { object, .. }
-                                        if matches!(infer_expr_type(ctx, object), MirType::Map { .. })))
+                                && matches!(value, ast::Expr::FieldAccess { .. })
+                                && !is_variant_expr(ctx, value)
                             {
-                                // `f = h.f` / `f = m[k]`: the closure read takes
-                                // its own reference, as `let f = h.f` does; the
-                                // source keeps its drop. (An array element read
-                                // is retained by the read itself.)
+                                // `f = h.f`: the closure field read takes its
+                                // own reference, as `let f = h.f` does; the
+                                // source keeps its drop. (An element or map
+                                // value read is retained by the read itself.)
                                 let sink = ctx.alloc_temp(MirType::I64);
                                 ctx.emit(Instruction::Assign {
                                     dest: sink,
@@ -7164,16 +7164,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // first, then release it after the store, guarded
                             // by pointer inequality so re-storing the SAME
                             // handle is a no-op.
-                            // An overwritten closure ELEMENT (`fs[i] = g`) is
-                            // released too: the array owned it, and an element
-                            // read retains what it reads. Not a map value yet:
-                            // a map read of a closure is not retained, so its
-                            // readers would lose it.
+                            // An overwritten closure element or map value
+                            // (`fs[i] = g`, `m[k] = g`) is released too: the
+                            // container owned it, and a read of either retains
+                            // what it reads.
                             let old_slot = release_if_ne_fn(&val_ty)
-                                .or_else(|| {
-                                    (matches!(val_ty, MirType::Function { .. }) && matches!(obj_ty, MirType::Array(..)))
-                                        .then_some("kryos_fn_release_if_ne")
-                                })
+                                .or_else(|| matches!(val_ty, MirType::Function { .. }).then_some("kryos_fn_release_if_ne"))
                                 .map(|rel| {
                                 let old_tmp = ctx.alloc_temp(val_ty.clone());
                                 let read = if matches!(obj_ty, MirType::Map { .. }) {
@@ -15709,6 +15705,9 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     MirType::Str => Some("kryos_string_retain_opt"),
                     MirType::Array(_, _) => Some("kryos_array_retain_opt"),
                     MirType::Map { .. } => Some("kryos_map_retain_opt"),
+                    // A closure too: the reader owns what it read, so an
+                    // overwritten or dropped map value can be released.
+                    MirType::Function { .. } => Some("kryos_fn_retain"),
                     _ => None,
                 };
                 if let Some(rf) = retain_fn {

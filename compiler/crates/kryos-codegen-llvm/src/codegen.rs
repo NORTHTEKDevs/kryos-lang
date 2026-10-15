@@ -1701,9 +1701,10 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_array_free(ptr {cap_val})"));
                     }
-                    Some(MirType::Map { .. }) => {
+                    Some(MirType::Map { key, value }) => {
                         self.emit_line(&format!("  {cap_val} = load i64, ptr {cap_ptr}"));
-                        self.emit_line(&format!("  call void @kryos_map_free(i64 {cap_val})"));
+                        let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
+                        self.emit_map_free(&cap_val, &k, &v);
                     }
                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
@@ -2546,9 +2547,10 @@ impl LlvmCodegen {
                             };
                             self.emit_array_drop(&fval, elem, &dummy);
                         }
-                        MirType::Map { .. } => {
+                        MirType::Map { key, value } => {
                             self.emit_line(&format!("  {fval} = load i64, ptr {fgep}"));
-                            self.emit_line(&format!("  call void @kryos_map_free(i64 {fval})"));
+                            let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
+                            self.emit_map_free(&fval, &k, &v);
                         }
                         MirType::Function { .. } | MirType::Shared(_) => {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
@@ -4151,97 +4153,8 @@ impl LlvmCodegen {
                         // Route through the type-aware free whenever key or
                         // value is heap-typed; scalar-only maps keep calling
                         // the plain free (identical codegen to before).
-                        let kind_of = |t: &MirType| -> i64 {
-                            match t {
-                                MirType::Str => 1,
-                                MirType::Array(_, _) => 2,
-                                MirType::Map { .. } => 3,
-                                // A dup of an array of STRUCTS is a header clone that
-                                // shares the element boxes, so the copy must add an
-                                // owner or the source's element-free releases boxes the
-                                // copy still points at.
-                                MirType::Struct(_) => 4,
-                                _ => 0,
-                            }
-                        };
-                        let key_kind = kind_of(key.as_ref());
-                        let value_kind = kind_of(value.as_ref());
-                        // When the value is itself an Array, the array's OWN
-                        // element kind is needed so the runtime frees
-                        // heap-typed elements (e.g. `map<K, [str]>`) instead
-                        // of only the array's flat buffer + header -- see
-                        // `kryos_map_free_typed`'s doc comment (kryos-rt).
-                        // A map-valued map: the inner map's key/value kinds,
-                        // packed, and its own value's element kind above them,
-                        // 8 bits per level (see `free_entry_slot` in kryos-rt)
-                        // -- with one level only, every map below the second
-                        // was freed untyped and leaked its keys.
-                        fn elem_kind_of(t: &MirType, kind_of: &dyn Fn(&MirType) -> i64, depth: u32) -> i64 {
-                            match t {
-                                MirType::Array(elem, _) => kind_of(elem.as_ref()),
-                                MirType::Map { key: ik, value: iv } if depth < 6 => {
-                                    (elem_kind_of(iv.as_ref(), kind_of, depth + 1) << 8)
-                                        | (kind_of(ik.as_ref()) << 4)
-                                        | kind_of(iv.as_ref())
-                                }
-                                _ => 0,
-                            }
-                        }
-                        let value_elem_kind = elem_kind_of(value.as_ref(), &kind_of, 0);
-                        // Struct/enum values are released through their type's
-                        // drop helper (the same one an array element gets); the
-                        // type-erased runtime free left every one behind.
-                        let value_drop_fn = match value.as_ref() {
-                            MirType::Struct(n) | MirType::Enum(n) if self.enum_defs.contains_key(n) => {
-                                Some(format!("__kryos_mapval_drop_{n}"))
-                            }
-                            MirType::Struct(n)
-                                if self.struct_defs.contains_key(n)
-                                    && !self.copy_structs.contains(n)
-                                    && n != "Map" =>
-                            {
-                                Some(format!("__kryos_mapval_drop_{n}"))
-                            }
-                            _ => None,
-                        };
-                        // Tuple values: an arc box holding the inline tuple. Released
-                        // element-by-element when every element is one 8-byte slot
-                        // (str/array/map/i64/f64), so the runtime can find each at
-                        // offset 8*i; other layouts keep the plain free.
-                        let tuple_value_kinds = match value.as_ref() {
-                            MirType::Tuple(tes)
-                                if tes.len() <= 16
-                                    && tes.iter().all(|t| {
-                                        matches!(
-                                            t,
-                                            MirType::Str
-                                                | MirType::Array(_, _)
-                                                | MirType::Map { .. }
-                                                | MirType::I64
-                                                | MirType::F64
-                                        )
-                                    })
-                                    && tes.iter().any(|t| kind_of(t) != 0) =>
-                            {
-                                Some(tes.iter().enumerate().fold(0i64, |acc, (k, t)| acc | (kind_of(t) << (k * 4))))
-                            }
-                            _ => None,
-                        };
-                        if let Some(drop_fn) = value_drop_fn {
-                            self.emit_line(&format!(
-                                "  call void @kryos_map_free_with(i64 {val}, i64 {key_kind}, ptr @{drop_fn})"
-                            ));
-                        } else if let Some(kinds) = tuple_value_kinds {
-                            self.emit_line(&format!(
-                                "  call void @kryos_map_free_tuple_values(i64 {val}, i64 {key_kind}, i64 {kinds}, i64 1)"
-                            ));
-                        } else if key_kind == 0 && value_kind == 0 {
-                            self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
-                        } else {
-                            self.emit_line(&format!(
-                                "  call void @kryos_map_free_typed(i64 {val}, i64 {key_kind}, i64 {value_kind}, i64 {value_elem_kind})"
-                            ));
-                        }
+                        let (key, value) = (key.as_ref().clone(), value.as_ref().clone());
+                        self.emit_map_free(&val, &key, &value);
                     }
                     Some(MirType::Struct(name)) => {
                         // @copy structs are passed by value and share field pointers;
@@ -4523,6 +4436,7 @@ impl LlvmCodegen {
                                         // owner or the source's element-free releases boxes the
                                         // copy still points at.
                                         MirType::Struct(_) => 4,
+                                        MirType::Function { .. } => 5,
                                         _ => 0,
                                     }
                                 };
@@ -11819,14 +11733,15 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
                 }
-                MirType::Map { .. } => {
+                MirType::Map { key, value } => {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
                         "  {gep} = getelementptr {llvm_struct_ty}, ptr {val}, i32 0, i32 {field_idx}"
                     ));
                     self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
-                    self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
+                    let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
+                    self.emit_map_free(&fv, &k, &v);
                 }
                 MirType::Struct(inner_name) => {
                     // @copy structs embedded in a containing struct share field
@@ -12092,6 +12007,107 @@ impl LlvmCodegen {
         self.emit_enum_drop_inner(val, enum_name, func, /*free_buf=*/ false);
     }
 
+    /// Release a map value of type `map<key, value>`: the type-aware free
+    /// when its keys or values are heap-typed (str / array / map / struct /
+    /// enum / tuple / closure), so the entries are released with the map.
+    /// Shared by a map local and a map held in a struct field, an enum
+    /// payload, a tuple or a closure env, which used the type-erased
+    /// `kryos_map_free` and leaked every entry.
+    fn emit_map_free(&mut self, val: &str, key: &MirType, value: &MirType) {
+        let kind_of = |t: &MirType| -> i64 {
+            match t {
+                MirType::Str => 1,
+                MirType::Array(_, _) => 2,
+                MirType::Map { .. } => 3,
+                // A dup of an array of STRUCTS is a header clone that
+                // shares the element boxes, so the copy must add an
+                // owner or the source's element-free releases boxes the
+                // copy still points at.
+                MirType::Struct(_) => 4,
+                MirType::Function { .. } => 5,
+                _ => 0,
+            }
+        };
+        let key_kind = kind_of(key);
+        let value_kind = kind_of(value);
+        // When the value is itself an Array, the array's OWN
+        // element kind is needed so the runtime frees
+        // heap-typed elements (e.g. `map<K, [str]>`) instead
+        // of only the array's flat buffer + header -- see
+        // `kryos_map_free_typed`'s doc comment (kryos-rt).
+        // A map-valued map: the inner map's key/value kinds,
+        // packed, and its own value's element kind above them,
+        // 8 bits per level (see `free_entry_slot` in kryos-rt)
+        // -- with one level only, every map below the second
+        // was freed untyped and leaked its keys.
+        fn elem_kind_of(t: &MirType, kind_of: &dyn Fn(&MirType) -> i64, depth: u32) -> i64 {
+            match t {
+                MirType::Array(elem, _) => kind_of(elem.as_ref()),
+                MirType::Map { key: ik, value: iv } if depth < 6 => {
+                    (elem_kind_of(iv.as_ref(), kind_of, depth + 1) << 8)
+                        | (kind_of(ik.as_ref()) << 4)
+                        | kind_of(iv.as_ref())
+                }
+                _ => 0,
+            }
+        }
+        let value_elem_kind = elem_kind_of(value, &kind_of, 0);
+        // Struct/enum values are released through their type's
+        // drop helper (the same one an array element gets); the
+        // type-erased runtime free left every one behind.
+        let value_drop_fn = match value {
+            MirType::Struct(n) | MirType::Enum(n) if self.enum_defs.contains_key(n) => {
+                Some(format!("__kryos_mapval_drop_{n}"))
+            }
+            MirType::Struct(n)
+                if self.struct_defs.contains_key(n)
+                    && !self.copy_structs.contains(n)
+                    && n != "Map" =>
+            {
+                Some(format!("__kryos_mapval_drop_{n}"))
+            }
+            _ => None,
+        };
+        // Tuple values: an arc box holding the inline tuple. Released
+        // element-by-element when every element is one 8-byte slot
+        // (str/array/map/i64/f64), so the runtime can find each at
+        // offset 8*i; other layouts keep the plain free.
+        let tuple_value_kinds = match value {
+            MirType::Tuple(tes)
+                if tes.len() <= 16
+                    && tes.iter().all(|t| {
+                        matches!(
+                            t,
+                            MirType::Str
+                                | MirType::Array(_, _)
+                                | MirType::Map { .. }
+                                | MirType::I64
+                                | MirType::F64
+                        )
+                    })
+                    && tes.iter().any(|t| kind_of(t) != 0) =>
+            {
+                Some(tes.iter().enumerate().fold(0i64, |acc, (k, t)| acc | (kind_of(t) << (k * 4))))
+            }
+            _ => None,
+        };
+        if let Some(drop_fn) = value_drop_fn {
+            self.emit_line(&format!(
+                "  call void @kryos_map_free_with(i64 {val}, i64 {key_kind}, ptr @{drop_fn})"
+            ));
+        } else if let Some(kinds) = tuple_value_kinds {
+            self.emit_line(&format!(
+                "  call void @kryos_map_free_tuple_values(i64 {val}, i64 {key_kind}, i64 {kinds}, i64 1)"
+            ));
+        } else if key_kind == 0 && value_kind == 0 {
+            self.emit_line(&format!("  call void @kryos_map_free(i64 {val})"));
+        } else {
+            self.emit_line(&format!(
+                "  call void @kryos_map_free_typed(i64 {val}, i64 {key_kind}, i64 {value_kind}, i64 {value_elem_kind})"
+            ));
+        }
+    }
+
     /// Release the heap elements of an inline tuple at `buf` (ptr to
     /// `llvm_ty`). Elements boxed into an i64 slot (an enum, or an aggregate
     /// the tuple type erased) live in ARC boxes this cannot release, so they
@@ -12114,10 +12130,11 @@ impl LlvmCodegen {
                     let et = et.as_ref().clone();
                     self.emit_array_drop(&v, &et, func);
                 }
-                MirType::Map { .. } if slot == "i64" => {
+                MirType::Map { key, value } if slot == "i64" => {
                     let v = self.next_temp();
                     self.emit_line(&format!("  {v} = load i64, ptr {gep}"));
-                    self.emit_line(&format!("  call void @kryos_map_free(i64 {v})"));
+                    let (mk, mv) = (key.as_ref().clone(), value.as_ref().clone());
+                    self.emit_map_free(&v, &mk, &mv);
                 }
                 MirType::Struct(n) if slot == format!("%{n}") && !self.copy_structs.contains(n) => {
                     let n = n.clone();
@@ -12378,9 +12395,10 @@ impl LlvmCodegen {
                             self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fv})"));
                         }
-                        MirType::Map { .. } => {
+                        MirType::Map { key, value } => {
                             self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
-                            self.emit_line(&format!("  call void @kryos_map_free(i64 {fv})"));
+                            let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
+                            self.emit_map_free(&fv, &k, &v);
                         }
                         MirType::Struct(name) => {
                             // Route through the pre-generated named

@@ -667,6 +667,8 @@ pub unsafe extern "C" fn kryos_array_free_typed(arr: *mut KryosArray, elem_kind:
                 4 => {
                     crate::alloc::kryos_struct_release_shared(handle as *mut u8);
                 }
+                // Closure elements (a `map<_, [fn]>` value's array).
+                5 => crate::arc::kryos_arc_release(handle as *mut u8),
                 _ => {}
             }
         }

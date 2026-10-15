@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - maps leaked their closures and nested maps leaked entries
+
+- **A map of closures** (`map<str, fn(..)>`) never released them, neither
+  when a value was overwritten nor when the map was dropped: 250MB per
+  million overwrites. A map read of a closure now owns what it read, so the
+  map can release its own.
+- **A map held in an enum payload, a struct field or a tuple** was freed
+  without its entries, which leaked every key and value: 127MB per million
+  with `--release`. The JIT never released a map enum payload at all
+  (556MB).
+
 ### Fixed - reassigned closures leaked
 
 - **Reassigning a closure variable** (`f = make_handler(i)` in a loop),
