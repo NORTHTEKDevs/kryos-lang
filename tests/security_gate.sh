@@ -14,6 +14,33 @@ K="${KRYOS_BIN:-compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="compiler/
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
+# 0. A `select` timeout is a branch like any other. All four Stmt::Select
+#    arms in the capability checker dropped the `timeout` field, so neither
+#    its body nor its duration expression was ever walked: a gated builtin
+#    there ran with nothing declared, in all three modes.
+#    Only the two ENFORCING modes are asserted: `permissive` checks nothing
+#    but annotated functions by design, and these probes' `main` carries no
+#    annotation, so it is not a boundary there.
+for esc in attack_select_timeout_body_zero_cap attack_select_timeout_duration_zero_cap; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/sel" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a select timeout runs unchecked"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/sel"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/sel" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in both enforcing modes"
+done
+if "$K" check tests/security/ctl_select_timeout_declared_cap.kry >"$TMP/selc" 2>&1; then
+    echo "  ok   a declared select timeout still compiles (no over-rejection)"
+else
+    echo "  FAIL: walking the select timeout rejected a program that declares it:"
+    tail -3 "$TMP/selc" | sed 's/^/    /'; fail=1
+fi
+
 # 1. The escape must NOT compile.
 if "$K" run tests/security/cap_escape_raw_memory.kry >"$TMP/esc" 2>&1; then
     echo "  FAIL: the raw-memory capability escape COMPILED AND RAN"

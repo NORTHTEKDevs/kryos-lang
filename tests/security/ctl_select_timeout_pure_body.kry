@@ -1,0 +1,11 @@
+fn main() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout 20 => {
+            println("timeout fired")
+        }
+    }
+}

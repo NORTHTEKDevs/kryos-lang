@@ -1,0 +1,8 @@
+@capabilities(fs:read)
+fn main() {
+    let mut s = || "a"
+    s = || "b"
+    deny!(fs:read) {
+        println(s())
+    }
+}

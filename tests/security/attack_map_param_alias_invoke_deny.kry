@@ -1,0 +1,20 @@
+// LEDGER items 69/70 (deny! form of assault4_actor_handler_map_param_*). A container PARAMETER read into a local
+// (`let f = m["s"]`) then invoked: the callee defers the charge to its callers but compute_hot_params
+// Seed B only registers an immediate `param[path]()` chain. Must be REJECTED (E0110 and/or E0507).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn run(m: map<str, fn() -> str>) {
+    let f = m["s"]
+    println("MIN1: " + f())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let m = { "p": || "x", "s": secret() }
+    deny!(fs:read) {
+        run(m)
+    }
+}

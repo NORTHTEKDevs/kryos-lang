@@ -1,0 +1,24 @@
+// LEDGER item 68. tools[0].run("job") inside deny!(fs:read): the tracked array literal's element is a FnCall
+// (factory), so resolve_method_field_invoke_caps returns empty at checker.rs:3786. Reproduces with
+// KRYOS_NO_HOTPARAM_ALL unset. Must be REJECTED (E0507 and/or E0110) under inferred and strict.
+struct Tool {
+    run: fn(str) -> str,
+}
+
+@capabilities(fs:read)
+fn make_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn make_tool(reader: fn() -> str) -> Tool {
+    return Tool { run: |input: str| reader() + "|" + input }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_reader("tests/security/secret_for_closure_launder.txt")
+    let tools: [Tool] = [make_tool(reader)]
+    deny!(fs:read) {
+        println("LEAK: " + tools[0].run("job"))
+    }
+}
