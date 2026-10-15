@@ -9,7 +9,7 @@ fn main() {
         }
         timeout 5 => {
             let p = str_to_ptr("hello")
-            println("byte0=" + to_string(ptr_byte_at(p, 0)))
+            println("SELECT-TIMEOUT-RAWMEM LEAK: byte0=" + to_string(ptr_byte_at(p, 0)))
         }
     }
 }

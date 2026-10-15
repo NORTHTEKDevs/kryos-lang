@@ -9,7 +9,7 @@ fn main() {
         }
         timeout 20 => {
             let r = file_write("marker_select_timeout_body.txt", "timeout-body-executed")
-            println("wrote " + to_string(r))
+            println("SELECT-TIMEOUT-BODY LEAK: wrote " + to_string(r))
         }
     }
 }

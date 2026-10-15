@@ -8,7 +8,7 @@ fn helper() {
         }
         timeout 5 => {
             let r = file_write("marker_select_timeout_transitive.txt", "via-helper")
-            println("wrote " + to_string(r))
+            println("SELECT-TIMEOUT-TRANSITIVE LEAK: wrote " + to_string(r))
         }
     }
 }
