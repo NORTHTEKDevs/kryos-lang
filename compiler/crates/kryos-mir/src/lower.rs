@@ -3354,7 +3354,12 @@ pub fn lower_function(
                     emit_struct_share(ctx, LocalId(id));
                 }
             }
-            let source_struct_local_id = if tail_owns || tail_share {
+            // A scalar field (`s.n`) moves nothing out: the struct keeps its
+            // drop. Excluding it leaked the whole struct per call. Not in a
+            // generic impl, whose type parameters are erased to i64 slots
+            // that can hold a boxed aggregate.
+            let scalar_field = is_copy_type(ctx, &tail_ty) && ctx.current_impl_generics.is_empty();
+            let source_struct_local_id = if tail_owns || tail_share || scalar_field {
                 None
             } else if let ast::Expr::FieldAccess { object, .. } = expr {
                 if let ast::Expr::Identifier { name, .. } = object.as_ref() {
@@ -3673,6 +3678,18 @@ fn take_tail_identifier(ctx: &mut LoweringContext, name: &str, scope_start: usiz
         // strip_escaping_tuple_drops recognizes as an independent owner
         // rather than an alias whose drops it removes.
         if is_owned_tuple_ty(ctx, &ty) || is_owned_enum_ty(ctx, &ty) {
+            emit_value_share(ctx, result.unwrap_or(id));
+            return;
+        }
+        // An owned struct named outside the branch (a local, a callee-owned
+        // param): shared, like a tuple, so it stays usable after the branch.
+        // Moving it suppressed its drop, and the `let` then copied the slot
+        // without releasing it: `let p = if c { q } else { P {..} }` leaked
+        // one struct per execution.
+        if is_owned_struct_ty(ctx, &ty)
+            && !ctx.borrowed_locals.contains(&id.0)
+            && !ctx.env_owned_locals.contains(&id.0)
+        {
             emit_value_share(ctx, result.unwrap_or(id));
             return;
         }
@@ -5226,6 +5243,16 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
     fn ident_owned(ctx: &LoweringContext, name: &str) -> bool {
         find_local_by_name(ctx, name).is_some_and(|l| ctx.env_owned_locals.contains(&l.0))
     }
+    // A BLOCK's tail name goes through take_tail_identifier, which also
+    // shares an owned struct named outside the branch into the slot. (A bare
+    // name as a match arm's whole body is moved by the arm instead.)
+    fn tail_ident_owned(ctx: &LoweringContext, name: &str) -> bool {
+        ident_owned(ctx, name)
+            || find_local_by_name(ctx, name).is_some_and(|l| {
+                !ctx.borrowed_locals.contains(&l.0)
+                    && ctx.locals.iter().any(|x| x.id == l && is_owned_struct_ty(ctx, &x.ty))
+            })
+    }
     fn tail_ident(e: &ast::Expr) -> Option<&String> {
         match e {
             ast::Expr::Identifier { name, .. } => Some(name),
@@ -5242,7 +5269,7 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
                 // A name the block binds itself shadows the one it resolves to.
                 !b.stmts.iter().any(|s| matches!(s, ast::Stmt::Let { name: n, pattern, .. }
                     if n == name || pattern.as_ref().is_some_and(|p| pattern_binds(p, name))))
-                    && ident_owned(ctx, name)
+                    && tail_ident_owned(ctx, name)
             }
             Some(ast::Stmt::Expr { expr, .. }) => struct_value_owned(ctx, expr),
             Some(ast::Stmt::Return { .. }) | Some(ast::Stmt::Throw { .. }) => true,
@@ -8201,7 +8228,16 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     emit_struct_share(ctx, LocalId(id));
                 }
             }
-            let source_struct_local_id = if ret_field_owns || ret_field_share || ret_fn_field {
+            // A scalar field (`return s.n`) moves nothing out: the struct
+            // keeps its drop. Excluding it leaked the whole struct per call.
+            // Not in a generic impl, whose type parameters are erased to i64
+            // slots that can hold a boxed aggregate.
+            let source_struct_local_id = if ret_field_owns
+                || ret_field_share
+                || ret_fn_field
+                || (ret_field_ty.as_ref().is_some_and(|t| is_copy_type(ctx, t))
+                    && ctx.current_impl_generics.is_empty())
+            {
                 None
             } else if let Some(ast::Expr::FieldAccess { object, .. }) = value.as_ref() {
                     if let ast::Expr::Identifier { name, .. } = object.as_ref() {

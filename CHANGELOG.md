@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed - two struct leaks: returning a scalar field, choosing a struct in an if
+
+- **Returning a scalar field of a local struct** (`return s.n`, or `s.n` as a
+  function's last expression) skipped the struct's own release: the whole
+  struct leaked on every call (65MB per million with `--release`, 96MB on
+  the JIT).
+- **`let p = if c { q } else { P { .. } }`**, with `q` a struct variable, a
+  parameter or a closure's capture, leaked one struct per execution, the
+  same amounts. The branch now shares `q`, so it also stays usable after the
+  `if`.
+
 ### Fixed - a `match` catch-all arm leaked its temporaries
 
 - **The `_` arm of a match on a number or string** (`_ => "y{i}" + "z"`)
