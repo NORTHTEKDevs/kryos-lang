@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# FIXED 2026-10-15 (LEDGER item 55): the REPL's wrapper fn now carries the
+# session's grant, so on a fixed compiler this probe prints NOT REPRODUCED and
+# exits 1. The regression gate is tests/repl_capability_gate.sh.
+#
 # RED TEAM round (toolchain-realworld lens, 2026-08-06): `kryos repl` only
 # runs the capability checker for a function literally NAMED `main`. Every
 # other way of executing a capability-gated builtin at the REPL -- a bare

@@ -193,6 +193,8 @@ cmd_gates() {
     run "audit_parse_failure" bash tests/audit_parse_failure_gate.sh
     run "minilisp"            bash tests/minilisp_gate.sh
     run "authority_surface"   bash tests/authority_surface_gate.sh
+    run "security"            bash tests/security_gate.sh
+    run "repl_capability"     bash tests/repl_capability_gate.sh
     run "jit_symbols"         bash tests/jit_symbols_gate.sh
     run "selfhost_regressions" bash compiler/self-host/test_regressions.sh
     [ "$tier" -lt 2 ] && { [ $fail -eq 0 ] && grn "tier1 GREEN" || red "tier1 RED"; return $fail; }
