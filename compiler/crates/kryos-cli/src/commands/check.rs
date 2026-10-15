@@ -1,4 +1,4 @@
-//! `kryos check` — type-check without compiling.
+//! `kryos check` - type-check without compiling.
 
 use std::path::Path;
 use std::time::Duration;
@@ -54,14 +54,30 @@ pub fn execute(path: &str, skip_ownership: bool, cap_mode: CapabilityMode) -> Re
     let mut error_count = 0;
     let mut warning_count = 0;
 
+    // Print at most MAX_SHOWN diagnostics. A cascade after one real error can
+    // run to tens of thousands (an abandoned deep parse emitted 24,873
+    // identical "expected `,` or `}`" lines), and nobody reads past the
+    // first few. The COUNT below still reports all of them.
+    const MAX_SHOWN: usize = 100;
+    let mut shown = 0;
     for diag in &diagnostics {
-        let rendered = render_diagnostic(diag, &source_map);
-        eprint!("{rendered}");
+        if shown < MAX_SHOWN {
+            let rendered = render_diagnostic(diag, &source_map);
+            eprint!("{rendered}");
+            shown += 1;
+        }
         if diag.is_error() {
             error_count += 1;
         } else {
             warning_count += 1;
         }
+    }
+    if diagnostics.len() > shown {
+        eprintln!(
+            "... {} more diagnostic{} not shown",
+            diagnostics.len() - shown,
+            if diagnostics.len() - shown == 1 { "" } else { "s" }
+        );
     }
 
     if error_count > 0 {

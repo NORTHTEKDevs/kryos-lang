@@ -1540,10 +1540,49 @@ impl Parser {
         self.parse_if_rest(kw.span)
     }
 
+    /// A statement that stands in for an abandoned parse: the unit block.
+    fn empty_stmt(&self, span: Span) -> Stmt {
+        Stmt::Expr {
+            expr: Expr::Block {
+                block: Block {
+                    stmts: Vec::new(),
+                    span,
+                },
+                span,
+            },
+            span,
+        }
+    }
+
     /// Parse the remainder of an `if` after the leading `if`/`elif`/`else if`
     /// keyword has been consumed. Dispatches to the `if let` desugar or a
     /// regular `if/elif/else` chain. `start` is the span of that keyword.
     fn parse_if_rest(&mut self, start: Span) -> Stmt {
+        // Nesting guard. An `elif` / `else if` chain recurses through
+        // parse_if_let_else -> parse_if_rest, and the bodies' parse_block
+        // charge AND RELEASE their own depth, so the chain itself accumulated
+        // nothing: ~50k clauses overflowed the native stack with no
+        // diagnostic (tests/security/attack_parser_elif_let_chain_stack_overflow.kry).
+        // Each clause of a chain now costs one unit of grammar recursion,
+        // like any other nesting, and a separate `if` statement at the same
+        // level still costs nothing (its unit is released at the end).
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return self.empty_stmt(span);
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let stmt = self.parse_if_rest_inner(start);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        stmt
+    }
+
+    fn parse_if_rest_inner(&mut self, start: Span) -> Stmt {
         if self.check(TokenKind::Let) {
             return self.parse_if_let(start);
         }
@@ -3107,6 +3146,29 @@ impl Parser {
     }
 
     fn parse_if_expr(&mut self) -> Expr {
+        // Same guard as parse_if_rest, for the expression-context chain
+        // (`let x = if a { 1 } elif b { 2 } .. else { 0 }`, a match-arm tail,
+        // a call argument): parse_if_expr / parse_if_expr_after_if recurse per
+        // clause and the bodies release their own depth, so ~50k clauses
+        // overflowed the stack
+        // (tests/security/attack_expr_if_elif_chain_stack_overflow.kry).
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return Expr::IntLiteral { value: 0, span };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let expr = self.parse_if_expr_guarded();
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        expr
+    }
+
+    fn parse_if_expr_guarded(&mut self) -> Expr {
         let kw = self.expect(TokenKind::If);
         let start = kw.span;
         let condition = self.parse_expr_no_struct_lit();
@@ -3153,6 +3215,23 @@ impl Parser {
     /// Parse an if-expression body after the `if` keyword has already been consumed
     /// (used for `elif` desugaring in expression context).
     fn parse_if_expr_after_if(&mut self, start: Span) -> Expr {
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return Expr::IntLiteral { value: 0, span };
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let expr = self.parse_if_expr_after_if_guarded(start);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        expr
+    }
+
+    fn parse_if_expr_after_if_guarded(&mut self, start: Span) -> Expr {
         let condition = self.parse_expr_no_struct_lit();
         let then_branch = self.parse_block();
         let else_branch = if self.peek_kind() == TokenKind::Elif {

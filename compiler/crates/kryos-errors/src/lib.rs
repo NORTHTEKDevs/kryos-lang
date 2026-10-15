@@ -1,4 +1,4 @@
-//! Kryos diagnostic engine — errors, warnings, source spans.
+//! Kryos diagnostic engine - errors, warnings, source spans.
 
 pub mod codes;
 pub mod explain;
@@ -179,7 +179,7 @@ impl Diagnostic {
     }
 }
 
-/// Source file registry — maps file IDs to names and contents.
+/// Source file registry - maps file IDs to names and contents.
 #[derive(Debug, Default)]
 pub struct SourceMap {
     files: Vec<SourceFile>,
@@ -255,6 +255,38 @@ pub fn render_diagnostic_plain(diag: &Diagnostic, source_map: &SourceMap) -> Str
     render_diagnostic_impl(diag, source_map, false)
 }
 
+/// Longest source line a diagnostic will print verbatim.
+const MAX_RENDERED_LINE: usize = 200;
+
+/// The slice of `line` to show for a span at byte column `col`, plus the
+/// column the caret takes inside that slice.
+///
+/// A short line is returned as is. A long one becomes a window around the
+/// span, marked with `...` on the side that was cut, so the rendered
+/// diagnostic stays bounded however long the line is. Cut points are moved to
+/// char boundaries, so a multi-byte character is never split.
+fn window_line(line: &str, col: usize) -> (String, usize) {
+    if line.len() <= MAX_RENDERED_LINE {
+        return (line.to_string(), col.min(line.len()));
+    }
+    const HALF: usize = MAX_RENDERED_LINE / 2;
+    let col = col.min(line.len());
+    let mut from = col.saturating_sub(HALF);
+    let mut to = (col + HALF).min(line.len());
+    while from > 0 && !line.is_char_boundary(from) {
+        from -= 1;
+    }
+    while to < line.len() && !line.is_char_boundary(to) {
+        to += 1;
+    }
+    let head = if from > 0 { "..." } else { "" };
+    let tail = if to < line.len() { "..." } else { "" };
+    (
+        format!("{head}{}{tail}", &line[from..to]),
+        head.len() + (col - from),
+    )
+}
+
 fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool) -> String {
     let (level_str, level_color) = match diag.level {
         Level::Error => ("error", ansi::BOLD_RED),
@@ -312,7 +344,16 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                     .get(line_idx + 1)
                     .map(|&s| s as usize)
                     .unwrap_or(file.source.len());
-                let src_line = &file.source[start..end].trim_end();
+                let full_line = file.source[start..end].trim_end();
+                // A diagnostic must not be proportional to the line it points
+                // at. A one-line generated file (minified source, a
+                // 3 MB interpolation-bomb line) rendered its whole line plus
+                // a caret padded to the column, so ONE error printed hundreds
+                // of megabytes: a resource-exhaustion path through the error
+                // path itself. Show a window around the span instead.
+                let col_start = (col - 1) as usize;
+                let (src_line, caret_col) = window_line(full_line, col_start);
+                let src_line = src_line.as_str();
 
                 if color {
                     out.push_str(&format!(
@@ -324,9 +365,8 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                     out.push_str(&format!("  {line} | {src_line}\n"));
                 }
 
-                let col_start = (col - 1) as usize;
                 let span_len = (label.span.end - label.span.start) as usize;
-                let padding = " ".repeat(col_start);
+                let padding = " ".repeat(caret_col);
                 // Clamp the caret run to the visible portion of THIS line. A
                 // MULTI-LINE span (e.g. a whole `match { .. }` expression) has
                 // a byte length far larger than the one displayed line, so an
@@ -334,7 +374,7 @@ fn render_diagnostic_impl(diag: &Diagnostic, source_map: &SourceMap, color: bool
                 // end of the shown line -- breaking any editor/LSP that maps
                 // the caret range back to columns. Single-line spans are
                 // unaffected (their length already fits the line).
-                let max_underline = src_line.len().saturating_sub(col_start).max(1);
+                let max_underline = src_line.len().saturating_sub(caret_col).max(1);
                 let underline = "^".repeat(span_len.min(max_underline).max(1));
                 let line_num_width = format!("{line}").len();
                 let gutter = " ".repeat(line_num_width + 2);

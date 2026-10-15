@@ -24,6 +24,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `E0100` instead of a segfault. An `any` parameter that really holds a
   `[str]` and is searched with a str needle still needs a type annotation.
 
+### Fixed - compiler crashes on hostile input
+
+- **Three inputs crashed `kryos check` with a native stack overflow (exit 253,
+  no diagnostic); each now reports E0010.** An `elif let` / `else if let`
+  chain of ~50k clauses, the same `elif` chain in expression position (a `let`
+  initializer, a match-arm tail, a call argument), and deeply nested string
+  interpolation (`"{ "{ "{ ..."`, which overflowed the lexer before the parser
+  ever ran). A legitimate shallow chain of each shape is still accepted.
+- **One error could print hundreds of megabytes.** A diagnostic rendered its
+  whole source line and padded the caret to the column, so a single error on
+  a multi-megabyte line (minified source) printed 198 MB. A long line is now
+  shown as a 200-byte window around the span, marked `...`.
+- **`kryos check` prints at most 100 diagnostics**, then `... N more
+  diagnostics not shown`. The error and warning counts still cover all of them
+  (an abandoned deep parse used to print 24,873 identical follow-on errors).
+
 ## [1.2.0] - 2026-10-31
 
 Correctness and memory-safety release. It fixes a silent miscompile, five

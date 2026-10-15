@@ -171,6 +171,54 @@ special-cased only a `Map` first argument, so an array fell through to the STRIN
     16, FAIL 0; `mem_agg_ops_gate.sh` PASS (`arr_contains_str` 4 MB peak on AOT and
     JIT at 1M iterations, ceiling 40 MB).
 
+## Wave: three unguarded recursions crashed `kryos check` with a native stack overflow, and one error could print 198 MB (2026-10-31)
+
+Crash (rc 253, no diagnostic) x3 plus resource exhaustion through the error path.
+Hostile or generated source only; no ordinary program reaches any of them.
+- Repro (before, master 540372ec release build; `kryos check`):
+  `elif let N = v { .. }` x20000 accepted silently (rc 0) and ~50k clauses
+  overflowed the stack; `let x = if a { 0 } elif a { i } .. else { -1 }` x20000
+  accepted (rc 0), same crash at depth; the committed 3 MB probe
+  `tests/security/resource_dos_lexer_nested_interp_stack_overflow.kry` rc 253
+  with `kryos: stack overflow (unbounded recursion?)`. A 2 MB single line with
+  one type error printed 4,000,373 bytes; 500 distinct type errors printed all
+  500.
+- Root cause. (1) `parse_if_rest -> parse_if_let -> parse_if_let_else ->
+  parse_if_rest` and the expression-position twin `parse_if_expr ->
+  parse_if_expr_after_if` recursed once per `elif` clause, and each body went
+  through `parse_block`, which charges AND RELEASES its own depth, so the chain
+  accumulated none. (2) The lexer had no depth counter: `scan_string` recurses
+  into `scan_token` for an interpolated expression, which recurses back into
+  `scan_string`; it runs before the parser's E0010 guard can see a token.
+  (3) A label rendered its whole source line and padded the caret to the
+  column, so output was proportional to the line length. (4) `check` printed
+  every diagnostic.
+- Fix. Each `elif` clause charges one unit of grammar recursion (released at
+  the end of the `if`, so a separate `if` costs nothing) and reports the
+  existing E0010 at the cap; the lexer carries its own interpolation depth
+  (max 64) and reports E0010; `window_line` shows a long line as a 200-byte
+  window around the span on char boundaries, marked `...`; `kryos check` prints
+  at most 100 diagnostics then `... N more diagnostics not shown`, with the
+  error / warning counts still covering all of them.
+- Proved both ways. `tests/parser_nesting_gate.sh` part 1b (elif-let @20000,
+  elif-expr @20000, the committed deep-interpolation probe, each with a shallow
+  legitimate control) and a new part 1c (2 MB single line; 500 distinct type
+  errors). The gate now honors `KRYOS_BIN`, so master and the branch were run
+  as two different binaries (full `cargo build --release` for the branch; the
+  master binary rebuilt from `origin/master` sources). Master binary: part 1b
+  FAILS 3 of 3 (`elif-let chain @20000` rc 0 not rejected, `elif chain in
+  expression position @20000` rc 0 not rejected, `nested interpolation
+  @committed` rc 253), part 1c FAILS 2 of 2 (`long-line diagnostic printed
+  4000426B`, `500 errors printed 500 diagnostics`). Branch binary: part 1b 15 of
+  15 ok (bombs 30421B / 348B / 41507B of output, shallow controls accepted),
+  part 1c ok (602B for the 2000000B line; 100 diagnostics, `400 more
+  diagnostics not shown`, summary still `500 errors`), whole gate PASS.
+- Gates on the branch tip (rebased onto origin/master 540372ec, full `cargo build --release`): `kryos-loop.sh gates 2` rc 0, conformance 113/113 PASS, tier 1 and `tier2 GREEN`; `test_bootstrap.sh` 16 / 16.
+- Not fixed / residual. The deep-interpolation leg runs the committed 3 MB probe
+  because the lexer overflow needs ~250k levels, impractical to generate in
+  bash; its shallow control is generated at depth 8. The diagnostics cap is in
+  `kryos check` only; `run` / `build` print their diagnostics as before.
+
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 
 Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.
