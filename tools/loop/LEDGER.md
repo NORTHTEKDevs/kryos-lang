@@ -10,6 +10,33 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: map closure values and map payload entries (2026-10-14)
+
+The closure-release wave's open leaks.
+- `map<_, fn>`: a map read of a closure is borrow-to-own now (the Map
+  IndexAccess arm retains a Function value like a container, and
+  `is_retained_container_get` knows `kryos_fn_retain`), so `let g = m[k]`
+  owns its read (`owns_fn_read` covers maps) and `f = m[k]` no longer
+  retains twice. An overwritten map value is released (`old_slot`), and the
+  map's drop releases its closures: map / array kind 5 = closure
+  (`free_entry_slot`, `retain_entry_slot` for the spawn snapshot,
+  `kryos_array_free_typed`), `kind_of(Function) = 5` in the map drop and
+  snapshot kinds of both backends (not the spawn array dup, whose numbering
+  differs). 127MB / 250MB per 1M -> 4MB on both backends.
+- A map inside an enum payload, a struct field, a tuple or a closure env was
+  freed with the type-erased `kryos_map_free` on LLVM (every key and value
+  leaked: 127MB / 1M); the typed free is now one method
+  (`emit_map_free`) used by the map local drop and those sites. Cranelift
+  never released an enum's map payload at all (556MB / 1M): its enum drop's
+  droppable types lacked `Map`.
+- `mem_agg_ops_gate.sh` modes `fn_map_values` / `map_holders` (master 250MB
+  / 251MB at 1M, now 4-5MB). Pinned by
+  `tests/conformance/conf_map_closure_release.kry` (closures read out of an
+  overwritten entry or a dropped map, maps in a struct, an enum and a
+  tuple), registered in `no_double_free.sh`.
+- Not done: a struct-drop helper's array-of-maps element still frees each
+  map untyped (a string-template call site in `emit_struct_drop`'s helper).
+
 ## Wave: closure reassignment and field overwrite leaks (2026-10-14)
 
 From the residual-reads wave's open leaks. `f = g` of an owned closure

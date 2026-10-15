@@ -65,6 +65,19 @@ fn mkfn(i: i64) -> fn(i64) -> str {
     let s = "c{i}"
     return |x: i64| s
 }
+struct Smh { m: map<str, str> }
+enum Wmh { Has(map<str, str>), No }
+fn mkmh(i: i64) -> map<str, str> {
+    let mut m: map<str, str> = {}
+    m["k"] = "m{i}"
+    return m
+}
+fn wmh_len(w: Wmh) -> i64 {
+    return match w {
+        Wmh.Has(m) => len(m),
+        Wmh.No => 0,
+    }
+}
 
 @capabilities(all)
 fn main() {
@@ -295,6 +308,18 @@ fn main() {
             let mut hfs = Hfs { f: mkfn(i) }
             hfs.f = mkfn(i + 1)
             acc = acc + len(hfs.f(0))
+        } elif mode == "fn_map_values" {
+            // A map never released its closures, overwritten or dropped.
+            let mut mfv: map<str, fn(i64) -> str> = {}
+            mfv["k"] = mkfn(i)
+            mfv["k"] = mkfn(i + 1)
+            let gv = mfv["k"]
+            acc = acc + len(gv(0))
+        } elif mode == "map_holders" {
+            // A map in an enum payload or a struct field leaked its entries.
+            let wmh = Wmh.Has(mkmh(i))
+            let smh = Smh { m: mkmh(i + 1) }
+            acc = acc + wmh_len(wmh) + len(smh.m)
         } elif mode == "fn_slot_overwrite" {
             // Nor overwriting a closure element.
             let mut fso = [mkfn(i)]

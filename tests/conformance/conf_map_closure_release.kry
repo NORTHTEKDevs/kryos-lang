@@ -1,0 +1,92 @@
+// Conformance (2026-10-14): a map now releases the closures it holds -- an
+// overwritten value and, when the map is dropped, every value (a
+// `map<_, fn>` leaked them: 127MB / 250MB per 1M) -- and a map held in a
+// struct field, an enum payload or a tuple is freed with its entries (the
+// enum payload leaked them, 127MB per 1M with --release and 556MB on the
+// JIT). So a map read of a closure owns what it read. Each value here is
+// read after the map entry it came from was overwritten or the map dropped,
+// and the memory reused.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+
+struct SM { m: map<str, str>, n: i64 }
+enum WM { Has(map<str, str>), No }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mkf(tag: str) -> fn(i64) -> str {
+    let s = tag
+    return |x: i64| s
+}
+
+fn mkm(tag: str) -> map<str, str> {
+    let mut m: map<str, str> = {}
+    m["k"] = tag
+    return m
+}
+
+fn closure_values(i: i64) -> str {
+    let mut m: map<str, fn(i64) -> str> = {}
+    m["a"] = mkf("a{i}")
+    let g = m["a"]
+    let mut h = mkf("x")
+    h = m["a"]
+    m["a"] = mkf("b{i}")
+    let f = mkf("c{i}")
+    m["c"] = f
+    churn(i)
+    let now = m["a"]
+    let c = m["c"]
+    return g(0) + " " + h(0) + " " + now(0) + " " + c(0) + " " + f(0)
+}
+
+fn dropped_map(i: i64) -> str {
+    let mut kept = mkf("x")
+    {
+        let mut m: map<str, fn(i64) -> str> = {}
+        m["k"] = mkf("d{i}")
+        kept = m["k"]
+    }
+    churn(i)
+    return kept(0)
+}
+
+fn wm_read(w: WM) -> str {
+    return match w {
+        WM.Has(m) => m["k"],
+        WM.No => "no",
+    }
+}
+
+fn map_holders(i: i64) -> str {
+    let s = SM { m: mkm("s{i}"), n: 1 }
+    let w = WM.Has(mkm("w{i}"))
+    let t = (mkm("t{i}"), 1)
+    let inner = s.m
+    churn(i)
+    return s.m["k"] + " " + wm_read(w) + " " + t.0["k"] + " " + inner["k"]
+}
+
+@capabilities(all)
+fn main() {
+    expect(closure_values(1) == "a1 a1 b1 c1 c1" and closure_values(2) == "a2 a2 b2 c2 c2", "closures in a map")
+    expect(dropped_map(1) == "d1" and dropped_map(2) == "d2", "a closure read out of a dropped map")
+    expect(map_holders(1) == "s1 w1 t1 s1" and map_holders(2) == "s2 w2 t2 s2", "maps in a struct, an enum and a tuple")
+    println("conformance map closure release: PASS")
+}

@@ -986,6 +986,9 @@ unsafe fn free_entry_slot(handle: i64, kind: i64, elem_kind: i64) {
                 kryos_map_free(handle)
             }
         }
+        // A closure value: one reference, released like any arc object (a
+        // `map<_, fn>` never released its closures).
+        5 => crate::arc::kryos_arc_release(handle as *mut u8),
         _ => {}
     }
 }
@@ -1063,6 +1066,9 @@ unsafe fn retain_entry_slot(handle: i64, kind: i64) {
         }
         3 => {
             kryos_map_retain(handle);
+        }
+        5 => {
+            crate::arc::kryos_arc_retain(handle as *mut u8);
         }
         _ => {}
     }

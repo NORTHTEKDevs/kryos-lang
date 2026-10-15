@@ -3907,6 +3907,7 @@ fn translate_instruction<M: Module>(
                                     // owner or the source's element-free releases boxes the
                                     // copy still points at.
                                     MirType::Struct(_) => 4,
+                                    MirType::Function { .. } => 5,
                                     _ => 0,
                                 }
                             };
@@ -8178,6 +8179,7 @@ fn emit_drop_for_value<M: Module>(
                     // owner or the source's element-free releases boxes the
                     // copy still points at.
                     MirType::Struct(_) => 4,
+                    MirType::Function { .. } => 5,
                     _ => 0,
                 }
             };
@@ -8590,6 +8592,7 @@ fn emit_drop_for_value<M: Module>(
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Shared(_)
+                                | MirType::Map { .. }
                         )
                     })
                 });
@@ -8615,6 +8618,7 @@ fn emit_drop_for_value<M: Module>(
                                         | MirType::Function { .. }
                                         | MirType::Enum(_)
                                         | MirType::Shared(_)
+                                        | MirType::Map { .. }
                                 )
                             })
                             .collect();
