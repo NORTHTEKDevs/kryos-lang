@@ -1,0 +1,21 @@
+// LEDGER item 58. A closure bound inside a `spawn fn() { }` lambda shadows an outer harmless name and is
+// invoked inside deny!(fs:read). Must be REJECTED (E0507 and/or E0110) under inferred and strict.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f = || "harmless"
+    println(f())
+    deny!(fs:read) {
+        spawn fn() {
+            let f = reader
+            let leaked = f()
+            println("SPAWN-LAMBDA-SHADOW LEAK: " + leaked)
+        }
+        sleep(300)
+    }
+}

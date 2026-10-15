@@ -1,0 +1,24 @@
+// LEDGER item 57. A select arm rebinds a privileged closure under the name of an outer harmless closure and
+// calls it inside deny!(fs:read). Must be REJECTED (E0507 and/or E0110) under inferred and strict.
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let f = || "harmless"
+    println(f())
+    let ch = chan()
+    send(ch, 1)
+    deny!(fs:read) {
+        select {
+            v ch => {
+                let f = reader
+                let leaked = f()
+                println("SELECT-SHADOW LEAK: " + leaked)
+            }
+        }
+    }
+}
