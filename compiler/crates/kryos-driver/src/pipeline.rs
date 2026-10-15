@@ -1,4 +1,4 @@
-//! Compilation pipeline — orchestrates the full source-to-binary flow.
+//! Compilation pipeline - orchestrates the full source-to-binary flow.
 //!
 //! The pipeline runs each compiler pass in sequence, collecting diagnostics
 //! at every stage and bailing out early if errors are found.
@@ -18,6 +18,37 @@ use kryos_types::type_check;
 use crate::build_cache::{self, CacheContext, CacheKey};
 use crate::config::{BuildConfig, BuildMode, OutputType};
 use crate::resolve;
+
+/// Raw-memory gate over the user's own code: the ROOT module plus every
+/// non-stdlib module in its import graph.
+///
+/// The root module alone was not enough. An unannotated `pub fn` in an
+/// imported user module (or in a package dependency) used `str_to_ptr` +
+/// `ptr_byte_at` and passed every mode, which is the escape
+/// `tests/security/cap_escape_raw_memory.kry` exists to stop, one `use` away
+/// (`tests/security/cap_escape_raw_memory_import.kry`). The stdlib stays
+/// trusted: it is built on these primitives, and charging it would make
+/// `std::json::parse` demand `ffi` from every caller.
+///
+/// An imported module's spans belong to its own file, which this
+/// `SourceMap` does not hold, so those diagnostics name the module and carry
+/// no caret rather than pointing at an unrelated line of the root file.
+fn raw_memory_diags(module: &kryos_ast::Module, path: &Path) -> Vec<Diagnostic> {
+    let mut diags = kryos_capabilities::check_raw_memory_direct(module);
+    for (module_path, imported) in resolve::user_modules_in_import_graph(module, path) {
+        for d in kryos_capabilities::check_raw_memory_direct(&imported) {
+            let mut moved = Diagnostic::error(format!(
+                "{} -- in imported module `{}`",
+                d.message,
+                module_path.display()
+            ));
+            moved.code = d.code;
+            moved.notes = d.notes;
+            diags.push(moved);
+        }
+    }
+    diags
+}
 
 // ---------------------------------------------------------------------------
 // Build-cache helpers (private)
@@ -151,7 +182,7 @@ fn try_cache_store(source: &str, config: &BuildConfig, result: &CompileResult) {
 }
 
 // ---------------------------------------------------------------------------
-// Backend trait — codegen backends implement this
+// Backend trait - codegen backends implement this
 // ---------------------------------------------------------------------------
 
 /// Trait for codegen backends.
@@ -182,7 +213,7 @@ pub trait Backend {
     /// all functions for cross-function metadata (signatures, string constants,
     /// ARC usage) and write the module preamble to its output sink.
     ///
-    /// `functions` is a shared slice used only for prescan — the caller will
+    /// `functions` is a shared slice used only for prescan - the caller will
     /// drain the Vec and pass each function to `emit_function_inc` afterwards.
     /// Backends use interior mutability (`RefCell`) to store session state.
     fn begin_module(
@@ -398,12 +429,12 @@ fn compile_file_impl(
     let mut visited = HashSet::new();
     visited.insert(canonical);
 
-    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
-    // is still the ROOT module -- imported declarations have not been merged
-    // yet, so this sees the user's own code and treats the stdlib as the
-    // trusted computing base. See check_raw_memory_direct for why the
-    // requirement must not propagate.
-    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    // Raw memory is gated at DIRECT USE IN USER CODE: the root module and
+    // every non-stdlib module it imports, each scanned before declarations
+    // are merged, so the stdlib stays the trusted computing base. See
+    // raw_memory_diags and check_raw_memory_direct for why the requirement
+    // must not propagate.
+    let raw_mem_diags = raw_memory_diags(&module, path);
     let has_raw_mem_errors = !raw_mem_diags.is_empty();
     diagnostics.extend(raw_mem_diags);
     if has_raw_mem_errors {
@@ -665,7 +696,7 @@ fn compile_module_impl(
         }
     }
 
-    drop(module); // AST no longer needed — free 0.5-1GB before codegen
+    drop(module); // AST no longer needed - free 0.5-1GB before codegen
 
     // 9b. Comptime evaluation: fold constant expressions in comptime blocks.
     kryos_mir::consteval::run_comptime_pass(&mut mir);
@@ -728,7 +759,7 @@ fn compile_module_impl(
         eprintln!("[kryos] MIR: {} functions lowered", mir.functions.len());
     }
 
-    // 9d. Check for main() — binary targets require an entry point.
+    // 9d. Check for main() - binary targets require an entry point.
     if config.output_type == OutputType::Binary {
         let has_main = mir.functions.iter().any(|f| f.name == "main");
         if !has_main {
@@ -888,7 +919,7 @@ fn codegen_and_link(
                     Ok(bytes) => {
                         let out_path = config.derive_output_path();
 
-                        // WASM backends emit a self-contained `.wasm` module —
+                        // WASM backends emit a self-contained `.wasm` module - 
                         // no native linker, no runtime archive, no object file.
                         if be.name() == "wasm" {
                             let stem = out_path
@@ -1190,7 +1221,7 @@ pub fn compile_project_with_backend(
 // check_file / check_source
 // ---------------------------------------------------------------------------
 
-/// Check a file without producing any output — equivalent to `kryos check`.
+/// Check a file without producing any output - equivalent to `kryos check`.
 ///
 /// Runs the full analysis pipeline (lex, parse, type check, ownership,
 /// capabilities) but skips MIR lowering and codegen.
@@ -1239,12 +1270,12 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     let mut visited = HashSet::new();
     visited.insert(canonical);
 
-    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
-    // is still the ROOT module -- imported declarations have not been merged
-    // yet, so this sees the user's own code and treats the stdlib as the
-    // trusted computing base. See check_raw_memory_direct for why the
-    // requirement must not propagate.
-    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    // Raw memory is gated at DIRECT USE IN USER CODE: the root module and
+    // every non-stdlib module it imports, each scanned before declarations
+    // are merged, so the stdlib stays the trusted computing base. See
+    // raw_memory_diags and check_raw_memory_direct for why the requirement
+    // must not propagate.
+    let raw_mem_diags = raw_memory_diags(&module, path);
     diagnostics.extend(raw_mem_diags);
 
     let mut imported_decls = Vec::new();
@@ -1270,7 +1301,7 @@ pub fn check_file(path: &Path) -> (Vec<Diagnostic>, SourceMap) {
     kryos_ast::expand_derives(&mut module);
 
     // Strip @cfg(...)-gated decls for the host (check_file targets the
-    // host in debug mode by default — no BuildConfig is available here).
+    // host in debug mode by default - no BuildConfig is available here).
     kryos_ast::strip_cfg(&mut module, &kryos_ast::CfgContext::for_host(false));
 
     // Type check
@@ -1340,12 +1371,12 @@ pub fn check_file_with_options_full(
     let mut visited = HashSet::new();
     visited.insert(canonical);
 
-    // Raw memory is gated at DIRECT USE IN USER CODE. Run this while `module`
-    // is still the ROOT module -- imported declarations have not been merged
-    // yet, so this sees the user's own code and treats the stdlib as the
-    // trusted computing base. See check_raw_memory_direct for why the
-    // requirement must not propagate.
-    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    // Raw memory is gated at DIRECT USE IN USER CODE: the root module and
+    // every non-stdlib module it imports, each scanned before declarations
+    // are merged, so the stdlib stays the trusted computing base. See
+    // raw_memory_diags and check_raw_memory_direct for why the requirement
+    // must not propagate.
+    let raw_mem_diags = raw_memory_diags(&module, path);
     diagnostics.extend(raw_mem_diags);
 
     let mut imported_decls = Vec::new();
@@ -1420,7 +1451,7 @@ pub fn check_source(source: &str, file_name: &str) -> (Vec<Diagnostic>, SourceMa
     let ownership = analyze_ownership(&module);
     diagnostics.extend(ownership.errors);
 
-    // Capabilities (non-strict by default — string-input check has no CLI
+    // Capabilities (non-strict by default - string-input check has no CLI
     // surface for the flag; use the file/project entry points to opt in).
     diagnostics.extend(check_capabilities(&module, false));
 
