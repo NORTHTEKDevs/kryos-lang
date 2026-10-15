@@ -1,0 +1,84 @@
+// Conformance (2026-10-14): two struct leaks that suppressed a drop -- a
+// struct named outside an if / match value (`let p = if c { q } else {
+// P {..} }`, a local, a parameter or a closure's capture) was MOVED into the
+// branch slot, which the `let` then copied without releasing, and returning
+// a scalar field (`return s.n`, a tail `s.n`) excluded the struct from its
+// scope-end drop as if the field had been moved out (65MB / 96MB per 1M with
+// --release / on the JIT, for each). The branch shares the struct now and
+// the struct keeps its drop, so it must still read right after the branch,
+// and a returned scalar field must survive the struct's release.
+// Run under KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
+// tests/no_double_free.sh.
+
+struct P { name: str, n: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn local_branch(i: i64) -> str {
+    let q = P { name: "q{i}", n: i }
+    let p = if i > 0 { q } else { P { name: "d", n: 0 } }
+    let r = match i % 2 {
+        0 => q,
+        _ => P { name: "m{i}", n: i },
+    }
+    churn(i)
+    return p.name + " " + r.name + " " + q.name
+}
+
+fn param_branch(c: bool, q: P) -> str {
+    let p = if c { q } else { P { name: "d", n: 0 } }
+    churn(1)
+    return p.name + " " + q.name
+}
+
+fn capture_branch(i: i64) -> str {
+    let cap = P { name: "c{i}", n: i }
+    let f = |k: i64| {
+        let p = if k > 0 { cap } else { P { name: "d", n: 0 } }
+        p.name
+    }
+    let a = f(1)
+    let b = f(0)
+    churn(i)
+    return a + " " + b + " " + cap.name
+}
+
+fn ret_field(i: i64) -> i64 {
+    let s = P { name: "s{i}", n: i * 10 }
+    return s.n
+}
+
+fn tail_field(i: i64) -> i64 {
+    let s = P { name: "t{i}", n: i * 100 }
+    s.n
+}
+
+@capabilities(all)
+fn main() {
+    expect(local_branch(1) == "q1 m1 q1" and local_branch(2) == "q2 q2 q2", "a local struct as an if / match value")
+    let q = P { name: "pq", n: 1 }
+    expect(param_branch(true, q) == "pq pq" and param_branch(false, q) == "d pq" and q.name == "pq", "a parameter as an if value")
+    expect(capture_branch(1) == "c1 d c1" and capture_branch(2) == "c2 d c2", "a closure's capture as an if value")
+    let a = ret_field(3)
+    churn(3)
+    let b = tail_field(4)
+    churn(4)
+    expect(a == 30 and b == 400, "a returned scalar field")
+    println("conformance struct branch value: PASS")
+}

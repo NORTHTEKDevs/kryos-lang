@@ -10,6 +10,35 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: two struct drops a read suppressed (2026-10-14)
+
+From the default-arm wave's L4 narrowing, then a wider one found on the way.
+- Returning a scalar field (`return s.n`, a tail `s.n`) put the struct in
+  `source_struct_local_id`, the "its field was moved out" exclusion from the
+  scope-end drop, although a Copy field moves nothing: the whole struct
+  leaked per call (66MB / 96MB per 1M, LLVM / Cranelift, master too). Both
+  the Return arm and the tail path now skip the exclusion for a Copy-typed
+  field -- but not inside a generic impl: its type parameters are erased to
+  i64 slots that can hold a boxed aggregate (`impl<A, B> Pair<A, B> { fn
+  first_of(self) -> A { return self.first } }` with `A` a struct), and
+  dropping `self` there freed the returned box (the smoke sweep's
+  `test_wide_generic_return` / `test_embedded_method_call` double-freed on
+  the JIT until this was excluded).
+- `let p = if c { q } else { P {..} }`: `take_tail_identifier` moved an
+  owned struct named outside the branch into the slot (suppressed its
+  drop), and the `let` copied the slot without releasing it (65MB / 96MB
+  per 1M, master too). It now shares the struct into the slot, like a tuple
+  or an enum, so the struct keeps its drop and stays usable after the
+  branch, and `struct_value_owned` counts such a block tail as owned (the
+  `let` releases the slot after its copy). Not a bare name as a match arm's
+  whole body (`0 => q`): the arm code still moves that, and treating it as
+  owned released `q` under a later read (caught by the new pin on the JIT).
+  That shape still leaks.
+- `mem_agg_ops_gate.sh` modes `struct_branch` / `ret_scalar_field` (master
+  66MB / 65MB at 1M, now 4-5MB). Pinned by
+  `tests/conformance/conf_struct_branch_value.kry`, registered in
+  `no_double_free.sh`.
+
 ## Wave: a switch-lowered match's default arm drops its temps (2026-10-14)
 
 The probe-hygiene note from the review rounds ("a switch-lowered match's
