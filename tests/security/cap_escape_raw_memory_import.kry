@@ -1,0 +1,18 @@
+// The second half of the raw-memory gate escape (2026-10-15): the gate ran on
+// the ROOT module only, so the same unannotated helper one `use` away -- in a
+// user module or a package dependency -- passed every mode and read memory the
+// program was never handed.
+//
+// Fixed by scanning every non-stdlib module in the import graph
+// (resolve::user_modules_in_import_graph). The stdlib stays trusted: it is
+// built on these primitives, and charging it would make `std::json::parse`
+// demand `ffi` from every caller.
+//
+// MUST be rejected with E0505 naming `str_to_ptr`, reported against the
+// imported module. Pinned by tests/security_gate.sh.
+
+use cap_escape_raw_memory_peeker::{peek}
+
+fn main() {
+    println("byte={peek("hello")}")
+}

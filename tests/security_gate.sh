@@ -27,6 +27,24 @@ else
     fail=1
 fi
 
+# 1b. The same calls one function, or one `use`, away from `main` must not
+#     compile either. The gate used to charge only `main` and annotated
+#     functions, and only in the root module, so both of these passed every
+#     mode and read memory the program was never handed.
+for esc in cap_escape_raw_memory_helper cap_escape_raw_memory_import; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities" "--capabilities-mode=permissive"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/esc2" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- raw memory with no ffi"
+            esc_ok=0; fail=1
+        elif ! grep -q "str_to_ptr\` requires \`ffi\`" "$TMP/esc2"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/esc2" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in all three modes (requires \`ffi\`)"
+done
+
 # 2. Declared use must still work (guards against over-rejection).
 cat > "$TMP/ok.kry" <<'KRY'
 @capabilities(ffi)

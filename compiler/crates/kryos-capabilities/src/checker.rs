@@ -73,9 +73,19 @@ impl CapabilityMode {
 /// declaring NO capabilities passes `--strict-capabilities` and still reads
 /// any string in the host process via `str_to_ptr` + `ptr_byte_at`
 /// (tests/security/cap_escape_raw_memory.kry).
+///
+/// The pass runs in [`CapabilityMode::Strict`] so EVERY function of the
+/// scanned module is charged for its own raw-memory calls. It ran in
+/// `Inferred` before, which checks only `main` and annotated functions, so
+/// moving the same two calls into an unannotated helper in the same file
+/// passed every mode and read arbitrary memory (`tests/security/
+/// cap_escape_raw_memory_helper.kry`). Strict does not make the requirement
+/// propagate: a CALL to a function that needs `ffi` raises E0507, whose
+/// message names the callee rather than a builtin, and the filter below keeps
+/// only diagnostics that name a raw-memory builtin.
 pub fn check_raw_memory_direct(module: &Module) -> Vec<Diagnostic> {
     let diags = crate::model::with_raw_memory_gate(|| {
-        check_capabilities_mode(module, CapabilityMode::Inferred)
+        check_capabilities_mode(module, CapabilityMode::Strict)
     });
     // Report ONLY the raw-memory findings. Every other diagnostic from this
     // extra pass is a duplicate of the real check that runs on the merged
