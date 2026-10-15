@@ -23,6 +23,15 @@ DOC="tools/loop/ESCAPE-ROUTING.md"
 
 fail=0
 missing=0
+# The heading's dash is matched by a wildcard: this pattern once spelled it as
+# an em dash, the heading became a hyphen, and the range matched nothing -- the
+# node passed for weeks while checking no item at all. An empty range FAILS.
+OPEN_SECTION="$(sed -n '/^## OPEN .*ranked/,/^## CLOSED/p' tools/loop/LEDGER.md)"
+if ! printf '%s\n' "$OPEN_SECTION" | grep -q "^## OPEN"; then
+    echo "  FAIL: no '## OPEN - ranked' section found in tools/loop/LEDGER.md"
+    echo "escape-instrument: FAIL"
+    exit 1
+fi
 # Every LIVE CAPABILITY ESCAPE still in the LEDGER's OPEN section needs an entry.
 while IFS= read -r line; do
     item="$(printf '%s' "$line" | sed -n 's/^### \([0-9]\+\)\..*/\1/p')"
@@ -41,7 +50,7 @@ while IFS= read -r line; do
         echo "  FAIL: item $item has NO routing entry in $DOC"
         missing=$((missing+1)); fail=1
     fi
-done < <(sed -n '/^## OPEN — ranked/,/^## CLOSED/p' tools/loop/LEDGER.md | grep -E "^### [0-9]+\.")
+done < <(printf '%s\n' "$OPEN_SECTION" | grep -E "^### [0-9]+\.")
 
 [ $missing -gt 0 ] && echo "  ($missing escape(s) unmeasured -- instrument before editing the checker)"
 [ $fail -eq 0 ] && echo "escape-instrument: PASS" || echo "escape-instrument: FAIL"
