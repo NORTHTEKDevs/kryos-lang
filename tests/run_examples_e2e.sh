@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end examples gate — RUNS example programs and checks what they produce.
+# End-to-end examples gate - RUNS example programs and checks what they produce.
 #
 # Why this exists (it is not a duplicate of run_examples_gate.sh):
 # that gate type-checks and AOT-COMPILES every example but never RUNS one, and
@@ -51,7 +51,10 @@ if ! command -v clang >/dev/null 2>&1; then
 fi
 
 TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"; kill_servers' EXIT
+# `kryos run` builds the JIT legs' programs into the temp dir (TMP on
+# Windows, TMPDIR elsewhere): point both at ours so kill_servers can find them.
+export TMPDIR="$TMP"
+trap 'kill_servers; rm -rf "$TMP"' EXIT
 fail=0
 skipped=()
 
@@ -63,6 +66,17 @@ kill_servers() {
             pkill -f "$n" >/dev/null 2>&1
         fi
     done
+    # timeout(1) kills `kryos run`, not the server it spawned out of $TMP;
+    # left alive, that server holds its port into the next run, whose legs
+    # then test a stale build.
+    if [[ -d "$TMP" ]]; then
+        if [[ "${OS:-}" == "Windows_NT" ]]; then
+            local w; w="$(cygpath -w "$TMP" 2>/dev/null || echo "$TMP")"
+            powershell -NoProfile -Command "Get-Process | Where-Object { \$_.Path -and \$_.Path.StartsWith('$w', [StringComparison]::OrdinalIgnoreCase) } | Stop-Process -Force" >/dev/null 2>&1
+        else
+            pkill -f "$TMP/" >/dev/null 2>&1
+        fi
+    fi
     return 0
 }
 
@@ -211,7 +225,7 @@ done
 echo "  layer 2: $l2_ok/$l2_n identical across backends"
 
 # ---------------------------------------------------------------------------
-# Layer 3: servers — assert on real response bodies.
+# Layer 3: servers - assert on real response bodies.
 # ---------------------------------------------------------------------------
 echo "examples-e2e: layer 3 — servers (response bodies over a socket)"
 if ! command -v curl >/dev/null 2>&1; then
@@ -232,10 +246,24 @@ else
         fail=1; return 1
     }
 
+    # port_held <port>: 0 when something already accepts connections there.
+    # Asserting against a port another process owns tests THAT process: a
+    # local llama-server on 8080 once turned web_server's legs into four
+    # failures quoting llama's JSON 404s. curl exit 7 = connection refused,
+    # which Windows reports only after ~2s of SYN retries: keep the timeout
+    # above that or every free port reads as held.
+    port_held() {
+        curl -s --connect-timeout 5 --max-time 6 -o /dev/null "http://127.0.0.1:$1/" >/dev/null 2>&1
+        [[ $? -ne 7 ]]
+    }
+
     for backend in aot jit; do
         # ---- rest_api: the app whose served JSON was silently corrupt ----
         src="$REPO/examples/showcase/rest_api.kry"
-        if [[ -f "$src" ]]; then
+        if [[ -f "$src" ]] && port_held 7878; then
+            skipped+=("rest_api[$backend] (port 7878 held by another process)")
+            echo "  SKIP rest_api[$backend]: 127.0.0.1:7878 is held by another process"
+        elif [[ -f "$src" ]]; then
             if [[ "$backend" == aot ]]; then
                 if build_aot "$src" "$TMP/rest_api_e2e.exe"; then
                     ( cd "$TMP" && ./rest_api_e2e.exe >rest.log 2>&1 & )
@@ -269,29 +297,36 @@ else
             kill_servers; sleep 1
         fi
 
-        # ---- web_server: serves only 3 requests, so assert within that budget ----
+        # ---- web_server: serves only 3 requests, so assert within that budget.
+        # Not its default 8080, which local dev servers commonly hold. ----
         src="$REPO/examples/showcase/web_server.kry"
-        if [[ -f "$src" ]]; then
+        WEB=7983
+        if [[ -f "$src" ]] && port_held $WEB; then
+            skipped+=("web_server[$backend] (port $WEB held by another process)")
+            echo "  SKIP web_server[$backend]: 127.0.0.1:$WEB is held by another process"
+        elif [[ -f "$src" ]]; then
+            rm -f "$TMP/web.log" "$TMP/web_jit.log"
             if [[ "$backend" == aot ]]; then
                 if build_aot "$src" "$TMP/web_server_e2e.exe"; then
-                    ( cd "$TMP" && ./web_server_e2e.exe >web.log 2>&1 & )
+                    ( cd "$TMP" && ./web_server_e2e.exe --port $WEB >web.log 2>&1 & )
                 else
                     echo "  BUILD FAIL web_server"; fail=1
                 fi
             else
-                ( timeout 300 "$KRYOS" run "$src" >"$TMP/web_jit.log" 2>&1 & )
+                ( timeout 300 "$KRYOS" run "$src" -- --port $WEB >"$TMP/web_jit.log" 2>&1 & )
             fi
             for _ in $(seq 1 60); do
-                curl -s --max-time 2 http://127.0.0.1:8080/hello >/dev/null 2>&1 && break
+                curl -s --max-time 2 http://127.0.0.1:$WEB/hello >/dev/null 2>&1 && break
                 sleep 1
             done
-            # /hello consumed one of the 3; two remain.
-            if [[ -s "$TMP/web.log" || -s "$TMP/web_jit.log" ]] || curl -s --max-time 3 http://127.0.0.1:8080/json >/dev/null 2>&1; then
-                want_body "web_server[$backend] /json" "http://127.0.0.1:8080/json" '"ok":true'
-                want_body "web_server[$backend] /count" "http://127.0.0.1:8080/count" 'request #'
+            # /hello consumed one of the 3; two remain. The server's own
+            # "serving" line proves the listener is ours.
+            if grep -qs "serving 3 requests on 127.0.0.1:$WEB" "$TMP/web.log" "$TMP/web_jit.log"; then
+                want_body "web_server[$backend] /json" "http://127.0.0.1:$WEB/json" '"ok":true'
+                want_body "web_server[$backend] /count" "http://127.0.0.1:$WEB/count" 'request #'
             else
-                skipped+=("web_server[$backend] (port 8080 unavailable)")
-                echo "  SKIP web_server[$backend]: could not reach 127.0.0.1:8080"
+                skipped+=("web_server[$backend] (server never reported serving on $WEB)")
+                echo "  SKIP web_server[$backend]: no 'serving' line from the server on 127.0.0.1:$WEB"
             fi
             kill_servers; sleep 1
         fi
@@ -299,7 +334,10 @@ else
         # ---- task_api: nested JSON CRUD, least-privilege net:tcp only,
         # exits after --max requests so it never leaks a background process ----
         src="$REPO/examples/showcase/task_api.kry"
-        if [[ -f "$src" ]]; then
+        if [[ -f "$src" ]] && port_held 7981; then
+            skipped+=("task_api[$backend] (port 7981 held by another process)")
+            echo "  SKIP task_api[$backend]: 127.0.0.1:7981 is held by another process"
+        elif [[ -f "$src" ]]; then
             if [[ "$backend" == aot ]]; then
                 if build_aot "$src" "$TMP/task_api_e2e.exe"; then
                     ( cd "$TMP" && ./task_api_e2e.exe --port 7981 --max 30 >task_api.log 2>&1 & )
