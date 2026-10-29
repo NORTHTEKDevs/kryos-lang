@@ -20,6 +20,8 @@ TYPES = {
     'otup': dict(t='Option<(str, i64)>', ctor='Some(("v{i}", i))',
                  show='return match v {\n        Some(t) => t.0,\n        None => "none",\n    }'),
     'nest': dict(t='Q', ctor='Q { p: P { name: "v{i}", n: i }, xs: ["x"] }', show='return v.p.name'),
+    'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
+                  show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
 CONSUMERS = ['ifval', 'matchval', 'idxstore', 'elemfield', 'retif', 'nested']
 # source kind -> (prelude lines, expr, kill lines); @C = ctor at i, @K = ctor at i + 100, @D = default
@@ -93,14 +95,14 @@ for tk, td in TYPES.items():
         G = '{"k": "v7"}'
     M = {'@C': C, '@K': K, '@D': D, '@T': T}
     for sk, sv in SOURCES.items():
-        if tk == 'fn' and sk in ('fldconst', 'gmut'):
+        if tk in ('fn', 'rtree') and sk in ('fldconst', 'gmut'):
             continue
         L = []
         if tk == 'opt':
             L.append('use std::option::{Option, Some, None}')
         if tk == 'otup' and 'use std::option' not in ''.join(L):
             L.append('use std::option::{Option, Some, None}')
-        L += ['struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
+        L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
               f'struct H {{ f: {T}, n: i64 }}', 'struct HH { h: H, n: i64 }', f'enum W {{ Has({T}), No }}']
         if sk == 'gmut':
             L.append(f'let mut GM: H = H {{ f: {G}, n: 1 }}')

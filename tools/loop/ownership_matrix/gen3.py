@@ -23,6 +23,8 @@ TYPES = {
     'parr': dict(t='[P]', ctor='[P { name: "v{i}", n: i }]', show='return v[0].name'),
     'otup': dict(t='Option<(str, i64)>', ctor='Some(("v{i}", i))', show=OTUP_SHOW),
     'nest': dict(t='Q', ctor='Q { p: P { name: "v{i}", n: i }, xs: ["x"] }', show='return v.p.name'),
+    'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
+                  show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
 # source kind -> (prelude lines, expr, kill lines)
 SOURCES = {
@@ -70,12 +72,12 @@ for tk, td in TYPES.items():
         G = '{"k": "v7"}'
     M = {'@C': C, '@K': K, '@T': T}
     for sk, sv in SOURCES.items():
-        if tk == 'fn' and sk in ('fldconst', 'gmut'):
+        if tk in ('fn', 'rtree') and sk in ('fldconst', 'gmut'):
             continue
         L = []
         if tk in ('opt', 'otup'):
             L.append('use std::option::{Option, Some, None}')
-        L += ['struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
+        L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
               f'struct H {{ f: {T}, n: i64 }}', 'struct HH { h: H, n: i64 }']
         if sk == 'fldconst':
             L.append(f'let GH: H = H {{ f: {G}, n: 1 }}')

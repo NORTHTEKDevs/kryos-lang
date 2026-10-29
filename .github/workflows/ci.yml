@@ -311,6 +311,14 @@ jobs:
         # Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_enum_recursive_gate.sh
 
+      - name: Recursive-enum call-boundary memory gate
+        # A directly self-recursive enum (`Node(Tree, Tree)`, no array) passed
+        # to a function is owned like any enum: the callee shares it, the
+        # caller still drops its own reference. It used to stay on the move
+        # model and leaked every tree that crossed a call. Master at 1M:
+        # 60-676MB per mode; fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_enum_recursive_call_gate.sh
+
       - name: Element-read memory gate
         # `let a = p.name` / `xs[i]` / `m[k]` bind a value the read already
         # retained; the binding must release it. 81c61df6 at 1M: ~100MB on
