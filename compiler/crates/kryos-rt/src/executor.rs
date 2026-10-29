@@ -144,8 +144,13 @@ pub extern "C" fn kryos_coop_spawn(fn_ptr: i64, args_ptr: *const i64, arg_count:
         // SAFETY: `addr` is a valid Kryos function address per spawn contract.
         crate::spawn::invoke_task(addr, &args);
         // A `throw` that unwound out of the task would otherwise vanish with
-        // the thread; report it like the spawn runtime does.
-        crate::exception::kryos_exception_report_thread_if_pending();
+        // the thread, silently skipping every statement after the throw point
+        // (e.g. the `send` a consumer is blocked on). Report it AND terminate
+        // the process (exit 101) exactly like the spawn runtime does: the
+        // report-only twin left the baton handed back and the consumer
+        // hanging forever (LEDGER: coop uncaught-throw wave, sibling of
+        // item 16).
+        crate::exception::kryos_exception_report_thread_fatal_if_pending();
 
         // Completion: mark done and hand the baton back to the scheduler.
         {

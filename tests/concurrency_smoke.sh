@@ -96,6 +96,40 @@ fails_fast() {
 fails_fast spawn_uncaught_throw_no_hang 101 'uncaught exception in spawned thread' \
   "$ROOT/tests/security/attack_spawn_uncaught_throw_waitgroup_hang.kry"
 
+# fails_fast_before <name> <expected-rc> <expected-substring> <forbidden-substring> <file> :
+# like fails_fast, and additionally the output must NOT contain <forbidden>.
+# Asserts WHERE the process died: a fatal throw must stop the program at the
+# throw, before the code that follows it runs (not merely exit 101 later).
+fails_fast_before() {
+  local name="$1" want_rc="$2" want="$3" never="$4" f="$5"
+  local out rc
+  out="$(timeout 15 "$KRYOS" run "$f" 2>&1)"; rc=$?
+  if [ "$rc" -ne "$want_rc" ] || [[ "$out" != *"$want"* ]] || [[ "$out" == *"$never"* ]]; then
+    echo "  FAIL  $name -- rc=$rc (want $want_rc; 124=deadlock) out=[$(printf '%s' "$out" | tr '
+' ' ')]"
+    fail=$((fail+1))
+  fi
+}
+
+# --- Sibling of item 16, on the cooperative executor: an uncaught `throw`
+# inside a `coop_spawn`ed task used to be reported NON-fatally (the task was
+# marked done and the process carried on), so the consumer blocked on the
+# `recv` the throw skipped hung forever, rc=124. It is now fatal (exit 101),
+# exactly like `spawn`: the process dies inside `coop_run`, so the line after
+# `coop_run()` never prints. ---
+fails_fast_before coop_uncaught_throw_no_hang 101 'uncaught exception in spawned thread: boom from coop task 1' 'coop_run returned'   "$ROOT/tests/security/attack_coop_throw_silent_swallow_hang.kry"
+
+# --- Control: same shape, the coop task does not throw -- must complete. ---
+completes_file coop_uncaught_throw_control 'control finished cleanly'   "$ROOT/tests/security/attack_coop_throw_silent_swallow_hang_control.kry"
+
+# --- Same hazard through an ACTOR HANDLER: the dispatch loop used to log
+# "[actor error] ..." and carry on, so a reply-channel consumer blocked on the
+# `send` the throw skipped hung forever, rc=124. Now fatal (exit 101). The
+# third `recv` line must never print. ---
+fails_fast_before actor_uncaught_throw_no_hang 101 'boom in actor handler' 'about to recv third value'   "$ROOT/tests/security/attack_actor_throw_waiter_hang.kry"
+
+completes_file actor_uncaught_throw_control 'control finished cleanly 3'   "$ROOT/tests/security/attack_actor_throw_waiter_hang_control.kry"
+
 # --- A mutating closure that reaches itself through its own stored value
 # (e.g. a map/struct self-reference) used to spin forever against the
 # item-7b serialization lock it already held on the same thread -- a
