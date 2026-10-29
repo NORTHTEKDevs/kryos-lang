@@ -10,6 +10,54 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: `byte_at` returned -1 for EVERY index once the string held one invalid-UTF-8 byte (2026-10-29)
+
+Closes universal-claim wave row 9 (LEDGER "Item 9", left open 2026-08-17 as a
+design question). Silent wrong answer, exit 0, identical on both backends.
+- Repro (before): `let bad = substr("café", 0, 4)` then `byte_at(bad, 0)`,
+  `byte_at(bad, 1)`, `len(bad)`: `kryos run` and `kryos build --release
+  --backend llvm` both printed `-1 -1 4` (rc=0); index 0 is `c` (99), index 1
+  is `a` (97).
+- Root cause: `kryos_byte_at_ks` (`kryos-stdlib-native/src/bindings.rs`) read
+  its string through `handle_to_str`, which is `from_utf8(..).unwrap_or("")`,
+  so ANY invalid byte turned the whole string into "" and the walk found no
+  i-th character. One implementation serves both backends (the JIT binds the
+  symbol, the AOT links `kryos_stdlib_native.lib`), so it needs a full
+  `cargo build --release`, not `-p kryos-cli`.
+- Decision (owner: byte_at reads the raw byte, valid strings unchanged): the
+  two clauses only reconcile as a lenient decode. `byte_at` now walks the
+  bytes with `utf8_chunks()`: each valid run yields codepoints exactly as
+  before (documented contract, and the latin-1 `chr`/`base64_decode` model
+  that stdlib crypto/bytes/websocket depend on), each INVALID byte is read raw
+  (0-255) as one unit, the same fallback `char_code` already had. Indices
+  before and after a bad byte are stable. Out of range / negative stays -1.
+  Not done: a pure byte-offset `byte_at` (`byte_at("é", 0)` would become 195,
+  breaking `byte_at(chr(200), 0) == 200` and every latin-1 buffer user).
+- Residual (documented in `docs/stdlib/core-builtins.md`, CLAUDE.md,
+  FULL-REFERENCE.md): on arbitrary binary data `i` is a unit index, not a byte
+  offset, if the data happens to hold a valid multibyte sequence; strict byte
+  offsets still need `char_code(substr(s, i, i + 1))` (karc.kry's accessor).
+- Pinned by `tests/conformance/conf_byte_at_invalid_utf8.kry` (both backends
+  via `run_conformance.sh`) and `tests/utf8_invalid_string_gate.sh` sections 3
+  and 4 (invalid input reads raw bytes, valid input unchanged, JIT and AOT).
+- Evidence: with the old `bindings.rs` and a full `cargo build --release`,
+  the new conformance program fails on both backends (`CONF FAIL: bad[0] is
+  'c': got -1, want 99`, rc=1) and the gate's two new byte_at invalid-input
+  checks FAIL; with the fix restored and rebuilt, `end` (rc=0) on JIT and AOT
+  and `utf8-invalid-string-gate: all green`. The original repro now prints
+  `99 97 195 -1 4` on both backends. Gates before/after, same machine:
+  conformance 102/102 -> 103/103, 28 PASS lines in `gates 2` -> 28 (tier2
+  GREEN both), bootstrap 16/16 -> 16/16.
+- Siblings sharing `handle_to_str`'s `unwrap_or("")` and LEFT OPEN (checked
+  live on the unfixed-for-them build): `base64_encode(substr("café", 0, 4))`
+  returns `""` (a valid `"caf"` gives `Y2Fm`); `sha256(bad) == sha256("")` is
+  `true`, so every invalid string hashes as the empty string (same pattern in
+  hmac/sha1/sha512/ed25519/pbkdf2, regex_*, http2_*, hex<->b64url). These are
+  the 46-call-site blast radius the 2026-08-01 strings wave filed; hashing
+  wants the raw bytes (a different fix from byte_at's) and base64_encode
+  wants an owner call on latin-1 vs raw. Still silent wrong answers: next
+  wave. `kryos-rt` `bytes_to_str` users (trim/contains/...) already panic.
+
 ## Wave: a struct-field closure's capture-box registry was keyed by name (2026-10-29)
 
 Found by an unrelated probe: `fn mkh(i: i64) -> Hf { return Hf { f: |x: i64| x + i } }`
@@ -1787,7 +1835,7 @@ were already written up in full by the waves that found them), triaged:**
 | 6 | snake_game (`ef501a2`) | P4 doc gap | `docs/19-language-reference.md` SS5.1 | Struct-field mutation through a fn param works without `mut`; reassigning the WHOLE param binding requires shadowing with a `mut` local -- real, but undocumented for parameters specifically | FIXED (doc) | `docs/19-language-reference.md` |
 | 7 | snake_game, found THIS session wiring it into `run_examples_e2e.sh` | P2 CLI tooling gap, undocumented in BOTH public and insider docs | `kryos-cli` (clap) | `kryos run <file> --demo` fails (`error: unexpected argument '--demo' found`) -- any script arg starting with `-`/`--` needs a `--` separator (`kryos run <file> -- --demo`); the compiled AOT binary has no such requirement. `snake_game.kry`'s OWN header comment demonstrated the non-working invocation | FIXED (doc + the file's own header + the e2e gate wiring) | `docs/01-getting-started.md` (CLI Commands table) -- **also missing from CLAUDE.md/FULL-REFERENCE.md before this session; genuinely new**, not merely un-published |
 | 8 | orbit_sim (`1ed41f5`) | -- | -- | No findings -- POSITIVE confirmation: f64 arithmetic byte-identical both backends, `--strict-capabilities` clean with ZERO `@capabilities` needed | n/a | n/a |
-| 9 | karc (`0415450`) | P0 (silent wrong answer) | core builtin `byte_at` | `byte_at(s, i)` silently returns `-1` for EVERY index (including valid ones) the instant `s` contains one invalid-UTF-8 byte anywhere -- not an error, exit 0 | **NOT FIXED (compiler)** -- documented only, see reasoning below | `docs/stdlib/core-builtins.md` (had NO entry for `byte_at` at all before this session, public or insider) |
+| 9 | karc (`0415450`) | P0 (silent wrong answer) | core builtin `byte_at` | `byte_at(s, i)` silently returns `-1` for EVERY index (including valid ones) the instant `s` contains one invalid-UTF-8 byte anywhere -- not an error, exit 0 | **FIXED 2026-10-29** (see the `byte_at` wave at the top); was: NOT FIXED (compiler) -- documented only, see reasoning below | `docs/stdlib/core-builtins.md` (had NO entry for `byte_at` at all before this session, public or insider) |
 | 10 | karc (`0415450`) | P3 (inconsistent, undocumented behavior split) | `std::fs::read_file` vs global `file_read` | `file_read` panics on invalid-UTF-8 content; `read_file`'s doc blanket-claims "throws if the file does not exist or cannot be read" but does NOT throw on invalid-UTF-8 content (no validity check at the read step) -- same input, different contract, undocumented split | FIXED (doc) | `docs/stdlib/fs.md` |
 | 11 | karc (`0415450`) | P4 doc gap | `chr`/`char_from` | `chr(n)` undocumented under its own name anywhere (an alias of `char_from`); neither entry warned that both are CODEPOINT constructors, not byte constructors (2-byte UTF-8 output for `n >= 128`), which matters for byte-buffer/binary code | FIXED (doc) | `docs/stdlib/core-builtins.md` |
 | 12 | karc (`0415450`) | P2 doc gap | `std::bytes` | No public doc page existed; not even listed in `docs/stdlib/README.md`'s module index (not even the "no separate docs" fallback table) -- completely undiscoverable | FIXED (doc: new `docs/stdlib/bytes.md` + README index entry) | `docs/stdlib/README.md`, new `docs/stdlib/bytes.md` |

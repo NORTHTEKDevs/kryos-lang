@@ -227,7 +227,7 @@ You do not need to `use` these — they're in the global namespace:
 | `sort(arr)` / `reverse(arr)`        | Sort / reverse an array IN PLACE (void). Array-only; write `sort(arr)` as a statement, NOT `arr = sort(arr)`. For a string use `std::string::reverse(s)`. |
 | `substr(s, start, end) -> str`      | Byte-indexed substring.                        |
 | `char_code(s) -> i64`               | First Unicode CODEPOINT of `s` as an integer (`char_code("é")` = 233, not the byte 195). Inverse of `char_from`. |
-| `byte_at(s, i) -> i64`              | CODEPOINT of the i-th CHARACTER (not the i-th raw UTF-8 byte): `byte_at("é", 0)` = 233. For latin-1 byte buffers (codepoints 0-255, per gotcha #22) codepoint == byte; there is no raw-byte accessor for a multibyte string. |
+| `byte_at(s, i) -> i64`              | CODEPOINT of the i-th CHARACTER (not the i-th raw UTF-8 byte): `byte_at("é", 0)` = 233. For latin-1 byte buffers (codepoints 0-255, per gotcha #22) codepoint == byte. A byte that is not part of valid UTF-8 is read raw (0-255) as its own unit instead of poisoning every index to -1; out of range is -1. For strict byte offsets use `char_code(substr(s, i, i + 1))`. |
 | `contains(haystack, needle)`        | Substring search.                              |
 | `sqrt`, `pow`, `sin`, `cos`         | Math (also in `std::math`).                    |
 

@@ -457,17 +457,21 @@ built entirely from codepoints `0..255` (e.g. via `chr`/`char_from`),
 codepoint and byte coincide, so `byte_at` behaves as a byte accessor -- this
 is the intended use for binary/byte-buffer code.
 
-**Invalid UTF-8, silent wrong answer:** if `s` contains even one genuinely
-invalid UTF-8 byte sequence anywhere (not just at index `i`), `byte_at`
-silently returns `-1` for EVERY index, including valid ones before the bad
-byte -- not an error, not a panic, a wrong answer with exit code 0. This is
-easy to hit by accident once a byte buffer is built by reading arbitrary
-binary data (a `.karc`/`.bin` fixture, a network payload) rather than only
-via `chr`/`char_from` (which can only ever produce valid UTF-8). If your
-buffer might contain arbitrary bytes, do not use `byte_at` -- read a byte via
-`char_code(substr(s, i, i + 1))` instead (see `examples/showcase/karc.kry`
-for a full worked byte-buffer archive tool built around this exact trap), or
-validate first with `std::utf8::is_valid(s)`.
+**Invalid UTF-8:** a string can hold invalid UTF-8 from ordinary code (a
+`substr()` that splits a multibyte character) or from reading binary data. A
+valid run still decodes to codepoints, exactly as above, and each invalid byte
+is read RAW as one unit (`0..255`, the same fallback `char_code` uses), so
+indices before and after a bad byte stay stable:
+`byte_at(substr("café", 0, 4), 3)` is `195` (the lone `0xC3`), and indices 0-2
+are `99 97 102`. Out of range (or negative `i`) returns `-1`. (Before
+2026-10-29 one invalid byte anywhere made `byte_at` return `-1` for EVERY
+index, silently, exit 0.)
+
+Limit: the index counts a valid multibyte sequence as ONE unit and an invalid
+byte as one unit, so on arbitrary binary data that might contain accidentally
+valid sequences `i` is not a byte offset. For strict byte offsets on such
+data use `char_code(substr(s, i, i + 1))` (see `examples/showcase/karc.kry`),
+or validate first with `std::utf8::is_valid(s)`.
 
 **See also:** `char_at`, `char_code`, `substr`
 

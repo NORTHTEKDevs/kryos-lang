@@ -686,27 +686,42 @@ pub extern "C" fn kryos_chr_ks(n: i64) -> i64 {
     str_to_handle(&s)
 }
 
-/// `byte_at(s: str, idx: i64) -> i64` — returns the byte at the i-th position
-/// (latin-1 codepoint scalar value). For ASCII strings this is the same as
-/// the standard byte; for strings produced by `chr(n)` this round-trips. Out
-/// of range returns -1.
+/// `byte_at(s: str, idx: i64) -> i64` — returns the i-th unit of `s`.
+///
+/// A unit is one Unicode codepoint (its full scalar value, matching
+/// `char_code` and the documented "CODEPOINT of the i-th CHARACTER" contract;
+/// for a latin-1 buffer built from `chr`/`base64_decode` that is the byte) or,
+/// where the bytes are NOT valid UTF-8, ONE RAW BYTE (0..=255), the same
+/// fallback `char_code` already uses. Valid strings behave exactly as before.
+/// A string with invalid bytes (an ordinary `substr()` that splits a multibyte
+/// character, a binary file) used to make EVERY index return -1, valid ones
+/// included, because `handle_to_str` collapsed the whole string to "". Now
+/// each valid run still decodes to codepoints and each invalid byte is read
+/// raw, so indices before and after a bad byte stay stable. Out of range
+/// (or negative) returns -1.
 #[no_mangle]
 pub extern "C" fn kryos_byte_at_ks(input_handle: i64, idx: i64) -> i64 {
-    let s = unsafe { handle_to_str(input_handle) };
     if idx < 0 {
         return -1;
     }
-    let i = idx as usize;
-    // Walk codepoints, returning the scalar value of the i-th one -- the FULL
-    // Unicode codepoint, matching char_code and the documented contract
-    // ("CODEPOINT of the i-th CHARACTER"). The previous `& 0xff` truncated
-    // any codepoint >= 256 (CJK, emoji, most non-Latin scripts) to its low
-    // byte -- byte_at("日", 0) returned 229 (26085 mod 256) instead of 26085.
-    // For a latin-1 buffer (codepoints 0-255, the base64/chr byte model) the
-    // mask was a no-op, which hid the bug.
-    for (k, ch) in s.chars().enumerate() {
-        if k == i {
-            return (ch as u32) as i64;
+    let (ptr, len) = unsafe { handle_to_bytes(input_handle) };
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
+    let mut remaining = idx as usize;
+    for chunk in bytes.utf8_chunks() {
+        for ch in chunk.valid().chars() {
+            if remaining == 0 {
+                return (ch as u32) as i64;
+            }
+            remaining -= 1;
+        }
+        for &b in chunk.invalid() {
+            if remaining == 0 {
+                return b as i64;
+            }
+            remaining -= 1;
         }
     }
     -1
