@@ -1,0 +1,54 @@
+// Conformance: byte_at on a string holding invalid UTF-8 (2026-10-29).
+// `byte_at` fed its string through `handle_to_str`, which collapsed ANY string
+// with one invalid byte to "", so every index (valid ones included) returned
+// -1 with exit 0. A substr() that splits a multibyte character produces such
+// a string from ordinary code. Now each valid run decodes to codepoints and
+// each invalid byte is read raw (0..255), the same fallback char_code uses;
+// valid strings are unchanged and out of range stays -1.
+
+fn expect(got: i64, want: i64, what: str) {
+    if got != want {
+        println("CONF FAIL: {what}: got {got}, want {want}")
+        exit(1)
+    }
+}
+
+fn main() {
+    // "caf" + the lone lead byte 0xC3 (substr is byte-indexed)
+    let bad = substr("café", 0, 4)
+    expect(len(bad), 4, "len(bad)")
+    expect(byte_at(bad, 0), 99, "bad[0] is 'c'")
+    expect(byte_at(bad, 1), 97, "bad[1] is 'a'")
+    expect(byte_at(bad, 2), 102, "bad[2] is 'f'")
+    expect(byte_at(bad, 3), 195, "bad[3] is the raw 0xC3")
+    expect(byte_at(bad, 4), -1, "bad[4] out of range")
+    expect(byte_at(bad, -1), -1, "bad[-1]")
+
+    // a cut 3-byte sequence (E6 97) and three stray bytes (97 A5 E6)
+    let tail = substr("日本", 0, 2)
+    expect(byte_at(tail, 0), 230, "tail[0]")
+    expect(byte_at(tail, 1), 151, "tail[1]")
+    expect(byte_at(tail, 2), -1, "tail[2] out of range")
+    let mid = substr("日本", 1, 4)
+    expect(byte_at(mid, 0), 151, "mid[0]")
+    expect(byte_at(mid, 1), 165, "mid[1]")
+    expect(byte_at(mid, 2), 230, "mid[2]")
+
+    // valid text, an invalid byte, valid text: indices stay stable around it
+    let mix = "A" + substr("é", 0, 1) + "é"
+    expect(byte_at(mix, 0), 65, "mix[0]")
+    expect(byte_at(mix, 1), 195, "mix[1] the stray 0xC3")
+    expect(byte_at(mix, 2), 233, "mix[2] the valid e-acute")
+    expect(byte_at(mix, 3), -1, "mix[3] out of range")
+
+    // valid strings are unchanged
+    expect(byte_at("café", 3), 233, "valid cafe[3]")
+    expect(byte_at("日本", 1), 26412, "valid CJK[1]")
+    let buf = chr(10) + chr(200) + chr(255) + chr(0)
+    expect(byte_at(buf, 1), 200, "latin-1 buffer [1]")
+    expect(byte_at(buf, 2), 255, "latin-1 buffer [2]")
+    expect(byte_at(buf, 3), 0, "latin-1 buffer [3]")
+    expect(byte_at(buf, 4), -1, "latin-1 buffer out of range")
+    expect(byte_at("", 0), -1, "empty")
+    println("end")
+}
