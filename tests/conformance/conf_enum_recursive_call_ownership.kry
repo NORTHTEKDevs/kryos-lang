@@ -1,0 +1,319 @@
+// Conformance (2026-10-29): a DIRECTLY self-recursive enum (`Node(Tree, Tree)`,
+// no array in between) is owned like any other enum: borrowed by calls, shared
+// once by the callee, dropped by whoever holds it. It used to stay on the move
+// model, which leaked every tree that crossed a call boundary; the fix gives it
+// owners, so this file also checks the use-after-free direction. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh (it also runs the
+// real-free binary and compares output).
+//   - a tree read after it was passed to a call, then again after allocation
+//     churn that would reuse a prematurely freed box
+//   - sub-trees bound by a match arm and passed on / returned / stored
+//   - a tree stored in an array, a map, a struct field, an Option, a closure
+//   - two enums containing each other
+//   - a tree rebuilt through a recursive fn (the interpreter/BST shape)
+use std::test::{assert_eq}
+use std::option::{Option, Some, None}
+
+enum Tree { Leaf(str), Node(Tree, Tree) }
+enum Ping { PL(str), Pg(Pong) }
+enum Pong { Pn(Ping, str) }
+enum Ex { Num(i64), Add(Ex, Ex), Neg(Ex) }
+struct Holder { name: str, t: Tree }
+struct Item { label: str, n: i64 }
+enum Chain { End, Link(Item, Chain) }
+enum Rose { RL(str), Br(Rose, [Rose]) }
+enum Lst<T> { Nil, Cons(T, Lst<T>) }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn leaves(t: Tree) -> i64 {
+    return match t {
+        Tree.Leaf(s) => len(s),
+        Tree.Node(a, b) => leaves(a) + leaves(b),
+    }
+}
+
+fn show(t: Tree) -> str {
+    return match t {
+        Tree.Leaf(s) => s,
+        Tree.Node(a, b) => "(" + show(a) + " " + show(b) + ")",
+    }
+}
+
+fn mk(d: i64, tag: str) -> Tree {
+    if d == 0 { return Tree.Leaf(tag) }
+    return Tree.Node(mk(d - 1, tag + "l"), mk(d - 1, tag + "r"))
+}
+
+fn left(t: Tree) -> Tree {
+    return match t {
+        Tree.Leaf(s) => t,
+        Tree.Node(a, b) => a,
+    }
+}
+
+fn id(t: Tree) -> Tree { return t }
+fn pair(t: Tree) -> Tree { return Tree.Node(t, t) }
+fn noop(t: Tree) -> i64 { return 1 }
+
+fn grow(t: Tree, k: i64) -> Tree {
+    return match t {
+        Tree.Leaf(s) => Tree.Node(Tree.Leaf(s), Tree.Leaf("g{k}")),
+        Tree.Node(a, b) => Tree.Node(grow(a, k + 1), b),
+    }
+}
+
+fn pings(p: Ping) -> i64 {
+    return match p {
+        Ping.PL(s) => len(s),
+        Ping.Pg(q) => pongs(q),
+    }
+}
+fn pongs(q: Pong) -> i64 {
+    return match q {
+        Pong.Pn(p, s) => pings(p) + len(s),
+    }
+}
+
+fn eval(e: Ex) -> i64 {
+    return match e {
+        Ex.Num(n) => n,
+        Ex.Add(a, b) => eval(a) + eval(b),
+        Ex.Neg(a) => 0 - eval(a),
+    }
+}
+fn simplify(e: Ex) -> Ex {
+    return match e {
+        Ex.Num(n) => Ex.Num(n),
+        Ex.Add(a, b) => Ex.Add(simplify(a), simplify(b)),
+        Ex.Neg(a) => match a {
+            Ex.Neg(inner) => simplify(inner),
+            Ex.Num(n) => Ex.Num(0 - n),
+            Ex.Add(x, y) => Ex.Neg(Ex.Add(x, y)),
+        },
+    }
+}
+
+fn chain_len(c: Chain) -> i64 {
+    return match c {
+        Chain.End => 0,
+        Chain.Link(it, rest) => len(it.label) + chain_len(rest),
+    }
+}
+fn chain_push(c: Chain, k: i64) -> Chain { return Chain.Link(Item { label: "i{k}", n: k }, c) }
+
+fn rose_size(r: Rose) -> i64 {
+    return match r {
+        Rose.RL(s) => len(s),
+        Rose.Br(h, ks) => {
+            let mut n = rose_size(h)
+            for k in ks { n = n + rose_size(k) }
+            return n
+        },
+    }
+}
+
+fn lst_sum(l: Lst<i64>) -> i64 {
+    return match l {
+        Lst.Nil => 0,
+        Lst.Cons(h, t) => h + lst_sum(t),
+    }
+}
+fn lst_str(l: Lst<str>) -> i64 {
+    return match l {
+        Lst.Nil => 0,
+        Lst.Cons(h, t) => len(h) + lst_str(t),
+    }
+}
+
+fn thrower(t: Tree, boom: bool) -> Tree {
+    if boom { throw "boom {leaves(t)}" }
+    return t
+}
+
+// Allocation churn: reuses any box a bug released early, so a later read of a
+// live tree sees the churn's bytes instead of its own.
+fn churn(n: i64) -> i64 {
+    let mut keep: [str] = []
+    let mut i = 0
+    while i < n {
+        keep = push(keep, "churn{i}" + "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")
+        let w = Tree.Node(Tree.Leaf("w{i}"), Tree.Leaf("v{i}"))
+        i = i + 1
+    }
+    return len(keep)
+}
+
+fn main() {
+    // Passed to a call, then read again after churn.
+    let t = mk(3, "t")
+    let want = show(t)
+    expect(leaves(t) == 8 * 4, "leaves after first call")
+    expect(churn(200) == 200, "churn 1")
+    expect(show(t) == want, "tree intact after a call and churn")
+    expect(noop(t) == 1 and noop(mk(2, "x")) == 1, "noop on a local and a temp")
+    expect(churn(200) == 200, "churn 2")
+    expect(show(t) == want and leaves(t) == 32, "tree intact after noop")
+
+    // A sub-tree bound by a match arm, returned, and read after the parent
+    // went through more calls.
+    let l = left(t)
+    expect(churn(100) == 100, "churn 3")
+    expect(show(l) == show(left(t)), "left() result survives its parent's calls")
+    expect(leaves(l) == 16, "left subtree leaves")
+    let ll = left(left(left(left(t))))
+    expect(show(ll) == "tlll", "deep left chain")
+    expect(show(t) == want, "parent intact after sub-tree extraction")
+
+    // Returned unchanged, doubled up, and rebuilt.
+    let same = id(t)
+    let two = pair(t)
+    expect(show(same) == want and leaves(two) == 64, "id and pair")
+    expect(churn(100) == 100, "churn 4")
+    expect(show(t) == want and show(same) == want, "owners independent")
+    let mut g = Tree.Leaf("s")
+    let mut k = 0
+    while k < 5 {
+        g = grow(g, k)
+        k = k + 1
+    }
+    expect(churn(100) == 100, "churn 5")
+    expect(leaves(g) > 5, "grown tree readable")
+
+    // Containers and fields.
+    let mut arr: [Tree] = []
+    let mut j = 0
+    while j < 4 {
+        arr = push(arr, mk(2, "a{j}"))
+        j = j + 1
+    }
+    expect(churn(100) == 100, "churn 6")
+    let mut total = 0
+    for x in arr { total = total + leaves(x) }
+    expect(total == 64, "array of trees")
+    let mut m: map<str, Tree> = {}
+    m["k"] = mk(2, "m")
+    m["k"] = mk(1, "n")
+    expect(churn(100) == 100, "churn 7")
+    expect(show(m["k"]) == "(nl nr)", "map value overwritten")
+    let h = Holder { name: "h", t: mk(2, "h") }
+    let h2 = Holder { name: "h2", t: h.t }
+    expect(churn(100) == 100, "churn 8")
+    expect(show(h.t) == show(h2.t) and leaves(h.t) == 12, "tree in struct fields")
+    let o: Option<Tree> = Some(mk(1, "o"))
+    match o {
+        Some(v) => { expect(show(v) == "(ol or)", "tree in Option") }
+        None() => { expect(false, "Option lost") }
+    }
+    let c = |q: i64| leaves(t) + q
+    expect(churn(100) == 100, "churn 9")
+    expect(c(1) == 33, "tree captured by a closure")
+
+    // Mutually recursive enums.
+    let mut pi = 0
+    let mut ptot = 0
+    while pi < 50 {
+        let p = Ping.Pg(Pong.Pn(Ping.Pg(Pong.Pn(Ping.PL("p{pi}"), "ab")), "c"))
+        ptot = ptot + pings(p) + pings(p)
+        pi = pi + 1
+    }
+    expect(ptot > 0 and churn(50) == 50, "mutually recursive enums")
+
+    // Interpreter shape.
+    let e = Ex.Add(Ex.Neg(Ex.Neg(Ex.Num(4))), Ex.Add(Ex.Num(3), Ex.Neg(Ex.Num(1))))
+    let s1 = simplify(e)
+    expect(churn(100) == 100, "churn 10")
+    expect(eval(e) == 6 and eval(s1) == eval(e), "eval and simplify")
+    let mut ei = 0
+    let mut etot = 0
+    while ei < 100 {
+        etot = etot + eval(simplify(Ex.Add(Ex.Num(ei), Ex.Neg(Ex.Neg(Ex.Num(1))))))
+        ei = ei + 1
+    }
+    expect(etot == 4950 + 100, "eval over fresh trees")
+
+    // A tree an inner scope built and passed on, read in the outer scope.
+    let mut outer = Tree.Leaf("o")
+    let mut r = 0
+    while r < 20 {
+        let inner = mk(2, "i{r}")
+        if r % 2 == 0 { outer = inner }
+        expect(noop(inner) == 1, "inner noop")
+        r = r + 1
+    }
+    expect(churn(100) == 100, "churn 11")
+    expect(show(outer) == "((i18ll i18lr) (i18rl i18rr))", "tree assigned from an inner scope")
+
+    // A tree read OUT of a container, then the slot overwritten: the read
+    // must own its reference (this crashed / double freed on master).
+    let mut slots: [Tree] = [mk(1, "p"), mk(1, "q")]
+    let got = slots[0]
+    let mut gm: map<str, Tree> = {}
+    gm["a"] = mk(2, "r")
+    let gm_got = gm["a"]
+    slots[0] = mk(1, "z")
+    gm["a"] = mk(1, "y")
+    expect(churn(100) == 100, "churn 12")
+    expect(show(got) == "(pl pr)" and show(gm_got) == "((rll rlr) (rrl rrr))", "container reads outlive their slots")
+    expect(show(slots[0]) == "(zl zr)" and show(gm["a"]) == "(yl yr)", "slots hold the new trees")
+    let mut cp = got
+    cp = grow(cp, 1)
+    expect(show(got) == "(pl pr)" and leaves(cp) > leaves(got), "copy rebuilt, source intact")
+
+    // Struct payload inside a recursive enum, built and passed in a loop.
+    let mut ch = Chain.End
+    let mut ci = 0
+    while ci < 30 {
+        ch = chain_push(ch, ci)
+        ci = ci + 1
+    }
+    expect(churn(100) == 100, "churn 13")
+    expect(chain_len(ch) == 10 * 2 + 20 * 3, "chain of struct payloads")
+    let ch2 = ch
+    ch = chain_push(ch, 99)
+    expect(chain_len(ch2) == 80 and chain_len(ch) == 83, "chain shared then extended")
+
+    // Direct recursion and an array of the same enum in one type.
+    let r = Rose.Br(Rose.RL("h"), [Rose.RL("a"), Rose.Br(Rose.RL("bb"), [Rose.RL("c")])])
+    let mut rt = 0
+    let mut ri = 0
+    while ri < 20 {
+        rt = rt + rose_size(r)
+        ri = ri + 1
+    }
+    expect(rt == 20 * 5 and rose_size(r) == 5, "rose tree")
+
+    // A generic recursive enum.
+    let mut li: Lst<i64> = Lst.Nil
+    let mut ls: Lst<str> = Lst.Nil
+    let mut gi = 0
+    while gi < 40 {
+        li = Lst.Cons(gi, li)
+        ls = Lst.Cons("s{gi}", ls)
+        gi = gi + 1
+    }
+    expect(churn(100) == 100, "churn 14")
+    expect(lst_sum(li) == 780 and lst_str(ls) == 10 * 2 + 30 * 3, "generic recursive list")
+    expect(lst_sum(li) == 780, "list intact after reads")
+
+    // Thrown past a frame holding a tree, and caught.
+    let mut caught = 0
+    let mut bi = 0
+    while bi < 20 {
+        try {
+            let kept = thrower(mk(1, "b{bi}"), bi % 2 == 0)
+            caught = caught + leaves(kept)
+        } catch e {
+            caught = caught + 100
+        }
+        bi = bi + 1
+    }
+    expect(caught == 1070, "tree across a throw")
+
+    println("conformance enum recursive call ownership: PASS")
+}

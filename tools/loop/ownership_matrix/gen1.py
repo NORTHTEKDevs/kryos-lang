@@ -17,6 +17,8 @@ TYPES = {
                 show='return match v {\n        Some(p) => p.name,\n        None => "none",\n    }'),
     'str': dict(t='str', ctor='"v{i}"', show='return v'),
     'arr': dict(t='[str]', ctor='["v{i}"]', show='return v[0]'),
+    'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
+                  show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
 CONSUMERS = ['let', 'reassign', 'structlit', 'arraylit', 'push', 'mapstore', 'payload', 'tuplelit', 'fieldstore', 'ret']
 # source kind -> (prelude lines, expr, kill lines); @C = ctor at i, @K = ctor at i + 100, @D = default
@@ -77,12 +79,12 @@ for tk, td in TYPES.items():
         G = '{"k": "v7"}'
     M = {'@C': C, '@K': K, '@D': D, '@T': T}
     for sk, sv in SOURCES.items():
-        if tk == 'fn' and sk == 'fldconst':
+        if tk in ('fn', 'rtree') and sk == 'fldconst':
             continue
         L = []
         if tk == 'opt':
             L.append('use std::option::{Option, Some, None}')
-        L += ['struct P { name: str, n: i64 }', f'struct H {{ f: {T}, n: i64 }}', f'enum W {{ Has({T}), No }}']
+        L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', f'struct H {{ f: {T}, n: i64 }}', f'enum W {{ Has({T}), No }}']
         if sk == 'fldconst':
             L.append(f'let GH: H = H {{ f: {G}, n: 1 }}')
         L += ['fn churn(i: i64) -> i64 {', '    let mut junk: [str] = []', '    let mut j = 0', '    while j < 40 {',

@@ -11591,51 +11591,47 @@ impl LlvmCodegen {
         self.shareable_walk(name, true, 0)
     }
 
-    fn enum_reaches(&self, from: &str, target: &str, depth: u32) -> bool {
-        if depth > 8 {
-            return true;
-        }
-        let Some(variants) = self.enum_defs.get(from) else { return false };
-        variants.iter().any(|v| {
-            v.fields.iter().any(|f| match f {
-                MirType::Enum(n) => n == target || self.enum_reaches(n, target, depth + 1),
-                _ => false,
-            })
-        })
+    fn shareable_walk(&self, name: &str, is_enum: bool, depth: u32) -> bool {
+        self.shareable_walk_v(name, is_enum, depth, &mut Vec::new())
     }
 
-    fn shareable_walk(&self, name: &str, is_enum: bool, depth: u32) -> bool {
+    /// Mirrors kryos-mir's `shareable_walk_v`: a type already on the walk's
+    /// stack (a recursive enum, or enums containing each other) is assumed
+    /// shareable -- the share retains a nested enum's box and never recurses
+    /// into it.
+    fn shareable_walk_v(&self, name: &str, is_enum: bool, depth: u32, on_stack: &mut Vec<(bool, String)>) -> bool {
         if depth > 32 {
             return false;
         }
-        if is_enum {
-            let Some(variants) = self.enum_defs.get(name) else {
-                return false;
-            };
-            variants.iter().all(|v| {
-                v.fields.iter().all(|f| match f {
-                    // Mirrors kryos-mir's shareable_enum_walk: a nested enum
-                    // payload is an owner-counted kryos_calloc box (the share
-                    // retains it), unless the enum is recursive.
-                    MirType::Enum(n) => {
-                        n != name && !self.enum_reaches(n, name, 0) && self.shareable_walk(n, true, depth + 1)
-                    }
-                    MirType::Struct(n) => {
-                        !self.copy_structs.contains(n) && self.shareable_walk(n, false, depth + 1)
-                    }
-                    _ => true,
-                })
-            })
-        } else {
-            let Some(fields) = self.struct_defs.get(name) else {
-                return false;
-            };
-            fields.iter().all(|(_, t)| match t {
-                MirType::Enum(n) => self.shareable_walk(n, true, depth + 1),
-                MirType::Struct(n) => self.shareable_walk(n, false, depth + 1),
-                _ => true,
-            })
+        if on_stack.iter().any(|(e, n)| *e == is_enum && n == name) {
+            return true;
         }
+        on_stack.push((is_enum, name.to_string()));
+        let ok = if is_enum {
+            match self.enum_defs.get(name) {
+                None => false,
+                Some(variants) => variants.iter().all(|v| {
+                    v.fields.iter().all(|f| match f {
+                        MirType::Enum(n) => self.shareable_walk_v(n, true, depth + 1, on_stack),
+                        MirType::Struct(n) => {
+                            !self.copy_structs.contains(n) && self.shareable_walk_v(n, false, depth + 1, on_stack)
+                        }
+                        _ => true,
+                    })
+                }),
+            }
+        } else {
+            match self.struct_defs.get(name) {
+                None => false,
+                Some(fields) => fields.iter().all(|(_, t)| match t {
+                    MirType::Enum(n) => self.shareable_walk_v(n, true, depth + 1, on_stack),
+                    MirType::Struct(n) => self.shareable_walk_v(n, false, depth + 1, on_stack),
+                    _ => true,
+                }),
+            }
+        };
+        on_stack.pop();
+        ok
     }
 
     fn emit_struct_share(&mut self, val: &str, struct_name: &str) {

@@ -2852,7 +2852,15 @@ fn emit_enum_deep_copy<M: Module>(
     // a self-referential monomorphized enum, e.g. `List<T> { Cons(T,
     // List<T>) }`, recurses this Rust function into itself with no base
     // case, overflowing the COMPILER's own stack during codegen).
+    //
+    // At runtime the nested value is a RECURSIVE reference (`Node(Tree, Tree)`
+    // reaches `Tree` again): the copy cannot descend into it at compile time,
+    // so it SHARES the nested box and takes its own owner of it. Returning the
+    // bare pointer left the copy and the source both owning one box (a double
+    // free once recursive enums became owned values).
     if !visiting.insert(enum_name.to_string()) {
+        let retain_ref = ensure_func_ref_with_args("kryos_struct_retain", builder, translator, module, 1)?;
+        builder.ins().call(retain_ref, &[val]);
         return Ok(val);
     }
     let result = emit_enum_deep_copy_inner(enum_name, val, builder, translator, module, visiting);

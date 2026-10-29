@@ -10,6 +10,75 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a directly self-recursive enum was never owned, so every tree that crossed a call leaked -- and reading one back out of a container was a use-after-free (2026-10-29)
+
+Closes the "recursive enums stay on the move model" residual (waves 2026-10-10
+"nested enums join the shared-owner model" and 2026-10-14 "recursive enums"
+still-open note). Leak first, but the reproduction also found a memory-safety
+bug under it (a container read), so the rank is silent wrong answer / UAF.
+- Repro (before; peak RSS at 1,000,000 iterations, AOT / JIT, baseline 3-4MB,
+  `tests/mem_enum_recursive_call_gate.sh`, probe
+  `tests/mem/enum_recursive_call_leak.kry`, `enum Tree { Leaf(str), Node(Tree,
+  Tree) }`): `noop(mkleaf(i))` 64 / 127MB, `noop(mkt(i))` 368 / 432MB, a
+  local passed to `noop` 371 / 432MB, a linear `N1(N1(L1))` chain 124 / 157MB,
+  two enums containing each other 157 / 188MB, `match` with bindings in a
+  callee 371 / 555MB, an AST `eval` shape 309 / 676MB, and the JIT-only case
+  `let t = mkt(i)  acc = acc + match t { Leaf(s) => 1, Node(a, b) => 2 }` in
+  `main`: 4 / 188MB. Controls: a non-recursive enum of the same shape, and
+  build-then-drop with no call, were 4MB. 19 of 24 legs failed the 40MB
+  ceiling on the reverted build. The leak was at the call boundary even for a
+  one-leaf tree. The existing `mem_enum_recursive_gate.sh` only covers the
+  ARRAY form (`enum T { N([T]) }`), which is a shareable enum and never
+  passed a tree to a function, which is why it stayed green.
+- Second finding, same cause: the ownership matrix (gen1/2/3, new `rtree`
+  type) on master. Reading a recursive enum out of an array or map
+  (`let y = xs[0]`, `m["k"]`, `mkxs(i)[0]`) crashed the JIT and Cranelift
+  AOT with rc=132 (illegal instruction) and printed 12-18 double-free
+  reports per program on LLVM AOT. 30 of 87 backend legs were unclean on
+  master; the new conformance program fails its container-read check
+  (`CONF FAIL: container reads outlive their slots`, JIT and AOT): a tree
+  read out of a slot did not survive the slot being overwritten.
+- Root cause: `shareable_enum_walk` (MIR) and `shareable_walk` (LLVM) rejected
+  any enum that reaches itself (`n != name && !enum_reaches(..)`), so
+  `is_owned_enum_ty` was false for it. `consume_call_args` then treated a call
+  argument as MOVED (the caller's scope-end drop suppressed) while the callee
+  recorded the param in `param_locals` (a non-owned param is never dropped):
+  nobody freed the tree. The only reason for the exclusion was that the walk
+  recursed on every self-reference. Nothing in the share is recursive: the
+  Cranelift share retains the enum box, the LLVM `emit_enum_share_payload`
+  retains a nested enum payload's box, and the drop helpers release contents
+  only at the last owner, so a recursive enum needs no special treatment.
+- Fix (compiler only; kryos-rt unchanged): the two shareability walks are
+  cycle-safe (an in-progress type on the walk's stack is assumed shareable;
+  `enum_reaches` deleted in both). Cranelift's `emit_enum_deep_copy` (behind
+  `__kryos_enum_index_clone`) returned the bare pointer at its compile-time
+  cycle guard, so a copy and its source owned the nested box once each; it now
+  `kryos_struct_retain`s it (this is the container-read double free).
+- Pinned by `tests/mem_enum_recursive_call_gate.sh` (12 modes x 2 backends, in
+  CI), `tests/conformance/conf_enum_recursive_call_ownership.kry` (use-after-
+  free direction: tree read after the call and after allocation churn,
+  sub-trees returned from match binds, container read then slot overwritten,
+  struct payload in a recursive enum, tree plus array in one enum, generic
+  `Lst<T>`, tree across a throw; run under KRYOS_FREE_DIAG and real frees by
+  `no_double_free.sh` case `enum_recursive_call_ownership`), and an `rtree`
+  type added to `tools/loop/ownership_matrix/gen1.py`, `gen2.py`, `gen3.py`.
+- Evidence (fix reverted, full `cargo build --release`): the new gate FAILED
+  19 of 24 legs (e.g. `rec_node` AOT 368MB, JIT 432MB) rc=1, and the
+  conformance program exited rc=1 on both backends. Fix restored, full
+  rebuild: gate PASS, every leg 3-4MB; conformance PASS on JIT, LLVM AOT and
+  Cranelift AOT under KRYOS_FREE_DIAG. Ownership matrix, 29 `rtree`
+  programs, master vs fix (`compare.py`): `regressions 0, crash-only 0;
+  same-clean 57, fixed 30, both-unclean 0`. All 13 other `tests/mem_*_gate.sh`
+  gates PASS. Gates before/after, same machine: `gates 2` 28 PASS -> 28 PASS
+  (conformance 103/103 -> 104/104, tier2 GREEN both), bootstrap 16/16 -> 16/16.
+- Residual (measured, not fixed): dropping a recursive enum recurses once per
+  level (`__kryos_drop_<Enum>` / the Cranelift drop), so a chain deeper than
+  roughly 600-800k nodes overflows the stack at drop (`kryos: stack overflow`,
+  rc=253; 600k ok, 800k overflows, identical on master for a local that is
+  never passed to a function). What changed is reach: a deep chain that crossed
+  a call used to leak silently and now hits that same limit at scope end. An
+  iterative drop of the last recursive field would lift it. Not touched here.
+
 ## Wave: uncaught throw in a `coop_spawn` task or an actor handler was non-fatal, so a blocked consumer hung forever (2026-10-29)
 
 Availability (silent hang, rc=124), reachable from ordinary code. Sibling of
@@ -770,7 +839,8 @@ it: prints another value's payload) and the `nested_enum` mode of
   (`emit_enum_share_payload`) and its drop helper already releases the
   contents only at the last owner; Cranelift shares the outer box. A
   RECURSIVE enum (`Expr { Add(Expr, Expr) }`, or two enums containing each
-  other -- `enum_reaches`) stays on the move model: the walk would branch
+  other -- `enum_reaches`) stayed on the move model (SUPERSEDED 2026-10-29,
+  first wave above: recursive enums are shareable now): the walk would branch
   on every self-reference.
 - `let mut b = a` of an array of structs/enums duplicated it with dup kind
   2 (an arc retain), a no-op on kryos_calloc element boxes, so both arrays

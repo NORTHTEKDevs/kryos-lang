@@ -2657,41 +2657,55 @@ fn struct_is_shareable(ctx: &LoweringContext, name: &str) -> bool {
 
 /// Shared recursion for `struct_is_shareable` / `enum_is_shareable`: a
 /// struct field may be a shareable enum (LLVM shares its inline payload,
-/// Cranelift its box), an enum payload may be a shareable struct, but never
-/// another enum (LLVM's nested-enum boxes are outside the share).
+/// Cranelift its box), an enum payload may be a shareable struct or another
+/// shareable enum (an owner-counted box: the share retains the box, the drop
+/// helper releases the contents at the last owner). A type already on the
+/// walk's stack (a RECURSIVE enum, `Tree { Node(Tree, Tree) }`, or two enums
+/// containing each other) is assumed shareable: the share only ever retains
+/// the nested box, it never recurses into it, so a self-reference adds no new
+/// requirement beyond the other payloads the walk already checks.
 fn shareable_struct_walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
-    if depth > 32 || ctx.actor_defs.contains_key(name) {
-        return false;
-    }
-    let Some(fields) = ctx.struct_defs.get(name) else {
-        return false;
-    };
-    fields.iter().all(|(_, t)| match t {
-        MirType::Enum(n) => shareable_enum_walk(ctx, n, depth + 1),
-        MirType::Struct(n) => shareable_struct_walk(ctx, n, depth + 1),
-        _ => true,
-    })
+    shareable_walk_v(ctx, name, false, depth, &mut Vec::new())
 }
 
 fn shareable_enum_walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
-    if depth > 32 || ctx.generic_enum_templates.contains_key(name) {
+    shareable_walk_v(ctx, name, true, depth, &mut Vec::new())
+}
+
+fn shareable_walk_v(ctx: &LoweringContext, name: &str, is_enum: bool, depth: u32, on_stack: &mut Vec<(bool, String)>) -> bool {
+    if depth > 32 || ctx.actor_defs.contains_key(name) {
         return false;
     }
-    let Some(variants) = ctx.enum_defs.get(name) else {
-        return false;
+    if on_stack.iter().any(|(e, n)| *e == is_enum && n == name) {
+        return true;
+    }
+    on_stack.push((is_enum, name.to_string()));
+    let ok = if is_enum {
+        match ctx.enum_defs.get(name) {
+            _ if ctx.generic_enum_templates.contains_key(name) => false,
+            None => false,
+            Some(variants) => variants.iter().all(|v| {
+                v.fields.iter().all(|f| match f {
+                    MirType::Enum(n) => shareable_walk_v(ctx, n, true, depth + 1, on_stack),
+                    MirType::Struct(n) => {
+                        !ctx.copy_structs.contains(n.as_str()) && shareable_walk_v(ctx, n, false, depth + 1, on_stack)
+                    }
+                    _ => true,
+                })
+            }),
+        }
+    } else {
+        match ctx.struct_defs.get(name) {
+            None => false,
+            Some(fields) => fields.iter().all(|(_, t)| match t {
+                MirType::Enum(n) => shareable_walk_v(ctx, n, true, depth + 1, on_stack),
+                MirType::Struct(n) => shareable_walk_v(ctx, n, false, depth + 1, on_stack),
+                _ => true,
+            }),
+        }
     };
-    variants.iter().all(|v| {
-        v.fields.iter().all(|f| match f {
-            // A nested enum payload is a kryos_calloc box on LLVM (an owner-
-            // counted box on Cranelift): the share retains the box and its
-            // drop helper releases the contents at the last owner.
-            MirType::Enum(n) => n != name && !enum_reaches(ctx, n, name, 0) && shareable_enum_walk(ctx, n, depth + 1),
-            MirType::Struct(n) => {
-                !ctx.copy_structs.contains(n.as_str()) && shareable_struct_walk(ctx, n, depth + 1)
-            }
-            _ => true,
-        })
-    })
+    on_stack.pop();
+    ok
 }
 
 /// A non-`@copy`, shareable struct type: its values are borrowed by calls,
@@ -2701,22 +2715,6 @@ fn shareable_enum_walk(ctx: &LoweringContext, name: &str, depth: u32) -> bool {
 /// allocator the share does not cover) and every struct payload shareable.
 /// Cranelift: a kryos_calloc box (kryos_struct_retain); LLVM: an inline
 /// `{ tag, words.. }` aggregate (per-variant leaf retain).
-/// Does enum `from` contain enum `target` anywhere in its payload graph (a
-/// recursive enum)? Those stay on the move model: the share walk would
-/// otherwise branch on every self-reference.
-fn enum_reaches(ctx: &LoweringContext, from: &str, target: &str, depth: u32) -> bool {
-    if depth > 8 {
-        return true;
-    }
-    let Some(variants) = ctx.enum_defs.get(from) else { return false };
-    variants.iter().any(|v| {
-        v.fields.iter().any(|f| match f {
-            MirType::Enum(n) => n == target || enum_reaches(ctx, n, target, depth + 1),
-            _ => false,
-        })
-    })
-}
-
 fn enum_is_shareable(ctx: &LoweringContext, name: &str) -> bool {
     shareable_enum_walk(ctx, name, 0)
 }

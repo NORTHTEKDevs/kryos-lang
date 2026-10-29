@@ -1,0 +1,87 @@
+// Peak-RSS probe for tests/mem_enum_recursive_call_gate.sh (2026-10-29).
+// A DIRECTLY self-recursive enum (a `Tree` field, no array in between) passed
+// to a function used to leak the whole tree: it was not a shareable enum, so
+// the caller's drop was suppressed (the old move model) and the callee, which
+// never owns a non-shareable param, never freed it. Each mode runs LEAK_ITERS
+// times; a leak grows RSS linearly.
+//   flat            control: a non-recursive enum of the same shape
+//   rec_nocall      control: build and drop a tree, no call
+//   rec_leaf_only   noop(mkleaf(i)): a one-leaf tree through a call
+//   rec_node        noop(mkt(i)): a temp tree argument
+//   rec_node_local  let t = mkt(i)  noop(t)
+//   rec_chain       a linear N1(N1(L1)) chain through a call
+//   mutual          two enums containing each other, through a call
+//   bind_temp       match with bindings in a callee over a temp tree
+//   nobind_temp     the same match with wildcard patterns
+//   bind_local      a local tree through the binding match
+//   inline_match    `match t { Leaf(s) => 1, Node(a, b) => 2 }` on a local, in main
+//   eval_ast        an interpreter shape: recursive eval over a fresh AST
+enum Tree { Leaf(str), Node(Tree, Tree) }
+enum Flat { A(str), B(str, str) }
+enum Tr1 { L1(str), N1(Tr1) }
+enum Ping { PL(str), Pg(Pong) }
+enum Pong { Pn(Ping, str) }
+enum Ex { Num(i64), Add(Ex, Ex), Mul(Ex, Ex), Neg(Ex) }
+
+fn mkt(i: i64) -> Tree { return Tree.Node(Tree.Leaf("a{i}"), Tree.Node(Tree.Leaf("b{i}"), Tree.Leaf("c"))) }
+fn mkleaf(i: i64) -> Tree { return Tree.Leaf("a{i}") }
+fn mkf(i: i64) -> Flat { return Flat.B("a{i}", "c") }
+fn mk1(i: i64) -> Tr1 { return Tr1.N1(Tr1.N1(Tr1.L1("a{i}"))) }
+fn mkp(i: i64) -> Ping { return Ping.Pg(Pong.Pn(Ping.PL("a{i}"), "c")) }
+fn mkex(i: i64) -> Ex { return Ex.Add(Ex.Mul(Ex.Num(i), Ex.Num(2)), Ex.Neg(Ex.Num(3))) }
+
+fn noop(t: Tree) -> i64 { return 1 }
+fn noopf(t: Flat) -> i64 { return 1 }
+fn noop1(t: Tr1) -> i64 { return 1 }
+fn noopp(t: Ping) -> i64 { return 1 }
+fn m_bind(t: Tree) -> i64 { return match t { Tree.Leaf(s) => 1, Tree.Node(a, b) => 2 } }
+fn m_nobind(t: Tree) -> i64 { return match t { Tree.Leaf(_) => 1, Tree.Node(_, _) => 2 } }
+fn eval(e: Ex) -> i64 {
+    return match e {
+        Ex.Num(n) => n,
+        Ex.Add(a, b) => eval(a) + eval(b),
+        Ex.Mul(a, b) => eval(a) * eval(b),
+        Ex.Neg(a) => 0 - eval(a),
+    }
+}
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut acc = 0
+    while i < iters {
+        if mode == "flat" {
+            acc = acc + noopf(mkf(i))
+        } elif mode == "rec_nocall" {
+            let t = mkt(i)
+            acc = acc + 1
+        } elif mode == "rec_leaf_only" {
+            acc = acc + noop(mkleaf(i))
+        } elif mode == "rec_node" {
+            acc = acc + noop(mkt(i))
+        } elif mode == "rec_node_local" {
+            let t = mkt(i)
+            acc = acc + noop(t)
+        } elif mode == "rec_chain" {
+            acc = acc + noop1(mk1(i))
+        } elif mode == "mutual" {
+            acc = acc + noopp(mkp(i))
+        } elif mode == "bind_temp" {
+            acc = acc + m_bind(mkt(i))
+        } elif mode == "nobind_temp" {
+            acc = acc + m_nobind(mkt(i))
+        } elif mode == "bind_local" {
+            let t = mkt(i)
+            acc = acc + m_bind(t)
+        } elif mode == "inline_match" {
+            let t = mkt(i)
+            acc = acc + match t { Tree.Leaf(s) => 1, Tree.Node(a, b) => 2 }
+        } elif mode == "eval_ast" {
+            acc = acc + eval(mkex(i))
+        }
+        i = i + 1
+    }
+    println(acc)
+}
