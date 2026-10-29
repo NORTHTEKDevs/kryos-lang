@@ -1,0 +1,36 @@
+// ATTACK (closes the actor half of the coop_spawn uncaught-throw cluster):
+// does an uncaught `throw` inside an ACTOR HANDLER get the same fatal severity
+// as an uncaught throw in a `spawn`ed task or a `coop_spawn`ed task, or does
+// the actor "recover" and leave a reply-channel consumer blocked forever?
+//
+// A Kryos throw is a thread-local flag plus a synthesized early return, so
+// every statement after the throw point in the handler is skipped -- here the
+// `send(ch, n)` the main thread is waiting on. The actor dispatch loop used to
+// log "[actor error] ..." and carry on to the next message, so the third
+// `recv` below hung forever (rc=124) with no link to the logged line. Now the
+// throw is fatal (exit 101), exactly like spawn (LEDGER item 16).
+actor Worker {
+    done: i64
+
+    fn process(self, ch: i64, n: i64) {
+        if n == 1 {
+            throw "boom in actor handler"
+        }
+        send(ch, n)
+    }
+}
+
+fn main() {
+    let ch = chan()
+    let w = Worker()
+    w.process(ch, 0)
+    w.process(ch, 1)
+    w.process(ch, 2)
+    let a = recv(ch)
+    println("got a=" + to_string(a))
+    let b = recv(ch)
+    println("got b=" + to_string(b))
+    println("about to recv third value -- if the actor throw was swallowed instead of fatal, this HANGS FOREVER")
+    let c = recv(ch)
+    println("got c=" + to_string(c))
+}

@@ -1,0 +1,21 @@
+// CONTROL for attack_actor_throw_waiter_hang.kry: same shape, but the handler
+// never throws, so all three replies arrive and main finishes cleanly.
+actor Worker {
+    done: i64
+
+    fn process(self, ch: i64, n: i64) {
+        send(ch, n)
+    }
+}
+
+fn main() {
+    let ch = chan()
+    let w = Worker()
+    w.process(ch, 0)
+    w.process(ch, 1)
+    w.process(ch, 2)
+    let a = recv(ch)
+    let b = recv(ch)
+    let c = recv(ch)
+    println("control finished cleanly " + to_string(a + b + c))
+}

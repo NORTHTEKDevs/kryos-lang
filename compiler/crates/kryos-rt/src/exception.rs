@@ -163,9 +163,13 @@ pub extern "C" fn kryos_exception_report_thread_fatal_if_pending() -> i64 {
 /// (`<actor>.<handler>`), not user data. `exc_val` is the exception value
 /// already taken via `kryos_exception_take` (ownership transferred to this
 /// call). Mirrors `kryos_exception_report_thread_if_pending`'s wording for
-/// the `spawn` path, so both surfaces read the same way in logs. Unlike the
-/// `spawn`/`main` report paths, this does NOT kill the caller — the actor's
-/// dispatch loop continues to the next message after this returns.
+/// the `spawn` path, so both surfaces read the same way in logs. Like the
+/// `spawn` path it is FATAL: after printing, the whole process exits with
+/// `UNCAUGHT_EXCEPTION_EXIT_CODE` (101). A handler throw skips every
+/// statement after the throw point, commonly the reply `send` a caller is
+/// blocked on; the old "log and carry on to the next message" behavior left
+/// that caller hanging forever with no link to the logged line (same class as
+/// LEDGER item 16). This call never returns to the dispatch loop.
 #[no_mangle]
 pub extern "C" fn kryos_actor_report_exception(label: i64, exc_val: i64) -> i64 {
     let label_text = if label != 0 {
@@ -204,7 +208,7 @@ pub extern "C" fn kryos_actor_report_exception(label: i64, exc_val: i64) -> i64 
     if !printed {
         eprintln!("[actor error] {label_text}: uncaught exception (value: {exc_val})");
     }
-    1
+    std::process::exit(UNCAUGHT_EXCEPTION_EXIT_CODE);
 }
 
 /// If an exception is pending, print it to stderr and exit nonzero.

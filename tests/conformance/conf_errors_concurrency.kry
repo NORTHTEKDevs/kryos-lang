@@ -70,18 +70,15 @@ actor Collector {
     }
 }
 
-// An uncaught `throw` inside an actor handler must NOT silently kill the actor:
-// it is logged ([actor error] ...) and the actor RECOVERS to process later
-// messages. A negative amount throws (no reply); good amounts accumulate and
-// reply their running total. Sending good/bad/good must yield 2 replies whose
-// second reflects BOTH good messages -- proving the actor survived the throw.
+// An actor handler accumulates private state across messages and replies its
+// running total. (An UNCAUGHT throw inside a handler is fatal -- exit 101, like
+// spawn -- so it cannot be exercised from a conformance program that must exit
+// 0; it is pinned in tests/concurrency_smoke.sh via
+// tests/security/attack_actor_throw_waiter_hang.kry.)
 actor Adder {
     sum: i64
 
     fn add(self, x: i64, reply: i64) {
-        if x < 0 {
-            throw "negative"
-        }
         sum = sum + x
         send(reply, sum)
     }
@@ -408,20 +405,15 @@ fn main() {
     }
     expect(lensum == 6, "actor [str]/map state persists (1+2+3), not null-init")
 
-    // Actor recovers from an uncaught throw in a handler: send good(5),
-    // bad(-1 throws, no reply), good(10). We must get exactly 2 replies; the
-    // second is 15 (5+10), proving the actor survived the throw and its state
-    // is intact. A regression (actor dies on throw) would never send the 2nd
-    // reply. The throw is logged to stderr as `[actor error] ...` (not asserted
-    // here since it's stderr), but it is NOT silent and NOT fatal.
+    // Actor state persists across messages: add(5) replies 5, add(10) replies
+    // 15 (5+10).
     let ach = chan()
     let adder = Adder()
     adder.add(5, ach)
-    adder.add(-1, ach)
     adder.add(10, ach)
     let r1 = recv(ach)
     let r2 = recv(ach)
-    expect(r1 + r2 == 5 + 15, "actor recovers from uncaught throw, processes later messages")
+    expect(r1 + r2 == 5 + 15, "actor accumulates private state across messages")
 
     // Actor-to-actor delegation via an actor-typed field: Dispatcher.relay
     // delegates to its Worker2 field, which replies its running total.

@@ -18456,9 +18456,11 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
     // after the handler call - suppresses the backends' automatic check
     // (both backends special-case "next instruction is a call to
     // `kryos_exception_check`", the same signal `emit_exception_check`
-    // uses for try/catch) and lets us recover instead: take the exception,
-    // report it to stderr, and loop back to `bb_poll` for the next message.
-    // One bad message aborts only itself; the actor and its state survive.
+    // uses for try/catch) and lets us take the exception and report it by
+    // handler name. The report call is FATAL (`kryos_actor_report_exception`
+    // exits 101): a handler throw skips the rest of the handler, commonly the
+    // reply `send` a caller is blocked on, so carrying on to the next message
+    // left that caller hanging forever (same class as spawn, LEDGER item 16).
     for (i, (handler_name, param_count)) in handlers.iter().enumerate() {
         let mut instructions = Vec::new();
 
@@ -18506,8 +18508,9 @@ fn generate_actor_dispatch(actor_name: &str, handlers: &[(String, usize)]) -> Mi
             },
         });
 
-        // Exception-recovery block: take + report the exception (naming
-        // the actor and handler), then continue the loop.
+        // Exception-report block: take + report the exception (naming the
+        // actor and handler). The runtime call does not return (exit 101);
+        // the Goto below is only the CFG's well-formed terminator.
         let label = format!("{actor_name}.{handler_name}");
         blocks.push(BasicBlock {
             id: exc_blocks[i],
