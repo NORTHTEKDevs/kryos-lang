@@ -276,18 +276,20 @@ pub struct LoweringContext {
     /// These must NOT be dropped by scope cleanup - the moved fields already
     /// own (and will free) their heap data; a full struct drop would double-free.
     partial_moved_locals: HashSet<u32>,
-    /// Ref-captured scalar variable name -> every heap box (`RValue::ArcAlloc`
-    /// cell) created for it so far in the CURRENT function. Populated when a
+    /// Ref-captured scalar variable (its LOCAL id, not its name: a name is
+    /// reused by an unrelated shadowing/later binding, whose assignments must
+    /// not write through the first one's boxes) -> every heap box
+    /// (`RValue::ArcAlloc` cell) created for it so far in the CURRENT function. Populated when a
     /// struct-literal-field closure literal (see `pending_box_scalar_captures`)
     /// boxes one of its non-mutated captures instead of snapshotting it by
-    /// value. `Stmt::Assign` to a plain identifier consults this map and
-    /// additionally writes the new value through every box on file, so a
+    /// value. `Stmt::Assign` to a plain identifier consults this map (by the
+    /// resolved local) and additionally writes the new value through every box on file, so a
     /// struct-field closure invoked LATER sees a mutation made to the outer
     /// variable AFTER the closure was constructed -- gotcha #11's by-reference
     /// promise, otherwise only honored for the `closure_locals` direct-call
     /// fast path (see `n01_closure_field_vs_local`-class bugs). Scoped like
     /// `closure_locals`: saved/restored around a nested lambda's own frame.
-    capture_boxes: HashMap<String, Vec<LocalId>>,
+    capture_boxes: HashMap<u32, Vec<LocalId>>,
     /// Set by a struct-literal field whose value is directly a `Lambda`
     /// expression, immediately before lowering that expression, and consumed
     /// (reset to `false`) at the top of the Lambda arm. Tells that ONE lambda
@@ -778,6 +780,12 @@ impl LoweringContext {
         // was simply missed.
         self.borrowed_locals.clear();
         self.env_owned_locals.clear();
+        // Variable local id -> box local ids of the function just lowered. Local
+        // ids restart at 0, so a stale entry made the NEXT top-level function's
+        // plain `name = ...` store through an unrelated local (a verifier error on
+        // the JIT, a segfault or silent wrong write on the AOT). A nested
+        // lambda's frame is already empty here: `save_function_state` takes it.
+        self.capture_boxes.clear();
         self.try_catch_target = None;
         self.local_actor_types.clear();
     }
@@ -886,7 +894,7 @@ struct FunctionState {
     closure_locals: HashMap<String, (String, Vec<Operand>)>,
     closure_local_ids: HashMap<String, u32>,
     current_ret_ty: MirType,
-    capture_boxes: HashMap<String, Vec<LocalId>>,
+    capture_boxes: HashMap<u32, Vec<LocalId>>,
     try_catch_target: Option<TryCatchTarget>,
     local_actor_types: HashMap<u32, String>,
     dropped_locals: HashSet<u32>,
@@ -7061,7 +7069,7 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // otherwise only honored for the `closure_locals`
                             // direct-call fast path (n01_closure_field_vs_local
                             // -class bugs).
-                            if let Some(boxes) = ctx.capture_boxes.get(name.as_str()).cloned() {
+                            if let Some(boxes) = ctx.capture_boxes.get(&dest.0).cloned() {
                                 for box_id in boxes {
                                     ctx.emit(Instruction::StoreDeref {
                                         ptr: Operand::Local(box_id),
@@ -16712,7 +16720,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                     // (both already-documented, tested boundaries).
                     if !mutated_scalar_boxed.contains(name) {
                         ctx.capture_boxes
-                            .entry(name.clone())
+                            .entry(local.0)
                             .or_default()
                             .push(box_id);
                     }
