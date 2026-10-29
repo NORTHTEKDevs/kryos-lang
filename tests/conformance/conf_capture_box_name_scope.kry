@@ -1,0 +1,111 @@
+// Conformance: a struct-field closure's capture-box registry is scoped to the
+// function that built it (2026-10-29). `capture_boxes` (name -> box locals,
+// the write-through for a variable a struct-literal-field closure captured by
+// reference) was keyed by NAME and never cleared between top-level functions.
+// `mkh(i)` registered a box for `i`; a LATER function with its own mutated
+// local `i` then emitted `store_deref(*<mkh's box local id> = i)` after every
+// `i = ...`: the JIT refused to compile main (Cranelift verifier: a store of a
+// bool-typed local through an i64 slot), the AOT build was clean and
+// segfaulted (rc=139) or wrote through whatever local had that id. Declaration
+// order mattered (mkh before main), as did a param/local sharing the name.
+
+struct Hf { f: fn(i64) -> i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn mkh(i: i64) -> Hf { return Hf { f: |x: i64| x + i } }
+
+// A second builder on the same name, and a builder whose capture is a
+// non-mutated scalar alongside a struct field (both register boxes).
+fn mkh2(i: i64, k: i64) -> Hf { return Hf { f: |x: i64| x * k + i } }
+
+// Mutated `i` loop, declared after the builders: the original failure.
+fn count_to(n: i64) -> i64 {
+    let mut i = 0
+    while i < n { i = i + 1 }
+    return i
+}
+
+// The same name mutated with a value that is NOT the loop counter, so a write
+// through a stale box (a wrong local) would corrupt the result silently.
+fn sum_to(n: i64) -> i64 {
+    let mut i = 0
+    let mut acc = 0
+    while i < n {
+        i = i + 1
+        acc = acc + i
+    }
+    return acc
+}
+
+// The builder's OWN variable still writes through to its box (the feature the
+// registry exists for): a closure sees a mutation made after construction.
+@capabilities(all)
+fn own_box_still_works() -> i64 {
+    let mut i = 10
+    let h = Hf { f: |x: i64| x + i }
+    i = 20
+    return (h.f)(1)
+}
+
+// The same collision INSIDE one function: the registry was keyed by name, so a
+// later, unrelated `i` (here after the capturing block ended) wrote through the
+// first `i`'s box and the stored closure read the later variable's values.
+@capabilities(all)
+fn shadow_after_block() -> i64 {
+    let mut hs: [Hf] = []
+    {
+        let i = 100
+        hs = push(hs, Hf { f: |x: i64| x + i })
+    }
+    let mut i = 0
+    i = i + 1
+    i = i + 1
+    return (hs[0].f)(1) * 1000 + i
+}
+
+// An inner shadowing `let i` must not take the OUTER `i`'s boxes: once the
+// inner block ends, assigning the outer `i` is still seen by the closure.
+@capabilities(all)
+fn shadow_inner_keeps_outer() -> i64 {
+    let mut i = 1
+    let h = Hf { f: |x: i64| x + i }
+    {
+        let mut i = 50
+        i = i + 1
+    }
+    i = 7
+    return (h.f)(1)
+}
+
+// Calls through a struct-field fn value need the fail-closed `all` grant.
+@capabilities(all)
+fn main() {
+    expect(count_to(3) == 3, "count_to(3)")
+    expect(count_to(0) == 0, "count_to(0)")
+    expect(sum_to(4) == 10, "sum_to(4)")
+
+    let mut i = 0
+    while i < 3 { i = i + 1 }
+    expect(i == 3, "main loop i")
+
+    let h = mkh(2)
+    expect((h.f)(5) == 7, "mkh(2).f(5)")
+    let h2 = mkh2(1, 3)
+    expect((h2.f)(4) == 13, "mkh2(1,3).f(4)")
+
+    // main's own `i` keeps mutating after the builders ran.
+    i = i + 10
+    expect(i == 13, "main i after builders")
+    expect((h.f)(5) == 7, "mkh capture unaffected by main's i")
+
+    expect(own_box_still_works() == 21, "own box write-through")
+    expect(shadow_after_block() == 101002, "later same-name var must not write the captured one's box")
+    expect(shadow_inner_keeps_outer() == 8, "outer box survives an inner shadow")
+    println("end")
+}

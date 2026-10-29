@@ -10,6 +10,55 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a struct-field closure's capture-box registry was keyed by name (2026-10-29)
+
+Found by an unrelated probe: `fn mkh(i: i64) -> Hf { return Hf { f: |x: i64| x + i } }`
+declared BEFORE a `main` with `let mut i = 0; while i < 3 { i = i + 1 }`
+broke `main` on both backends, though `mkh` is never called. `kryos run`:
+`codegen error in function 'main': ... store.i64 v14, v15 ... arg 1 (v15) with
+type i8` (rc=1); `kryos build --release` builds clean and the binary
+segfaults (rc=139). Silent-miscompile class: the AOT build gives no sign.
+- Root cause: `LoweringContext::capture_boxes` (the write-through registry for
+  a scalar a struct-literal-field closure captured by reference) was keyed by
+  variable NAME, and `reset()` never cleared it between top-level functions
+  (only a nested lambda's frame was isolated, via `save_function_state`).
+  After `mkh`, `capture_boxes["i"] = [box local]`; local ids restart at 0, so
+  in `main` every plain `i = ...` emitted `store_deref(*_1 = _0)` through
+  `main`'s own local `_1` (the loop's bool). `--emit-mir` showed it directly.
+  Discriminators from triage (rename either `i`, put `main` first, no capture,
+  no struct, lambda bound first, no `while`) all removed the registry entry or
+  the collision, matching.
+- Same-function sibling found by the scan (silent wrong answer, no crash): the
+  name key also collided inside ONE function. `{ let i = 100; hs = push(hs,
+  Hf { f: |x: i64| x + i }) }` followed by a later, unrelated `let mut i = 0;
+  i = i + 1; i = i + 1` wrote 1 then 2 through the first `i`'s box, so
+  `(hs[0].f)(1)` returned 3, not 101 (renaming the second `i` gave 101).
+- Fix (`kryos-mir/src/lower.rs`): `capture_boxes` is keyed by the captured
+  variable's LOCAL id (the `Stmt::Assign` arm already resolves its target
+  scope-aware through `visible_local`, so an out-of-scope or shadowed `i` no
+  longer matches), and `reset()` clears it so ids from one function never
+  reach the next. An inner shadowing `let i` does not take the outer `i`'s
+  boxes: the outer assignment after the inner block still reaches the closure.
+- Scan of the other name-keyed context state: `closure_locals` /
+  `closure_local_ids` are already cleared per function (conf_closure_name_scope);
+  `mutating_closures` is keyed by the unique `__lambda_N` name; the remaining
+  name-keyed maps are whole-program tables. No further per-function leak found.
+- Pinned by `tests/conformance/conf_capture_box_name_scope.kry` (both backends
+  via `run_conformance.sh`, plus `no_double_free.sh`): the original shape, a
+  variant that calls `mkh(2)` and invokes the closure, same-name mutations of
+  a different value, the in-function block-scope collision (expects 101002),
+  the shadow-keeps-outer case (expects 8), and the builder's own write-through
+  still working (expects 21).
+- Evidence: reverted `lower.rs`, full `cargo build --release`: the new test
+  fails on the JIT (`undefined local _3`) and does not build on the AOT, and
+  the block-scope probe prints `h0=3`; restored fix and rebuild: `end` on JIT
+  and AOT (rc=0), `h0=101`. Gates before/after, same machine: conformance
+  101/101 -> 102/102, 28 PASS lines in `gates 2` -> 28 (tier2 GREEN both),
+  bootstrap 16/16 -> 16/16.
+- Residual: none found for this registry. The ruled-out guess in the triage
+  (`boxed_capture_names` / `mutated_scalar_boxed` being global) stays ruled out:
+  both are per-lambda locals.
+
 ## Wave: two struct drops a read suppressed (2026-10-14)
 
 From the default-arm wave's L4 narrowing, then a wider one found on the way.
