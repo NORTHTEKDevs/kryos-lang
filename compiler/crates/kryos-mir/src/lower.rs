@@ -2038,6 +2038,27 @@ pub fn lower_module_with_lambda_params(
         }
     }
 
+    // A top-level global's declared type was lowered ctx-free when its decl was
+    // visited (`lower_type_expr`), so an enum came out as `Struct(name)` and a
+    // generic `Option<T>` / `Result<T, E>` as the type-erased stub `Struct("Option")`
+    // (payload typed i64), whether or not the enum was declared before it. With
+    // that type a `return G` skipped the enum clone and a match on the global
+    // bound a `str` payload as an i64. Every enum and template is registered
+    // now: resolve the declared type the way a local's annotation is.
+    for decl in &module.declarations {
+        if let ast::Decl::Const { name, ty: Some(t), mutable, .. } = decl {
+            let resolved = ctx.resolve_type(t);
+            ctx.func_ret_types.insert(name.clone(), resolved.clone());
+            if *mutable {
+                if let Some(slot) = ctx.mutable_globals.get_mut(name) {
+                    slot.0 = resolved;
+                }
+            } else if let Some(slot) = ctx.const_defs.get_mut(name) {
+                slot.0 = resolved;
+            }
+        }
+    }
+
     let mut functions = Vec::new();
 
     for decl in &module.declarations {

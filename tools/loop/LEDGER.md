@@ -10,6 +10,83 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a top-level `let mut` global of a tuple / enum / Option / Result is boxed on the AOT, and typed as what it is (2026-10-30)
+
+Silent wrong answer plus a segfault, AOT (`--release`) only, and a JIT double
+free on the same programs. The ledger's one residual ("a mutable-global enum
+with a heap payload prints empty") was the visible tip: every by-value
+aggregate global was wrong, and the JIT-only double free was a separate cause.
+- Repro (before; JIT | AOT, `let mut` global read in `main`): tuple
+  `("t", 1)` `t 1` | segfault; `Option<i64>` `Some(3)` `3` | `0`;
+  `Option<str>` `Some("s")` `s` | empty; `Result<i64, str>` `Ok(4)` `4` | `0`;
+  `enum Op { Add, Num(i64), Name(str) }` `Op.Num(7)` `7` | segfault (rc=139),
+  `Op.Name("q")` `q` | segfault; `enum GE { B(i64), C }` `GE.B(5)` `5` | `0`.
+  Struct, array, map and non-mut `let` aggregates were correct. On the JIT,
+  `match GS { Some(s) => println("ostr {s}") }` on a `let mut GS: Option<str>`
+  printed the pointer (`ostr 140702923272288`), and `fn g() -> GE { return G1 }`
+  called twice (`let d = g()`, `let d2 = g()`) reported a double free under
+  `KRYOS_FREE_DIAG`.
+- Root cause 1 (LLVM, `kryos-codegen-llvm`): `kryos_global_set` heap-boxes its
+  value, and forces the argument to the i64 slot, only when the operand type
+  starts with `%` (a named struct). Tuples, enums, `Option` and `Result` are
+  inline `{ i64, i64 }` aggregates, so the call passed the aggregate BY VALUE to
+  an i64 parameter, while the read side (`kryos_global_get` then the generic
+  i64-to-aggregate coercion, inttoptr + load, zero for null) expects a box.
+  The test is now `%` or `{`.
+- Root cause 2 (MIR, `kryos-mir/src/lower.rs`): a global's declared type was
+  lowered ctx-free (`lower_type_expr`) when its decl was visited, so an enum
+  came out as `Struct("GE")` and a generic `Option<T>` / `Result<T, E>` as the
+  type-erased stub `Struct("Option")` (payload i64), whether or not the enum was
+  declared first. With that type `return G1` never reached the enum arm of the
+  global-return clone (`MirType::Struct(..) if struct_defs.contains_key`, no
+  `Enum`), so the caller received the global's own box and its scope-end drop
+  freed it (the ledger's "enum arm unproven" double free), and a `match` on the
+  global bound a `str` payload as an i64. After every enum and template is
+  registered, each `Decl::Const` type is now resolved with `resolve_type`, the
+  way a local's annotation is (`mutable_globals`, `const_defs`,
+  `func_ret_types`). A global declared before its enum resolves too.
+- Proved both ways (separately, each part reverted and rebuilt with a full
+  `cargo build --release`): with ONLY the LLVM change reverted,
+  `tests/conformance/conf_mut_global_aggregate.kry` segfaults on the AOT
+  (`aot rc=139`; the JIT passes); with ONLY the MIR change reverted the program
+  prints PASS but `tests/no_double_free.sh` fails on it (`DOUBLE-FREE
+  mut_global_aggregate (jit)`, ~60 reports from `returned()`), and with both in
+  place it is clean. The stand-alone repros all match the JIT on the AOT now.
+- Pinned by `tests/conformance/conf_mut_global_aggregate.kry`, registered in
+  `no_double_free.sh` (`no_df_both`: JIT + AOT with the free diagnostics, then
+  the AOT with real frees): nine globals (tuple, `Option<i64>`, `Option<str>`,
+  `Result` Ok and Err, an enum's `Num`, `Name(str)`, unit and `B(i64)`
+  variants), each read from a function, read twice, read after a reassignment
+  from another function, after a switch of variant (`None`, `Err`, `Add`, `C`),
+  and in a 200-iteration reassign loop; `return G` copies (`Op`, `Option<str>`,
+  `Result`, tuple) held across churn and a reassignment of the global, 200
+  rounds; and an enum global declared BEFORE its enum. Memory pin: mode
+  `glob_agg` of `tests/mem_agg_ops_gate.sh` (a tuple / enum / `Option<str>`
+  global read and returned by name 1,000,000 times).
+- Gates (baseline master -> this branch): `kryos-loop.sh gates 2` GREEN (tier1
+  + tier2) -> GREEN, conformance 107/107 -> 108/108; bootstrap 16/16 -> 16/16.
+  `tests/mem_agg_ops_gate.sh` full run: 152 legs, PASS (`glob_agg` 4MB AOT and
+  JIT; it guards the clone / the box from leaking, it is not the correctness pin).
+- Residual, all measured here (peak RSS at 1,000,000 iterations, baseline 4MB):
+  - Reassigning a WHOLE aggregate global never releases the old value, on the
+    JIT as before and on the AOT now (the AOT additionally allocates one box per
+    store, so the AOT matches the JIT): `GT = ("tt{i}", i)` 104 / 171MB AOT / JIT,
+    `GS = Some("ss{i}")` 106 / 106, `GN = Op.Name("nn{i}")` 108 / 108,
+    `GR = Ok(i)` 29 / 29, and the known struct case `GK = S{..}` 106 / 106.
+    Same class as the 2026-10-29 "WHOLE mutable-global struct reassigned" leak:
+    `release_if_ne_fn` is None for a struct / enum / tuple, a different fix (drop
+    the old value after the RHS is read, with a self-assign and shared-leaf
+    guard). Reading and returning these globals is flat (4 / 4MB, mode
+    `glob_agg` plus `ret_enum` / `ret_ostr` / `ret_tup` / `ret_res` probes).
+  - FOUND, NOT FIXED, not a global: a function whose RETURN TYPE names an enum
+    declared LATER in the file builds a wrong local on the AOT. `fn mk() -> E {
+    return E.B("x") }` placed before `enum E { A(P), B(str), C }`, then
+    `let d = mk()`, fails `kryos build --release` with `'%t7' defined with type
+    '{ i64, i64 }' but expected 'ptr'` (the caller's local is `Struct("E")`;
+    `func_ret_types` is filled in the pre-pass before the enum is registered and
+    the retag pass covers `struct_defs` / `enum_defs` only). The JIT builds it.
+    Moving the enum above the function avoids it.
+
 ## Wave: a struct if / match value's hidden slot is released or moved, and a global's struct field releases what it replaces (2026-10-29)
 
 Closes the three leftovers named by the struct-branch wave (2026-10-14: "Not a
@@ -107,7 +184,8 @@ afterwards.
   master baseline is the first fixer's run and the verifier's count of 106
   conformance programs; it was not re-measured after the root-cause-4 fix.)
 - Residual, all measured here, all master too, none touched:
-  - A mutable-global ENUM with a heap payload (`let mut GE: E = E::A("ge")`)
+  - (CLOSED by the 2026-10-30 mutable-global aggregate wave above, both halves.)
+    A mutable-global ENUM with a heap payload (`let mut GE: E = E::A("ge")`)
     read straight off the global prints an EMPTY string from a `--release`
     (LLVM) program (`println(ename(GE))`; the JIT and the debug AOT print
     `ge`), with no function return involved: a silent wrong answer on the
