@@ -1697,6 +1697,13 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_string_free(ptr {cap_val})"));
                     }
+                    // An array of tuples: the env owns a reference to each
+                    // tuple (see the capture), released with it.
+                    Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                        self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
+                        let elem = elem.as_ref().clone();
+                        self.emit_array_drop(&cap_val, &elem, &dummy);
+                    }
                     Some(MirType::Array(_, _)) => {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_array_free(ptr {cap_val})"));
@@ -4244,8 +4251,15 @@ impl LlvmCodegen {
                 // is a plain I64 local holding the raw handle read back
                 // before the store; comparison is a raw i64 inequality
                 // against `new` (the handle now occupying the slot).
-                if matches!(ty, MirType::Struct(_) | MirType::Enum(_)) {
-                    let old_val = self.operand_to_llvm(&Operand::Local(*old), func);
+                // Also a replaced TUPLE array element (a counted box) and a
+                // replaced array of tuples (a `ptr` local, not an i64 handle).
+                if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
+                    || kryos_mir::ir::tuple_array_elem_releasable(ty)
+                    || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::tuple_array_elem_releasable(e))
+                {
+                    let old_raw = self.operand_to_llvm(&Operand::Local(*old), func);
+                    let old_raw_ty = self.operand_type(&Operand::Local(*old), func);
+                    let old_val = self.coerce_value(&old_raw, &old_raw_ty, "i64");
                     let new_val = self.operand_to_llvm(new, func);
                     let new_ty = self.operand_type(new, func);
                     let new_i64 = self.coerce_value(&new_val, &new_ty, "i64");
@@ -4299,6 +4313,31 @@ impl LlvmCodegen {
                             } else {
                                 self.emit_enum_drop(&old_ptr, name, func);
                             }
+                        }
+                        // The replaced tuple element: a counted box, so only
+                        // its last owner releases the elements and the box.
+                        MirType::Tuple(tes) => {
+                            let tty = self.sig_ty_to_llvm(ty);
+                            let tes = tes.clone();
+                            let sh = self.next_temp();
+                            self.emit_line(&format!(
+                                "  {sh} = call i64 @kryos_struct_release_shared(ptr {old_ptr})"
+                            ));
+                            let last = self.next_temp();
+                            self.emit_line(&format!("  {last} = icmp eq i64 {sh}, 0"));
+                            let tdrop = format!("dropifne_tuple_{uid}");
+                            self.emit_line(&format!(
+                                "  br i1 {last}, label %{tdrop}, label %{skip_label}"
+                            ));
+                            self.emit_line(&format!("{tdrop}:"));
+                            self.emit_tuple_drop(&old_ptr, &tty, &tes, func);
+                            self.emit_line(&format!("  call void @kryos_free(ptr {old_ptr})"));
+                        }
+                        // The replaced array of tuples (its last owner
+                        // releases the tuples it holds).
+                        MirType::Array(elem, _) => {
+                            let elem = elem.as_ref().clone();
+                            self.emit_array_drop(&old_ptr, &elem, func);
                         }
                         _ => {}
                     }
@@ -4409,6 +4448,9 @@ impl LlvmCodegen {
                                     // owner or the source's element-free releases boxes the
                                     // copy still points at.
                                     MirType::Struct(_) => 4,
+                                    // A tuple element (a counted box): the copy
+                                    // retains it, the parent releases its own.
+                                    t @ MirType::Tuple(_) => array_dup_kind(t),
                                     _ => 0,
                                 };
                                 let cl = self.next_temp();
@@ -4527,6 +4569,16 @@ impl LlvmCodegen {
                         ));
                         cloned
                     }
+                    // An array of tuples: the receiver's copy owns its own
+                    // reference to each tuple.
+                    Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                        let cloned = self.next_temp();
+                        let kind = array_dup_kind(elem.as_ref());
+                        self.emit_line(&format!(
+                            "  {cloned} = call ptr @kryos_array_dup(ptr {val}, i64 {kind})"
+                        ));
+                        cloned
+                    }
                     Some(MirType::Array(_, _)) => {
                         let cloned = self.next_temp();
                         self.emit_line(&format!(
@@ -4630,6 +4682,14 @@ impl LlvmCodegen {
                             let cloned = self.next_temp();
                             self.emit_line(&format!(
                                 "  {cloned} = call ptr @kryos_string_clone(ptr {val})"
+                            ));
+                            (cloned, true)
+                        }
+                        Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                            let cloned = self.next_temp();
+                            let kind = array_dup_kind(elem.as_ref());
+                            self.emit_line(&format!(
+                                "  {cloned} = call ptr @kryos_array_dup(ptr {val}, i64 {kind})"
                             ));
                             (cloned, true)
                         }
@@ -5778,6 +5838,8 @@ impl LlvmCodegen {
 
             // ----- Function call -----
             RValue::Call { func: fname, args } => {
+                let remapped_args = remap_tuple_dup_kind(fname, args);
+                let args = remapped_args.as_ref().unwrap_or(args);
                 // A tuple map value is an arc box here, not the tuple handle
                 // MIR names (see kryos-rt `kryos_tuple_box_release_if_ne`).
                 let box_release = "kryos_tuple_box_release_if_ne".to_string();
@@ -8489,6 +8551,17 @@ impl LlvmCodegen {
                                 let cloned = self.next_temp();
                                 self.emit_line(&format!(
                                     "  {cloned} = call ptr @kryos_string_clone(ptr {cap_val})"
+                                ));
+                                self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
+                            }
+                            // An array of tuples: the env owns its own reference
+                            // to each tuple box (the capturing scope drops its
+                            // array and releases the ones it holds).
+                            Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                                let cloned = self.next_temp();
+                                let kind = array_dup_kind(elem.as_ref());
+                                self.emit_line(&format!(
+                                    "  {cloned} = call ptr @kryos_array_dup(ptr {cap_val}, i64 {kind})"
                                 ));
                                 self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
                             }
@@ -11821,9 +11894,7 @@ impl LlvmCodegen {
                 | MirType::Enum(_)
                 | MirType::Shared(_)
                 | MirType::Map { .. }
-        );
-        // Tuple elements are not released (see the Cranelift array drop):
-        // array copies share them without a retain.
+        ) || kryos_mir::ir::tuple_array_elem_releasable(elem_ty);
 
         if is_droppable {
             let uid = self.temp_counter;
@@ -11932,6 +12003,33 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {fv} = load ptr, ptr {elem_gep}"));
                 let inner = inner.as_ref().clone();
                 self.emit_array_drop(&fv, &inner, _func);
+                self.emit_line(&format!("  br label %{tail_label}"));
+                self.emit_line(&format!("{tail_label}:"));
+                self.emit_line(&format!("  {i_next_name} = add i64 {i_name}, 1"));
+                self.emit_line(&format!("  br label %{hdr_label}"));
+                self.emit_line(&format!("{exit_label}:"));
+                self.emit_line(&format!("  br label %{skip_label}"));
+                self.emit_line(&format!("{skip_label}:"));
+                self.emit_line(&format!("  call void @kryos_array_free(ptr {val})"));
+                return;
+            }
+            // A tuple element is a counted `kryos_calloc` box: a copy of the
+            // array retained it (dup kind 4), so only the LAST owner releases
+            // the tuple's heap elements and the box.
+            if let MirType::Tuple(tes) = elem_ty {
+                let tty = self.sig_ty_to_llvm(elem_ty);
+                let tes = tes.clone();
+                let fv = self.next_temp();
+                self.emit_line(&format!("  {fv} = load ptr, ptr {elem_gep}"));
+                let sh = self.next_temp();
+                self.emit_line(&format!("  {sh} = call i64 @kryos_struct_release_shared(ptr {fv})"));
+                let last = self.next_temp();
+                self.emit_line(&format!("  {last} = icmp eq i64 {sh}, 0"));
+                let tdrop = format!("arr_tdrop_{uid}");
+                self.emit_line(&format!("  br i1 {last}, label %{tdrop}, label %{tail_label}"));
+                self.emit_line(&format!("{tdrop}:"));
+                self.emit_tuple_drop(&fv, &tty, &tes, _func);
+                self.emit_line(&format!("  call void @kryos_free(ptr {fv})"));
                 self.emit_line(&format!("  br label %{tail_label}"));
                 self.emit_line(&format!("{tail_label}:"));
                 self.emit_line(&format!("  {i_next_name} = add i64 {i_name}, 1"));
@@ -12562,8 +12660,24 @@ fn array_dup_kind(elem: &MirType) -> i64 {
         MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
         MirType::Struct(_) | MirType::Enum(_) => 4,
         MirType::Function { .. } | MirType::Shared(_) => 2,
+        // A tuple element is a `kryos_calloc` box here, so a copy takes an
+        // owner-count retain (kind 4), released by the array drop below.
+        MirType::Tuple(_) if kryos_mir::ir::tuple_array_elem_releasable(elem) => 4,
         _ => 0,
     }
+}
+
+/// MIR names a tuple-array dup with `TUPLE_ELEM_DUP_KIND` (it cannot know a
+/// backend's tuple representation); LLVM's array element is a counted box,
+/// dup kind 4.
+fn remap_tuple_dup_kind(func: &str, args: &[Operand]) -> Option<Vec<Operand>> {
+    if func == "kryos_array_dup"
+        && args.len() == 2
+        && matches!(&args[1], Operand::Constant(Constant::Int(k)) if *k == kryos_mir::ir::TUPLE_ELEM_DUP_KIND)
+    {
+        return Some(vec![args[0].clone(), Operand::Constant(Constant::Int(4))]);
+    }
+    None
 }
 
 fn mir_type_name_of_operand(op: &Operand, func: &MirFunction) -> &'static str {

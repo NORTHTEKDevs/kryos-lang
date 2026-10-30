@@ -19,6 +19,7 @@ TYPES = {
     'opt': dict(t='Option<P>', ctor='Some(P { name: "v{i}", n: i })', show=OPT_SHOW),
     'str': dict(t='str', ctor='"v{i}"', show='return v'),
     'arr': dict(t='[str]', ctor='["v{i}"]', show='return v[0]'),
+    'atup': dict(t='[(str, i64)]', ctor='[("v{i}", i)]', show='return v[0].0'),
     'tst': dict(t='PT', ctor='PT { t: ("v{i}", i), n: i }', show='return v.t.0'),
     'parr': dict(t='[P]', ctor='[P { name: "v{i}", n: i }]', show='return v[0].name'),
     'otup': dict(t='Option<(str, i64)>', ctor='Some(("v{i}", i))', show=OTUP_SHOW),

@@ -17,6 +17,7 @@ TYPES = {
                 show='return match v {\n        Some(p) => p.name,\n        None => "none",\n    }'),
     'str': dict(t='str', ctor='"v{i}"', show='return v'),
     'arr': dict(t='[str]', ctor='["v{i}"]', show='return v[0]'),
+    'atup': dict(t='[(str, i64)]', ctor='[("v{i}", i)]', show='return v[0].0'),
     'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
                   show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }

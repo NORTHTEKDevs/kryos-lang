@@ -64,6 +64,42 @@ pub struct TraitMethodSig {
 /// retain of each heap leaf of the inline aggregate, WASM to nothing.
 pub const STRUCT_SHARE_FN: &str = "kryos_struct_share";
 
+/// `kryos_array_dup` element kind for an array of tuples. A tuple element is a
+/// refcounted KryosArray on Cranelift (the dup retains it like any array
+/// header, kind 1) but a `kryos_calloc` box on LLVM (an owner-count retain,
+/// kind 4), so MIR cannot name the runtime kind: each backend rewrites this
+/// one to its own when it lowers the call.
+pub const TUPLE_ELEM_DUP_KIND: i64 = 6;
+
+/// A tuple whose array-element release is sound on both backends: every
+/// element a scalar, `str`, array, map or such a tuple (what a tuple local's
+/// Drop releases without any ownership context). An array of such tuples owns
+/// each element once: the literal / `push` stores one reference, a copy
+/// retains it (`TUPLE_ELEM_DUP_KIND`), the array's last drop releases it.
+pub fn tuple_array_elem_releasable(elem: &MirType) -> bool {
+    let MirType::Tuple(es) = elem else { return false };
+    !es.is_empty()
+        && es.iter().all(|e| match e {
+            MirType::I8
+            | MirType::I16
+            | MirType::I32
+            | MirType::I64
+            | MirType::U8
+            | MirType::U16
+            | MirType::U32
+            | MirType::U64
+            | MirType::F32
+            | MirType::F64
+            | MirType::Bool
+            | MirType::Char
+            | MirType::Str
+            | MirType::Array(_, _)
+            | MirType::Map { .. } => true,
+            MirType::Tuple(_) => tuple_array_elem_releasable(e),
+            _ => false,
+        })
+}
+
 /// MIR-level type representation.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum MirType {

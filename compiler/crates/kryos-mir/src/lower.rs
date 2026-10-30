@@ -2552,6 +2552,8 @@ fn array_elem_dup_kind(elem: &MirType) -> i64 {
         MirType::Struct(_) | MirType::Enum(_) => 4,
         // A closure is an arc box the array drop releases, like `Shared`.
         MirType::Shared(_) | MirType::Function { .. } => 2,
+        // A tuple element the array drop releases (backends map the kind).
+        MirType::Tuple(_) if tuple_array_elem_releasable(elem) => TUPLE_ELEM_DUP_KIND,
         _ => 0,
     }
 }
@@ -5421,6 +5423,23 @@ fn type_array_releases(blocks: &mut [BasicBlock], locals: &[MirLocal]) {
                 continue;
             }
             let Operand::Local(old) = &args[0] else { continue };
+            // An array of tuples: no runtime kind describes a tuple element on
+            // both backends, so the backend's type-directed drop releases the
+            // old array (and the tuples it holds) unless it is the new handle.
+            if let Some(ty @ MirType::Array(elem, _)) = locals.iter().find(|l| l.id == *old).map(|l| &l.ty) {
+                if tuple_array_elem_releasable(elem) {
+                    let new_op = args[1].clone();
+                    let (old, ty) = (*old, ty.clone());
+                    *inst = Instruction::DropIfNe {
+                        old,
+                        new: new_op,
+                        ty,
+                        retained_by_store: false,
+                        via_map: false,
+                    };
+                    continue;
+                }
+            }
             let elem_kind = match locals.iter().find(|l| l.id == *old).map(|l| &l.ty) {
                 Some(MirType::Array(elem, _)) => match elem.as_ref() {
                     MirType::Str => 1,
@@ -5491,7 +5510,16 @@ fn strip_escaping_tuple_drops(
     let mut shared_copy_at: HashSet<(usize, usize)> = HashSet::new();
     for (bi, b) in blocks.iter().enumerate() {
         for (ii, inst) in b.instructions.iter().enumerate() {
-            if let Instruction::Assign { dest, value: RValue::Field { .. } } = inst {
+            if let Instruction::Assign { dest, value: value @ (RValue::Field { .. } | RValue::Index { .. }) } = inst {
+                // An element read of an array of tuples is the binding's own
+                // only when the destination is a NAMED local: an unnamed temp
+                // followed by a share is a container store's (`push(ys,
+                // xs[0])`), which keeps the tuple's own release balanced.
+                if matches!(value, RValue::Index { .. })
+                    && !locals.iter().any(|l| l.id == *dest && l.name.is_some())
+                {
+                    continue;
+                }
                 // Only the binding's own share, emitted right after the read
                 // (`let`/reassignment owns_element): a later share of it is a
                 // container's (`push(ts, u)`), not the binding's.
@@ -5563,7 +5591,9 @@ fn strip_escaping_tuple_drops(
                 {
                     continue;
                 }
-                Instruction::Assign { value: RValue::Field { .. }, .. } if shared_copy_at.contains(&(bi, ii)) => {
+                Instruction::Assign { value: RValue::Field { .. } | RValue::Index { .. }, .. }
+                    if shared_copy_at.contains(&(bi, ii)) =>
+                {
                     continue;
                 }
                 // `t.1 = v` mutates the tuple in place (the store's own release
@@ -5874,9 +5904,15 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                         || is_owned_enum_ty(ctx, &mir_ty)
                         || (is_owned_tuple_ty(ctx, &mir_ty)
                             && match expr {
-                                ast::Expr::IndexAccess { object, .. } => {
-                                    matches!(infer_expr_type(ctx, object), MirType::Map { .. })
-                                }
+                                // An array of tuples owns its elements now
+                                // (its drop and an element overwrite
+                                // release them), so a read needs its own
+                                // reference like a map read.
+                                ast::Expr::IndexAccess { object, .. } => match infer_expr_type(ctx, object) {
+                                    MirType::Map { .. } => true,
+                                    MirType::Array(e, _) => tuple_array_elem_releasable(&e),
+                                    _ => false,
+                                },
                                 ast::Expr::FieldAccess { object, .. } => {
                                     matches!(infer_expr_type(ctx, object), MirType::Struct(_) | MirType::Tuple(_))
                                 }
@@ -6907,8 +6943,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     ast::Expr::IndexAccess { object, .. } => {
                                         let obj_ty = infer_expr_type(ctx, object);
                                         (dest_ty.as_ref().is_some_and(|t| is_owned_tuple_ty(ctx, t))
-                                            && matches!(obj_ty, MirType::Map { .. })
-                                            && rooted_at_local(ctx, object))
+                                            && ((matches!(obj_ty, MirType::Map { .. }) && rooted_at_local(ctx, object))
+                                                // An array of tuples, a temporary
+                                                // too (`y = mk(i)[0]`): its drop
+                                                // releases the element.
+                                                || matches!(&obj_ty, MirType::Array(e, _) if tuple_array_elem_releasable(e))))
                                             // `y = xs[i]` of a struct / enum
                                             // element: the array keeps its own
                                             // owner (overwriting the slot or
@@ -7306,7 +7345,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // type-directed, pointer-inequality-guarded) free
                             // the old one.
                             let is_struct_or_enum =
-                                matches!(val_ty, MirType::Struct(_) | MirType::Enum(_));
+                                matches!(val_ty, MirType::Struct(_) | MirType::Enum(_))
+                                    // `a[i] = (..)` on an array of tuples: the
+                                    // replaced tuple was the array's own.
+                                    || (!matches!(obj_ty, MirType::Map { .. })
+                                        && tuple_array_elem_releasable(&val_ty));
                             let idx_ty_dropifne = infer_expr_type(ctx, index);
                             let old_dropifne = if is_struct_or_enum {
                                 let old_tmp = ctx.alloc_temp(MirType::I64);
@@ -9101,8 +9144,14 @@ fn lower_for(
     // (LLVM retains, Cranelift clones a str), so that loop variable OWNS it
     // and is released every iteration -- as a borrowed alias each iteration
     // leaked one (`for s in xs { len(s) }`). Other elements stay aliases.
-    let loop_var_owned = matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
-        && matches!(pattern, ast::Pattern::Ident { .. });
+    // A tuple element of an array of tuples is owned by the array (its drop
+    // and an element overwrite release it), so the loop variable takes its
+    // own share and releases it every iteration: a body that overwrites the
+    // element being visited must not free what the variable still reads.
+    let tuple_elem_owned = tuple_array_elem_releasable(&elem_type);
+    let loop_var_owned = (matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
+        && matches!(pattern, ast::Pattern::Ident { .. }))
+        || tuple_elem_owned;
     let loop_scope_start = ctx.locals.len();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
     if !loop_var_owned {
@@ -9115,6 +9164,9 @@ fn lower_for(
             index: Operand::Local(idx_local),
         },
     });
+    if tuple_elem_owned {
+        emit_value_share(ctx, loop_var);
+    }
     // Tuple pattern: `for (a, b) in pairs` - destructure the element into its
     // named fields (the checker binds a/b's types; the MIR must extract them,
     // else a/b were undefined temporaries reading 0).
@@ -17485,7 +17537,13 @@ fn suppress_enum_field_arg_drops(
         // mark is involved, so this one does not wait for the others).
         let map_tuple = matches!(a, ast::Expr::IndexAccess { object, .. }
             if matches!(infer_expr_type(ctx, object), MirType::Map { .. }) && rooted_at_local(ctx, object))
-            && is_owned_tuple_ty(ctx, &lty);
+            && is_owned_tuple_ty(ctx, &lty)
+            // A tuple ARRAY element, a temporary array's too (`W.Has(mk(i)[0])`):
+            // the array's drop releases the element, so the payload takes its
+            // own owner.
+            || matches!(a, ast::Expr::IndexAccess { object, .. }
+                if matches!(infer_expr_type(ctx, object), MirType::Array(e, _) if tuple_array_elem_releasable(&e)))
+                && is_owned_tuple_ty(ctx, &lty);
         // A struct / enum ARRAY element (`W.Has(xs[0])`): the array keeps its
         // own owner and releases it when the slot is overwritten or the array
         // dropped, so the payload takes one too, as `let y = xs[0]` does. An

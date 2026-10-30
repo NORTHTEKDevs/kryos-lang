@@ -452,6 +452,7 @@ no_df_both map_closure_release "$ROOT/tests/conformance/conf_map_closure_release
 no_df_both struct_branch_value "$ROOT/tests/conformance/conf_struct_branch_value.kry"
 no_df_both capture_box_name_scope "$ROOT/tests/conformance/conf_capture_box_name_scope.kry"
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
+no_df_both array_tuple_ownership "$ROOT/tests/conformance/conf_array_tuple_ownership.kry"
 
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
