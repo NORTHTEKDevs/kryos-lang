@@ -36,15 +36,32 @@ afterwards.
   the 2026-10-29 dyn wave's `arm_names_outer_owned_struct`. It is kept as the
   mode `match_bare` (green before and after); the shapes above are what still
   leaked around it.
-- Root causes, three:
+- Root causes, four (the fourth was found by the adversarial verifier, below):
   - `struct_value_owned` (does every branch hand the hidden slot an owned
     struct?) refused a call, "a call can return a share of an existing
     struct". A call's result is a reference of its own (a callee returns a
-    fresh struct or retains the param / global it hands back; `let s = f()`
-    already takes it over), so a slot with a call arm kept the clone the
+    fresh struct or hands back a copy of the param / global it returns --
+    see root cause 4 for the global that did not; `let s = f()` already
+    takes it over), so a slot with a call arm kept the clone the
     `let` makes and was never released. Calls (`FnCall`, `MethodCall`,
     `StaticMethodCall`) count as owned now, the same call `fn_value_owned`
     already made for closure values.
+  - A function that returned a MUTABLE-GLOBAL struct / enum by its bare name
+    (`fn glob() -> P { return GP }`, a tail `GP`, a method, a closure) handed
+    the caller the global's own box with no reference of its own, so the
+    caller's scope-end drop freed it under the global. This is master's bug
+    (bare `let d = glob()` then churn then `GP.name` reads freed memory on the
+    JIT; AOT copies and was unaffected) and it falsified the invariant
+    cause 1 relies on: with calls counted as owned it spread to every
+    `if` / `match` call arm (`let d = if c { glob() } else { mkp(i) }`, the
+    match form, `d = if ..`, `push(arr, if .. glob() ..)`, a statement match),
+    which used to leak and now would have corrupted. `return GP` is a
+    borrowed-alias read like `return xs[0]`, but only a borrowed LOCAL and an
+    index / field read were cloned; the `Stmt::Return` arm and the
+    function-tail arm now clone a bare mutable-global struct / enum
+    (`__kryos_struct_index_clone` / `__kryos_enum_index_clone`) so the
+    caller owns what it receives. Returning a global's field, a global array
+    element and `pass(GP)` were already fine.
   - An if / match value assigned to an existing struct local (`r = match ..`)
     and one pushed (`push(xs, if ..)`) SHARED the slot (a retain) and left the
     slot's own reference orphaned. When `struct_value_owned` holds the
@@ -58,7 +75,7 @@ afterwards.
     owned by its slot, so `G.inner = ..` now reads the old field, stores, and
     drops it like a local root does.
 - After: every mode below reads 4MB on AOT and JIT (`tests/mem_agg_ops_gate.sh`
-  full run: 142 legs, PASS). With only the `lower.rs` change reverted and
+  full run: 150 legs, PASS). With only the `lower.rs` change reverted and
   rebuilt, the same ten modes read: `match_bare` 4 / 4 (already green),
   `match_bare_call` 157 / 187, `match_bare_assign` 124 / 157, `branch_call`
   157 / 188, `match_call_assign` 157 / 187, `push_branch` 124 / 156,
@@ -72,11 +89,38 @@ afterwards.
   to a struct local, a pass-through call arm, a pushed if / match value inside
   and outside a closure, a global field overwritten under a live `Option`
   payload, a copy and a local stored into a global field; 200 iterations with
-  churn). The conformance pin is the use-after-free direction and is green
-  before the fix too: the leak is in the gate modes.
+  churn), now also covering root cause 4: `glob_plain` (`return GP`, a tail
+  `GP`, an early `return GP`), `glob_branch` (an if / match arm, `let` and
+  assigned), `glob_push`, `glob_stmt` (a statement match), `glob_method`,
+  `glob_closure`, each reading `GP.name` after churn. This is the
+  use-after-free pin: with ONLY the two global-return clones reverted and
+  rebuilt it FAILS on the JIT ("CONF FAIL: a mutable-global struct returned
+  by name", plus 2 double-free diagnostics under `KRYOS_FREE_DIAG`), and
+  PASSES with them. The leak modes are NOT use-after-free pins: with the
+  clones reverted the four new `glob_*` modes still read under the ceiling
+  (JIT 9 - 21MB, AOT 4MB), since a freed box leaks nothing. They guard the
+  other side (the clone must not leak): 4MB on both backends (AOT 5MB for
+  `glob_ret`) with the fix. Added modes: `glob_ret`, `glob_ret_tail`,
+  `glob_branch`, `glob_push`.
 - Gates (baseline master -> this branch): `kryos-loop.sh gates 2` GREEN ->
-  GREEN, conformance 106/106 -> 107/107; bootstrap 16/16 -> 16/16.
+  GREEN, conformance 106/106 -> 107/107; bootstrap 16/16 -> 16/16. (The
+  master baseline is the first fixer's run and the verifier's count of 106
+  conformance programs; it was not re-measured after the root-cause-4 fix.)
 - Residual, all measured here, all master too, none touched:
+  - A mutable-global ENUM with a heap payload (`let mut GE: E = E::A("ge")`)
+    read straight off the global prints an EMPTY string from a `--release`
+    (LLVM) program (`println(ename(GE))`; the JIT and the debug AOT print
+    `ge`), with no function return involved: a silent wrong answer on the
+    AOT, not fixed here. And `let d = g()` (`g` returns `GE`) in a function
+    called twice reports a double free under `KRYOS_FREE_DIAG` on the JIT
+    (same on the main tree's build): the enum clone the return now takes does
+    not isolate the str payload. The enum arm of the two global-return
+    clones is therefore unproven; the struct arm is what is pinned.
+  - Shapes the verifier probed on this branch that still leak (not measured
+    on master, so not claimed pre-existing): field push of a struct
+    (250MB / 1M), an index store (126 / 158MB), a struct literal field
+    (123 / 158MB), `GG.items = []` reset (95MB), a pattern-bound struct
+    (154 / 184MB), and a block-wrapped `if` with a call arm (158 / 187MB).
   - A WHOLE mutable-global struct reassigned (`GS = Gin{..}`) leaks the old
     struct: 97MB / 1M (the 2026-08 item-2b release covers str / array / map
     globals only; `release_fn` is None for a struct). A different fix: the old

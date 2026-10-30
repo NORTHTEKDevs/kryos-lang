@@ -3324,8 +3324,15 @@ pub fn lower_function(
             // an independent copy, as the `return` statement does. Also when
             // the tail only evaluates to one (a block ending in it).
             if let Operand::Local(src) = tail_val.clone() {
-                let borrowed_ident = matches!(expr, ast::Expr::Identifier { name: id_name, .. }
-                    if find_local_by_name(ctx, id_name).is_some_and(|l| ctx.borrowed_locals.contains(&l.0)));
+                // (A bare mutable-global struct / enum is the same alias: the
+                // global's slot keeps the original.)
+                let borrowed_ident = match expr {
+                    ast::Expr::Identifier { name: id_name, .. } => match find_local_by_name(ctx, id_name) {
+                        Some(l) => ctx.borrowed_locals.contains(&l.0),
+                        None => ctx.mutable_globals.contains_key(id_name.as_str()),
+                    },
+                    _ => false,
+                };
                 if borrowed_ident || ctx.env_owned_locals.contains(&src.0) {
                     let src_ty = ctx.locals.iter().find(|l| l.id == src).map(|l| l.ty.clone()).unwrap_or(MirType::I64);
                     let clone_fn = match src_ty {
@@ -5350,7 +5357,9 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
         }),
         ast::Expr::Block { block, .. } => block_owned(ctx, block),
         // A call's result is an owned reference of its own (a callee returns
-        // a fresh struct, or retains the param / global it hands back), the
+        // a fresh struct, or a copy of the param / global it hands back: the
+        // `return` and function-tail arms clone a bare mutable-global struct,
+        // `fn glob() -> P { return GP }`), the
         // same fact `let s = f()` relies on. The callers check that the slot
         // is a struct, so a branch call here yields one. Leaving it "not
         // owned" kept the clone the `let` makes and never released the slot:
@@ -8307,10 +8316,17 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     e,
                     ast::Expr::IndexAccess { .. } | ast::Expr::FieldAccess { .. }
                 );
+                // A bare mutable-global struct / enum (`return GP`) is the
+                // same alias: the slot keeps the original, so the caller
+                // gets its own copy. Without it `let d = glob()` held the
+                // global's box and its scope-end drop freed it under the
+                // global (use-after-free on the JIT).
                 let is_borrowed_bare_ident = if let ast::Expr::Identifier { name: id_name, .. } = e
                 {
-                    find_local_by_name(ctx, id_name)
-                        .is_some_and(|l| ctx.borrowed_locals.contains(&l.0))
+                    match find_local_by_name(ctx, id_name) {
+                        Some(l) => ctx.borrowed_locals.contains(&l.0),
+                        None => ctx.mutable_globals.contains_key(id_name.as_str()),
+                    }
                 } else {
                     false
                 };

@@ -8,6 +8,9 @@ struct P { name: str, xs: [i64] }
 struct Gin { name: str }
 struct Gig { inner: Gin, n: i64 }
 let mut GG: Gig = Gig { inner: Gin { name: "a" }, n: 0 }
+let mut GQ: P = P { name: "gq", xs: [1] }
+fn globq() -> P { return GQ }
+fn globq_tail() -> P { GQ }
 
 fn mkq(i: i64) -> P { return P { name: "q{i}", xs: [i] } }
 fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
@@ -573,6 +576,27 @@ fn main() {
             }
         } elif mode == "clo_push_if" {
             acc = acc + push_if(i)
+        } elif mode == "glob_ret" {
+            // A function that returns a mutable-global struct by its bare
+            // name hands the caller its own copy (the caller drops it).
+            let gr = globq()
+            acc = acc + len(gr.name)
+        } elif mode == "glob_ret_tail" {
+            let grt = globq_tail()
+            acc = acc + len(grt.name)
+        } elif mode == "glob_branch" {
+            // The same call as an if / match arm (the slot's reference is the
+            // call's, released by the `let`).
+            let gb = if i % 2 == 0 { globq() } else { mkq(i) }
+            let gm = match i % 2 {
+                0 => globq(),
+                _ => mkq(i),
+            }
+            acc = acc + len(gb.name) + len(gm.name)
+        } elif mode == "glob_push" {
+            let mut gp: [P] = []
+            gp = push(gp, if i % 2 == 0 { globq() } else { mkq(i) })
+            acc = acc + len(gp[0].name)
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }
