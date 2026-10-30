@@ -5,7 +5,14 @@ use std::iter::{map}
 // synthesized helpers' and-chains and replace chains), a short-circuit
 // and-chain over field reads, and an element read off a fresh tuple.
 struct P { name: str, xs: [i64] }
+struct Gin { name: str }
+struct Gig { inner: Gin, n: i64 }
+let mut GG: Gig = Gig { inner: Gin { name: "a" }, n: 0 }
+let mut GQ: P = P { name: "gq", xs: [1] }
+fn globq() -> P { return GQ }
+fn globq_tail() -> P { GQ }
 
+fn mkq(i: i64) -> P { return P { name: "q{i}", xs: [i] } }
 fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
 fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", xs: [i] }, "s{i}") }
 enum E { A(P), B(str), C }
@@ -121,6 +128,14 @@ fn main() {
         cs.inner = P { name: "i{k}", xs: [k] }
         cs = Pc { inner: P { name: "w{k}", xs: [k] }, n: cs.n + 1, tag: cs.tag + "w" }
         return cs.n
+    }
+    // clo_push_if: a struct local captured by a closure that pushes an
+    // `if` value naming it.
+    let cap = P { name: "cap", xs: [1, 2] }
+    let push_if = |k: i64| -> i64 {
+        let mut arr: [P] = []
+        arr = push(arr, if k % 2 == 0 { cap } else { P { name: "o", xs: [] } })
+        return len(arr)
     }
     // cap_escape: the captured struct pushed, stored into a field, and
     // returned as the closure's tail value, every iteration.
@@ -496,6 +511,92 @@ fn main() {
             let mut fso = [mkfn(i)]
             fso[0] = mkfn(i + 1)
             acc = acc + len(fso[0](0))
+        } elif mode == "match_bare" {
+            // A match arm whose whole body is a bare name of an owned struct,
+            // the other arm a fresh literal.
+            let mbq = P { name: "q{i}", xs: [i] }
+            let mbr = match i % 2 {
+                0 => mbq,
+                _ => P { name: "z", xs: [] },
+            }
+            acc = acc + len(mbr.name) + len(mbq.name)
+        } elif mode == "match_bare_call" {
+            // The bare name's sibling arm is a call: struct_value_owned
+            // refused a call, so the `let` cloned the slot and kept it.
+            let mcq = mkq(i)
+            let mcr = match i % 2 {
+                0 => mcq,
+                _ => mkq(i + 1),
+            }
+            acc = acc + len(mcr.name) + len(mcq.name)
+        } elif mode == "match_bare_assign" {
+            // The bare-name match assigned to an existing struct local.
+            let mba = mkq(i)
+            let mut mbb = P { name: "w", xs: [] }
+            mbb = match i % 2 {
+                0 => mba,
+                _ => P { name: "z", xs: [] },
+            }
+            acc = acc + len(mbb.name) + len(mba.name)
+        } elif mode == "branch_call" {
+            let bcr = if i % 2 == 0 { mkq(i) } else { mkq(i + 1) }
+            acc = acc + len(bcr.name)
+        } elif mode == "match_call_assign" {
+            let mut mca = P { name: "w", xs: [] }
+            mca = match i % 2 {
+                0 => mkq(i),
+                _ => mkq(i + 1),
+            }
+            acc = acc + len(mca.name)
+        } elif mode == "push_branch" {
+            // push of an if value naming a struct local (outside a closure).
+            let pbq = mkq(i)
+            let mut pba: [P] = []
+            pba = push(pba, if i % 2 == 0 { pbq } else { P { name: "o", xs: [] } })
+            acc = acc + len(pba) + len(pba[0].name) + len(pbq.name)
+        } elif mode == "push_branch_lit" {
+            let mut pbl: [P] = []
+            pbl = push(pbl, match i % 2 {
+                0 => P { name: "p", xs: [] },
+                _ => mkq(i),
+            })
+            acc = acc + len(pbl) + len(pbl[0].name)
+        } elif mode == "glob_field_set" {
+            // A mutable global's struct field overwritten: the old value
+            // was never released.
+            GG.inner = Gin { name: "g{i}" }
+            acc = acc + len(GG.inner.name)
+        } elif mode == "glob_field_opt" {
+            // A mutable global's field as an Option payload, then overwritten.
+            let go = Some(GG.inner)
+            GG.inner = Gin { name: "g{i}" }
+            match go {
+                Some(x) => { acc = acc + len(x.name) },
+                _ => { acc = acc + 1 },
+            }
+        } elif mode == "clo_push_if" {
+            acc = acc + push_if(i)
+        } elif mode == "glob_ret" {
+            // A function that returns a mutable-global struct by its bare
+            // name hands the caller its own copy (the caller drops it).
+            let gr = globq()
+            acc = acc + len(gr.name)
+        } elif mode == "glob_ret_tail" {
+            let grt = globq_tail()
+            acc = acc + len(grt.name)
+        } elif mode == "glob_branch" {
+            // The same call as an if / match arm (the slot's reference is the
+            // call's, released by the `let`).
+            let gb = if i % 2 == 0 { globq() } else { mkq(i) }
+            let gm = match i % 2 {
+                0 => globq(),
+                _ => mkq(i),
+            }
+            acc = acc + len(gb.name) + len(gm.name)
+        } elif mode == "glob_push" {
+            let mut gp: [P] = []
+            gp = push(gp, if i % 2 == 0 { globq() } else { mkq(i) })
+            acc = acc + len(gp[0].name)
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }

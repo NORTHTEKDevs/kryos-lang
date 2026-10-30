@@ -1,0 +1,222 @@
+// Conformance (2026-10-29): the leftovers of the struct-branch wave. A struct
+// if / match value whose branch is a call or names a struct local, assigned
+// to an existing struct local or pushed into an array, and a mutable
+// global's struct field overwritten while an `Option` payload still holds
+// the old value. Each of these used to leak one struct per execution; the
+// fixes hand the hidden if / match slot's reference to the destination
+// instead of sharing it and leaving the slot's own behind, so what must hold
+// here is the use-after-free direction: every named struct stays readable
+// after it was an arm, the copies stay independent of it, and the values in
+// an array / Option survive churn. Run under KRYOS_FREE_DIAG on both
+// backends, and on AOT with real frees, by tests/no_double_free.sh.
+//
+// The other direction (2026-10-30): a call arm counts as an owned struct, which
+// is only true if a function that returns a MUTABLE GLOBAL struct by its bare
+// name (`return GP`, a tail `GP`, a method, a closure) hands back a copy of its
+// own. It used to hand back the global's box, so the caller's scope-end drop
+// freed it under the global: `let d = glob()` then churn then `GP.name` read
+// freed memory (empty / garbage) on the JIT. Each `glob_*` function below
+// reads GP after the churn.
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+struct Gin { name: str }
+struct Gig { inner: Gin, n: i64 }
+
+let mut GG: Gig = Gig { inner: Gin { name: "a" }, n: 0 }
+let mut GP: P = P { name: "gp", n: 0 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        junk = push(junk, "junk{i}-{j}")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mkp(i: i64) -> P { return P { name: "m{i}", n: i } }
+fn pass(p: P) -> P { return p }
+fn inner_of() -> Gin { return GG.inner }
+fn glob() -> P { return GP }
+fn glob_tail() -> P { GP }
+fn glob_early(c: bool) -> P {
+    if c { return GP }
+    return P { name: "e", n: 1 }
+}
+impl P { fn glob_me(self: P) -> P { return GP } }
+
+fn match_call(i: i64) -> str {
+    let q = P { name: "q{i}", n: i }
+    let r = match i % 2 {
+        0 => q,
+        _ => mkp(i),
+    }
+    let s = match i % 2 {
+        0 => pass(q),
+        _ => q,
+    }
+    churn(i)
+    return q.name + " " + r.name + " " + s.name
+}
+
+fn match_assign(i: i64) -> str {
+    let q = P { name: "q{i}", n: i }
+    let mut r = P { name: "w", n: 0 }
+    r = match i % 2 {
+        0 => q,
+        _ => P { name: "z{i}", n: i },
+    }
+    churn(i)
+    let mut t = P { name: "t", n: 0 }
+    t = if i > 0 { pass(q) } else { mkp(i) }
+    churn(i)
+    return q.name + " " + r.name + " " + t.name + " " + to_string(q.n)
+}
+
+fn branch_call(c: bool) -> str {
+    let q = mkp(1)
+    let mut a = if c { mkp(2) } else { mkp(3) }
+    a.n = 50
+    let b = if c { pass(q) } else { mkp(4) }
+    churn(2)
+    return a.name + " " + b.name + " " + q.name + " " + to_string(a.n) + " " + to_string(q.n)
+}
+
+fn push_branch(i: i64) -> str {
+    let q = P { name: "q{i}", n: i }
+    let mut arr: [P] = []
+    arr = push(arr, if i % 2 == 0 { q } else { P { name: "o{i}", n: 0 } })
+    arr = push(arr, match i % 2 { 0 => pass(q), _ => mkp(i) })
+    churn(i)
+    return arr[0].name + " " + arr[1].name + " " + q.name + " " + to_string(q.n)
+}
+
+fn closure_push(i: i64) -> str {
+    let cap = P { name: "c{i}", n: i }
+    let f = |k: i64| -> [P] {
+        let mut arr: [P] = []
+        arr = push(arr, if k % 2 == 0 { cap } else { P { name: "o{k}", n: k } })
+        return arr
+    }
+    let a = f(0)
+    let b = f(1)
+    let c = f(2)
+    churn(i)
+    return a[0].name + " " + b[0].name + " " + c[0].name + " " + cap.name
+}
+
+fn global_payload(i: i64) -> str {
+    let o = Some(GG.inner)
+    GG.inner = Gin { name: "g{i}" }
+    churn(i)
+    let x = GG.inner
+    GG.inner = Gin { name: "h{i}" }
+    churn(i)
+    let was = match o {
+        Some(v) => v.name,
+        _ => "none",
+    }
+    return was + " " + x.name + " " + GG.inner.name
+}
+
+fn global_from_local() -> str {
+    let y = Gin { name: "y" }
+    GG.inner = y
+    churn(1)
+    let got = inner_of()
+    GG.inner = Gin { name: "after" }
+    churn(2)
+    return y.name + " " + got.name + " " + GG.inner.name
+}
+
+fn glob_plain(i: i64) -> str {
+    let d = glob()
+    let t = glob_tail()
+    let e = glob_early(true)
+    churn(i)
+    return d.name + " " + t.name + " " + e.name + " " + GP.name
+}
+
+fn glob_branch(i: i64) -> str {
+    let d = if i % 2 == 0 { glob() } else { mkp(i) }
+    let m = match i % 2 {
+        0 => glob(),
+        _ => mkp(i),
+    }
+    let mut a = P { name: "w", n: 0 }
+    a = if i % 2 == 0 { glob() } else { mkp(i) }
+    let mut b = P { name: "w", n: 0 }
+    b = match i % 2 {
+        0 => glob(),
+        _ => mkp(i),
+    }
+    churn(i)
+    return d.name + " " + m.name + " " + a.name + " " + b.name + " " + GP.name
+}
+
+fn glob_push(i: i64) -> str {
+    let mut arr: [P] = []
+    arr = push(arr, if i % 2 == 0 { glob() } else { mkp(i) })
+    arr = push(arr, match i % 2 { 0 => glob(), _ => mkp(i) })
+    churn(i)
+    return arr[0].name + " " + arr[1].name + " " + GP.name
+}
+
+fn glob_stmt(i: i64) -> str {
+    let xs = [P { name: "x{i}", n: i }]
+    match i % 2 { 0 => glob(), _ => mkp(i) }
+    churn(i)
+    return xs[0].name + " " + GP.name
+}
+
+fn glob_method(i: i64) -> str {
+    let q = mkp(i)
+    let d = q.glob_me()
+    churn(i)
+    return d.name + " " + q.name + " " + GP.name
+}
+
+fn glob_closure(i: i64) -> str {
+    let f = || GP
+    let g = || -> P { return GP }
+    let a = f()
+    let b = g()
+    churn(i)
+    return a.name + " " + b.name + " " + GP.name
+}
+
+@capabilities(all)
+fn main() {
+    expect(match_call(2) == "q2 q2 q2" and match_call(3) == "q3 m3 q3", "a call arm beside a bare-name arm")
+    expect(match_assign(2) == "q2 q2 q2 2" and match_assign(3) == "q3 z3 q3 3", "an if / match assigned to a struct local")
+    expect(branch_call(true) == "m2 m1 m1 50 1" and branch_call(false) == "m3 m4 m1 50 1", "call-valued if branches")
+    expect(push_branch(2) == "q2 q2 q2 2" and push_branch(3) == "o3 m3 q3 3", "a pushed if / match value")
+    expect(closure_push(4) == "c4 o1 c4 c4", "a pushed if value in a closure")
+    expect(global_payload(7) == "a g7 h7", "a global field overwritten under an Option payload")
+    expect(global_from_local() == "y y after", "a global field set from a local")
+    expect(glob_plain(1) == "gp gp gp gp" and glob_plain(2) == "gp gp gp gp", "a mutable-global struct returned by name")
+    expect(glob_branch(2) == "gp gp gp gp gp" and glob_branch(3) == "m3 m3 m3 m3 gp", "a global-returning call as an if / match arm")
+    expect(glob_push(2) == "gp gp gp" and glob_push(3) == "m3 m3 gp", "a pushed if / match value that is a global-returning call")
+    expect(glob_stmt(2) == "x2 gp" and glob_stmt(3) == "x3 gp", "a statement match with a global-returning arm")
+    expect(glob_method(5) == "gp m5 gp", "a method returning a global")
+    expect(glob_closure(6) == "gp gp gp", "a closure returning a global")
+    expect(GP.name == "gp", "the global is intact")
+    let mut i = 0
+    let mut acc = 0
+    while i < 200 {
+        acc = acc + len(match_call(i)) + len(match_assign(i)) + len(push_branch(i)) + len(closure_push(i)) + len(global_payload(i)) + len(glob_plain(i)) + len(glob_branch(i)) + len(glob_push(i)) + len(glob_stmt(i)) + len(glob_method(i)) + len(glob_closure(i))
+        i = i + 1
+    }
+    expect(acc > 0, "loop")
+    println("conformance branch global ownership: PASS")
+}
