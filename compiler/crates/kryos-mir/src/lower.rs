@@ -9333,9 +9333,17 @@ fn lower_for(
     // own share and releases it every iteration: a body that overwrites the
     // element being visited must not free what the variable still reads.
     let tuple_elem_owned = tuple_array_elem_releasable(&elem_type);
+    // A shareable struct / enum element is owned by the array the same way (its
+    // overwrite releases it): the loop variable takes its own share, exactly as
+    // `let y = xs[i]` does, and releases it every iteration. As a borrowed alias
+    // a body that overwrote the element it was visiting (`xs[0] = ..`) freed the
+    // value the variable still read (empty string / use-after-free).
+    let value_elem_owned = matches!(pattern, ast::Pattern::Ident { .. })
+        && (is_owned_struct_ty(ctx, &elem_type) || is_owned_enum_ty(ctx, &elem_type));
     let loop_var_owned = (matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
         && matches!(pattern, ast::Pattern::Ident { .. }))
-        || tuple_elem_owned;
+        || tuple_elem_owned
+        || value_elem_owned;
     let loop_scope_start = ctx.locals.len();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
     if !loop_var_owned {
@@ -9348,7 +9356,7 @@ fn lower_for(
             index: Operand::Local(idx_local),
         },
     });
-    if tuple_elem_owned {
+    if tuple_elem_owned || value_elem_owned {
         emit_value_share(ctx, loop_var);
     }
     // Tuple pattern: `for (a, b) in pairs` - destructure the element into its
