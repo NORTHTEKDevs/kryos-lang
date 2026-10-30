@@ -458,6 +458,7 @@ no_df_both branch_global_ownership "$ROOT/tests/conformance/conf_branch_global_o
 no_df_both mut_global_aggregate "$ROOT/tests/conformance/conf_mut_global_aggregate.kry"
 no_df_both struct_array_dup_fields "$ROOT/tests/conformance/conf_struct_array_dup_fields.kry"
 no_df_both closure_capture_array_elems "$ROOT/tests/conformance/conf_closure_capture_array_elems.kry"
+no_df_both result_container_elems "$ROOT/tests/conformance/conf_result_container_elems.kry"
 
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"

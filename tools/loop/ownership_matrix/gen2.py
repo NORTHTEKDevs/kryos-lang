@@ -21,6 +21,14 @@ TYPES = {
     'otup': dict(t='Option<(str, i64)>', ctor='Some(("v{i}", i))',
                  show='return match v {\n        Some(t) => t.0,\n        None => "none",\n    }'),
     'nest': dict(t='Q', ctor='Q { p: P { name: "v{i}", n: i }, xs: ["x"] }', show='return v.p.name'),
+    'res': dict(t='Result<str, str>', ctor='Ok("v{i}")',
+                show='return match v {\n        Ok(p) => p,\n        Err(e) => e,\n    }'),
+    'resp': dict(t='Result<P, str>', ctor='Ok(P { name: "v{i}", n: i })',
+                 show='return match v {\n        Ok(p) => p.name,\n        Err(e) => e,\n    }'),
+    'resi': dict(t='Result<str, i64>', ctor='Ok("v{i}")',
+                 show='return match v {\n        Ok(p) => p,\n        Err(e) => "err",\n    }'),
+    'rese': dict(t='Result<i64, str>', ctor='Err("v{i}")',
+                 show='return match v {\n        Ok(n) => "ok",\n        Err(e) => e,\n    }'),
     'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
                   show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
@@ -103,6 +111,8 @@ for tk, td in TYPES.items():
             L.append('use std::option::{Option, Some, None}')
         if tk == 'otup' and 'use std::option' not in ''.join(L):
             L.append('use std::option::{Option, Some, None}')
+        if tk.startswith('res'):
+            L.append('use std::result::{Result, Ok, Err}')
         L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
               f'struct H {{ f: {T}, n: i64 }}', 'struct HH { h: H, n: i64 }', f'enum W {{ Has({T}), No }}']
         if sk == 'gmut':

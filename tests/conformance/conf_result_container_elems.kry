@@ -1,0 +1,223 @@
+// Conformance (2026-10-30): a `Result` read out of a container into an
+// UNANNOTATED local, then the container slot overwritten. `Ok("v1")` binds only
+// `T`, so the MIR typed the literal -- and every local the type checker had
+// already resolved to `Result<str, str>` -- as the type-erased `Result` stub
+// whose payload is an i64: the element read took no retain and the slot
+// overwrite released the string the local still held. Cranelift (`kryos run`,
+// `--backend cranelift`) died with "stack overflow (unbounded recursion?)" /
+// `kryos_struct_retain on ALREADY-FREED box`; LLVM read an empty string. A
+// match / if value whose FIRST arm is the `Ok("vd")` literal and whose other
+// arm borrows from a container hit the same hole through the result temp (LLVM
+// blank, even for an annotated `let`). `Option<str>` / `Option<P>` were never
+// affected. Every case overwrites the source, churns the allocator, then reads
+// the copy. Run on both backends by run_conformance.sh and, with the free
+// diagnostics, by tests/no_double_free.sh.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+struct H { f: Result<str, str>, n: i64 }
+
+let mut GM: H = H { f: Ok("vg"), n: 1 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < k {
+        junk = push(junk, "junk-{j}-padding-padding")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn show(r: Result<str, str>) -> str {
+    return match r {
+        Ok(p) => p,
+        Err(e) => e,
+    }
+}
+
+fn showp(r: Result<P, str>) -> str {
+    return match r {
+        Ok(p) => p.name,
+        Err(e) => e,
+    }
+}
+
+fn showi(r: Result<str, i64>) -> str {
+    return match r {
+        Ok(p) => p,
+        Err(e) => "err",
+    }
+}
+
+fn showe(r: Result<i64, str>) -> str {
+    return match r {
+        Ok(n) => "ok",
+        Err(e) => e,
+    }
+}
+
+fn from_array(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = xs[0]
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return show(y) + "/" + show(xs[0])
+}
+
+fn from_array_tmp(i: i64) -> str {
+    let xs = [Ok("v{i}")]
+    let y = xs[0]
+    churn(40)
+    return show(y)
+}
+
+fn from_map(i: i64) -> str {
+    let mut m: map<str, Result<str, str>> = {}
+    m["k"] = Ok("v{i}")
+    let mut y = Ok("vd")
+    y = m["k"]
+    m["k"] = Ok("w{i}")
+    churn(40)
+    return show(y) + "/" + show(m["k"])
+}
+
+fn from_map_let(i: i64) -> str {
+    let mut m: map<str, Result<str, str>> = {}
+    m["k"] = Ok("v{i}")
+    let y = m["k"]
+    m["k"] = Ok("w{i}")
+    churn(40)
+    return show(y)
+}
+
+fn match_value(i: i64) -> str {
+    let mut m: map<str, Result<str, str>> = {}
+    m["k"] = Ok("v{i}")
+    let y = match i {
+        0 => Ok("vd"),
+        _ => m["k"],
+    }
+    m["k"] = Ok("w{i}")
+    churn(40)
+    return show(y)
+}
+
+fn match_value_annotated(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y: Result<str, str> = match i {
+        0 => Ok("vd"),
+        _ => xs[0],
+    }
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return show(y)
+}
+
+fn if_value(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = if i > 0 { xs[0] } else { Ok("vd") }
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return show(y)
+}
+
+fn if_value_literal_first(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = if i < 0 { Ok("vd") } else { xs[0] }
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return show(y)
+}
+
+fn global_field(i: i64) -> str {
+    GM.f = Ok("v{i}")
+    let y = if i > 0 { GM.f } else { Ok("vd") }
+    GM.f = Ok("w{i}")
+    churn(40)
+    return show(y) + "/" + show(GM.f)
+}
+
+fn payload_struct(i: i64) -> str {
+    let mut xs = [Ok(P { name: "v{i}", n: i })]
+    let y = xs[0]
+    xs[0] = Ok(P { name: "w{i}", n: i })
+    churn(40)
+    return showp(y)
+}
+
+fn payload_err_str(i: i64) -> str {
+    let mut xs = [Err("v{i}")]
+    let y = xs[0]
+    xs[0] = Err("w{i}")
+    churn(40)
+    return showe(y)
+}
+
+fn payload_int_err(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = xs[0]
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return showi(y)
+}
+
+fn show_opt(r: Option<Result<str, str>>) -> str {
+    return match r {
+        Some(x) => show(x),
+        None => "none",
+    }
+}
+
+fn nested_option(i: i64) -> str {
+    let mut xs = [Some(Ok("v{i}"))]
+    let y = xs[0]
+    xs[0] = Some(Ok("w{i}"))
+    churn(40)
+    return show_opt(y)
+}
+
+fn tuple_elem(i: i64) -> str {
+    let mut xs = [(Ok("v{i}"), 1)]
+    let y = xs[0]
+    xs[0] = (Ok("w{i}"), 2)
+    churn(40)
+    return show(y.0)
+}
+
+fn main() {
+    expect(from_array(1) == "v1/w1", "array element read then overwrite")
+    expect(from_array_tmp(2) == "v2", "array element read of an immutable array")
+    expect(from_map(3) == "v3/w3", "map value read into a reassigned local")
+    expect(from_map_let(4) == "v4", "map value read into a let")
+    expect(match_value(5) == "v5", "match value, literal first arm, map read second")
+    expect(match_value_annotated(6) == "v6", "annotated match value")
+    expect(if_value(7) == "v7", "if value, array read first")
+    expect(if_value_literal_first(8) == "v8", "if value, literal first arm")
+    expect(global_field(9) == "v9/w9", "mutable global struct field")
+    expect(payload_struct(10) == "v10", "Result<P, str> element")
+    expect(payload_err_str(11) == "v11", "Result<i64, str> Err element")
+    expect(payload_int_err(12) == "v12", "Result<str, i64> element")
+    expect(nested_option(13) == "v13", "Option<Result<str, str>> element")
+    expect(tuple_elem(14) == "v14", "(Result<str, str>, i64) element")
+
+    // repeated rounds with allocator churn between creation and the read
+    let mut i = 0
+    while i < 50 {
+        expect(from_array(i) == "v{i}/w{i}", "array round {i}")
+        expect(from_map(i) == "v{i}/w{i}", "map round {i}")
+        expect(if_value(i + 1) == "v{i + 1}", "if round {i}")
+        expect(payload_struct(i) == "v{i}", "payload round {i}")
+        expect(nested_option(i) == "v{i}", "nested round {i}")
+        i = i + 1
+    }
+    println("PASS")
+}

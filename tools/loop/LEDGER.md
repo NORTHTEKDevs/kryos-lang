@@ -10,6 +10,87 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a `Result` read out of a container into an unannotated local was typed as the payload-less stub, so the read took no retain (2026-10-30)
+
+Silent wrong answer / use-after-free. `kryos run` and `--backend cranelift`
+crash (`kryos: stack overflow (unbounded recursion?)`, rc=132/253, free diag
+`kryos_struct_retain on ALREADY-FREED box`); the LLVM AOT reads an empty string.
+`Option<str>`, `Option<P>` and an annotated `Result` were always fine.
+- Repro (before), `use std::result::{Result, Ok, Err}`, `fn show(r: Result<str,
+  str>) -> str { return match r { Ok(p) => p, Err(e) => e } }`, a `churn` that
+  pushes 40 strings, then `let mut xs = [Ok("v1")]  let y = xs[0]  xs[0] =
+  Ok("w1")  churn(1)  println(show(y))`: JIT and Cranelift AOT `kryos: stack
+  overflow (unbounded recursion?)`, LLVM AOT `v1`. LLVM side: `let mut m:
+  map<str, Result<str, str>> = {}  m["k"] = Ok("v1")  let y = match i { 0 =>
+  Ok("vd"), _ => m["k"] }  m["k"] = Ok("w1")  churn(1)  println(show(y))` printed
+  an EMPTY line on the LLVM AOT (JIT `v1`), and so did the same program with
+  `let y: Result<str, str> = match ...`. Matrix rows `res_idx`, `res_idxtmp`,
+  `res_gmut`, `res_mapval` (new, `gen2.py`: `res`, `resp`, `resi`, `rese` =
+  `Result<str,str>`, `<P,str>`, `<str,i64>`, `<i64,str>`, each x 12 sources x 6
+  consumers x 6 legs): on the master binary exactly the sources `idx`,
+  `idxtmp`, `gmut`, `mapval` fail for all four types (16 of 48 programs; the
+  other 8 sources are clean). `res_idx` fails on 4 of 6 legs (JIT both, Cranelift
+  both), `res_idxtmp` and `res_gmut` on 5, `res_mapval` only on the LLVM
+  real-free leg (the diag leg hides it).
+- Root cause, two holes with one cause. `Ok("v1")` binds only `T`; `E` is open
+  (`infer_generic_variant_instance` returns None "so an annotation stays
+  required"), so the MIR typed the literal, and everything inferred from it, as
+  the bare `Result` template stub whose payload is the erased i64 slot. The
+  type checker had already unified the real type (`Result<str, str>`) and told
+  nobody. (1) An unannotated `let` took the stub: `[Result; 1]` / `Result`
+  locals, so `kryos_struct_share` on the element read and the release type of
+  the overwritten slot (`drop_if_ne(.., Result)`) saw no `str` payload. An
+  annotated `let xs: [Result<str,str>]` got `Result___str_str` and was clean
+  (MIR diff of the two forms). (2) An if / match VALUE took the type of its first
+  branch, `Ok("vd")` = the stub, so the result temp never retained the borrowed
+  `m["k"]` / `xs[0]` arm, whatever the `let` was typed.
+- Fix, two places. `kryos-types/src/check.rs`: every unannotated, non-pattern
+  `let` records its type (`resolved_result_lets`); at end-of-check the ones whose
+  fully resolved type contains a `Result` (itself, or as an array / map / tuple
+  / `Option` / generic argument, including the stdlib bridge `Enum{Result}`) are
+  merged into the existing `let_types` export that MIR already consumes for
+  empty-array lets, so the local gets exactly the type an annotation gives it.
+  `kryos-mir/src/lower.rs`: `infer_if_value_type` / `infer_match_result_type`
+  keep the first-branch rule but a bare generic-template stub loses to another
+  branch's instance of the same template (`prefer_template_instance`), only
+  consulted when the first branch IS a stub, so every other if / match is typed
+  exactly as before. `infer_match_result_type`'s per-arm body moved to
+  `infer_one_arm_type` unchanged (the diff of that function is re-indentation).
+- Proved both ways (`cargo build --release` each time). Pin
+  `tests/conformance/conf_result_container_elems.kry`. With BOTH changes
+  reverted: JIT rc=132, `--backend cranelift` rc=132 (Illegal instruction),
+  LLVM AOT `CONF FAIL: map value read into a reassigned local` (rc=1). With
+  only the checker change: all three fail (`CONF FAIL: match value, literal
+  first arm, map read second` on LLVM, stack overflow on JIT / Cranelift); with
+  only the MIR change: all three fail (the array and map read cases). Restored,
+  the JIT, the LLVM AOT, the Cranelift AOT print PASS, and PASS under
+  `KRYOS_FREE_DIAG`.
+- Pinned by that program (registered in `no_double_free.sh` as
+  `result_container_elems`, JIT + AOT with the free diagnostics, then the AOT
+  with real frees): the triage array read, an immutable array read, the map value
+  into a reassigned `let mut y = Ok("vd")` and into a `let`, match / if values
+  with the literal first and second (and an annotated `let`), a mutable global
+  struct field, `Result<P, str>`, `Result<i64, str>` (Err), `Result<str, i64>`,
+  `Option<Result<str, str>>` and `(Result<str, str>, i64)` elements, and 50
+  rounds with allocator churn between the overwrite and the read.
+- Gates (baseline master -> this branch): `kryos-loop.sh gates 2` tier1 + tier2
+  GREEN -> GREEN, conformance 110/110 -> 111/111; bootstrap 16/16 -> 16/16;
+  `tests/mem_agg_ops_gate.sh` full run PASS (160 legs, 0 FAIL, every mode 4MB
+  against the 40MB ceiling). The whole matrix (gen1 + gen2 + gen3, 206 programs
+  x 6 legs, every output line checked against the value-semantics answer, no
+  free diagnostics) is clean on this branch: 0 programs with a problem, the 48
+  `res*` programs included.
+- Residual: only a `let` is re-typed. A `Result` stub reaching a place that is
+  NOT a `let` and NOT a branch value (an unannotated closure result, a struct
+  field set from a bare `Ok(..)` literal) still goes through the old inference;
+  the matrix consumers (struct literal, array literal, push, map store, payload,
+  tuple literal, field store, index store, nested) are all clean, so none is
+  known. A `Result` whose `E` is never constrained anywhere (`let y = Ok("x")`
+  and nothing reads an error) stays the stub, which is harmless: no typed read
+  of it exists. The same open-type-parameter hole exists for any generic enum
+  whose variant leaves a parameter unbound by its payload; `Result` is the only
+  stdlib one, so a user generic enum like that is untested.
+
 ## Wave: a closure returned over a LOCAL array of heap elements owns its elements (2026-10-30)
 
 Silent wrong answer / use-after-free, JIT and AOT (`--release`, LLVM and

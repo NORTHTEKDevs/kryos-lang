@@ -69,6 +69,15 @@ pub struct TypeChecker {
     /// type the local (its own inference defaults an empty array's element to
     /// i64, which mis-types `X[i].field` / aggregate elements on AOT).
     resolved_let_types: std::collections::HashMap<Span, Type>,
+    /// Every OTHER unannotated, non-destructuring `let` that has an initializer,
+    /// keyed by the Let span. Resolved at end-of-check; only the ones whose type
+    /// is (or contains) a concrete `Result<T, E>` are exported (merged into the
+    /// `let_types` map). The MIR types a bare `Ok(x)` / `Err(e)` literal as the
+    /// type-erased `Result` stub because the OTHER type argument is not bound by
+    /// the payload, so an unannotated `let mut xs = [Ok("a")]` / `let y = Ok("a")`
+    /// local lost its `str` payload and every container read / overwrite of it
+    /// skipped the retain / release (use-after-free).
+    resolved_result_lets: std::collections::HashMap<Span, Type>,
     /// Nesting depth of enclosing `unsafe { }` blocks. Raw-pointer dereference
     /// is only permitted when this is > 0 (else E0500).
     unsafe_depth: u32,
@@ -214,6 +223,7 @@ impl TypeChecker {
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
+            resolved_result_lets: std::collections::HashMap::new(),
             unsafe_depth: 0,
             actor_nonvoid_handlers: std::collections::HashMap::new(),
             pending_self_recursive_name: None,
@@ -3106,6 +3116,8 @@ impl TypeChecker {
                     };
                     if record {
                         self.resolved_let_types.insert(*span, final_ty.clone());
+                    } else if pattern.is_none() && value.is_some() {
+                        self.resolved_result_lets.insert(*span, final_ty.clone());
                     }
 
                     // LEDGER item 40c: a call to a GENERIC free function
@@ -7167,6 +7179,24 @@ fn is_flowable_param_type(ty: &Type) -> bool {
     )
 }
 
+/// Does a (fully resolved) type contain a `Result<T, E>` anywhere -- itself, or
+/// as an array / map / tuple / `Option` / generic-argument element?
+fn type_mentions_result(ty: &Type) -> bool {
+    match ty {
+        Type::Result { .. } => true,
+        // The stdlib bridge `Result` enum (see `stdlib_bridge_generics`).
+        Type::Enum { name, generics } if name == "Result" => !generics.is_empty(),
+        Type::Enum { generics, .. } | Type::Struct { generics, .. } => {
+            generics.iter().any(type_mentions_result)
+        }
+        Type::Array { element, .. } => type_mentions_result(element),
+        Type::Map { key, value } => type_mentions_result(key) || type_mentions_result(value),
+        Type::Tuple { elements } => elements.iter().any(type_mentions_result),
+        Type::Option { inner } => type_mentions_result(inner),
+        _ => false,
+    }
+}
+
 /// Convert a resolved concrete `Type` to an AST `TypeExpr` for annotating a
 /// lambda param. Returns None for unresolved vars or shapes we can't represent.
 fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
@@ -9696,6 +9726,18 @@ fn type_check_with_lambda_params_inner(
             concrete_type_to_type_expr(&resolved).map(|te| (*span, te))
         })
         .collect();
+    let mut let_types = let_types;
+    for (span, ty) in checker.resolved_result_lets.iter() {
+        if let_types.contains_key(span) {
+            continue;
+        }
+        let resolved = checker.engine.resolve(ty);
+        if type_mentions_result(&resolved) {
+            if let Some(te) = concrete_type_to_type_expr(&resolved) {
+                let_types.insert(*span, te);
+            }
+        }
+    }
     (
         std::mem::take(&mut checker.diagnostics),
         std::mem::take(&mut checker.resolved_lambda_params),
