@@ -21,10 +21,27 @@ TYPES = {
     'otup': dict(t='Option<(str, i64)>', ctor='Some(("v{i}", i))',
                  show='return match v {\n        Some(t) => t.0,\n        None => "none",\n    }'),
     'nest': dict(t='Q', ctor='Q { p: P { name: "v{i}", n: i }, xs: ["x"] }', show='return v.p.name'),
+    'res': dict(t='Result<str, str>', ctor='Ok("v{i}")',
+                show='return match v {\n        Ok(p) => p,\n        Err(e) => e,\n    }'),
+    'resp': dict(t='Result<P, str>', ctor='Ok(P { name: "v{i}", n: i })',
+                 show='return match v {\n        Ok(p) => p.name,\n        Err(e) => e,\n    }'),
+    'resi': dict(t='Result<str, i64>', ctor='Ok("v{i}")',
+                 show='return match v {\n        Ok(p) => p,\n        Err(e) => "err",\n    }'),
+    'rese': dict(t='Result<i64, str>', ctor='Err("v{i}")',
+                 show='return match v {\n        Ok(n) => "ok",\n        Err(e) => e,\n    }'),
     'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
                   show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
-CONSUMERS = ['ifval', 'matchval', 'idxstore', 'elemfield', 'retif', 'nested']
+# `inl`: the same value consumed by an INLINE match on the local itself (the
+# idiom; every other consumer routes through the annotated `show` helper, which
+# pins the type for the checker and hides an untyped-local hole).
+TYPES['res']['inl'] = 'match y {\n        Ok(p) => p,\n        Err(e) => e,\n    }'
+TYPES['resp']['inl'] = 'match y {\n        Ok(p) => p.name,\n        Err(e) => e,\n    }'
+TYPES['resi']['inl'] = 'match y {\n        Ok(p) => p,\n        Err(e) => "err",\n    }'
+TYPES['rese']['inl'] = 'match y {\n        Ok(n) => "ok",\n        Err(e) => e,\n    }'
+TYPES['opt']['inl'] = 'match y {\n        Some(p) => p.name,\n        None => "none",\n    }'
+TYPES['otup']['inl'] = 'match y {\n        Some(t) => t.0,\n        None => "none",\n    }'
+CONSUMERS = ['ifval', 'matchval', 'idxstore', 'elemfield', 'retif', 'nested', 'inl', 'forloop']
 # source kind -> (prelude lines, expr, kill lines); @C = ctor at i, @K = ctor at i + 100, @D = default
 SOURCES = {
     'local': (['let mut x = @C'], 'x', ['x = @K']),
@@ -40,12 +57,14 @@ SOURCES = {
     'gmut': (['GM.f = @C'], 'GM.f', ['GM.f = @K']),
     'nestfld': (['let mut hh = HH { h: H { f: @C, n: 1 }, n: 2 }'], 'hh.h.f', ['hh.h.f = @K', 'hh = HH { h: H { f: @K, n: 3 }, n: 4 }']),
 }
-RT = {'let': '@T', 'reassign': '@T', 'structlit': 'H', 'arraylit': '[@T]', 'push': '[@T]',
+RT = {'inl': '@T', 'forloop': '@T', 'let': '@T', 'reassign': '@T', 'structlit': 'H', 'arraylit': '[@T]', 'push': '[@T]',
       'mapstore': 'map<str, @T>', 'payload': 'W', 'tuplelit': '(@T, i64)', 'fieldstore': 'H',
       'ifval': '@T', 'matchval': '@T', 'idxstore': '[@T]', 'elemfield': '[H]', 'nested': 'HH'}
 
 
-def consume(c, e):
+def consume(c, e, td=None):
+    if c == 'inl':
+        return ([f'let y = {e}'], td['inl'])
     if c == 'let':
         return ([f'let y = {e}'], 'show(y)')
     if c == 'reassign':
@@ -103,6 +122,8 @@ for tk, td in TYPES.items():
             L.append('use std::option::{Option, Some, None}')
         if tk == 'otup' and 'use std::option' not in ''.join(L):
             L.append('use std::option::{Option, Some, None}')
+        if tk.startswith('res'):
+            L.append('use std::result::{Result, Ok, Err}')
         L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', 'struct PT { t: (str, i64), n: i64 }', 'struct Q { p: P, xs: [str] }',
               f'struct H {{ f: {T}, n: i64 }}', 'struct HH { h: H, n: i64 }', f'enum W {{ Has({T}), No }}']
         if sk == 'gmut':
@@ -119,13 +140,25 @@ for tk, td in TYPES.items():
         calls = []
         for c in CONSUMERS:
             fn = f'c_{c}'
+            if c == 'inl' and ('inl' not in td or sk in ('param', 'cap')):
+                continue
+            if c == 'forloop':
+                # A `for` over an array whose body overwrites the element it is
+                # visiting: the loop variable must own its element. Source-
+                # independent, so emitted once (with the `local` source).
+                if sk != 'local' or tk in ('fn', 'map'):
+                    continue
+                L += [f'fn {fn}(i: i64) -> str {{', f'    let mut xs = [{C}, {K}]', '    let mut out = ""', '    for r in xs {',
+                      f'        xs[0] = {K}', '        churn(i)', '        out = out + show(r) + ","', '    }', '    return out', '}']
+                calls.append(fn)
+                continue
             if sk in ('param', 'cap'):
                 if c == 'retif':
                     L += [f'fn {fn}_in(i: i64, x: {T}) -> {T} {{', '    return if len("a") > 0 {{ x }} else {{ x }}', '}']
                     L += [f'fn {fn}(i: i64) -> str {{', f'    let mut a = {C}', f'    let y = {fn}_in(i, a)', f'    a = {K}', '    churn(i)',
                           '    return show(y) + "/" + show(a)', '}']
                 else:
-                    b, r = consume(c, 'x')
+                    b, r = consume(c, 'x', td)
                     rt = sub([RT[c]], M)[0]
                     if sk == 'param':
                         L += [f'fn {fn}_in(i: i64, x: {T}) -> {rt} {{'] + ['    ' + l for l in sub(b, M)] + ['    return y', '}']
@@ -140,7 +173,7 @@ for tk, td in TYPES.items():
                     L += [f'fn {fn}_in(i: i64) -> {T} {{'] + ['    ' + l for l in sub(pre, M)] + [f'    return if i > 0 {{ {e} }} else {{ {e} }}', '}']
                     L += [f'fn {fn}(i: i64) -> str {{', f'    let y = {fn}_in(i)', '    churn(i)', '    return show(y)', '}']
                 else:
-                    b, r = consume(c, e)
+                    b, r = consume(c, e, td)
                     L += [f'fn {fn}(i: i64) -> str {{'] + ['    ' + l for l in sub(pre, M)] + ['    ' + l for l in sub(b, M)] + \
                          ['    ' + l for l in sub(kill, M)] + ['    churn(i)', f'    return {r}', '}']
             calls.append(fn)

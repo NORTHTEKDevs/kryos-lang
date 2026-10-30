@@ -9333,9 +9333,17 @@ fn lower_for(
     // own share and releases it every iteration: a body that overwrites the
     // element being visited must not free what the variable still reads.
     let tuple_elem_owned = tuple_array_elem_releasable(&elem_type);
+    // A shareable struct / enum element is owned by the array the same way (its
+    // overwrite releases it): the loop variable takes its own share, exactly as
+    // `let y = xs[i]` does, and releases it every iteration. As a borrowed alias
+    // a body that overwrote the element it was visiting (`xs[0] = ..`) freed the
+    // value the variable still read (empty string / use-after-free).
+    let value_elem_owned = matches!(pattern, ast::Pattern::Ident { .. })
+        && (is_owned_struct_ty(ctx, &elem_type) || is_owned_enum_ty(ctx, &elem_type));
     let loop_var_owned = (matches!(elem_type, MirType::Str | MirType::Array(_, _) | MirType::Map { .. })
         && matches!(pattern, ast::Pattern::Ident { .. }))
-        || tuple_elem_owned;
+        || tuple_elem_owned
+        || value_elem_owned;
     let loop_scope_start = ctx.locals.len();
     let loop_var = ctx.alloc_local(Some(loop_var_name), elem_type, false);
     if !loop_var_owned {
@@ -9348,7 +9356,7 @@ fn lower_for(
             index: Operand::Local(idx_local),
         },
     });
-    if tuple_elem_owned {
+    if tuple_elem_owned || value_elem_owned {
         emit_value_share(ctx, loop_var);
     }
     // Tuple pattern: `for (a, b) in pairs` - destructure the element into its
@@ -11548,7 +11556,49 @@ fn overlay_arm_bindings(ctx: &mut LoweringContext, ty: &MirType, pat: &ast::Patt
     }
 }
 
+/// A value-producing branch typed as the bare generic template stub
+/// (`Result`, from `Ok("vd")` whose `E` no payload binds) loses to a sibling
+/// branch typed as an INSTANCE of the same template (`Result___str_str`, from
+/// a typed read). The stub erases the payload to i64, so an if / match result
+/// temp of that type never retained a borrowed `str` arm (`match i { 0 =>
+/// Ok("vd"), _ => m["k"] }` bound a dangling `y` after `m["k"]` was
+/// overwritten).
+fn prefer_template_instance(ctx: &LoweringContext, first: MirType, other: MirType) -> MirType {
+    if let (MirType::Enum(f), MirType::Enum(o)) = (&first, &other) {
+        if ctx.generic_enum_templates.contains_key(f.as_str())
+            && o.len() > f.len() + 3
+            && o.starts_with(f.as_str())
+            && o[f.len()..].starts_with("___")
+            && ctx.mono_instance_args.contains_key(o.as_str())
+        {
+            return other;
+        }
+    }
+    first
+}
+
+fn is_template_stub(ctx: &LoweringContext, ty: &MirType) -> bool {
+    matches!(ty, MirType::Enum(n) if ctx.generic_enum_templates.contains_key(n.as_str()))
+}
+
 fn infer_match_result_type(
+    ctx: &mut LoweringContext,
+    subject: &ast::Expr,
+    arms: &[ast::MatchArm],
+) -> MirType {
+    let first = infer_match_arm_type(ctx, subject, arms);
+    if !is_template_stub(ctx, &first) {
+        return first;
+    }
+    let mut best = first;
+    for arm in arms.iter().filter(|a| !arm_body_diverges(&a.body)) {
+        let t = infer_one_arm_type(ctx, subject, arm);
+        best = prefer_template_instance(ctx, best, t);
+    }
+    best
+}
+
+fn infer_match_arm_type(
     ctx: &mut LoweringContext,
     subject: &ast::Expr,
     arms: &[ast::MatchArm],
@@ -11556,72 +11606,78 @@ fn infer_match_result_type(
     arms.iter()
         .find(|a| !arm_body_diverges(&a.body))
         .or_else(|| arms.first())
-        .map(|arm| {
-            if let ast::Pattern::Enum {
-                name: enum_name,
-                variant,
-                fields,
-                ..
-            } = &arm.pattern
+        .map(|arm| infer_one_arm_type(ctx, subject, arm))
+        .unwrap_or(MirType::I64)
+}
+
+fn infer_one_arm_type(
+    ctx: &mut LoweringContext,
+    subject: &ast::Expr,
+    arm: &ast::MatchArm,
+) -> MirType {
+    if let ast::Pattern::Enum {
+        name: enum_name,
+        variant,
+        fields,
+        ..
+    } = &arm.pattern
+    {
+        if let ast::Expr::Identifier {
+            name: body_name, ..
+        } = &*arm.body
+        {
+            // Resolve the enum definition to consult. A QUALIFIED
+            // pattern (`Option.Some(n)` / `Opt::Some(n)`) carries the
+            // enum name directly. A BARE pattern (`Some(n)`) leaves
+            // `enum_name` empty by parser convention (parser.rs:
+            // "the enum is left empty and resolved from the matched
+            // value's type during lowering") -- looking that empty
+            // name up in `ctx.enum_defs` silently misses, falling
+            // through to `infer_expr_type(&arm.body)` below, which
+            // can't see `body_name` (not bound yet) and defaults to
+            // I64. Prefer the SUBJECT's own inferred type when it
+            // names a (possibly monomorphized, e.g. `Option___str`)
+            // enum, so the payload field type is the real concrete
+            // type rather than the generic stub's i64 placeholder;
+            // fall back to the pattern's name, then to a bare-variant
+            // lookup.
+            let resolved_enum_name = match infer_expr_type(ctx, subject) {
+                MirType::Enum(n) => Some(n),
+                _ if !enum_name.is_empty() => Some(enum_name.clone()),
+                _ => find_enum_variant(ctx, variant).map(|(en, _)| en),
+            };
+            if let Some(variants) =
+                resolved_enum_name.and_then(|en| ctx.enum_defs.get(en.as_str()).cloned())
             {
-                if let ast::Expr::Identifier {
-                    name: body_name, ..
-                } = &*arm.body
-                {
-                    // Resolve the enum definition to consult. A QUALIFIED
-                    // pattern (`Option.Some(n)` / `Opt::Some(n)`) carries the
-                    // enum name directly. A BARE pattern (`Some(n)`) leaves
-                    // `enum_name` empty by parser convention (parser.rs:
-                    // "the enum is left empty and resolved from the matched
-                    // value's type during lowering") -- looking that empty
-                    // name up in `ctx.enum_defs` silently misses, falling
-                    // through to `infer_expr_type(&arm.body)` below, which
-                    // can't see `body_name` (not bound yet) and defaults to
-                    // I64. Prefer the SUBJECT's own inferred type when it
-                    // names a (possibly monomorphized, e.g. `Option___str`)
-                    // enum, so the payload field type is the real concrete
-                    // type rather than the generic stub's i64 placeholder;
-                    // fall back to the pattern's name, then to a bare-variant
-                    // lookup.
-                    let resolved_enum_name = match infer_expr_type(ctx, subject) {
-                        MirType::Enum(n) => Some(n),
-                        _ if !enum_name.is_empty() => Some(enum_name.clone()),
-                        _ => find_enum_variant(ctx, variant).map(|(en, _)| en),
-                    };
-                    if let Some(variants) =
-                        resolved_enum_name.and_then(|en| ctx.enum_defs.get(en.as_str()).cloned())
-                    {
-                        if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
-                            for (field_idx, pat) in fields.iter().enumerate() {
-                                if let ast::Pattern::Ident {
-                                    name: field_name, ..
-                                } = pat
-                                {
-                                    if field_name == body_name {
-                                        if let Some(ft) = variants[idx].fields.get(field_idx) {
-                                            return ft.clone();
-                                        }
-                                    }
+                if let Some(idx) = variants.iter().position(|v| v.name == *variant) {
+                    for (field_idx, pat) in fields.iter().enumerate() {
+                        if let ast::Pattern::Ident {
+                            name: field_name, ..
+                        } = pat
+                        {
+                            if field_name == body_name {
+                                if let Some(ft) = variants[idx].fields.get(field_idx) {
+                                    return ft.clone();
                                 }
                             }
                         }
                     }
                 }
             }
-            // Overlay the arm pattern's bindings (typed from the subject) so a
-            // body that COMPUTES on a binding resolves -- without this,
-            // `v => v + "!"` over a str subject fell to i64 and the match
-            // result slot stored the str as a raw pointer (both backends).
-            let subj_ty = infer_expr_type(ctx, subject);
-            let saved_len = ctx.locals.len();
-            let saved_next = ctx.next_local;
-            overlay_arm_bindings(ctx, &subj_ty, &arm.pattern);
-            let inferred = infer_expr_type(ctx, &arm.body);
-            ctx.locals.truncate(saved_len);
-            ctx.next_local = saved_next;
-            inferred
-        })
-        .unwrap_or(MirType::I64)
+        }
+    }
+    // Overlay the arm pattern's bindings (typed from the subject) so a
+    // body that COMPUTES on a binding resolves -- without this,
+    // `v => v + "!"` over a str subject fell to i64 and the match
+    // result slot stored the str as a raw pointer (both backends).
+    let subj_ty = infer_expr_type(ctx, subject);
+    let saved_len = ctx.locals.len();
+    let saved_next = ctx.next_local;
+    overlay_arm_bindings(ctx, &subj_ty, &arm.pattern);
+    let inferred = infer_expr_type(ctx, &arm.body);
+    ctx.locals.truncate(saved_len);
+    ctx.next_local = saved_next;
+    inferred
 }
 
 /// `match <call> { .. }` on a str/array/map or shareable enum: the call's
@@ -13176,6 +13232,31 @@ fn block_tail_let_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<
     Some(result)
 }
 
+/// The value type of an if-expression: the first branch that produces a value,
+/// except that a bare generic-template stub loses to the other branch's
+/// instance of the same template (see `prefer_template_instance`).
+fn infer_if_value_type(
+    ctx: &mut LoweringContext,
+    then_branch: &ast::Block,
+    else_branch: Option<&ast::Block>,
+) -> MirType {
+    let t = infer_branch_value_type(ctx, then_branch);
+    match t {
+        // Only a stub then-branch needs the else branch's say; every other
+        // type is exactly what the first-value rule always picked.
+        Some(t) if is_template_stub(ctx, &t) => {
+            match else_branch.and_then(|b| infer_branch_value_type(ctx, b)) {
+                Some(e) => prefer_template_instance(ctx, t, e),
+                None => t,
+            }
+        }
+        Some(t) => t,
+        None => else_branch
+            .and_then(|b| infer_branch_value_type(ctx, b))
+            .unwrap_or(MirType::I64),
+    }
+}
+
 fn infer_branch_value_type(ctx: &mut LoweringContext, block: &ast::Block) -> Option<MirType> {
     if let Some(t) = block_tail_let_type(ctx, block) {
         return Some(t);
@@ -13914,9 +13995,7 @@ fn infer_expr_type(ctx: &mut LoweringContext, expr: &ast::Expr) -> MirType {
             // `let f = if c { throw } else { "s" }` typed `f` as I64 (the throw
             // arm) while the str "s" was stored, so println(f) printed the raw
             // pointer bits. (Was: looked only at the then-branch's Stmt::Expr.)
-            infer_branch_value_type(ctx, then_branch)
-                .or_else(|| else_branch.as_ref().and_then(|b| infer_branch_value_type(ctx, b)))
-                .unwrap_or(MirType::I64)
+            infer_if_value_type(ctx, then_branch, else_branch.as_ref())
         }
 
         ast::Expr::ComptimeBlock { body, .. } => {
@@ -16234,9 +16313,7 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
             // Inference mirrors the rule used by `infer_expr_type` for IfExpr:
             // look at the tail expression of the then-branch, fall back to the
             // else-branch's tail, then to I64 as a last resort.
-            let result_ty = infer_branch_value_type(ctx, then_branch)
-                .or_else(|| else_branch.as_ref().and_then(|b| infer_branch_value_type(ctx, b)))
-                .unwrap_or(MirType::I64);
+            let result_ty = infer_if_value_type(ctx, then_branch, else_branch.as_ref());
             let result_local = ctx.alloc_temp(result_ty);
             let cond_op = lower_expr_to_operand(ctx, condition);
             let then_bb = ctx.alloc_block();

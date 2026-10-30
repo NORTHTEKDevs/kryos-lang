@@ -69,6 +69,23 @@ pub struct TypeChecker {
     /// type the local (its own inference defaults an empty array's element to
     /// i64, which mis-types `X[i].field` / aggregate elements on AOT).
     resolved_let_types: std::collections::HashMap<Span, Type>,
+    /// Every OTHER unannotated, non-destructuring `let` that has an initializer,
+    /// keyed by the Let span. Resolved at end-of-check; only the ones whose type
+    /// is (or contains) a concrete `Result<T, E>` are exported (merged into the
+    /// `let_types` map). The MIR types a bare `Ok(x)` / `Err(e)` literal as the
+    /// type-erased `Result` stub because the OTHER type argument is not bound by
+    /// the payload, so an unannotated `let mut xs = [Ok("a")]` / `let y = Ok("a")`
+    /// local lost its `str` payload and every container read / overwrite of it
+    /// skipped the retain / release (use-after-free).
+    resolved_result_lets: std::collections::HashMap<Span, (Type, bool)>,
+    /// Fresh vars `stdlib_bridge_generics` left for the slot a `Ok(x)` /
+    /// `Err(e)` literal does not bind (`E` of `Ok`, `T` of `Err`). When nothing
+    /// ever constrains one, no code can read it typed, so the export gives it
+    /// the same i64 slot the MIR gives an unbound enum parameter.
+    bridge_open_vars: Vec<u32>,
+    /// Number of enclosing generic declarations (fn / impl / trait): inside
+    /// one, an unresolved var may be a type parameter, never defaulted.
+    generic_scope_depth: u32,
     /// Nesting depth of enclosing `unsafe { }` blocks. Raw-pointer dereference
     /// is only permitted when this is > 0 (else E0500).
     unsafe_depth: u32,
@@ -214,6 +231,9 @@ impl TypeChecker {
             lambda_expected_types: std::collections::HashMap::new(),
             resolved_lambda_params: std::collections::HashMap::new(),
             resolved_let_types: std::collections::HashMap::new(),
+            resolved_result_lets: std::collections::HashMap::new(),
+            bridge_open_vars: Vec::new(),
+            generic_scope_depth: 0,
             unsafe_depth: 0,
             actor_nonvoid_handlers: std::collections::HashMap::new(),
             pending_self_recursive_name: None,
@@ -2286,6 +2306,29 @@ impl TypeChecker {
 
     /// Check a declaration's body (second pass).
     fn check_decl(&mut self, decl: &Decl) {
+        let generic = match decl {
+            Decl::Function { generics, .. } => !generics.is_empty(),
+            Decl::Impl {
+                generics, methods, ..
+            } => {
+                !generics.is_empty()
+                    || methods.iter().any(|m| {
+                        matches!(m, Decl::Function { generics, .. } if !generics.is_empty())
+                    })
+            }
+            Decl::Trait { .. } => true,
+            _ => false,
+        };
+        if generic {
+            self.generic_scope_depth += 1;
+        }
+        self.check_decl_inner(decl);
+        if generic {
+            self.generic_scope_depth -= 1;
+        }
+    }
+
+    fn check_decl_inner(&mut self, decl: &Decl) {
         match decl {
             Decl::Function {
                 name,
@@ -3106,6 +3149,9 @@ impl TypeChecker {
                     };
                     if record {
                         self.resolved_let_types.insert(*span, final_ty.clone());
+                    } else if pattern.is_none() && value.is_some() {
+                        self.resolved_result_lets
+                            .insert(*span, (final_ty.clone(), self.generic_scope_depth > 0));
                     }
 
                     // LEDGER item 40c: a call to a GENERIC free function
@@ -3922,6 +3968,28 @@ impl TypeChecker {
                     (Type::Option { .. }, "None") => vec![],
                     (Type::Result { ok, .. }, "Ok") => vec![(**ok).clone()],
                     (Type::Result { err, .. }, "Err") => vec![(**err).clone()],
+                    // The constructor-built stdlib bridge enums (`Ok(x)` is an
+                    // `Enum{Result,[T, E]}`, see `stdlib_bridge_generics`) carry
+                    // the same payload types in their generics. Without this the
+                    // payload of `match y { Ok(p) => .. }` on an unannotated
+                    // `let y = Ok("v1")` bound to an untyped `any`, so `p` was
+                    // never tied to `str` and the error slot was never tied to
+                    // anything.
+                    (Type::Enum { name: en, generics }, "Some")
+                        if en == "Option" && generics.len() == 1 =>
+                    {
+                        vec![generics[0].clone()]
+                    }
+                    (Type::Enum { name: en, generics }, "Ok")
+                        if en == "Result" && generics.len() == 2 =>
+                    {
+                        vec![generics[0].clone()]
+                    }
+                    (Type::Enum { name: en, generics }, "Err")
+                        if en == "Result" && generics.len() == 2 =>
+                    {
+                        vec![generics[1].clone()]
+                    }
                     // Cross-type mismatches. These previously fell to the enum
                     // fallback, found no user enum named Result/Option, and bound
                     // the payload to a fresh var with NO diagnostic. The `?`
@@ -4481,8 +4549,20 @@ impl TypeChecker {
     ) -> Vec<Type> {
         let payload = arg_tys.first().cloned().unwrap_or(Type::Error);
         match (enum_name, variant) {
-            ("Result", "Ok") => vec![payload, self.engine.fresh_var()],
-            ("Result", "Err") => vec![self.engine.fresh_var(), payload],
+            ("Result", "Ok") => {
+                let open = self.engine.fresh_var();
+                if let Type::Var(id) = &open {
+                    self.bridge_open_vars.push(*id);
+                }
+                vec![payload, open]
+            }
+            ("Result", "Err") => {
+                let open = self.engine.fresh_var();
+                if let Type::Var(id) = &open {
+                    self.bridge_open_vars.push(*id);
+                }
+                vec![open, payload]
+            }
             ("Option", "Some") => vec![payload],
             ("Option", "None") => vec![self.engine.fresh_var()],
             _ => Vec::new(),
@@ -7167,6 +7247,61 @@ fn is_flowable_param_type(ty: &Type) -> bool {
     )
 }
 
+/// Does a (fully resolved) type contain a `Result<T, E>` anywhere -- itself, or
+/// as an array / map / tuple / `Option` / generic-argument element?
+fn type_mentions_result(ty: &Type) -> bool {
+    match ty {
+        Type::Result { .. } => true,
+        // The stdlib bridge `Result` enum (see `stdlib_bridge_generics`).
+        Type::Enum { name, generics } if name == "Result" => !generics.is_empty(),
+        Type::Enum { generics, .. } | Type::Struct { generics, .. } => {
+            generics.iter().any(type_mentions_result)
+        }
+        Type::Array { element, .. } => type_mentions_result(element),
+        Type::Map { key, value } => type_mentions_result(key) || type_mentions_result(value),
+        Type::Tuple { elements } => elements.iter().any(type_mentions_result),
+        Type::Option { inner } => type_mentions_result(inner),
+        _ => false,
+    }
+}
+
+/// Replace every still-unresolved var whose root is in `roots` (an `Ok` / `Err`
+/// literal's never-constrained other slot) with `i64`, the slot the MIR gives
+/// an unbound enum type parameter. Other vars are left for the caller to reject.
+fn default_open_vars(ty: &Type, roots: &std::collections::HashSet<u32>) -> Type {
+    let go = |t: &Type| default_open_vars(t, roots);
+    match ty {
+        Type::Var(id) if roots.contains(id) => Type::I64,
+        Type::Array { element, size } => Type::Array {
+            element: Box::new(go(element)),
+            size: *size,
+        },
+        Type::Tuple { elements } => Type::Tuple {
+            elements: elements.iter().map(go).collect(),
+        },
+        Type::Map { key, value } => Type::Map {
+            key: Box::new(go(key)),
+            value: Box::new(go(value)),
+        },
+        Type::Option { inner } => Type::Option {
+            inner: Box::new(go(inner)),
+        },
+        Type::Result { ok, err } => Type::Result {
+            ok: Box::new(go(ok)),
+            err: Box::new(go(err)),
+        },
+        Type::Struct { name, generics } => Type::Struct {
+            name: name.clone(),
+            generics: generics.iter().map(go).collect(),
+        },
+        Type::Enum { name, generics } => Type::Enum {
+            name: name.clone(),
+            generics: generics.iter().map(go).collect(),
+        },
+        other => other.clone(),
+    }
+}
+
 /// Convert a resolved concrete `Type` to an AST `TypeExpr` for annotating a
 /// lambda param. Returns None for unresolved vars or shapes we can't represent.
 fn concrete_type_to_type_expr(ty: &Type) -> Option<TypeExpr> {
@@ -9696,6 +9831,31 @@ fn type_check_with_lambda_params_inner(
             concrete_type_to_type_expr(&resolved).map(|te| (*span, te))
         })
         .collect();
+    let mut let_types = let_types;
+    let open_roots: std::collections::HashSet<u32> = checker
+        .bridge_open_vars
+        .clone()
+        .iter()
+        .filter_map(|v| match checker.engine.resolve(&Type::Var(*v)) {
+            Type::Var(root) => Some(root),
+            _ => None,
+        })
+        .collect();
+    for (span, (ty, in_generic)) in checker.resolved_result_lets.iter() {
+        if let_types.contains_key(span) {
+            continue;
+        }
+        let mut resolved = checker.engine.resolve(ty);
+        if !type_mentions_result(&resolved) {
+            continue;
+        }
+        if !*in_generic {
+            resolved = default_open_vars(&resolved, &open_roots);
+        }
+        if let Some(te) = concrete_type_to_type_expr(&resolved) {
+            let_types.insert(*span, te);
+        }
+    }
     (
         std::mem::take(&mut checker.diagnostics),
         std::mem::take(&mut checker.resolved_lambda_params),

@@ -43,7 +43,7 @@ def expected_ok(lines):
         k, _, v = l.partition('=')
         seen[k] = seen.get(k, 0) + 1
         i = seen[k]
-        if v not in (f'v{i}', 'vg', 'v7', f'v{i}/v{i + 100}'):
+        if v not in (f'v{i}', 'vg', 'v7', f'v{i}/v{i + 100}', f'v{i},v{i + 100},'):
             return False
     return True
 

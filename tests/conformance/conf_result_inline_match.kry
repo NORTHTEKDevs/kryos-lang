@@ -1,0 +1,290 @@
+// Conformance (2026-10-30): the idiomatic way to read a `Result` / `Option<Result>`
+// out of a container -- an INLINE `match y { Ok(p) => .., Err(e) => .. }` on an
+// UNANNOTATED local -- and a `for` loop over an array of struct / enum /
+// Result elements whose body overwrites the element it is visiting.
+//
+// 1. `Ok("v1")` binds only `T`, so the checker left the `E` slot of an
+//    unannotated `let xs = [Ok("v1")]` open; the export of the resolved `let`
+//    type skipped it (no concrete type), the MIR kept the payload-less `Result`
+//    stub, and the element read took no retain: the overwrite of the slot freed
+//    the string `y` still read (rc=132 / stack overflow on Cranelift, an empty
+//    string on LLVM). The payload of a match on a constructor-built `Result` /
+//    `Option` was also bound to an untyped `any`, so `println(p)` printed the
+//    string's pointer even with no container. This group never routes the local
+//    through an annotated helper parameter (the `show(y)` of
+//    conf_result_container_elems.kry pinned the type for the checker and hid
+//    the hole).
+// 2. A `for x in xs` loop variable that is a shareable struct / enum was a
+//    borrowed alias of the array slot: `xs[0] = ..` in the body released the
+//    value the variable still read (an empty field on `kryos run` / Cranelift,
+//    "stack overflow" for an enum). Option<str>, P and a user enum all failed.
+// Every case overwrites the source, churns the allocator, then reads the copy.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+
+struct P { name: str, n: i64 }
+enum E { A(str), B }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < k {
+        junk = push(junk, "junk-{j}-padding-padding")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn id(s: str) -> str { return s }
+fn show(r: Result<str, str>) -> str {
+    return match r {
+        Ok(p) => p,
+        Err(e) => e,
+    }
+}
+fn so(r: Option<str>) -> str {
+    return match r {
+        Some(p) => p,
+        None => "none",
+    }
+}
+fn pe(e: E) -> str {
+    return match e {
+        A(s) => s,
+        B => "b",
+    }
+}
+
+fn inline_array(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = xs[0]
+    xs[0] = Ok("w{i}")
+    churn(40)
+    return match y {
+        Ok(p) => id(p),
+        Err(e) => id(e),
+    }
+}
+
+fn inline_value(i: i64) -> str {
+    let mut xs = [Ok("v{i}")]
+    let y = xs[0]
+    xs[0] = Ok("w{i}")
+    churn(40)
+    let s = match y {
+        Ok(p) => id(p),
+        Err(e) => id(e),
+    }
+    return s
+}
+
+fn inline_err_first(i: i64) -> str {
+    let mut xs = [Err("e{i}")]
+    let y = xs[0]
+    xs[0] = Err("f{i}")
+    churn(40)
+    return match y {
+        Ok(p) => "ok",
+        Err(e) => id(e),
+    }
+}
+
+fn inline_map(i: i64) -> str {
+    let mut m: map<str, Result<str, str>> = {}
+    m["k"] = Ok("v{i}")
+    let mut y = Ok("vd")
+    y = m["k"]
+    m["k"] = Ok("w{i}")
+    churn(40)
+    return match y {
+        Ok(p) => id(p),
+        Err(e) => id(e),
+    }
+}
+
+fn inline_option_result(i: i64) -> str {
+    let mut xs = [Some(Ok("v{i}"))]
+    let y = xs[0]
+    xs[0] = Some(Ok("w{i}"))
+    churn(40)
+    let z = match y {
+        Some(r) => show(r),
+        None => "none",
+    }
+    return z
+}
+
+fn nested_option_result_inline(i: i64) -> str {
+    let mut xs = [Some(Ok("v{i}"))]
+    let y = xs[0]
+    xs[0] = Some(Ok("w{i}"))
+    churn(40)
+    return match y {
+        Some(r) => match r {
+            Ok(p) => id(p),
+            Err(e) => id(e),
+        },
+        None => "none",
+    }
+}
+
+// No container at all: `E` is never constrained, so the payload was an untyped
+// `any` and `println(p)` printed the pointer.
+fn unconstrained_error(i: i64) -> str {
+    let y = Ok("v{i}")
+    return match y {
+        Ok(p) => "<{p}>",
+        Err(e) => "err",
+    }
+}
+
+fn unconstrained_ok(i: i64) -> str {
+    let y = Err("e{i}")
+    return match y {
+        Ok(p) => "ok",
+        Err(e) => "<{e}>",
+    }
+}
+
+// Inside a generic function the open slot may be a type parameter: it must not
+// be defaulted.
+fn generic_ok<T>(x: T) -> T {
+    let r = Ok(x)
+    return match r {
+        Ok(v) => v,
+        Err(e) => x,
+    }
+}
+
+fn for_result(i: i64) -> str {
+    let mut xs: [Result<str, str>] = [Ok("v{i}"), Err("e{i}")]
+    let mut out = ""
+    for r in xs {
+        xs[0] = Ok("w{i}")
+        churn(40)
+        out = out + show(r) + ","
+    }
+    return out
+}
+
+fn for_result_unannotated(i: i64) -> str {
+    let mut xs = [Ok("v{i}"), Ok("u{i}")]
+    let mut out = ""
+    for r in xs {
+        xs[0] = Ok("w{i}")
+        churn(40)
+        out = out + show(r) + ","
+    }
+    return out
+}
+
+fn for_option(i: i64) -> str {
+    let mut xs: [Option<str>] = [Some("v{i}"), None()]
+    let mut out = ""
+    for r in xs {
+        xs[0] = Some("w{i}")
+        churn(40)
+        out = out + so(r) + ","
+    }
+    return out
+}
+
+fn for_struct(i: i64) -> str {
+    let mut xs: [P] = [P { name: "v{i}", n: 1 }, P { name: "z{i}", n: 2 }]
+    let mut out = ""
+    for r in xs {
+        xs[0] = P { name: "w{i}", n: 3 }
+        churn(40)
+        out = out + r.name + ","
+    }
+    return out
+}
+
+fn for_enum(i: i64) -> str {
+    let mut xs: [E] = [A("v{i}"), B]
+    let mut out = ""
+    for r in xs {
+        xs[0] = A("w{i}")
+        churn(40)
+        out = out + pe(r) + ","
+    }
+    return out
+}
+
+// The loop variable's own share must also be balanced on break / continue /
+// return and when the variable is stored somewhere.
+fn for_exits(i: i64) -> str {
+    let mut xs: [P] = [P { name: "a{i}", n: 1 }, P { name: "b{i}", n: 2 }, P { name: "c{i}", n: 3 }]
+    let mut kept: [P] = []
+    let mut out = ""
+    for r in xs {
+        if r.n == 1 {
+            kept = push(kept, r)
+            continue
+        }
+        xs[0] = P { name: "w{i}", n: 9 }
+        churn(40)
+        if r.n == 3 {
+            break
+        }
+        out = out + r.name + ","
+    }
+    xs[0] = P { name: "x{i}", n: 8 }
+    churn(40)
+    return out + kept[0].name
+}
+
+fn for_return(i: i64) -> str {
+    let mut xs: [P] = [P { name: "a{i}", n: 1 }, P { name: "b{i}", n: 2 }]
+    for r in xs {
+        if r.n == 2 {
+            xs[0] = P { name: "w{i}", n: 9 }
+            churn(40)
+            return r.name
+        }
+    }
+    return "none"
+}
+
+fn for_return_value(i: i64) -> E {
+    let mut xs: [E] = [A("a{i}"), A("b{i}")]
+    for r in xs {
+        xs[0] = A("w{i}")
+        churn(40)
+        return r
+    }
+    return B
+}
+
+fn main() {
+    let mut i = 0
+    while i < 30 {
+        expect(inline_array(i) == "v{i}", "inline match on array read, round {i}")
+        expect(inline_value(i) == "v{i}", "match value on array read, round {i}")
+        expect(inline_err_first(i) == "e{i}", "Err literal array read, round {i}")
+        expect(inline_map(i) == "v{i}", "inline match on map read, round {i}")
+        expect(inline_option_result(i) == "v{i}", "Option<Result> via helper, round {i}")
+        expect(nested_option_result_inline(i) == "v{i}", "Option<Result> inline, round {i}")
+        expect(unconstrained_error(i) == "<v{i}>", "unconstrained error slot, round {i}")
+        expect(unconstrained_ok(i) == "<e{i}>", "unconstrained ok slot, round {i}")
+        expect(for_result(i) == "v{i},e{i},", "for over [Result], round {i}")
+        expect(for_result_unannotated(i) == "v{i},u{i},", "for over unannotated [Result], round {i}")
+        expect(for_option(i) == "v{i},none,", "for over [Option<str>], round {i}")
+        expect(for_struct(i) == "v{i},z{i},", "for over [P], round {i}")
+        expect(for_enum(i) == "v{i},b,", "for over [E], round {i}")
+        expect(for_exits(i) == "b{i},a{i}", "for with continue / break / store, round {i}")
+        expect(for_return(i) == "b{i}", "return from a for over [P], round {i}")
+        expect(pe(for_return_value(i)) == "a{i}", "return the loop variable, round {i}")
+        i = i + 1
+    }
+    expect(generic_ok("g") == "g", "generic str")
+    expect(generic_ok(7) == 7, "generic i64")
+    println("PASS")
+}
