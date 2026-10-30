@@ -10,6 +10,61 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: overwriting an element of a copied array of structs releases the box's fields only at the last owner (2026-10-30)
+
+Silent wrong answer / use-after-free, AOT (`--release`) only; the JIT and the
+Cranelift AOT were correct. `let mut b = a` of an array of structs shares every
+element box (`kryos_array_dup` kind 4, one more owner per box, 2026-10-10).
+Overwriting `b[0]` then drops the REPLACED element, which `a[0]` still holds.
+- Repro (before; JIT | AOT), `struct V { name: str, xs: [i64] }`, `let a = [V {
+  name: "v1", xs: [1] }]  let mut b = a  b[0] = V { name: "v2", xs: [2] }`,
+  `println("{len(a[0].xs)} {len(b[0].xs)} {a[0].name}")`: `1 1 v1` | `0 1 v1`.
+  `xs: [str]`: JIT `1 1 q` | AOT panic `array index out of bounds: index 0 but
+  length is 0`. `map<str, i64>` field: `1 1 m1` | `0 1 m1`. A param copy
+  (`fn f(xs: [W]) -> [W] { let mut c = xs  c[0] = W{..}  return c }`) and the
+  chain `a -> b -> c` hit the caller's / sibling's array the same way.
+- Root cause (`kryos-codegen-llvm`, `Instruction::DropIfNe`, Struct arm): the
+  replaced element was released with `emit_struct_drop` (free the str / array /
+  map fields) and only THEN `kryos_free`, which consumes one extra owner. The
+  owner count was never asked first, unlike `__kryos_drop_<T>` and the plain
+  `Instruction::Drop` of a boxed struct (`kryos_struct_release_shared` first). So
+  the box survived the call (kryos_free just took the owner off) but its fields
+  were freed under the sibling. Str-only structs were hit too: the freed `name`
+  still read back until the allocator reused it (the triage's `a[0].name`
+  empty / garbage after churn); the heap field made it visible at once because
+  an array / map free zeroes the handle. MIR was right (`kryos_array_dup(_3, 4)`,
+  `kryos_array_set`, `drop_if_ne(_7, _10: V)`); this is not an owner-count error
+  in the struct literal or the dup.
+- Fix: the non-`via_map` struct arm calls `kryos_struct_release_shared` on the
+  old handle and skips the field release and the free unless it was the last
+  owner. The `via_map` arm (arc-allocated map values) is unchanged.
+- Proved both ways (`cargo build --release` each time): with the change reverted
+  `tests/conformance/conf_struct_array_dup_fields.kry` prints `CONF FAIL: V
+  sibling xs len` on the AOT (rc=1; JIT PASS) and the three stand-alone repros
+  print `0 1 v1` / `0 1 m1` / the index panic; restored, the test prints PASS
+  (AOT, JIT and `--backend cranelift`) and the repros print `1 1 ...`.
+- Pinned by `tests/conformance/conf_struct_array_dup_fields.kry` (registered in
+  `no_double_free.sh` as `struct_array_dup_fields`, JIT + AOT with the free
+  diagnostics, then the AOT with real frees): `[i64]`, `[str]` and `map` fields,
+  a 50-round overwrite loop over literal-built `Item`s with allocator churn
+  between, a param copy, the `a -> b -> c` chain, a str / scalar-only struct, and
+  two copies overwritten at the same slot. Every case reads the SIBLING's str,
+  array and map fields after the overwrite and after churn, and the copy's new
+  element. Leak guard: mode `arr_dup_overwrite` of `tests/mem_agg_ops_gate.sh`
+  (copy + overwrite 1,000,000 times: 4MB AOT, 4MB JIT).
+- Gates (baseline master -> this branch): `kryos-loop.sh gates 2` GREEN (tier1 +
+  tier2) -> GREEN, conformance 108/108 -> 109/109; bootstrap 16/16 -> 16/16;
+  `tests/mem_agg_ops_gate.sh` full run PASS (0 FAIL legs, `arr_dup_overwrite`
+  and `glob_agg` 4MB on both); `tests/no_double_free.sh` clean.
+- Probed correct on AOT and JIT after the fix (identical output, 0 free
+  diagnostics): a struct with a nested struct holding `[str]` plus a map field,
+  an array of enums with an `[str]` payload copied and overwritten, a struct
+  copied then overwritten through a map slot, `hb[0] = hb[1]` and
+  `hc[0] = ha[0]` self / cross assignment.
+- Residual: the `via_map` DropIfNe arm still releases the fields before
+  `kryos_arc_release` (a map value box has its own arc count). Not reproduced
+  with the aliased struct-valued map above (that shares the map, not the boxes), so it is unproven.
+
 ## Wave: a top-level `let mut` global of a tuple / enum / Option / Result is boxed on the AOT, and typed as what it is (2026-10-30)
 
 Silent wrong answer plus a segfault, AOT (`--release`) only, and a JIT double

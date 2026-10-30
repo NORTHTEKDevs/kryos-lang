@@ -624,6 +624,14 @@ fn main() {
             let mut gp: [P] = []
             gp = push(gp, if i % 2 == 0 { globq() } else { mkq(i) })
             acc = acc + len(gp[0].name)
+        } elif mode == "arr_dup_overwrite" {
+            // `let mut b = a` of an array of structs, then an overwrite of
+            // b[0]: the replaced box has two owners, the last one frees its
+            // str / array fields, and a[0] must still read them.
+            let ada = [mkq(i), mkq(i + 1)]
+            let mut adb = ada
+            adb[0] = mkq(i + 2)
+            acc = acc + len(ada[0].name) + len(ada[0].xs) + len(adb[0].name) + len(adb[1].xs)
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }

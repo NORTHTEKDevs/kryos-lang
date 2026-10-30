@@ -1,0 +1,134 @@
+// Conformance (2026-10-30): `let mut b = a` of an array of structs shares
+// every element box with `a` (kryos_array_dup, kind 4: one more owner on each
+// box). Overwriting `b[0]` then drops the REPLACED element. The LLVM AOT
+// released that element's str / array / map fields unconditionally and only
+// then asked the box to consume an owner, so `a[0]`, which still held the
+// box, was left with freed fields: `len(a[0].xs)` read 0 (JIT 1), a `[str]`
+// field panicked `array index out of bounds`, a map field read empty, and
+// after allocator churn even `a[0].name` printed garbage. The JIT and a
+// struct with no heap field in the way were never affected. Each case
+// overwrites the copy, churns the allocator, then reads the SIBLING's str,
+// array and map fields, and checks the copy's new element too. Run on both
+// backends by run_conformance.sh and, with the free diagnostics, by
+// tests/no_double_free.sh.
+struct V { name: str, xs: [i64] }
+struct W { name: str, tags: [str] }
+struct M { name: str, m: map<str, i64> }
+struct Item { name: str, tags: [str], price: f64 }
+struct P { name: str, n: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut total = 0
+    let mut i = 0
+    while i < k {
+        let s = "churn-" + to_string(i) + "-padding-padding"
+        let xs = [i, i + 1, i + 2, i + 3]
+        let ts = ["x" + to_string(i), "y" + to_string(i)]
+        total = total + len(s) + len(xs) + len(ts)
+        i = i + 1
+    }
+    return total
+}
+
+fn mkitem(i: i64) -> Item {
+    return Item { name: "item" + to_string(i), tags: ["t" + to_string(i), "u"], price: 1.5 }
+}
+
+fn copy_overwrite(xs: [W]) -> [W] {
+    let mut c = xs
+    c[0] = W { name: "cw", tags: ["c1", "c2", "c3"] }
+    return c
+}
+
+fn main() {
+    // [i64] field
+    let a = [V { name: "v1", xs: [1, 2, 3] }]
+    let mut b = a
+    b[0] = V { name: "v2", xs: [9] }
+    churn(300)
+    expect(a[0].name == "v1", "V sibling name")
+    expect(len(a[0].xs) == 3, "V sibling xs len")
+    expect(a[0].xs[2] == 3, "V sibling xs[2]")
+    expect(b[0].name == "v2", "V copy name")
+    expect(len(b[0].xs) == 1 and b[0].xs[0] == 9, "V copy xs")
+
+    // [str] field
+    let a2 = [W { name: "w1", tags: ["p", "q"] }]
+    let mut b2 = a2
+    b2[0] = W { name: "w2", tags: ["r"] }
+    churn(300)
+    expect(a2[0].name == "w1", "W sibling name")
+    expect(len(a2[0].tags) == 2, "W sibling tags len")
+    expect(a2[0].tags[0] == "p" and a2[0].tags[1] == "q", "W sibling tags")
+    expect(b2[0].tags[0] == "r", "W copy tags")
+
+    // map field
+    let a3 = [M { name: "m1", m: {"k": 1, "j": 2} }]
+    let mut b3 = a3
+    b3[0] = M { name: "m2", m: {"k": 7} }
+    churn(300)
+    expect(a3[0].name == "m1", "M sibling name")
+    expect(len(a3[0].m) == 2, "M sibling map len")
+    expect(a3[0].m["j"] == 2, "M sibling map value")
+    expect(b3[0].m["k"] == 7, "M copy map value")
+
+    // heap churn between a literal-built element and the overwrite
+    let a4 = [mkitem(1), mkitem(2)]
+    let mut b4 = a4
+    let mut i = 0
+    while i < 50 {
+        b4[0] = mkitem(100 + i)
+        churn(20)
+        i = i + 1
+    }
+    expect(a4[0].name == "item1", "Item sibling name after churn")
+    expect(len(a4[0].tags) == 2 and a4[0].tags[0] == "t1", "Item sibling tags after churn")
+    expect(a4[1].name == "item2" and a4[1].tags[0] == "t2", "Item untouched element")
+    expect(b4[0].name == "item149", "Item copy last name")
+    expect(b4[1].name == "item2" and b4[1].tags[0] == "t2", "Item shared element")
+
+    // param copy: the caller's array must keep its elements
+    let a5 = [W { name: "w5", tags: ["m", "n"] }]
+    let c5 = copy_overwrite(a5)
+    churn(300)
+    expect(a5[0].name == "w5", "param sibling name")
+    expect(len(a5[0].tags) == 2 and a5[0].tags[1] == "n", "param sibling tags")
+    expect(c5[0].name == "cw" and len(c5[0].tags) == 3, "param copy")
+
+    // chain: a -> b -> c, overwrite c
+    let a6 = [W { name: "w6", tags: ["z"] }]
+    let b6 = a6
+    let mut c6 = b6
+    c6[0] = W { name: "w6c", tags: ["y", "x"] }
+    churn(300)
+    expect(a6[0].name == "w6" and a6[0].tags[0] == "z", "chain a")
+    expect(b6[0].name == "w6" and b6[0].tags[0] == "z", "chain b")
+    expect(c6[0].name == "w6c" and len(c6[0].tags) == 2, "chain c")
+
+    // a struct with only str / scalar fields shares its box the same way
+    let a7 = [P { name: "p1", n: 1 }]
+    let mut b7 = a7
+    b7[0] = P { name: "p2", n: 2 }
+    churn(300)
+    expect(a7[0].name == "p1" and a7[0].n == 1, "P sibling")
+    expect(b7[0].name == "p2" and b7[0].n == 2, "P copy")
+
+    // both arrays overwritten at the same slot: the box is released once by each
+    let a8 = [V { name: "v8", xs: [8, 8] }]
+    let mut b8 = a8
+    let mut c8 = a8
+    b8[0] = V { name: "v8b", xs: [1] }
+    c8[0] = V { name: "v8c", xs: [2, 2, 2] }
+    churn(300)
+    expect(a8[0].name == "v8" and len(a8[0].xs) == 2, "triple sibling")
+    expect(b8[0].name == "v8b" and c8[0].name == "v8c" and len(c8[0].xs) == 3, "triple copies")
+
+    println("PASS")
+}

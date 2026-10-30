@@ -4302,6 +4302,26 @@ impl LlvmCodegen {
                     match ty {
                         MirType::Struct(name) => {
                             if !self.copy_structs.contains(name) {
+                                if !*via_map {
+                                    // A kryos_calloc box can have other owners
+                                    // (`let mut b = a` of an array of structs
+                                    // retains every element box). Only the
+                                    // last owner releases the fields; the
+                                    // others just give up their reference, or
+                                    // the box still held by the sibling is left
+                                    // with freed str / array / map fields.
+                                    let sh = self.next_temp();
+                                    let shared = self.next_temp();
+                                    self.emit_line(&format!(
+                                        "  {sh} = call i64 @kryos_struct_release_shared(ptr {old_ptr})"
+                                    ));
+                                    self.emit_line(&format!("  {shared} = icmp ne i64 {sh}, 0"));
+                                    let own_label = format!("dropifne_own_{uid}");
+                                    self.emit_line(&format!(
+                                        "  br i1 {shared}, label %{skip_label}, label %{own_label}"
+                                    ));
+                                    self.emit_line(&format!("{own_label}:"));
+                                }
                                 self.emit_struct_drop(&old_ptr, name, func);
                                 if *via_map {
                                     // Boxed via kryos_arc_alloc_i64 (map
