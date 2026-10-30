@@ -1700,9 +1700,10 @@ impl LlvmCodegen {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_string_free(ptr {cap_val})"));
                     }
-                    // An array of tuples: the env owns a reference to each
-                    // tuple (see the capture), released with it.
-                    Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                    // An array with releasable elements: the env owns a
+                    // reference to each element (see the capture), released
+                    // with it.
+                    Some(MirType::Array(elem, _)) if array_dup_kind(elem.as_ref()) != 0 => {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         let elem = elem.as_ref().clone();
                         self.emit_array_drop(&cap_val, &elem, &dummy);
@@ -8591,10 +8592,15 @@ impl LlvmCodegen {
                                 ));
                                 self.emit_line(&format!("  store ptr {cloned}, ptr {cap_ptr}"));
                             }
-                            // An array of tuples: the env owns its own reference
-                            // to each tuple box (the capturing scope drops its
-                            // array and releases the ones it holds).
-                            Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                            // An array whose elements the array drop releases
+                            // (str, array, map, struct, enum, closure, releasable
+                            // tuple): the env owns its own reference to each
+                            // element (the capturing scope drops its array and
+                            // releases the ones it holds), exactly like the spawn
+                            // capture and `let mut b = a`. A bare header clone
+                            // left the env reading elements the scope-end drop
+                            // had already freed.
+                            Some(MirType::Array(elem, _)) if array_dup_kind(elem.as_ref()) != 0 => {
                                 let cloned = self.next_temp();
                                 let kind = array_dup_kind(elem.as_ref());
                                 self.emit_line(&format!(
