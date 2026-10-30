@@ -1,0 +1,223 @@
+// Conformance (2026-10-30): a closure RETURNED from a function that captures a
+// LOCAL array whose elements are heap values (str, struct, array, enum, map,
+// closure) read freed memory. The capture was a header clone of the array (the
+// elements were not retained), and the function's scope-end drop of the local
+// then released every element: the closure read empty strings, another
+// allocation's data (`lit1lit2`, `zzzzzzzz1`) or a struct whose fields were gone,
+// on the JIT and the AOT alike. `[i64]` has no element release so it survived.
+// The capture now owns its own reference to each element, like the spawn
+// capture and `let mut b = a`, and the env's drop releases them. Each case
+// returns the closure, churns the allocator, then calls it more than once.
+// Run on both backends by run_conformance.sh and, with the free diagnostics
+// and real frees, by tests/no_double_free.sh.
+struct P { name: str }
+struct W { name: str, tags: [str] }
+enum E { A(str), B(i64), C }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut total = 0
+    let mut i = 0
+    while i < k {
+        let s = "zzzzzzzz" + to_string(i) + "-padding-padding"
+        let xs = [i, i + 1, i + 2, i + 3]
+        let ts = ["yyyyyyyy" + to_string(i), "xxxxxxxx" + to_string(i), "w" + to_string(i)]
+        let ps = [P { name: "pad" + to_string(i) }, P { name: "ding" + to_string(i) }]
+        total = total + len(s) + len(xs) + len(ts) + len(ps)
+        i = i + 1
+    }
+    return total
+}
+
+fn clo_str(i: i64) -> fn() -> str {
+    let ys = ["a{i}", "b{i}"]
+    return || ys[0] + ys[1]
+}
+
+fn clo_str_len(i: i64) -> fn() -> i64 {
+    let ys = ["a{i}", "b{i}"]
+    return || len(ys[0]) + len(ys[1])
+}
+
+fn clo_lit() -> fn() -> str {
+    let zs = ["lit1", "lit2"]
+    return || zs[0] + zs[1]
+}
+
+fn clo_struct(i: i64) -> fn() -> str {
+    let ys = [P { name: "p{i}" }, P { name: "q{i}" }]
+    return || ys[0].name + ys[1].name
+}
+
+fn clo_struct_heap(i: i64) -> fn() -> str {
+    let ys = [W { name: "w{i}", tags: ["t{i}", "u{i}"] }, W { name: "v{i}", tags: ["s{i}"] }]
+    return || ys[0].name + ys[0].tags[1] + ys[1].tags[0] + to_string(len(ys[0].tags))
+}
+
+fn clo_nested(i: i64) -> fn() -> str {
+    let ys = [["x{i}"], ["y{i}", "z{i}"]]
+    return || ys[0][0] + ys[1][0] + ys[1][1]
+}
+
+fn clo_nested_struct(i: i64) -> fn() -> str {
+    let ys = [[P { name: "n{i}" }], [P { name: "o{i}" }, P { name: "r{i}" }]]
+    return || ys[0][0].name + ys[1][0].name + ys[1][1].name
+}
+
+fn clo_nested_int(i: i64) -> fn() -> i64 {
+    let ys = [[i, 1], [i + 1, 2, 3]]
+    return || ys[0][0] + ys[1][0] + len(ys[1])
+}
+
+fn clo_deep(i: i64) -> fn() -> fn() -> str {
+    let ys = ["a{i}", "b{i}"]
+    return || || ys[1] + ys[0]
+}
+
+fn clo_enum(i: i64) -> fn() -> str {
+    let ys = [E.A("e{i}"), E.B(i), E.A("f{i}")]
+    return || {
+        let mut out = ""
+        for e in ys {
+            match e {
+                E.A(s) => { out = out + s },
+                E.B(n) => { out = out + to_string(n) },
+                E.C => { out = out + "c" },
+            }
+        }
+        return out
+    }
+}
+
+fn clo_map(i: i64) -> fn() -> i64 {
+    let key = "k{i}"
+    let mut m1: map<str, i64> = {}
+    m1[key] = i
+    m1["j"] = 5
+    let mut m2: map<str, i64> = {}
+    m2[key] = i + 1
+    let ys = [m1, m2]
+    return || ys[0]["j"] + ys[1][key] + len(ys)
+}
+
+fn clo_fns(i: i64) -> fn() -> str {
+    let a = "fa{i}"
+    let b = "fb{i}"
+    let ys = [|| a, || b]
+    return || ys[0]() + ys[1]()
+}
+
+fn clo_param(xs: [str]) -> fn() -> str {
+    return || xs[0] + xs[1]
+}
+
+fn clo_param_alias(xs: [str]) -> fn() -> str {
+    let ys = xs
+    return || ys[0] + ys[1]
+}
+
+fn clo_two(i: i64) -> [fn() -> str] {
+    let ys = ["m{i}", "n{i}"]
+    let f = || ys[0]
+    let g = || ys[1]
+    return [f, g]
+}
+
+fn clo_for(i: i64) -> fn() -> str {
+    let ys = ["q{i}", "r{i}", "s{i}"]
+    return || {
+        let mut out = ""
+        for y in ys { out = out + y }
+        return out
+    }
+}
+
+fn clo_int(i: i64) -> fn() -> i64 {
+    let ys = [i, i + 1, i + 2]
+    return || ys[0] + ys[1] + ys[2]
+}
+
+fn clo_tuple(i: i64) -> fn() -> str {
+    let ys = [("k{i}", i), ("l{i}", i + 1)]
+    return || ys[0].0 + ys[1].0
+}
+
+@capabilities(all)
+fn main() {
+    // the triage repro: a literal closure built between creating and calling
+    let f2 = clo_str(6)
+    let f4 = clo_lit()
+    let junk = ["zzzzzzzz{1}", "yyyyyyyy{2}", "xxxxxxxx{3}"]
+    expect(f2() == "a6b6", "str closure first call")
+    expect(f2() == "a6b6", "str closure second call")
+    expect(f4() == "lit1lit2", "literal closure")
+    expect(junk[0] == "zzzzzzzz1", "junk")
+    churn(200)
+    expect(f2() == "a6b6", "str closure after churn")
+    expect(clo_str_len(6)() == 4, "str len closure")
+
+    let fs = clo_struct(2)
+    let fh = clo_struct_heap(3)
+    let fn1 = clo_nested(6)
+    let fni = clo_nested_int(4)
+    let fns = clo_nested_struct(3)
+    let fd = clo_deep(1)
+    let fe = clo_enum(5)
+    let fm = clo_map(7)
+    let ff = clo_fns(8)
+    let fp = clo_param(["pp{3}", "qq"])
+    let fpa = clo_param_alias(["rr{3}", "ss"])
+    let fg = clo_two(9)
+    let fo = clo_for(1)
+    let fi = clo_int(10)
+    let ft = clo_tuple(2)
+    churn(300)
+    expect(fs() == "p2q2", "struct elems")
+    expect(fh() == "w3u3s32", "struct elems with heap fields")
+    expect(fn1() == "x6y6z6", "nested array of str")
+    expect(fni() == 4 + 5 + 3, "nested array of int")
+    expect(fns() == "n3o3r3", "nested array of struct")
+    expect(fd()() == "b1a1", "nested closure")
+    expect(fe() == "e55f5", "enum elems")
+    expect(fm() == 5 + 8 + 2, "map elems")
+    expect(ff() == "fa8fb8", "closure elems")
+    expect(fp() == "pp3qq", "param array captured directly")
+    expect(fpa() == "rr3ss", "param array alias")
+    expect(fg[0]() == "m9" and fg[1]() == "n9", "two closures over one array")
+    expect(fo() == "q1r1s1", "for over a captured array")
+    expect(fi() == 33, "int array")
+    expect(ft() == "k2l2", "tuple elems")
+    churn(300)
+    expect(fs() == "p2q2" and fh() == "w3u3s32", "struct elems again")
+    expect(fn1() == "x6y6z6" and fd()() == "b1a1" and fe() == "e55f5", "nested/enum again")
+    expect(fm() == 15 and ff() == "fa8fb8" and fo() == "q1r1s1", "map/closure/for again")
+
+    // many rounds: each closure is created, the allocator churns, then it runs
+    let mut round = 0
+    let mut acc = 0
+    while round < 100 {
+        let c1 = clo_str(round)
+        let c2 = clo_struct(round)
+        let c3 = clo_nested(round)
+        let c4 = clo_struct_heap(round)
+        let c5 = clo_enum(round)
+        let c6 = clo_nested_struct(round)
+        churn(5)
+        acc = acc + len(c1()) + len(c2()) + len(c3()) + len(c4()) + len(c5())
+        expect(c1() == "a{round}b{round}", "round str")
+        expect(c2() == "p{round}q{round}", "round struct")
+        expect(c3() == "x{round}y{round}z{round}", "round nested")
+        expect(c5() == "e{round}{round}f{round}", "round enum")
+        expect(c6() == "n{round}o{round}r{round}", "round nested struct")
+        round = round + 1
+    }
+    expect(acc > 0, "rounds ran")
+
+    println("PASS")
+}

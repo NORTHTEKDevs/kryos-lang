@@ -730,6 +730,44 @@ pub unsafe extern "C" fn kryos_array_free_elems(arr: *mut KryosArray, drop_fn: e
     kryos_array_free(arr);
 }
 
+/// Release an array whose elements are themselves arrays (any depth), from a
+/// context with no inline loop -- a closure env's dropper freeing a captured
+/// `[[str]]`. `chain` names the element types from the outer array inward, 4
+/// bits each: 1 str, 2 array (the next nibble describes ITS elements), 3 map,
+/// 4 a leaf released through `leaf_fn` (a struct / enum drop helper), 5 an arc
+/// box (closure); anything else is left alone. As everywhere, the LAST
+/// reference to an array releases its elements; the count is `kryos_array_free`'s.
+/// A bare `kryos_array_free_elems` with `kryos_array_free` as the drop released
+/// each row's header but never the strings in it.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_free_chain(arr: *mut KryosArray, chain: i64, leaf_fn: i64) {
+    if arr.is_null() || crate::leak_on_zero() {
+        return;
+    }
+    if rc_atomic(arr).load(Ordering::Acquire) == 1 && !(*arr).data.is_null() {
+        let len = (*arr).len as usize;
+        let data = (*arr).data as *const i64;
+        for i in 0..len {
+            let h = *data.add(i);
+            if h == 0 {
+                continue;
+            }
+            match chain & 0xF {
+                1 => crate::string::kryos_string_free(h as *mut crate::string::KryosString),
+                2 => kryos_array_free_chain(h as *mut KryosArray, chain >> 4, leaf_fn),
+                3 => crate::map::kryos_map_free(h),
+                4 if leaf_fn != 0 => {
+                    let f: extern "C" fn(i64) = std::mem::transmute(leaf_fn as usize);
+                    f(h);
+                }
+                5 => crate::arc::kryos_arc_release(h as *mut u8),
+                _ => {}
+            }
+        }
+    }
+    kryos_array_free(arr);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

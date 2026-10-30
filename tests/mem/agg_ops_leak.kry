@@ -13,6 +13,20 @@ fn globq() -> P { return GQ }
 fn globq_tail() -> P { GQ }
 
 fn mkq(i: i64) -> P { return P { name: "q{i}", xs: [i] } }
+// A closure returned over a LOCAL array of heap elements: the env owns a
+// reference to each element and releases it with the closure.
+fn clo_arr_str(i: i64) -> fn() -> str {
+    let ys = ["a{i}", "b{i}"]
+    return || ys[0] + ys[1]
+}
+fn clo_arr_struct(i: i64) -> fn() -> str {
+    let ys = [mkq(i), mkq(i + 1)]
+    return || ys[0].name + ys[1].name
+}
+fn clo_arr_nested(i: i64) -> fn() -> str {
+    let ys = [["x{i}"], ["y{i}", "z{i}"]]
+    return || ys[0][0] + ys[1][1]
+}
 fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
 fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", xs: [i] }, "s{i}") }
 enum E { A(P), B(str), C }
@@ -624,6 +638,15 @@ fn main() {
             let mut gp: [P] = []
             gp = push(gp, if i % 2 == 0 { globq() } else { mkq(i) })
             acc = acc + len(gp[0].name)
+        } elif mode == "clo_arr_str" {
+            let ca1 = clo_arr_str(i)
+            acc = acc + len(ca1())
+        } elif mode == "clo_arr_struct" {
+            let ca2 = clo_arr_struct(i)
+            acc = acc + len(ca2())
+        } elif mode == "clo_arr_nested" {
+            let ca3 = clo_arr_nested(i)
+            acc = acc + len(ca3())
         } elif mode == "arr_dup_overwrite" {
             // `let mut b = a` of an array of structs, then an overwrite of
             // b[0]: the replaced box has two owners, the last one frees its

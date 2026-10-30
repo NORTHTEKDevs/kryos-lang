@@ -10,6 +10,93 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a closure returned over a LOCAL array of heap elements owns its elements (2026-10-30)
+
+Silent wrong answer / use-after-free, JIT and AOT (`--release`, LLVM and
+Cranelift). Closes LEDGER "review6 R32" (a returned closure over an array of
+strings reads empty on AOT) and the tuple-array wave's residual (5), which was
+worse than described: arrays of structs, nested arrays, enums, maps and closures
+too, and the JIT as well, where the stale read is not empty but ANOTHER
+allocation's data.
+- Repro (before; JIT and AOT printed the same), `fn clo(i) -> fn() -> str { let
+  ys = ["a{i}", "b{i}"]  return || ys[0] + ys[1] }`, a second function returning
+  a closure over `["lit1", "lit2"]`, then `let junk = ["zzzzzzzz{1}", ..]` and the
+  calls: expected `a6b6`, `a6b6`, `lit1lit2`; got empty, empty, `lit1lit2`
+  (the other closure's data), and on a later call `zzzzzzzz1` (the junk array's
+  string). Closures over `[P{name:"p2"},P{name:"q2"}]` (sum of names), `[["x6"],
+  ["y6"]]` and `|| || ys[1]` read back empty / `pp3pp3` (another closure's
+  data) / empty instead of `p2q2`, `x6y6`, `b1`. `[i64]`, a tuple, a map, a single
+  str or struct, and a parameter array (`let ys = xs`, read back `pp3`) were fine. The conformance
+  program printed `CONF FAIL: str closure first call` on the JIT and on the AOT
+  with the master binary.
+- Root cause (both codegens, `RValue::Closure`): the capture of an array was a
+  header clone (`kryos_array_clone`), so the env pointed at the SAME element
+  strings / boxes / rows as the local. The function's scope-end drop of that
+  local (`emit_array_drop` on LLVM, the element loop in `emit_drop_for_value` on
+  Cranelift) then released every element, and the env's dropper only freed the
+  header. `[i64]` has no element release, so it survived. The tuple-array wave
+  fixed exactly this for arrays of tuples (`kryos_array_dup` plus an element
+  release in the env dropper) and left every other element type on the old path.
+- Fix, at the capture site only (array drop untouched, unlike the backed-out
+  "release at array drop" attempt): the dup arm is no longer tuple-only. Any
+  array whose element the array drop releases (`array_dup_kind(elem) != 0`: str,
+  array, map, struct, enum, closure, releasable tuple) is captured with
+  `kryos_array_dup(arr, kind)`, so the env owns one reference per element, as
+  the spawn capture and `let mut b = a` already did; the env's dropper releases
+  them with the element-typed release (LLVM `emit_array_drop`; Cranelift
+  `emit_helper_array_field_free`). Cranelift needed one more piece: its
+  one-level release freed each ROW of a captured `[[str]]` but never the strings
+  in it (JIT 189MB per 1M, AOT 4MB), so a new runtime fn
+  `kryos_array_free_chain(arr, chain, leaf_fn)` (kryos-rt `array.rs`, registered
+  in `jit.rs`) walks a packed element chain (4 bits a level: str, array, map,
+  struct / enum through its drop helper, closure) and releases at the last
+  owner. A chain ending in a tuple keeps the one-level release.
+- Proved both ways, each with a full `cargo build --release`: with the LLVM
+  change reverted `tests/conformance/conf_closure_capture_array_elems.kry` prints
+  `CONF FAIL: str closure first call` on the AOT (JIT PASS); with the Cranelift
+  change reverted it prints the same on the JIT and on `--backend cranelift`
+  (LLVM AOT PASS); on the master build both fail. Restored, the JIT, the LLVM AOT
+  and the Cranelift AOT all print PASS (also under `KRYOS_FREE_DIAG`, no
+  diagnostics). For the chain fn: before it the `clo_arr_nested` leak mode read
+  JIT 189MB (AOT 4MB), after it 4MB on both.
+- Pinned by `tests/conformance/conf_closure_capture_array_elems.kry` (registered
+  in `no_double_free.sh` as `closure_capture_array_elems`, JIT + AOT with the
+  free diagnostics, then the AOT with real frees): returned closures over `[str]`
+  (the triage repro, with a second literal closure and a junk array between
+  create and call), `[P]`, `[W]` with `[str]` fields, `[[str]]`, `[[i64]]`,
+  `[[P]]`, an enum array, a `map` array, a closure array, a nested
+  `|| || ys[1]`, a `for` over the captured array, two closures over one array,
+  `[(str, i64)]`, the parameter array captured directly and aliased; allocator
+  churn between creation and the calls, calls repeated after more churn, and a
+  100-round create / churn / call loop. Leak guards: modes `clo_arr_str`,
+  `clo_arr_struct`, `clo_arr_nested` of `tests/mem_agg_ops_gate.sh` (a closure
+  per iteration, 1,000,000 times: 4MB on AOT and JIT for each).
+- Gates (baseline master -> this branch): `kryos-loop.sh gates 2` tier1 + tier2
+  GREEN -> GREEN, conformance 109/109 -> 110/110 (the baseline run on the master
+  binary had every other gate PASS; `no_double_free` and `ir_signatures` showed
+  the new test as their only failure because it did not compile yet, and
+  `ir_signatures` re-run on the master binary with it fixed was PASS);
+  bootstrap 16/16 -> 16/16; `tests/mem_agg_ops_gate.sh` full run PASS (160 legs,
+  0 FAIL).
+- Probed correct on the JIT, the LLVM AOT and the Cranelift AOT after the fix
+  (identical output, no free diagnostics; master fails the first): closures over
+  an array built by `push`, over `[src[1], src[0]]`, over a struct field read
+  (`let ys = h.items`), a closure that pushes to its captured array (each call
+  grows its own copy), an array reassigned and an element overwritten after
+  capture (the closure keeps the snapshot), an array stored into an enum payload,
+  `map(xs, |x| .. ys[0] ..)`, three closures over one `[P]`, `[Option<str>]`,
+  `[@copy struct]`, `[[(str, i64)]]`, `[map]`, `[[[str]]]`, `[[fn]]`. The
+  ownership matrix `*_cap` consumers (36 programs x 6 legs, master vs fix,
+  `compare.py`): `regressions 0, crash-only 0`, 108 legs same-clean.
+- Residual: (1) a captured `[[(..)]]` (tuples two levels down) keeps the
+  Cranelift one-level release, so its tuples leak on the JIT and the Cranelift
+  AOT (the LLVM drop recurses); not measured. (2) The wasm backend's closure
+  capture was not read; `wasm_differential` is green but has no
+  closure-over-array probe. (3) `kryos_array_free_chain` is one more runtime
+  symbol on the in-process JIT path (`kryos test` / `repl`): registered
+  (`jit_symbols_gate` PASS) and one `@test` over a captured `[[str]]` passed
+  there, but that path has no leak gate.
+
 ## Wave: overwriting an element of a copied array of structs releases the box's fields only at the last owner (2026-10-30)
 
 Silent wrong answer / use-after-free, AOT (`--release`) only; the JIT and the
@@ -504,7 +591,9 @@ the risk was the use-after-free direction and it was probed hard.
   open and separate (found while probing, master too): a closure returned from a
   function that captures an array of STRINGS reads empty with real frees
   (review6 R32): the capture is a header clone and the scope-end drop frees
-  the strings; this wave fixed that shape for arrays of tuples only.
+  the strings; this wave fixed that shape for arrays of tuples only. CLOSED
+  2026-10-30 for every element type (wave "a closure returned over a LOCAL array
+  of heap elements owns its elements", top of this file).
 
 ## Wave: a directly self-recursive enum was never owned, so every tree that crossed a call leaked -- and reading one back out of a container was a use-after-free (2026-10-29)
 
@@ -1319,9 +1408,9 @@ the `wasm_differential` corpus by
 `tests/harden-probes/probe_wasm_missing_key_container.kry`. The
 same gate's JIT `task_api` leg never started on master either: the script
 passed `--port` without the `--` the CLI requires.
-Also seen, on master too and still open: a closure returned from a function
-that captures an ARRAY of strings (`return || xs[1]`) reads empty on AOT
-with real frees (review6 R32); `fs = f(fs, v)` where `f` returns
+Also seen, on master too (review6 R32, closed 2026-10-30, see the top wave): a
+closure returned from a function that captures an ARRAY of strings
+(`return || xs[1]`) reads empty on AOT with real frees; `fs = f(fs, v)` where `f` returns
 `push(param, v)` leaks the array per call (96MB / 1M, master the same).
 
 ## Wave: nested enums join the shared-owner model; struct-array dup (2026-10-10)

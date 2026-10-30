@@ -2041,6 +2041,15 @@ pub fn compile_module_with_options(
             let id = object_module.declare_function("kryos_array_free_tuples", Linkage::Import, &sig)?;
             func_ids.insert("kryos_array_free_tuples".to_string(), id);
         }
+        // A captured `[[T]]` releases its rows' elements through this.
+        if !func_ids.contains_key("kryos_array_free_chain") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_array_free_chain", Linkage::Import, &sig)?;
+            func_ids.insert("kryos_array_free_chain".to_string(), id);
+        }
         // `[T]` fields of drop helpers release their elements through this.
         if !func_ids.contains_key("kryos_array_free_elems") {
             let mut sig = Signature::new(call_conv);
@@ -2093,16 +2102,33 @@ pub fn compile_module_with_options(
                         builder.ins().call(fref, &[val, kv]);
                         continue;
                     }
-                    // An array of tuples: release the tuples with it.
+                    // An array with releasable elements: release them with it
+                    // (the capture took a reference to each).
                     if let Some(MirType::Array(elem, _)) = cap_ty {
-                        if let (MirType::Tuple(tes), true) =
-                            (elem.as_ref(), kryos_mir::ir::tuple_array_elem_releasable(elem))
-                        {
+                        if array_dup_kind(elem.as_ref()) != 0 {
                             let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
-                            let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
-                            let fid = func_ids["kryos_array_free_tuples"];
-                            let fref = object_module.declare_func_in_func(fid, builder.func);
-                            builder.ins().call(fref, &[val, kv]);
+                            // `[[T]]`: the rows' own elements go too.
+                            if let Some((chain, leaf)) = array_free_chain(elem.as_ref(), &func_ids) {
+                                let leaf_addr = match leaf.and_then(|n| func_ids.get(&n).copied()) {
+                                    Some(lid) => {
+                                        let lref = object_module.declare_func_in_func(lid, builder.func);
+                                        builder.ins().func_addr(types::I64, lref)
+                                    }
+                                    None => builder.ins().iconst(types::I64, 0),
+                                };
+                                let cv = builder.ins().iconst(types::I64, chain);
+                                let fid = func_ids["kryos_array_free_chain"];
+                                let fref = object_module.declare_func_in_func(fid, builder.func);
+                                builder.ins().call(fref, &[val, cv, leaf_addr]);
+                                continue;
+                            }
+                            emit_helper_array_field_free(
+                                &mut builder,
+                                &mut object_module,
+                                &func_ids,
+                                val,
+                                elem.as_ref(),
+                            );
                             continue;
                         }
                     }
@@ -6646,12 +6672,13 @@ fn translate_rvalue<M: Module>(
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
-                        // An array of tuples: the env owns its own reference to
-                        // each tuple (the capturing scope drops its array and
-                        // releases the tuples it holds).
-                        Some(MirType::Array(elem, _))
-                            if kryos_mir::ir::tuple_array_elem_releasable(elem) =>
-                        {
+                        // An array whose elements the array drop releases (str,
+                        // array, map, struct, enum, closure, releasable tuple):
+                        // the env owns its own reference to each element (the
+                        // capturing scope drops its array and releases the ones
+                        // it holds). A bare header clone left the env reading
+                        // elements the scope-end drop had already freed.
+                        Some(MirType::Array(elem, _)) if array_dup_kind(elem.as_ref()) != 0 => {
                             let f = ensure_func_ref_with_args(
                                 "kryos_array_dup",
                                 builder,
@@ -8975,6 +9002,55 @@ fn emit_exception_cleanup_drops<M: Module>(
 /// Free a `[T]` field from inside a generated drop helper: the elements go
 /// through their own drop (`__kryos_drop_<T>` for a struct/enum, the runtime
 /// free for a str/array/map), released by the array's last reference.
+/// `kryos_array_free_chain`'s packed element chain (4 bits a level) and leaf
+/// drop function for an array whose element is itself an array, or None when
+/// the element is not one or ends in something the chain cannot release (a
+/// tuple), which keeps the one-level release.
+fn array_free_chain(
+    elem: &MirType,
+    func_ids: &HashMap<String, FuncId>,
+) -> Option<(i64, Option<String>)> {
+    if !matches!(elem, MirType::Array(_, _)) {
+        return None;
+    }
+    let mut chain = 0i64;
+    let mut leaf = None;
+    let mut t = elem;
+    for level in 0..12 {
+        let shift = level * 4;
+        match t {
+            MirType::Array(inner, _) => {
+                chain |= 2 << shift;
+                t = inner.as_ref();
+            }
+            MirType::Str => {
+                chain |= 1 << shift;
+                break;
+            }
+            MirType::Map { .. } => {
+                chain |= 3 << shift;
+                break;
+            }
+            MirType::Struct(n) | MirType::Enum(n) => {
+                chain |= 4 << shift;
+                let dn = format!("__kryos_drop_{n}");
+                leaf = Some(if func_ids.contains_key(&dn) { dn } else { "kryos_free".to_string() });
+                break;
+            }
+            MirType::Function { .. } | MirType::Shared(_) => {
+                chain |= 5 << shift;
+                break;
+            }
+            MirType::Tuple(_) => return None,
+            _ => break,
+        }
+        if level == 11 {
+            return None;
+        }
+    }
+    Some((chain, leaf))
+}
+
 fn emit_helper_array_field_free<M: Module>(
     builder: &mut FunctionBuilder,
     object_module: &mut M,

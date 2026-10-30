@@ -211,6 +211,10 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_free_elems as *const u8,
         );
         jit_builder.symbol(
+            "kryos_array_free_chain",
+            kryos_rt::array::kryos_array_free_chain as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_array_concat",
             kryos_rt::array::kryos_array_concat as *const u8,
         );
@@ -2350,6 +2354,7 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_map_get_or_empty", "kryos_map_get_or_empty", sig(3));
     decl!("kryos_tuple_release", "kryos_tuple_release", sig(2));
     decl!("kryos_array_free_tuples", "kryos_array_free_tuples", sig(2));
+    decl!("kryos_array_free_chain", "kryos_array_free_chain", sig(3));
     decl!("kryos_map_get_str_or_empty", "kryos_map_get_str_or_empty", sig(3));
     decl!("kryos_map_len", "kryos_map_len", sig(1));
     decl!("kryos_map_free", "kryos_map_free", sig(1));
