@@ -19,6 +19,7 @@ pub mod async_lower;
 pub mod consteval;
 pub mod debug_lines;
 pub mod display;
+pub mod dyn_own;
 pub mod ir;
 pub mod liveness;
 pub mod lower;

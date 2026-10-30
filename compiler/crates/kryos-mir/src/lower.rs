@@ -2328,6 +2328,7 @@ pub fn lower_module_with_lambda_params(
     }
 
     keep_closures_passed_to_escaping_params(&mut functions);
+    crate::dyn_own::own_dyn_refs(&mut functions);
 
     MirModule {
         functions,
@@ -3352,7 +3353,7 @@ pub fn lower_function(
             let tail_ty = infer_expr_type(ctx, expr);
             let tail_owns = matches!(
                 tail_ty,
-                MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::DynTrait(_)
             );
             let tail_share =
                 matches!(expr, ast::Expr::FieldAccess { .. })
@@ -3719,6 +3720,35 @@ fn take_tail_identifier(ctx: &mut LoweringContext, name: &str, scope_start: usiz
         }
     }
     ctx.dropped_locals.insert(id.0);
+}
+
+/// A match arm whose whole body is a bare name for an owned struct declared
+/// OUTSIDE the arm (`match c { 0 => nb, _ => na }`). Like a block tail
+/// (`take_tail_identifier`) the result slot shares it instead of moving it:
+/// a move suppressed the scope-end drop of the name on every path, including
+/// the arms that did not take it, so both structs leaked per execution.
+fn arm_names_outer_owned_struct(
+    ctx: &LoweringContext,
+    pattern: Option<&ast::Pattern>,
+    locals_mark: usize,
+    body: &ast::Expr,
+    body_val: &Operand,
+) -> bool {
+    let (ast::Expr::Identifier { name, .. }, Operand::Local(id)) = (body, body_val) else {
+        return false;
+    };
+    if pattern.is_some_and(|p| pattern_binds(p, name)) {
+        return false;
+    }
+    let Some(l) = find_local_by_name(ctx, name) else { return false };
+    // Declared before the match began (a name an arm's pattern binds is
+    // allocated after it).
+    let outer = ctx.locals.iter().position(|x| x.id == l).is_some_and(|pos| pos < locals_mark);
+    outer
+        && l == *id
+        && !ctx.borrowed_locals.contains(&id.0)
+        && !ctx.env_owned_locals.contains(&id.0)
+        && ctx.locals.iter().any(|x| x.id == *id && is_owned_struct_ty(ctx, &x.ty))
 }
 
 /// Is unnamed temp `t` a fresh struct copy made in this block: defined by
@@ -4853,6 +4883,14 @@ fn drop_unescaped_str_temps(
                     }
                     true
                 }
+                // A trait object built from this struct temp takes its OWN
+                // owner of the struct (`owns_data`), so the temp only lends
+                // its value and still drops its own reference.
+                RValue::MakeTraitObject { value, owns_data: true, .. }
+                    if mentions(value, id) && is_owned_struct_ty(ctx, &cand_ty) =>
+                {
+                    true
+                }
                 // Any other rvalue shape touching this temp is a potential
                 // escape (Use copies the pointer, aggregate inits store it...).
                 other => {
@@ -5291,6 +5329,12 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
             block_owned(ctx, then_branch) && else_branch.as_ref().is_some_and(|b| block_owned(ctx, b))
         }
         ast::Expr::MatchExpr { arms, .. } => arms.iter().all(|a| {
+            if let ast::Expr::Identifier { name, .. } = a.body.as_ref() {
+                // A bare outer name is shared into the slot (see
+                // arm_names_outer_owned_struct); one the pattern binds is not.
+                return !pattern_binds(&a.pattern, name)
+                    && (ident_owned(ctx, name) || tail_ident_owned(ctx, name));
+            }
             !tail_ident(&a.body).is_some_and(|n| pattern_binds(&a.pattern, n)) && struct_value_owned(ctx, &a.body)
         }),
         ast::Expr::Block { block, .. } => block_owned(ctx, block),
@@ -5879,7 +5923,30 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     && matches!(infer_expr_type(ctx, expr), MirType::Struct(_))
                 {
                     let operand = lower_expr_to_operand(ctx, expr);
-                    RValue::Use(coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr))
+                    // `let d: dyn T = if c { S { .. } } else { S { .. } }` (or a
+                    // match / block): the arms hand the hidden slot an owned
+                    // struct, and the trait object takes its OWN owner of it
+                    // (`owns_data`), so the slot's reference is released right
+                    // after the wrap. Only when every branch is provably owned
+                    // (struct_value_owned) and the value is an unnamed slot: a
+                    // named binding keeps its own scope-end drop.
+                    let slot_to_drop = match (&operand, expr) {
+                        (
+                            Operand::Local(l),
+                            ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. } | ast::Expr::Block { .. },
+                        ) if ctx.locals.iter().any(|x| x.id == *l && x.name.is_none())
+                            && struct_value_owned(ctx, expr)
+                            && matches!(infer_expr_type(ctx, expr), MirType::Struct(ref n) if dyn_owns_data(ctx, n)) =>
+                        {
+                            Some(*l)
+                        }
+                        _ => None,
+                    };
+                    let wrapped = coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr);
+                    if let Some(slot) = slot_to_drop {
+                        ctx.emit(Instruction::Drop { local: slot });
+                    }
+                    RValue::Use(wrapped)
                 } else {
                     lower_expr_to_rvalue(ctx, expr)
                 };
@@ -5933,7 +6000,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // released it -- one leaked string per such `let`. Tuple
                 // element reads are retained the same way.
                 let owns_heap_read = reads_element
-                    && matches!(mir_ty, MirType::Str | MirType::Array(..) | MirType::Map { .. })
+                    && matches!(
+                        mir_ty,
+                        MirType::Str | MirType::Array(..) | MirType::Map { .. } | MirType::DynTrait(_)
+                    )
                     && !matches!(
                         expr,
                         ast::Expr::FieldAccess { object, .. }
@@ -6253,6 +6323,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 t if is_owned_tuple_ty(ctx, t) => {
                                     ctx.pending_let_share = true;
                                 }
+                                // A trait object binding owns its own fat-box
+                                // reference: dyn_own (module pass) retains it
+                                // for a copy of a named value and moves a fresh
+                                // temp's, and the scope-end Drop releases it.
+                                MirType::DynTrait(_) => {}
                                 _ => {
                                     // A struct/enum/tuple whose field graph the
                                     // clone helpers can't fully deep-copy (an
@@ -6757,7 +6832,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 // loop leaked one per iteration). Not a param,
                                 // an alias or a closure's own capture, which
                                 // do not own theirs.
-                                Some(MirType::Function { .. })
+                                // A trait object is an ARC fat box like a closure
+                                // env: the old one is released the same way.
+                                Some(MirType::Function { .. }) | Some(MirType::DynTrait(_))
                                     if !ctx.param_locals.contains(&dest.0)
                                         && !ctx.borrowed_locals.contains(&dest.0)
                                         && !ctx.env_owned_locals.contains(&dest.0)
@@ -6815,10 +6892,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         dest: struct_tmp,
                                         value: rvalue,
                                     });
+                                    let owns_data = dyn_owns_data(ctx, &concrete_type);
                                     rvalue = RValue::MakeTraitObject {
                                         value: Operand::Local(struct_tmp),
                                         concrete_type,
                                         trait_name,
+                                        owns_data,
                                     };
                                 }
                             }
@@ -6993,7 +7072,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 if src_is_retained_get {
                                 } else if let Some(rf) = retain_for_ty(&src_ty) {
                                     retain_container_src = Some(rf);
-                                } else if !is_copy_type(ctx, &src_ty) && !share_new {
+                                } else if !is_copy_type(ctx, &src_ty)
+                                    && !share_new
+                                    // A trait object source keeps its own drop:
+                                    // the copy takes its own reference (dyn_own).
+                                    && !matches!(src_ty, MirType::DynTrait(_))
+                                {
                                     ctx.dropped_locals.insert(src.0);
                                 }
                             }
@@ -7632,7 +7716,29 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // store). Read it now; released once after the
                             // store -- unlike a str / array / map field read, a
                             // closure field read takes no reference of its own.
-                            let old_fn_field = if matches!(field_ty, MirType::Function { .. }) && !obj_is_tuple {
+                            // A trait object field is an ARC fat box like a
+                            // closure env: the old one is released the same
+                            // way (read, store, guarded release), but only
+                            // through a struct this function owns -- an alias
+                            // of another binding's struct still belongs to it.
+                            let dyn_field_owned = matches!(field_ty, MirType::DynTrait(_)) && {
+                                let mut root = object.as_ref();
+                                while let ast::Expr::FieldAccess { object: inner, .. } = root {
+                                    root = inner.as_ref();
+                                }
+                                match root {
+                                    ast::Expr::Identifier { name, .. } => find_local_by_name(ctx, name)
+                                        .is_some_and(|l| {
+                                            !ctx.borrowed_locals.contains(&l.0)
+                                                && !ctx.param_locals.contains(&l.0)
+                                                && !ctx.partial_moved_locals.contains(&l.0)
+                                        }),
+                                    _ => false,
+                                }
+                            };
+                            let old_fn_field = if (matches!(field_ty, MirType::Function { .. }) || dyn_field_owned)
+                                && !obj_is_tuple
+                            {
                                 let old_tmp = ctx.alloc_temp(field_ty.clone());
                                 let obj_op = lower_expr_to_operand(ctx, object);
                                 ctx.emit(Instruction::Assign {
@@ -8266,7 +8372,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             let ret_field_ty = value.as_ref().map(|e| infer_expr_type(ctx, e));
             let ret_field_owns = matches!(
                 ret_field_ty,
-                Some(MirType::Str) | Some(MirType::Array(_, _)) | Some(MirType::Map { .. })
+                Some(MirType::Str)
+                    | Some(MirType::Array(_, _))
+                    | Some(MirType::Map { .. })
+                    | Some(MirType::DynTrait(_))
             );
             let ret_field_share = matches!(value.as_ref(), Some(ast::Expr::FieldAccess { .. }))
                 && ret_field_ty
@@ -10951,6 +11060,7 @@ fn lower_match_sequential(
         // switch-path arm handling in `lower_match`; without it, once the result
         // is correctly str-typed both the tail local and the result free the
         // same pointer (Pass-18 latent double-free behind the type bug).
+        let share_named = arm_names_outer_owned_struct(ctx, Some(&arm.pattern), usize::MAX, &arm.body, &body_val);
         let arm_value = match env_owned_copy(ctx, &body_val) {
             Some(copy) => copy,
             None => {
@@ -10961,7 +11071,7 @@ fn lower_match_sequential(
                         .find(|l| l.id == *src)
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
-                    if !is_copy_type(ctx, &src_ty) {
+                    if !is_copy_type(ctx, &src_ty) && !share_named {
                         ctx.dropped_locals.insert(src.0);
                     }
                 }
@@ -10972,6 +11082,11 @@ fn lower_match_sequential(
             dest: result_local,
             value: arm_value,
         });
+        if share_named {
+            // The result slot owns its own reference; the named struct keeps
+            // its scope-end drop (as a block tail does, take_tail_identifier).
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, &arm.body, result_local, &arm_partial_before);
         ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
     }
@@ -11499,6 +11614,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 }
 
 fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
+    let match_locals_mark = ctx.locals.len();
     // Normalize BARE enum-variant idents (`Red =>`, parsed as Pattern::Ident)
     // into the qualified `Pattern::Enum` shape before any dispatch decision.
     // The tag-switch machinery below chains SAME-TAG guarded arms correctly
@@ -11656,6 +11772,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         );
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let body_val = lower_expr_to_operand(ctx, &first.body);
+        let share_named = arm_names_outer_owned_struct(ctx, Some(&first.pattern), match_locals_mark, &first.body, &body_val);
         let arm_value = match env_owned_copy(ctx, &body_val) {
             Some(copy) => copy,
             None => {
@@ -11666,7 +11783,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                         .find(|l| l.id == *src)
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
-                    if !is_copy_type(ctx, &src_ty) {
+                    if !is_copy_type(ctx, &src_ty) && !share_named {
                         ctx.dropped_locals.insert(src.0);
                     }
                 }
@@ -11677,6 +11794,11 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_value,
         });
+        if share_named {
+            // The result slot owns its own reference; the named struct keeps
+            // its scope-end drop (as a block tail does, take_tail_identifier).
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, &first.body, result_local, &arm_partial_before);
         ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
         arms_rest = &arms_rest[1..];
@@ -12515,6 +12637,10 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         let arm_locals_mark = ctx.locals.len();
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        let share_named = match &arm_rvalue {
+            RValue::Use(op) => arm_names_outer_owned_struct(ctx, None, match_locals_mark, body, op),
+            _ => false,
+        };
         // If the arm body moves a non-copy local into the result, mark the
         // source as consumed so the scope cleanup won't double-drop it.
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
@@ -12524,7 +12650,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
-            if !is_copy_type(ctx, &src_ty) {
+            if !is_copy_type(ctx, &src_ty) && !share_named {
                 ctx.dropped_locals.insert(src.0);
             }
         }
@@ -12555,6 +12681,9 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_rvalue,
         });
+        if share_named {
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, body, result_local, &arm_partial_before);
         // The arm value's intermediate temps (`"A(" + s` feeding
         // `"A(" + s + ")"`) get the statement-end cleanup an expression arm
@@ -12595,6 +12724,10 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         let arm_locals_mark = ctx.locals.len();
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        let share_named = match &arm_rvalue {
+            RValue::Use(op) => arm_names_outer_owned_struct(ctx, None, match_locals_mark, body, op),
+            _ => false,
+        };
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
             let src_ty = ctx
                 .locals
@@ -12602,7 +12735,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
-            if !is_copy_type(ctx, &src_ty) {
+            if !is_copy_type(ctx, &src_ty) && !share_named {
                 ctx.dropped_locals.insert(src.0);
             }
         }
@@ -12616,6 +12749,9 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_rvalue,
         });
+        if share_named {
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, body, result_local, &arm_partial_before);
         // The same statement-end cleanup the case arms get: a `_` arm computing
         // `"y{i}" + "z"` leaked the interpolated string on every evaluation.
@@ -12775,7 +12911,14 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 && (borrowable_struct
                     || matches!(
                         local_ty,
-                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::Function { .. }
+                        MirType::Str
+                            | MirType::Array(_, _)
+                            | MirType::Map { .. }
+                            | MirType::Function { .. }
+                            // A trait object argument is lent: the callee's
+                            // dyn param is borrowed, and one that keeps it
+                            // takes its own reference (dyn_own).
+                            | MirType::DynTrait(_)
                     ))
             {
                 // An async callee runs after this frame is gone: its future
@@ -13912,6 +14055,14 @@ fn lower_nested_field_assign(
 /// an explicitly `dyn Trait`-annotated `let`, a `return` from a function
 /// whose declared return type is `dyn Trait`, a `dyn Trait`-typed struct
 /// field initializer, and a `dyn Trait` parameter of a resolved method call.
+/// Does a trait object built from a `concrete` struct take its own owner of
+/// the struct (see `RValue::MakeTraitObject::owns_data`)? Exactly the structs
+/// whose values are shared by STRUCT_SHARE_FN: for any other the source value
+/// keeps the old never-dropped behavior (and so is never dropped by MIR).
+fn dyn_owns_data(ctx: &LoweringContext, concrete: &str) -> bool {
+    is_owned_struct_ty(ctx, &MirType::Struct(concrete.to_string()))
+}
+
 fn coerce_to_dyn_if_needed(
     ctx: &mut LoweringContext,
     operand: Operand,
@@ -13921,12 +14072,14 @@ fn coerce_to_dyn_if_needed(
     if let MirType::DynTrait(ref trait_name) = target_ty {
         if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, source_expr) {
             let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+            let owns_data = dyn_owns_data(ctx, concrete_type);
             ctx.emit(Instruction::Assign {
                 dest: tmp,
                 value: RValue::MakeTraitObject {
                     value: operand,
                     concrete_type: concrete_type.clone(),
                     trait_name: trait_name.clone(),
+                    owns_data,
                 },
             });
             return Operand::Local(tmp);
@@ -14940,12 +15093,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             if let MirType::Struct(ref concrete_type) = arg_type {
                                 // Emit MakeTraitObject to wrap the struct into a fat pointer.
                                 let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                                let owns_data = dyn_owns_data(ctx, concrete_type);
                                 ctx.emit(Instruction::Assign {
                                     dest: tmp,
                                     value: RValue::MakeTraitObject {
                                         value: operand,
                                         concrete_type: concrete_type.clone(),
                                         trait_name: trait_name.clone(),
+                                        owns_data,
                                     },
                                 });
                                 return Operand::Local(tmp);
@@ -15723,7 +15878,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 // name: self.name }` leaked ~90MB per 1M calls).
                                 let retained_read = matches!(
                                     field_ty,
-                                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                                    MirType::Str
+                                        | MirType::Array(_, _)
+                                        | MirType::Map { .. }
+                                        // dyn_own retains a trait object read
+                                        // out of a field.
+                                        | MirType::DynTrait(_)
                                 );
                                 if !is_copy_type(ctx, &field_ty) && !retained_read {
                                     ctx.partial_moved_locals.insert(source_id.0);
@@ -20993,12 +21153,14 @@ fn lower_generic_fn_call(
             {
                 if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
                     let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                    let owns_data = dyn_owns_data(ctx, concrete_type);
                     ctx.emit(Instruction::Assign {
                         dest: tmp,
                         value: RValue::MakeTraitObject {
                             value: operand,
                             concrete_type: concrete_type.clone(),
                             trait_name: trait_name.clone(),
+                            owns_data,
                         },
                     });
                     return Operand::Local(tmp);
@@ -21390,6 +21552,14 @@ fn mir_type_to_type_expr_spanned(ty: &MirType, span: kryos_errors::Span) -> ast:
                 mir_type_to_type_expr_spanned(key, span),
                 mir_type_to_type_expr_spanned(value, span),
             ],
+            span,
+        },
+        // A monomorphized instance bound to `dyn Trait` must keep the trait
+        // object type on its params / locals / return: as a plain name it lost
+        // it (locals typed i64), so dyn_own saw a borrowed dyn param returned
+        // with no retain while the caller released the result as owned.
+        MirType::DynTrait(name) => ast::TypeExpr::DynTrait {
+            trait_name: name.clone(),
             span,
         },
         other => ast::TypeExpr::Simple {

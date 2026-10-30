@@ -583,6 +583,7 @@ pub fn compile_module_with_options(
                         | Some(MirType::Array(_, _))
                         | Some(MirType::Function { .. })
                         | Some(MirType::Shared(_))
+                        | Some(MirType::DynTrait(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
                         | Some(MirType::Map { .. })
@@ -616,6 +617,7 @@ pub fn compile_module_with_options(
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::DynTrait(_)
                         | MirType::Tuple(_)
                 )
             })
@@ -758,6 +760,7 @@ pub fn compile_module_with_options(
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::DynTrait(_)
                         | MirType::Map { .. }
                 )
             })
@@ -2118,7 +2121,7 @@ pub fn compile_module_with_options(
                         Some(MirType::Str) => Some("kryos_string_free"),
                         Some(MirType::Array(_, _)) => Some("kryos_array_free"),
                         Some(MirType::Map { .. }) => Some("kryos_map_free"),
-                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                        Some(MirType::Function { .. }) | Some(MirType::Shared(_)) | Some(MirType::DynTrait(_)) => {
                             Some("kryos_arc_release")
                         }
                         Some(MirType::Struct(_)) | Some(MirType::Enum(_)) => Some("kryos_free"),
@@ -2237,7 +2240,7 @@ pub fn compile_module_with_options(
                             let free_fn = match field_ty {
                                 MirType::Str => Some("kryos_string_free"),
                                 MirType::Map { .. } => Some("kryos_map_free"),
-                                MirType::Function { .. } | MirType::Shared(_) => {
+                                MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
                                     Some("kryos_arc_release")
                                 }
                                 MirType::Struct(n) => {
@@ -2476,7 +2479,7 @@ pub fn compile_module_with_options(
                             field_val
                         }
                     }
-                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) | Some(MirType::DynTrait(_)) => {
                         let f = func_ids["kryos_arc_retain"];
                         let fr = object_module.declare_func_in_func(f, builder.func);
                         builder.ins().call(fr, &[field_val]);
@@ -2860,7 +2863,7 @@ fn emit_struct_deep_copy_inner<M: Module>(
                 builder.ins().call(retain_ref, &[field_val]);
                 field_val
             }
-            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+            Some(MirType::Function { .. }) | Some(MirType::Shared(_)) | Some(MirType::DynTrait(_)) => {
                 let retain_ref =
                     ensure_func_ref_with_args("kryos_arc_retain", builder, translator, module, 1)?;
                 builder.ins().call(retain_ref, &[field_val]);
@@ -3218,6 +3221,7 @@ pub fn translate_function<M: Module>(
                             | MirType::Enum(_)
                             | MirType::Function { .. }
                             | MirType::Shared(_)
+                            | MirType::DynTrait(_)
                     )
                 })
             });
@@ -3566,8 +3570,11 @@ fn translate_instruction<M: Module>(
                             builder.ins().call(free_ref, &[val]);
                         }
                         kryos_mir::ir::MirType::Function { .. }
-                        | kryos_mir::ir::MirType::Shared(_) => {
-                            // ARC-managed; release our reference.
+                        | kryos_mir::ir::MirType::Shared(_)
+                        | kryos_mir::ir::MirType::DynTrait(_) => {
+                            // ARC-managed; release our reference. (A trait
+                            // object's last release runs `kryos_dyn_drop`,
+                            // which releases the data it owns.)
                             let release_ref = ensure_func_ref_with_args(
                                 "kryos_arc_release",
                                 builder,
@@ -6951,10 +6958,19 @@ fn translate_rvalue<M: Module>(
             value,
             concrete_type,
             trait_name,
+            owns_data,
         } => {
-            // Dynamic dispatch: heap-allocate a fat pointer [data, vtable_entry...].
-            // Heap allocation ensures the fat pointer survives the current scope.
+            // Dynamic dispatch: heap-allocate a fat pointer
+            // [data, drop_fn, vtable_entry...]. It is an ARC object, so it
+            // survives the current scope and is freed with its last reference.
             let data_val = translate_operand(value, builder, translator, module)?;
+            // `owns`: the trait object takes its own owner of the struct box
+            // (retain), and its drop slot names the struct's drop helper, which
+            // the ARC drop hook (`kryos_dyn_drop`) runs at the last release.
+            let owns = *owns_data
+                && concrete_type != "Map"
+                && translator.struct_defs.contains_key(concrete_type.as_str())
+                && !translator.copy_structs.contains(concrete_type.as_str());
 
             // Look up the trait method(s) for this concrete type.
             let vtable_key = (concrete_type.clone(), trait_name.clone());
@@ -6982,17 +6998,43 @@ fn translate_rvalue<M: Module>(
                 }
             }
 
-            // Heap-allocate fat pointer: [data (i64), fn_ptr_0, fn_ptr_1, ...]
+            // Heap-allocate fat pointer: [data (i64), drop_fn, fn_ptr_0, fn_ptr_1, ...]
             let num_methods = method_names.len().max(1) as u32;
-            let alloc_size = (8 + 8 * num_methods) as i64;
+            let alloc_size = (16 + 8 * num_methods) as i64;
 
-            let malloc_ref = ensure_func_ref_with_args("malloc", builder, translator, module, 1)?;
+            let alloc_ref =
+                ensure_func_ref_with_args("kryos_arc_alloc_i64", builder, translator, module, 1)?;
             let size_val = builder.ins().iconst(types::I64, alloc_size);
-            let call_inst = builder.ins().call(malloc_ref, &[size_val]);
+            let call_inst = builder.ins().call(alloc_ref, &[size_val]);
             let fat_ptr = builder.inst_results(call_inst)[0];
 
             // Store the data value.
             builder.ins().store(MemFlags::new(), data_val, fat_ptr, 0);
+
+            // Store the data's drop helper (0 = the box does not own its data).
+            if owns {
+                let retain_ref =
+                    ensure_func_ref_with_args("kryos_struct_retain", builder, translator, module, 1)?;
+                builder.ins().call(retain_ref, &[data_val]);
+                let helper = format!("__kryos_drop_{concrete_type}");
+                let helper = if translator.func_ids.contains_key(&helper) {
+                    helper
+                } else {
+                    "kryos_free".to_string()
+                };
+                let helper_ref = ensure_func_ref_with_args(&helper, builder, translator, module, 1)?;
+                let helper_addr = builder.ins().func_addr(types::I64, helper_ref);
+                builder.ins().store(MemFlags::new(), helper_addr, fat_ptr, 8);
+                let hook_ref =
+                    ensure_func_ref_with_args("kryos_dyn_drop", builder, translator, module, 1)?;
+                let hook_addr = builder.ins().func_addr(types::I64, hook_ref);
+                let set_drop_ref =
+                    ensure_func_ref_with_args("kryos_arc_set_drop", builder, translator, module, 2)?;
+                builder.ins().call(set_drop_ref, &[fat_ptr, hook_addr]);
+            } else {
+                let zero = builder.ins().iconst(types::I64, 0);
+                builder.ins().store(MemFlags::new(), zero, fat_ptr, 8);
+            }
 
             // Store each method function pointer.
             for (i, method_name) in method_names.iter().enumerate() {
@@ -7001,7 +7043,7 @@ fn translate_rvalue<M: Module>(
                 let fn_addr = builder.ins().func_addr(types::I64, func_ref);
                 builder
                     .ins()
-                    .store(MemFlags::new(), fn_addr, fat_ptr, 8 + 8 * i as i32);
+                    .store(MemFlags::new(), fn_addr, fat_ptr, 16 + 8 * i as i32);
             }
 
             Ok(Some(fat_ptr))
@@ -7018,8 +7060,9 @@ fn translate_rvalue<M: Module>(
 
             // Load the data pointer (offset 0).
             let data_ptr = builder.ins().load(types::I64, MemFlags::new(), fat_ptr, 0);
-            // Load the method fn_ptr (offset 8 + 8 * method_index).
-            let fn_offset = 8 + 8 * (*method_index as i32);
+            // Load the method fn_ptr (offset 16 + 8 * method_index; slot 1 is
+            // the data drop helper).
+            let fn_offset = 16 + 8 * (*method_index as i32);
             let fn_ptr = builder
                 .ins()
                 .load(types::I64, MemFlags::new(), fat_ptr, fn_offset);
@@ -8268,7 +8311,7 @@ fn emit_drop_for_value<M: Module>(
                 ensure_func_ref_with_args("kryos_string_free", builder, translator, module, 1)?;
             builder.ins().call(free_ref, &[val]);
         }
-        MirType::Function { .. } | MirType::Shared(_) => {
+        MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
             let release_ref =
                 ensure_func_ref_with_args("kryos_arc_release", builder, translator, module, 1)?;
             builder.ins().call(release_ref, &[val]);
@@ -8437,7 +8480,8 @@ fn emit_drop_for_value<M: Module>(
                                 | MirType::Function { .. }
                                 | MirType::Enum(_)
                                 | MirType::Tuple(_)
-                                | MirType::Shared(_) => {
+                                | MirType::Shared(_)
+                                | MirType::DynTrait(_) => {
                                     let field_val = builder.ins().load(
                                         types::I64,
                                         MemFlags::new(),

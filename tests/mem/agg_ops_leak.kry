@@ -48,6 +48,24 @@ impl Lg for Lgr {
     fn log(self: Lgr, msg: str) { if len(msg) == 999 { println(msg) } }
 }
 fn dlg(d: dyn Lg, i: i64) { d.log("m{i}") }
+// A struct with a heap field coerced to a `dyn` (the fat box and the data
+// copy leaked per coercion: 125-186MB per 1M).
+struct Lgs { n: i64, name: str }
+impl Lg for Lgs {
+    fn log(self: Lgs, msg: str) { if len(msg) == 999 { println(msg) } }
+}
+struct Dh { d: dyn Lg, k: i64 }
+fn mkd(i: i64) -> dyn Lg { return Lgs { n: i, name: "r{i}" } }
+fn mkd_local(i: i64) -> dyn Lg {
+    let s: dyn Lg = Lgs { n: i, name: "l{i}" }
+    return s
+}
+fn pass_d(d: dyn Lg) -> dyn Lg { return d }
+fn gen_id<T>(x: T) -> T { return x }
+fn gen_first<T>(a: T, b: T) -> T { return a }
+fn hold_d(d: dyn Lg, k: i64) -> Dh { return Dh { d: d, k: k } }
+fn dh_log(h: Dh) { h.d.log("h") }
+fn dyn_clo(d: dyn Lg) -> fn(i64) -> i64 { return |k: i64| -> i64 { d.log("c") return k } }
 fn show_p(p: P) {
     if len(p.name) == 99 { println(p.name) }
 }
@@ -272,6 +290,95 @@ fn main() {
             m3["a"]["b"]["c"] = i
             m3["a"]["d"]["e"] = i
             acc = acc + len(m3["a"])
+        } elif mode == "dyn_param" {
+            dlg(Lgs { n: i, name: "x{i}" }, i)
+        } elif mode == "dyn_let" {
+            let s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            s.log("a")
+        } elif mode == "dyn_named" {
+            let r = Lgs { n: i, name: "x{i}" }
+            dlg(r, i)
+            let s: dyn Lg = r
+            s.log("b")
+            acc = acc + len(r.name)
+        } elif mode == "dyn_ret" {
+            let a = mkd(i)
+            let b = mkd_local(i)
+            a.log("a")
+            b.log("b")
+            pass_d(a).log("c")
+        } elif mode == "dyn_copy" {
+            let s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            let t = s
+            t.log("t")
+            dlg(t, i)
+        } elif mode == "dyn_field" {
+            let h = hold_d(Lgs { n: i, name: "x{i}" }, i)
+            dh_log(h)
+        } elif mode == "dyn_reassign" {
+            let mut s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            s = Lgs { n: i, name: "y{i}" }
+            s.log("r")
+        } elif mode == "dyn_fieldstore" {
+            let mut h = hold_d(Lgs { n: i, name: "x{i}" }, i)
+            h.d = Lgs { n: i, name: "y{i}" }
+            dh_log(h)
+        } elif mode == "dyn_clo" {
+            let f = dyn_clo(Lgs { n: i, name: "x{i}" })
+            acc = acc + f(i)
+        } elif mode == "dyn_if" {
+            // A dyn coerced from an if / match VALUE slot (the arms build the
+            // struct, the let wraps it): the slot's struct was never dropped.
+            let d: dyn Lg = if i % 2 == 0 { Lgs { n: i, name: "x{i}" } } else { Lgs { n: i, name: "y{i}" } }
+            d.log("a")
+        } elif mode == "dyn_match" {
+            let d: dyn Lg = match i % 3 {
+                0 => Lgs { n: i, name: "x{i}" },
+                1 => Lgs { n: i, name: "y{i}" },
+                _ => Lgs { n: i, name: "z{i}" },
+            }
+            d.log("a")
+        } elif mode == "dyn_if_named" {
+            // Named structs picked by an if / match, coerced at the let: the
+            // named struct is still used afterwards.
+            let na = Lgs { n: i, name: "a{i}" }
+            let nb = Lgs { n: i, name: "b{i}" }
+            let d: dyn Lg = if i % 2 == 0 { na } else { nb }
+            let e: dyn Lg = match i % 2 {
+                0 => nb,
+                _ => na,
+            }
+            d.log("a")
+            e.log("b")
+            acc = acc + len(na.name) + len(nb.name)
+        } elif mode == "match_named" {
+            // The same without a dyn: a match whose arms are bare names of
+            // owned structs moved them out of their scope-end drop, on every
+            // path, so both leaked.
+            let mna = Lgs { n: i, name: "a{i}" }
+            let mnb = Lgs { n: i, name: "b{i}" }
+            let mne: Lgs = match i % 2 {
+                0 => mnb,
+                _ => mna,
+            }
+            acc = acc + len(mne.name) + len(mna.name) + len(mnb.name)
+        } elif mode == "dyn_if_plain" {
+            let d: dyn Lg = if i % 2 == 0 { Lgr { n: i } } else { Lgr { n: i + 1 } }
+            d.log("p")
+        } elif mode == "dyn_if_dyn" {
+            // The arms already produce dyn values.
+            let d: dyn Lg = if i % 2 == 0 { mkd(i) } else { pass_d(mkd(i + 1)) }
+            d.log("q")
+        } elif mode == "dyn_gen" {
+            // A generic instantiated with a dyn type borrows its param and
+            // returns it: the instance must keep the dyn type to retain it.
+            let g = gen_id(pass_d(Lgs { n: i, name: "x{i}" }))
+            let h: dyn Lg = Lgs { n: i, name: "y{i}" }
+            let h2 = gen_id(h)
+            let h3 = gen_first(h, g)
+            g.log("g")
+            h2.log("h")
+            h3.log("i")
         } elif mode == "dyn_arg" {
             // A `dyn` method call as a statement leaked its argument.
             dlg(dl, i)

@@ -408,10 +408,12 @@ fn remap_rvalue(rv: &RValue, offset: u32) -> RValue {
             value,
             concrete_type,
             trait_name,
+            owns_data,
         } => RValue::MakeTraitObject {
             value: remap_operand(value, offset),
             concrete_type: concrete_type.clone(),
             trait_name: trait_name.clone(),
+            owns_data: *owns_data,
         },
         RValue::VtableCall {
             object,
