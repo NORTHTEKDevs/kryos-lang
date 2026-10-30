@@ -2328,6 +2328,7 @@ pub fn lower_module_with_lambda_params(
     }
 
     keep_closures_passed_to_escaping_params(&mut functions);
+    crate::dyn_own::own_dyn_refs(&mut functions);
 
     MirModule {
         functions,
@@ -3352,7 +3353,7 @@ pub fn lower_function(
             let tail_ty = infer_expr_type(ctx, expr);
             let tail_owns = matches!(
                 tail_ty,
-                MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::DynTrait(_)
             );
             let tail_share =
                 matches!(expr, ast::Expr::FieldAccess { .. })
@@ -4853,6 +4854,14 @@ fn drop_unescaped_str_temps(
                     }
                     true
                 }
+                // A trait object built from this struct temp takes its OWN
+                // owner of the struct (`owns_data`), so the temp only lends
+                // its value and still drops its own reference.
+                RValue::MakeTraitObject { value, owns_data: true, .. }
+                    if mentions(value, id) && is_owned_struct_ty(ctx, &cand_ty) =>
+                {
+                    true
+                }
                 // Any other rvalue shape touching this temp is a potential
                 // escape (Use copies the pointer, aggregate inits store it...).
                 other => {
@@ -5933,7 +5942,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                 // released it -- one leaked string per such `let`. Tuple
                 // element reads are retained the same way.
                 let owns_heap_read = reads_element
-                    && matches!(mir_ty, MirType::Str | MirType::Array(..) | MirType::Map { .. })
+                    && matches!(
+                        mir_ty,
+                        MirType::Str | MirType::Array(..) | MirType::Map { .. } | MirType::DynTrait(_)
+                    )
                     && !matches!(
                         expr,
                         ast::Expr::FieldAccess { object, .. }
@@ -6253,6 +6265,11 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 t if is_owned_tuple_ty(ctx, t) => {
                                     ctx.pending_let_share = true;
                                 }
+                                // A trait object binding owns its own fat-box
+                                // reference: dyn_own (module pass) retains it
+                                // for a copy of a named value and moves a fresh
+                                // temp's, and the scope-end Drop releases it.
+                                MirType::DynTrait(_) => {}
                                 _ => {
                                     // A struct/enum/tuple whose field graph the
                                     // clone helpers can't fully deep-copy (an
@@ -6757,7 +6774,9 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 // loop leaked one per iteration). Not a param,
                                 // an alias or a closure's own capture, which
                                 // do not own theirs.
-                                Some(MirType::Function { .. })
+                                // A trait object is an ARC fat box like a closure
+                                // env: the old one is released the same way.
+                                Some(MirType::Function { .. }) | Some(MirType::DynTrait(_))
                                     if !ctx.param_locals.contains(&dest.0)
                                         && !ctx.borrowed_locals.contains(&dest.0)
                                         && !ctx.env_owned_locals.contains(&dest.0)
@@ -6815,10 +6834,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                         dest: struct_tmp,
                                         value: rvalue,
                                     });
+                                    let owns_data = dyn_owns_data(ctx, &concrete_type);
                                     rvalue = RValue::MakeTraitObject {
                                         value: Operand::Local(struct_tmp),
                                         concrete_type,
                                         trait_name,
+                                        owns_data,
                                     };
                                 }
                             }
@@ -6993,7 +7014,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                 if src_is_retained_get {
                                 } else if let Some(rf) = retain_for_ty(&src_ty) {
                                     retain_container_src = Some(rf);
-                                } else if !is_copy_type(ctx, &src_ty) && !share_new {
+                                } else if !is_copy_type(ctx, &src_ty)
+                                    && !share_new
+                                    // A trait object source keeps its own drop:
+                                    // the copy takes its own reference (dyn_own).
+                                    && !matches!(src_ty, MirType::DynTrait(_))
+                                {
                                     ctx.dropped_locals.insert(src.0);
                                 }
                             }
@@ -7632,7 +7658,29 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             // store). Read it now; released once after the
                             // store -- unlike a str / array / map field read, a
                             // closure field read takes no reference of its own.
-                            let old_fn_field = if matches!(field_ty, MirType::Function { .. }) && !obj_is_tuple {
+                            // A trait object field is an ARC fat box like a
+                            // closure env: the old one is released the same
+                            // way (read, store, guarded release), but only
+                            // through a struct this function owns -- an alias
+                            // of another binding's struct still belongs to it.
+                            let dyn_field_owned = matches!(field_ty, MirType::DynTrait(_)) && {
+                                let mut root = object.as_ref();
+                                while let ast::Expr::FieldAccess { object: inner, .. } = root {
+                                    root = inner.as_ref();
+                                }
+                                match root {
+                                    ast::Expr::Identifier { name, .. } => find_local_by_name(ctx, name)
+                                        .is_some_and(|l| {
+                                            !ctx.borrowed_locals.contains(&l.0)
+                                                && !ctx.param_locals.contains(&l.0)
+                                                && !ctx.partial_moved_locals.contains(&l.0)
+                                        }),
+                                    _ => false,
+                                }
+                            };
+                            let old_fn_field = if (matches!(field_ty, MirType::Function { .. }) || dyn_field_owned)
+                                && !obj_is_tuple
+                            {
                                 let old_tmp = ctx.alloc_temp(field_ty.clone());
                                 let obj_op = lower_expr_to_operand(ctx, object);
                                 ctx.emit(Instruction::Assign {
@@ -8266,7 +8314,10 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
             let ret_field_ty = value.as_ref().map(|e| infer_expr_type(ctx, e));
             let ret_field_owns = matches!(
                 ret_field_ty,
-                Some(MirType::Str) | Some(MirType::Array(_, _)) | Some(MirType::Map { .. })
+                Some(MirType::Str)
+                    | Some(MirType::Array(_, _))
+                    | Some(MirType::Map { .. })
+                    | Some(MirType::DynTrait(_))
             );
             let ret_field_share = matches!(value.as_ref(), Some(ast::Expr::FieldAccess { .. }))
                 && ret_field_ty
@@ -12775,7 +12826,14 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                 && (borrowable_struct
                     || matches!(
                         local_ty,
-                        MirType::Str | MirType::Array(_, _) | MirType::Map { .. } | MirType::Function { .. }
+                        MirType::Str
+                            | MirType::Array(_, _)
+                            | MirType::Map { .. }
+                            | MirType::Function { .. }
+                            // A trait object argument is lent: the callee's
+                            // dyn param is borrowed, and one that keeps it
+                            // takes its own reference (dyn_own).
+                            | MirType::DynTrait(_)
                     ))
             {
                 // An async callee runs after this frame is gone: its future
@@ -13912,6 +13970,14 @@ fn lower_nested_field_assign(
 /// an explicitly `dyn Trait`-annotated `let`, a `return` from a function
 /// whose declared return type is `dyn Trait`, a `dyn Trait`-typed struct
 /// field initializer, and a `dyn Trait` parameter of a resolved method call.
+/// Does a trait object built from a `concrete` struct take its own owner of
+/// the struct (see `RValue::MakeTraitObject::owns_data`)? Exactly the structs
+/// whose values are shared by STRUCT_SHARE_FN: for any other the source value
+/// keeps the old never-dropped behavior (and so is never dropped by MIR).
+fn dyn_owns_data(ctx: &LoweringContext, concrete: &str) -> bool {
+    is_owned_struct_ty(ctx, &MirType::Struct(concrete.to_string()))
+}
+
 fn coerce_to_dyn_if_needed(
     ctx: &mut LoweringContext,
     operand: Operand,
@@ -13921,12 +13987,14 @@ fn coerce_to_dyn_if_needed(
     if let MirType::DynTrait(ref trait_name) = target_ty {
         if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, source_expr) {
             let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+            let owns_data = dyn_owns_data(ctx, concrete_type);
             ctx.emit(Instruction::Assign {
                 dest: tmp,
                 value: RValue::MakeTraitObject {
                     value: operand,
                     concrete_type: concrete_type.clone(),
                     trait_name: trait_name.clone(),
+                    owns_data,
                 },
             });
             return Operand::Local(tmp);
@@ -14940,12 +15008,14 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                             if let MirType::Struct(ref concrete_type) = arg_type {
                                 // Emit MakeTraitObject to wrap the struct into a fat pointer.
                                 let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                                let owns_data = dyn_owns_data(ctx, concrete_type);
                                 ctx.emit(Instruction::Assign {
                                     dest: tmp,
                                     value: RValue::MakeTraitObject {
                                         value: operand,
                                         concrete_type: concrete_type.clone(),
                                         trait_name: trait_name.clone(),
+                                        owns_data,
                                     },
                                 });
                                 return Operand::Local(tmp);
@@ -15723,7 +15793,12 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                                 // name: self.name }` leaked ~90MB per 1M calls).
                                 let retained_read = matches!(
                                     field_ty,
-                                    MirType::Str | MirType::Array(_, _) | MirType::Map { .. }
+                                    MirType::Str
+                                        | MirType::Array(_, _)
+                                        | MirType::Map { .. }
+                                        // dyn_own retains a trait object read
+                                        // out of a field.
+                                        | MirType::DynTrait(_)
                                 );
                                 if !is_copy_type(ctx, &field_ty) && !retained_read {
                                     ctx.partial_moved_locals.insert(source_id.0);
@@ -20993,12 +21068,14 @@ fn lower_generic_fn_call(
             {
                 if let MirType::Struct(ref concrete_type) = infer_expr_type(ctx, a) {
                     let tmp = ctx.alloc_temp(MirType::DynTrait(trait_name.clone()));
+                    let owns_data = dyn_owns_data(ctx, concrete_type);
                     ctx.emit(Instruction::Assign {
                         dest: tmp,
                         value: RValue::MakeTraitObject {
                             value: operand,
                             concrete_type: concrete_type.clone(),
                             trait_name: trait_name.clone(),
+                            owns_data,
                         },
                     });
                     return Operand::Local(tmp);

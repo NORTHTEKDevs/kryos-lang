@@ -1044,6 +1044,27 @@ pub extern "C" fn kryos_fn_release_if_ne(old: i64, new: i64) -> i64 {
     0
 }
 
+/// ARC drop hook of a `dyn Trait` fat box `[data, drop_fn, method_0, ..]`:
+/// runs when the last reference to the box goes. `drop_fn` (slot 1) is the
+/// concrete struct's `__kryos_drop_<T>` helper (or `kryos_free`), called on the
+/// data pointer the box took its own owner of; 0 means the box does not own
+/// its data (an `@copy` struct), so there is nothing to release.
+#[no_mangle]
+pub extern "C" fn kryos_dyn_drop(fat: *mut u8) {
+    if fat.is_null() {
+        return;
+    }
+    unsafe {
+        let words = fat as *const i64;
+        let data = *words;
+        let drop_fn = *words.add(1);
+        if data != 0 && drop_fn != 0 {
+            let f: extern "C" fn(*mut u8) = core::mem::transmute(drop_fn as usize);
+            f(data as *mut u8);
+        }
+    }
+}
+
 /// Decrement the reference count of an ARC-managed object.
 /// When count reaches zero, calls the drop function and deallocates.
 #[no_mangle]

@@ -10,6 +10,102 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: `dyn Trait` values own their fat box and the struct behind it, so every coercion no longer leaks (2026-10-29)
+
+Closes the "dyn Trait values are never dropped" leak (wave 2026-10-14
+default-arm "Measured while here", and the 2026-10-14 "map closure values" note
+that a struct coerced to `dyn Trait` leaks per coercion). Leak, plus a silent
+wrong answer found on the way (below), so the risk was the use-after-free
+direction and it was probed hard.
+- Repro (before; peak RSS at 1,000,000 iterations, AOT / JIT, baseline 4MB,
+  probe `tests/mem/agg_ops_leak.kry`, `struct Lgs { n: i64, name: str }`):
+  `dlg(Lgs{..}, i)` into a `dyn` param 186 / 127MB; `let s: dyn Lg = Lgs{..}`
+  189 / 125MB; a named struct passed and coerced 250 / 65MB; a `dyn` returned
+  from a function and passed on 373 / 250MB; `let t = s` 189 / 127MB; a `dyn`
+  field of a struct 189 / 158MB; a reassigned `dyn` 373 / 250MB; a `dyn`
+  captured by a returned closure 189 / 128MB; `h.d = Lgs{..}` 173 / 173MB
+  (measured with the rest of the fix in place). The existing `dyn_arg` mode
+  passes a PRE-BUILT dyn local, which is why it was green (4 / 4MB). The ledger's
+  127 / 32 and 202 / 141 figures were a different struct (no heap field).
+- Silent wrong answer, master too: `let r = Rc{..}  let d: dyn Sh = r  return d`
+  (`conf_dyn_ownership.kry` "returned from named struct") reads freed memory in
+  the caller on the JIT: the fat box held a shallow copy / the raw box of `r`,
+  and `r`'s scope-end drop freed it. A dyn that outlives the struct it was
+  built from is a use-after-free on master; the fix is the same ownership change.
+- Root cause: a `DynTrait` value had no drop arm on either backend, and the
+  data slot was a shallow copy (LLVM, an ARC box) or the raw struct box
+  (Cranelift) with no owner of its own, so nothing could release it and the
+  source struct's drop could free it under the dyn.
+- Fix (a vtable ABI change on both backends plus one MIR pass):
+  - The fat box is `[data, drop_fn, method_0, ..]` (was `[data, method_0, ..]`;
+    `VtableCall` reads slot `2 + index`), an ARC object on both backends
+    (Cranelift used `malloc`). `MakeTraitObject` gained `owns_data`
+    (`dyn_owns_data`: exactly the structs `STRUCT_SHARE_FN` shares); when set the
+    dyn takes its OWN owner of the struct (Cranelift: `kryos_struct_retain`;
+    LLVM: a `kryos_calloc` box holding the aggregate copy with every heap leaf
+    retained, or a box retain), stores the struct's `__kryos_drop_<T>` helper
+    (or `kryos_free`) in slot 1, and installs the new runtime hook
+    `kryos_dyn_drop` (kryos-rt `builtins.rs`) as the ARC drop function, so the
+    last release of the fat box releases the data. `@copy` and non-shareable
+    structs keep the old never-dropped behavior (`owns_data` false).
+  - `kryos-mir/src/dyn_own.rs` (module pass after `keep_closures_...`): every
+    named dyn local and every producer result owns one reference; a copy
+    (`let t = s`), a struct field, a return, a closure capture, a `Spawn` /
+    channel / actor message, a runtime builtin or an async callee takes its own
+    (`kryos_fn_retain`); a use as an argument of a user function, a vtable call
+    or a call through a function value is a borrow. An unnamed temp releases
+    after its last use in its block (its last copy / owning use MOVES the
+    reference, so a fresh temp costs no retain); a cross-block temp with one
+    owning use that cannot repeat is moved too. Every default is the leak-safe
+    one. `__spawn_*` / `__coopspawn_*` wrappers release the references
+    `Spawn` retained for them.
+  - Lowering: a `dyn` binding owns its reference (`let t = s` no longer marks
+    `t` borrowed / `s` consumed), a named `dyn` passed to a user function is no
+    longer "consumed" (which suppressed its scope-end Drop), a `dyn` field read is
+    a retained read (the struct is not partially moved), reassignment of a `dyn`
+    local and a `dyn` struct-field store release the old fat box through the
+    closure path (`kryos_fn_release_if_ne`), and a struct temp lent to
+    `MakeTraitObject{owns_data}` is dropped at statement end like any lent temp.
+  - Backends: a `DynTrait` `Drop` is `kryos_arc_release`; a struct drop helper,
+    inline struct drop, struct share and both deep-copy / clone paths now
+    release / retain a `dyn` field (so a struct holding a dyn is shared, copied
+    and dropped consistently); closure envs release a captured dyn.
+- Pinned by `tests/mem_agg_ops_gate.sh` modes `dyn_param`, `dyn_let`,
+  `dyn_named`, `dyn_ret`, `dyn_copy`, `dyn_field`, `dyn_reassign`,
+  `dyn_fieldstore`, `dyn_clo` (in CI) and `tests/conformance/conf_dyn_ownership.kry`
+  (use-after-free direction: a dyn built from a struct still used afterwards, a
+  dyn passed twice, a copy that outlives its source, a dyn returned through
+  several frames, a dyn field of a struct that is copied / passed / put in an
+  array and a map / overwritten, a reassigned dyn in a loop, early return /
+  continue / throw while a dyn is live, a closure over a dyn outliving it, a dyn
+  built from an array element that is then overwritten; every read after junk
+  allocations reuse freed memory), registered in `no_double_free.sh`
+  (`dyn_ownership`, diag on both backends and real frees on AOT). The ownership
+  matrix gained a `dyn` type in `gen1.py` (consumers let / reassign / structlit /
+  fieldstore / ret, sources local / param / cap / fld / fldtmp / fldidx; the
+  container shapes are E0110 for a dyn): 6 programs, all 18 legs clean.
+- Evidence: master (this commit's parent, full release build) FAILS all 8
+  pre-existing-shape gate modes on both backends (numbers above, ceiling 40MB)
+  and fails the conformance program (`CONF FAIL: returned from named struct`);
+  with the fix every mode reads 4MB on AOT and JIT and the program is clean on
+  all four legs (JIT / AOT, diag / real frees). A mutation check (the pass's
+  retains disabled) turns the conformance program red on `copy outlives source`
+  with `arc RELEASE-AFTER-FREE` reports, so it is not vacuous.
+- Gates before / after, same machine: `gates 2` 28 PASS -> 28 PASS (conformance
+  105/105 -> 106/106, tier2 GREEN both), bootstrap 16/16 -> 16/16. All 13 other
+  `tests/mem_*` gates PASS.
+- Residual (measured, not fixed): (1) a `dyn` (or a str / struct) local live at
+  a `throw` is leaked, like every named local of a `try` body (a str + struct
+  throw loop leaks 88MB per 500k on this build, and a dyn throw loop 170MB per 1M) - not dyn-specific. (2) `d = d` and
+  `h.d = h.d` (re-storing the same fat box) keep one extra reference. (3) A
+  direct `spawn f(d)` of a user function, and a dyn sent in an actor message,
+  retain the fat box once and never release it (the `spawn { .. }` block wrapper
+  does release); one fat box + struct per spawn / message, unmeasured. (4) A
+  struct that is not shareable (an enum field whose payload is not shareable)
+  or `@copy` keeps the old never-dropped coercion. (5) The generic-struct
+  `impl<T> Trait for Box<T>` non-i64 `T` raw-bit-pattern read (CLAUDE.md gotcha
+  22) is unchanged.
+
 ## Wave: arrays of tuples own their elements -- literal, push, copies, overwrites (2026-10-29)
 
 Closes the "arrays of tuples leak" blocker open since review round 6 (waves
@@ -357,7 +453,8 @@ block arm with a local are right on all six legs.
     202 / 141MB for `let s: dyn T = S {..}`. A DynTrait value is never
     dropped (no drop arm): the fat box and the data slot leak, and the data
     slot is a shallow copy of the struct, so dropping it needs the struct
-    shared at coercion plus a drop the vtable can reach.
+    shared at coercion plus a drop the vtable can reach. CLOSED 2026-10-29,
+    see the "`dyn Trait` values own their fat box" wave at the top.
   - L4, narrowed: `let p = if c { cap } else { P {..} }` inside a closure
     whose struct capture arrives as a callee-owned param: 65 / 96MB.
     `take_tail_identifier` moves the param into the branch slot (its drop
@@ -855,7 +952,7 @@ at 1M on the pre-round candidate or master -> 4MB):
   closure (R4; in place, like a field store -- CLAUDE.md gotcha 23);
   overwriting a tuple field leaks the old tuple (with a heap element, master
   403MB / 192MB at 1M, now 156MB / 66MB); a struct coerced to `dyn Trait`
-  leaks per coercion (143MB / 1M, master the same); a tuple literal with
+  leaks per coercion (143MB / 1M, master the same; CLOSED 2026-10-29); a tuple literal with
   narrower or wider elements than its declared type at a return / array /
   map / enum site reads the wrong bytes on AOT (master the same; only the
   struct-field store coerces); a missing-middle-key write whose key is not

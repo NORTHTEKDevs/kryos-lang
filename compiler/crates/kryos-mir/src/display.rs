@@ -279,6 +279,7 @@ impl fmt::Display for RValue {
                 value,
                 concrete_type,
                 trait_name,
+                ..
             } => {
                 write!(
                     f,

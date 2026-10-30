@@ -48,6 +48,22 @@ impl Lg for Lgr {
     fn log(self: Lgr, msg: str) { if len(msg) == 999 { println(msg) } }
 }
 fn dlg(d: dyn Lg, i: i64) { d.log("m{i}") }
+// A struct with a heap field coerced to a `dyn` (the fat box and the data
+// copy leaked per coercion: 125-186MB per 1M).
+struct Lgs { n: i64, name: str }
+impl Lg for Lgs {
+    fn log(self: Lgs, msg: str) { if len(msg) == 999 { println(msg) } }
+}
+struct Dh { d: dyn Lg, k: i64 }
+fn mkd(i: i64) -> dyn Lg { return Lgs { n: i, name: "r{i}" } }
+fn mkd_local(i: i64) -> dyn Lg {
+    let s: dyn Lg = Lgs { n: i, name: "l{i}" }
+    return s
+}
+fn pass_d(d: dyn Lg) -> dyn Lg { return d }
+fn hold_d(d: dyn Lg, k: i64) -> Dh { return Dh { d: d, k: k } }
+fn dh_log(h: Dh) { h.d.log("h") }
+fn dyn_clo(d: dyn Lg) -> fn(i64) -> i64 { return |k: i64| -> i64 { d.log("c") return k } }
 fn show_p(p: P) {
     if len(p.name) == 99 { println(p.name) }
 }
@@ -272,6 +288,42 @@ fn main() {
             m3["a"]["b"]["c"] = i
             m3["a"]["d"]["e"] = i
             acc = acc + len(m3["a"])
+        } elif mode == "dyn_param" {
+            dlg(Lgs { n: i, name: "x{i}" }, i)
+        } elif mode == "dyn_let" {
+            let s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            s.log("a")
+        } elif mode == "dyn_named" {
+            let r = Lgs { n: i, name: "x{i}" }
+            dlg(r, i)
+            let s: dyn Lg = r
+            s.log("b")
+            acc = acc + len(r.name)
+        } elif mode == "dyn_ret" {
+            let a = mkd(i)
+            let b = mkd_local(i)
+            a.log("a")
+            b.log("b")
+            pass_d(a).log("c")
+        } elif mode == "dyn_copy" {
+            let s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            let t = s
+            t.log("t")
+            dlg(t, i)
+        } elif mode == "dyn_field" {
+            let h = hold_d(Lgs { n: i, name: "x{i}" }, i)
+            dh_log(h)
+        } elif mode == "dyn_reassign" {
+            let mut s: dyn Lg = Lgs { n: i, name: "x{i}" }
+            s = Lgs { n: i, name: "y{i}" }
+            s.log("r")
+        } elif mode == "dyn_fieldstore" {
+            let mut h = hold_d(Lgs { n: i, name: "x{i}" }, i)
+            h.d = Lgs { n: i, name: "y{i}" }
+            dh_log(h)
+        } elif mode == "dyn_clo" {
+            let f = dyn_clo(Lgs { n: i, name: "x{i}" })
+            acc = acc + f(i)
         } elif mode == "dyn_arg" {
             // A `dyn` method call as a statement leaked its argument.
             dlg(dl, i)

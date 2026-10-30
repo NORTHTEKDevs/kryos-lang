@@ -15,7 +15,7 @@ KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 PROBE="$ROOT/tests/mem/agg_ops_leak.kry"
 ITERS=1000000
 CEIL_MB=40
-MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem tuple_store tuple_struct_elem tuple_alias map_struct map_enum map_container tuple_containers closures void_param map_tuple if_value fn_values nested_enum for_read map3 dyn_arg cap_struct cap_array cap_escape if_struct tuple_field fn_reassign fn_field_store fn_slot_overwrite fn_map_values map_holders default_arm struct_branch ret_scalar_field arr_tuple_lit arr_tuple_push arr_tuple_copy arr_tuple_overwrite arr_tuple_loop"
+MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem tuple_store tuple_struct_elem tuple_alias map_struct map_enum map_container tuple_containers closures void_param map_tuple if_value fn_values nested_enum for_read map3 dyn_arg cap_struct cap_array cap_escape if_struct tuple_field fn_reassign fn_field_store fn_slot_overwrite fn_map_values map_holders default_arm struct_branch ret_scalar_field arr_tuple_lit arr_tuple_push arr_tuple_copy arr_tuple_overwrite arr_tuple_loop dyn_param dyn_let dyn_named dyn_ret dyn_copy dyn_field dyn_reassign dyn_fieldstore dyn_clo"
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-agg-ops: SKIP (no powershell -- Windows-only, like the other mem_* gates)"

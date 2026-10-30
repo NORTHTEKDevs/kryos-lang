@@ -18,9 +18,15 @@ TYPES = {
     'str': dict(t='str', ctor='"v{i}"', show='return v'),
     'arr': dict(t='[str]', ctor='["v{i}"]', show='return v[0]'),
     'atup': dict(t='[(str, i64)]', ctor='[("v{i}", i)]', show='return v[0].0'),
+    # A `dyn Trait` cannot live INSIDE a container, enum payload or tuple (E0110),
+    # so only the consumers / sources below apply to it (DYN_CONSUMERS /
+    # DYN_SOURCES); its values come from `mkd`, the struct behind it from `Sq`.
+    'dyn': dict(t='dyn Sh', ctor='mkd(i)', show='return v.tag()'),
     'rtree': dict(t='Tree', ctor='Tree.Node(Tree.Leaf("v{i}"), Tree.Leaf("c"))',
                   show='return match v {\n        Tree.Leaf(s) => s,\n        Tree.Node(a, b) => match a {\n            Tree.Leaf(s) => s,\n            Tree.Node(x, y) => "deep",\n        },\n    }'),
 }
+DYN_CONSUMERS = ['let', 'reassign', 'structlit', 'fieldstore', 'ret']
+DYN_SOURCES = ['local', 'param', 'cap', 'fld', 'fldtmp', 'fldidx']
 CONSUMERS = ['let', 'reassign', 'structlit', 'arraylit', 'push', 'mapstore', 'payload', 'tuplelit', 'fieldstore', 'ret']
 # source kind -> (prelude lines, expr, kill lines); @C = ctor at i, @K = ctor at i + 100, @D = default
 SOURCES = {
@@ -82,21 +88,33 @@ for tk, td in TYPES.items():
     for sk, sv in SOURCES.items():
         if tk in ('fn', 'rtree') and sk == 'fldconst':
             continue
+        if tk == 'dyn' and sk not in DYN_SOURCES:
+            continue
         L = []
         if tk == 'opt':
             L.append('use std::option::{Option, Some, None}')
-        L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', f'struct H {{ f: {T}, n: i64 }}', f'enum W {{ Has({T}), No }}']
+        if tk == 'dyn':
+            L += ['trait Sh { fn tag(self: Self) -> str }', 'struct Sq { label: str, n: i64 }',
+                  'impl Sh for Sq { fn tag(self: Sq) -> str { return self.label } }']
+        L += ['enum Tree { Leaf(str), Node(Tree, Tree) }', 'struct P { name: str, n: i64 }', f'struct H {{ f: {T}, n: i64 }}']
+        if tk == 'dyn':
+            L += ['fn mkd(i: i64) -> dyn Sh { return Sq { label: "v{i}", n: i } }']
+        else:
+            L += [f'enum W {{ Has({T}), No }}']
         if sk == 'fldconst':
             L.append(f'let GH: H = H {{ f: {G}, n: 1 }}')
         L += ['fn churn(i: i64) -> i64 {', '    let mut junk: [str] = []', '    let mut j = 0', '    while j < 40 {',
               '        junk = push(junk, "junk{i}-{j}")', '        j = j + 1', '    }', '    return len(junk)', '}']
         L += ['fn mkm(i: i64) -> map<str, str> {', '    let mut m: map<str, str> = {}', '    m["k"] = "v{i}"', '    return m', '}']
         L += ['fn mkf(i: i64) -> fn(i64) -> str {', '    let s = "v{i}"', '    return |x: i64| s', '}']
-        L += [f'fn mkh(i: i64) -> H {{ return H {{ f: {C}, n: i }} }}', f'fn mkxs(i: i64) -> [{T}] {{ return [{C}] }}']
+        L += [f'fn mkh(i: i64) -> H {{ return H {{ f: {C}, n: i }} }}']
+        if tk != 'dyn':
+            L += [f'fn mkxs(i: i64) -> [{T}] {{ return [{C}] }}']
         L += [f'fn show(v: {T}) -> str {{', '    ' + td['show'], '}']
-        L += ['fn showw(w: W) -> str {', '    return match w {', '        W.Has(v) => show(v),', '        W.No => "no",', '    }', '}']
+        if tk != 'dyn':
+            L += ['fn showw(w: W) -> str {', '    return match w {', '        W.Has(v) => show(v),', '        W.No => "no",', '    }', '}']
         calls = []
-        for c in CONSUMERS:
+        for c in (DYN_CONSUMERS if tk == 'dyn' else CONSUMERS):
             fn = f'c_{c}'
             if sk in ('param', 'cap'):
                 if c == 'ret':

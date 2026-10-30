@@ -670,10 +670,21 @@ pub enum RValue {
 
     /// Create a trait object (fat pointer): packs data + vtable pointer.
     /// `concrete_type` is the struct name, `trait_name` identifies which vtable.
+    ///
+    /// The fat box is an ARC object laid out `[data, drop_fn, method_0, ..]`
+    /// (`VtableCall` reads slot `2 + method_index`). `owns_data` is true when
+    /// the trait object takes its OWN owner of the struct (a box retain on
+    /// Cranelift, a retain of every heap leaf of a heap copy on LLVM): its
+    /// drop slot then names the struct's `__kryos_drop_<T>` helper, which the
+    /// fat box's ARC drop hook (`kryos_dyn_drop`) runs when the last
+    /// reference to the fat box goes. False (an `@copy` struct, or one that is
+    /// not shareable) keeps the older leak-the-data behavior: the source value
+    /// is not borrowed, so MIR never drops it either.
     MakeTraitObject {
         value: Operand,
         concrete_type: String,
         trait_name: String,
+        owns_data: bool,
     },
 
     /// Call a method through a vtable (dynamic dispatch).

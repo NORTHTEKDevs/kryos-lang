@@ -1558,6 +1558,7 @@ impl JitCompiler {
         jit_builder.symbol("kryos_arc_release", kryos_rt::arc::kryos_arc_release as *const u8);
         jit_builder.symbol("kryos_arc_retain", kryos_rt::arc::kryos_arc_retain as *const u8);
         jit_builder.symbol("kryos_fn_retain", kryos_rt::builtins::kryos_fn_retain as *const u8);
+        jit_builder.symbol("kryos_dyn_drop", kryos_rt::builtins::kryos_dyn_drop as *const u8);
         jit_builder.symbol(
             "kryos_fn_release_if_ne",
             kryos_rt::builtins::kryos_fn_release_if_ne as *const u8,

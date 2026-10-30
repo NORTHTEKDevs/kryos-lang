@@ -1197,6 +1197,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_fn_retain(i64)");
         self.emit_line("declare i64 @kryos_fn_release_if_ne(i64, i64)");
         self.emit_line("declare void @kryos_arc_set_drop_i64(i64, i64)");
+        self.emit_line("declare void @kryos_dyn_drop(ptr)");
         self.emit_line("declare ptr @kryos_array_retain(ptr)");
         self.emit_line("declare i64 @kryos_struct_release_shared(ptr)");
         // Read-only zero image an unboxed aggregate loads from when its box
@@ -1642,6 +1643,7 @@ impl LlvmCodegen {
                         | Some(MirType::Array(_, _))
                         | Some(MirType::Function { .. })
                         | Some(MirType::Shared(_))
+                        | Some(MirType::DynTrait(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
                         | Some(MirType::Map { .. })
@@ -1677,6 +1679,7 @@ impl LlvmCodegen {
                         | Some(MirType::Array(_, _))
                         | Some(MirType::Function { .. })
                         | Some(MirType::Shared(_))
+                        | Some(MirType::DynTrait(_))
                         | Some(MirType::Struct(_))
                         | Some(MirType::Enum(_))
                         | Some(MirType::Map { .. })
@@ -1713,7 +1716,9 @@ impl LlvmCodegen {
                         let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
                         self.emit_map_free(&cap_val, &k, &v);
                     }
-                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
+                    // A captured trait object holds one reference (taken at the
+                    // capture by dyn_own), released with the env.
+                    Some(MirType::Function { .. }) | Some(MirType::Shared(_)) | Some(MirType::DynTrait(_)) => {
                         self.emit_line(&format!("  {cap_val} = load ptr, ptr {cap_ptr}"));
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {cap_val})"));
                     }
@@ -2277,6 +2282,7 @@ impl LlvmCodegen {
                         | MirType::Function { .. }
                         | MirType::Enum(_)
                         | MirType::Shared(_)
+                        | MirType::DynTrait(_)
                         | MirType::Map { .. }
                         | MirType::Tuple(_)
                 )
@@ -2559,7 +2565,7 @@ impl LlvmCodegen {
                             let (k, v) = (key.as_ref().clone(), value.as_ref().clone());
                             self.emit_map_free(&fval, &k, &v);
                         }
-                        MirType::Function { .. } | MirType::Shared(_) => {
+                        MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
                             self.emit_line(&format!("  {fval} = load ptr, ptr {fgep}"));
                             self.emit_line(&format!("  call void @kryos_arc_release(ptr {fval})"));
                         }
@@ -4146,6 +4152,13 @@ impl LlvmCodegen {
                     }
                     Some(MirType::Function { .. }) | Some(MirType::Shared(_)) => {
                         self.emit_line(&format!("  call void @kryos_arc_release(ptr {val})"));
+                    }
+                    // A trait object is an ARC fat box; the last release runs
+                    // `kryos_dyn_drop`, which releases the data it owns.
+                    Some(MirType::DynTrait(_)) => {
+                        let local_llvm = self.local_type(*local);
+                        let p = self.coerce_value(&val, &local_llvm, "ptr");
+                        self.emit_line(&format!("  call void @kryos_arc_release(ptr {p})"));
                     }
                     Some(MirType::Map { key, value }) => {
                         // A map local is already an i64 handle (MirType::Map -> i64),
@@ -8760,6 +8773,7 @@ impl LlvmCodegen {
                                         | Some(MirType::Array(_, _))
                                         | Some(MirType::Function { .. })
                                         | Some(MirType::Shared(_))
+                                        | Some(MirType::DynTrait(_))
                                         | Some(MirType::Struct(_))
                                         | Some(MirType::Enum(_))
                                         | Some(MirType::Map { .. })
@@ -9016,10 +9030,22 @@ impl LlvmCodegen {
                 value,
                 concrete_type,
                 trait_name,
+                owns_data,
             } => {
-                // Materialize a fat pointer: [data: i64, fn_ptr_0: i64, fn_ptr_1: i64, ...]
+                // Materialize a fat pointer:
+                // [data: i64, drop_fn: i64, fn_ptr_0: i64, fn_ptr_1: i64, ...]
                 // Allocated via the ARC runtime so the trait object survives
                 // the current scope and is freed when its refcount drops.
+                //
+                // `owns` = the trait object takes its OWN owner of the data
+                // (a retain of each heap leaf of the heap copy, or of the
+                // struct box), and its drop slot holds the struct's
+                // `__kryos_drop_<T>` helper, which the ARC drop hook
+                // (`kryos_dyn_drop`) runs at the last release of the box.
+                let owns = *owns_data
+                    && concrete_type != "Map"
+                    && self.struct_defs.contains_key(concrete_type.as_str())
+                    && !self.copy_structs.contains(concrete_type.as_str());
                 let data_val = self.operand_to_llvm(value, func);
                 let val_ty = self.operand_type(value, func);
 
@@ -9040,19 +9066,42 @@ impl LlvmCodegen {
                         "  {size_int} = ptrtoint ptr {size_tmp} to i64"
                     ));
                     let slot_i64 = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {slot_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
-                    ));
                     let slot_ptr = self.next_temp();
-                    self.emit_line(&format!(
-                        "  {slot_ptr} = inttoptr i64 {slot_i64} to ptr"
-                    ));
+                    if owns {
+                        // A kryos_calloc box, so `__kryos_drop_<T>` (which
+                        // checks the owner count and frees the box) can
+                        // release it.
+                        self.emit_line(&format!(
+                            "  {slot_ptr} = call ptr @kryos_calloc(i64 1, i64 {size_int})"
+                        ));
+                        self.emit_line(&format!(
+                            "  {slot_i64} = ptrtoint ptr {slot_ptr} to i64"
+                        ));
+                    } else {
+                        self.emit_line(&format!(
+                            "  {slot_i64} = call i64 @kryos_arc_alloc_i64(i64 {size_int})"
+                        ));
+                        self.emit_line(&format!(
+                            "  {slot_ptr} = inttoptr i64 {slot_i64} to ptr"
+                        ));
+                    }
                     self.emit_line(&format!(
                         "  store {val_ty} {data_val}, ptr {slot_ptr}"
                     ));
+                    if owns {
+                        // The shallow copy shares every heap leaf with the
+                        // source: one more reference on each.
+                        self.emit_struct_share(&slot_ptr, concrete_type);
+                    }
                     slot_i64
                 } else {
-                    self.coerce_value(&data_val, &val_ty, "i64")
+                    let d = self.coerce_value(&data_val, &val_ty, "i64");
+                    if owns {
+                        // Boxed struct: one more owner of the box.
+                        let p = self.coerce_value(&data_val, &val_ty, "ptr");
+                        self.emit_line(&format!("  call ptr @kryos_struct_retain(ptr {p})"));
+                    }
+                    d
                 };
 
                 let vtable_key = (concrete_type.clone(), trait_name.clone());
@@ -9078,7 +9127,7 @@ impl LlvmCodegen {
                     }
                 }
                 let num_methods = method_names.len().max(1);
-                let alloc_size = 8 + 8 * num_methods;
+                let alloc_size = 16 + 8 * num_methods;
 
                 let fat_i64 = self.next_temp();
                 self.emit_line(&format!(
@@ -9088,14 +9137,35 @@ impl LlvmCodegen {
                 self.emit_line(&format!("  {fat_ptr} = inttoptr i64 {fat_i64} to ptr"));
                 // Store data at offset 0.
                 self.emit_line(&format!("  store i64 {data_i64}, ptr {fat_ptr}"));
-                // Store each method dyn-thunk pointer at offset (i+1)*8.
+                // Drop helper of the data at offset 8 (0 = does not own it).
+                let drop_slot = self.next_temp();
+                self.emit_line(&format!(
+                    "  {drop_slot} = getelementptr i64, ptr {fat_ptr}, i64 1"
+                ));
+                if owns {
+                    let drop_int = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {drop_int} = ptrtoint ptr @__kryos_drop_{concrete_type} to i64"
+                    ));
+                    self.emit_line(&format!("  store i64 {drop_int}, ptr {drop_slot}"));
+                    let hook = self.next_temp();
+                    self.emit_line(&format!(
+                        "  {hook} = ptrtoint ptr @kryos_dyn_drop to i64"
+                    ));
+                    self.emit_line(&format!(
+                        "  call void @kryos_arc_set_drop_i64(i64 {fat_i64}, i64 {hook})"
+                    ));
+                } else {
+                    self.emit_line(&format!("  store i64 0, ptr {drop_slot}"));
+                }
+                // Store each method dyn-thunk pointer at offset (i+2)*8.
                 // The dyn-thunk accepts uniform `(i64 self, i64 args...) -> i64`
                 // and forwards to the real method (handling byval/sret).
                 for (i, method_name) in method_names.iter().enumerate() {
                     let slot = self.next_temp();
                     self.emit_line(&format!(
                         "  {slot} = getelementptr i64, ptr {fat_ptr}, i64 {}",
-                        i + 1
+                        i + 2
                     ));
                     let fn_int = self.next_temp();
                     self.emit_line(&format!(
@@ -9138,11 +9208,12 @@ impl LlvmCodegen {
                 let data_val = self.next_temp();
                 self.emit_line(&format!("  {data_val} = load i64, ptr {fat_ptr}"));
 
-                // Load fn_ptr at offset (1 + method_index)*8.
+                // Load fn_ptr at offset (2 + method_index)*8 (slot 1 is the
+                // data drop helper).
                 let fn_slot = self.next_temp();
                 self.emit_line(&format!(
                     "  {fn_slot} = getelementptr i64, ptr {fat_ptr}, i64 {}",
-                    method_index + 1
+                    method_index + 2
                 ));
                 let fn_i64 = self.next_temp();
                 self.emit_line(&format!("  {fn_i64} = load i64, ptr {fn_slot}"));
@@ -11285,7 +11356,7 @@ impl LlvmCodegen {
                     ));
                     cur = nv;
                 }
-                MirType::Function { .. } | MirType::Shared(_) => {
+                MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
                     let fv = self.next_temp();
                     self.emit_line(&format!(
                         "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
@@ -11345,7 +11416,8 @@ impl LlvmCodegen {
             | MirType::Array(_, _)
             | MirType::Map { .. }
             | MirType::Function { .. }
-            | MirType::Shared(_) => true,
+            | MirType::Shared(_)
+            | MirType::DynTrait(_) => true,
             MirType::Struct(inner) => self.struct_has_heap_fields(inner),
             MirType::Enum(inner) => self.enum_shareable(inner),
             MirType::Tuple(_) => true,
@@ -11452,7 +11524,7 @@ impl LlvmCodegen {
                     ));
                     cur = nv;
                 }
-                MirType::Function { .. } | MirType::Shared(_) => {
+                MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
                     let fv = self.next_temp();
                     self.emit_line(&format!(
                         "  {fv} = extractvalue {dest_ty} {cur}, {idx}"
@@ -11500,7 +11572,8 @@ impl LlvmCodegen {
             | MirType::Array(_, _)
             | MirType::Map { .. }
             | MirType::Function { .. }
-            | MirType::Shared(_) => true,
+            | MirType::Shared(_)
+            | MirType::DynTrait(_) => true,
             MirType::Struct(inner) => self.struct_has_heap_fields(inner),
             MirType::Enum(inner) => self.enum_shareable(inner),
             // A tuple field (as deep_copy_struct_index_clone's own check): a
@@ -11733,7 +11806,7 @@ impl LlvmCodegen {
                     self.emit_line(&format!("  {fv} = load i64, ptr {gep}"));
                     self.emit_line(&format!("  call i64 @kryos_map_retain_opt(i64 {fv})"));
                 }
-                MirType::Function { .. } | MirType::Shared(_) => {
+                MirType::Function { .. } | MirType::Shared(_) | MirType::DynTrait(_) => {
                     let fv = self.next_temp();
                     self.emit_line(&format!("  {fv} = load ptr, ptr {gep}"));
                     self.emit_line(&format!("  call void @kryos_arc_retain(ptr {fv})"));
@@ -11793,7 +11866,7 @@ impl LlvmCodegen {
                     let et = inner_elem.as_ref().clone();
                     self.emit_array_drop(&fv, &et, _func);
                 }
-                MirType::Function { .. } => {
+                MirType::Function { .. } | MirType::DynTrait(_) => {
                     let gep = self.next_temp();
                     let fv = self.next_temp();
                     self.emit_line(&format!(
