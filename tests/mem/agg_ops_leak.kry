@@ -16,6 +16,14 @@ fn mkq(i: i64) -> P { return P { name: "q{i}", xs: [i] } }
 fn mk(i: i64) -> (str, [i64]) { return ("k{i}", [i, i]) }
 fn mkp(i: i64) -> (P, str) { return (P { name: "p{i}", xs: [i] }, "s{i}") }
 enum E { A(P), B(str), C }
+// By-value aggregate globals (tuple, enum with a heap payload, Option<str>):
+// stored boxed on the AOT, read back and returned by name.
+let mut GAe: E = E.B("gb")
+let mut GAo: Option<str> = Some("go")
+let mut GAt: (str, i64) = ("gt", 1)
+fn gae() -> E { return GAe }
+fn gao() -> Option<str> { return GAo }
+fn gat() -> (str, i64) { return GAt }
 fn mke(i: i64) -> E {
     if i % 3 == 0 { return E.A(P { name: "e{i}", xs: [i] }) }
     if i % 3 == 1 { return E.B("b{i}") }
@@ -581,6 +589,25 @@ fn main() {
             // name hands the caller its own copy (the caller drops it).
             let gr = globq()
             acc = acc + len(gr.name)
+        } elif mode == "glob_agg" {
+            // A by-value aggregate global read straight off the slot and
+            // returned by name: no allocation may survive the iteration.
+            let ge1 = gae()
+            let go1 = gao()
+            let gt1 = gat()
+            match GAe {
+                E.B(s) => { acc = acc + len(s) },
+                _ => { acc = acc + 1 },
+            }
+            match ge1 {
+                E.B(s) => { acc = acc + len(s) },
+                _ => { acc = acc + 1 },
+            }
+            match go1 {
+                Some(s) => { acc = acc + len(s) },
+                _ => { acc = acc + 1 },
+            }
+            acc = acc + len(gt1.0) + len(GAt.0)
         } elif mode == "glob_ret_tail" {
             let grt = globq_tail()
             acc = acc + len(grt.name)

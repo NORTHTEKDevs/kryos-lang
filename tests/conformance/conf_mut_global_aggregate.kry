@@ -1,0 +1,250 @@
+// Conformance (2026-10-30): a top-level `let mut` global of a by-value
+// aggregate type (tuple, enum, Option, Result) is a runtime-registry slot
+// (one i64). The LLVM AOT passed the inline `{ i64, i64 }` aggregate BY VALUE to
+// that i64 slot and read it back through a box that did not exist, so every
+// such global printed garbage on a --release program: an i64 payload read as
+// 0, a str payload as the empty string, a heap-payload enum as a segfault.
+// Only `%Struct` globals were boxed. Struct, array, map and non-mut globals
+// were fine. Each global below is read straight off the global, read again
+// after a call that touches it, and read after a reassignment (including a
+// reassignment inside a loop), and the value is checked, not just survived.
+// Run on both backends by run_conformance.sh and, with the free diagnostics,
+// by tests/no_double_free.sh.
+use std::option::{Option, Some, None}
+use std::result::{Result, Ok, Err}
+
+enum Op { Add, Num(i64), Name(str) }
+enum Ge { B(i64), C }
+
+let mut GT: (str, i64) = ("t", 1)
+let mut GP: Option<i64> = Some(3)
+let mut GS: Option<str> = Some("s")
+let mut GR: Result<i64, str> = Ok(4)
+let mut GE2: Result<i64, str> = Err("bad")
+let mut GO: Op = Op.Num(7)
+let mut GN: Op = Op.Name("q")
+let mut GA: Op = Op.Add
+let mut GB: Ge = Ge.B(5)
+// declared BEFORE its enum: the global's type is resolved after every enum is known
+let mut GL: Late = Late.Nm("l")
+enum Late { Nm(str), Nn }
+fn late() -> str {
+    match GL {
+        Late.Nm(s) => { return "nm" + s }
+        Late.Nn => { return "nn" }
+    }
+}
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn tup() -> str {
+    let (a, b) = GT
+    return a + to_string(b)
+}
+fn opt() -> str {
+    match GP {
+        Some(n) => { return "p" + to_string(n) }
+        None() => { return "p-none" }
+    }
+}
+fn ostr() -> str {
+    match GS {
+        Some(s) => { return "s" + s }
+        None() => { return "s-none" }
+    }
+}
+fn res() -> str {
+    match GR {
+        Ok(n) => { return "ok" + to_string(n) }
+        Err(e) => { return "err" + e }
+    }
+}
+fn res2() -> str {
+    match GE2 {
+        Ok(n) => { return "ok" + to_string(n) }
+        Err(e) => { return "err" + e }
+    }
+}
+fn opn() -> str {
+    match GO {
+        Op.Add => { return "add" }
+        Op.Num(n) => { return "num" + to_string(n) }
+        Op.Name(s) => { return "name" + s }
+    }
+}
+fn opname() -> str {
+    match GN {
+        Op.Add => { return "add" }
+        Op.Num(n) => { return "num" + to_string(n) }
+        Op.Name(s) => { return "name" + s }
+    }
+}
+fn opadd() -> str {
+    match GA {
+        Op.Add => { return "add" }
+        Op.Num(n) => { return "num" + to_string(n) }
+        Op.Name(s) => { return "name" + s }
+    }
+}
+fn ge() -> str {
+    match GB {
+        Ge.B(n) => { return "b" + to_string(n) }
+        Ge.C => { return "c" }
+    }
+}
+
+// A global returned by name must hand the caller its own copy: the caller's
+// scope-end drop must not free what the global still holds (the enum arm of
+// the clone never ran, the global was typed `Struct("GE")`: double free on the
+// JIT under KRYOS_FREE_DIAG, a use-after-free once the memory is reused), and
+// a copy must survive the global being reassigned.
+fn get_name() -> Op { return GN }
+fn get_ostr() -> Option<str> { return GS }
+fn get_res() -> Result<i64, str> { return GE2 }
+fn get_tup() -> (str, i64) { return GT }
+
+// Reuses freed memory, so a dangling read shows up with real frees.
+fn churn(i: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < 50 {
+        push(junk, "junk" + to_string(i) + to_string(j))
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn show_op(o: Op) -> str {
+    match o {
+        Op.Add => { return "add" }
+        Op.Num(n) => { return "num" + to_string(n) }
+        Op.Name(s) => { return "name" + s }
+    }
+}
+fn show_ostr(o: Option<str>) -> str {
+    match o {
+        Some(s) => { return "s" + s }
+        None() => { return "s-none" }
+    }
+}
+fn show_res(r: Result<i64, str>) -> str {
+    match r {
+        Ok(n) => { return "ok" + to_string(n) }
+        Err(e) => { return "err" + e }
+    }
+}
+
+fn returned(i: i64) -> str {
+    let a = get_name()
+    let b = get_name()
+    let c = get_ostr()
+    let d = get_res()
+    let e = get_tup()
+    churn(i)
+    GN = Op.Name("new" + to_string(i))
+    GS = Some("new" + to_string(i))
+    GE2 = Err("new" + to_string(i))
+    GT = ("new" + to_string(i), i)
+    churn(i)
+    let (ts, tn) = e
+    let out = show_op(a) + " " + show_op(b) + " " + show_ostr(c) + " " + show_res(d) + " " + ts + to_string(tn)
+    return out + " | " + opname() + " " + ostr() + " " + res2() + " " + tup()
+}
+
+// Reads a global from a function other than the one that wrote it.
+fn set_all(i: i64) {
+    GT = ("t" + to_string(i), i)
+    GP = Some(i)
+    GS = Some("s" + to_string(i))
+    GR = Ok(i)
+    GE2 = Err("e" + to_string(i))
+    GO = Op.Num(i)
+    GN = Op.Name("n" + to_string(i))
+    GA = Op.Add
+    GB = Ge.B(i)
+}
+
+@capabilities(all)
+fn main() {
+    expect(tup() == "t1", "tuple global (str, i64) initial: " + tup())
+    expect(opt() == "p3", "Option<i64> global initial: " + opt())
+    expect(ostr() == "ss", "Option<str> global initial: " + ostr())
+    expect(res() == "ok4", "Result Ok global initial: " + res())
+    expect(res2() == "errbad", "Result Err global initial: " + res2())
+    expect(opn() == "num7", "enum Num global initial: " + opn())
+    expect(opname() == "nameq", "enum Name(str) global initial: " + opname())
+    expect(opadd() == "add", "enum unit-variant global initial: " + opadd())
+    expect(ge() == "b5", "enum B(i64) global initial: " + ge())
+    expect(late() == "nml", "enum global declared before its enum: " + late())
+    GL = Late.Nn
+    expect(late() == "nn", "enum global declared before its enum, reassigned: " + late())
+    GL = Late.Nm("m")
+    expect(late() == "nmm", "enum global declared before its enum, reassigned again: " + late())
+    // read twice: a read must not consume the global
+    expect(tup() == "t1" and opt() == "p3" and ostr() == "ss" and opname() == "nameq", "second read")
+
+    set_all(9)
+    expect(tup() == "t99", "tuple global after reassignment: " + tup())
+    expect(opt() == "p9", "Option<i64> global after reassignment: " + opt())
+    expect(ostr() == "ss9", "Option<str> global after reassignment: " + ostr())
+    expect(res() == "ok9", "Result Ok global after reassignment: " + res())
+    expect(res2() == "erre9", "Result Err global after reassignment: " + res2())
+    expect(opn() == "num9", "enum Num global after reassignment: " + opn())
+    expect(opname() == "namen9", "enum Name(str) global after reassignment: " + opname())
+    expect(opadd() == "add", "enum unit-variant global after reassignment: " + opadd())
+    expect(ge() == "b9", "enum B(i64) global after reassignment: " + ge())
+
+    // a different variant, and the None / C / Add side of each type
+    GP = None()
+    GS = None()
+    GR = Err("x")
+    GO = Op.Name("o")
+    GN = Op.Add
+    GA = Op.Num(2)
+    GB = Ge.C
+    expect(opt() == "p-none", "Option<i64> global set to None: " + opt())
+    expect(ostr() == "s-none", "Option<str> global set to None: " + ostr())
+    expect(res() == "errx", "Result global switched to Err: " + res())
+    expect(opn() == "nameo", "enum global switched to Name: " + opn())
+    expect(opname() == "add", "enum global switched to Add: " + opname())
+    expect(opadd() == "num2", "enum global switched to Num: " + opadd())
+    expect(ge() == "c", "enum global switched to C: " + ge())
+
+    // reassigned in a loop, read each time
+    let mut i = 0
+    while i < 200 {
+        set_all(i)
+        expect(tup() == "t" + to_string(i) + to_string(i), "tuple loop " + to_string(i))
+        expect(opt() == "p" + to_string(i), "Option<i64> loop " + to_string(i))
+        expect(ostr() == "ss" + to_string(i), "Option<str> loop " + to_string(i))
+        expect(res() == "ok" + to_string(i), "Result loop " + to_string(i))
+        expect(opname() == "namen" + to_string(i), "enum Name(str) loop " + to_string(i))
+        expect(opn() == "num" + to_string(i), "enum Num loop " + to_string(i))
+        expect(ge() == "b" + to_string(i), "enum B loop " + to_string(i))
+        i = i + 1
+    }
+    // copies returned from a global stay intact while the global changes, and
+    // the global is not freed by the copies' scope-end drops
+    set_all(1)
+    GN = Op.Name("q")
+    GS = Some("s")
+    GE2 = Err("bad")
+    GT = ("t", 1)
+    expect(returned(0) == "nameq nameq ss errbad t1 | namenew0 snew0 errnew0 new00", "copies returned from globals: " + returned(0))
+    expect(returned(3) == "namenew0 namenew0 snew0 errnew0 new00 | namenew3 snew3 errnew3 new33", "copies returned from globals, second round: " + returned(3))
+    let mut k = 0
+    while k < 200 {
+        GN = Op.Name("q")
+        GS = Some("s")
+        GE2 = Err("bad")
+        GT = ("t", 1)
+        expect(returned(k) == "nameq nameq ss errbad t1 | namenew" + to_string(k) + " snew" + to_string(k) + " errnew" + to_string(k) + " new" + to_string(k) + to_string(k), "returned loop " + to_string(k))
+        k = k + 1
+    }
+    println("conformance mut global aggregate: PASS")
+}

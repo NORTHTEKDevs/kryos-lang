@@ -6116,8 +6116,15 @@ impl LlvmCodegen {
                         // first `CUR.name`). kryos_global_get's struct load is
                         // the matching half (see the STRUCT_SHARE_FN arm's
                         // neighbour, `global_get_struct`).
+                        // Tuples, enums, Option and Result are inline `{ .. }`
+                        // aggregates, not `%Struct` names: they need the same box
+                        // (passed by value to the i64 slot they were read back as
+                        // garbage / empty / a segfault on --release).
+                        let global_boxed = fname == "kryos_global_set"
+                            && i == 1
+                            && (actual_ty.starts_with('%') || actual_ty.starts_with('{'));
                         let coerced = if ((fname == "kryos_array_set" && i == 2)
-                            || (fname == "kryos_global_set" && i == 1 && actual_ty.starts_with('%')))
+                            || global_boxed)
                             && (actual_ty.starts_with('{')
                                 || actual_ty.starts_with('[')
                                 || actual_ty.starts_with('%'))
@@ -6176,10 +6183,7 @@ impl LlvmCodegen {
                             self.coerce_value(&val, &actual_ty, &expected_ty)
                         };
                         // A boxed struct global is passed as the box's i64 handle.
-                        let expected_ty = if fname == "kryos_global_set"
-                            && i == 1
-                            && actual_ty.starts_with('%')
-                        {
+                        let expected_ty = if global_boxed {
                             "i64".to_string()
                         } else {
                             expected_ty
