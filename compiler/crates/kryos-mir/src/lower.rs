@@ -306,6 +306,12 @@ pub struct LoweringContext {
     /// in `borrowed_locals`; kept apart because the env does own the struct,
     /// so a field store through one still releases the field's old value.
     env_owned_locals: HashSet<u32>,
+    /// Unnamed struct temps that carry a reference nobody else owns (the
+    /// result slot of an if / match whose every branch hands it an owned
+    /// struct, copied into a call argument). `push` moves such a temp into
+    /// the array instead of sharing it, which left the slot's own reference
+    /// orphaned.
+    owned_slot_temps: HashSet<u32>,
     /// Set by `Stmt::Let` just before lowering a Lambda-valued initializer
     /// (`let name = |...| { ... }` -- also what a nested/local named
     /// `fn name(...) { ... }` desugars to in the parser), immediately before
@@ -550,6 +556,7 @@ impl LoweringContext {
             pending_box_scalar_captures: false,
             pending_env_owned_captures: HashSet::new(),
             env_owned_locals: HashSet::new(),
+            owned_slot_temps: HashSet::new(),
             pending_self_recursive_name: None,
             keep_closure_locals_once: false,
             pending_let_share: false,
@@ -780,6 +787,7 @@ impl LoweringContext {
         // was simply missed.
         self.borrowed_locals.clear();
         self.env_owned_locals.clear();
+        self.owned_slot_temps.clear();
         // Variable local id -> box local ids of the function just lowered. Local
         // ids restart at 0, so a stale entry made the NEXT top-level function's
         // plain `name = ...` store through an unrelated local (a verifier error on
@@ -846,6 +854,7 @@ impl LoweringContext {
             // tests segfault when those marks are lost).
             borrowed_locals: std::mem::take(&mut self.borrowed_locals),
             env_owned_locals: std::mem::take(&mut self.env_owned_locals),
+            owned_slot_temps: std::mem::take(&mut self.owned_slot_temps),
             param_locals: std::mem::take(&mut self.param_locals),
             partial_moved_locals: std::mem::take(&mut self.partial_moved_locals),
         }
@@ -874,6 +883,7 @@ impl LoweringContext {
         self.partial_moved_locals = state.partial_moved_locals;
         self.borrowed_locals = state.borrowed_locals;
         self.env_owned_locals = state.env_owned_locals;
+        self.owned_slot_temps = state.owned_slot_temps;
     }
 }
 
@@ -881,6 +891,7 @@ impl LoweringContext {
 struct FunctionState {
     borrowed_locals: std::collections::HashSet<u32>,
     env_owned_locals: HashSet<u32>,
+    owned_slot_temps: HashSet<u32>,
     locals: Vec<MirLocal>,
     blocks: Vec<BasicBlock>,
     current_instructions: Vec<Instruction>,
@@ -5338,6 +5349,13 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
             !tail_ident(&a.body).is_some_and(|n| pattern_binds(&a.pattern, n)) && struct_value_owned(ctx, &a.body)
         }),
         ast::Expr::Block { block, .. } => block_owned(ctx, block),
+        // A call's result is an owned reference of its own (a callee returns
+        // a fresh struct, or retains the param / global it hands back), the
+        // same fact `let s = f()` relies on. The callers check that the slot
+        // is a struct, so a branch call here yields one. Leaving it "not
+        // owned" kept the clone the `let` makes and never released the slot:
+        // `let r = if c { q } else { mk(i) }` leaked one struct per run.
+        ast::Expr::FnCall { .. } | ast::Expr::MethodCall { .. } | ast::Expr::StaticMethodCall { .. } => true,
         // A read of a temporary: the branch shares it (share_temp_read_tail).
         e if is_temp_read(ctx, e) => true,
         _ => false,
@@ -7049,7 +7067,21 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                                     ctx.partial_moved_locals.remove(&id);
                                 }
                             }
+                            // `r = if c { q } else { P { .. } }` / a match: every
+                            // branch handed the hidden slot a reference of its
+                            // own, so `r` takes the slot's instead of sharing
+                            // it (a share left the slot's reference orphaned,
+                            // one struct per assignment).
+                            let owned_slot_src = owned_agg_dest
+                                && matches!(value, ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. })
+                                && matches!(&rvalue, RValue::Use(Operand::Local(src))
+                                    if *src != dest
+                                        && ctx.locals.iter().any(|l| l.id == *src
+                                            && l.name.is_none()
+                                            && is_owned_struct_ty(ctx, &l.ty)))
+                                && struct_value_owned(ctx, value);
                             let share_new = owned_agg_dest
+                                && !owned_slot_src
                                 && (owns_read
                                     || matches!(&rvalue, RValue::Use(Operand::Local(src)) if *src != dest));
                             // `x = x`: nothing to release (the old value IS the
@@ -7832,13 +7864,19 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             }
                             // A closure's env-owned capture counts as owned:
                             // the env's struct drops the field's new value.
+                            // A mutable global's struct is owned by its slot
+                            // (nothing else drops it), so overwriting one of
+                            // its fields releases the old value: `G.inner =
+                            // ..` leaked every value it replaced.
                             let root_owned = match root {
-                                ast::Expr::Identifier { name, .. } => find_local_by_name(ctx, name)
-                                    .is_some_and(|l| {
+                                ast::Expr::Identifier { name, .. } => match find_local_by_name(ctx, name) {
+                                    Some(l) => {
                                         ctx.env_owned_locals.contains(&l.0)
                                             || (!ctx.borrowed_locals.contains(&l.0)
                                                 && !ctx.param_locals.contains(&l.0))
-                                    }),
+                                    }
+                                    None => ctx.mutable_globals.contains_key(name.as_str()),
+                                },
                                 _ => false,
                             };
                             let owned_old = if root_owned
@@ -12993,7 +13031,7 @@ fn consume_call_args(ctx: &mut LoweringContext, dest: LocalId, func: &str, args:
                     // JSON value back as another variant).
                     // (Also through a block's materialized copy: `push(xs,
                     // { p.n = k  p })` of a closure's capture leaked one.)
-                    if !is_fresh_struct_clone(ctx, *local_id) {
+                    if !is_fresh_struct_clone(ctx, *local_id) && !ctx.owned_slot_temps.contains(&local_id.0) {
                         emit_value_share(ctx, *local_id);
                     }
                     continue;
@@ -15008,6 +15046,21 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                 .enumerate()
                 .map(|(i, a)| {
                     let operand = lower_expr_to_operand(ctx, a);
+                    // `push(xs, if c { q } else { P { .. } })`: every branch
+                    // hands the hidden slot a reference of its own, which the
+                    // array takes over; sharing it too left the slot's
+                    // reference orphaned (one struct per push).
+                    if func_name == "push" && i == 1 {
+                        if let (Operand::Local(l), ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. }) = (&operand, a) {
+                            let owned_struct = ctx
+                                .locals
+                                .iter()
+                                .any(|x| x.id == *l && x.name.is_none() && is_owned_struct_ty(ctx, &x.ty));
+                            if owned_struct && struct_value_owned(ctx, a) {
+                                ctx.owned_slot_temps.insert(l.0);
+                            }
+                        }
+                    }
                     // push(dest_arr, struct_index_or_field_read): on the
                     // Cranelift backend, structs AND enums are uniformly raw
                     // heap pointers with no ref_count of their own (no

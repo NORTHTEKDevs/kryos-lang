@@ -454,6 +454,7 @@ no_df_both capture_box_name_scope "$ROOT/tests/conformance/conf_capture_box_name
 no_df_both struct_array_overwrite "$ROOT/tests/mem/adv_struct_array_overwrite.kry"
 no_df_both array_tuple_ownership "$ROOT/tests/conformance/conf_array_tuple_ownership.kry"
 no_df_both dyn_ownership "$ROOT/tests/conformance/conf_dyn_ownership.kry"
+no_df_both branch_global_ownership "$ROOT/tests/conformance/conf_branch_global_ownership.kry"
 
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"

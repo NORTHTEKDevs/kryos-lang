@@ -10,6 +10,87 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: a struct if / match value's hidden slot is released or moved, and a global's struct field releases what it replaces (2026-10-29)
+
+Closes the three leftovers named by the struct-branch wave (2026-10-14: "Not a
+bare name as a match arm ... still leaks"), the 10-13 wave (L3: "overwriting a
+global's field never releases the old value") and the default-arm wave (L4:
+`push(xs, if c { cap } else { P {..} })` in a closure). Leaks only (50-250MB
+per 1M); the risk direction was use-after-free, so each fix hands a reference
+over instead of dropping one and the conformance pin reads every struct again
+afterwards.
+- Repro (before; peak RSS at 1,000,000 iterations, AOT / JIT, baseline 4MB,
+  probe `tests/mem/agg_ops_leak.kry`, `struct P { name: str, xs: [i64] }`):
+  `let r = match i % 2 { 0 => q, _ => mkq(i + 1) }` (a bare name beside a
+  call arm) 157 / 187MB; the same assigned to an existing local 124 / 157MB;
+  `let r = if c { mkq(i) } else { mkq(i + 1) }` 157 / 188MB (no bare name at
+  all: any call-valued struct branch); `r = match .. { 0 => mkq(i), _ =>
+  mkq(i + 1) }` 157 / 187MB; `push(xs, if c { q } else { P{..} })` 124 / 156MB
+  and `push(xs, match .. { 0 => P{..}, _ => mkq(i) })` 127 / 157MB, in or out of
+  a closure; L4 as filed (closure pushing `if k % 2 == 0 { cap } else {
+  P{..} }`) 49 / 65MB; L3 `let o = Some(GG.inner)  GG.inner = Gin{..}` 66 /
+  96MB, and the plain overwrite `GG.inner = Gin{..}` with no `Option` at all
+  the same 65 / 95MB (the payload was never the leak).
+- NOT reproduced on master `aea6fb89`: the triage repro `let r = match i % 2 {
+  0 => q, _ => P{..} }` (both arms a name / a literal) reads 4 / 4MB, fixed by
+  the 2026-10-29 dyn wave's `arm_names_outer_owned_struct`. It is kept as the
+  mode `match_bare` (green before and after); the shapes above are what still
+  leaked around it.
+- Root causes, three:
+  - `struct_value_owned` (does every branch hand the hidden slot an owned
+    struct?) refused a call, "a call can return a share of an existing
+    struct". A call's result is a reference of its own (a callee returns a
+    fresh struct or retains the param / global it hands back; `let s = f()`
+    already takes it over), so a slot with a call arm kept the clone the
+    `let` makes and was never released. Calls (`FnCall`, `MethodCall`,
+    `StaticMethodCall`) count as owned now, the same call `fn_value_owned`
+    already made for closure values.
+  - An if / match value assigned to an existing struct local (`r = match ..`)
+    and one pushed (`push(xs, if ..)`) SHARED the slot (a retain) and left the
+    slot's own reference orphaned. When `struct_value_owned` holds the
+    destination takes the slot's reference: the reassignment skips `share_new`
+    (`owned_slot_src`), and `push` marks the argument temp in a new
+    `owned_slot_temps` set (saved / cleared with `env_owned_locals`) that
+    `consume_call_args` treats like a fresh struct clone (no share).
+  - A field store whose root is a MUTABLE GLOBAL took the not-owned branch
+    (`root_owned` looked the name up as a local only), so neither the old
+    field value was dropped nor the new one shared. The global's struct is
+    owned by its slot, so `G.inner = ..` now reads the old field, stores, and
+    drops it like a local root does.
+- After: every mode below reads 4MB on AOT and JIT (`tests/mem_agg_ops_gate.sh`
+  full run: 142 legs, PASS). With only the `lower.rs` change reverted and
+  rebuilt, the same ten modes read: `match_bare` 4 / 4 (already green),
+  `match_bare_call` 157 / 187, `match_bare_assign` 124 / 157, `branch_call`
+  157 / 188, `match_call_assign` 157 / 187, `push_branch` 124 / 156,
+  `push_branch_lit` 127 / 157, `glob_field_set` 65 / 95, `glob_field_opt`
+  66 / 96, `clo_push_if` 49 / 65.
+- Pinned by `mem_agg_ops_gate.sh` modes `match_bare`, `match_bare_call`,
+  `match_bare_assign`, `branch_call`, `match_call_assign`, `push_branch`,
+  `push_branch_lit`, `glob_field_set`, `glob_field_opt`, `clo_push_if`, and
+  `tests/conformance/conf_branch_global_ownership.kry` registered in
+  `no_double_free.sh` (a call arm beside a bare name, an if / match assigned
+  to a struct local, a pass-through call arm, a pushed if / match value inside
+  and outside a closure, a global field overwritten under a live `Option`
+  payload, a copy and a local stored into a global field; 200 iterations with
+  churn). The conformance pin is the use-after-free direction and is green
+  before the fix too: the leak is in the gate modes.
+- Gates (baseline master -> this branch): `kryos-loop.sh gates 2` GREEN ->
+  GREEN, conformance 106/106 -> 107/107; bootstrap 16/16 -> 16/16.
+- Residual, all measured here, all master too, none touched:
+  - A WHOLE mutable-global struct reassigned (`GS = Gin{..}`) leaks the old
+    struct: 97MB / 1M (the 2026-08 item-2b release covers str / array / map
+    globals only; `release_fn` is None for a struct). A different fix: the old
+    value must be dropped after the RHS is read, with a self-assign guard.
+  - A field read straight off an if / match temporary leaks the slot, with or
+    without a bare name: `len(match i % 2 { 0 => P{..}, _ => P{..} }.name)`
+    126 / 1M.
+  - Assignment from a named struct local still ALIASES it (`r = q  r.n = 9`
+    changes `q.n`, and a pushed local shares its box; documented
+    "non-`@copy` structs: JIT aliases, AOT copies"); the conformance pin
+    deliberately does not mutate through such a copy.
+  - The other 10-13 open item, R1 (a struct / `Option` index read put into an
+    array, struct literal or map), is unchanged.
+
 ## Wave: `dyn Trait` values own their fat box and the struct behind it, so every coercion no longer leaks (2026-10-29)
 
 Closes the "dyn Trait values are never dropped" leak (wave 2026-10-14
@@ -488,7 +569,9 @@ From the default-arm wave's L4 narrowing, then a wider one found on the way.
   `let` releases the slot after its copy). Not a bare name as a match arm's
   whole body (`0 => q`): the arm code still moves that, and treating it as
   owned released `q` under a later read (caught by the new pin on the JIT).
-  That shape still leaks.
+  That shape still leaks. (CLOSED 2026-10-29, see the "struct if / match
+  value's hidden slot" wave at the top: the dyn wave had already fixed the
+  plain shape; the variants around it are fixed there.)
 - `mem_agg_ops_gate.sh` modes `struct_branch` / `ret_scalar_field` (master
   66MB / 65MB at 1M, now 4-5MB). Pinned by
   `tests/conformance/conf_struct_branch_value.kry`, registered in
@@ -777,7 +860,8 @@ returned on LLVM -- fail on master too):
   and no new crash (compare.py); 715 legs clean on both, 173 legs master gets
   wrong are clean here, 99 legs are unclean on both (master's own
   use-after-frees, the open items below).
-- Still open: L3 -- a mutable global's field as a payload (`Some(G.inner)`)
+- Still open (L3 and L4 CLOSED 2026-10-29, see the "struct if / match value's
+  hidden slot" wave at the top): L3 -- a mutable global's field as a payload (`Some(G.inner)`)
   owns its value now (master double-freed it once the enum was dropped),
   but overwriting a global's field never releases the old value (master
   too), so after `G.inner = ..` that reference leaks: 94MB / 1M. L4 --
