@@ -243,16 +243,21 @@ fn inst_def(
     }
 }
 
-/// Blocks reachable from `from` (excluding `from` itself unless on a cycle).
-fn reachable_from(succs: &[Vec<usize>], from: usize) -> HashSet<usize> {
+/// Can `from` reach itself through a path that never enters a block of
+/// `barriers`?
+fn reaches_without(succs: &[Vec<usize>], from: usize, barriers: &HashSet<usize>) -> bool {
     let mut seen: HashSet<usize> = HashSet::new();
     let mut stack: Vec<usize> = succs[from].clone();
     while let Some(b) = stack.pop() {
-        if seen.insert(b) {
-            stack.extend(succs[b].iter().copied());
+        if b == from {
+            return true;
         }
+        if barriers.contains(&b) || !seen.insert(b) {
+            continue;
+        }
+        stack.extend(succs[b].iter().copied());
     }
-    seen
+    false
 }
 
 fn is_exception_check(inst: &Instruction) -> bool {
@@ -373,15 +378,6 @@ fn own_dyn_refs_in(
     // `Copy` uses whose source gives its reference away (a move).
     let mut moved: HashSet<(usize, usize, u32)> = HashSet::new();
 
-    // Reachability is needed only for cross-block temps; compute lazily.
-    let mut reach_cache: HashMap<usize, HashSet<usize>> = HashMap::new();
-    let reach = |from: usize, cache: &mut HashMap<usize, HashSet<usize>>| -> HashSet<usize> {
-        cache
-            .entry(from)
-            .or_insert_with(|| reachable_from(&succs, from))
-            .clone()
-    };
-
     let mut ids: Vec<u32> = dyn_ids.iter().copied().collect();
     ids.sort_unstable();
     for l in ids {
@@ -494,14 +490,17 @@ fn own_dyn_refs_in(
 
         // Cross-block temp (an if / match value slot): a single owning use
         // that runs at most once per definition can take the reference.
-        // (Not on a cycle, and not reachable back to a definition: the use
-        // then runs at most once for each definition that ran.)
+        // That holds when the use cannot run again before a definition
+        // re-runs: no path from the use back to itself that avoids every
+        // definition block. A loop around the whole if / match is fine (the
+        // slot is redefined on every pass); requiring the use to be off every
+        // cycle left a slot inside any loop leak-safe forever, one fat box per
+        // iteration.
         if let [(ub, _, k)] = l_uses.as_slice() {
             if matches!(k, Use::Copy | Use::Own | Use::Ret)
                 && !l_defs.is_empty()
                 && !def_blocks.contains(ub)
-                && !reach(*ub, &mut reach_cache).contains(ub)
-                && def_blocks.iter().all(|d| !reach(*ub, &mut reach_cache).contains(d))
+                && !reaches_without(&succs, *ub, &def_blocks)
             {
                 // Moved: no retain, no release.
                 continue;

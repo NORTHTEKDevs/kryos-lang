@@ -72,7 +72,8 @@ direction and it was probed hard.
     and dropped consistently); closure envs release a captured dyn.
 - Pinned by `tests/mem_agg_ops_gate.sh` modes `dyn_param`, `dyn_let`,
   `dyn_named`, `dyn_ret`, `dyn_copy`, `dyn_field`, `dyn_reassign`,
-  `dyn_fieldstore`, `dyn_clo` (in CI) and `tests/conformance/conf_dyn_ownership.kry`
+  `dyn_fieldstore`, `dyn_clo`, plus (review round 2) `dyn_if`, `dyn_match`,
+  `dyn_if_named`, `match_named`, `dyn_if_plain`, `dyn_if_dyn`, `dyn_gen` (in CI) and `tests/conformance/conf_dyn_ownership.kry`
   (use-after-free direction: a dyn built from a struct still used afterwards, a
   dyn passed twice, a copy that outlives its source, a dyn returned through
   several frames, a dyn field of a struct that is copied / passed / put in an
@@ -91,9 +92,69 @@ direction and it was probed hard.
   all four legs (JIT / AOT, diag / real frees). A mutation check (the pass's
   retains disabled) turns the conformance program red on `copy outlives source`
   with `arc RELEASE-AFTER-FREE` reports, so it is not vacuous.
-- Gates before / after, same machine: `gates 2` 28 PASS -> 28 PASS (conformance
-  105/105 -> 106/106, tier2 GREEN both), bootstrap 16/16 -> 16/16. All 13 other
-  `tests/mem_*` gates PASS.
+- Review round 2 (adversarial verifier on PR 24; both findings reproduced live
+  on the first commit, then fixed on the same branch):
+  - Memory-safety regression the first commit introduced: a GENERIC function
+    instantiated with a dyn type double-released the fat box. `fn gen_id<T>(x:
+    T) -> T { return x }` then `let g2 = gen_id(pass(mkbg(i)))` (also
+    `gen_id(g)` and `gen_first(g, g3)` with named dyn locals) printed
+    `KRYOS-FREE-DIAG: arc RELEASE-AFTER-FREE` on both backends (and a panic
+    inside a vtable call in the verifier's variant); master was clean.
+    Root cause: `monomorphize` rebuilt the instance's param / return types
+    through `mir_type_to_type_expr_spanned`, which had no `DynTrait` arm, so
+    the instance was `gen_id___dyn_Sh(_0: i64) -> i64` (MIR dump); `dyn_own`
+    identifies dyn locals only by `MirType::DynTrait`, so the callee returned
+    its borrowed param with no retain while the caller released the result as
+    an owned reference. Fix: that function maps `DynTrait` back to
+    `TypeExpr::DynTrait`; the instance is now `(_0: dyn Sh) -> dyn Sh` with the
+    return retain. Pinned by conformance section 12 (generic id / first / wrap
+    over a named dyn, a returned dyn and a struct, in a loop) under the
+    `no_double_free.sh` `dyn_ownership` diag legs; with only this arm reverted
+    that script reports `DOUBLE-FREE  dyn_ownership (jit)`, restored it is clean.
+    A mem-gate mode `dyn_gen` also pins that the generic path does not leak.
+  - Incomplete fix: a `dyn` coerced from an if / match VALUE still leaked
+    (peak RSS at 1M iterations, AOT / JIT, on the first commit): `let d: dyn Lg
+    = if c { Lgs{..} } else { Lgs{..} }` 66 / 95MB (`dyn_if`), the same with a
+    `match` 66 / 95MB (`dyn_match`), arms that are named structs 127 / 188MB
+    (`dyn_if_named`), a struct with no heap field 4 / 34MB (`dyn_if_plain`), arms
+    that are already dyn values 170 / 173MB (`dyn_if_dyn`). Three causes, each
+    fixed: (a) the arms hand the hidden slot an owned struct and the trait
+    object takes its OWN owner, but nothing released the slot's: the dyn `let`
+    now drops the slot after the wrap when `struct_value_owned` proves every
+    branch owned; (b) `dyn_own` kept a cross-block slot leak-safe forever when
+    its single owning use sat on ANY cycle, i.e. every slot inside a loop (the
+    case here, and a plain `let d = if c { mkd(i) } else { mkd(i+1) }`): the
+    use now moves the reference unless it can run twice without a definition in
+    between (`reaches_without`, a cycle that avoids every definition block);
+    (c) a match arm whose body is a bare name of an owned struct declared
+    outside the match MOVED it (suppressing its scope-end drop on every path,
+    including the arms that did not take it), so both named structs leaked per
+    execution, dyn or not (`match_named`, a plain `let e: Lgs = match i % 2 {
+    0 => nb, _ => na }`: 127 / 188MB on the first commit). The arm now shares it
+    into the result slot like a block tail does (`take_tail_identifier`;
+    `arm_names_outer_owned_struct`, all four arm-lowering sites of the
+    sequential and switch match paths) and `struct_value_owned` accepts that
+    shape, so the `let` takes the slot over and releases it.
+  - After: every mode of the new set reads 4MB on AOT and JIT. With the first
+    commit's sources plus only the generic arm, the same set fails exactly as
+    above (`dyn_if` 66 / 94, `dyn_match` 66 / 95, `dyn_if_named` 127 / 188,
+    `match_named` 127 / 187, `dyn_if_plain` JIT 34, `dyn_if_dyn` 170 / 173),
+    and restored it reads 4MB on every leg and `no_double_free.sh` is clean.
+    Conformance section 13 pins the use-after-free direction of the new shapes
+    (named structs still intact and usable after being picked by an if / match
+    and wrapped in a dyn, a struct copied out of a match arm and mutated, a dyn
+    returned from a match of named structs, dyn-valued arms), 300 iterations
+    with junk allocations.
+- Ownership matrix (gen1 + gen2 + gen3, 398 programs x 3 backends x diag / real
+  frees; the match-arm change touches every `let y = match .. { 0 => SRC, _ =>
+  SRC }` / `return match` shape of gen2 / gen3), master `aff5f4e9` build vs this
+  branch, `compare.py`: `regressions 0, crash-only 0` in all three shards
+  (1194 legs same-clean).
+- Gates before / after, same machine, master `aff5f4e9` vs this branch:
+  `gates 2` 28 PASS -> 28 PASS (conformance 105/105 -> 106/106, tier2 GREEN
+  both), bootstrap 16/16 -> 16/16. The full `mem_agg_ops_gate.sh` (61 modes x 2
+  legs, all 4MB for the dyn set) PASS. All 13 other `tests/mem_*`
+  gates PASS.
 - Residual (measured, not fixed): (1) a `dyn` (or a str / struct) local live at
   a `throw` is leaked, like every named local of a `try` body (a str + struct
   throw loop leaks 88MB per 500k on this build, and a dyn throw loop 170MB per 1M) - not dyn-specific. (2) `d = d` and

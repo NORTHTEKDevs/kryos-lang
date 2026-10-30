@@ -3722,6 +3722,35 @@ fn take_tail_identifier(ctx: &mut LoweringContext, name: &str, scope_start: usiz
     ctx.dropped_locals.insert(id.0);
 }
 
+/// A match arm whose whole body is a bare name for an owned struct declared
+/// OUTSIDE the arm (`match c { 0 => nb, _ => na }`). Like a block tail
+/// (`take_tail_identifier`) the result slot shares it instead of moving it:
+/// a move suppressed the scope-end drop of the name on every path, including
+/// the arms that did not take it, so both structs leaked per execution.
+fn arm_names_outer_owned_struct(
+    ctx: &LoweringContext,
+    pattern: Option<&ast::Pattern>,
+    locals_mark: usize,
+    body: &ast::Expr,
+    body_val: &Operand,
+) -> bool {
+    let (ast::Expr::Identifier { name, .. }, Operand::Local(id)) = (body, body_val) else {
+        return false;
+    };
+    if pattern.is_some_and(|p| pattern_binds(p, name)) {
+        return false;
+    }
+    let Some(l) = find_local_by_name(ctx, name) else { return false };
+    // Declared before the match began (a name an arm's pattern binds is
+    // allocated after it).
+    let outer = ctx.locals.iter().position(|x| x.id == l).is_some_and(|pos| pos < locals_mark);
+    outer
+        && l == *id
+        && !ctx.borrowed_locals.contains(&id.0)
+        && !ctx.env_owned_locals.contains(&id.0)
+        && ctx.locals.iter().any(|x| x.id == *id && is_owned_struct_ty(ctx, &x.ty))
+}
+
 /// Is unnamed temp `t` a fresh struct copy made in this block: defined by
 /// `__kryos_struct_index_clone`, possibly through plain `Use` copies of one
 /// (a nested block re-materializes its value)? Its reference is its own.
@@ -5300,6 +5329,12 @@ fn struct_value_owned(ctx: &LoweringContext, e: &ast::Expr) -> bool {
             block_owned(ctx, then_branch) && else_branch.as_ref().is_some_and(|b| block_owned(ctx, b))
         }
         ast::Expr::MatchExpr { arms, .. } => arms.iter().all(|a| {
+            if let ast::Expr::Identifier { name, .. } = a.body.as_ref() {
+                // A bare outer name is shared into the slot (see
+                // arm_names_outer_owned_struct); one the pattern binds is not.
+                return !pattern_binds(&a.pattern, name)
+                    && (ident_owned(ctx, name) || tail_ident_owned(ctx, name));
+            }
             !tail_ident(&a.body).is_some_and(|n| pattern_binds(&a.pattern, n)) && struct_value_owned(ctx, &a.body)
         }),
         ast::Expr::Block { block, .. } => block_owned(ctx, block),
@@ -5888,7 +5923,30 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                     && matches!(infer_expr_type(ctx, expr), MirType::Struct(_))
                 {
                     let operand = lower_expr_to_operand(ctx, expr);
-                    RValue::Use(coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr))
+                    // `let d: dyn T = if c { S { .. } } else { S { .. } }` (or a
+                    // match / block): the arms hand the hidden slot an owned
+                    // struct, and the trait object takes its OWN owner of it
+                    // (`owns_data`), so the slot's reference is released right
+                    // after the wrap. Only when every branch is provably owned
+                    // (struct_value_owned) and the value is an unnamed slot: a
+                    // named binding keeps its own scope-end drop.
+                    let slot_to_drop = match (&operand, expr) {
+                        (
+                            Operand::Local(l),
+                            ast::Expr::IfExpr { .. } | ast::Expr::MatchExpr { .. } | ast::Expr::Block { .. },
+                        ) if ctx.locals.iter().any(|x| x.id == *l && x.name.is_none())
+                            && struct_value_owned(ctx, expr)
+                            && matches!(infer_expr_type(ctx, expr), MirType::Struct(ref n) if dyn_owns_data(ctx, n)) =>
+                        {
+                            Some(*l)
+                        }
+                        _ => None,
+                    };
+                    let wrapped = coerce_to_dyn_if_needed(ctx, operand, &mir_ty, expr);
+                    if let Some(slot) = slot_to_drop {
+                        ctx.emit(Instruction::Drop { local: slot });
+                    }
+                    RValue::Use(wrapped)
                 } else {
                     lower_expr_to_rvalue(ctx, expr)
                 };
@@ -11002,6 +11060,7 @@ fn lower_match_sequential(
         // switch-path arm handling in `lower_match`; without it, once the result
         // is correctly str-typed both the tail local and the result free the
         // same pointer (Pass-18 latent double-free behind the type bug).
+        let share_named = arm_names_outer_owned_struct(ctx, Some(&arm.pattern), usize::MAX, &arm.body, &body_val);
         let arm_value = match env_owned_copy(ctx, &body_val) {
             Some(copy) => copy,
             None => {
@@ -11012,7 +11071,7 @@ fn lower_match_sequential(
                         .find(|l| l.id == *src)
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
-                    if !is_copy_type(ctx, &src_ty) {
+                    if !is_copy_type(ctx, &src_ty) && !share_named {
                         ctx.dropped_locals.insert(src.0);
                     }
                 }
@@ -11023,6 +11082,11 @@ fn lower_match_sequential(
             dest: result_local,
             value: arm_value,
         });
+        if share_named {
+            // The result slot owns its own reference; the named struct keeps
+            // its scope-end drop (as a block tail does, take_tail_identifier).
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, &arm.body, result_local, &arm_partial_before);
         ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
     }
@@ -11550,6 +11614,7 @@ fn lower_match(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::Matc
 }
 
 fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast::MatchArm]) -> Operand {
+    let match_locals_mark = ctx.locals.len();
     // Normalize BARE enum-variant idents (`Red =>`, parsed as Pattern::Ident)
     // into the qualified `Pattern::Enum` shape before any dispatch decision.
     // The tag-switch machinery below chains SAME-TAG guarded arms correctly
@@ -11707,6 +11772,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         );
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let body_val = lower_expr_to_operand(ctx, &first.body);
+        let share_named = arm_names_outer_owned_struct(ctx, Some(&first.pattern), match_locals_mark, &first.body, &body_val);
         let arm_value = match env_owned_copy(ctx, &body_val) {
             Some(copy) => copy,
             None => {
@@ -11717,7 +11783,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                         .find(|l| l.id == *src)
                         .map(|l| l.ty.clone())
                         .unwrap_or(MirType::I64);
-                    if !is_copy_type(ctx, &src_ty) {
+                    if !is_copy_type(ctx, &src_ty) && !share_named {
                         ctx.dropped_locals.insert(src.0);
                     }
                 }
@@ -11728,6 +11794,11 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_value,
         });
+        if share_named {
+            // The result slot owns its own reference; the named struct keeps
+            // its scope-end drop (as a block tail does, take_tail_identifier).
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, &first.body, result_local, &arm_partial_before);
         ctx.finish_block(Terminator::Goto(merge_bb), next_bb);
         arms_rest = &arms_rest[1..];
@@ -12566,6 +12637,10 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         let arm_locals_mark = ctx.locals.len();
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        let share_named = match &arm_rvalue {
+            RValue::Use(op) => arm_names_outer_owned_struct(ctx, None, match_locals_mark, body, op),
+            _ => false,
+        };
         // If the arm body moves a non-copy local into the result, mark the
         // source as consumed so the scope cleanup won't double-drop it.
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
@@ -12575,7 +12650,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
-            if !is_copy_type(ctx, &src_ty) {
+            if !is_copy_type(ctx, &src_ty) && !share_named {
                 ctx.dropped_locals.insert(src.0);
             }
         }
@@ -12606,6 +12681,9 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_rvalue,
         });
+        if share_named {
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, body, result_local, &arm_partial_before);
         // The arm value's intermediate temps (`"A(" + s` feeding
         // `"A(" + s + ")"`) get the statement-end cleanup an expression arm
@@ -12646,6 +12724,10 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
         let arm_locals_mark = ctx.locals.len();
         let arm_partial_before = ctx.partial_moved_locals.clone();
         let arm_rvalue = lower_expr_to_rvalue(ctx, body);
+        let share_named = match &arm_rvalue {
+            RValue::Use(op) => arm_names_outer_owned_struct(ctx, None, match_locals_mark, body, op),
+            _ => false,
+        };
         if let RValue::Use(Operand::Local(src)) = &arm_rvalue {
             let src_ty = ctx
                 .locals
@@ -12653,7 +12735,7 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
                 .find(|l| l.id == *src)
                 .map(|l| l.ty.clone())
                 .unwrap_or(MirType::I64);
-            if !is_copy_type(ctx, &src_ty) {
+            if !is_copy_type(ctx, &src_ty) && !share_named {
                 ctx.dropped_locals.insert(src.0);
             }
         }
@@ -12667,6 +12749,9 @@ fn lower_match_inner(ctx: &mut LoweringContext, subject: &ast::Expr, arms: &[ast
             dest: result_local,
             value: arm_rvalue,
         });
+        if share_named {
+            emit_value_share(ctx, result_local);
+        }
         share_temp_read_tail(ctx, body, result_local, &arm_partial_before);
         // The same statement-end cleanup the case arms get: a `_` arm computing
         // `"y{i}" + "z"` leaked the interpolated string on every evaluation.
@@ -21467,6 +21552,14 @@ fn mir_type_to_type_expr_spanned(ty: &MirType, span: kryos_errors::Span) -> ast:
                 mir_type_to_type_expr_spanned(key, span),
                 mir_type_to_type_expr_spanned(value, span),
             ],
+            span,
+        },
+        // A monomorphized instance bound to `dyn Trait` must keep the trait
+        // object type on its params / locals / return: as a plain name it lost
+        // it (locals typed i64), so dyn_own saw a borrowed dyn param returned
+        // with no retain while the caller released the result as owned.
+        MirType::DynTrait(name) => ast::TypeExpr::DynTrait {
+            trait_name: name.clone(),
             span,
         },
         other => ast::TypeExpr::Simple {

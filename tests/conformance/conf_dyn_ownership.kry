@@ -13,6 +13,13 @@
 // memory, so a dangling fat box or struct shows up with real frees. Run under
 // KRYOS_FREE_DIAG on both backends, and on AOT with real frees, by
 // tests/no_double_free.sh.
+//
+// Also pinned here (2026-10-29, review of the first fix): a generic function
+// instantiated with a dyn type (its instance must keep the dyn type, or the
+// callee returns its borrowed param without a retain while the caller
+// releases the result), and a dyn coerced from an if / match VALUE (struct
+// literal arms, named struct arms that stay usable afterwards, dyn-valued
+// arms inside a loop).
 
 trait Sh {
     fn area(self: Self) -> i64
@@ -37,6 +44,29 @@ impl Sh for Pt {
 }
 
 struct Holder { d: dyn Sh, n: i64 }
+
+struct Bg { n: i64, label: str, xs: [i64] }
+impl Sh for Bg {
+    fn area(self: Bg) -> i64 { return self.n * 2 + len(self.xs) }
+    fn tag(self: Bg) -> str { return "bg-" + self.label }
+}
+fn mkbg(i: i64) -> Bg {
+    return Bg { n: i, label: "b{i}", xs: [i, i + 1] }
+}
+fn gen_id<T>(x: T) -> T { return x }
+fn gen_first<T>(a: T, b: T) -> T { return a }
+struct Wrap<T> { v: T, k: i64 }
+fn gen_wrap<T>(x: T) -> Wrap<T> { return Wrap { v: x, k: 1 } }
+
+fn pick_dyn(i: i64) -> dyn Sh {
+    let na = Sq { side: i, label: "pa{i}" }
+    let nb = Sq { side: i + 1, label: "pb{i}" }
+    let d: dyn Sh = match i % 2 {
+        0 => nb,
+        _ => na,
+    }
+    return d
+}
 
 fn expect(cond: bool, what: str) {
     if not cond {
@@ -297,6 +327,68 @@ fn main() {
     hw.d = hw.d
     hw.d = before
     expect(hw.d.area() == 36 and before.area() == 36, "field assigned from alias")
+
+    // 12. a generic instantiated with a dyn type: the instance borrows its
+    // param and hands it back, so the result needs its own reference.
+    let mut gacc = 0
+    let mut gexp = 0
+    let mut gi = 0
+    while gi < 300 {
+        let g1 = gen_id(pass(mkbg(gi)))
+        let gd: dyn Sh = mkbg(gi)
+        let g2 = gen_id(gd)
+        let g3 = gen_first(gd, g1)
+        let gw = gen_wrap(gd)
+        if gi % 50 == 0 {
+            expect(churn(gi) > 0, "churn")
+        }
+        gacc = gacc + g1.area() + g2.area() + g3.area() + gw.v.area() + len(g2.tag()) + gw.k
+        gexp = gexp + 4 * (gi * 2 + 2) + len("bg-b{gi}") + 1
+        gi = gi + 1
+    }
+    expect(gacc == gexp, "generic with dyn: {gacc} vs {gexp}")
+    expect(gen_id(q).side == 5, "generic over the struct itself")
+
+    // 13. a dyn coerced from an if / match value.
+    let mut ii = 0
+    while ii < 300 {
+        let na = Sq { side: ii, label: "na{ii}" }
+        let nb = Sq { side: ii + 1, label: "nb{ii}" }
+        let even = ii % 2 == 0
+        let d1: dyn Sh = if even { Sq { side: ii, label: "x{ii}" } } else { Sq { side: ii + 1, label: "y{ii}" } }
+        let d2: dyn Sh = match ii % 3 {
+            0 => Sq { side: ii, label: "m0{ii}" },
+            1 => Sq { side: ii + 2, label: "m1{ii}" },
+            _ => Sq { side: ii + 3, label: "m2{ii}" },
+        }
+        let d3: dyn Sh = if even { na } else { nb }
+        let d4: dyn Sh = match ii % 2 {
+            0 => nb,
+            _ => na,
+        }
+        let mut s5: Sq = match ii % 2 {
+            0 => nb,
+            _ => na,
+        }
+        let d6: dyn Sh = if even { mk_sq(ii) } else { pass(mk_sq(ii + 1)) }
+        let d7 = pick_dyn(ii)
+        s5.side = 999
+        if ii % 40 == 0 {
+            expect(churn(ii) > 0, "churn")
+        }
+        let lo = if even { ii } else { ii + 1 }
+        let hi = if even { ii + 1 } else { ii }
+        let side2 = if ii % 3 == 0 { ii } else { if ii % 3 == 1 { ii + 2 } else { ii + 3 } }
+        expect(d1.area() == lo * lo, "if literal arms")
+        expect(d2.area() == side2 * side2, "match literal arms")
+        expect(d3.area() == lo * lo and d3.tag() == (if even { "sq-na{ii}" } else { "sq-nb{ii}" }), "if named arms")
+        expect(d4.area() == hi * hi, "match named arms")
+        expect(s5.side == 999 and na.side == ii and nb.side == ii + 1, "match named arms copy")
+        expect(na.label == "na{ii}" and nb.label == "nb{ii}", "named structs intact")
+        expect(d6.area() == lo * lo, "if dyn arms")
+        expect(d7.area() == hi * hi, "dyn returned from a match of named structs")
+        ii = ii + 1
+    }
 
     println("dyn ownership ok")
 }
