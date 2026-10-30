@@ -10,6 +10,87 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: arrays of tuples own their elements -- literal, push, copies, overwrites (2026-10-29)
+
+Closes the "arrays of tuples leak" blocker open since review round 6 (waves
+2026-10-10 "tuples in containers" and 2026-10-14 default-arm "Measured while
+here"). Leak (no wrong answers on master), but the fix changes who owns what, so
+the risk was the use-after-free direction and it was probed hard.
+- Repro (before; peak RSS at 1,000,000 iterations, AOT / JIT, baseline 4MB,
+  probe `tests/mem/agg_ops_leak.kry`): `let a = [("k{i}", i), ("z{i}", i)]`
+  188 / 310MB; `a = push(a, ("k{i}", i))` 94 / 155MB (the ledger's 188/311 and
+  96/155, within noise); `let mut b = a` + struct copy + field read + enum
+  payload copy 372 / 617MB; overwriting an element or the whole array 372 /
+  617MB; a `for` loop, a returned closure and a destructuring read of the same
+  array 372 / 617MB. Output correct on every one.
+- Root cause: the array drop released no tuple element, because every array
+  COPY site (dup, struct copy, enum payload, closure capture, spawn / actor
+  send) shared the element without a retain (review6 R12-R31), so releasing
+  double freed. The element representation differs per backend: Cranelift's
+  tuple is a refcounted KryosArray (`kryos_array_dup` kind 1 retains it);
+  LLVM's array slot is a `kryos_calloc` box holding the inline aggregate (an
+  owner-count retain, kind 4).
+- Fix: MIR names the dup kind `TUPLE_ELEM_DUP_KIND` (6) and each backend maps it
+  to its own (`remap_tuple_dup_kind`), `array_dup_kind` returns the backend's kind
+  for a tuple, so every dup site that already dispatched on the element type
+  retains tuples. `tuple_array_elem_releasable` (kryos-mir `ir.rs`) is the one
+  predicate: scalars, str, array, map and nested such tuples, so MIR and both
+  backends agree on which arrays own their tuples. Releases: the array drop
+  (Cranelift through the tuple's own drop, LLVM `emit_array_drop` with an
+  owner-count check then `emit_tuple_drop` + `kryos_free`), the closure env
+  dropper (new rt `kryos_array_free_tuples`, Cranelift struct-drop array
+  fields too), `DropIfNe` extended to a replaced tuple element (`a[i] = (..)`)
+  and a replaced array (`a = [..]`, a field, a map value via
+  `type_array_releases`). Copies that now retain: closure capture, `spawn`
+  capture, channel and actor message sends (all were header clones). Reads that
+  now own a reference, like a map read does: `let t = a[i]`, `t = a[i]` (also off
+  a temporary array), a `for` loop variable (shared, released every iteration),
+  an enum payload `W.Has(a[i])`; `strip_escaping_tuple_drops` keeps the drop of a
+  NAMED binding of an index read (an unnamed temp followed by a share is a
+  container store's).
+- Pinned by `tests/mem_agg_ops_gate.sh` modes `arr_tuple_lit`, `arr_tuple_push`,
+  `arr_tuple_copy`, `arr_tuple_overwrite`, `arr_tuple_loop` (in CI) and
+  `tests/conformance/conf_array_tuple_ownership.kry` (use-after-free direction:
+  reads, copies, a returned closure, a spawn capture and a loop variable
+  surviving the array being overwritten / churned over; run under KRYOS_FREE_DIAG
+  on both backends and with real frees on AOT by `no_double_free.sh`
+  `array_tuple_ownership`). The ownership matrix generators gained an `atup`
+  (`[(str, i64)]`) type in gen1/2/3.
+- Evidence: master (this commit's parent, full release build) FAILS all 10 legs
+  of the five new gate modes (e.g. `arr_tuple_copy` AOT 372MB, JIT 617MB, ceiling
+  40MB); with the fix all 10 legs read 4MB and the gate passes. The conformance
+  program is a use-after-free pin, so it is green on master too (master never
+  frees these tuples); it is the guard for the direction the fix could break. It
+  caught nothing on the final build but the probes caught real regressions of
+  intermediate builds (an element read aliasing a tuple the array then released,
+  a `for` variable, a temp-array read through `push`, `y = tmp[0]`,
+  `W.Has(tmp[0])`, a spawn capture, a returned closure), each fixed before this
+  commit. Full ownership
+  matrix (gen1+gen2+gen3, 392 programs x 3 backends x diag/real frees), master
+  vs fix with `compare.py`: `regressions 0, crash-only 0` in all four shards
+  (1176 legs same-clean). 12 further hand-written probes (closure capture, spawn,
+  actor, @copy struct, zip / enumerate / filter, nested arrays, element swaps,
+  overwrite-while-iterating, map values) clean on all six legs.
+- Gates before / after, same machine: `gates 2` 28 PASS -> 28 PASS (conformance
+  104/104 -> 105/105, tier2 GREEN both), bootstrap 16/16 -> 16/16. All 15 other
+  `tests/mem_*` gates PASS (`mem_agg_ops_gate.sh` with the five new modes, 4MB on
+  every leg).
+- Residual (measured, not fixed): (1) `pop(a)` and `a + b` on an array of tuples
+  still leak the tuple (79 / 100MB and 72 / 77MB per 400k); `[str]` leaks on
+  both on master too (62 / 65MB, 77 / 72MB), so this is parity, not a tuple
+  gap. (2) A `map<K, [(..)]>` value: the overwritten value is released now, but
+  the map's own drop still frees its array values with the type-erased free, so
+  the last value's tuples leak (41 / 63MB per 400k, master 75 / 123MB; the same
+  shape with `[str]` is 4MB because the map free has element kinds for strings).
+  (3) A tuple with a struct, enum or closure element is not
+  `tuple_array_elem_releasable`: arrays of those keep the old never-released
+  behavior (leak, no change). (4) A `@copy` struct's `[(..)]` field is shared at
+  copy time and its drop is a no-op, as for every `@copy` heap field. (5) Still
+  open and separate (found while probing, master too): a closure returned from a
+  function that captures an array of STRINGS reads empty with real frees
+  (review6 R32): the capture is a header clone and the scope-end drop frees
+  the strings; this wave fixed that shape for arrays of tuples only.
+
 ## Wave: a directly self-recursive enum was never owned, so every tree that crossed a call leaked -- and reading one back out of a container was a use-after-free (2026-10-29)
 
 Closes the "recursive enums stay on the move model" residual (waves 2026-10-10
@@ -270,7 +351,8 @@ block arm with a local are right on all six legs.
 - Measured while here, all on master too (1M iterations, LLVM / Cranelift):
   - Arrays of tuples: 188 / 311MB for a literal, 96 / 155MB for a push --
     still the review-round-6 blocker (LLVM boxes array tuple elements with a
-    plain `kryos_calloc`, so a copy cannot share them).
+    plain `kryos_calloc`, so a copy cannot share them). CLOSED 2026-10-29,
+    see the "arrays of tuples own their elements" wave at the top.
   - `dyn Trait` coercion: 127 / 32MB passing a struct to a `dyn` param,
     202 / 141MB for `let s: dyn T = S {..}`. A DynTrait value is never
     dropped (no drop arm): the fat box and the data slot leak, and the data

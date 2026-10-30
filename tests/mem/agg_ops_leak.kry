@@ -61,6 +61,13 @@ fn match_tuple(i: i64) -> i64 {
 }
 
 struct Hfs { f: fn(i64) -> str }
+struct Hat { items: [(str, i64)] }
+enum Eat { Items([(str, i64)]), Nothing }
+fn mk_atc(i: i64) -> fn() -> i64 {
+    let xs = [("o{i}", i), ("p{i}", i)]
+    return || len(xs[1].0)
+}
+
 struct Pbr { name: str, n: i64 }
 fn pbr_n(i: i64) -> i64 {
     let s = Pbr { name: "r{i}", n: i }
@@ -325,6 +332,42 @@ fn main() {
             let wmh = Wmh.Has(mkmh(i))
             let smh = Smh { m: mkmh(i + 1) }
             acc = acc + wmh_len(wmh) + len(smh.m)
+        } elif mode == "arr_tuple_lit" {
+            // An array of tuples: the literal's element boxes were never
+            // released at the array's drop.
+            let atl = [("k{i}", i), ("z{i}", i)]
+            acc = acc + len(atl) + len(atl[1].0)
+        } elif mode == "arr_tuple_push" {
+            let mut atp: [(str, i64)] = []
+            atp = push(atp, ("k{i}", i))
+            acc = acc + len(atp) + len(atp[0].0)
+        } elif mode == "arr_tuple_copy" {
+            // Every way an array of tuples is copied shares its elements.
+            let atc = [("c{i}", i)]
+            let mut atd = atc
+            atd = push(atd, ("d{i}", i))
+            let ath = Hat { items: [("a{i}", i)] }
+            let ath2 = ath
+            let ati = ath.items
+            let ate = Eat.Items([("e{i}", i)])
+            let ates = [ate, ate]
+            acc = acc + len(atd) + len(atc[0].0) + len(ath2.items[0].0) + len(ati[0].0) + len(ates)
+        } elif mode == "arr_tuple_overwrite" {
+            // Read a tuple out, overwrite its source, read the tuple again.
+            let mut ato = [("o{i}", i), ("p{i}", i)]
+            let tt = ato[0]
+            ato = [("q{i}", i)]
+            ato[0] = ("r{i}", i)
+            acc = acc + len(tt.0) + len(ato[0].0)
+        } elif mode == "arr_tuple_loop" {
+            // A returned closure over an array of tuples, a loop variable and
+            // a destructuring read: each owns its own reference.
+            let atl2 = [("o{i}", i), ("p{i}", i)]
+            let atf = mk_atc(i)
+            let mut atn = 0
+            for att in atl2 { atn = atn + len(att.0) }
+            let (ats, atk) = atl2[0]
+            acc = acc + atf() + atn + len(ats) + atk
         } elif mode == "default_arm" {
             // A switch-lowered match's `_` arm never dropped its temps.
             let da = match i % 3 {

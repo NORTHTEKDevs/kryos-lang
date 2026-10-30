@@ -55,6 +55,27 @@ pub unsafe extern "C" fn kryos_tuple_release(t: *mut KryosArray, kinds: i64) {
     kryos_array_free(t);
 }
 
+/// Release an array whose elements are TUPLE handles (`kinds` as in
+/// `kryos_tuple_release`): the last reference releases each tuple, then the
+/// array. A closure env's dropper and a struct drop helper use this for a
+/// `[(..)]` they own; a bare `kryos_array_free` left every tuple behind.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_free_tuples(arr: *mut KryosArray, kinds: i64) {
+    if arr.is_null() {
+        return;
+    }
+    if rc_atomic(arr).load(Ordering::Acquire) == 1 && !(*arr).data.is_null() {
+        let len = (*arr).len;
+        for i in 0..len {
+            let t = kryos_array_get(arr, i);
+            if t != 0 {
+                kryos_tuple_release(t as *mut KryosArray, kinds);
+            }
+        }
+    }
+    kryos_array_free(arr);
+}
+
 /// Set an array's refcount (see `map::fresh_empty_container`).
 pub(crate) unsafe fn kryos_array_set_refcount(arr: *mut KryosArray, rc: i64) {
     if !arr.is_null() {

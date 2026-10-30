@@ -108,8 +108,38 @@ fn array_dup_kind(elem: &MirType) -> i64 {
         MirType::Str | MirType::Array(_, _) | MirType::Map { .. } => 1,
         MirType::Struct(_) | MirType::Enum(_) => 4,
         MirType::Function { .. } | MirType::Shared(_) => 2,
+        // A tuple element is a refcounted KryosArray here (kind 1), released
+        // by the array drop when it is one the drop handles.
+        MirType::Tuple(_) if kryos_mir::ir::tuple_array_elem_releasable(elem) => 1,
         _ => 0,
     }
+}
+
+/// `kryos_tuple_release`'s element kinds for a tuple type (4 bits per element:
+/// 1 str, 2 array, 3 map, 0 anything the release leaves alone).
+fn tuple_release_kinds(tes: &[MirType]) -> i64 {
+    tes.iter().take(16).enumerate().fold(0i64, |acc, (k, t)| {
+        let kind = match t {
+            MirType::Str => 1,
+            MirType::Array(_, _) => 2,
+            MirType::Map { .. } => 3,
+            _ => 0,
+        };
+        acc | (kind << (k * 4))
+    })
+}
+
+/// MIR names a tuple-array dup with `TUPLE_ELEM_DUP_KIND` (it cannot know a
+/// backend's tuple representation); Cranelift's tuple is a refcounted array,
+/// dup kind 1.
+fn remap_tuple_dup_kind(func: &str, args: &[Operand]) -> Option<Vec<Operand>> {
+    if func == "kryos_array_dup"
+        && args.len() == 2
+        && matches!(&args[1], Operand::Constant(Constant::Int(k)) if *k == kryos_mir::ir::TUPLE_ELEM_DUP_KIND)
+    {
+        return Some(vec![args[0].clone(), Operand::Constant(Constant::Int(1))]);
+    }
+    None
 }
 
 /// Returns true if a type is a floating-point type.
@@ -1999,6 +2029,15 @@ pub fn compile_module_with_options(
             let id = object_module.declare_function("kryos_tuple_release", Linkage::Import, &sig)?;
             func_ids.insert("kryos_tuple_release".to_string(), id);
         }
+        // A `[(..)]` a drop helper or closure dropper owns releases its tuples
+        // through this.
+        if !func_ids.contains_key("kryos_array_free_tuples") {
+            let mut sig = Signature::new(call_conv);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            let id = object_module.declare_function("kryos_array_free_tuples", Linkage::Import, &sig)?;
+            func_ids.insert("kryos_array_free_tuples".to_string(), id);
+        }
         // `[T]` fields of drop helpers release their elements through this.
         if !func_ids.contains_key("kryos_array_free_elems") {
             let mut sig = Signature::new(call_conv);
@@ -2050,6 +2089,19 @@ pub fn compile_module_with_options(
                         let fref = object_module.declare_func_in_func(fid, builder.func);
                         builder.ins().call(fref, &[val, kv]);
                         continue;
+                    }
+                    // An array of tuples: release the tuples with it.
+                    if let Some(MirType::Array(elem, _)) = cap_ty {
+                        if let (MirType::Tuple(tes), true) =
+                            (elem.as_ref(), kryos_mir::ir::tuple_array_elem_releasable(elem))
+                        {
+                            let val = builder.ins().load(types::I64, MemFlags::new(), env_ptr, offset);
+                            let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+                            let fid = func_ids["kryos_array_free_tuples"];
+                            let fref = object_module.declare_func_in_func(fid, builder.func);
+                            builder.ins().call(fref, &[val, kv]);
+                            continue;
+                        }
                     }
                     // A struct/enum capture is a deep copy (see RValue::Closure):
                     // its type's drop helper releases its fields and the box --
@@ -3579,7 +3631,12 @@ fn translate_instruction<M: Module>(
             // plain I64 local holding the raw handle read back before the
             // store; only Struct/Enum `ty` does anything -- other types
             // are a defensive no-op (never emitted by lower.rs today).
-            if matches!(ty, MirType::Struct(_) | MirType::Enum(_)) {
+            // Also a replaced TUPLE array element, and a replaced array of
+            // tuples (type-directed like the rest; both are plain handles).
+            if matches!(ty, MirType::Struct(_) | MirType::Enum(_))
+                || kryos_mir::ir::tuple_array_elem_releasable(ty)
+                || matches!(ty, MirType::Array(e, _) if kryos_mir::ir::tuple_array_elem_releasable(e))
+            {
                 if let Some(&old_var) = translator.variables.get(&old.0) {
                     let old_val = builder.use_var(old_var);
                     let new_val = translate_operand(new, builder, translator, module)?;
@@ -3884,6 +3941,9 @@ fn translate_instruction<M: Module>(
                                 // owner or the source's element-free releases boxes the
                                 // copy still points at.
                                 MirType::Struct(_) => 4,
+                                // A tuple element (a refcounted array): the copy
+                                // retains it, the parent releases its own.
+                                t @ MirType::Tuple(_) => array_dup_kind(t),
                                 _ => 0,
                             };
                             let f = ensure_func_ref_with_args(
@@ -4039,6 +4099,20 @@ fn translate_instruction<M: Module>(
                     let c = builder.ins().call(f, &[v_val]);
                     builder.inst_results(c)[0]
                 }
+                // An array of tuples: the receiver's copy owns its own
+                // reference to each tuple.
+                Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                    let f = ensure_func_ref_with_args(
+                        "kryos_array_dup",
+                        builder,
+                        translator,
+                        module,
+                        2,
+                    )?;
+                    let k = builder.ins().iconst(types::I64, array_dup_kind(elem));
+                    let c = builder.ins().call(f, &[v_val, k]);
+                    builder.inst_results(c)[0]
+                }
                 Some(MirType::Array(_, _)) => {
                     let f = ensure_func_ref_with_args(
                         "kryos_array_clone",
@@ -4142,6 +4216,18 @@ fn translate_instruction<M: Module>(
                             1,
                         )?;
                         let c = builder.ins().call(f, &[val]);
+                        builder.inst_results(c)[0]
+                    }
+                    Some(MirType::Array(elem, _)) if kryos_mir::ir::tuple_array_elem_releasable(elem) => {
+                        let f = ensure_func_ref_with_args(
+                            "kryos_array_dup",
+                            builder,
+                            translator,
+                            module,
+                            2,
+                        )?;
+                        let k = builder.ins().iconst(types::I64, array_dup_kind(elem));
+                        let c = builder.ins().call(f, &[val, k]);
                         builder.inst_results(c)[0]
                     }
                     Some(MirType::Array(_, _)) => {
@@ -4659,6 +4745,8 @@ fn translate_rvalue<M: Module>(
         }
 
         RValue::Call { func, args } => {
+            let remapped_args = remap_tuple_dup_kind(func, args);
+            let args = remapped_args.as_ref().unwrap_or(args);
             // Handle print/println/eprintln specially: all string values are
             // KryosString handles (even constants), and non-string values must
             // be converted to KryosString before printing.
@@ -6551,6 +6639,23 @@ fn translate_rvalue<M: Module>(
                             let c = builder.ins().call(f, &[val]);
                             builder.inst_results(c)[0]
                         }
+                        // An array of tuples: the env owns its own reference to
+                        // each tuple (the capturing scope drops its array and
+                        // releases the tuples it holds).
+                        Some(MirType::Array(elem, _))
+                            if kryos_mir::ir::tuple_array_elem_releasable(elem) =>
+                        {
+                            let f = ensure_func_ref_with_args(
+                                "kryos_array_dup",
+                                builder,
+                                translator,
+                                module,
+                                2,
+                            )?;
+                            let k = builder.ins().iconst(types::I64, array_dup_kind(elem));
+                            let c = builder.ins().call(f, &[val, k]);
+                            builder.inst_results(c)[0]
+                        }
                         Some(MirType::Array(_, _)) => {
                             let f = ensure_func_ref_with_args(
                                 "kryos_array_clone",
@@ -8399,11 +8504,14 @@ fn emit_drop_for_value<M: Module>(
                         Some("kryos_free".to_string())
                     }
                 }
-                // Tuple elements are NOT released (an array of tuples leaks
-                // them, as on master): array copies -- a struct copy, a `let
-                // mut` dup, a field read, an enum payload or closure snapshot
-                // -- share the tuple elements without retaining them, so
-                // releasing them here double-freed (review round 6, R12-R31).
+                // A tuple element (a refcounted KryosArray) is released
+                // below through the tuple's own drop, like an array row.
+                // Only tuples `tuple_array_elem_releasable` accepts: every
+                // array copy retains them (kryos_array_dup kind 1), so the
+                // last array to drop owns the last reference.
+                MirType::Tuple(_) if kryos_mir::ir::tuple_array_elem_releasable(elem_ty.as_ref()) => {
+                    Some("kryos_array_free".to_string())
+                }
                 _ => None,
             };
 
@@ -8472,7 +8580,7 @@ fn emit_drop_for_value<M: Module>(
                     .load(types::I64, MemFlags::new(), elem_addr, 0);
                 // An array of arrays releases each row element-wise too: a
                 // bare kryos_array_free on `[[str]]`'s rows leaked every string.
-                if matches!(elem_ty.as_ref(), MirType::Array(_, _)) {
+                if matches!(elem_ty.as_ref(), MirType::Array(_, _) | MirType::Tuple(_)) {
                     let ety = elem_ty.as_ref().clone();
                     emit_drop_for_value(elem, &ety, builder, translator, module)?;
                 } else {
@@ -8830,6 +8938,13 @@ fn emit_helper_array_field_free<M: Module>(
     field_val: cranelift_codegen::ir::Value,
     elem: &MirType,
 ) {
+    if let (MirType::Tuple(tes), true) = (elem, kryos_mir::ir::tuple_array_elem_releasable(elem)) {
+        let kv = builder.ins().iconst(types::I64, tuple_release_kinds(tes));
+        let fid = func_ids["kryos_array_free_tuples"];
+        let fref = object_module.declare_func_in_func(fid, builder.func);
+        builder.ins().call(fref, &[field_val, kv]);
+        return;
+    }
     let elem_fn = match elem {
         MirType::Str => Some("kryos_string_free".to_string()),
         MirType::Array(_, _) => Some("kryos_array_free".to_string()),
