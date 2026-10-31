@@ -30,6 +30,12 @@
 #      not on an unrelated later statement the overflow-triggering peek
 #      merely happened to be looking at.
 #
+#   4. (2026-10-15/31) An `elif let` / `elif` chain in expression position
+#      is parsed in a loop and charged to the same 2048 AST-depth budget as a
+#      flat operator chain: ~1500 clauses are accepted and run, a chain past
+#      the budget is rejected with E0010, and a 50k-clause bomb yields one
+#      E0010 in a few hundred bytes under check, run AND build.
+#
 # Investigation record: `tools/loop/LEDGER.md` item 22. That item's own
 # claimed thresholds (nested parens 1750 fast / 1780 hangs; nested arrays
 # 1600 fast / 1800 hangs; nested string interpolation 495 fast / 500 hangs)
@@ -171,6 +177,20 @@ gen() {
               for ((i=0; i<depth; i++)); do printf ' elif a { %d }\n' "$i"; done
               printf ' else { -1 }\n println(to_string(x))\n}\n'
             } > "$out" ;;
+        # The same expression chain as a CALL ARGUMENT (889 KB at 50k). The
+        # abandoned tail used to parse as struct-literal fields, each emitting
+        # its own unsuppressed error: 5.9 MB of diagnostics under `run`.
+        elifcall)
+            { printf 'fn main() {
+ let a: bool = false
+ println(to_string(if a { 0 }
+'
+              for ((i=0; i<depth; i++)); do printf ' elif a { %d }
+' "$i"; done
+              printf ' else { -1 }))
+}
+'
+            } > "$out" ;;
         # Nested interpolation deep enough to overflow the LEXER, which runs
         # before the parser's guard can see a token: scan_string recurses into
         # scan_token on the nested literal
@@ -253,6 +273,68 @@ for shape in eliflet elifexpr deepinterp; do
     fi
 done
 
+# --- Part 1b-2: the chain limit is DOCUMENTED, not accidental. An
+# `elif` / `elif let` chain is parsed in a loop and each clause costs one unit
+# of the same 2048 AST-depth budget a flat operator chain pays, so a legitimate
+# chain well past the old 250-clause recursion cap must be ACCEPTED and RUN
+# correctly, and one past the budget must be rejected with E0010.
+echo "-- part 1b-2: long legitimate chains (limit ~2048 clauses) --"
+for shape in eliflet elifexpr; do
+    gen "$shape" 1500 "$TMP/${shape}_1500.kry"
+    check_bounded "$shape chain @1500 (legitimate)" "$TMP/${shape}_1500.kry"
+    if [ $? -eq 0 ]; then
+        echo "  ok   $shape chain @1500 accepted"
+    else
+        echo "  FAIL: $shape chain @1500 rejected -- over-rejects a valid flat chain"
+        head -3 "$TMP/${shape}_1500.kry.out" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+    gen "$shape" 2100 "$TMP/${shape}_2100.kry"
+    check_bounded "$shape chain @2100 (over the budget)" "$TMP/${shape}_2100.kry"
+    if [ $? -ne 0 ] && grep -q "E0010" "$TMP/${shape}_2100.kry.out"; then
+        echo "  ok   $shape chain @2100 rejected with E0010"
+    else
+        echo "  FAIL: $shape chain @2100 was not rejected with E0010"
+        fail=1
+    fi
+done
+# RUN it, not just check it: the observable is the value the chain selects.
+gen elifexpr 1500 "$TMP/elifexpr_run.kry"
+got=$(timeout 120 "$K" run "$TMP/elifexpr_run.kry" 2>&1 | tr -d '')
+if [ "$got" = "-1" ]; then
+    echo "  ok   elif-expr chain @1500 runs and selects the else value (-1)"
+else
+    echo "  FAIL: elif-expr chain @1500 printed '${got:0:80}' (want -1)"
+    fail=1
+fi
+gen eliflet 1500 "$TMP/eliflet_run.kry"
+got=$(timeout 120 "$K" run "$TMP/eliflet_run.kry" 2>&1 | tr -d '')
+if [ "$got" = "z" ]; then
+    echo "  ok   elif-let chain @1500 runs and takes the else arm (z)"
+else
+    echo "  FAIL: elif-let chain @1500 printed '${got:0:80}' (want z)"
+    fail=1
+fi
+# The abandoned chain must yield ONE E0010 and a small output on EVERY path,
+# not only `check`: `run` and `build` printed 5.9 MB for the call-argument bomb.
+gen elifcall 50000 "$TMP/elifcall.kry"
+for mode in check run build; do
+    case $mode in
+        check) cmd=(check) ;;
+        run)   cmd=(run) ;;
+        build) cmd=(build -o "$TMP/elifcall.exe") ;;
+    esac
+    timeout 120 "$K" "${cmd[@]}" "$TMP/elifcall.kry" > "$TMP/elifcall.$mode.out" 2>&1
+    rc=$?
+    sz=$(wc -c < "$TMP/elifcall.$mode.out")
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && grep -q "E0010" "$TMP/elifcall.$mode.out" && [ "$sz" -le 4096 ]; then
+        echo "  ok   50k-clause call-argument bomb under '$mode': E0010, ${sz}B"
+    else
+        echo "  FAIL: 50k-clause call-argument bomb under '$mode': rc=$rc, ${sz}B (want E0010 in <= 4096B)"
+        fail=1
+    fi
+done
+
 # --- Part 1c: the error path itself must be bounded (2026-10-15). These two
 # need no deep nesting, so they isolate the rendering/printing fix from the
 # recursion guards above. On master the long line renders in full (4 MB for a
@@ -278,6 +360,22 @@ else
     echo "  FAIL: 500 errors printed ${shown} diagnostics (want <= 100, a '400 more' footer, and '500 errors' in the summary)"
     fail=1
 fi
+
+# The same cap holds for `run` and `build`, not only `check`.
+for mode in run build; do
+    case $mode in
+        run)   cmd=(run) ;;
+        build) cmd=(build -o "$TMP/manyerr.exe") ;;
+    esac
+    timeout 120 "$K" "${cmd[@]}" "$TMP/manyerr.kry" > "$TMP/manyerr.$mode.out" 2>&1
+    shown=$(grep -c "E0100" "$TMP/manyerr.$mode.out")
+    if [ "$shown" -le 100 ] && grep -q "400 more diagnostics not shown" "$TMP/manyerr.$mode.out"; then
+        echo "  ok   '$mode' prints ${shown} of 500 diagnostics with a '400 more' footer"
+    else
+        echo "  FAIL: '$mode' printed ${shown} diagnostics for 500 errors (want <= 100 and a '400 more' footer)"
+        fail=1
+    fi
+done
 
 # --- Part 2: no false-positive rejection just under the true ceiling.
 echo "-- part 2: flat chain just under the ceiling must be ACCEPTED --"
@@ -317,7 +415,7 @@ fi
 
 echo
 if [ "$fail" -eq 0 ]; then
-    echo "PASS: parser nesting-depth guard is bounded-time and false-positive-free."
+    echo "PASS: parser nesting-depth guard is bounded-time; chains up to the 2048-level budget are accepted."
 else
     echo "FAIL: see above."
 fi

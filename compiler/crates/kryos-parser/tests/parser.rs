@@ -1338,3 +1338,76 @@ fn test_hint_assign_in_condition() {
         "expected == note in {diags:?}"
     );
 }
+
+// ======================== elif / elif-let chains (E0010) ========================
+
+fn elif_chain_srcs(n: usize) -> Vec<(&'static str, String)> {
+    let expr = format!(
+        "fn main() {{ let a = false
+ let x: i64 = if a {{ 0 }}{} else {{ -1 }}
+ println(to_string(x)) }}",
+        " elif a { 1 }".repeat(n)
+    );
+    let else_if_expr = format!(
+        "fn main() {{ let a = false
+ let x: i64 = if a {{ 0 }}{} else {{ -1 }}
+ println(to_string(x)) }}",
+        " else if a { 1 }".repeat(n)
+    );
+    let elif_let = format!(
+        "fn main() {{ let v: i64 = 0
+ if let 1 = v {{ println(\"a\") }}{} else {{ println(\"z\") }} }}",
+        " elif let 2 = v { println(\"b\") }".repeat(n)
+    );
+    let mixed_let = format!(
+        "fn main() {{ let v: i64 = 0
+ if let 1 = v {{ println(\"a\") }}{} else {{ println(\"z\") }} }}",
+        " else if let 2 = v { println(\"b\") } elif let 3 = v { println(\"c\") }".repeat(n / 2)
+    );
+    let call_arg = format!(
+        "fn main() {{ let a = false
+ println(to_string(if a {{ 0 }}{} else {{ -1 }})) }}",
+        " elif a { 1 }".repeat(n)
+    );
+    vec![
+        ("elif expr", expr),
+        ("else-if expr", else_if_expr),
+        ("elif let", elif_let),
+        ("mixed else-if-let / elif-let", mixed_let),
+        ("elif expr as call argument", call_arg),
+    ]
+}
+
+#[test]
+fn test_elif_chains_far_past_the_old_recursion_cap_still_parse() {
+    // Regression for an over-rejection: the first nesting guard charged the
+    // 256-deep GRAMMAR-recursion budget once per elif clause, so a flat chain
+    // in expression position / an elif-let chain was rejected at ~250 clauses
+    // although v1.2.0 compiled them. A chain is parsed in a loop now and pays
+    // only the 2048 AST-depth budget, so 1500 clauses must parse clean.
+    for (label, src) in elif_chain_srcs(1500) {
+        let tokens = Lexer::new(&src, 0).tokenize();
+        if let Err(diags) = parse(tokens) {
+            panic!("{label} @1500 rejected: {:?}", diags.first());
+        }
+    }
+}
+
+#[test]
+fn test_elif_chain_bomb_is_one_e0010_and_nothing_else() {
+    // Past the budget (and at bomb scale) every shape yields exactly ONE
+    // diagnostic, E0010: the abandoned tail must not cascade into follow-on
+    // syntax errors (it used to emit one struct-literal error per leftover
+    // field: 23,880 of them for a 50k-clause call-argument chain).
+    for n in [2100usize, 50_000] {
+        for (label, src) in elif_chain_srcs(n) {
+            let diags = parse_err(&src);
+            let e0010 = diags
+                .iter()
+                .filter(|d| d.code.as_deref() == Some("E0010"))
+                .count();
+            assert_eq!(e0010, 1, "{label} @{n}: expected one E0010, got {} diagnostics", diags.len());
+            assert_eq!(diags.len(), 1, "{label} @{n}: follow-on diagnostics after E0010: {:?}", diags.get(1));
+        }
+    }
+}

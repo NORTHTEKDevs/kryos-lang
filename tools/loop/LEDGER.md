@@ -193,31 +193,75 @@ Hostile or generated source only; no ordinary program reaches any of them.
   (3) A label rendered its whole source line and padded the caret to the
   column, so output was proportional to the line length. (4) `check` printed
   every diagnostic.
-- Fix. Each `elif` clause charges one unit of grammar recursion (released at
-  the end of the `if`, so a separate `if` costs nothing) and reports the
-  existing E0010 at the cap; the lexer carries its own interpolation depth
-  (max 64) and reports E0010; `window_line` shows a long line as a 200-byte
-  window around the span on char boundaries, marked `...`; `kryos check` prints
-  at most 100 diagnostics then `... N more diagnostics not shown`, with the
-  error / warning counts still covering all of them.
+- Fix. (1) The two chains are parsed in a LOOP (`parse_if_let`,
+  `parse_if_expr_chain`), the nested match / IfExpr shape built afterwards,
+  innermost first. Each further clause charges one unit of `nest_depth` (the
+  2048 AST-depth budget a flat operator chain pays) and NOT the 256
+  grammar-recursion budget; the whole chain costs one recursion unit. The next
+  clause past the budget reports the existing E0010. (2) The lexer carries its
+  own interpolation depth (max 64) and reports E0010. (3) `window_line` shows a
+  long line as a 200-byte window around the span on char boundaries, marked
+  `...`. (4) `check`, `run` and `build` print at most 100 diagnostics then
+  `... N more diagnostics not shown`; counts still cover all of them (shared
+  `MAX_SHOWN_DIAGNOSTICS` in `commands/mod.rs`). (5) The struct-literal
+  "expected `,` or `}`" error ignored the E0010 poison flag, so the abandoned
+  tail of a call-argument chain emitted one per leftover field (23,880 for 50k
+  clauses, 5.9 MB under `run`); it is now suppressed like every other syntax
+  error after E0010, so the bomb is exactly one diagnostic.
+- First version of this fix was rejected (adversarial review): it charged the
+  256 recursion budget once per clause, so a flat expression-position `elif`
+  chain was rejected at 251 clauses and an elif-let chain at 252, although
+  master compiles and runs them (N=300, 1000, 5000, 20000 print -1; LLVM AOT at
+  1000 too) and the E0010 text was misleading for a flat chain. Fixed by the
+  loop above. Measured on this build, `kryos run`: elif-expr, else-if-expr,
+  elif-let, else-if-let and a mixed chain print the right value at 20, 300,
+  1500 and 2030 clauses; 2100, 20000 and 50000 give E0010 (rc 1). The value
+  selected by the LAST clause of a 2001-clause chain is correct for all three
+  shapes (expr, let, plain statement). `kryos build --backend llvm` and
+  `--backend cranelift` of the 2030-clause expr / elif-let / mixed chains
+  build and print -1 / z / z.
 - Proved both ways. `tests/parser_nesting_gate.sh` part 1b (elif-let @20000,
   elif-expr @20000, the committed deep-interpolation probe, each with a shallow
-  legitimate control) and a new part 1c (2 MB single line; 500 distinct type
-  errors). The gate now honors `KRYOS_BIN`, so master and the branch were run
-  as two different binaries (full `cargo build --release` for the branch; the
-  master binary rebuilt from `origin/master` sources). Master binary: part 1b
-  FAILS 3 of 3 (`elif-let chain @20000` rc 0 not rejected, `elif chain in
-  expression position @20000` rc 0 not rejected, `nested interpolation
-  @committed` rc 253), part 1c FAILS 2 of 2 (`long-line diagnostic printed
-  4000426B`, `500 errors printed 500 diagnostics`). Branch binary: part 1b 15 of
-  15 ok (bombs 30421B / 348B / 41507B of output, shallow controls accepted),
-  part 1c ok (602B for the 2000000B line; 100 diagnostics, `400 more
-  diagnostics not shown`, summary still `500 errors`), whole gate PASS.
-- Gates on the branch tip (rebased onto origin/master 540372ec, full `cargo build --release`): `kryos-loop.sh gates 2` rc 0, conformance 113/113 PASS, tier 1 and `tier2 GREEN`; `test_bootstrap.sh` 16 / 16.
-- Not fixed / residual. The deep-interpolation leg runs the committed 3 MB probe
-  because the lexer overflow needs ~250k levels, impractical to generate in
-  bash; its shallow control is generated at depth 8. The diagnostics cap is in
-  `kryos check` only; `run` / `build` print their diagnostics as before.
+  control), new part 1b-2 (1500-clause chains accepted and RUN, 2100 rejected,
+  a 50k call-argument bomb under check / run / build bounded to <= 4096 B with
+  E0010) and part 1c (2 MB single line; 500 type errors under check, run and
+  build). Two source reverts, each a full `cargo build --release`:
+  * PR source as first pushed (f0a20f76): gate exits 1 with 9 FAILs: elif-let
+    and elif-expr @1500 rejected (x2) and not runnable (x2), the call-argument
+    bomb printed 27516 B under check and 6993821 B under run and build, and
+    `run` / `build` printed 500 diagnostics for 500 errors (x2).
+  * origin/master sources (parser, lexer, errors, cli): gate exits 1 with 12
+    FAILs: elif-let @20000 rc 0, elif-expr @20000 rc 0, committed interpolation
+    probe rc 253, elif-let and elif-expr @2100 not rejected, the call-argument
+    bomb rc 253 (45 B) under check / run / build, `long-line diagnostic printed
+    4000426B`, and 500 diagnostics printed under check, run and build.
+  * This branch: gate PASS. Bombs: 386 B / 353 B / 41507 B (committed
+    interpolation probe), call-argument bomb 353 B check / 338 B run / 351 B
+    build; long line 602 B; 500 errors print 100 + `400 more diagnostics not
+    shown` with the summary still `500 errors`.
+  Parser tests (`tests/parser.rs`, release):
+  `test_elif_chains_far_past_the_old_recursion_cap_still_parse` and
+  `test_elif_chain_bomb_is_one_e0010_and_nothing_else` FAIL on the first
+  pushed parser.rs (elif expr @1500 rejected; a struct-literal follow-on after
+  E0010) and PASS here; kryos-parser 71 + 42, kryos-errors 5 and kryos-lexer
+  green. `test_nesting_guard_allows_reasonable_depth` overflows the 2 MiB test
+  stack in a debug build on master too (verified); it passes in release.
+- Gates on the branch tip (origin/master 540372ec is the merge base, full
+  `cargo build --release`): `kryos-loop.sh gates 2` rc 0, conformance 113/113
+  PASS (equal to v1.2.0), every tier 1 gate PASS, `tier2 GREEN`;
+  `test_bootstrap.sh` PASS: 16 / 16.
+- Not fixed / residual. NEW LIMIT, deliberate: an `elif let` chain or an
+  expression-position `elif` / `else if` chain is capped at ~2000 clauses
+  (2048 minus surrounding nesting), where v1.2.0 accepted longer chains
+  (20000 ran correctly) until the stack overflowed near 50k; the AST of such a
+  chain is still nested per clause, so lifting the cap needs the downstream
+  phases to be iterative, not just the parser. Statement-position plain `if` /
+  `elif` chains are unlimited (a flat Vec). Nested interpolation is capped at
+  63 levels. The deep-interpolation leg runs the committed 3 MB probe because
+  the lexer overflow needs ~250k levels, impractical to generate in bash. The
+  100-diagnostic cap also hides warnings past the 100th in `run` / `build` /
+  `check`. macOS CI is red on the PR from a GitHub macOS 14 runner brownout (0
+  steps run), not from this change; the PR has no macOS coverage.
 
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 

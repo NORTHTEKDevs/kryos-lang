@@ -187,13 +187,16 @@ pub fn execute(
 
     // Render diagnostics to stderr.
     let use_color = atty_stderr();
-    for diag in &result.diagnostics {
+    for diag in result.diagnostics.iter().take(super::MAX_SHOWN_DIAGNOSTICS) {
         let rendered = render_diagnostic(diag, &result.source_map);
         if use_color {
             eprint!("{}", colorize_diagnostic(&rendered));
         } else {
             eprint!("{rendered}");
         }
+    }
+    if let Some(note) = super::hidden_diagnostics_note(result.diagnostics.len()) {
+        eprintln!("{note}");
     }
 
     if !result.success {
