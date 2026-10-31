@@ -1,0 +1,18 @@
+// LEDGER item 59. A for-loop binder shadows an outer harmless closure name; the array mixes a pure closure
+// (first) with a privileged one. Must be REJECTED (E0507 and/or E0110) under inferred and strict.
+@capabilities(fs:read)
+fn make_secret_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let reader = make_secret_reader()
+    let fns = [|| "pure", reader]
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

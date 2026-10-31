@@ -10,6 +10,137 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: PR #18 verifier round 1 -- a statement-position `match` reassigned a fn-typed local invisibly, the REPL skipped the raw-memory gate, `KRYOS_STDLIB_DIR` made user modules trusted (2026-10-31)
+
+Trust-model wave, same branch (fin/trust). An adversarial verifier rejected
+e60e6817 for four things; all four reproduced and are fixed here.
+
+- Repro 1. `let mut f = harmless`, then `match n { 1 => { f = reader } _ =>
+  { f = harmless } }`, then `f()` inside `deny!(fs:read)`: `kryos check` rc=0 in
+  default, strict and inferred; `kryos run` printed the secret. Same for
+  `match 1 {..}`, a `match` on an enum, a `match` inside the `deny!` block, and a
+  lambda whose whole body is a `match`. Master behaves the same (not a
+  regression). Before this wave: `v7_match_assign`, `w1_match_stmt_block`,
+  `w5_match_in_deny`, `w6_match_enum` rc=0; `v1`-`v4`, `v6`, `w2`-`w4` rc=1.
+- Root cause 1. `build_local_closure_caps_block` matched `Stmt::Let`,
+  `Assign`, `DenyBlock`, `If`, `For`/`While`, `Select`, `TryCatch` and a bare
+  block. A `match` statement is `Stmt::Expr { MatchExpr }`, and a lambda whose
+  body is one expression parses with that expression as its body (no block), so
+  neither was walked. Fix: `build_local_closure_caps_expr` walks a block, every
+  `match` arm body and both `if`-expression branches; called for `Let`
+  initializers, `Stmt::Expr`, `Spawn`, `Throw`, `Return` and a lambda body.
+  Closures capture by value, so a lambda that reassigns an outer local does not
+  change the outer one at run time (probed: `apply(|| { f = reader })` prints
+  "not a secret"); only the statement forms above can leak.
+- Repro 2. `printf ':caps
+ptr_byte_at(str_to_ptr("TOP"), 0)
+:quit
+' |
+  kryos repl` printed `capabilities: none` then `84`; `kryos eval` of the same
+  expression and a file doing it were rejected (E0505). Root cause 2.
+  `check_raw_memory_direct` ran only from `compile_file_impl`, `check_file` and
+  `check_file_with_options_full`; the REPL goes through `compile_source`. Fix:
+  `compile_source_impl` runs it on the parsed module. A REPL-declared `fn` is
+  charged too (every function is, as in a file); `--allow ffi` / `:allow ffi`
+  grant it. Consequence: `:type <raw-memory expression>` is rejected without an
+  `ffi` grant, because its type-check wrapper is unannotated.
+- Repro 3. `KRYOS_STDLIB_DIR=<dir holding the user's modules>`: `kryos check`
+  rc=0 on a main -> mid -> deep chain with `str_to_ptr` + `ptr_byte_at` in
+  `deep`, on a default release build. Root cause 3.
+  `user_modules_in_import_graph` trusted anything under `find_stdlib_dir`, which
+  honours the variable first. Fix: the trusted stdlib is found WITHOUT the
+  variable (exe-relative, build tree, walk-up) and only falls back to it when no
+  stdlib exists anywhere else (a binary run outside its distribution layout, as
+  CI does). The variable still decides where `use std::..` is read from.
+  Residual: with no stdlib next to the binary, in the build tree or above the
+  program, the variable still names the trusted one.
+- Item 4. `fn_field_names` in `kryos-capabilities/src/checker.rs` was populated
+  and never read; its doc comment described a fail-closed behaviour that was
+  reverted in 6ed0b1e0. Field, initialisation, population and comment removed.
+- Proved both ways (source files `checker.rs`, `pipeline.rs`, `resolve.rs`
+  restored to e60e6817, full `cargo build --release`, then re-applied and rebuilt).
+  Reverted: `security_gate.sh` FAIL with 11 FAIL lines (the five new
+  `attack_reassign_local_match_*` fixtures x default and strict = 10, plus
+  `KRYOS_STDLIB_DIR=<user modules> exempted them from the raw-memory gate`);
+  `repl_capability_gate.sh` FAIL with 2 FAIL (`a zero-grant REPL session read
+  raw memory`, `raw memory inside a REPL-declared fn ran with no grant`); the
+  controls (`--allow ffi`, `:allow ffi`, the pure-only `match`, the real stdlib
+  named by the variable) stayed ok. Fixed: `security-gate: PASS` (150 ok),
+  `repl-capability: PASS` (14 ok).
+- Fixtures: `tests/security/attack_reassign_local_match_{stmt_block,in_deny,
+  enum_arm,literal_subject,lambda_body}.kry` (escape_status rows 73-77, all
+  rejected, so "STILL ESCAPING" stays 11), control `ctl_reassign_pure_in_match.kry`.
+- Over-rejection, fixed build: `stdlib_compile_gate` 66/66; `ecosystem_check`
+  259/259 clean; `capability_matrix_gate` attacks rejected 75/75, precision
+  34/75 (unchanged); conformance 113/113 (master 113).
+- Residual. (1) The eleven escapes in `escape_status.sh` are unchanged. (2)
+  `:type` of a raw-memory expression needs `ffi` (above). (3) Not every parent of an arm-bearing expression was probed (a `match` in a
+  `while` condition, for example); the walk covers each expression form that
+  carries a block or arm body, not every place one can sit.
+
+## Wave: PR #18 (capability boundary) rebased onto v1.2.0; the REPL ran its code after dropping the JIT that owns its string literals (2026-10-31)
+
+Trust-model wave. fin/trust (REPL grant, `KRYOS_NO_HOTPARAM_ALL`, raw-memory
+gate, reassigned-local authority, select timeout, the item 55-72 escape rows)
+was based on `7a20150e`; rebased onto v1.2.0 + #33 (`540372ec`). Master had
+not touched the capability, CLI or driver crates since the base, so the only
+conflict was this file (both waves kept). One new defect surfaced doing it.
+
+- Repro. PR #18's Linux CI job FAILED on its own new gate and was never
+  green: `tests/repl_capability_gate.sh` 7 of 10 checks passed. The grants
+  worked (`capabilities: process` was printed) but the program's output was
+  wrong: `env_get` printed the value without its `ENV=` prefix, `file_write`
+  printed `-1` and wrote nothing. Reproduced on Ubuntu 24.04 (WSL2) with
+  `println("hello")` at the prompt: `<invalid utf-8>`. Windows and macOS were
+  green. `kryos run` was fine, so the compiler was not at fault.
+- Root cause. `repl.rs` called `CraneliftBackend::jit_compile_module`, which
+  builds a `JitCompiler`, compiles, and RETURNS THE POINTERS WHILE DROPPING THE
+  COMPILER. The compiler owns the executable pages and the string-literal data
+  those pointers refer to; the REPL then called `__repl_eval__` on freed memory.
+  Where the allocator leaves the pages intact (Windows, macOS) it works by
+  luck; on Linux a literal comes back as garbage some of the time. Not caused
+  by this PR's capability annotation (the wrapper change only made the existing
+  corruption visible to a gate that prints strings), and it existed on master.
+- Fix. `repl.rs` holds the `JitCompiler` itself (`JitCompiler::new` +
+  `compile_all_with_module`) until the call returns. `dap.rs` has the same
+  shape (`jit_compile_module`, pointer kept in `main_ptr`) and is NOT touched
+  here: see residual.
+- Proved both ways, Linux (full `cargo build --release` each time, only
+  `repl.rs` differs). New check 4b sends 12 `println("literal-N-ok")` inputs and
+  requires all 12. Fix reverted: 4 / 12 intact, `repl-capability: FAIL`
+  (3 FAIL: 4b, `--allow process`, `--allow fs:write`); the same probe outside
+  the gate gave 9 / 12 and 7 / 12 on two runs and 12 / 12 and 12 / 12 with the
+  fix. Fix applied: 12 / 12, `repl-capability: PASS` (10 ok). Windows with the
+  fix: PASS (10 ok).
+- The branch's own gates, re-proved against the v1.2.0 master binary (built
+  from `origin/master`, the branch's tests and the master binary) and the
+  branch binary, both on Windows:
+  `repl_capability_gate.sh` master 7 FAIL / 3 ok (`--allow` is "unexpected
+  argument" there), branch 10 ok. `security_gate.sh` master FAIL (11 FAIL lines:
+  both select-timeout probes x 2 modes, `cap_escape_raw_memory_helper` and
+  `_import` x 3 modes, and `KRYOS_NO_HOTPARAM_ALL=1 weakens this build: 41a's
+  escape compiled`), branch PASS (142 ok, 0 FAIL). `escape_status.sh` master
+  21 escaping / 19 rejected, branch 11 escaping / 29 rejected: the ten rows
+  that flip are `assault_round2_strip_reassigned_local_deny`,
+  `attack_deny_bare_closure_reassign_escape`,
+  `attack_reassign_local_defeats_hotparam`,
+  `attack_round3_trycatch_deny_narrowed_catch`,
+  `attack_select_arm_shadow_closure_deny` and five
+  `attack_select_timeout_*`; no row goes the other way.
+- Over-rejection, same two binaries: `stdlib_compile_gate` 66/66 on both;
+  `ecosystem_check` 259/259 clean on both; `capability_matrix_gate` 75/75
+  attacks rejected, precision 34/75 on both (unchanged); conformance 113/113 on
+  the branch (v1.2.0 master: 113).
+- Gates on the branch tip, `kryos-loop.sh gates 2`: tier 1 and tier 2 GREEN
+  (conformance 113/113); `compiler/self-host/test_bootstrap.sh` run alone:
+  16 / 16.
+- Residual. (1) Eleven capability escapes stay LIVE on this branch
+  (`escape_status.sh` 11 escaping): they need the row layer in kryos-types and
+  are items 58, 59, 64-72 above. This PR narrows the boundary, it does not
+  close it. (2) `kryos dap` keeps the same dropped-JIT shape in `dap.rs`; not
+  reproduced, not fixed. (3) Linux CI cannot
+  be run from here; the Linux proof above is a local WSL2 Ubuntu 24.04 build.
+
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 
 Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.
@@ -1064,6 +1195,73 @@ segfaults (rc=139). Silent-miscompile class: the AOT build gives no sign.
 - Residual: none found for this registry. The ruled-out guess in the triage
   (`boxed_capture_names` / `mutated_scalar_boxed` being global) stays ruled out:
   both are per-lambda locals.
+
+## Wave: the capability-escape corpus was not what it measured (2026-10-15)
+
+### Items 55-72: the capability-escape wave of 2026-10-15
+
+Eighteen escapes, measured one at a time on `7a20150e`. Each entry below
+states the probe, what it violates, the routing (which function returns the
+fail-open answer), the control that must stay accepted, and the status.
+Seven are closed on this branch; eleven are open and listed in
+`escape_status.sh`, so `STILL ESCAPING` counts them.
+
+The roots, in the order they should be landed, with the over-rejection cost
+each one was measured against (a 1015-program corpus: tests/security,
+conformance, examples, ecosystem, self-host, packages, benchmarks):
+
+- R1 walkers drop a child node (the `select` timeout): 0 verdict changes.
+  CLOSED here for all four capability walkers and the provenance builder.
+- R2 a store of a closure into a slot never widens the slot's row
+  (kryos-types): 0 of 1015 newly rejected in the prototype. OPEN; closes
+  the largest group (items 59, 60, 62, 63, 66, 67, 69-72).
+- R3 the `deny!` verdict is judged on a row that still has unbound
+  variables (kryos-types): 0 of 1015. OPEN; closes 64, 65, 68.
+- R4 `Stmt::Select` and `Stmt::Spawn` have empty arms in kryos-types: 0 of
+  1015. OPEN; closes 57, 58 at the row layer.
+- R5 a fn-typed local's authority was its first binding, flow-insensitively
+  (kryos-capabilities): CLOSED here (union over every binding, plus the
+  Assign and DenyBlock arms the builder lacked). Measured to flip exactly
+  items 60-63 and nothing else.
+- R6 an unresolvable receiver in `resolve_method_field_invoke_caps` returns
+  the empty set. DEFERRED with a measured cost: failing closed there
+  rejects `examples/showcase/repo_auditor.kry`, the shipped
+  `deny!(net:http)` registry-dispatch example, because the shape layer
+  cannot tell which element a loop variable holds. Prototyped and reverted
+  on this branch; the row layer (R2/R3) closes the same items without that
+  cost.
+- R7 the deferred own-param protocol (a `DependsOnParam` charge lowered to
+  the empty set with no registered taker). DEFERRED with a measured cost:
+  rejects `ecosystem/kryos-tool-broker`.
+
+### 55. LIVE CAPABILITY ESCAPE -- a select `timeout N => { }` BODY is never walked by any capability pass: an unannotated main runs file_write and raw-memory builtins there and `kryos check` accepts in every mode (also transitively through an inferred-pure helper and inside deny!) -- CLOSED 2026-10-15 (this branch)
+
+Probe tests/security/attack_select_timeout_body_zero_cap.kry (new, now committed). Program: unannotated main with `select { v ch => {..} timeout 20 => { file_write(..) } }`. Master 7a20150e: kryos check rc=0 under inferred, strict AND permissive; kryos run writes the marker file (executed). Variants, all accepted and all executed on master: (a) transitive: an explicit `@capabilities()` main calls an unannotated helper whose only gated call is in a timeout body (inference skips it, strict accepts too, marker written); (b) raw memory: str_to_ptr plus ptr_byte_at in the timeout body is accepted even in permissive and prints byte0=104 (the always-on ffi gate reuses check_stmt); (c) inside deny!(fs:read) the timeout body prints the secret file (the row layer is blind too: check.rs:3481). Boundary violated: code whose declared and inferred set is empty runs gated builtins; no closure, shadow or container is needed, so this is the most severe item of the wave. Routing: four capability walkers bind `{ branches, .. }` (checker.rs:1231, 1438, 4318, 5162); flip control: the identical call in an ordinary arm is E0505. Closing roots: R1 (shape; the prototype closes every variant) and R4 (rows; deny variant). Acceptance: rejected (E0505, or E0507 for the transitive form) under inferred and strict; the raw-memory variant under all three modes; permissive keeps accepting an unannotated main by design. Controls that must stay accepted: tests/security/ctl_select_timeout_pure_body.kry and ctl_select_timeout_declared_cap.kry. Wired: escape_status.sh row added; the fixed ones are pinned in tests/security_gate.sh.
+
+### 56. LIVE CAPABILITY ESCAPE -- the select `timeout <expr>` DURATION expression is evaluated at run time but never visited by any capability walker -- CLOSED 2026-10-15 (this branch)
+
+Probe tests/security/attack_select_timeout_duration_zero_cap.kry (new, now committed). Program: unannotated main, `timeout len(to_string(file_write(..))) => {..}`. Master: kryos check rc=0 in inferred, strict and permissive; kryos run executes the file_write inside the duration expression (marker file written, executed). Flip control: the same expression bound by a let before the select is E0505. Same four walker arms as item 55 (checker.rs:5162-5167, 4318, 1231, 1438): SelectTimeout.duration_ms is a second unvisited child. Closing root: R1; acceptance: rejected under inferred and strict, permissive accepts an unannotated main by design. Pin with item 55.
+
+### 57. LIVE CAPABILITY ESCAPE -- a closure rebound inside a select arm under the name of an outer harmless closure defeats deny!(fs:read) -- CLOSED 2026-10-15 (this branch)
+
+Probe tests/security/attack_select_arm_shadow_closure_deny.kry (new, now committed). main holds fs:read; an outer `let f = harmless lambda` is shadowed inside a select arm by `let f = reader` (privileged closure from an annotated factory) and called inside deny!(fs:read). Master: check rc=0 in all three modes; run prints the secret (executed). Routing: shape: build_local_closure_caps_block has no Select arm (catch-all 2467) so the arm's `let f` is never registered and the Identifier arm 1927-1930 returns the stale Known(empty) of the OUTER f; rows: check.rs:3481 skips the arm entirely. Flip: a fresh binder name gives E0507 [all]. Closing roots: R4 (rows: walk Select) closes it alone (measured rows-only); R5 (shape Select recursion, KRYOS_X_FIX_CAPS) closes it alone (measured). Known unrelated: final/known_overrejections/ctl_select_arm_pure_in_deny.kry is over-rejected by master today and stays so. Pin as a new security_gate check plus escape_status row.
+
+### 60. LIVE CAPABILITY ESCAPE -- assault_round2_strip_reassigned_local_deny: a reassigned fn-typed local keeps its initializer's authority in both layers and defeats deny! -- CLOSED 2026-10-15 (this branch)
+
+Repo probe tests/security/assault_round2_strip_reassigned_local_deny.kry (unwired in security_gate.sh and escape_status.sh; header demands E0507). main holds fs:read: `let mut slot = harmless; slot = reader; deny!(fs:read) { slot() }`. Master: rc=0 inferred, strict, permissive; run prints the secret. Declaration-keyed provenance: shape local_caps written once at the initializer (2417), Assign swallowed (2467); rows unify closed/closed no-op at the assign (check.rs:3210, infer.rs:867-874). Each layer's fix alone flips it (measured KRYOS_X_FIX_CAPS and KRYOS_X_FIX_ROW; my KRYOS_X_RP=assign rows-only). Closing roots: R2 primary, R5 alternate. Control that must stay accepted: ctl_reassign_pure_in_deny.kry. Wire into escape_status.sh and security_gate.sh.
+
+### 61. LIVE CAPABILITY ESCAPE -- attack_deny_bare_closure_reassign_escape: deny! inside the callee plus a reassigned local; the row layer needs two holes closed -- CLOSED 2026-10-15 (this branch)
+
+Repo probe tests/security/attack_deny_bare_closure_reassign_escape.kry (LEDGER item-41 collateral list). The deny! block is inside fn outer (scope depth 2 vs entry 1): `let mut f = harmless; f = reader; f()`. Master: rc=0 in all modes; run prints the secret. Shape: stale Known(empty), Assign and DenyBlock swallowed (2467); rows: assignment narrows the param's open row var (infer.rs:862-866) AND the deny verdict drops the still-open var (check.rs:3513), so rows-only closure needs R2 assign plus R3 together (measured: assign alone 0, openvar alone 0, both 1); the shape builder (R5) closes it alone, and the shape layer is the only single-fix closure. Controls: ctl_reassign_pure_in_deny.kry. Wired: escape_status.sh row added.
+
+### 62. LIVE CAPABILITY ESCAPE -- attack_reassign_local_defeats_hotparam: a callback parameter reassigned into a local is neither charged at the call site nor in the callee -- CLOSED 2026-10-15 (this branch)
+
+Repo probe tests/security/attack_reassign_local_defeats_hotparam.kry (unwired). `fn apply(cb) { let mut state = harmless; state = cb; return state() }` called as apply(reader) inside deny!(fs:read) in main. Master: rc=0 in all modes; run leaks. Three independent fail-opens (any one closed rejects it): callee-side stale Known(empty) (1927-1930, 2417, 2467), caller-side Seed A is name-based so cb is never hot (1518-1521, then 3294-3296), rows assignment pins the param row to the closed initializer row (infer.rs:862-866). Closing roots: R2 assign (measured), R5 join (measured), R7 taker (measured, deferred for cost). Wired: escape_status.sh row added.
+
+### 63. LIVE CAPABILITY ESCAPE -- attack_round3_trycatch_deny_narrowed_catch: a reassigned fn-typed local called inside a deny! in a catch handler -- CLOSED 2026-10-15 (this branch)
+
+Repo probe tests/security/attack_round3_trycatch_deny_narrowed_catch.kry (unwired). Master: rc=0 in all modes; run prints the secret. The try/catch is incidental (a straight-line copy leaks identically); the escape is the Assign to a fn-typed local after an initializer that fixed its authority, in both layers (checker.rs:1927-1930 stale entry, infer.rs:867-874). Header claim that straight-line reassignment is already proven correct is false (item 60 is the straight-line shape). Closing roots: R2 assign, R5 join, each measured. Wired: escape_status.sh row added.
+
 
 ## Wave: two struct drops a read suppressed (2026-10-14)
 
@@ -5178,12 +5376,25 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-08-13 the true count is **0 escaping, 17 rejected**.
+> 2026-10-15 the true count is **11 escaping, 29 rejected**.
 >
-> **0 KNOWN escapes is not 0 escapes.** The corpus is 17 adversarial shapes
-> found by directed search. Every one is now rejected under both enforcement
-> modes; that is a floor, not a soundness proof. The next shape nobody has
-> thought of is the one that matters.
+> **It happened again, and worse (2026-10-15).** The corpus was the 19 named
+> repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
+> escaped. Ten were already sitting in `tests/security/`, each with a header
+> saying it leaked, wired into no gate -- the nine item 41 listed as collateral
+> plus one more -- and eight more were found by following their routing. Every
+> one was re-measured on `7a20150e`: `kryos check` accepts it, and running it
+> prints the secret or writes the file. They are items 55-72 below, and they
+> are all in `escape_status.sh` now, which is what makes the count above real.
+>
+> The lesson is the one this file keeps recording in other forms: a repro that
+> no gate names is a repro nobody runs. A file under `tests/security/` with no
+> `escape_status.sh` row and no `security_gate.sh` check is not tracked,
+> whatever its own header claims.
+>
+> **0 KNOWN escapes is not 0 escapes.** The corpus is adversarial shapes found
+> by directed search; a green count is a floor, not a soundness proof. The
+> next shape nobody has thought of is the one that matters.
 >
 > **THE ELEVEN ARE ONE BUG IN ELEVEN DRESSES.** Enforcement resolves a callee by
 > pattern-matching the SHAPE of the call expression, and every unmatched shape
@@ -5217,6 +5428,58 @@ capability-escape item and every other OPEN item below remain untouched.
 >   partial-application pipe (`5 |> padd(10)`): "cannot resolve" and "different
 >   shape entirely" are not the same thing. `ir_signatures` is the gate that
 >   catches it; `security_gate.sh` check 66 pins it.
+
+
+### Items 55-72: the capability-escape wave of 2026-10-15 -- the OPEN eleven
+
+Seven of the eighteen are closed on this branch; their entries are in the
+wave at the top of this file. These eleven are live: `escape_status.sh`
+counts them and `ESCAPE-ROUTING.md` carries a measured routing row for
+each.
+
+### 58. LIVE CAPABILITY ESCAPE -- a closure bound inside a `spawn fn() { }` lambda under the name of an outer harmless closure defeats deny!(fs:read) -- NOT FIXED
+
+Probe tests/security/attack_spawn_lambda_shadow_closure_deny.kry (new, now committed). Same shadow shape as item 57 but inside the spawned lambda. Master: check rc=0 in all modes; run prints harmless then the secret (executed). The bare `spawn { }` block form is rejected E0110, so the hole is specific to the lambda form. Routing: shape: no Spawn arm in the local-provenance builders (catch-all 2467) so the Identifier arm 1927-1930 returns the outer stale Known(empty); rows: Stmt::Spawn (check.rs:3478-3480) infers a Lambda whose cap frame is popped and never charged outward (check.rs:6317-6319). Closing roots: R4 (charge the spawned row) alone, R5 (Spawn arm) alone, each measured. Hazard: the R5 spawn arm alone unmasks item 72, land rows first.
+
+### 59. LIVE CAPABILITY ESCAPE -- a for-loop binder shadowing an outer harmless closure name, iterating a mixed pure/privileged closure array, defeats deny!(fs:read) -- NOT FIXED
+
+Probe tests/security/attack_for_binder_shadow_closure_deny.kry (new, now committed). main holds fs:read; `let f = harmless`, `fns = [pure lambda, reader]`, then `deny!(fs:read) { for f in fns { f() } }`. Master: check rc=0 in all modes; run prints pure then the secret (executed). Control: renaming the binder to g is E0507. Both layers fail: shape returns the stale outer Known(empty) because the For arm (2433-2435) never registers or poisons the pattern binder; rows type the array by its first element (pure) and drop the privileged row (infer.rs:867-874). Closing roots: R2 (slots) alone, R5 (poison) alone, each measured. Proves the stale-provenance class is wider than assignment.
+
+### 64. LIVE CAPABILITY ESCAPE -- attack_deny_double_indirection_wrapper_local: a deferred own-param charge is frozen as Known(empty) at pre-pass and the row layer drops the open var -- NOT FIXED
+
+Repo probe tests/security/attack_deny_double_indirection_wrapper_local.kry (unwired). `fn outer(reader) { let alias = reader; let go = || alias(); deny!(fs:read) { go() } }`. Master: rc=0 in all modes; run prints the secret. Shape: the Lambda arm fallthrough (1918-1925) lowers the deferred charge through deferred_own_param_caps (3587) outside any deny scope and freezes Known(empty); the single-hop control (go = || reader()) is rejected. Rows: concrete_bits() drops the open var of param reader (check.rs:3513). Closing roots: R3 (measured rows-only rc=1); alternate P1 prototype (R7 I2, measured). Related relatives accepted today (triage): v05 alias, v07 no local, v08 helper-returned wrapper, v09 HOF, v11 actor handler, v12 impl method, v14 no fn param anywhere.
+
+### 65. LIVE CAPABILITY ESCAPE -- attack_match_bound_var_field_invoke: a fn-typed struct field invoked through a pattern-bound variable inside deny! -- NOT FIXED
+
+Repo probe tests/security/attack_match_bound_var_field_invoke.kry (unwired). `if let Some(b) = wrap(reader) { b.f() }` inside deny!(fs:read). Master: rc=0 in all modes; run prints the secret. Not a data-flow case: the closure is invoked inside the denied block. Shape: checker.rs:3829 fallthrough empty (re-measured trace: root=b has_lit=false has_ty=false in_deny_scope=true); the same shape with a typed let is rejected. Rows: open var dropped (check.rs:3513) because Box.f's row var is declaration-global and the factory freshens its copy. The same fall-through admits for-bound, tuple-destructured and deny-body-let roots (triage variants). Closing roots: R3 (measured rc=1), R6 alternate (deferred: flips repo_auditor.kry). Cross-function twin f6 (pattern-bound alias of a param, Seed B 1540) is a separate shape-layer residual.
+
+### 66. LIVE CAPABILITY ESCAPE -- attack_realprogram_registry_list_wrapper: a List<Plugin> registry read into a local inside deny! (first-store-wins slot plus untyped local) -- NOT FIXED
+
+Repo probe tests/security/attack_realprogram_registry_list_wrapper.kry (unwired). Safe plugin pushed first, privileged second, `let p = reg.get(1); p.run()` inside deny!(fs:read). Master: rc=0 in all modes; the fs:write twin (triage w1_witness_write) leaves a real file written inside deny!(fs:write). List, .get and the factory are red herrings: a raw array or a bare struct escapes identically. Shape: 3829 (the let is inside the deny body, DenyBlock absent from the three builders, MethodCall initializers never typed); rows: first store pins the per-declaration Plugin.run slot var to {} and the second store is dropped (infer.rs:867-874). Closing roots: R2 slots (measured rc=1); R6 alternate (deferred). Sibling attack_realprogram_registry_foreach shares the row hole.
+
+### 67. LIVE CAPABILITY ESCAPE -- attack_realprogram_registry_foreach: a lambda parameter's fn-typed field invoked inside a HOF callback in deny! -- NOT FIXED
+
+Repo probe tests/security/attack_realprogram_registry_foreach.kry (unwired). `for_each(plugins, |p: Plugin| p.run())` inside deny!(fs:read) with the safe plugin first. Master: rc=0 in all modes; run prints the secret; the direct-call control (registry_direct_control) is rejected E0507. Shape: the receiver root is the lambda's own param, hot_own_param (1831) sees only a direct call, so the lambda classifies as Known(empty) at the HOF call and the body check falls to 3829; rows: first-store-wins slot (infer.rs:867-874). Also lets a function declared @capabilities() run file_read (triage z1). Closing roots: R2 slots (measured rc=1); R6 type-seeded lambda params (triage-measured 0 corpus flips but pure registries through lambda params become [all]). Wired: escape_status.sh row added.
+
+### 68. LIVE CAPABILITY ESCAPE -- tools[0].run(..) on a factory-built Tool element inside deny!: resolve_method_field_invoke_caps returns empty at line 3786 -- NOT FIXED
+
+Probe tests/security/attack_index_field_invoke_factory_element_deny.kry (new, now committed). `let tools: [Tool] = [make_tool(reader)]` then `deny!(fs:read) { tools[0].run(job) }`. Master with KRYOS_NO_HOTPARAM_ALL UNSET: check rc=0 in inferred and strict; run prints the secret (executed). Routing re-measured: rmfic root=tools path=[Index] method=run ret=LIT-BRANCH-FIELD-MISSING (checker.rs:3786): the tracked literal's element is a FnCall, so literal_field_exists is false. Rows: open var dropped (check.rs:3513). Closing roots: R3 (measured rows-only rc=1); R6 fix (a) alternate. Distinct from the env-switch defect.
+
+### 69. LIVE CAPABILITY ESCAPE (deny! form) -- assault4_actor_handler_map_param_probe_v2: an alias read of a container parameter has no hot_params taker; the as-written file is delegation once the sender is charged -- NOT FIXED
+
+Repo probe tests/security/assault4_actor_handler_map_param_probe_v2.kry; escaping minimal form tests/security/attack_map_param_alias_invoke_deny.kry (new; now committed). Master: as-written file rc=0 in inferred and permissive (strict rc=1 only because unannotated build_registry needs its own declaration); deny! form rc=0 in all modes and leaks. Measured: direct spelling reg[name]() is E0507 [all], an alias plus one dead direct call flips it, swapped map entries give E0110 (row layer). IMPORTANT: after any correct fix (taker plus aligned index) the as-written file is ACCEPTED because the sender main is charged exactly [fs:read] and holds it (measured with KRYOS_X_SP=taker,actorself); its header expectation (must be REJECTED, function-built container => all) is stale because the checker traces the factory's returned literal. The escape is the deny! form. Closing root: R2 slots on the deny form (measured); R7 deferred (taker newly rejects ecosystem/kryos-tool-broker). Re-baseline the as-written file as a delegation control and pin the deny! form.
+
+### 70. LIVE CAPABILITY ESCAPE (deny! form) -- assault4_actor_handler_map_param_strict_probe: same alias-read-of-container-parameter defect; the as-written file is delegation -- NOT FIXED
+
+Repo probe tests/security/assault4_actor_handler_map_param_strict_probe.kry (build_registry annotated); minimal escaping form tests/security/attack_array_param_alias_invoke_deny.kry (new; now committed; triage a4 m3_min_array_lambdas). Master: as-written rc=0 in all three modes, run prints the secret; the minimal array form rc=0 in all modes and leaks (executed). Flips (triage a4): privileged element first -> E0110 only (row layer), direct spelling -> E0507 only (shape layer), alias plus an unreachable direct call -> E0507 [all]. Same two layers and same closing root as item 69 (R2 slots, measured); the as-written file stays ACCEPTED after the fix (delegation, sender holds fs:read). Wired: escape_status.sh row added. The array deny! form.
+
+### 71. LIVE CAPABILITY ESCAPE -- actor handler with an explicit self and the container parameter second: the hot index counts self so the sender is never charged (direct spelling, inside deny!) -- NOT FIXED
+
+Probe tests/security/attack_actor_explicit_self_swapped_params_deny.kry (new, now committed). `fn run_it(self, name: str, reg: map<..>) { reg[name]() }` called as d.run_it(secret, reg) inside deny!(fs:read) with reg built by a factory (pure first). Master: check rc=0 in inferred and permissive (strict rc=1 for the unrelated unannotated factory); run prints the secret (executed). No alias is involved. Measured: hot_params run_it param_idx=2, extra_into_enforce=[], and deleting only `self` from the handler makes master reject (E0507). Defect: accumulate_hot_extra_caps (3299-3312) and the propagation loop (1573-1575) assume an actor handler has no self slot, parse_param_list keeps it. Closing root: R2 slots (measured rc=1). The shape fix (aligned index) is NOT recommended: it drops matrix PRECISION from 34/75 to 18/75 (R7).
+
+### 72. LIVE CAPABILITY ESCAPE -- real-program plugin platform: dispatch routes A-D (actor-hosted registry, free-function HOF, actor forward) leak inside deny!, masked in the shipped file by an unrelated E0507 [all] -- NOT FIXED
+
+Probe tests/security/assault_r1_real_program_plugin_platform_nopool.kry (new; the shipped assault_r1_real_program_plugin_platform.kry with only the run_worker_pool() call in main removed; copy-ready now committed). Master: check rc=0 in inferred, permissive (strict rc=1 for an unrelated reason); run prints EVIL-SUPPLY-CHAIN-LEAK and the secret on all four routes inside deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) (executed). The shipped file currently shows as rejected only because run_worker_pool needs [all] (spawn precision over-rejection), so no gate flags the four live escapes. Both layers fail: shape 3829 for root=p in_deny_scope=true (4 sites); rows: honest plugin stored first and the compromised second (infer.rs:867-874) plus an open row var {?C26} at the deny boundary (check.rs:3513). Closing roots: R2 slots together with the R3 deferral and raw-charge mechanism (measured rows-only rc=1; slots alone 0, assign or openvar alone 0). Hazard: a spawn precision fix on the shape side flips the shipped file to ACCEPTED; land R2+R3 first.
 
 
 ### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
