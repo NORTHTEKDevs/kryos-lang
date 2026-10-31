@@ -94,5 +94,40 @@ out="$(printf ':allow fs:raed\n:caps\n:quit\n' | repl)"
 if grep -q "W-CAP-UNKNOWN" <<<"$out" && grep -q "capabilities: none" <<<"$out"; then ok ":allow refuses an unknown capability name"
 else bad ":allow accepted an unknown capability name"; fi
 
+# 8. raw memory is gated in the REPL like in a file. A zero-grant session read
+#    any string in the host process (`ptr_byte_at(str_to_ptr("TOP"), 0)` -> 84)
+#    while `kryos eval` and a file doing the same were rejected with E0505.
+RAWPROG='ptr_byte_at(str_to_ptr("TOP"), 0)'
+out="$(printf '%s
+:quit
+' "$RAWPROG" | repl)"
+if ! grep -qx "84" <<<"$(tr -d '' <<<"$out")" && grep -q "E0505" <<<"$out"; then ok "raw memory rejected with no grant (E0505), nothing read"
+else bad "a zero-grant REPL session read raw memory"; printf '%s
+' "$out" | sed 's/^/      /' | head -6; fi
+
+# 8b. ... also from a function the session declared (every function is charged)
+out="$(printf 'fn peek() -> i64 {
+    return ptr_byte_at(str_to_ptr("TOP"), 0)
+}
+println(peek())
+:quit
+' | repl)"
+if ! grep -qx "84" <<<"$(tr -d '' <<<"$out")" && grep -q "E0505" <<<"$out"; then ok "raw memory inside fn peek() rejected with no grant"
+else bad "raw memory inside a REPL-declared fn ran with no grant"; fi
+
+# 8c. control: granting ffi lets it run
+out="$(printf '%s
+:quit
+' "$RAWPROG" | repl --allow ffi)"
+if grep -qx "84" <<<"$(tr -d '' <<<"$out")"; then ok "control: --allow ffi lets raw memory run"
+else bad "control: --allow ffi did not grant raw memory"; printf '%s
+' "$out" | sed 's/^/      /' | head -6; fi
+out="$(printf ':allow ffi
+%s
+:quit
+' "$RAWPROG" | repl)"
+if grep -qx "84" <<<"$(tr -d '' <<<"$out")"; then ok "control: :allow ffi grants raw memory from then on"
+else bad "control: :allow ffi did not grant raw memory"; fi
+
 [[ $fail -eq 0 ]] && echo "repl-capability: PASS" || echo "repl-capability: FAIL"
 exit $fail

@@ -1,0 +1,36 @@
+// A reassigned fn-typed local keeps the authority of its FIRST binding when
+// the reassignment sits in the arm of a statement-position `match`.
+// `build_local_closure_caps_block` walked Let, Assign, DenyBlock, If, For,
+// While, Select, TryCatch and a bare block, but a `match` statement is an
+// `Expr`, not a `Stmt::If`, so its arm bodies were never visited: the call
+// `f()` inside `deny!(fs:read)` was charged the pure `harmless`.
+// ACCEPTANCE: rejected (E0507) in default and --strict-capabilities mode.
+// A compile that prints the LEAK marker means the arm was not walked.
+
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+enum Mode { A, B }
+fn outer(reader: fn() -> str) {
+    let mut f: fn() -> str = harmless
+    let m = Mode::A
+    match m {
+        Mode::A => { f = reader }
+        Mode::B => { f = harmless }
+    }
+    deny!(fs:read) {
+        println("W6 LEAK: " + f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}
+

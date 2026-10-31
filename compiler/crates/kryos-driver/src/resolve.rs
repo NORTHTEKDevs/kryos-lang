@@ -36,11 +36,29 @@ pub fn resolve_stdlib_dir_for_diagnostics() -> Option<PathBuf> {
 }
 
 fn find_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
+    find_stdlib_dir_impl(importing_file, true)
+}
+
+/// The stdlib that is TRUSTED with raw memory (see
+/// `user_modules_in_import_graph`): the directory the toolchain itself
+/// resolves to, ignoring `KRYOS_STDLIB_DIR`. That variable decides where
+/// `use std::..` is read from, which is its job, but it must not also decide
+/// which code is exempt from the raw-memory gate -- pointing it at a
+/// directory of the user's own modules exempted them, on a default release
+/// build. Only when no stdlib exists anywhere else does the override stand in
+/// (a binary run from outside its distribution layout, as CI does).
+fn find_trusted_stdlib_dir(importing_file: &Path) -> Option<PathBuf> {
+    find_stdlib_dir_impl(importing_file, false).or_else(|| find_stdlib_dir(importing_file))
+}
+
+fn find_stdlib_dir_impl(importing_file: &Path, honor_env: bool) -> Option<PathBuf> {
     // 1. Env var override
-    if let Ok(dir) = env::var("KRYOS_STDLIB_DIR") {
-        let p = PathBuf::from(dir);
-        if p.is_dir() {
-            return Some(p);
+    if honor_env {
+        if let Ok(dir) = env::var("KRYOS_STDLIB_DIR") {
+            let p = PathBuf::from(dir);
+            if p.is_dir() {
+                return Some(p);
+            }
         }
     }
 
@@ -675,7 +693,7 @@ pub fn user_modules_in_import_graph(
     module: &Module,
     importing_file: &Path,
 ) -> Vec<(PathBuf, Module)> {
-    let stdlib = find_stdlib_dir(importing_file).map(|d| fs::canonicalize(&d).unwrap_or(d));
+    let stdlib = find_trusted_stdlib_dir(importing_file).map(|d| fs::canonicalize(&d).unwrap_or(d));
     let mut out = Vec::new();
     let mut visited = HashSet::new();
     collect_user_modules(

@@ -965,5 +965,51 @@ else
     tail -3 "$TMP/hp" | sed 's/^/    /'; fail=1
 fi
 
+# A reassignment inside the arm of a statement-position `match` is a binding
+# like any other. The builder walked if/for/while/select/try/deny and a bare
+# block but not a `match` statement (an Expr, not a Stmt::If), so
+# `match n { 1 => { f = reader } _ => { f = harmless } }` left `f` charged as
+# `harmless` and `f()` inside `deny!(fs:read)` printed the secret.
+for esc in attack_reassign_local_match_stmt_block attack_reassign_local_match_in_deny            attack_reassign_local_match_enum_arm attack_reassign_local_match_literal_subject            attack_reassign_local_match_lambda_body; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/rm" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a match-arm reassignment is invisible"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/rm"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/rm" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in default and strict mode"
+done
+if "$K" check --strict-capabilities tests/security/ctl_reassign_pure_in_match.kry >"$TMP/rmc" 2>&1; then
+    echo "  ok   a match that reassigns only pure closures is still accepted (no cascade)"
+else
+    echo "  FAIL: the match-arm walk over-rejects a pure-only reassignment:"
+    tail -3 "$TMP/rmc" | sed 's/^/    /'; fail=1
+fi
+
+# KRYOS_STDLIB_DIR chooses where `use std::..` is read from. It must not also
+# choose which code is exempt from the raw-memory gate: pointing it at the
+# directory holding the program's own modules exempted them, so a module
+# using str_to_ptr + ptr_byte_at compiled on a default release build.
+SEC_DIR="$(cd tests/security && pwd)"
+if KRYOS_STDLIB_DIR="$SEC_DIR" "$K" check tests/security/cap_escape_raw_memory_import.kry >"$TMP/sd" 2>&1; then
+    echo "  FAIL: KRYOS_STDLIB_DIR=<user modules> exempted them from the raw-memory gate"
+    fail=1
+elif grep -q "str_to_ptr\` requires \`ffi\`" "$TMP/sd"; then
+    echo "  ok   KRYOS_STDLIB_DIR does not make user modules trusted (still requires \`ffi\`)"
+else
+    echo "  FAIL: rejected with KRYOS_STDLIB_DIR set, but not for the capability reason:"
+    tail -3 "$TMP/sd" | sed 's/^/    /'; fail=1
+fi
+if KRYOS_STDLIB_DIR="$(cd compiler/stdlib && pwd)" "$K" check "$TMP/nocascade.kry" >"$TMP/sdc" 2>&1; then
+    echo "  ok   control: the real stdlib named by KRYOS_STDLIB_DIR is still trusted"
+else
+    echo "  FAIL: KRYOS_STDLIB_DIR=<real stdlib> now over-rejects std::json:"
+    tail -3 "$TMP/sdc" | sed 's/^/    /'; fail=1
+fi
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

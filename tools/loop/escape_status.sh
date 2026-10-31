@@ -49,6 +49,11 @@ files="
 70|attack_array_param_alias_invoke_deny
 71|attack_actor_explicit_self_swapped_params_deny
 72|assault_r1_real_program_plugin_platform_nopool
+73|attack_reassign_local_match_stmt_block
+74|attack_reassign_local_match_in_deny
+75|attack_reassign_local_match_enum_arm
+76|attack_reassign_local_match_literal_subject
+77|attack_reassign_local_match_lambda_body
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

@@ -1,0 +1,26 @@
+// Control for attack_reassign_local_match_*: a `match` whose every arm
+// reassigns a fn-typed local to a PURE closure must stay accepted, so the
+// fix walks the arms without charging `all` for the reassigned name.
+fn one() -> str {
+    return "one"
+}
+fn other() -> str {
+    return "other"
+}
+
+fn outer() {
+    let mut f: fn() -> str = one
+    let n = 2
+    match n {
+        1 => { f = one }
+        _ => { f = other }
+    }
+    deny!(fs:read) {
+        println(f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    outer()
+}

@@ -341,23 +341,6 @@ struct CapabilityChecker {
     /// (`struct List<T> { .. }` -> `["T"]`). Feeds `struct_fields_for`'s
     /// generic-argument substitution.
     struct_generic_params: HashMap<String, Vec<String>>,
-    /// Every FIELD NAME declared with a function type by any struct in the
-    /// module (`struct Box { f: fn() -> str }` -> `f`).
-    ///
-    /// `resolve_method_field_invoke_caps` can resolve `b.f()` only when it
-    /// can name `b`'s struct literal or its static type. For a receiver it
-    /// cannot (one bound by a match arm, a lambda's own parameter, a
-    /// for-loop variable, an element read out of a wrapper) it fell off the
-    /// end and returned EMPTY -- "I could not resolve this" answered with
-    /// "this needs no authority", which is how a privileged closure stored
-    /// in such a field ran inside a `deny!` block that forbade its
-    /// capability. This set makes the distinction the checker lacks a type
-    /// for: a `method` that is ALSO a declared fn-typed field name may be a
-    /// closure invocation, so an unresolvable receiver fails closed to
-    /// `all`; an ordinary method name (no struct declares a fn-typed field
-    /// of that name) is unaffected, which is what keeps the precision cost
-    /// of this bounded.
-    fn_field_names: std::collections::HashSet<String>,
     /// For every user-defined method whose receiver is literally named
     /// `self` and whose every return path decomposes to the SAME
     /// self-rooted field/index chain, the method NAME -> that self-relative
@@ -555,7 +538,6 @@ impl CapabilityChecker {
             actor_handler_names: HashSet::new(),
             struct_field_types: HashMap::new(),
             struct_generic_params: HashMap::new(),
-            fn_field_names: std::collections::HashSet::new(),
             transparent_accessor_paths: HashMap::new(),
             hot_params: HashMap::new(),
             hot_param_companions: HashMap::new(),
@@ -662,11 +644,6 @@ impl CapabilityChecker {
                 );
                 self.struct_generic_params
                     .insert(name.clone(), generics.iter().map(|g| g.name.clone()).collect());
-                for f in fields {
-                    if matches!(f.ty, TypeExpr::Function { .. }) {
-                        self.fn_field_names.insert(f.name.clone());
-                    }
-                }
             }
         }
     }
@@ -2422,9 +2399,7 @@ impl CapabilityChecker {
                     // closure defined inside the block is registered in
                     // `locals` before any call to it (inside the same
                     // block) is resolved by the real per-call checker.
-                    if let Expr::Block { block: inner, .. } = v {
-                        self.build_local_closure_caps_block(inner, working, fn_return_caps, own_params, local_container_lits, locals);
-                    }
+                    self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
                     if let Expr::Lambda { body, .. } = v {
                         // A self-recursive nested named function (`fn nfact(n)
                         // { return n * nfact(n - 1) }`, desugared to `let
@@ -2445,9 +2420,10 @@ impl CapabilityChecker {
                         // normally via the real `r` computed below, which
                         // OVERWRITES this placeholder once known.
                         locals.insert(name.clone(), ClosureCapsResult::Known(CapabilitySet::empty()));
-                        if let Expr::Block { block, .. } = body.as_ref() {
-                            self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, locals);
-                        }
+                        // A lambda whose whole body is one `match`/`if`
+                        // parses with that expression as the body (no
+                        // block), so walk it as an expression.
+                        self.build_local_closure_caps_expr(body, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                     // A closure/fn-value read OUT of a container via a
                     // field/index chain and bound to a local (`let f =
@@ -2584,14 +2560,52 @@ impl CapabilityChecker {
                 // same way an `if`/`for`/`while`/`try` body already does,
                 // consistent with this function's documented "flatten nested
                 // scopes into one map" design.
-                Stmt::Expr {
-                    expr: Expr::Block { block: inner, .. },
-                    ..
-                } => {
-                    self.build_local_closure_caps_block(inner, working, fn_return_caps, own_params, local_container_lits, locals);
+                // A statement-position `match` (or `if` expression) is an
+                // `Expr`, not a `Stmt::If`, so its arm bodies were never
+                // walked: `match n { 1 => { f = reader } _ => { f = harmless } }`
+                // reassigned a fn-typed local invisibly and a later `f()`
+                // inside `deny!(fs:read)` was charged the first binding's
+                // (pure) authority. The same walk covers a bare block.
+                Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+                    self.build_local_closure_caps_expr(expr, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+                Stmt::Return { value: Some(v), .. } => {
+                    self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Walks the statement-bearing expression forms (a block, a `match`
+    /// arm body, an `if` expression branch) so the bindings made inside
+    /// them reach the flat local map, exactly as the same statements would
+    /// in a plain block. Anything else holds no statements and is skipped.
+    fn build_local_closure_caps_expr(
+        &self,
+        expr: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
+        locals: &mut HashMap<String, ClosureCapsResult>,
+    ) {
+        match expr {
+            Expr::Block { block, .. } => {
+                self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, locals);
+            }
+            Expr::MatchExpr { arms, .. } => {
+                for arm in arms {
+                    self.build_local_closure_caps_expr(&arm.body, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+            }
+            Expr::IfExpr { then_branch, else_branch, .. } => {
+                self.build_local_closure_caps_block(then_branch, working, fn_return_caps, own_params, local_container_lits, locals);
+                if let Some(b) = else_branch {
+                    self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+            }
+            _ => {}
         }
     }
 
