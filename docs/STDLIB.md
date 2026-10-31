@@ -105,7 +105,7 @@ itself) prints `"Hello, 0! You are 1."`, not `"Hello, Alice! You are 30."` (veri
 | `pop(arr)`               | T       | Removes and returns the last element.                     |
 | `sort(arr)`              | void    | In-place ascending sort.                                  |
 | `reverse(arr)`           | void    | In-place reverse.                                         |
-| `contains(arr, v)`       | bool    | Membership check for `[int]`, `[f64]`, `[bool]`, `[char]` (by value) and `[str]` (by content). Any other element type, or a non-str/array/map first argument, is a compile error (E0100). Not yet supported on `--backend wasm`. |
+| `contains(arr, v)`       | bool    | Membership check for `[int]`, `[f64]`, `[bool]`, `[char]` (by value) and `[str]` (by content). Any other element type, a reference-typed first argument (`&[i64]`, `&mut [i64]`, `&str`, `&map<..>`), or a non-str/array/map first argument, is a compile error (E0100); pass the value, not the reference. Not yet supported on `--backend wasm`. |
 | `keys(map)`              | [T]     | Returns array of keys (use `map_keys` / `map_keys_str` for typed variants). |
 
 ### 1.6 Filesystem
