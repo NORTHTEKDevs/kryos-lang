@@ -1,0 +1,110 @@
+// Conformance (2026-10-30): `contains(arr, v)` on an array. It type-checked
+// clean (the builtin's params are lenient), is documented in STDLIB.md, and
+// fell through to the STRING `contains`, which read the array handle as a
+// KryosString: rc=139 on `kryos run` and on the AOT binary, no output. Now an
+// array first argument tests membership: ints / bool / char by value, f64 by
+// float ==, str by CONTENT (a fresh needle with a different pointer must
+// match). Unsupported element kinds (struct, nested array, f32) and a
+// non-str / non-array / non-map first argument are compile errors (pinned in
+// tests/type_soundness.sh). Run on both backends by run_conformance.sh and,
+// with the free diagnostics, by tests/no_double_free.sh.
+
+struct Box1 { names: [str], ids: [i64] }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn has_name(xs: [str], v: str) -> bool { return contains(xs, v) }
+fn has_id(xs: [i64], v: i64) -> bool { return contains(xs, v) }
+fn has_gen<T>(xs: [T], v: T) -> bool { return contains(xs, v) }
+
+fn main() {
+    // The triage repros.
+    let a = [5, 2, 9]
+    expect(contains(a, 2), "i64 present")
+    expect(not contains(a, 7), "i64 absent")
+    expect(contains(a, 5) and contains(a, 9), "i64 first and last")
+    let s = ["x", "y"]
+    expect(contains(s, "y"), "str present")
+    expect(not contains(s, "z"), "str absent")
+
+    // str compares by content: a needle built at runtime is a different object.
+    let tail = "y"
+    expect(contains(s, "" + tail), "str needle built at runtime")
+    expect(contains(s, "x" + ""), "str first element, built needle")
+    expect(not contains(s, "xy"), "str prefix of nothing")
+    expect(not contains(s, ""), "empty needle absent")
+    let with_empty = ["", "q"]
+    expect(contains(with_empty, ""), "empty str element")
+
+    // Empty and grown arrays.
+    let e: [i64] = []
+    expect(not contains(e, 0), "empty array")
+    let mut g: [i64] = []
+    expect(not contains(g, 3), "before push")
+    g = push(g, 3)
+    expect(contains(g, 3), "after push")
+    let mut gs: [str] = []
+    gs = push(gs, "k{len(gs)}")
+    expect(contains(gs, "k0"), "pushed str")
+
+    // Other scalar element kinds.
+    expect(contains([true, false], false), "bool")
+    expect(not contains([true, true], false), "bool absent")
+    expect(contains(['a', 'b'], 'b'), "char")
+    expect(not contains(['a', 'b'], 'z'), "char absent")
+    let u: [u8] = [1, 2, 200]
+    expect(contains(u, 200), "u8 high value")
+    expect(not contains(u, 3), "u8 absent")
+    let n: [i32] = [-1, 4]
+    expect(contains(n, -1), "i32 negative")
+    let f = [1.5, 2.5, -0.0]
+    expect(contains(f, 2.5), "f64 present")
+    expect(not contains(f, 3.5), "f64 absent")
+    expect(contains(f, 0.0), "f64 0.0 == -0.0")
+    let x = 1.5
+    expect(contains(f, x), "f64 from a local")
+    let nan = 0.0 / 0.0
+    expect(not contains([nan], nan), "f64 NaN equals nothing")
+
+    // Through a function boundary, a generic, a struct field, a fresh temp.
+    expect(has_name(s, "y"), "str via fn")
+    expect(has_id(a, 9), "i64 via fn")
+    expect(has_gen(a, 9) and not has_gen(a, 4), "generic i64")
+    expect(has_gen(s, "x") and not has_gen(s, "w"), "generic str")
+    let b = Box1 { names: ["m", "n"], ids: [10, 20] }
+    expect(contains(b.names, "n") and contains(b.ids, 20), "struct fields")
+    expect(not contains(b.names, "o") and not contains(b.ids, 30), "struct fields absent")
+    expect(contains(split("a,b,c", ","), "b"), "split temp")
+    expect(not contains(split("a,b,c", ","), "d"), "split temp absent")
+
+    // The receiver and needle are only read: both still hold afterwards.
+    let keep = ["p", "q"]
+    let needle = "q"
+    expect(contains(keep, needle), "borrowed needle")
+    expect(contains(keep, needle) and len(keep) == 2 and needle == "q", "operands intact")
+
+    // The other two shapes keep working.
+    expect(contains("hello", "ell"), "substring")
+    expect(not contains("hello", "xyz"), "substring absent")
+    let mut m: map<str, i64> = {}
+    m["k"] = 1
+    let mut mi: map<i64, i64> = {}
+    mi[3] = 1
+    expect(contains(m, "k") and not contains(m, "z"), "str-keyed map")
+    expect(contains(mi, 3) and not contains(mi, 4), "int-keyed map")
+
+    // Repeat: no state is retained between calls.
+    let mut i = 0
+    let mut hits = 0
+    while i < 200 {
+        if contains(["u{i % 4}", "v"], "u2") { hits = hits + 1 }
+        i = i + 1
+    }
+    expect(hits == 50, "200 rounds, 50 hits, got {hits}")
+    println("PASS")
+}

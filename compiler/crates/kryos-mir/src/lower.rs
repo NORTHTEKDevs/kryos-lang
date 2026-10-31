@@ -4079,6 +4079,10 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "kryos_map_get_str_or_empty",
     "kryos_map_has",
     "kryos_map_has_str",
+    // `contains(arr, v)` on an array: reads the array and the needle only.
+    "kryos_array_contains",
+    "kryos_array_contains_str",
+    "kryos_array_contains_f64",
     "kryos_map_keys",
     "kryos_map_keys_str",
     "kryos_map_delete",
@@ -15109,6 +15113,44 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         func: rt.to_string(),
                         args: mir_args,
                     };
+                }
+            }
+
+            // `contains(arr, v)`: membership in an array. Without this arm an
+            // array first argument fell through to the STRING `contains`, which
+            // read the array handle as a KryosString (segfault on both
+            // backends). A str element compares by content, a scalar element
+            // (int / bool / char) by value; the type checker rejects every
+            // other element kind before it reaches here.
+            // A program that defines (or imports) its own `contains` -- the
+            // stdlib's `trie::contains(t: [i64], word: str)` -- owns the name:
+            // `user_fn_names` only ever holds user definitions, never the
+            // builtin table.
+            if func_name == "contains"
+                && args.len() == 2
+                && !ctx.user_fn_names.contains("contains")
+            {
+                let obj_ty = infer_expr_type(ctx, &args[0]);
+                if let MirType::Array(elem, _) = &obj_ty {
+                    let rt = match elem.as_ref() {
+                        MirType::Str => Some("kryos_array_contains_str"),
+                        MirType::F64 => Some("kryos_array_contains_f64"),
+                        MirType::F32 => None,
+                        MirType::Struct(_)
+                        | MirType::Enum(_)
+                        | MirType::Tuple(_)
+                        | MirType::Array(..)
+                        | MirType::Map { .. } => None,
+                        _ => Some("kryos_array_contains"),
+                    };
+                    if let Some(rt) = rt {
+                        let mir_args: Vec<Operand> =
+                            args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                        return RValue::Call {
+                            func: rt.to_string(),
+                            args: mir_args,
+                        };
+                    }
                 }
             }
 

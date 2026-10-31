@@ -1209,6 +1209,9 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_diag_site(i64)");
         self.emit_line("declare i64 @kryos_array_retain_opt(ptr)");
         self.emit_line("declare ptr @kryos_array_dup(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains_str(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains_f64(ptr, i64)");
         self.emit_line("declare i64 @kryos_map_retain_opt(i64)");
         self.emit_line("declare i64 @kryos_map_retain(i64)");
         self.emit_line("declare i64 @kryos_async_current_task()");
@@ -13043,7 +13046,12 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         }
         // Borrow-to-own retains for container reads (double-free fix).
         "kryos_string_retain_opt" | "kryos_array_retain_opt" => Some(vec!["ptr".into()]),
-        "kryos_array_dup" => Some(vec!["ptr".into(), "i64".into()]),
+        "kryos_array_dup"
+        | "kryos_array_contains"
+        | "kryos_array_contains_str"
+        | "kryos_array_contains_f64" => {
+            Some(vec!["ptr".into(), "i64".into()])
+        }
         "kryos_map_retain_opt" => Some(vec!["i64".into()]),
         // An f64 key is passed as its raw bits, like kryos_map_get/insert
         // (without this a `map<f64, S>` read always took the missing-key
