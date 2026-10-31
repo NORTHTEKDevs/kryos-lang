@@ -169,6 +169,18 @@ impl JitCompiler {
             kryos_rt::array::kryos_array_dup as *const u8,
         );
         jit_builder.symbol(
+            "kryos_array_contains",
+            kryos_rt::array::kryos_array_contains as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_array_contains_f64",
+            kryos_rt::array::kryos_array_contains_f64 as *const u8,
+        );
+        jit_builder.symbol(
+            "kryos_array_contains_str",
+            kryos_rt::array::kryos_array_contains_str as *const u8,
+        );
+        jit_builder.symbol(
             "kryos_map_retain_opt",
             kryos_rt::map::kryos_map_retain_opt as *const u8,
         );
@@ -2331,6 +2343,9 @@ fn declare_runtime_builtins<M: Module>(
     decl!("kryos_string_retain_opt", "kryos_string_retain_opt", sig(1));
     decl!("kryos_array_retain_opt", "kryos_array_retain_opt", sig(1));
     decl!("kryos_array_dup", "kryos_array_dup", sig(2));
+    decl!("kryos_array_contains", "kryos_array_contains", sig(2));
+    decl!("kryos_array_contains_f64", "kryos_array_contains_f64", sig(2));
+    decl!("kryos_array_contains_str", "kryos_array_contains_str", sig(2));
     decl!("kryos_map_retain_opt", "kryos_map_retain_opt", sig(1));
     decl!("kryos_diag_site", "kryos_diag_site", sig(1));
 

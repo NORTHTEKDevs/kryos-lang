@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`contains(array, v)` segfaulted on both backends.** An array first
+  argument fell through to the string `contains` and read the array handle as
+  a string. It now tests membership for arrays of ints (any width), `f64`,
+  `bool`, `char` and `str` (by content). Unsupported shapes (arrays of
+  structs, enums, tuples, nested arrays, `f32`; a reference-typed first
+  argument) are a clean `E0100` instead of a crash. `contains(map, k)` and
+  `contains(str, s)` are unchanged. Two element kinds needed their own
+  fixes: `contains(bools, true)` was false on `--release` (an LLVM array
+  literal stored `true` as -1), and a narrow-int needle held in a variable
+  (`x: u8 = 200`) missed on every backend.
+
 ## [1.2.0] - 2026-10-31
 
 Correctness and memory-safety release. It fixes a silent miscompile, five

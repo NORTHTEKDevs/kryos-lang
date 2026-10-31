@@ -334,6 +334,57 @@ pub unsafe extern "C" fn kryos_array_len(arr: *const KryosArray) -> i64 {
     (*arr).len
 }
 
+/// `contains(arr, v)` for an array of scalar elements (ints, bool, char): true
+/// when some slot equals `v`. Reads the array only; a null handle is empty.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_contains(arr: *const KryosArray, v: i64) -> i64 {
+    if arr.is_null() {
+        return 0;
+    }
+    let data = (*arr).data as *const i64;
+    for i in 0..(*arr).len as usize {
+        if *data.add(i) == v {
+            return 1;
+        }
+    }
+    0
+}
+
+/// `contains(arr, v)` for an array of `f64`: slots hold the raw bits, so the
+/// test is a float `==` (0.0 equals -0.0, NaN equals nothing), not a bit test.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_contains_f64(arr: *const KryosArray, bits: i64) -> i64 {
+    if arr.is_null() {
+        return 0;
+    }
+    let data = (*arr).data as *const i64;
+    let needle = f64::from_bits(bits as u64);
+    for i in 0..(*arr).len as usize {
+        if f64::from_bits(*data.add(i) as u64) == needle {
+            return 1;
+        }
+    }
+    0
+}
+
+/// `contains(arr, v)` for an array of `str`: compares by CONTENT (a slot holds
+/// a string handle, so comparing the raw slot is a pointer test). Reads only.
+#[no_mangle]
+pub unsafe extern "C" fn kryos_array_contains_str(arr: *const KryosArray, v: i64) -> i64 {
+    if arr.is_null() {
+        return 0;
+    }
+    let data = (*arr).data as *const i64;
+    let needle = v as *const crate::string::KryosString;
+    for i in 0..(*arr).len as usize {
+        let el = *data.add(i) as *const crate::string::KryosString;
+        if crate::string::kryos_string_eq(el, needle) {
+            return 1;
+        }
+    }
+    0
+}
+
 /// Concatenate two KryosArrays, returning a new array containing all elements
 /// from `a` followed by all elements from `b`. The originals are not freed.
 #[no_mangle]

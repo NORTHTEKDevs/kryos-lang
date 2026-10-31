@@ -1209,6 +1209,9 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_diag_site(i64)");
         self.emit_line("declare i64 @kryos_array_retain_opt(ptr)");
         self.emit_line("declare ptr @kryos_array_dup(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains_str(ptr, i64)");
+        self.emit_line("declare i64 @kryos_array_contains_f64(ptr, i64)");
         self.emit_line("declare i64 @kryos_map_retain_opt(i64)");
         self.emit_line("declare i64 @kryos_map_retain(i64)");
         self.emit_line("declare i64 @kryos_async_current_task()");
@@ -9814,7 +9817,10 @@ impl LlvmCodegen {
                     t
                 } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
                     let t = self.next_temp();
-                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    // A bool is 0/1 (Cranelift stores 1): sext i1 true stored -1,
+                    // so contains(b, true) and any slot == 1 test missed it.
+                    let ext = if elem_ty == "i1" { "zext" } else { "sext" };
+                    self.emit_line(&format!("  {t} = {ext} {elem_ty} {elem_val} to i64"));
                     t
                 } else if elem_ty.starts_with('{') || elem_ty.starts_with('[') || elem_ty.starts_with('%') {
                     // Aggregate element (struct/tuple/enum): box on the heap and
@@ -9908,7 +9914,10 @@ impl LlvmCodegen {
                     t
                 } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
                     let t = self.next_temp();
-                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    // A bool is 0/1 (Cranelift stores 1): sext i1 true stored -1,
+                    // so contains(b, true) and any slot == 1 test missed it.
+                    let ext = if elem_ty == "i1" { "zext" } else { "sext" };
+                    self.emit_line(&format!("  {t} = {ext} {elem_ty} {elem_val} to i64"));
                     t
                 } else {
                     // Unknown type: emit identity and let the verifier flag it.
@@ -13043,7 +13052,12 @@ fn runtime_param_types(fname: &str) -> Option<Vec<String>> {
         }
         // Borrow-to-own retains for container reads (double-free fix).
         "kryos_string_retain_opt" | "kryos_array_retain_opt" => Some(vec!["ptr".into()]),
-        "kryos_array_dup" => Some(vec!["ptr".into(), "i64".into()]),
+        "kryos_array_dup"
+        | "kryos_array_contains"
+        | "kryos_array_contains_str"
+        | "kryos_array_contains_f64" => {
+            Some(vec!["ptr".into(), "i64".into()])
+        }
         "kryos_map_retain_opt" => Some(vec!["i64".into()]),
         // An f64 key is passed as its raw bits, like kryos_map_get/insert
         // (without this a `map<f64, S>` read always took the missing-key

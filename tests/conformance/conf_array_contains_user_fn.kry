@@ -1,0 +1,20 @@
+// Conformance (2026-10-30): a program's OWN `contains` over an array shadows the
+// builtin. The `contains(arr, v)` lowering for the builtin must not capture it:
+// std::trie::contains(t: [i64], word: str) took the array path and compared the
+// str handle as an int (conf_stdlib_untested "trie contains an inserted word").
+fn contains(t: [i64], word: str) -> bool {
+    return len(t) == 2 and word == "ok" and t[1] == 7
+}
+
+fn main() {
+    let t = [3, 7]
+    if not contains(t, "ok") {
+        println("CONF FAIL: user contains(array, str) not called")
+        exit(1)
+    }
+    if contains(t, "no") or contains([1], "ok") {
+        println("CONF FAIL: user contains result wrong")
+        exit(1)
+    }
+    println("PASS")
+}

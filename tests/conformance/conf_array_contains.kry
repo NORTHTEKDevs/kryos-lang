@@ -1,0 +1,166 @@
+// Conformance (2026-10-30): `contains(arr, v)` on an array. It type-checked
+// clean (the builtin's params are lenient), is documented in STDLIB.md, and
+// fell through to the STRING `contains`, which read the array handle as a
+// KryosString: rc=139 on `kryos run` and on the AOT binary, no output. Now an
+// array first argument tests membership: ints / bool / char by value, f64 by
+// float ==, str by CONTENT (a fresh needle with a different pointer must
+// match). Unsupported element kinds (struct, nested array, f32) and a
+// non-str / non-array / non-map first argument are compile errors (pinned in
+// tests/type_soundness.sh). Run on both backends by run_conformance.sh and,
+// with the free diagnostics, by tests/no_double_free.sh.
+
+struct Box1 { names: [str], ids: [i64] }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn has_name(xs: [str], v: str) -> bool { return contains(xs, v) }
+fn has_id(xs: [i64], v: i64) -> bool { return contains(xs, v) }
+fn has_gen<T>(xs: [T], v: T) -> bool { return contains(xs, v) }
+fn has_bool(xs: [bool], v: bool) -> bool { return contains(xs, v) }
+fn has_u8(xs: [u8], v: u8) -> bool { return contains(xs, v) }
+
+fn main() {
+    // The triage repros.
+    let a = [5, 2, 9]
+    expect(contains(a, 2), "i64 present")
+    expect(not contains(a, 7), "i64 absent")
+    expect(contains(a, 5) and contains(a, 9), "i64 first and last")
+    let s = ["x", "y"]
+    expect(contains(s, "y"), "str present")
+    expect(not contains(s, "z"), "str absent")
+
+    // str compares by content: a needle built at runtime is a different object.
+    let tail = "y"
+    expect(contains(s, "" + tail), "str needle built at runtime")
+    expect(contains(s, "x" + ""), "str first element, built needle")
+    expect(not contains(s, "xy"), "str prefix of nothing")
+    expect(not contains(s, ""), "empty needle absent")
+    let with_empty = ["", "q"]
+    expect(contains(with_empty, ""), "empty str element")
+
+    // Empty and grown arrays.
+    let e: [i64] = []
+    expect(not contains(e, 0), "empty array")
+    let mut g: [i64] = []
+    expect(not contains(g, 3), "before push")
+    g = push(g, 3)
+    expect(contains(g, 3), "after push")
+    let mut gs: [str] = []
+    gs = push(gs, "k{len(gs)}")
+    expect(contains(gs, "k0"), "pushed str")
+
+    // Other scalar element kinds.
+    expect(contains([true, false], false), "bool")
+    expect(not contains([true, true], false), "bool absent")
+    expect(contains(['a', 'b'], 'b'), "char")
+    expect(not contains(['a', 'b'], 'z'), "char absent")
+    let u: [u8] = [1, 2, 200]
+    expect(contains(u, 200), "u8 high value")
+    expect(not contains(u, 3), "u8 absent")
+    let n: [i32] = [-1, 4]
+    expect(contains(n, -1), "i32 negative")
+    let f = [1.5, 2.5, -0.0]
+    expect(contains(f, 2.5), "f64 present")
+    expect(not contains(f, 3.5), "f64 absent")
+    expect(contains(f, 0.0), "f64 0.0 == -0.0")
+    let x = 1.5
+    expect(contains(f, x), "f64 from a local")
+    let nan = 0.0 / 0.0
+    expect(not contains([nan], nan), "f64 NaN equals nothing")
+
+    // bool elements (LLVM AOT stored `true` as -1 via sext i1, so every
+    // `true` needle missed on --release while the JIT and Cranelift AOT said
+    // true): a LOCAL array (not just a literal argument), a pushed array, an
+    // element set after the fact, a computed needle / element, via a fn.
+    let bl = [true, false]
+    expect(contains(bl, true) and contains(bl, false), "bool local both")
+    let bt = [true, true]
+    expect(contains(bt, true) and not contains(bt, false), "bool all true")
+    let bf = [false, false]
+    expect(contains(bf, false) and not contains(bf, true), "bool all false")
+    let mut bp: [bool] = []
+    bp = push(bp, true)
+    expect(contains(bp, true) and not contains(bp, false), "bool pushed")
+    let mut bs = [false, false, false]
+    bs[1] = true
+    expect(contains(bs, true), "bool set to true")
+    let three = 3
+    let bc = [three > 2, three > 9]
+    expect(contains(bc, three > 2) and contains(bc, three > 9), "bool computed")
+    expect(has_bool(bl, true) and has_bool(bl, false) and not has_bool(bt, false), "bool via fn")
+    expect(has_gen(bl, true) and not has_gen(bt, false), "bool via generic")
+    let mut beq: [bool] = []
+    beq = push(beq, true)
+    beq = push(beq, false)
+    expect(bl == beq, "bool literal and pushed arrays are equal")
+
+    // Narrow ints: a typed needle (variable / cast / fn param) must widen the
+    // way the element slot reads back. u8 200 as a VARIABLE needle missed on
+    // all three legs (undefined upper bits against a full-width compare).
+    let big: i64 = 200
+    let x200: u8 = 200
+    expect(contains(u, x200) and contains(u, big as u8), "u8 variable / cast needle")
+    expect(has_u8(u, 200) and has_u8(u, x200) and not has_u8(u, 100), "u8 via fn")
+    let mut up: [u8] = []
+    up = push(up, 250)
+    expect(contains(up, 250) and contains(up, 250 as u8), "u8 pushed")
+    let mut us: [u8] = [0, 0]
+    us[1] = 255
+    expect(contains(us, 255) and not contains(us, 254), "u8 set")
+    let u16a: [u16] = [65535, 1]
+    expect(contains(u16a, 65535), "u16 max")
+    let u32a: [u32] = [4294967295, 1]
+    let u32x: u32 = 4294967295
+    expect(contains(u32a, 4294967295) and contains(u32a, u32x), "u32 max")
+    let i8a: [i8] = [-128, 127]
+    let i8x: i8 = -128
+    expect(contains(i8a, -128) and contains(i8a, 127) and contains(i8a, i8x), "i8 extremes")
+    let i16a: [i16] = [-32768, 1]
+    expect(contains(i16a, -32768), "i16 min")
+    let i32a: [i32] = [-2147483648, 1]
+    let i32x: i32 = -2147483648
+    expect(contains(i32a, -2147483648) and contains(i32a, i32x), "i32 min")
+    expect(has_gen(u, x200) and not has_gen(u, 7 as u8), "generic u8")
+
+    // Through a function boundary, a generic, a struct field, a fresh temp.
+    expect(has_name(s, "y"), "str via fn")
+    expect(has_id(a, 9), "i64 via fn")
+    expect(has_gen(a, 9) and not has_gen(a, 4), "generic i64")
+    expect(has_gen(s, "x") and not has_gen(s, "w"), "generic str")
+    let b = Box1 { names: ["m", "n"], ids: [10, 20] }
+    expect(contains(b.names, "n") and contains(b.ids, 20), "struct fields")
+    expect(not contains(b.names, "o") and not contains(b.ids, 30), "struct fields absent")
+    expect(contains(split("a,b,c", ","), "b"), "split temp")
+    expect(not contains(split("a,b,c", ","), "d"), "split temp absent")
+
+    // The receiver and needle are only read: both still hold afterwards.
+    let keep = ["p", "q"]
+    let needle = "q"
+    expect(contains(keep, needle), "borrowed needle")
+    expect(contains(keep, needle) and len(keep) == 2 and needle == "q", "operands intact")
+
+    // The other two shapes keep working.
+    expect(contains("hello", "ell"), "substring")
+    expect(not contains("hello", "xyz"), "substring absent")
+    let mut m: map<str, i64> = {}
+    m["k"] = 1
+    let mut mi: map<i64, i64> = {}
+    mi[3] = 1
+    expect(contains(m, "k") and not contains(m, "z"), "str-keyed map")
+    expect(contains(mi, 3) and not contains(mi, 4), "int-keyed map")
+
+    // Repeat: no state is retained between calls.
+    let mut i = 0
+    let mut hits = 0
+    while i < 200 {
+        if contains(["u{i % 4}", "v"], "u2") { hits = hits + 1 }
+        i = i + 1
+    }
+    expect(hits == 50, "200 rounds, 50 hits, got {hits}")
+    println("PASS")
+}
