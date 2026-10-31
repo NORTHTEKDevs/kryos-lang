@@ -9817,7 +9817,10 @@ impl LlvmCodegen {
                     t
                 } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
                     let t = self.next_temp();
-                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    // A bool is 0/1 (Cranelift stores 1): sext i1 true stored -1,
+                    // so contains(b, true) and any slot == 1 test missed it.
+                    let ext = if elem_ty == "i1" { "zext" } else { "sext" };
+                    self.emit_line(&format!("  {t} = {ext} {elem_ty} {elem_val} to i64"));
                     t
                 } else if elem_ty.starts_with('{') || elem_ty.starts_with('[') || elem_ty.starts_with('%') {
                     // Aggregate element (struct/tuple/enum): box on the heap and
@@ -9911,7 +9914,10 @@ impl LlvmCodegen {
                     t
                 } else if elem_ty == "i1" || elem_ty == "i8" || elem_ty == "i16" || elem_ty == "i32" {
                     let t = self.next_temp();
-                    self.emit_line(&format!("  {t} = sext {elem_ty} {elem_val} to i64"));
+                    // A bool is 0/1 (Cranelift stores 1): sext i1 true stored -1,
+                    // so contains(b, true) and any slot == 1 test missed it.
+                    let ext = if elem_ty == "i1" { "zext" } else { "sext" };
+                    self.emit_line(&format!("  {t} = {ext} {elem_ty} {elem_val} to i64"));
                     t
                 } else {
                     // Unknown type: emit identity and let the verifier flag it.

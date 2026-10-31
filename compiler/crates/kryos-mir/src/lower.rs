@@ -15144,8 +15144,33 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         _ => Some("kryos_array_contains"),
                     };
                     if let Some(rt) = rt {
-                        let mir_args: Vec<Operand> =
+                        let mut mir_args: Vec<Operand> =
                             args.iter().map(|a| lower_expr_to_operand(ctx, a)).collect();
+                        // The runtime compares full i64 slots. A narrow needle
+                        // (`x: u8 = 200`) reaches the i64 param with undefined
+                        // or sign-extended upper bits on the JIT and AOT, so
+                        // widen it with `as i64` (zero-extends unsigned,
+                        // sign-extends signed), matching how the element slot
+                        // reads back.
+                        if matches!(
+                            elem.as_ref(),
+                            MirType::I8
+                                | MirType::I16
+                                | MirType::I32
+                                | MirType::U8
+                                | MirType::U16
+                                | MirType::U32
+                        ) {
+                            let wide = ctx.alloc_temp(MirType::I64);
+                            ctx.emit(Instruction::Assign {
+                                dest: wide,
+                                value: RValue::Cast {
+                                    operand: mir_args[1].clone(),
+                                    ty: MirType::I64,
+                                },
+                            });
+                            mir_args[1] = Operand::Local(wide);
+                        }
                         return RValue::Call {
                             func: rt.to_string(),
                             args: mir_args,
