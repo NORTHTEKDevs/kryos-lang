@@ -481,6 +481,61 @@ impl TypeChecker {
     /// pairing is what codegen mishandles. A genuine upstream type error
     /// produces `Type::Error` on the ARGUMENT side, which this never reports
     /// on, so a broken program does not get extra noise from this check.
+    /// Shape gate for the builtin `contains(x, needle)`: `x` is a str (str
+    /// needle), a map (any key), or an array of ints / bool / char / str whose
+    /// needle has the element type. Everything else used to compile and then
+    /// read the handle as a string at runtime.
+    fn check_contains_shape(&mut self, first: &Type, needle: &Type, first_span: Span, needle_span: Span) {
+        let opaque = |t: &Type| matches!(t, Type::Error | Type::Var(_));
+        if opaque(first) {
+            return;
+        }
+        let peeled = match first {
+            Type::Reference { inner, .. } => self.engine.resolve(inner),
+            other => other.clone(),
+        };
+        match &peeled {
+            Type::Map { .. } => {}
+            Type::Str => {
+                if !opaque(needle) && *needle != Type::Str {
+                    self.error_with_code(
+                        format!("`contains` on a str needs a str needle; found `{needle}`"),
+                        needle_span,
+                        kryos_errors::codes::E0100,
+                    );
+                }
+            }
+            Type::Array { element, .. } => {
+                let elem = self.engine.resolve(element);
+                if opaque(&elem) {
+                    return;
+                }
+                let supported = elem.is_integer()
+                    || matches!(elem, Type::Bool | Type::Char | Type::Str | Type::F64);
+                if !supported {
+                    self.error_with_code(
+                        format!(
+                            "`contains` on an array supports int, f64, bool, char and str elements; found `[{elem}]`"
+                        ),
+                        first_span,
+                        kryos_errors::codes::E0100,
+                    );
+                } else if !opaque(needle) {
+                    if let Err(diag) = self.engine.unify(&elem, needle, needle_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+            }
+            other => {
+                self.error_with_code(
+                    format!("`contains` expects a str, array, or map; found `{other}`"),
+                    first_span,
+                    kryos_errors::codes::E0100,
+                );
+            }
+        }
+    }
+
     fn reject_untagged_scalar_into_any(&mut self, param_ty: &Type, arg_ty: &Type, span: Span) {
         let p = self.engine.resolve(param_ty);
         let a = self.engine.resolve(arg_ty);
@@ -5254,6 +5309,9 @@ impl TypeChecker {
                                 *span,
                             );
                         } else {
+                            // First argument's type, kept for the builtin
+                            // `contains` shape gate after its needle is typed.
+                            let mut contains_first: Option<Type> = None;
                             for (i, (arg, param_ty)) in
                                 args.iter().zip(params.iter()).enumerate()
                             {
@@ -5387,6 +5445,23 @@ impl TypeChecker {
                                             ),
                                             arg.span(),
                                         );
+                                    }
+                                }
+                                // The builtin `contains` takes its params as
+                                // Type::Error (it is polymorphic over str, map and
+                                // array), so nothing checked the SHAPE: an array or
+                                // a number reached the string `contains` and read
+                                // the handle as a KryosString (segfault on both
+                                // backends). Gate the builtin only -- a user
+                                // function named `contains` has typed params.
+                                if matches!(&callee_name_str, Some(n) if n == "contains")
+                                    && matches!(param_ty, Type::Error)
+                                {
+                                    if i == 0 {
+                                        contains_first = Some(self.engine.resolve(&arg_ty));
+                                    } else if let Some(first) = contains_first.take() {
+                                        let needle = self.engine.resolve(&arg_ty);
+                                        self.check_contains_shape(&first, &needle, args[0].span(), arg.span());
                                     }
                                 }
                             }

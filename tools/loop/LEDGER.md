@@ -10,6 +10,63 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: `contains(array, v)` compiled clean, was documented, and segfaulted on both backends (2026-10-30)
+
+Availability (crash) on a documented feature. The builtin's two params are lenient
+`Type::Error`, so nothing checked the SHAPE of the first argument; MIR lowering
+special-cased only a `Map` first argument, so an array fell through to the STRING
+`contains` and read the array handle as a `KryosString`.
+- Repro (before): `fn main() { let a = [5, 2, 9]  println("{contains(a, 2)}") }`
+  (and `let s = ["x","y"]  contains(s, "y")`): `kryos run` rc=139, the `kryos build
+  --release` binary rc=139, no output. docs/STDLIB.md lines 52 and 108 documented
+  `contains(arr, v)`. Related shapes had the same hole: a number first argument
+  (`contains(5, 5)`), a non-str needle on a str (`contains("abc", 1)`), an array of
+  structs.
+- Fix. Runtime `kryos-rt/src/array.rs`: `kryos_array_contains` (slot == value, ints /
+  bool / char), `kryos_array_contains_str` (content compare through
+  `kryos_string_eq`, so a null slot is "" and a runtime-built needle matches),
+  `kryos_array_contains_f64` (slots hold raw bits; float `==`, so 0.0 equals -0.0
+  and NaN equals nothing). Registered in the JIT symbol table + decls (the
+  `jit_symbols` gate sees them) and the LLVM declares / param types; Cranelift AOT
+  resolves through the same JIT-side decls. `kryos-mir/src/lower.rs`: an array arm
+  next to the map arm picks the runtime fn by element type (the three names are on
+  the borrow list, so a fresh `split(..)` receiver or `"a" + "b"` needle is
+  released at the call; measured flat), skipped when the program defines its own
+  `contains` (`user_fn_names`; `std::trie::contains(t: [i64], word: str)` is one --
+  the first version of this fix captured it and broke `conf_stdlib_untested`).
+  `kryos-types/src/check.rs`: `check_contains_shape`, gated on the builtin only
+  (opaque `Type::Error` param, like the `len` gate): first arg must be a str (str
+  needle), a map, or an array of int / f64 / bool / char / str with a needle of the
+  element type; everything else is a clean E0100 (struct / nested array / f32
+  elements, a number or tuple first argument). Open type variables and generic
+  `[T]` pass through (monomorphized `has<T>(xs: [T], v: T)` works for i64 and str).
+  docs/STDLIB.md lines 52 and 108 now state the supported shapes.
+- Proved both ways (full `cargo build --release` each time). Pin
+  `tests/conformance/conf_array_contains.kry` (i64 / str / bool / char / u8 / i32 /
+  f64, empty and pushed arrays, runtime-built needles, a generic, fn params, struct
+  fields, a `split` temp, repeated rounds, map and substring shapes still work) and
+  `conf_array_contains_user_fn.kry` (a program's own `contains(array, str)`).
+  With `git stash -- compiler`: JIT rc=139 and AOT rc=139 on the new conformance
+  program, and `type_soundness.sh` reports 6 probes failed (the five rejection pins
+  plus the supported-shapes `want_pass`). Restored: JIT, LLVM AOT and Cranelift AOT
+  print PASS; `type_soundness.sh` all probes correct. The user-fn pin separately:
+  with only the `!ctx.user_fn_names.contains("contains")` guard removed, JIT and AOT
+  print `CONF FAIL: user contains(array, str) not called`; guard restored, PASS.
+- Registered: `no_double_free.sh` `array_contains` (JIT + AOT with the free
+  diagnostics, then real frees); `type_soundness.sh` `contains_*` (1 accept, 5
+  E0100 rejections); `mem_agg_ops_gate.sh` mode `arr_contains_str` (fresh needle +
+  fresh `split` receiver per iteration). 1.6M iterations of that shape: 4 MB peak.
+- Gates: `kryos-loop.sh gates 2` tier1 + tier2 GREEN -> GREEN, conformance 112/112
+  -> 114/114, 28 PASS lines -> 28; bootstrap 16/16 -> 16/16; `mem_agg_ops_gate.sh` full run PASS (`arr_contains_str`
+  4 MB peak on AOT and JIT at 1M iterations, ceiling 40 MB).
+- Residuals (honest). `--backend wasm` does not implement the array arm: a program
+  using `contains(arr, v)` fails at codegen with "WASM backend v0.1 does not yet
+  support: call to `kryos_array_contains`" (a clean compile error, not a crash; was
+  an unsupported-call path before too); STDLIB.md says so. `contains` on an array of
+  f32, structs, enums, tuples or nested arrays is rejected rather than implemented
+  (no structural-equality runtime hook for them; use a loop with `==`). The lsp hover
+  text for `contains` still shows only the `str` signature.
+
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 
 Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.

@@ -49,7 +49,7 @@ a one-line summary. Return types follow Kryos naming: `i64`, `f64`, `str`,
 | `to_upper(s)` / `to_lower(s)`   | str     | Case conversion.                                 |
 | `trim(s)`                       | str     | Whitespace trimming (global builtin). `trim_start(s)` / `trim_end(s)` are one-sided variants but are **not** global — `use std::string::{trim_start, trim_end}`. |
 | `substr(s, start, end)`         | str     | Slice by byte offset.                            |
-| `contains(s, needle)`           | bool    | Substring test (also works for arrays).          |
+| `contains(s, needle)`           | bool    | Substring test; for an array or map, see `contains(arr, v)` below. |
 | `starts_with(s, prefix)`        | bool    |                                                  |
 | `ends_with(s, suffix)`          | bool    |                                                  |
 | `replace(s, from, to)`          | str     | First-occurrence replace.                        |
@@ -105,7 +105,7 @@ itself) prints `"Hello, 0! You are 1."`, not `"Hello, Alice! You are 30."` (veri
 | `pop(arr)`               | T       | Removes and returns the last element.                     |
 | `sort(arr)`              | void    | In-place ascending sort.                                  |
 | `reverse(arr)`           | void    | In-place reverse.                                         |
-| `contains(arr, v)`       | bool    | Membership check.                                         |
+| `contains(arr, v)`       | bool    | Membership check for `[int]`, `[f64]`, `[bool]`, `[char]` (by value) and `[str]` (by content). Any other element type, or a non-str/array/map first argument, is a compile error (E0100). Not yet supported on `--backend wasm`. |
 | `keys(map)`              | [T]     | Returns array of keys (use `map_keys` / `map_keys_str` for typed variants). |
 
 ### 1.6 Filesystem
