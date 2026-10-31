@@ -15151,16 +15151,22 @@ fn lower_expr_to_rvalue(ctx: &mut LoweringContext, expr: &ast::Expr) -> RValue {
                         // or sign-extended upper bits on the JIT and AOT, so
                         // widen it with `as i64` (zero-extends unsigned,
                         // sign-extends signed), matching how the element slot
-                        // reads back.
-                        if matches!(
-                            elem.as_ref(),
-                            MirType::I8
-                                | MirType::I16
-                                | MirType::I32
-                                | MirType::U8
-                                | MirType::U16
-                                | MirType::U32
-                        ) {
+                        // reads back. Keyed on the NEEDLE's own type as well as
+                        // the element's: `a: [i64]` with a `u8` variable needle
+                        // has a wide element and a narrow needle.
+                        let needle_ty = infer_expr_type(ctx, &args[1]);
+                        let narrow = |t: &MirType| {
+                            matches!(
+                                t,
+                                MirType::I8
+                                    | MirType::I16
+                                    | MirType::I32
+                                    | MirType::U8
+                                    | MirType::U16
+                                    | MirType::U32
+                            )
+                        };
+                        if narrow(elem.as_ref()) || narrow(&needle_ty) {
                             let wide = ctx.alloc_temp(MirType::I64);
                             ctx.emit(Instruction::Assign {
                                 dest: wide,

@@ -23,6 +23,8 @@ fn has_id(xs: [i64], v: i64) -> bool { return contains(xs, v) }
 fn has_gen<T>(xs: [T], v: T) -> bool { return contains(xs, v) }
 fn has_bool(xs: [bool], v: bool) -> bool { return contains(xs, v) }
 fn has_u8(xs: [u8], v: u8) -> bool { return contains(xs, v) }
+fn has_wide_u8(xs: [i64], v: u8) -> bool { return contains(xs, v) }
+fn has_wide_i8(xs: [i64], v: i8) -> bool { return contains(xs, v) }
 
 fn main() {
     // The triage repros.
@@ -127,6 +129,31 @@ fn main() {
     expect(contains(i32a, -2147483648) and contains(i32a, i32x), "i32 min")
     expect(has_gen(u, x200) and not has_gen(u, 7 as u8), "generic u8")
 
+    // A NARROW needle against a WIDER (or unannotated) int array: the widening
+    // is keyed on the needle's own type, not just the array's. A u8 / u16 / u32
+    // variable needle used to carry undefined upper bits and miss on every leg
+    // while `a[0] == n` was true.
+    let w64: [i64] = [200, 255]
+    let w8: u8 = 200
+    expect(w64[0] == w8, "wide array element equals u8 var")
+    expect(contains(w64, w8), "i64 array, u8 variable needle")
+    expect(not contains(w64, 100 as u8), "i64 array, u8 absent")
+    let wi = [200, 255]
+    expect(contains(wi, 200 as u8), "unannotated int array, u8 cast needle")
+    let w16: [i64] = [60000, 5]
+    let n16: u16 = 60000
+    expect(contains(w16, n16), "i64 array, u16 variable needle")
+    let w32: [i64] = [3000000000, 5]
+    let n32: u32 = 3000000000
+    expect(contains(w32, n32), "i64 array, u32 variable needle")
+    expect(has_wide_u8([200, 5], 200), "i64 array, u8 param needle")
+    expect(not has_wide_u8([200, 5], 6), "i64 array, u8 param absent")
+    let wneg: [i64] = [-5, 7]
+    let ni8: i8 = -5
+    let ni32: i32 = -5
+    expect(contains(wneg, ni8) and contains(wneg, ni32), "i64 array, signed narrow needle")
+    expect(has_wide_i8(wneg, -5) and not has_wide_i8(wneg, 5), "i64 array, i8 param needle")
+
     // Through a function boundary, a generic, a struct field, a fresh temp.
     expect(has_name(s, "y"), "str via fn")
     expect(has_id(a, 9), "i64 via fn")
@@ -152,6 +179,9 @@ fn main() {
     let mut mi: map<i64, i64> = {}
     mi[3] = 1
     expect(contains(m, "k") and not contains(m, "z"), "str-keyed map")
+    let key = "k"
+    let mu: map<u8, i64> = {200: 1}
+    expect(contains(m, key) and contains(mu, 200), "map keys, str and u8 literal")
     expect(contains(mi, 3) and not contains(mi, 4), "int-keyed map")
 
     // Repeat: no state is retained between calls.

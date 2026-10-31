@@ -1523,6 +1523,31 @@ fn has(m: &map<str, i64>, k: str) -> bool { return contains(m, k) }
 fn main() { let mut m: map<str, i64> = {}
   m["a"] = 1
   println("{has(&m, "a")}") }'
+# An `any` parameter and an un-annotated closure parameter carry no usable type
+# at the call, so MIR took the STRING path for an array / map (rc=139 on every
+# leg). A non-str needle cannot belong to a str: clean E0100. A str needle keeps
+# the string reading (an un-annotated closure param is inferred str).
+want_reject_e0100 contains_any_param_int_needle '
+fn has(a: any, v: i64) -> bool { return contains(a, v) }
+fn main() { println("{has([1, 3], 3)}") }'
+want_reject_e0100 contains_untyped_closure_param_int_needle '
+fn main() { let f = |a| contains(a, 3)
+  println("{f([1, 3])}") }'
+want_reject_e0100 contains_untyped_closure_param_array_arg '
+fn main() { let f = |s| contains(s, "x")
+  println("{f(["x"])}") }'
+want_pass contains_untyped_closure_param_str '
+fn main() { let f = |s| contains(s, "x")
+  if not (f("axb") and not f("abc")) { exit(1) } }'
+want_pass contains_any_param_str '
+fn has(a: any, v: str) -> bool { return contains(a, v) }
+fn main() { if not has("axb", "x") { exit(1) } }'
+want_reject_e0100 contains_map_wrong_needle '
+fn main() { let m: map<str, i64> = {"a": 1}
+  println("{contains(m, 1)}") }'
+want_reject_e0100 contains_int_map_str_needle '
+fn main() { let m: map<i64, i64> = {1: 2}
+  println("{contains(m, "a")}") }'
 
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"

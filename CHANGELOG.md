@@ -17,7 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `contains(str, s)` are unchanged. Two element kinds needed their own
   fixes: `contains(bools, true)` was false on `--release` (an LLVM array
   literal stored `true` as -1), and a narrow-int needle held in a variable
-  (`x: u8 = 200`) missed on every backend.
+  (`x: u8 = 200`) missed on every backend, including against a wider or
+  unannotated int array (`[i64]` with a `u8` needle). A map first argument
+  with a needle of the wrong type (`contains(m, 1)` on `map<str, i64>`), and
+  an `any` or un-annotated closure parameter with a non-`str` needle, are an
+  `E0100` instead of a segfault. An `any` parameter that really holds a
+  `[str]` and is searched with a str needle still needs a type annotation.
 
 ## [1.2.0] - 2026-10-31
 

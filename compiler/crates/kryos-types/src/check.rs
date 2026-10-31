@@ -459,6 +459,40 @@ impl TypeChecker {
     fn check_contains_shape(&mut self, first: &Type, needle: &Type, first_span: Span, needle_span: Span) {
         let opaque = |t: &Type| matches!(t, Type::Error | Type::Var(_));
         if opaque(first) {
+            // The first argument's type is unknown HERE: an `any` parameter
+            // (erased to `Type::Error`, no runtime tag) or an un-annotated
+            // closure parameter whose type is only fixed by a LATER call (the
+            // closure's param types are recorded when its body is checked, so
+            // MIR still sees it as unknown). MIR then takes the STRING path, so
+            // a str is the only first argument that works. A str needle keeps
+            // that reading (an un-annotated closure param is inferred to be a
+            // str; a later array argument is then a clean type mismatch). Any
+            // other needle cannot belong to a str, so the first argument is an
+            // array or a map and would segfault: reject it and ask for the type.
+            let needle = self.engine.resolve(needle);
+            if opaque(&needle) {
+                return;
+            }
+            if needle == Type::Str {
+                if matches!(first, Type::Var(_)) {
+                    if let Err(diag) = self.engine.unify(first, &Type::Str, first_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+                return;
+            }
+            // `Type::Error` is also the cascade sentinel after an earlier
+            // error; do not pile a second diagnostic on a broken program.
+            if matches!(first, Type::Error) && self.diagnostics.iter().any(|d| d.is_error()) {
+                return;
+            }
+            self.error_with_code(
+                format!(
+                    "`contains` cannot tell what its first argument is (an `any` or un-annotated closure parameter); annotate it, e.g. `[{needle}]`, so the array or map membership test is chosen"
+                ),
+                first_span,
+                kryos_errors::codes::E0100,
+            );
             return;
         }
         // A reference-typed first argument (`a: &[i64]`, `&mut`, `let r = &a`)
@@ -477,7 +511,16 @@ impl TypeChecker {
             return;
         }
         match first {
-            Type::Map { .. } => {}
+            Type::Map { key, .. } => {
+                // A wrong-typed needle (`m: map<str, i64>`, `contains(m, 1)`)
+                // read an int as a KryosString key and segfaulted.
+                let key = self.engine.resolve(key);
+                if !opaque(&key) && !opaque(needle) {
+                    if let Err(diag) = self.engine.unify(&key, needle, needle_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+            }
             Type::Str => {
                 if !opaque(needle) && *needle != Type::Str {
                     self.error_with_code(

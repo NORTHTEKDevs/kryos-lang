@@ -115,6 +115,61 @@ special-cased only a `Map` first argument, so an array fell through to the STRIN
   f32, structs, enums, tuples or nested arrays is rejected rather than implemented
   (no structural-equality runtime hook for them; use a loop with `==`). The lsp hover
   text for `contains` still shows only the `str` signature.
+- Round 4 (adversarial verifier #3 on PR #30). The verifier found one silent wrong
+  answer, three residual crashes and the "everything else is a clean E0100" claim
+  false. All reproduced on the round-3 tip (full build) before touching code.
+  - Silent wrong answer: the round-3 narrow-needle widening was keyed on the ARRAY's
+    element type only, so a `u8` / `u16` / `u32` needle against an `[i64]` (or
+    unannotated) array reached the i64 runtime param with undefined upper bits and
+    missed on the JIT, Cranelift AOT and LLVM AOT alike, while `a[0] == n` was true:
+    `let a: [i64] = [200, 255]  let n: u8 = 200  contains(a, n)` false; `let a = [200,
+    255]` with `200 as u8` false; u16 `[60000, 5]` with a u16 var false; u32
+    `[3000000000, 5]` with a u32 var false; `fn has(a: [i64], v: u8)` called as
+    `has([200, 5], 200)` false. Fix (`kryos-mir/src/lower.rs`): the `as i64` Cast is
+    applied when the ELEMENT or the NEEDLE (`infer_expr_type(args[1])`) is a narrow
+    int. Mixed widths stay accepted (the checker unifies int widths, `a[0] == n`
+    already compiles), so the right answer is the widened compare, not an error.
+  - Residual crashes (rc=139 on every leg, also on master): (1) `let f = |a|
+    contains(a, 3)  f([1,3])`; (2) `fn has(a: any, v: i64) { contains(a, v) }`;
+    (3) `m: map<str,i64>`, `contains(m, 1)` (the map arm took any needle). Root
+    cause for (1) and (2): the first argument has no type at the call. An `any`
+    param is `Type::Error` (no runtime tag, item 6); an un-annotated closure param
+    is an open var whose type a LATER call fixes, but the closure's param types are
+    recorded when its body is checked, so MIR sees it as unknown and takes the
+    string path. Fix (`check_contains_shape`, `kryos-types/src/check.rs`): with an
+    opaque first argument, a NON-str needle cannot belong to a str, so it is a clean
+    E0100 asking for an annotation (skipped for `Type::Error` once an earlier error
+    exists, so a broken program gets no second diagnostic); a str needle keeps the
+    string reading and an open var is inferred `str` (a later `f(["x"])` is then a
+    clean type mismatch instead of a segfault). A map first argument now unifies its
+    key type with the needle (3).
+  - Pins. `conf_array_contains.kry`: wide-array / narrow-needle block (u8 var, u8
+    cast against an unannotated array, u16, u32, u8 and i8 fn params, signed narrow
+    needles, absent cases), plus a u8-keyed map with a literal needle.
+    `type_soundness.sh`: `contains_any_param_int_needle`,
+    `contains_untyped_closure_param_int_needle`,
+    `contains_untyped_closure_param_array_arg`, `contains_map_wrong_needle`,
+    `contains_int_map_str_needle` (E0100) and the two str shapes that must still
+    compile and run (`contains_untyped_closure_param_str`, `contains_any_param_str`).
+  - Residual (still true, narrower than the verifier's list): an `any`-typed param
+    that really holds a `[str]`, called with a STR needle, still takes the string
+    path (`any` has no runtime tag; a str is also a legitimate value there, so it
+    cannot be rejected without breaking `has(a: any, v: str)` on a str). Annotate
+    the param. Separate bug found while building the matrix, present on master and
+    unrelated to `contains`: a `map<u8, i64>` indexed with a `u8` VARIABLE key misses
+    (`let mu: map<u8,i64> = {200: 1}  let k: u8 = 200  mu[k]` reads 0, `contains(mu,
+    k)` false; a literal key works). Not fixed here.
+  - Proved both ways (full `cargo build --release` each time). Source reverted
+    (`git apply -R` of the compiler/ diff): `conf_array_contains.kry` prints
+    `CONF FAIL: i64 array, u8 variable needle` on the JIT, Cranelift AOT and LLVM
+    AOT, and `type_soundness.sh` reports 5 HOLEs (the five new E0100 pins).
+    Restored and rebuilt: the program prints PASS on all three legs and
+    `type_soundness.sh` is all probes correct.
+  - Gates (fresh full build, branch tip): `kryos-loop.sh gates 2` GATES_RC=0, tier2
+    GREEN, 28 PASS lines, conformance 115/115 (v1.2.0 master 113, 0 failures),
+    no_double_free PASS, type_soundness PASS; `test_bootstrap.sh` run alone PASS 16 /
+    16, FAIL 0; `mem_agg_ops_gate.sh` PASS (`arr_contains_str` 4 MB peak on AOT and
+    JIT at 1M iterations, ceiling 40 MB).
 
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 
