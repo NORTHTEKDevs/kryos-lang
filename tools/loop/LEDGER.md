@@ -61,6 +61,36 @@ special-cased only a `Map` first argument, so an array fell through to the STRIN
   binary) those 5 report HOLE; after, `type_soundness.sh` is all probes correct.
   The first sentence of the Fix above ("everything else is a clean E0100") is true
   only with this round.
+- Round 3 (adversarial verifier #2 on PR #30, element-type matrix, rebased on v1.2.0
+  master). `contains(bool_array, true)` was FALSE on `kryos build --release` (JIT and
+  Cranelift AOT true): `let b = [true, false]  println("{contains(b, true)}")` printed
+  `false` / `true` for `true` / `false` needles. Root cause: LLVM `emit_aggregate_array`
+  (stack-promoted AND heap literal paths) widened an `i1` element with `sext`, so
+  `true` was stored as -1; `kryos_array_contains` compares full i64 slots against the
+  needle (`zext` -> 1). Cranelift stores 1. Fix: `zext` for `i1` in both literal
+  paths (`codegen.rs`; the neighbouring cast code already says `true as i64` must be
+  1, not -1). Wider matrix found a second, backend-independent defect: a NARROW-int
+  needle held in a variable (`let x: u8 = 200  contains(u8a, x)`, `big as u8`, a `u8`
+  fn param) missed on the JIT, Cranelift AOT and LLVM alike (a literal needle worked),
+  because the narrow value reached the i64 runtime param with undefined upper bits.
+  Fix in `kryos-mir/src/lower.rs`: for i8/i16/i32/u8/u16/u32 element arrays the
+  needle goes through an `as i64` Cast first (zero-extends unsigned, sign-extends
+  signed, as the slot reads back).
+- Matrix run on JIT / LLVM AOT / Cranelift AOT (70 probes in two scratch programs +
+  the pins below): i64, f64, str, bool, char, u8, u16, u32, u64, i8, i16, i32; present /
+  absent; empty; stack-promoted literal, pushed, `arr[i] = v`, computed (`n > 2`),
+  struct field, fn param, generic `has<T>`, `split` temp, bool-array `==`;
+  `contains(map, k)` and `contains(str, s)` unchanged. Rejected cleanly (E0100 / E0110):
+  struct, enum, tuple, nested array, f32 elements; mismatched needle types. Before the
+  fix: LLVM failed 6 bool probes; all three legs failed 4 u8-variable probes. After: 0.
+- Pins: `conf_array_contains.kry` gained bool local / all-true / all-false / pushed /
+  set / computed / fn / generic / literal-vs-pushed `==`, and u8 variable / cast / fn /
+  pushed / set, u16 / u32 max, i8 / i16 / i32 extremes, generic u8. Source fixes
+  reverted (rebuilt): JIT `CONF FAIL: u8 variable / cast needle`, Cranelift AOT the
+  same, LLVM AOT `CONF FAIL: bool local both`. Fixes restored (rebuilt): all three PASS.
+- Gates (fresh full build, branch tip): `kryos-loop.sh gates 2` GATES_RC=0, tier2
+  GREEN, conformance 115/115 (v1.2.0 master 113, +2 for the two contains programs, 0
+  failures), `test_bootstrap.sh` PASS 16 / 16.
 - Proved both ways (full `cargo build --release` each time). Pin
   `tests/conformance/conf_array_contains.kry` (i64 / str / bool / char / u8 / i32 /
   f64, empty and pushed arrays, runtime-built needles, a generic, fn params, struct
