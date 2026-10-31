@@ -10,6 +10,85 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
+
+Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.
+- Repro (before), peak RSS at 400k iterations, AOT / JIT, an idle loop is 4 / 4MB:
+  `let s = "a,b,{i},d"  let p = split(s, ",")` 34 / 34; `let a = ["a","b","c"]
+  let j = join(a, "-")` 36 / 39; `join(["x","y"], sep)` with an interpolated
+  `sep` 58 / 63; `let mut a = ["b{i}","a"]  sort(a)` 64 / 63 (`[i64]` 12 / 41);
+  `reverse(a)` 65 / 66; `let t = type_of(s)` 28 / 29; `env_get(k)` with an
+  interpolated key 34 / 32; `let last = pop(a)` on a `[str]` 88 / 84.
+  `kryos build --emit-mir`: `_1 = call split(_0, ",")`, `_5 = call sort(_4)`,
+  `_8 = call type_of(_0)` and the function ends with `drop(_8) drop(_1)` only;
+  the source string `_0` and the sorted array `_4` have no `drop` (`len` /
+  `to_upper` / `replace` arguments do).
+- Root cause. `BORROWING_CALL_ARGS` (`kryos-mir/src/lower.rs`) is an allow-list;
+  `consume_call_args` marks the non-copy argument of every unlisted callee
+  CONSUMED, and the consume mark is static and path-insensitive, so the caller's
+  scope-end Drop of that local disappears on every path. The seven runtime
+  builtins were never audited onto the list. Each was read in
+  `kryos-rt/src/builtins.rs`: `split` / `join` / `env_get` read their arguments
+  and return a fresh value, `type_of` ignores its argument, `sort` / `sort_str` /
+  `sort_f64` / `reverse` reorder the array's own slots in place (the array keeps
+  every element), and `pop` shrinks `len` by one and hands the last element to
+  the caller -- the array's share moves to the result, so the array is only read
+  and its drop frees exactly the elements it still holds.
+- Fix. The seven names join `BORROWING_CALL_ARGS` with the audit written next to
+  them. One list change; it feeds both `consume_call_args` (the local keeps its
+  scope-end drop) and `drop_unescaped_str_temps` (a temp array / string fed to
+  one of them is dropped: `join(mk(), ",")`, `pop(mk())`).
+- Proved both ways (full `cargo build --release` each time). Pin: ten new
+  `tests/mem/agg_ops_leak.kry` modes in `tests/mem_agg_ops_gate.sh` (`bi_split`,
+  `bi_join`, `bi_join_sep`, `bi_sort_str`, `bi_sort_int`, `bi_reverse`,
+  `bi_type_of`, `bi_env_get`, `bi_pop_str`, `bi_pop_int`; 1M iterations, 40MB
+  ceiling). With the `lower.rs` change reverted EVERY one of the 20 legs FAILS:
+  AOT / JIT `bi_split` 80 / 81MB, `bi_join` 95 / 96, `bi_join_sep` 157 / 157,
+  `bi_sort_str` 157 / 157, `bi_sort_int` 96 / 95, `bi_reverse` 157 / 157,
+  `bi_type_of` 65 / 65, `bi_env_get` 65 / 65, `bi_pop_str` 218 / 218,
+  `bi_pop_int` 95 / 95. Restored: all 20 legs 4MB. Measured on the 400k repro
+  above after the fix: every shape 4 / 4MB except `type_of` 5 / 4 and `env_get`
+  9 / 10 (the empty-string residual below).
+- The other direction (the argument IS dropped now, so nothing the call returned
+  or left behind may have been freed with it):
+  `tests/conformance/conf_readonly_builtin_args.kry`, registered in
+  `no_double_free.sh` as `readonly_builtin_args` (JIT + AOT with the free
+  diagnostics, then the AOT with real frees). It reads the argument after the
+  call and after allocator churn for `split` (named and temp source), `join`
+  (array and separator, temp array), `sort` `[str]` / `[i64]` / `[f64]`,
+  `reverse`, `type_of`, `env_get`, `pop` on `[str]` / `[i64]` / `[P]` /
+  `[(str, i64)]` / `[[str]]` / a temp array, a push / pop stack fed from locals
+  the caller keeps, a sort in one branch only, reverse / sort in a loop, and 50
+  rounds. HONEST: this program is GREEN on master too (the old behaviour leaked,
+  it never freed early), so it guards the double-free direction of THIS change,
+  not the leak; the leak is pinned by the `bi_*` modes above.
+- Gates before / after, same machine: `kryos-loop.sh gates 2` 28 PASS -> 28 PASS
+  (conformance 112/112 -> 113/113, tier2 GREEN both), bootstrap 16/16 -> 16/16,
+  `no_double_free.sh` clean, `mem_agg_ops_gate.sh` full run PASS (180 legs, 0
+  FAIL; 178 at 4MB; JIT `match_exit` 34MB and JIT `map_enum` 24MB, both under the
+  40MB ceiling and IDENTICAL on master, 35 / 24MB, so not this change).
+- Residuals (measured, not fixed):
+  (1) Every EMPTY string leaks its one-byte data buffer: `kryos_string_free`
+  (`kryos-rt/src/string.rs`) only deallocs `data` when `cap > 0`, but
+  `kryos_string_new(.., 0)` allocates `layout(0)` = 1 byte. Independent of
+  this wave: `let v = trim("  ")` in a loop is 26MB at 1.6M iterations on AOT, an
+  `env_get` of an UNSET variable the same (16 bytes per call; a set variable is
+  flat, 4MB). That is why `bi_env_get` reads a variable that exists. The one-line
+  fix is a runtime memory-safety change in the free path (the comment there records a
+  heap-corruption history), so it was not folded into a borrow-list wave.
+  (2) `pop` on an array of tuples: AOT 15MB at 400k / 53MB at 1.6M (about 30
+  bytes per call; JIT flat, 4MB). This SUPERSEDES the note in the arrays-of-tuples
+  wave that `pop(a)` leaked 79 / 100MB per 400k and that `[str]` was parity: `pop`
+  on `[str]` is flat on both backends now, the tuple case is AOT only and an
+  order of magnitude smaller. Not chased.
+  (3) Other read-only builtins outside this cluster were not audited or measured
+  (`index_of`, `file_read`, `read_file`, `char_from`, ...).
+  (4) A user function that shadows one of the seven names and takes a STRUCT
+  argument is now treated as borrowing it, like the existing `len` / `trim` /
+  `replace` entries already do; no such function exists in stdlib, self-host or
+  tests (stdlib `split` / `join` / `reverse` / `env_get` take str / array
+  arguments, which a user fn borrows anyway).
+
 ## Wave: a `Result` read out of a container into an unannotated local was typed as the payload-less stub, so the read took no retain (2026-10-30)
 
 Silent wrong answer / use-after-free. `kryos run` and `--backend cranelift`

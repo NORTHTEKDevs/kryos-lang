@@ -655,6 +655,55 @@ fn main() {
             let mut adb = ada
             adb[0] = mkq(i + 2)
             acc = acc + len(ada[0].name) + len(ada[0].xs) + len(adb[0].name) + len(adb[1].xs)
+        } elif mode == "bi_split" {
+            // The read-only runtime builtins (split / join / sort / reverse /
+            // type_of / env_get / pop) were not on BORROWING_CALL_ARGS, so the
+            // call "consumed" the caller's local argument and its scope-end drop
+            // was suppressed on every path: one buffer (or array) per call.
+            let bs = "a,b,{i},d"
+            let bp = split(bs, ",")
+            acc = acc + len(bp) + len(bs)
+        } elif mode == "bi_join" {
+            let ba = ["a", "b", "c"]
+            let bj = join(ba, "-")
+            acc = acc + len(bj) + len(ba)
+        } elif mode == "bi_join_sep" {
+            let bsep = "-{i}"
+            let bj2 = join(["x", "y"], bsep)
+            acc = acc + len(bj2) + len(bsep)
+        } elif mode == "bi_sort_str" {
+            let mut bss = ["b{i}", "a"]
+            sort(bss)
+            acc = acc + len(bss[0])
+        } elif mode == "bi_sort_int" {
+            let mut bsi = [i, 3, 1]
+            sort(bsi)
+            acc = acc + bsi[0]
+        } elif mode == "bi_reverse" {
+            let mut brv = ["b{i}", "a"]
+            reverse(brv)
+            acc = acc + len(brv[0])
+        } elif mode == "bi_type_of" {
+            let bto = "v{i}"
+            let bt = type_of(bto)
+            acc = acc + len(bt) + len(bto)
+        } elif mode == "bi_env_get" {
+            // An interpolated key that names a variable which exists: an UNSET
+            // variable returns an empty string, and an empty string leaks its
+            // one-byte data buffer in kryos_string_free (a separate, runtime-side
+            // item recorded in the ledger), which would drown this measurement.
+            let bh = if i >= 0 { "H" } else { "X" }
+            let bek = "PAT{bh}"
+            let bev = env_get(bek)
+            acc = acc + len(bev) + len(bek)
+        } elif mode == "bi_pop_str" {
+            let mut bpa = ["p{i}", "q{i}", "r"]
+            let bpl = pop(bpa)
+            acc = acc + len(bpl) + len(bpa)
+        } elif mode == "bi_pop_int" {
+            let mut bpi = [i, 2, 3]
+            let bpv = pop(bpi)
+            acc = acc + bpv + len(bpi)
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }

@@ -4033,6 +4033,31 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     // (the escaping chain in every `to_string` of a struct/array of strings
     // leaked two intermediates per string field).
     "replace",
+    // Read-only runtime builtins, each audited in kryos-rt builtins.rs for a
+    // store or free of its arguments (none):
+    //   split(s, d)   reads both strings, returns a fresh [str] of fresh strings
+    //   join(a, sep)  reads the array's strings, returns a fresh string
+    //   type_of(v)    ignores its argument, returns a fresh string
+    //   env_get(k)    reads the key, returns a fresh string
+    //   sort(a), reverse(a)  reorder the array's slots in place; the array
+    //                 keeps every element it had, so its own drop still frees
+    //                 them (sort_str / sort_f64 are codegen-selected variants
+    //                 of `sort`, same contract)
+    //   pop(a)        shrinks the array's len by one and hands the LAST element
+    //                 to the caller (the array's share moves to the result, the
+    //                 array no longer references it), so the array is only
+    //                 read here and keeps its drop for the elements left.
+    // Leaving them off this list made the call a "consume": the caller's local
+    // argument lost its scope-end Drop on EVERY path and leaked once per call
+    // (`let p = split(s, ",")` in a loop: 33MB per 400k iterations, a `[str]`
+    // that was sorted / reversed / popped / joined: 56-88MB).
+    "split",
+    "join",
+    "type_of",
+    "env_get",
+    "sort",
+    "reverse",
+    "pop",
     // The builtin asserts only read their arguments (a user fn of the same
     // name borrows them too).
     "assert_eq",
