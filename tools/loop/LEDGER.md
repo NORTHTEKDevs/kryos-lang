@@ -41,6 +41,26 @@ special-cased only a `Map` first argument, so an array fell through to the STRIN
   elements, a number or tuple first argument). Open type variables and generic
   `[T]` pass through (monomorphized `has<T>(xs: [T], v: T)` works for i64 and str).
   docs/STDLIB.md lines 52 and 108 now state the supported shapes.
+- Round 2 (adversarial verifier on PR #30). The first gate PEELED a `Type::Reference`
+  and then accepted the inner array / map / str, but the MIR arms match the value
+  type only, so a reference-typed first argument passed the checker, missed the arm
+  and fell through to the string `contains`. Measured on the round-1 tip with a full
+  build: `fn by_ref(a: &[i64], v: i64) { contains(a, v) }` rc=139; `a: &mut [i64]`
+  rc=139; `let r = &a; contains(r, "y")` rc=98 ("string operation requires valid
+  UTF-8"); `s: &str` rc=139; `m: &map<str,i64>` rc=98. Same bug, same cause. Fix:
+  `check_contains_shape` no longer peels; any `Type::Reference` first argument is a
+  clean E0100 ("`contains` does not accept a reference; pass the value"), the same
+  posture as `len(a: &[i64])`. Dereferencing in MIR was not taken: the value forms
+  already work and a reference arm would need a per-backend load for each of the
+  three runtime fns. The doc comment of `check_contains_shape` had been inserted
+  between an existing comment and `reject_untagged_scalar_into_any`; moved back so
+  each comment sits on its own function. STDLIB.md names the reference rejection.
+  Pins (type_soundness.sh, E0100): `contains_ref_array_param`,
+  `contains_mut_ref_array_param`, `contains_ref_str_array_local`,
+  `contains_ref_str_param`, `contains_ref_map_param`. Before the fix (round-1
+  binary) those 5 report HOLE; after, `type_soundness.sh` is all probes correct.
+  The first sentence of the Fix above ("everything else is a clean E0100") is true
+  only with this round.
 - Proved both ways (full `cargo build --release` each time). Pin
   `tests/conformance/conf_array_contains.kry` (i64 / str / bool / char / u8 / i32 /
   f64, empty and pushed arrays, runtime-built needles, a generic, fn params, struct
@@ -56,8 +76,7 @@ special-cased only a `Map` first argument, so an array fell through to the STRIN
   diagnostics, then real frees); `type_soundness.sh` `contains_*` (1 accept, 5
   E0100 rejections); `mem_agg_ops_gate.sh` mode `arr_contains_str` (fresh needle +
   fresh `split` receiver per iteration). 1.6M iterations of that shape: 4 MB peak.
-- Gates: `kryos-loop.sh gates 2` tier1 + tier2 GREEN -> GREEN, conformance 112/112
-  -> 114/114, 28 PASS lines -> 28; bootstrap 16/16 -> 16/16; `mem_agg_ops_gate.sh` full run PASS (`arr_contains_str`
+- Gates (round 2, fresh full build, before/after this commit on the same branch): `kryos-loop.sh gates 2` GATES_RC=0 -> 0, tier2 GREEN -> GREEN, conformance 114/114 -> 114/114, 28 PASS lines -> 28; bootstrap 16/16 -> 16/16 (round 1 vs master: conformance 112/112 -> 114/114); `mem_agg_ops_gate.sh` full run PASS (`arr_contains_str`
   4 MB peak on AOT and JIT at 1M iterations, ceiling 40 MB).
 - Residuals (honest). `--backend wasm` does not implement the array arm: a program
   using `contains(arr, v)` fails at codegen with "WASM backend v0.1 does not yet

@@ -452,35 +452,6 @@ impl TypeChecker {
             .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
-    /// LEDGER item 40 (+ 40b), the `[any]`-container sibling of item 24.
-    ///
-    /// `any` resolves to `Type::Error` -- the erasure sentinel (item 6, an
-    /// ABI-blocked design note: `any` is a bare i64 with NO runtime type tag).
-    /// `bool` (i1) and `f64`/`f32` are not i64-shaped, so a value of those
-    /// types reaching an `any` slot is reinterpreted, not converted. `str`
-    /// (item 40b) IS already i64-shaped (a pointer), so the handle survives
-    /// intact and only the RENDERING on read-back is wrong -- a different
-    /// mechanism, but the same fix (reject at the container boundary).
-    ///
-    /// Item 24 closed the DIRECT shape (`let x: any = <bool>`) at `Stmt::Let`.
-    /// It cannot see this one: by the time `let b: any = args[0]` runs, the
-    /// element type of an `[any]` PARAMETER was already erased at the
-    /// parameter's own declaration, so no concrete `Bool` survives to inspect.
-    /// The last point a concrete type still exists is the CALL SITE, where a
-    /// `[bool]` argument is unified against an `[any]` parameter -- so the
-    /// check belongs here.
-    ///
-    /// Measured before the fix: `log_event([true])` where `fn log_event(args:
-    /// [any])` builds CLEAN on both backends and prints THREE different values
-    /// for one program -- correct `true`, JIT `1`, AOT `-1`. AOT reached a
-    /// clean build, a clean run, and a wrong number, which is the worst case in
-    /// this repo's ranking doctrine (a silent wrong answer outranks a crash).
-    ///
-    /// Only fires when the ARGUMENT side carries a CONCRETE `Bool`/`F64`/`F32`
-    /// at a position where the PARAMETER side is the `any` sentinel. That
-    /// pairing is what codegen mishandles. A genuine upstream type error
-    /// produces `Type::Error` on the ARGUMENT side, which this never reports
-    /// on, so a broken program does not get extra noise from this check.
     /// Shape gate for the builtin `contains(x, needle)`: `x` is a str (str
     /// needle), a map (any key), or an array of ints / bool / char / str whose
     /// needle has the element type. Everything else used to compile and then
@@ -490,11 +461,22 @@ impl TypeChecker {
         if opaque(first) {
             return;
         }
-        let peeled = match first {
-            Type::Reference { inner, .. } => self.engine.resolve(inner),
-            other => other.clone(),
-        };
-        match &peeled {
+        // A reference-typed first argument (`a: &[i64]`, `&mut`, `let r = &a`)
+        // is NOT peeled: the MIR array/map arms match the value type only, so a
+        // peeled reference would pass this gate, miss those arms and fall through
+        // to the string `contains` (array handle read as a KryosString). `len`
+        // rejects the same shape with a clean error; do the same here.
+        if let Type::Reference { .. } = first {
+            self.error_with_code(
+                format!(
+                    "`contains` does not accept a reference; pass the value, not `{first}`"
+                ),
+                first_span,
+                kryos_errors::codes::E0100,
+            );
+            return;
+        }
+        match first {
             Type::Map { .. } => {}
             Type::Str => {
                 if !opaque(needle) && *needle != Type::Str {
@@ -536,6 +518,35 @@ impl TypeChecker {
         }
     }
 
+    /// LEDGER item 40 (+ 40b), the `[any]`-container sibling of item 24.
+    ///
+    /// `any` resolves to `Type::Error` -- the erasure sentinel (item 6, an
+    /// ABI-blocked design note: `any` is a bare i64 with NO runtime type tag).
+    /// `bool` (i1) and `f64`/`f32` are not i64-shaped, so a value of those
+    /// types reaching an `any` slot is reinterpreted, not converted. `str`
+    /// (item 40b) IS already i64-shaped (a pointer), so the handle survives
+    /// intact and only the RENDERING on read-back is wrong -- a different
+    /// mechanism, but the same fix (reject at the container boundary).
+    ///
+    /// Item 24 closed the DIRECT shape (`let x: any = <bool>`) at `Stmt::Let`.
+    /// It cannot see this one: by the time `let b: any = args[0]` runs, the
+    /// element type of an `[any]` PARAMETER was already erased at the
+    /// parameter's own declaration, so no concrete `Bool` survives to inspect.
+    /// The last point a concrete type still exists is the CALL SITE, where a
+    /// `[bool]` argument is unified against an `[any]` parameter -- so the
+    /// check belongs here.
+    ///
+    /// Measured before the fix: `log_event([true])` where `fn log_event(args:
+    /// [any])` builds CLEAN on both backends and prints THREE different values
+    /// for one program -- correct `true`, JIT `1`, AOT `-1`. AOT reached a
+    /// clean build, a clean run, and a wrong number, which is the worst case in
+    /// this repo's ranking doctrine (a silent wrong answer outranks a crash).
+    ///
+    /// Only fires when the ARGUMENT side carries a CONCRETE `Bool`/`F64`/`F32`
+    /// at a position where the PARAMETER side is the `any` sentinel. That
+    /// pairing is what codegen mishandles. A genuine upstream type error
+    /// produces `Type::Error` on the ARGUMENT side, which this never reports
+    /// on, so a broken program does not get extra noise from this check.
     fn reject_untagged_scalar_into_any(&mut self, param_ty: &Type, arg_ty: &Type, span: Span) {
         let p = self.engine.resolve(param_ty);
         let a = self.engine.resolve(arg_ty);
