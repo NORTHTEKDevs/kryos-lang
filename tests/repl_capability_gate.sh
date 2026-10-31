@@ -53,6 +53,19 @@ out="$(printf 'println(40 + 2)\n:quit\n' | repl)"
 if grep -qx "42" <<<"$(tr -d '\r' <<<"$out")"; then ok "control: ungated expression runs"
 else bad "control: the REPL did not evaluate 40 + 2"; fi
 
+# 4b. control: string literals reach the program intact. The REPL called the
+#     JIT'd code after dropping the compiler that owns the literal data. On
+#     Linux the freed pages are reused, so println("hello") printed garbage
+#     (`<invalid utf-8>`) for some inputs and not others while Windows and
+#     macOS passed by luck. One literal can survive, so send twelve and
+#     require every one: 7-9 of 12 arrived intact before the fix.
+lits=""
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do lits+="println(\"literal-$i-ok\")"$'\n'; done
+out="$(printf '%s:quit\n' "$lits" | repl)"
+n="$(tr -d '\r' <<<"$out" | grep -c '^literal-[0-9]*-ok$')"
+if [[ "$n" == "12" ]]; then ok "control: 12 of 12 string literals print intact"
+else bad "control: only $n of 12 string literals printed intact"; fi
+
 # 5. control: the --allow FLAG grants, and grants only what it names. Checked
 #    on stdout (env_get under `process`) rather than through the filesystem,
 #    so the check does not depend on the platform's temp-dir behaviour; the
