@@ -10,6 +10,69 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: PR #18 (capability boundary) rebased onto v1.2.0; the REPL ran its code after dropping the JIT that owns its string literals (2026-10-31)
+
+Trust-model wave. fin/trust (REPL grant, `KRYOS_NO_HOTPARAM_ALL`, raw-memory
+gate, reassigned-local authority, select timeout, the item 55-72 escape rows)
+was based on `7a20150e`; rebased onto v1.2.0 + #33 (`540372ec`). Master had
+not touched the capability, CLI or driver crates since the base, so the only
+conflict was this file (both waves kept). One new defect surfaced doing it.
+
+- Repro. PR #18's Linux CI job FAILED on its own new gate and was never
+  green: `tests/repl_capability_gate.sh` 7 of 10 checks passed. The grants
+  worked (`capabilities: process` was printed) but the program's output was
+  wrong: `env_get` printed the value without its `ENV=` prefix, `file_write`
+  printed `-1` and wrote nothing. Reproduced on Ubuntu 24.04 (WSL2) with
+  `println("hello")` at the prompt: `<invalid utf-8>`. Windows and macOS were
+  green. `kryos run` was fine, so the compiler was not at fault.
+- Root cause. `repl.rs` called `CraneliftBackend::jit_compile_module`, which
+  builds a `JitCompiler`, compiles, and RETURNS THE POINTERS WHILE DROPPING THE
+  COMPILER. The compiler owns the executable pages and the string-literal data
+  those pointers refer to; the REPL then called `__repl_eval__` on freed memory.
+  Where the allocator leaves the pages intact (Windows, macOS) it works by
+  luck; on Linux a literal comes back as garbage some of the time. Not caused
+  by this PR's capability annotation (the wrapper change only made the existing
+  corruption visible to a gate that prints strings), and it existed on master.
+- Fix. `repl.rs` holds the `JitCompiler` itself (`JitCompiler::new` +
+  `compile_all_with_module`) until the call returns. `dap.rs` has the same
+  shape (`jit_compile_module`, pointer kept in `main_ptr`) and is NOT touched
+  here: see residual.
+- Proved both ways, Linux (full `cargo build --release` each time, only
+  `repl.rs` differs). New check 4b sends 12 `println("literal-N-ok")` inputs and
+  requires all 12. Fix reverted: 4 / 12 intact, `repl-capability: FAIL`
+  (3 FAIL: 4b, `--allow process`, `--allow fs:write`); the same probe outside
+  the gate gave 9 / 12 and 7 / 12 on two runs and 12 / 12 and 12 / 12 with the
+  fix. Fix applied: 12 / 12, `repl-capability: PASS` (10 ok). Windows with the
+  fix: PASS (10 ok).
+- The branch's own gates, re-proved against the v1.2.0 master binary (built
+  from `origin/master`, the branch's tests and the master binary) and the
+  branch binary, both on Windows:
+  `repl_capability_gate.sh` master 7 FAIL / 3 ok (`--allow` is "unexpected
+  argument" there), branch 10 ok. `security_gate.sh` master FAIL (11 FAIL lines:
+  both select-timeout probes x 2 modes, `cap_escape_raw_memory_helper` and
+  `_import` x 3 modes, and `KRYOS_NO_HOTPARAM_ALL=1 weakens this build: 41a's
+  escape compiled`), branch PASS (142 ok, 0 FAIL). `escape_status.sh` master
+  21 escaping / 19 rejected, branch 11 escaping / 29 rejected: the ten rows
+  that flip are `assault_round2_strip_reassigned_local_deny`,
+  `attack_deny_bare_closure_reassign_escape`,
+  `attack_reassign_local_defeats_hotparam`,
+  `attack_round3_trycatch_deny_narrowed_catch`,
+  `attack_select_arm_shadow_closure_deny` and five
+  `attack_select_timeout_*`; no row goes the other way.
+- Over-rejection, same two binaries: `stdlib_compile_gate` 66/66 on both;
+  `ecosystem_check` 259/259 clean on both; `capability_matrix_gate` 75/75
+  attacks rejected, precision 34/75 on both (unchanged); conformance 113/113 on
+  the branch (v1.2.0 master: 113).
+- Gates on the branch tip, `kryos-loop.sh gates 2`: tier 1 and tier 2 GREEN
+  (conformance 113/113); `compiler/self-host/test_bootstrap.sh` run alone:
+  16 / 16.
+- Residual. (1) Eleven capability escapes stay LIVE on this branch
+  (`escape_status.sh` 11 escaping): they need the row layer in kryos-types and
+  are items 58, 59, 64-72 above. This PR narrows the boundary, it does not
+  close it. (2) `kryos dap` keeps the same dropped-JIT shape in `dap.rs`; not
+  reproduced, not fixed. (3) Linux CI cannot
+  be run from here; the Linux proof above is a local WSL2 Ubuntu 24.04 build.
+
 ## Wave: read-only runtime builtins (split, join, sort, reverse, type_of, env_get, pop) were missing from BORROWING_CALL_ARGS, so the caller's argument was never dropped (2026-10-30)
 
 Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.

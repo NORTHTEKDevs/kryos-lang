@@ -6,6 +6,50 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Capability-boundary fixes: five ways a program or a shipped
+binary got more authority than it declared are closed, and a REPL bug on Linux.
+
+Upgrade notes:
+
+- `kryos repl` now starts with no capabilities, like an unannotated `main`.
+  Input that calls `file_write`, `env_get` or another gated builtin is
+  rejected until it is granted: `kryos repl --allow fs:read,net:http` at
+  start, or `:allow <cap>` at the prompt (`:caps` shows the session grant).
+  A misspelled capability name is refused instead of silently accepted.
+- `KRYOS_NO_HOTPARAM_ALL` no longer has any effect in a release build. It
+  exists only in a compiler built with `--features
+  kryos-capabilities/item41-experiment`.
+- A program that reaches raw memory (`str_to_ptr`, `ptr_byte_at`, ...)
+  without declaring `ffi` is rejected wherever the call sits: any function in
+  the root file, or any non-stdlib module it imports. Before, only `main` and
+  annotated functions of the root file were charged. The standard library is
+  unchanged.
+
+### Fixed - the capability boundary
+
+- **`kryos repl` ran capability-gated builtins with no declaration.** Each
+  input was compiled into an unannotated helper that inferred mode never
+  checks, so `file_write(..)` and `env_get(..)` ran at the prompt.
+- **One environment variable weakened a shipped compiler.**
+  `KRYOS_NO_HOTPARAM_ALL=1` re-opened two escapes in every release build,
+  with nothing visible in the source or `kryos.toml`.
+- **The raw-memory gate missed an unannotated helper and every imported
+  module.** Moving `str_to_ptr` + `ptr_byte_at` one function or one `use`
+  away passed `check` in all three modes and read any string in the host
+  process.
+- **A reassigned function-typed local kept the authority of its first
+  binding.** `let mut f = <pure>` then `f = <privileged>` charged the pure set
+  at `f()`, including inside a `deny!` block.
+- **A `select` timeout body and duration expression were never checked.** A
+  gated builtin there ran in an unannotated `main`, or inside a `deny!`
+  block that forbids it, in every mode.
+
+### Fixed - `kryos repl`
+
+- String literals could print as garbage on Linux (`println("hello")` gave
+  `<invalid utf-8>`): the REPL ran its compiled code after the JIT compiler
+  that owns the literal data had been dropped.
+
 ## [1.2.0] - 2026-10-31
 
 Correctness and memory-safety release. It fixes a silent miscompile, five

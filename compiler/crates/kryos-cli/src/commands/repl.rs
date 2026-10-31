@@ -358,8 +358,19 @@ pub fn execute(allow: Vec<String>) -> Result<(), String> {
 
                     if let Some(ref mir) = result.mir {
                         // JIT compile ALL functions so cross-function calls work.
-                        let backend = kryos_codegen_cranelift::CraneliftBackend::new();
-                        match backend.jit_compile_module(mir) {
+                        // The compiler owns the executable code AND the string
+                        // literal data, so it must outlive the call:
+                        // `jit_compile_module` drops it on return, and on Linux
+                        // the freed pages were reused, so a literal printed as
+                        // garbage (`println("hello")` gave `<invalid utf-8>`).
+                        let mut jit = match kryos_codegen_cranelift::jit::JitCompiler::new() {
+                            Ok(j) => j,
+                            Err(e) => {
+                                eprintln!("JIT error: {e}");
+                                continue;
+                            }
+                        };
+                        match jit.compile_all_with_module(mir) {
                             Ok(ptrs) => {
                                 if let Some(&ptr) = ptrs.get("__repl_eval__") {
                                     // Safety: `ptr` points to JIT-compiled code with the
