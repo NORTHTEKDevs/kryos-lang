@@ -6,6 +6,66 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-31
+
+Correctness and memory-safety release. It fixes a silent miscompile, five
+values that read back wrong or crashed, and the remaining large leaks
+(recursive enums, arrays of tuples, `dyn Trait`), on both backends.
+
+Upgrade notes:
+
+- An uncaught `throw` inside a `coop_spawn` task or an actor handler now
+  ends the program with exit code 101, the same as `spawn`. Before, it was
+  logged and execution continued past the throw, which could leave a
+  receiver waiting forever. Catch inside the task or handler if it should
+  recover.
+- `byte_at(s, i)` on a string holding invalid UTF-8 reads each invalid byte
+  raw (0-255) instead of returning -1 for every index. Valid strings are
+  unchanged.
+
+### Fixed - a silent miscompile
+
+- **A closure stored in a struct field that captured a parameter** (`fn
+  mk(i: i64) -> H { return H { f: |x: i64| x + i } }`) broke a later
+  function that mutated its own local of the same name: a clean
+  `--release` build that segfaulted, a codegen error under `kryos run`, or
+  a wrong value inside one function.
+
+### Fixed - values that read back wrong or crashed
+
+- A mutable global tuple, enum, `Option` or `Result` read back as 0, an
+  empty string or a crash with `--release`; a function returning a mutable
+  global struct by name freed it under the global.
+- A `Result` read out of an array or map into an unannotated local, and an
+  inline `match` on one, lost its payload type (use-after-free or an empty
+  string).
+- A closure returned over a local array of strings, structs, arrays, enums,
+  maps or closures read freed memory.
+- Overwriting an element of a copied array of structs freed the other
+  copy's fields (`--release`).
+- `byte_at` returned -1 for every index once a string held one invalid
+  UTF-8 byte.
+
+### Fixed - leaks
+
+- Recursive enums (`enum Tree { Leaf(str), Node(Tree, Tree) }`) leaked every
+  tree passed to a function (60-676MB per million calls); reading one back
+  out of a container could double free.
+- Arrays of tuples leaked every element: literals, pushes, copies and
+  overwrites (94-617MB per million).
+- `dyn Trait` values were never released: passing a struct to a `dyn`
+  parameter or binding it to a `dyn` local leaked it (125-190MB per
+  million), and a returned `dyn` could read freed memory.
+- A struct chosen by an `if`/`match` with a call arm, and an overwritten
+  mutable global's struct field, leaked one struct per execution.
+- `split`, `join`, `sort`, `reverse`, `type_of`, `env_get` and `pop` leaked
+  the caller's argument.
+
+### Fixed - a hang
+
+- An uncaught `throw` in a `coop_spawn` task or an actor handler could hang
+  the program (see the upgrade note).
+
 ### Fixed - two struct leaks: returning a scalar field, choosing a struct in an if
 
 - **Returning a scalar field of a local struct** (`return s.n`, or `s.n` as a
