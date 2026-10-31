@@ -23,7 +23,12 @@ Upgrade notes:
   without declaring `ffi` is rejected wherever the call sits: any function in
   the root file, or any non-stdlib module it imports. Before, only `main` and
   annotated functions of the root file were charged. The standard library is
-  unchanged.
+  unchanged. Which directory counts as the standard library is the one the
+  toolchain resolves to; `KRYOS_STDLIB_DIR` still decides where `use std::..`
+  is read from, but no longer exempts the modules in the directory it names.
+- `kryos repl` applies the same raw-memory rule as a file: a session with no
+  `ffi` grant is rejected with E0505 on `str_to_ptr`, `ptr_byte_at` and the
+  rest, and `:allow ffi` (or `--allow ffi`) grants them.
 
 ### Fixed - the capability boundary
 
@@ -39,7 +44,15 @@ Upgrade notes:
   process.
 - **A reassigned function-typed local kept the authority of its first
   binding.** `let mut f = <pure>` then `f = <privileged>` charged the pure set
-  at `f()`, including inside a `deny!` block.
+  at `f()`, including inside a `deny!` block. This includes a reassignment in
+  the arm of a statement-position `match` (or an `if` expression), or in a
+  lambda whose whole body is one.
+- **A zero-grant `kryos repl` session read raw process memory.**
+  `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
+  expression in a file or `kryos eval` was rejected with E0505.
+- **`KRYOS_STDLIB_DIR` exempted the user's own modules from the raw-memory
+  gate.** Pointing it at a directory of user modules made a module using
+  `str_to_ptr` + `ptr_byte_at` compile on a default release build.
 - **A `select` timeout body and duration expression were never checked.** A
   gated builtin there ran in an unannotated `main`, or inside a `deny!`
   block that forbids it, in every mode.

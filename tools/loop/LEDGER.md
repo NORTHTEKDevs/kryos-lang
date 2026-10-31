@@ -10,6 +10,74 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: PR #18 verifier round 1 -- a statement-position `match` reassigned a fn-typed local invisibly, the REPL skipped the raw-memory gate, `KRYOS_STDLIB_DIR` made user modules trusted (2026-10-31)
+
+Trust-model wave, same branch (fin/trust). An adversarial verifier rejected
+e60e6817 for four things; all four reproduced and are fixed here.
+
+- Repro 1. `let mut f = harmless`, then `match n { 1 => { f = reader } _ =>
+  { f = harmless } }`, then `f()` inside `deny!(fs:read)`: `kryos check` rc=0 in
+  default, strict and inferred; `kryos run` printed the secret. Same for
+  `match 1 {..}`, a `match` on an enum, a `match` inside the `deny!` block, and a
+  lambda whose whole body is a `match`. Master behaves the same (not a
+  regression). Before this wave: `v7_match_assign`, `w1_match_stmt_block`,
+  `w5_match_in_deny`, `w6_match_enum` rc=0; `v1`-`v4`, `v6`, `w2`-`w4` rc=1.
+- Root cause 1. `build_local_closure_caps_block` matched `Stmt::Let`,
+  `Assign`, `DenyBlock`, `If`, `For`/`While`, `Select`, `TryCatch` and a bare
+  block. A `match` statement is `Stmt::Expr { MatchExpr }`, and a lambda whose
+  body is one expression parses with that expression as its body (no block), so
+  neither was walked. Fix: `build_local_closure_caps_expr` walks a block, every
+  `match` arm body and both `if`-expression branches; called for `Let`
+  initializers, `Stmt::Expr`, `Spawn`, `Throw`, `Return` and a lambda body.
+  Closures capture by value, so a lambda that reassigns an outer local does not
+  change the outer one at run time (probed: `apply(|| { f = reader })` prints
+  "not a secret"); only the statement forms above can leak.
+- Repro 2. `printf ':caps
+ptr_byte_at(str_to_ptr("TOP"), 0)
+:quit
+' |
+  kryos repl` printed `capabilities: none` then `84`; `kryos eval` of the same
+  expression and a file doing it were rejected (E0505). Root cause 2.
+  `check_raw_memory_direct` ran only from `compile_file_impl`, `check_file` and
+  `check_file_with_options_full`; the REPL goes through `compile_source`. Fix:
+  `compile_source_impl` runs it on the parsed module. A REPL-declared `fn` is
+  charged too (every function is, as in a file); `--allow ffi` / `:allow ffi`
+  grant it. Consequence: `:type <raw-memory expression>` is rejected without an
+  `ffi` grant, because its type-check wrapper is unannotated.
+- Repro 3. `KRYOS_STDLIB_DIR=<dir holding the user's modules>`: `kryos check`
+  rc=0 on a main -> mid -> deep chain with `str_to_ptr` + `ptr_byte_at` in
+  `deep`, on a default release build. Root cause 3.
+  `user_modules_in_import_graph` trusted anything under `find_stdlib_dir`, which
+  honours the variable first. Fix: the trusted stdlib is found WITHOUT the
+  variable (exe-relative, build tree, walk-up) and only falls back to it when no
+  stdlib exists anywhere else (a binary run outside its distribution layout, as
+  CI does). The variable still decides where `use std::..` is read from.
+  Residual: with no stdlib next to the binary, in the build tree or above the
+  program, the variable still names the trusted one.
+- Item 4. `fn_field_names` in `kryos-capabilities/src/checker.rs` was populated
+  and never read; its doc comment described a fail-closed behaviour that was
+  reverted in 6ed0b1e0. Field, initialisation, population and comment removed.
+- Proved both ways (source files `checker.rs`, `pipeline.rs`, `resolve.rs`
+  restored to e60e6817, full `cargo build --release`, then re-applied and rebuilt).
+  Reverted: `security_gate.sh` FAIL with 11 FAIL lines (the five new
+  `attack_reassign_local_match_*` fixtures x default and strict = 10, plus
+  `KRYOS_STDLIB_DIR=<user modules> exempted them from the raw-memory gate`);
+  `repl_capability_gate.sh` FAIL with 2 FAIL (`a zero-grant REPL session read
+  raw memory`, `raw memory inside a REPL-declared fn ran with no grant`); the
+  controls (`--allow ffi`, `:allow ffi`, the pure-only `match`, the real stdlib
+  named by the variable) stayed ok. Fixed: `security-gate: PASS` (150 ok),
+  `repl-capability: PASS` (14 ok).
+- Fixtures: `tests/security/attack_reassign_local_match_{stmt_block,in_deny,
+  enum_arm,literal_subject,lambda_body}.kry` (escape_status rows 73-77, all
+  rejected, so "STILL ESCAPING" stays 11), control `ctl_reassign_pure_in_match.kry`.
+- Over-rejection, fixed build: `stdlib_compile_gate` 66/66; `ecosystem_check`
+  259/259 clean; `capability_matrix_gate` attacks rejected 75/75, precision
+  34/75 (unchanged); conformance 113/113 (master 113).
+- Residual. (1) The eleven escapes in `escape_status.sh` are unchanged. (2)
+  `:type` of a raw-memory expression needs `ffi` (above). (3) Not every parent of an arm-bearing expression was probed (a `match` in a
+  `while` condition, for example); the walk covers each expression form that
+  carries a block or arm body, not every place one can sit.
+
 ## Wave: PR #18 (capability boundary) rebased onto v1.2.0; the REPL ran its code after dropping the JIT that owns its string literals (2026-10-31)
 
 Trust-model wave. fin/trust (REPL grant, `KRYOS_NO_HOTPARAM_ALL`, raw-memory

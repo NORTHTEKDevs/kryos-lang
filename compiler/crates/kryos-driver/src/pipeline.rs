@@ -839,6 +839,26 @@ fn compile_source_impl(
         }
     };
 
+    // Raw memory is gated at direct use here too. This is the entry point the
+    // REPL compiles every input through, and it used to skip the gate that
+    // every file-based command applies, so a zero-grant `kryos repl` session
+    // read any string in the host process (`ptr_byte_at(str_to_ptr(..), 0)`)
+    // while `kryos eval` and a file doing the same were rejected with E0505.
+    let raw_mem_diags = kryos_capabilities::check_raw_memory_direct(&module);
+    if !raw_mem_diags.is_empty() {
+        let mut diagnostics = diagnostics;
+        diagnostics.extend(raw_mem_diags);
+        return CompileResult {
+            diagnostics,
+            source_map,
+            success: false,
+            output_path: None,
+            mir: None,
+            object_bytes: None,
+            llvm_ir: None,
+        };
+    }
+
     // Note: compile_source does not support `use` imports (no file path context).
     // For file-based compilation with import support, use compile_file_with_backend.
     compile_module_impl(module, diagnostics, source_map, config, backend)
