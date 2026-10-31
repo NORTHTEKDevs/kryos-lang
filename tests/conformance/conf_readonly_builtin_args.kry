@@ -1,0 +1,233 @@
+// Conformance (2026-10-30): the read-only runtime builtins split / join / sort /
+// reverse / type_of / env_get / pop are now on BORROWING_CALL_ARGS, so the
+// caller's local argument keeps its scope-end drop (before, the call "consumed"
+// it and one buffer leaked per call; the leak is pinned by the bi_* modes of
+// tests/mem/agg_ops_leak.kry). This program is the OTHER direction: now that
+// the argument IS dropped, nothing the call returned or left behind may have
+// been freed with it. Every case churns the allocator between the call and the
+// later read so a freed-and-reused buffer shows up as wrong bytes. `pop` is the
+// delicate one: it hands the array's LAST element to the caller and shrinks the
+// array, so the array's drop must free only what it still holds.
+// Run on both backends by run_conformance.sh and, with the free diagnostics, by
+// tests/no_double_free.sh.
+struct P { name: str, n: i64 }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < k {
+        junk = push(junk, "junk-{j}-padding-padding")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn mk(i: i64) -> str {
+    return "a,b,{i},d"
+}
+
+fn mk_arr(i: i64) -> [str] {
+    return ["x{i}", "y{i}", "z{i}"]
+}
+
+fn split_case(i: i64) -> str {
+    let s = "a,b,{i},d"
+    let p = split(s, ",")
+    churn(40)
+    return join(p, "|") + "/" + s + "/" + to_string(len(p))
+}
+
+fn split_temp(i: i64) -> str {
+    let p = split(mk(i), ",")
+    churn(40)
+    return p[2] + "/" + to_string(len(p))
+}
+
+fn join_case(i: i64) -> str {
+    let a = ["a{i}", "b{i}", "c{i}"]
+    let sep = "-{i}-"
+    let j = join(a, sep)
+    churn(40)
+    return j + "/" + a[0] + a[1] + a[2] + "/" + sep
+}
+
+fn join_temp(i: i64) -> str {
+    let j = join(mk_arr(i), ",")
+    churn(40)
+    return j
+}
+
+fn sort_case(i: i64) -> str {
+    let mut a = ["m{i}", "c", "z", "a{i}"]
+    sort(a)
+    churn(40)
+    return join(a, ",")
+}
+
+fn sort_int_case(i: i64) -> str {
+    let mut a = [i + 5, 3, 9, 1]
+    sort(a)
+    churn(40)
+    return to_string(a[0]) + "," + to_string(a[1]) + "," + to_string(a[2]) + "," + to_string(a[3])
+}
+
+fn sort_f64_case() -> str {
+    let mut a = [2.5, -1.5, 9.0, 0.5]
+    sort(a)
+    churn(40)
+    return to_string(a[0]) + "," + to_string(a[3])
+}
+
+fn reverse_case(i: i64) -> str {
+    let mut a = ["p{i}", "q{i}", "r{i}"]
+    reverse(a)
+    churn(40)
+    return join(a, ",")
+}
+
+fn type_of_case(i: i64) -> str {
+    let s = "v{i}"
+    let t = type_of(s)
+    churn(40)
+    return t + "/" + s
+}
+
+@capabilities(all)
+fn env_case(i: i64) -> str {
+    let h = if i >= 0 { "H" } else { "X" }
+    let k = "PAT{h}"
+    let v = env_get(k)
+    churn(40)
+    return k + "/" + to_string(len(v) > 0)
+}
+
+fn pop_str_case(i: i64) -> str {
+    let mut a = ["p{i}", "q{i}", "r{i}"]
+    let last = pop(a)
+    churn(40)
+    return last + "/" + a[0] + a[1] + "/" + to_string(len(a))
+}
+
+fn pop_int_case(i: i64) -> str {
+    let mut a = [i, 2, 3]
+    let last = pop(a)
+    churn(40)
+    return to_string(last) + "/" + to_string(a[0]) + to_string(a[1]) + "/" + to_string(len(a))
+}
+
+fn pop_struct_case(i: i64) -> str {
+    let mut a = [P { name: "n{i}", n: i }, P { name: "m{i}", n: i + 1 }]
+    let last = pop(a)
+    churn(40)
+    return last.name + "/" + a[0].name + "/" + to_string(len(a))
+}
+
+fn pop_tuple_case(i: i64) -> str {
+    let mut a = [("t{i}", i), ("u{i}", i + 1)]
+    let last = pop(a)
+    churn(40)
+    return last.0 + "/" + a[0].0 + "/" + to_string(len(a))
+}
+
+fn pop_nested_case(i: i64) -> str {
+    let mut a = [["a{i}", "b{i}"], ["c{i}", "d{i}"]]
+    let last = pop(a)
+    churn(40)
+    return join(last, ",") + "/" + join(a[0], ",") + "/" + to_string(len(a))
+}
+
+fn pop_temp_case(i: i64) -> str {
+    let last = pop(mk_arr(i))
+    churn(40)
+    return last
+}
+
+// A stack: strings pushed from locals the caller keeps, popped back one by one.
+fn stack_case(i: i64) -> str {
+    let s1 = "s1-{i}"
+    let s2 = "s2-{i}"
+    let mut st: [str] = []
+    st = push(st, s1)
+    st = push(st, s2)
+    st = push(st, "s3-{i}")
+    let a = pop(st)
+    let b = pop(st)
+    churn(40)
+    let c = pop(st)
+    churn(40)
+    return a + "," + b + "," + c + "," + s1 + "," + s2 + "/" + to_string(len(st))
+}
+
+// The consume mark was static and path-insensitive: one sort in one branch
+// suppressed the drop on every path. The argument must read the same on both.
+fn branch_case(i: i64) -> str {
+    let mut a = ["k{i}", "b", "j"]
+    let mut out = ""
+    if i % 2 == 0 {
+        sort(a)
+        out = join(a, ",")
+    } else {
+        out = a[0] + "|" + a[1] + "|" + a[2]
+    }
+    churn(40)
+    return out + "/" + a[0]
+}
+
+// A loop reusing one argument across calls.
+fn loop_case(i: i64) -> str {
+    let mut a = ["w{i}", "v", "u"]
+    let mut r = 0
+    while r < 3 {
+        reverse(a)
+        sort(a)
+        reverse(a)
+        r = r + 1
+    }
+    churn(40)
+    return join(a, ",")
+}
+
+@capabilities(all)
+fn main() {
+    expect(split_case(7) == "a|b|7|d/a,b,7,d/4", "split source still readable: {split_case(7)}")
+    expect(split_temp(8) == "8/4", "split of a temporary: {split_temp(8)}")
+    expect(join_case(3) == "a3-3-b3-3-c3/a3b3c3/-3-", "join array and separator still readable: {join_case(3)}")
+    expect(join_temp(4) == "x4,y4,z4", "join of a temporary array: {join_temp(4)}")
+    expect(sort_case(5) == "a5,c,m5,z", "sort [str]: {sort_case(5)}")
+    expect(sort_int_case(6) == "1,3,9,11", "sort [i64]: {sort_int_case(6)}")
+    expect(sort_f64_case() == "-1.5,9", "sort [f64]: {sort_f64_case()}")
+    expect(reverse_case(2) == "r2,q2,p2", "reverse [str]: {reverse_case(2)}")
+    expect(type_of_case(9) == "str/v9", "type_of argument still readable: {type_of_case(9)}")
+    expect(env_case(1) == "PATH/true", "env_get key still readable: {env_case(1)}")
+    expect(pop_str_case(5) == "r5/p5q5/2", "pop [str]: {pop_str_case(5)}")
+    expect(pop_int_case(5) == "3/52/2", "pop [i64]: {pop_int_case(5)}")
+    expect(pop_struct_case(5) == "m5/n5/1", "pop [P]: {pop_struct_case(5)}")
+    expect(pop_tuple_case(5) == "u5/t5/1", "pop [(str, i64)]: {pop_tuple_case(5)}")
+    expect(pop_nested_case(5) == "c5,d5/a5,b5/1", "pop [[str]]: {pop_nested_case(5)}")
+    expect(pop_temp_case(5) == "z5", "pop of a temporary array: {pop_temp_case(5)}")
+    expect(stack_case(5) == "s3-5,s2-5,s1-5,s1-5,s2-5/0", "stack push / pop: {stack_case(5)}")
+    expect(branch_case(2) == "b,j,k2/b", "sort in one branch: {branch_case(2)}")
+    expect(branch_case(3) == "k3|b|j/k3", "no sort in the other branch: {branch_case(3)}")
+    expect(loop_case(4) == "w4,v,u", "reverse / sort in a loop: {loop_case(4)}")
+
+    // repeated rounds with allocator churn between the call and the reads
+    let mut i = 0
+    while i < 50 {
+        expect(split_case(i) == "a|b|{i}|d/a,b,{i},d/4", "split round {i}")
+        expect(join_case(i) == "a{i}-{i}-b{i}-{i}-c{i}/a{i}b{i}c{i}/-{i}-", "join round {i}")
+        expect(pop_str_case(i) == "r{i}/p{i}q{i}/2", "pop str round {i}")
+        expect(pop_struct_case(i) == "m{i}/n{i}/1", "pop struct round {i}")
+        expect(pop_nested_case(i) == "c{i},d{i}/a{i},b{i}/1", "pop nested round {i}")
+        expect(stack_case(i) == "s3-{i},s2-{i},s1-{i},s1-{i},s2-{i}/0", "stack round {i}")
+        expect(type_of_case(i) == "str/v{i}", "type_of round {i}")
+        i = i + 1
+    }
+    println("PASS")
+}

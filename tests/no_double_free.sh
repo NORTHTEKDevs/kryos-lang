@@ -460,6 +460,7 @@ no_df_both struct_array_dup_fields "$ROOT/tests/conformance/conf_struct_array_du
 no_df_both closure_capture_array_elems "$ROOT/tests/conformance/conf_closure_capture_array_elems.kry"
 no_df_both result_container_elems "$ROOT/tests/conformance/conf_result_container_elems.kry"
 no_df_both result_inline_match "$ROOT/tests/conformance/conf_result_inline_match.kry"
+no_df_both readonly_builtin_args "$ROOT/tests/conformance/conf_readonly_builtin_args.kry"
 
 if [ "$fail" -eq 0 ]; then
   echo "no-double-free: all programs clean (no rc-0 frees)"
