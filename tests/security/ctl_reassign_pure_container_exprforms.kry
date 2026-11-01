@@ -1,0 +1,47 @@
+// Control for attack_reassign_container_<form>: writing a PURE closure into a
+// tracked map, array or struct field from inside an `unsafe`/`quantum` block, a
+// `match` or if-expression argument, a `while` condition or a `deny!` body must
+// stay accepted. The exhaustive walk applies each write to the snapshot; it must
+// not charge `all` merely because the write sits inside an expression.
+struct Runner {
+    run: fn() -> str,
+}
+fn one() -> str {
+    return "one"
+}
+fn other() -> str {
+    return "other"
+}
+
+fn outer() {
+    let mut m: map<str, fn() -> str> = {"k": one}
+    let mut a: [fn() -> str] = [one]
+    let mut r = Runner { run: one }
+    unsafe {
+        m["k"] = other
+    }
+    quantum {
+        a = push(a, other)
+    }
+    println(to_string(match 1 { 1 => { a[0] = other
+ 1 }
+ _ => { 2 } }))
+    println(to_string(if true { r.run = other
+ 1 } else { 2 }))
+    while match 1 { 1 => { m["k"] = one
+ false }
+ _ => { false } } {
+        break
+    }
+    deny!(fs:read) {
+        m["k"] = other
+        println(m["k"]())
+        println(a[1]())
+        println(r.run())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    outer()
+}

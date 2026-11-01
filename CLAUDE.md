@@ -249,7 +249,7 @@ Package registry: `NORTHTEKDevs/kryos-registry` on GitHub. **`kryos pkg install`
 | `kryos check`                 | Type-check, do not codegen. Fast.                              |
 | `kryos fmt`                   | Auto-format `.kry` files in place.                             |
 | `kryos test`                  | Run `@test` fns (file or `tests/` dir) in-process. Works with stdlib imports and `@capabilities`; failing tests exit 1. LIMITATION: a runtime PANIC (not a failed assert) inside one test aborts the whole run -- panics are process-fatal by design, so remaining tests don't execute. |
-| `kryos repl`                  | Interactive shell.                                             |
+| `kryos repl`                  | Interactive shell. Capability-checked: starts with none; `--allow fs:read,...` / `:allow <cap>` grant. |
 | `kryos doc`                   | Generate Markdown (stdout) from `///` doc comments; `--html` for HTML. |
 | `kryos pkg add <name>`        | Resolve and install a registry package.                        |
 | `kryos lsp`                   | Language server (stdio).                                       |

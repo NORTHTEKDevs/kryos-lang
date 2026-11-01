@@ -1,0 +1,16 @@
+fn pure_a() -> str {
+    return "a"
+}
+
+fn run(m: map<str, fn() -> str>) {
+    let f = m["s"]
+    println("CTL: " + f())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let m = { "p": pure_a, "s": pure_a }
+    deny!(fs:read) {
+        run(m)
+    }
+}

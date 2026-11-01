@@ -1,0 +1,10 @@
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    deny!(fs:read) {
+        spawn fn() {
+            println(f())
+        }
+        sleep(100)
+    }
+}

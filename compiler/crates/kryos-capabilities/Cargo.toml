@@ -6,3 +6,8 @@ edition.workspace = true
 [dependencies]
 kryos-errors.workspace = true
 kryos-ast.workspace = true
+
+[features]
+# LEDGER item 41 re-measurement only: honors KRYOS_NO_HOTPARAM_ALL, which
+# weakens enforcement. Never enable in a shipped build.
+item41-experiment = []

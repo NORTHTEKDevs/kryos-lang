@@ -1,0 +1,33 @@
+// OPEN ESCAPE (listed in tools/loop/escape_status.sh and the README, not
+// rejected). A fn-typed local is reassigned from the result of calling a
+// LOCAL closure that returns its parameter: `f = setter(reader)`.
+// `resolve_closure_caps` resolves a call through a local name to the local's
+// OWN invocation authority (`local_caps`), not to the authority of the value
+// it returns, so `f` is charged the pure set and `f()` inside
+// `deny!(fs:read)` reads the file. A top-level named function with the same
+// shape is resolved through `fn_return_caps` (DependsOnParam) and rejected;
+// only a local lambda or nested `fn` is open. Present on master.
+// ACCEPTANCE (when closed): rejected (E0507) in default and strict mode.
+
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let mut f: fn() -> str = harmless
+    let setter = |r: fn() -> str| { r }
+    f = setter(reader)
+    deny!(fs:read) {
+        println("OUT: " + f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

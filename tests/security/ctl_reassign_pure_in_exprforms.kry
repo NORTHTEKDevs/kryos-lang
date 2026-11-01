@@ -1,0 +1,54 @@
+// Control for attack_reassign_local_<form>: the same expression forms that
+// carry a reassignment (an `unsafe`/`quantum` block, a `match` or an
+// if-expression used as an argument or an operand, a `while` condition, a
+// match scrutinee, a string interpolation) reassigning a fn-typed local to a
+// PURE closure must stay accepted. The exhaustive walk records what each
+// name can hold; it must not charge `all` merely because a binding sits
+// inside an expression.
+fn one() -> str {
+    return "one"
+}
+fn other() -> str {
+    return "other"
+}
+
+fn outer() {
+    let mut f: fn() -> str = one
+    let n = 2
+    unsafe {
+        f = other
+    }
+    quantum {
+        f = one
+    }
+    println(to_string(match n { 1 => { f = one
+ 1 }
+ _ => { f = other
+ 2 } }))
+    println(to_string(if n == 1 { f = one
+ 1 } else { f = other
+ 2 }))
+    let z = 1 + if n == 1 { f = one
+ 1 } else { 2 }
+    println(to_string(z))
+    while match n { 1 => { f = other
+ false }
+ _ => { false } } {
+        break
+    }
+    match { f = one
+ n } {
+        _ => { println("x") }
+    }
+    println("v={match n { 1 => { f = one
+ 1 }
+ _ => { 2 } }}")
+    deny!(fs:read) {
+        println(f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    outer()
+}

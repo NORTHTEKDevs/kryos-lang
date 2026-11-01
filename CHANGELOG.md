@@ -6,6 +6,76 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+Capability-boundary fixes: seven ways a program or a shipped
+binary got more authority than it declared are closed, and a REPL bug on Linux.
+
+Upgrade notes:
+
+- `kryos repl` now starts with no capabilities, like an unannotated `main`.
+  Input that calls `file_write`, `env_get` or another gated builtin is
+  rejected until it is granted: `kryos repl --allow fs:read,net:http` at
+  start, or `:allow <cap>` at the prompt (`:caps` shows the session grant).
+  A misspelled capability name is refused instead of silently accepted.
+- `KRYOS_NO_HOTPARAM_ALL` no longer has any effect in a release build. It
+  exists only in a compiler built with `--features
+  kryos-capabilities/item41-experiment`.
+- A program that reaches raw memory (`str_to_ptr`, `ptr_byte_at`, ...)
+  without declaring `ffi` is rejected wherever the call sits: any function in
+  the root file, or any non-stdlib module it imports. Before, only `main` and
+  annotated functions of the root file were charged. The standard library is
+  unchanged. Which directory counts as the standard library is the one the
+  toolchain resolves to; `KRYOS_STDLIB_DIR` still decides where `use std::..`
+  is read from, but no longer exempts the modules in the directory it names.
+- `kryos repl` applies the same raw-memory rule as a file: a session with no
+  `ffi` grant is rejected with E0505 on `str_to_ptr`, `ptr_byte_at` and the
+  rest, and `:allow ffi` (or `--allow ffi`) grants them.
+
+### Fixed - the capability boundary
+
+- **`kryos repl` ran capability-gated builtins with no declaration.** Each
+  input was compiled into an unannotated helper that inferred mode never
+  checks, so `file_write(..)` and `env_get(..)` ran at the prompt.
+- **One environment variable weakened a shipped compiler.**
+  `KRYOS_NO_HOTPARAM_ALL=1` re-opened two escapes in every release build,
+  with nothing visible in the source or `kryos.toml`.
+- **The raw-memory gate missed an unannotated helper and every imported
+  module.** Moving `str_to_ptr` + `ptr_byte_at` one function or one `use`
+  away passed `check` in all three modes and read any string in the host
+  process.
+- **A reassigned function-typed local kept the authority of its first
+  binding.** `let mut f = <pure>` then `f = <privileged>` charged the pure set
+  at `f()`, including inside a `deny!` block. The reassignment was missed
+  whenever it sat inside an expression other than a plain block, a `match` arm
+  or an `if` branch: an `unsafe` or `quantum` block, a `match` or `if` used as
+  a call argument or operand, a loop or `if` condition, a `match` scrutinee or
+  guard, a string interpolation, an index, a range, a collection or struct
+  literal. The scan now covers every statement and expression form, and a new
+  form is a compile error in the checker rather than a silent gap. The same
+  gap hid a closure written into a map element, array element or struct field
+  inside any of those forms (or inside a `deny!` body); it is closed the same
+  way. It also rejects a closure shadowing an outer name inside a `spawn`
+  lambda. One
+  conservative cost: a lambda that reassigns an outer function-typed local
+  (which never changes the outer one, since closures capture by value) is
+  rejected when the outer one is called inside `deny!`. Still open: a local
+  reassigned from the result of calling a local closure or nested `fn` that
+  returns its parameter; the README lists it with the other live shapes.
+- **A zero-grant `kryos repl` session read raw process memory.**
+  `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
+  expression in a file or `kryos eval` was rejected with E0505.
+- **`KRYOS_STDLIB_DIR` exempted the user's own modules from the raw-memory
+  gate.** Pointing it at a directory of user modules made a module using
+  `str_to_ptr` + `ptr_byte_at` compile on a default release build.
+- **A `select` timeout body and duration expression were never checked.** A
+  gated builtin there ran in an unannotated `main`, or inside a `deny!`
+  block that forbids it, in every mode.
+
+### Fixed - `kryos repl`
+
+- String literals could print as garbage on Linux (`println("hello")` gave
+  `<invalid utf-8>`): the REPL ran its compiled code after the JIT compiler
+  that owns the literal data had been dropped.
+
 ### Fixed
 
 - **`contains(array, v)` segfaulted on both backends.** An array first

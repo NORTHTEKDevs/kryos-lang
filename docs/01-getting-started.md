@@ -142,7 +142,7 @@ The `kryos` command has 30+ subcommands (see `kryos --help` for the full list). 
 | `kryos run <file.kry> -- <args>` | Pass arguments to the PROGRAM, not to `kryos` itself. **Required if any arg starts with `-`/`--`** -- `kryos run f.kry --demo` fails (`error: unexpected argument '--demo' found`, clap parses it as a flag on `run` before the trailing `[ARGS]...` gets a chance); `kryos run f.kry -- --demo` works and `args()`/`argv()` inside the program sees `--demo` as a normal element (the `--` separator itself is not passed through). A `kryos build --release` COMPILED BINARY has no such requirement -- `kryos build` does not execute the program at all (no `ARGS` of its own to conflict with), and the resulting native binary (`./f --demo`) parses its own argv directly with no clap layer in front of it. This quirk is specific to `kryos run`'s CLI front-end, not the language or the compiled output. |
 | `kryos build <file.kry>` | Compile to a native binary. By default uses Cranelift AOT; pass `--release` for LLVM-optimized output. Use `-o <path>` to set the output path and `--target <triple>` for cross-compilation. |
 | `kryos check <file.kry>` | Type-check, ownership analysis, and capability audit without producing a binary. Reports violations and prints a capability map of every function. |
-| `kryos repl` | Start an interactive REPL session. Supports multi-line input (detects unclosed braces/parens). Type `exit` or Ctrl+D to quit. |
+| `kryos repl` | Start an interactive REPL session. Supports multi-line input (detects unclosed braces/parens). Type `exit` or Ctrl+D to quit. Starts with no capabilities; grant with `--allow fs:read,...` or `:allow <cap>` (see "The REPL" below). |
 | `kryos test [dir]` | Run `.kry` test files in a directory. Tests use `// expect:` comments to assert expected output and `// expect-error:` for expected failures. Use `// skip` to skip a test. Defaults to `tests/` if no directory is given. |
 
 ### Build flags
@@ -198,6 +198,18 @@ kryos> println(square(x))
 ```
 
 The REPL detects unclosed braces, brackets, and parentheses and shows a continuation prompt (`...>`) until you close them. State persists across lines within a session -- variables and functions you define stay available.
+
+A REPL session is capability-checked like a program: it starts with **no** capabilities, the way an unannotated `main` does, so `file_write(..)` or `env_get(..)` at the prompt (or inside a function you define there) is rejected with `E0505`/`E0507`. Grant what the session needs when you start it, or at the prompt:
+
+```
+kryos repl --allow fs:read,net:http
+kryos> :allow process
+capabilities: fs:read, net:http, process
+kryos> :caps
+capabilities: fs:read, net:http, process
+```
+
+A misspelled capability name is refused, not silently granted.
 
 ## File Extension
 

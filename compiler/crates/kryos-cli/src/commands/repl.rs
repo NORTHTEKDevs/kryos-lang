@@ -1,4 +1,4 @@
-//! `kryos repl` — interactive read-eval-print loop.
+//! `kryos repl` - interactive read-eval-print loop.
 //!
 //! Line editing, Up/Down history recall, and Tab completion are provided by
 //! `rustyline`. Persistent history is kept in `~/.kryos_history` using the
@@ -30,7 +30,57 @@ const COMPLETION_WORDS: &[&str] = &[
     "cos", "abs", "min", "max", "exit",
     // REPL meta-commands
     ":help", ":quit", ":type", ":clear", ":reset", ":history", ":history-clear",
+    ":allow", ":caps",
 ];
+
+/// `@capabilities(..)` line for the wrapper an input runs in. Without it the
+/// wrapper is an interior helper, which inferred mode never checks: every
+/// gated builtin ran at the prompt unchecked (tests/security/
+/// repl_toplevel_capability_bypass.sh). With it the wrapper is a boundary, so
+/// the session holds exactly what was granted, starting from nothing, like
+/// an unannotated `main`.
+fn caps_annotation(grant: &[String]) -> String {
+    format!("@capabilities({})", grant.join(", "))
+}
+
+/// Grant `more` on top of `grant` after checking the spelling compiles as an
+/// annotation; on a bad name, print the compiler's diagnostic and keep the
+/// old grant.
+fn extend_grant(grant: &[String], more: &str) -> Option<Vec<String>> {
+    let mut next = grant.to_vec();
+    for cap in more.split(|c: char| c == ',' || c.is_whitespace()) {
+        let cap = cap.trim();
+        if !cap.is_empty() && !next.iter().any(|g| g == cap) {
+            next.push(cap.to_string());
+        }
+    }
+    let probe = format!("{}\nfn __repl_caps_probe__() {{}}", caps_annotation(&next));
+    let mut config = kryos_driver::BuildConfig::for_file("<repl>");
+    config.output_type = kryos_driver::OutputType::Mir;
+    let result = kryos_driver::compile_source(&probe, "<repl>", &config);
+    // An unknown name is only a warning in a file (it grants nothing); here
+    // it is refused, so a typo is not mistaken for a grant.
+    let unknown = result
+        .diagnostics
+        .iter()
+        .any(|d| d.code.as_deref() == Some("W-CAP-UNKNOWN"));
+    if result.success && !unknown {
+        Some(next)
+    } else {
+        for d in &result.diagnostics {
+            eprint!("{}", kryos_errors::render_diagnostic(d, &result.source_map));
+        }
+        None
+    }
+}
+
+fn caps_line(grant: &[String]) -> String {
+    if grant.is_empty() {
+        "capabilities: none (grant with :allow <cap>, e.g. :allow fs:read)".to_string()
+    } else {
+        format!("capabilities: {}", grant.join(", "))
+    }
+}
 
 /// rustyline `Helper` providing Kryos keyword/builtin Tab completion.
 /// Hinting, highlighting, and validation use the trait defaults.
@@ -75,16 +125,22 @@ impl Highlighter for KryosHelper {}
 impl Validator for KryosHelper {}
 impl Helper for KryosHelper {}
 
-/// Execute the REPL.
-pub fn execute() -> Result<(), String> {
+/// Execute the REPL. `allow` is the session's initial capability grant.
+pub fn execute(allow: Vec<String>) -> Result<(), String> {
+    let mut grant: Vec<String> = Vec::new();
+    if !allow.is_empty() {
+        grant = extend_grant(&grant, &allow.join(","))
+            .ok_or_else(|| "invalid --allow capability list".to_string())?;
+    }
     eprintln!(
-        "Kryos {} REPL — type :help for commands, :quit to exit",
+        "Kryos {} REPL - type :help for commands, :quit to exit",
         env!("CARGO_PKG_VERSION")
     );
+    eprintln!("{}", caps_line(&grant));
 
     // Persistent history: load from ~/.kryos_history on startup, append each
     // accepted input line during the session. Lines starting with `:` (REPL
-    // meta-commands) are recorded too — useful context when re-reading.
+    // meta-commands) are recorded too - useful context when re-reading.
     let history_path = history_file_path();
     let mut session_history: Vec<String> = read_history(&history_path);
 
@@ -148,6 +204,8 @@ pub fn execute() -> Result<(), String> {
                 println!("  :type <expr>    Show the type of an expression");
                 println!("  :clear          Clear the screen");
                 println!("  :reset          Clear accumulated definitions");
+                println!("  :allow <caps>   Grant capabilities for this session (e.g. :allow fs:read,net:http)");
+                println!("  :caps           Show the session's capabilities");
                 println!("  :history        Show the persistent input history");
                 println!("  :history-clear  Wipe the on-disk history file");
                 println!();
@@ -181,6 +239,16 @@ pub fn execute() -> Result<(), String> {
                 decl_history.clear();
                 let_history.clear();
                 println!("(state cleared)");
+            }
+            ":caps" => println!("{}", caps_line(&grant)),
+            input if input.starts_with(":allow") => {
+                let more = input[":allow".len()..].trim();
+                if more.is_empty() {
+                    eprintln!("usage: :allow <cap>[,<cap>...]  (e.g. :allow fs:read,net:http)");
+                } else if let Some(next) = extend_grant(&grant, more) {
+                    grant = next;
+                    println!("{}", caps_line(&grant));
+                }
             }
             input if input.starts_with(":type ") => {
                 let expr = &input[6..];
@@ -243,24 +311,25 @@ pub fn execute() -> Result<(), String> {
 
                 let mut config = kryos_driver::BuildConfig::for_file("<repl>");
                 config.output_type = kryos_driver::OutputType::Mir;
+                let caps = caps_annotation(&grant);
 
                 let wrapper = if is_decl {
-                    // Top-level declaration — place it alongside history,
+                    // Top-level declaration - place it alongside history,
                     // with an empty eval body just to validate.
-                    format!("{preamble}\n{input}\nfn __repl_eval__() {{ {lets} }}")
+                    format!("{preamble}\n{input}\n{caps}\nfn __repl_eval__() {{ {lets} }}")
                 } else if is_let || is_assignment || input.ends_with(';') {
-                    format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
+                    format!("{preamble}\n{caps}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                 } else {
-                    // Bare expression — try to auto-print via println(to_string(...)).
+                    // Bare expression - try to auto-print via println(to_string(...)).
                     let print_wrapper = format!(
-                        "{preamble}\nfn __repl_eval__() {{ {lets}\nprintln(to_string({input})) }}"
+                        "{preamble}\n{caps}\nfn __repl_eval__() {{ {lets}\nprintln(to_string({input})) }}"
                     );
                     let probe = kryos_driver::compile_source(&print_wrapper, "<repl>", &config);
                     if probe.success {
                         print_wrapper
                     } else {
                         // Fall back to running silently (e.g. void call or side-effecting stmt).
-                        format!("{preamble}\nfn __repl_eval__() {{ {lets}\n{input} }}")
+                        format!("{preamble}\n{caps}\nfn __repl_eval__() {{ {lets}\n{input} }}")
                     }
                 };
 
@@ -271,8 +340,15 @@ pub fn execute() -> Result<(), String> {
                         let rendered = kryos_errors::render_diagnostic(d, &result.source_map);
                         eprint!("{rendered}");
                     }
+                    if result
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code.as_deref().is_some_and(|c| c.starts_with("E05")))
+                    {
+                        eprintln!("hint: the session's {}", caps_line(&grant));
+                    }
                 } else {
-                    // Compilation succeeded — accumulate into history so
+                    // Compilation succeeded - accumulate into history so
                     // subsequent lines see these definitions/bindings.
                     if is_decl {
                         decl_history.push(input.to_string());
@@ -282,8 +358,19 @@ pub fn execute() -> Result<(), String> {
 
                     if let Some(ref mir) = result.mir {
                         // JIT compile ALL functions so cross-function calls work.
-                        let backend = kryos_codegen_cranelift::CraneliftBackend::new();
-                        match backend.jit_compile_module(mir) {
+                        // The compiler owns the executable code AND the string
+                        // literal data, so it must outlive the call:
+                        // `jit_compile_module` drops it on return, and on Linux
+                        // the freed pages were reused, so a literal printed as
+                        // garbage (`println("hello")` gave `<invalid utf-8>`).
+                        let mut jit = match kryos_codegen_cranelift::jit::JitCompiler::new() {
+                            Ok(j) => j,
+                            Err(e) => {
+                                eprintln!("JIT error: {e}");
+                                continue;
+                            }
+                        };
+                        match jit.compile_all_with_module(mir) {
                             Ok(ptrs) => {
                                 if let Some(&ptr) = ptrs.get("__repl_eval__") {
                                     // Safety: `ptr` points to JIT-compiled code with the

@@ -14,6 +14,33 @@ K="${KRYOS_BIN:-compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="compiler/
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
+# 0. A `select` timeout is a branch like any other. All four Stmt::Select
+#    arms in the capability checker dropped the `timeout` field, so neither
+#    its body nor its duration expression was ever walked: a gated builtin
+#    there ran with nothing declared, in all three modes.
+#    Only the two ENFORCING modes are asserted: `permissive` checks nothing
+#    but annotated functions by design, and these probes' `main` carries no
+#    annotation, so it is not a boundary there.
+for esc in attack_select_timeout_body_zero_cap attack_select_timeout_duration_zero_cap; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/sel" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a select timeout runs unchecked"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/sel"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/sel" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in both enforcing modes"
+done
+if "$K" check tests/security/ctl_select_timeout_declared_cap.kry >"$TMP/selc" 2>&1; then
+    echo "  ok   a declared select timeout still compiles (no over-rejection)"
+else
+    echo "  FAIL: walking the select timeout rejected a program that declares it:"
+    tail -3 "$TMP/selc" | sed 's/^/    /'; fail=1
+fi
+
 # 1. The escape must NOT compile.
 if "$K" run tests/security/cap_escape_raw_memory.kry >"$TMP/esc" 2>&1; then
     echo "  FAIL: the raw-memory capability escape COMPILED AND RAN"
@@ -26,6 +53,24 @@ else
     tail -3 "$TMP/esc" | sed 's/^/    /'
     fail=1
 fi
+
+# 1b. The same calls one function, or one `use`, away from `main` must not
+#     compile either. The gate used to charge only `main` and annotated
+#     functions, and only in the root module, so both of these passed every
+#     mode and read memory the program was never handed.
+for esc in cap_escape_raw_memory_helper cap_escape_raw_memory_import; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities" "--capabilities-mode=permissive"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/esc2" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- raw memory with no ffi"
+            esc_ok=0; fail=1
+        elif ! grep -q "str_to_ptr\` requires \`ffi\`" "$TMP/esc2"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/esc2" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in all three modes (requires \`ffi\`)"
+done
 
 # 2. Declared use must still work (guards against over-rejection).
 cat > "$TMP/ok.kry" <<'KRY'
@@ -905,6 +950,141 @@ if "$K" check --strict-capabilities "$TMP/a2a_nocascade.kry" >"$TMP/a2a_nc" 2>&1
 else
     echo "  FAIL: the item-33 fix cascaded into pure actor message passing:"
     tail -5 "$TMP/a2a_nc" | sed 's/^/    /'; fail=1
+fi
+
+# The item-41 experiment switch must be inert in a default build: it re-opens
+# escape_status rows 41a/41b, and one environment variable on a build machine
+# used to be enough (the switch now needs the item41-experiment feature).
+if KRYOS_NO_HOTPARAM_ALL=1 "$K" check tests/security/attack_realprogram_deny_blocks_builtin_exfil.kry >"$TMP/hp" 2>&1; then
+    echo "  FAIL: KRYOS_NO_HOTPARAM_ALL=1 weakens this build: 41a's escape compiled"
+    fail=1
+elif grep -q "denied in this block\|requires" "$TMP/hp"; then
+    echo "  ok   KRYOS_NO_HOTPARAM_ALL is inert in a default build (41a still rejected)"
+else
+    echo "  FAIL: 41a rejected with the switch set, but not for the capability reason:"
+    tail -3 "$TMP/hp" | sed 's/^/    /'; fail=1
+fi
+
+# A reassignment is a binding wherever it sits. The builder walked if/for/while/
+# select/try/deny and a bare block, then three expression parents (a block, a
+# `match` arm, an if-expression branch) and fell through `_ => {}` for every
+# other expression form, so `unsafe { f = reader }`, a `match` used as a call
+# argument or an operand, a `while` condition, a match scrutinee, a string
+# interpolation (and the rest listed below) left `f` charged as `harmless` and
+# `f()` inside `deny!(fs:read)` printed the secret. The walk is now exhaustive
+# over `Expr` and `Stmt` with no wildcard arm.
+REASSIGN_FORMS="match_stmt_block \
+    match_in_deny \
+    match_enum_arm \
+    match_literal_subject \
+    block_in_for_iterable \
+    block_in_match_scrutinee \
+    block_in_method_receiver \
+    ifexpr_as_call_arg \
+    ifexpr_in_binop \
+    match_as_call_arg \
+    match_in_array_literal \
+    match_in_assign_rhs \
+    match_in_cast \
+    match_in_elif_cond \
+    match_in_if_cond \
+    match_in_index \
+    match_in_interpolation \
+    match_in_let_tuple \
+    match_in_map_literal \
+    match_in_match_guard \
+    match_in_method_arg \
+    match_in_pipe \
+    match_in_range \
+    match_in_ref \
+    match_in_struct_literal \
+    match_in_unary \
+    match_in_while_cond \
+    quantum_block \
+    unsafe_block \
+    unsafe_in_match_arm"
+for form in $REASSIGN_FORMS; do
+    esc="attack_reassign_local_$form"
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/rm" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a reassignment in this expression form is invisible"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/rm"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/rm" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in default and strict mode"
+done
+# The same is true of a write into a TRACKED CONTAINER (a map element, an array
+# element or push, a struct field): `build_local_container_lits_block` listed a few
+# statement forms and skipped a `deny!` body, `unsafe`/`quantum` blocks and every
+# expression, so the snapshot stayed `harmless`. Same exhaustive walk.
+CONTAINER_FORMS="arr_match_arg \
+    arr_push_quantum \
+    arr_unsafe \
+    map_in_deny_body \
+    map_match_arg \
+    map_unsafe \
+    map_while_cond \
+    struct_field_ifexpr_arg"
+for form in $CONTAINER_FORMS; do
+    esc="attack_reassign_container_$form"
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/rm" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a container write in this form is invisible"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/rm"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/rm" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in default and strict mode"
+done
+# NOT an escape: a lambda captures `f` by value, so calling it never changes the
+# outer `f` (the program prints "not a secret"). It is rejected anyway because
+# the builder's name -> authority map is flat. Pinned so the over-rejection is a
+# known, deliberate cost, not a surprise.
+for mode in "" "--strict-capabilities"; do
+    if "$K" check $mode tests/security/attack_reassign_local_match_lambda_body.kry >"$TMP/rm" 2>&1; then
+        echo "  note: attack_reassign_local_match_lambda_body.kry is now accepted by \`check $mode\` (it was a conservative rejection)"
+    elif grep -qE "E0505|E0507" "$TMP/rm"; then
+        echo "  ok   attack_reassign_local_match_lambda_body.kry rejected by \`check $mode\` (conservative; not an escape)"
+    else
+        echo "  FAIL: attack_reassign_local_match_lambda_body.kry rejected by \`check $mode\`, but not for the capability reason:"
+        tail -3 "$TMP/rm" | sed 's/^/    /'; fail=1
+    fi
+done
+for ctl in ctl_reassign_pure_in_match ctl_reassign_pure_in_exprforms ctl_reassign_pure_container_exprforms; do
+    if "$K" check --strict-capabilities "tests/security/$ctl.kry" >"$TMP/rmc" 2>&1; then
+        echo "  ok   $ctl.kry accepted (no cascade)"
+    else
+        echo "  FAIL: the reassignment walk over-rejects $ctl.kry (pure-only reassignments):"
+        tail -3 "$TMP/rmc" | sed 's/^/    /'; fail=1
+    fi
+done
+
+# KRYOS_STDLIB_DIR chooses where `use std::..` is read from. It must not also
+# choose which code is exempt from the raw-memory gate: pointing it at the
+# directory holding the program's own modules exempted them, so a module
+# using str_to_ptr + ptr_byte_at compiled on a default release build.
+SEC_DIR="$(cd tests/security && pwd)"
+if KRYOS_STDLIB_DIR="$SEC_DIR" "$K" check tests/security/cap_escape_raw_memory_import.kry >"$TMP/sd" 2>&1; then
+    echo "  FAIL: KRYOS_STDLIB_DIR=<user modules> exempted them from the raw-memory gate"
+    fail=1
+elif grep -q "str_to_ptr\` requires \`ffi\`" "$TMP/sd"; then
+    echo "  ok   KRYOS_STDLIB_DIR does not make user modules trusted (still requires \`ffi\`)"
+else
+    echo "  FAIL: rejected with KRYOS_STDLIB_DIR set, but not for the capability reason:"
+    tail -3 "$TMP/sd" | sed 's/^/    /'; fail=1
+fi
+if KRYOS_STDLIB_DIR="$(cd compiler/stdlib && pwd)" "$K" check "$TMP/nocascade.kry" >"$TMP/sdc" 2>&1; then
+    echo "  ok   control: the real stdlib named by KRYOS_STDLIB_DIR is still trusted"
+else
+    echo "  FAIL: KRYOS_STDLIB_DIR=<real stdlib> now over-rejects std::json:"
+    tail -3 "$TMP/sdc" | sed 's/^/    /'; fail=1
 fi
 
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"

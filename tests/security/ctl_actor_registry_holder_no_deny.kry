@@ -1,0 +1,32 @@
+@capabilities(fs:read)
+fn make_secret_reader() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn pure_tool() -> str {
+    return "pure result"
+}
+
+@capabilities(fs:read)
+fn build_registry() -> map<str, fn() -> str> {
+    return {
+        "pure": pure_tool,
+        "secret": make_secret_reader(),
+    }
+}
+
+actor ZeroCapDispatcher {
+    fn run_it(self, reg: map<str, fn() -> str>, name: str) {
+        let f = reg[name]
+        let out = f()
+        println("DELEGATED: " + out)
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg = build_registry()
+    let d = ZeroCapDispatcher()
+    d.run_it(reg, "secret")
+    sleep(100)
+}

@@ -1,0 +1,15 @@
+// LEDGER item 55. An UNANNOTATED main (deny-by-default boundary, declared set empty) runs the gated
+// builtin file_write inside the BODY of a select `timeout` branch. Must be REJECTED (E0505) under
+// inferred and strict. Identical call in an ordinary `v ch =>` arm, or outside select, is already rejected.
+fn main() {
+    let ch = chan()
+    select {
+        v ch => {
+            println("received")
+        }
+        timeout 20 => {
+            let r = file_write("marker_select_timeout_body.txt", "timeout-body-executed")
+            println("SELECT-TIMEOUT-BODY LEAK: wrote " + to_string(r))
+        }
+    }
+}

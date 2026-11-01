@@ -1,0 +1,26 @@
+// Capability escape, found 2026-10-15 while writing docs/THREAT-MODEL.md:
+// the raw-memory gate only charged `main` and ANNOTATED functions, so moving
+// the exact calls of cap_escape_raw_memory.kry into an unannotated helper in
+// the SAME file passed `kryos check`, `--strict-capabilities` AND
+// `--capabilities-mode=permissive`, and read memory the program was never
+// handed. `str_to_ptr` + `ptr_byte_at` is the pair that gate exists to stop.
+//
+// Root cause: check_raw_memory_direct ran its pass in Inferred mode, which
+// checks a function against its own declaration only for `main` and
+// annotated functions; an unannotated helper's requirement was left to
+// propagate to its callers, and the gate's filter (keep only diagnostics
+// naming a raw-memory builtin) then dropped the E0507 propagation error.
+// Fixed by running that pass in Strict mode, which charges every function for
+// its own raw-memory calls without making the requirement propagate.
+//
+// MUST be rejected with E0505 naming `str_to_ptr` and `ptr_byte_at`, in all
+// three modes. Pinned by tests/security_gate.sh.
+
+fn peek(s: str) -> i64 {
+    let p: i64 = str_to_ptr(s)
+    return ptr_byte_at(p, 1)
+}
+
+fn main() {
+    println("byte={peek("hello")}")
+}
