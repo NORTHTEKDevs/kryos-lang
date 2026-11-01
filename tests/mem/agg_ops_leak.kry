@@ -142,6 +142,24 @@ fn wmh_len(w: Wmh) -> i64 {
 fn main() {
     let iters = parse_int(env_get("LEAK_ITERS"))
     let mode = env_get("LEAK_MODE")
+    // bb_* (borrow audit of the remaining read-only builtins): shared fixtures.
+    let mut bbd = env_get("TEMP")
+    if len(bbd) == 0 { bbd = "." }
+    // Padding so a SLOW mode (file / signing builtins, run at fewer iterations by
+    // the gate) still leaks well past its ceiling: bbpp lengthens a path with "/."
+    // segments, bbpad lengthens a content argument.
+    let bbpp = "/./././././././././././././././././././././././././././././././././././././././././././././././././././././././././././."
+    let bbpad = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    let bbf = bbd + bbpp + "/kryos_bb_probe.txt"
+    let bbk = ed25519_generate()
+    let bbpub = ed25519_public(bbk)
+    let bbre = regex_new("a+b")
+    let bbjo = json_parse("{{\"k\":1}")
+    if starts_with(mode, "bb_") {
+        file_write(bbf, "hello")
+        file_write(bbd + "/kryos_bb_a.txt", "")
+        file_write(bbd + "/kryos_bb_w.txt", "")
+    }
     // cap_struct: a closure mutating a captured struct, called every iteration
     // (field stores and a whole reassignment, rewritten into field stores).
     let mut cs = Pc { inner: P { name: "c", xs: [] }, n: 0, tag: "t" }
@@ -738,6 +756,118 @@ fn main() {
             let bpe = pop(bpt)
             let bpf = pop(bpt)
             acc = acc + len(bpe.0) + len(bpf.0) + len(bpt)
+        } elif mode == "bb_index_of" {
+            let bih = "xx{i}yy"
+            let bin = "{i}"
+            acc = acc + index_of(bih, bin) + len(bih) + len(bin)
+        } elif mode == "bb_file_size" {
+            let bfp = bbf + trim(" ")
+            acc = acc + file_size(bfp) + len(bfp)
+        } elif mode == "bb_file_read" {
+            let bfp = bbf + trim(" ")
+            let bfc = file_read(bfp)
+            acc = acc + len(bfc) + len(bfp)
+        } elif mode == "bb_read_file" {
+            let bfp = bbf + trim(" ")
+            let bfc = read_file(bfp)
+            acc = acc + len(bfc) + len(bfp)
+        } elif mode == "bb_write_file" {
+            let bfp = bbd + bbpp + "/kryos_bb_w.txt"
+            let bfc = bbpad + "w{i % 7}"
+            acc = acc + write_file(bfp, bfc) + len(bfp) + len(bfc)
+        } elif mode == "bb_append_file" {
+            let bfp = bbd + bbpp + "/kryos_bb_a.txt"
+            let bfc = bbpad + "a"
+            acc = acc + append_file(bfp, bfc) + len(bfp) + len(bfc)
+        } elif mode == "bb_create_dir" {
+            let bcd = "." + bbpp + trim(" ")
+            acc = acc + create_dir(bcd) + len(bcd)
+        } elif mode == "bb_hmac" {
+            let bk = "key{i}"
+            let bm = "msg{i}"
+            let bh = hmac_sha256(bk, bm)
+            acc = acc + len(bh) + len(bk) + len(bm)
+        } elif mode == "bb_sha512" {
+            let bs = "s{i}"
+            let bh = sha512(bs)
+            acc = acc + len(bh) + len(bs)
+        } elif mode == "bb_sha1_hex" {
+            let bs = "s{i}"
+            let bh = sha1_hex(bs)
+            acc = acc + len(bh) + len(bs)
+        } elif mode == "bb_sha1_b64" {
+            let bs = "s{i}"
+            let bh = sha1_base64(bs)
+            acc = acc + len(bh) + len(bs)
+        } elif mode == "bb_hex_b64" {
+            let bs = "abcd{i % 10}0"
+            let bh = hex_to_base64url(bs)
+            acc = acc + len(bh) + len(bs)
+        } elif mode == "bb_b64_hex" {
+            let bs = "YWJj{i % 10}A"
+            let bh = base64url_to_hex(bs)
+            acc = acc + len(bh) + len(bs)
+        } elif mode == "bb_ed_sign" {
+            let bk2 = bbk + trim(" ")
+            let bm = "m{i}"
+            let bsig = ed25519_sign(bk2, bm)
+            acc = acc + len(bsig) + len(bk2) + len(bm)
+        } elif mode == "bb_ed_pub" {
+            let bk2 = bbk + trim(" ")
+            let bp = ed25519_public(bk2)
+            acc = acc + len(bp) + len(bk2)
+        } elif mode == "bb_ed_verify" {
+            let bp2 = bbpub + trim(" ")
+            let bm = "m"
+            let bsg = "00{i % 3}"
+            acc = acc + ed25519_verify(bp2, bm, bsg) + len(bp2) + len(bm) + len(bsg)
+        } elif mode == "bb_pbkdf2" {
+            let bpw = "pw{i}"
+            let bsalt = "abcd{i % 10}0"
+            let bd = pbkdf2_sha256(bpw, bsalt, 1)
+            acc = acc + len(bd) + len(bpw) + len(bsalt)
+        } elif mode == "bb_regex_match" {
+            let bt = "xxaab{i}"
+            if regex_match(bbre, bt) { acc = acc + 1 }
+            acc = acc + len(bt)
+        } elif mode == "bb_regex_find" {
+            let bt = "xxaab{i}"
+            let bf = regex_find(bbre, bt)
+            acc = acc + len(bf) + len(bt)
+        } elif mode == "bb_regex_pos" {
+            let bt = "xxaab{i}"
+            acc = acc + regex_find_pos(bbre, bt, 0) + regex_find_end(bbre, bt, 0) + len(bt)
+        } elif mode == "bb_regex_repl" {
+            let bt = "xxaab{i}"
+            let br = "R{i % 5}"
+            let bo = regex_replace_all(bbre, bt, br)
+            acc = acc + len(bo) + len(bt) + len(br)
+        } elif mode == "bb_regex_new" {
+            let bpat = "a{i % 5}+b"
+            let bre2 = regex_new(bpat)
+            regex_drop(bre2)
+            acc = acc + len(bpat)
+        } elif mode == "bb_json_get" {
+            let bkey = "k"
+            let bkk = "{bkey}{i % 1}"
+            acc = acc + json_get(bbjo, bkk) + len(bkk)
+        } elif mode == "bb_buf_write_str" {
+            let bb = buf_new(16)
+            let bws = "w{i}"
+            buf_write_str(bb, bws)
+            acc = acc + buf_len(bb) + len(bws)
+            buf_free(bb)
+        } elif mode == "bb_ws_text" {
+            let bws = "p{i}"
+            let bw1 = ws_encode_text(bws)
+            let bw2 = ws_encode_binary(bws)
+            let bw3 = ws_encode_ping(bws)
+            let bw4 = ws_encode_pong(bws)
+            acc = acc + len(bw1) + len(bw2) + len(bw3) + len(bw4) + len(bws)
+        } elif mode == "bb_ws_key" {
+            let bwk = "k{i}"
+            let bwa = ws_accept_key(bwk)
+            acc = acc + len(bwa) + len(bwk)
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }

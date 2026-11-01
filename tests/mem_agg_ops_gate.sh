@@ -13,11 +13,19 @@ export KRYOS_STDLIB_DIR="${KRYOS_STDLIB_DIR:-$ROOT/compiler/stdlib}"
 KRYOS="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 [ -x "$KRYOS" ] || KRYOS="$ROOT/compiler/target/release/kryos.exe"
 PROBE="$ROOT/tests/mem/agg_ops_leak.kry"
-ITERS=1000000
+ITERS="${KRYOS_MEM_ITERS:-1000000}"
 CEIL_MB=40
-MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem tuple_store tuple_struct_elem tuple_alias map_struct map_enum map_container tuple_containers closures void_param map_tuple if_value fn_values nested_enum for_read map3 dyn_arg cap_struct cap_array cap_escape if_struct tuple_field fn_reassign fn_field_store fn_slot_overwrite fn_map_values map_holders default_arm struct_branch ret_scalar_field arr_tuple_lit arr_tuple_push arr_tuple_copy arr_tuple_overwrite arr_tuple_loop dyn_param dyn_let dyn_named dyn_ret dyn_copy dyn_field dyn_reassign dyn_fieldstore dyn_clo dyn_if dyn_match dyn_if_named match_named dyn_if_plain dyn_if_dyn dyn_gen match_bare match_bare_call match_bare_assign branch_call match_call_assign push_branch push_branch_lit glob_field_set glob_field_opt clo_push_if glob_ret glob_ret_tail glob_branch glob_push glob_agg arr_dup_overwrite clo_arr_str clo_arr_struct clo_arr_nested bi_split bi_join bi_join_sep bi_sort_str bi_sort_int bi_reverse bi_type_of bi_env_get bi_pop_str bi_pop_int arr_contains_str empty_trim empty_env_unset empty_concat empty_overwrite bi_pop_tuple"
+MODES="eqstruct eqarr eqtuple andchain tostr assert tuple_elem let_if match_exit match_tuple ret_elem tuple_store tuple_struct_elem tuple_alias map_struct map_enum map_container tuple_containers closures void_param map_tuple if_value fn_values nested_enum for_read map3 dyn_arg cap_struct cap_array cap_escape if_struct tuple_field fn_reassign fn_field_store fn_slot_overwrite fn_map_values map_holders default_arm struct_branch ret_scalar_field arr_tuple_lit arr_tuple_push arr_tuple_copy arr_tuple_overwrite arr_tuple_loop dyn_param dyn_let dyn_named dyn_ret dyn_copy dyn_field dyn_reassign dyn_fieldstore dyn_clo dyn_if dyn_match dyn_if_named match_named dyn_if_plain dyn_if_dyn dyn_gen match_bare match_bare_call match_bare_assign branch_call match_call_assign push_branch push_branch_lit glob_field_set glob_field_opt clo_push_if glob_ret glob_ret_tail glob_branch glob_push glob_agg arr_dup_overwrite clo_arr_str clo_arr_struct clo_arr_nested bi_split bi_join bi_join_sep bi_sort_str bi_sort_int bi_reverse bi_type_of bi_env_get bi_pop_str bi_pop_int arr_contains_str empty_trim empty_env_unset empty_concat empty_overwrite bi_pop_tuple bb_index_of bb_hmac bb_sha512 bb_sha1_hex bb_sha1_b64 bb_hex_b64 bb_b64_hex bb_ed_verify bb_pbkdf2 bb_regex_match bb_regex_find bb_regex_pos bb_regex_repl bb_regex_new bb_json_get bb_buf_write_str bb_ws_text bb_ws_key"
 
-MODES="${KRYOS_MEM_MODES:-$MODES}"   # narrow a run to a few modes
+# The file / signing builtins of the borrow audit cost 20-180us per call, so a
+# 1M-iteration run would take minutes per leg. They run at SLOW_ITERS with a
+# lower ceiling; their probes pad the path / content argument (bbpp / bbpad in
+# agg_ops_leak.kry) so an unfixed run still leaks 3-4x past that ceiling.
+SLOW_MODES="bb_file_size bb_file_read bb_read_file bb_write_file bb_append_file bb_create_dir bb_ed_sign bb_ed_pub"
+SLOW_ITERS="${KRYOS_MEM_SLOW_ITERS:-150000}"
+SLOW_CEIL_MB=20
+FAST_ITERS="$ITERS"; FAST_CEIL_MB="$CEIL_MB"
+MODES="${KRYOS_MEM_MODES:-$MODES $SLOW_MODES}"   # narrow a run to a few modes
 
 if ! command -v powershell >/dev/null 2>&1; then
   echo "mem-agg-ops: SKIP (no powershell -- Windows-only, like the other mem_* gates)"
@@ -48,6 +56,10 @@ check() { # leg mode bytes
 }
 
 for mode in $MODES; do
+  case " $SLOW_MODES " in
+    *" $mode "*) ITERS="$SLOW_ITERS"; CEIL_MB="$SLOW_CEIL_MB" ;;
+    *) ITERS="$FAST_ITERS"; CEIL_MB="$FAST_CEIL_MB" ;;
+  esac
   aot_bytes=$(powershell -NoProfile -Command \
     "\$env:LEAK_MODE='$mode'; \$env:LEAK_ITERS='$ITERS'; \$p=Start-Process -FilePath '$win_aot' -PassThru -NoNewWindow -RedirectStandardOutput \$env:TEMP\\meag_aot.txt; \$m=0; while(-not \$p.HasExited){try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; Start-Sleep -Milliseconds 20}; try{\$p.Refresh(); if(\$p.PeakWorkingSet64 -gt \$m){\$m=\$p.PeakWorkingSet64}}catch{}; \$m" 2>/dev/null | tr -d '\r')
   check AOT "$mode" "$aot_bytes"

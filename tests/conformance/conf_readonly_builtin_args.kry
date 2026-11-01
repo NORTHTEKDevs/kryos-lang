@@ -194,6 +194,139 @@ fn loop_case(i: i64) -> str {
     return join(a, ",")
 }
 
+// ---- 2026-11-01: the remaining read-only builtins (index_of, file_*, crypto,
+// regex, json, buf_write_*, ws_*) joined BORROWING_CALL_ARGS the same way (the
+// leak is pinned by the bb_* modes of tests/mem/agg_ops_leak.kry; the MIR shape
+// by tests/builtin_borrow_mir_gate.sh). The caller now drops the argument, so
+// each case reads every argument AFTER the call and after allocator churn.
+fn tmp_dir() -> str {
+    let mut d = env_get("TEMP")
+    if len(d) == 0 { d = env_get("TMPDIR") }
+    if len(d) == 0 { d = "/tmp" }
+    return d
+}
+
+fn index_of_case(i: i64) -> str {
+    let h = "xx{i}yy{i}"
+    let nd = "yy{i}"
+    let at = index_of(h, nd)
+    churn(40)
+    return to_string(at) + "/" + h + "/" + nd
+}
+
+fn fs_case(i: i64) -> str {
+    let dir = tmp_dir() + "/kryos_conf_ro_{i}"
+    let mk = create_dir(dir)
+    let path = dir + "/f.txt"
+    let body = "body-{i}"
+    let w = write_file(path, body)
+    churn(40)
+    let a = append_file(path, "+{i}")
+    let r1 = read_file(path)
+    let r2 = file_read(path)
+    let sz = file_size(path)
+    churn(40)
+    return to_string(mk) + to_string(w) + to_string(a) + "/" + r1 + "/" + r2 + "/" + to_string(sz) + "/" + path + "/" + body + "/" + dir
+}
+
+fn hash_case(i: i64) -> str {
+    let m = "abc"
+    let k = "key{i}"
+    let s1 = sha1_hex(m)
+    let s2 = sha1_base64(m)
+    let s5 = sha512(m)
+    let h1 = hmac_sha256(k, m)
+    let h2 = hmac_sha256(k, m)
+    churn(40)
+    let same = h1 == h2
+    return s1 + "/" + s2 + "/" + substr(s5, 0, 16) + "/" + to_string(len(h1)) + to_string(same) + "/" + m + k
+}
+
+fn hexb64_case(i: i64) -> str {
+    let hx = "ffee{i % 10}0"
+    let b = hex_to_base64url(hx)
+    let back = base64url_to_hex(b)
+    churn(40)
+    return b + "/" + back + "/" + hx
+}
+
+fn ed_case(i: i64) -> str {
+    let key = ed25519_generate()
+    let pubk = ed25519_public(key)
+    let msg = "message-{i}"
+    let sig = ed25519_sign(key, msg)
+    churn(40)
+    let ok = ed25519_verify(pubk, msg, sig)
+    let bad = ed25519_verify(pubk, msg + "x", sig)
+    let again = ed25519_public(key)
+    return to_string(ok) + to_string(bad) + to_string(again == pubk) + "/" + msg + "/" + to_string(len(key)) + "/" + to_string(len(sig))
+}
+
+fn pbkdf2_case(i: i64) -> str {
+    let pw = "pw{i}"
+    let salt = "abcd{i % 10}0"
+    let d1 = pbkdf2_sha256(pw, salt, 2)
+    let d2 = pbkdf2_sha256(pw, salt, 2)
+    churn(40)
+    return to_string(d1 == d2) + "/" + to_string(len(d1)) + "/" + pw + "/" + salt
+}
+
+fn regex_case(i: i64) -> str {
+    let pat = "a+b{i}"
+    let re = regex_new(pat)
+    let t = "xxaab{i}zz"
+    let rp = "R"
+    let m = regex_match(re, t)
+    let f = regex_find(re, t)
+    let ps = regex_find_pos(re, t, 0)
+    let pe = regex_find_end(re, t, 0)
+    let out = regex_replace_all(re, t, rp)
+    churn(40)
+    regex_drop(re)
+    return to_string(m) + "/" + f + "/" + to_string(ps) + "/" + to_string(pe) + "/" + out + "/" + pat + "/" + t + "/" + rp
+}
+
+fn json_case(i: i64) -> str {
+    let src = "\{\"k{i}\": 7, \"s\": \"v\"}"
+    let root = json_parse(src)
+    let key = "k{i}"
+    let node = json_get(root, key)
+    let sn = json_string("str-{i}")
+    let ks = ["a{i}", "b{i}"]
+    let vs = [sn, node]
+    let obj = json_object(ks, vs)
+    let items = [sn, node]
+    let arr = json_array(items)
+    churn(40)
+    return to_string(json_to_int(node)) + "/" + json_to_str(sn) + "/" + to_string(json_length(obj)) + "/" + to_string(json_length(arr)) + "/" + src + "/" + key + "/" + ks[0] + ks[1]
+}
+
+fn buf_case(i: i64) -> str {
+    let b = buf_new(8)
+    let s = "buf-{i}"
+    buf_write_str(b, s)
+    buf_write_str(b, s)
+    let path = tmp_dir() + "/kryos_conf_ro_buf_{i}.bin"
+    let w = buf_write_to_file(b, path)
+    churn(40)
+    let back = read_file(path)
+    let out = buf_str(b)
+    buf_free(b)
+    return to_string(w) + "/" + back + "/" + out + "/" + s + "/" + path
+}
+
+fn ws_case(i: i64) -> str {
+    let key = "dGhlIHNhbXBsZSBub25jZQ=="
+    let acc = ws_accept_key(key + trim(" "))
+    let pl = "p{i}"
+    let a = ws_encode_text(pl)
+    let b = ws_encode_binary(pl)
+    let c = ws_encode_ping(pl)
+    let d = ws_encode_pong(pl)
+    churn(40)
+    return acc + "/" + to_string(len(a)) + to_string(len(b)) + to_string(len(c)) + to_string(len(d)) + "/" + pl + "/" + key
+}
+
 @capabilities(all)
 fn main() {
     expect(split_case(7) == "a|b|7|d/a,b,7,d/4", "split source still readable: {split_case(7)}")
@@ -216,6 +349,18 @@ fn main() {
     expect(branch_case(2) == "b,j,k2/b", "sort in one branch: {branch_case(2)}")
     expect(branch_case(3) == "k3|b|j/k3", "no sort in the other branch: {branch_case(3)}")
     expect(loop_case(4) == "w4,v,u", "reverse / sort in a loop: {loop_case(4)}")
+    // the remaining read-only builtins (2026-11-01)
+    expect(index_of_case(3) == "3/xx3yy3/yy3", "index_of: {index_of_case(3)}")
+    let td = tmp_dir()
+    expect(fs_case(4) == "000/body-4+4/body-4+4/8/{td}/kryos_conf_ro_4/f.txt/body-4/{td}/kryos_conf_ro_4", "file builtins: {fs_case(4)}")
+    expect(hash_case(2) == "a9993e364706816aba3e25717850c26c9cd0d89d/qZk+NkcGgWq6PiVxeFDCbJzQ2J0=/ddaf35a193617aba/64true/abckey2", "hashes: {hash_case(2)}")
+    expect(hexb64_case(7) == "_-5w/ffee70/ffee70", "hex <-> base64url: {hexb64_case(7)}")
+    expect(ed_case(5) == "10true/message-5/166/128", "ed25519: {ed_case(5)}")
+    expect(pbkdf2_case(6) == "true/64/pw6/abcd60", "pbkdf2: {pbkdf2_case(6)}")
+    expect(regex_case(8) == "true/aab8/2/6/xxRzz/a+b8/xxaab8zz/R", "regex: {regex_case(8)}")
+    expect(json_case(9) == "7/str-9/2/2/\{\"k9\": 7, \"s\": \"v\"}/k9/a9b9", "json: {json_case(9)}")
+    expect(buf_case(3) == "0/buf-3buf-3/buf-3buf-3/buf-3/{td}/kryos_conf_ro_buf_3.bin", "buf_write_*: {buf_case(3)}")
+    expect(ws_case(1) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=/4444/p1/dGhlIHNhbXBsZSBub25jZQ==", "ws: {ws_case(1)}")
 
     // repeated rounds with allocator churn between the call and the reads
     let mut i = 0
@@ -227,6 +372,11 @@ fn main() {
         expect(pop_nested_case(i) == "c{i},d{i}/a{i},b{i}/1", "pop nested round {i}")
         expect(stack_case(i) == "s3-{i},s2-{i},s1-{i},s1-{i},s2-{i}/0", "stack round {i}")
         expect(type_of_case(i) == "str/v{i}", "type_of round {i}")
+        expect(index_of_case(i) == "{2 + len(to_string(i))}/xx{i}yy{i}/yy{i}", "index_of round {i}")
+        expect(ends_with(hexb64_case(i), "/ffee{i % 10}0/ffee{i % 10}0"), "hex <-> base64url round {i}")
+        expect(regex_case(i) == "true/aab{i}/2/{5 + len(to_string(i))}/xxRzz/a+b{i}/xxaab{i}zz/R", "regex round {i}")
+        expect(json_case(i) == "7/str-{i}/2/2/\{\"k{i}\": 7, \"s\": \"v\"}/k{i}/a{i}b{i}", "json round {i}")
+        expect(ws_case(i) == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=/{2 + len("p{i}")}{2 + len("p{i}")}{2 + len("p{i}")}{2 + len("p{i}")}/p{i}/dGhlIHNhbXBsZSBub25jZQ==", "ws round {i}")
         i = i + 1
     }
     println("PASS")
