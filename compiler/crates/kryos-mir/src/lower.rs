@@ -7379,7 +7379,12 @@ fn lower_stmt_inner(ctx: &mut LoweringContext, stmt: &ast::Stmt) {
                             let val_ty = match (&val_ty, &obj_ty) {
                                 (MirType::Enum(v), MirType::Array(elem, _))
                                 | (MirType::Enum(v), MirType::Map { value: elem, .. }) => match elem.as_ref() {
-                                    MirType::Enum(e) if e != v && mono_base_name(ctx, e) == *v => (**elem).clone(),
+                                    // `mono_base_name` is the LONGEST registered prefix, so for a
+                                    // nested instance (`Option___Result___str_str`, whose
+                                    // `Option___Result` is registered too) it answers
+                                    // `Option___Result`, not `Option`: also accept the plain
+                                    // generic-name prefix.
+                                    MirType::Enum(e) if e != v && (mono_base_name(ctx, e) == *v || e.starts_with(&format!("{v}___"))) => (**elem).clone(),
                                     _ => val_ty.clone(),
                                 },
                                 _ => val_ty.clone(),

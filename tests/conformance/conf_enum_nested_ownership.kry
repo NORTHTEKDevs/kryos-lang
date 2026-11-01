@@ -1,0 +1,170 @@
+// Conformance (2026-11-01): an enum nested DIRECTLY inside an enum
+// (Option<Result<..>>, user enum in user enum, a list, a tree) is owned like
+// any struct/enum field. The LLVM push site used to clone the enum's fields as
+// well as taking the MIR share, leaking one reference for every non-fresh
+// source (call result, container read, reassigned local); this checks the
+// other direction -- dropping that duplicate must not free what the array,
+// map, struct or closure still holds. Every case overwrites or drops the
+// source, churns the allocator, then asserts the VALUES. Run under
+// KRYOS_FREE_DIAG on both backends by tests/no_double_free.sh.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+enum In { X(str), Y(i64), Z }
+enum Out { W(In), V(In, str), U }
+enum Lst { Nil, Cons(str, Lst) }
+enum Ex { Num(i64), Add(Ex, Ex), Neg(Ex) }
+enum Flat { A(str), B(str, str) }
+struct Holder { o: Out, tag: str }
+
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+fn churn(n: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < n {
+        junk = push(junk, "junk{j}-padding")
+        j = j + 1
+    }
+    return len(junk)
+}
+fn mkout(i: i64) -> Out { return Out.V(In.X("vx{i}"), "vt{i}") }
+fn mkw(i: i64) -> Out { return Out.W(In.X("wx{i}")) }
+fn mkflat(i: i64) -> Flat { return Flat.B("fa{i}", "fb{i}") }
+fn mklst(i: i64) -> Lst { return Lst.Cons("a{i}", Lst.Cons("b{i}", Lst.Nil)) }
+fn mkex(i: i64) -> Ex { return Ex.Add(Ex.Neg(Ex.Num(i)), Ex.Add(Ex.Num(2), Ex.Num(3))) }
+fn mkopt(i: i64) -> Option<Result<str, str>> {
+    if i % 2 == 0 { return Some(Ok("o{i}")) }
+    return Some(Err("e{i}"))
+}
+fn show(o: Out) -> str {
+    return match o {
+        Out.W(i) => match i { In.X(s) => s, In.Y(n) => "y{n}", In.Z => "z" },
+        Out.V(i, t) => match i { In.X(s) => s + "/" + t, In.Y(n) => "y{n}/" + t, In.Z => "z/" + t },
+        Out.U => "u",
+    }
+}
+fn showf(f: Flat) -> str { return match f { Flat.A(s) => s, Flat.B(a, b) => a + "+" + b } }
+fn showo(o: Option<Result<str, str>>) -> str {
+    return match o { Some(r) => match r { Ok(s) => "ok:" + s, Err(e) => "err:" + e }, None => "none" }
+}
+fn showl(l: Lst) -> str { return match l { Lst.Nil => ".", Lst.Cons(s, r) => s + "," + showl(r) } }
+fn eval(e: Ex) -> i64 { return match e { Ex.Num(n) => n, Ex.Neg(x) => 0 - eval(x), Ex.Add(a, b) => eval(a) + eval(b) } }
+fn put(m: map<str, Out>, k: str, o: Out) { m[k] = o }
+
+fn main() {
+    // push of a call result, a local, and a reassigned local
+    let mut a: [Out] = []
+    a = push(a, mkout(1))
+    let l = mkout(2)
+    a = push(a, l)
+    let mut r = mkout(3)
+    a = push(a, r)
+    r = mkw(4)
+    a = push(a, r)
+    expect(churn(200) == 200, "churn")
+    expect(show(a[0]) == "vx1/vt1" and show(a[1]) == "vx2/vt2" and show(a[2]) == "vx3/vt3" and show(a[3]) == "wx4", "push call/local/reassigned")
+    expect(show(l) == "vx2/vt2" and show(r) == "wx4", "sources still readable")
+
+    // flat enum from a call, pushed many times
+    let mut fl: [Flat] = []
+    let mut i = 0
+    while i < 50 {
+        fl = push(fl, mkflat(i))
+        i = i + 1
+    }
+    churn(100)
+    expect(showf(fl[0]) == "fa0+fb0" and showf(fl[49]) == "fa49+fb49" and len(fl) == 50, "flat pushes")
+
+    // container read, then push into another array, then overwrite the source slot
+    let mut src: [Out] = [mkout(5), mkw(6)]
+    let got = src[0]
+    let mut dst: [Out] = []
+    dst = push(dst, got)
+    dst = push(dst, src[1])
+    src[0] = mkw(7)
+    src[1] = Out.U
+    churn(200)
+    expect(show(dst[0]) == "vx5/vt5" and show(dst[1]) == "wx6" and show(got) == "vx5/vt5", "read-push-overwrite")
+    expect(show(src[0]) == "wx7" and show(src[1]) == "u", "overwritten slots")
+
+    // map store of a nested enum, overwrite, read back
+    let m: map<str, Out> = {}
+    put(m, "k", mkout(8))
+    let held = m["k"]
+    put(m, "k", mkw(9))
+    put(m, "j", held)
+    churn(200)
+    expect(show(m["k"]) == "wx9" and show(m["j"]) == "vx8/vt8" and show(held) == "vx8/vt8", "map store")
+
+    // struct field and literal
+    let mut h = Holder { o: mkout(10), tag: "t" }
+    let kept = h.o
+    h.o = mkw(11)
+    let h2 = Holder { o: kept, tag: "u" }
+    churn(200)
+    expect(show(h.o) == "wx11" and show(h2.o) == "vx10/vt10" and show(kept) == "vx10/vt10", "struct field")
+
+    // Option<Result<..>> through an array and a function
+    let mut oa: [Option<Result<str, str>>] = []
+    oa = push(oa, mkopt(2))
+    oa = push(oa, mkopt(3))
+    let o0 = oa[0]
+    oa[0] = None
+    churn(200)
+    expect(showo(oa[1]) == "err:e3" and showo(o0) == "ok:o2" and showo(oa[0]) == "none", "option result")
+
+    // a bare `None` stored over an `Option<Result<..>>` slot: typed as the
+    // generic `Option`, so the old element was released as a stub (a double
+    // free, then a crash on Cranelift) -- array, map and re-read
+    let mut ob: [Option<Result<str, str>>] = [mkopt(4), mkopt(5)]
+    let z = ob[0]
+    ob[0] = None
+    ob[1] = None()
+    let om: map<str, Option<Result<str, str>>> = {}
+    om["a"] = mkopt(6)
+    let zm = om["a"]
+    om["a"] = None
+    churn(200)
+    expect(showo(z) == "ok:o4" and showo(ob[0]) == "none" and showo(ob[1]) == "none", "None over nested Option array")
+    expect(showo(zm) == "ok:o6" and showo(om["a"]) == "none", "None over nested Option map")
+
+    // list and tree
+    let mut ls: [Lst] = []
+    ls = push(ls, mklst(1))
+    let l2 = mklst(2)
+    ls = push(ls, l2)
+    ls[0] = Lst.Nil
+    churn(200)
+    expect(showl(ls[1]) == "a2,b2,." and showl(l2) == "a2,b2,." and showl(ls[0]) == ".", "recursive list")
+    let mut ts: [Ex] = []
+    ts = push(ts, mkex(4))
+    let t2 = mkex(5)
+    ts = push(ts, t2)
+    churn(200)
+    expect(eval(ts[0]) == 1 and eval(ts[1]) == 0 and eval(t2) == 0, "recursive tree")
+
+    // closure capture
+    let o = mkout(12)
+    let f = fn() -> str { return show(o) }
+    let mut keep: [Out] = []
+    keep = push(keep, o)
+    churn(200)
+    expect(f() == "vx12/vt12" and show(keep[0]) == "vx12/vt12", "closure capture")
+
+    // 200 rounds of build, push, overwrite
+    let mut ring: [Out] = [Out.U, Out.U, Out.U]
+    let mut k = 0
+    while k < 200 {
+        let c = mkout(k)
+        ring = push(ring, c)
+        ring[k % 3] = mkw(k)
+        k = k + 1
+    }
+    churn(100)
+    expect(show(ring[0]) == "wx198" and show(ring[2]) == "wx197" and len(ring) == 203, "ring rounds")
+    println("conformance enum nested ownership: PASS")
+}

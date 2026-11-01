@@ -426,6 +426,19 @@ no_df_both enum_arg_ownership "$ROOT/tests/conformance/conf_enum_arg_ownership.k
 no_df_both enum_ownership_review "$ROOT/tests/conformance/conf_enum_ownership_review.kry"
 no_df_both enum_recursive_ownership "$ROOT/tests/conformance/conf_enum_recursive_ownership.kry"
 no_df_both enum_recursive_call_ownership "$ROOT/tests/conformance/conf_enum_recursive_call_ownership.kry"
+# A bare `None` stored over an `Option<Result<..>>` slot was typed as the generic
+# `Option` stub, so the old element was released as a stub: a double free
+# (Cranelift: "double free ... ignored", then a crash in the full program).
+no_df nested_option_none_overwrite 'use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+fn main() {
+    let o0 = Some(Ok("a"))
+    let mut oa: [Option<Result<str, str>>] = [o0]
+    oa[0] = None
+    println("done")
+}'
+
+no_df_both enum_nested_ownership "$ROOT/tests/conformance/conf_enum_nested_ownership.kry"
 no_df_both element_read_ownership "$ROOT/tests/conformance/conf_element_read_ownership.kry"
 no_df_both tuple_ownership "$ROOT/tests/conformance/conf_tuple_ownership.kry"
 no_df_both structural_eq_and_lookup "$ROOT/tests/conformance/conf_structural_eq_and_lookup.kry"
