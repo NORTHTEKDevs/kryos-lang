@@ -176,6 +176,14 @@ jobs:
         # input fails loudly, valid multibyte input is unaffected.
         run: bash tests/utf8_invalid_string_gate.sh
 
+      - name: Builtin borrow MIR gate (read-only builtins keep the caller's drop)
+        # Every runtime builtin audited onto BORROWING_CALL_ARGS on 2026-11-01
+        # (index_of, file_*, crypto, regex, json, ws_*, net / pg / dom ...) must
+        # leave a drop for its fresh str / array argument in the emitted MIR;
+        # unlisted, the call consumed the local and leaked it once per call.
+        # The peak-RSS side is tests/mem_agg_ops_gate.sh (bb_* modes).
+        run: bash tests/builtin_borrow_mir_gate.sh
+
       - name: IR signature gate (calls must match their declarations)
         # Guards the bug CLASS behind the json_bool miscompile: a narrow value
         # passed where a wider one is declared leaves the upper bits of the

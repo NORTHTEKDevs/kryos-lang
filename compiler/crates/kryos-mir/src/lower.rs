@@ -4058,6 +4058,98 @@ const BORROWING_CALL_ARGS: &[&str] = &[
     "sort",
     "reverse",
     "pop",
+    // Borrow audit of the REMAINING runtime builtins (2026-11-01). Every one
+    // was read in kryos-rt `builtins.rs` / kryos-stdlib-native (`bindings.rs`,
+    // `net.rs`, `tls.rs`, `unix_socket.rs`, `postgres.rs`, `websocket.rs`,
+    // `json.rs`): each reads its str / array arguments (through
+    // `handle_to_str` / `handle_to_bytes` / `ks_to_string`, a copy into a Rust
+    // String, or a `from_raw_parts` slice that does not outlive the call) and
+    // returns a scalar, a node / socket / regex HANDLE (an integer, not an
+    // owner of the argument) or a fresh string. None frees, retains or stores
+    // an argument. Unlisted, each one consumed the caller's local on every
+    // path and leaked it once per call (`hmac_sha256(k, m)` in a loop: 65MB at
+    // 400k iterations, `write_file` 73MB, `index_of` 61MB, `regex_replace_all`
+    // 59MB, `json_get` 30MB).
+    //   text / fs:     index_of, file_read / read_file, file_write is above,
+    //                  write_file / append_file (aliases of file_write /
+    //                  file_append under their own MIR names), file_size,
+    //                  create_dir, buf_write_str, buf_write_to_file
+    //   crypto:        hmac_sha256, sha512, sha1_hex, sha1_base64,
+    //                  hex_to_base64url, base64url_to_hex, ed25519_public /
+    //                  sign / verify, pbkdf2_sha256
+    //   regex:         regex_new, regex_match, regex_find, regex_find_pos,
+    //                  regex_find_end, regex_replace_all
+    //   json:          json_parse, json_string, json_get, json_object,
+    //                  json_array (the node table copies keys / strings; the
+    //                  arrays' elements are node handles)
+    //   net / io:      http_request, https_get, http2_get / post /
+    //                  request, fetch_text, tcp_connect, tcp_listen,
+    //                  tls_server_config, tls_send, uds_connect / bind / send,
+    //                  pg_connect / exec / query, ws_accept_key, ws_encode_*,
+    //                  ws_unmask, dom_set_text, dom_get_value, alert,
+    //                  canvas_fill_rect, canvas_clear
+    // DELIBERATELY NOT LISTED: `str_to_ptr` / `arr_to_ptr` return the data
+    // pointer INTO the argument, so dropping the argument (a temp at the end
+    // of its statement, a local at scope end) would dangle the pointer the
+    // caller is still holding; `send` / `push` and the container stores move
+    // or share their argument; `panic` never returns.
+    "index_of",
+    "file_read",
+    "read_file",
+    "write_file",
+    "append_file",
+    "file_size",
+    "create_dir",
+    "buf_write_str",
+    "buf_write_to_file",
+    "hmac_sha256",
+    "sha512",
+    "sha1_hex",
+    "sha1_base64",
+    "hex_to_base64url",
+    "base64url_to_hex",
+    "ed25519_public",
+    "ed25519_sign",
+    "ed25519_verify",
+    "pbkdf2_sha256",
+    "regex_new",
+    "regex_match",
+    "regex_find",
+    "regex_find_pos",
+    "regex_find_end",
+    "regex_replace_all",
+    "json_parse",
+    "json_string",
+    "json_get",
+    "json_object",
+    "json_array",
+    "http_request",
+    "https_get",
+    "http2_get",
+    "http2_post",
+    "http2_request",
+    "fetch_text",
+    "tcp_connect",
+    "tcp_listen",
+    "tls_server_config",
+    "tls_send",
+    "uds_connect",
+    "uds_bind",
+    "uds_send",
+    "pg_connect",
+    "pg_exec",
+    "pg_query",
+    "ws_accept_key",
+    "ws_encode_text",
+    "ws_encode_binary",
+    "ws_encode_ping",
+    "ws_encode_pong",
+    "ws_unmask",
+    "dom_set_text",
+    "dom_get_value",
+    "alert",
+    "canvas_fill_rect",
+    "canvas_clear",
     // The builtin asserts only read their arguments (a user fn of the same
     // name borrows them too).
     "assert_eq",
