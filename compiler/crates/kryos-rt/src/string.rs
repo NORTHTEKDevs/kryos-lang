@@ -53,6 +53,22 @@ impl KryosString {
     }
 }
 
+/// Shared, read-only data buffer of every EMPTY heap string (cap == 0).
+///
+/// Ownership invariant: `cap > 0` <=> `data` is a heap block of
+/// `layout(cap)` that `kryos_string_free` owns; `cap == 0` => `data` is never
+/// freed (this static, or a literal's immortal buffer). Before 2026-11-01 an
+/// empty string allocated `layout(0)` = 1 byte with `cap = 0`, and the free
+/// path (which must not free a cap-0 buffer) leaked it on every `trim("  ")`,
+/// unset `env_get`, `"" + ""`, ... Nothing ever writes through the data of an
+/// empty string: `len` is 0 and every constructor allocates a fresh buffer.
+static EMPTY_DATA: [u8; 1] = [0];
+
+#[inline(always)]
+fn empty_data() -> *mut u8 {
+    EMPTY_DATA.as_ptr() as *mut u8
+}
+
 /// Convert raw bytes to a &str for a TEXT-SEMANTIC operation (contains, trim,
 /// case conversion, replace, ...). Panics loudly on invalid UTF-8 rather than
 /// silently substituting "" -- the old `unwrap_or("")` made `trim`/`to_upper`/
@@ -88,21 +104,25 @@ pub unsafe extern "C" fn kryos_string_new(ptr: *const u8, len: i64) -> *mut Kryo
     let len_usize = if len < 0 { 0 } else { len as usize };
     let cap = len_usize;
     let layout = KryosString::layout(cap);
-    let data = alloc(layout);
+    let data = if len_usize == 0 { empty_data() } else { alloc(layout) };
     if data.is_null() {
         return ptr::null_mut();
     }
-    if len_usize > 0 && !ptr.is_null() {
-        ptr::copy_nonoverlapping(ptr, data, len_usize);
+    if len_usize > 0 {
+        if !ptr.is_null() {
+            ptr::copy_nonoverlapping(ptr, data, len_usize);
+        }
+        // Null-terminate.
+        *data.add(len_usize) = 0;
     }
-    // Null-terminate.
-    *data.add(len_usize) = 0;
 
     let s = STR_HDR_POOL
         .get()
         .unwrap_or_else(|| alloc(Layout::new::<KryosString>())) as *mut KryosString;
     if s.is_null() {
-        dealloc(data, layout);
+        if len_usize > 0 {
+            dealloc(data, layout);
+        }
         return ptr::null_mut();
     }
     (*s).len = len_usize as i64;
@@ -144,6 +164,9 @@ pub unsafe extern "C" fn kryos_string_concat(
     // in self-concat (`s = s + s`). A sound version requires a liveness-gated
     // consuming-append intrinsic emitted only where the left operand is provably
     // dead. Until then, concat always allocates a fresh string.
+    if total == 0 {
+        return kryos_string_new(ptr::null(), 0);
+    }
     let layout = KryosString::layout(total);
     let data = alloc(layout);
     if data.is_null() {

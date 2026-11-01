@@ -10,6 +10,84 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: runtime-leaks -- every empty string leaked its data buffer; AOT `pop` on an array of tuples leaked the popped box (2026-11-01)
+
+Leak, two residuals recorded by the "read-only runtime builtins" wave (2026-10-30),
+both reproduced on master a6ab7710 before any change.
+- Repro (before), peak RSS, AOT, `tests/mem/agg_ops_leak.kry` modes. 400k / 1.6M
+  iterations: `empty_trim` (`trim("  ")` x1) 10 / 28MB; `empty_env_unset`
+  (`env_get` of an unset variable) 10 / 28MB; `empty_concat` (`trim(..) + trim(..)`)
+  23 / 78MB; `empty_overwrite` 29 / 102MB; `bi_pop_tuple` (`pop` on `[(str, i64)]`)
+  16 / 53MB (idle loop 4MB). Gate legs at 1M iterations with the fix reverted:
+  `empty_trim` AOT 67 / JIT 65MB, `empty_env_unset` AOT 50, `empty_concat` AOT 50 /
+  JIT 50, `empty_overwrite` AOT 65 / JIT 66, `bi_pop_tuple` AOT 65 (JIT 4: flat,
+  the JIT's popped tuple IS the box and its Drop releases it). Ceiling 40MB.
+- Root cause 1. `kryos_string_new(.., 0)` (and `kryos_string_concat` of two empties,
+  and the `string_to_ks` copy in kryos-stdlib-native json.rs) allocated
+  `layout(0)` = 1 byte with `cap = 0`; `kryos_string_free` frees data only when
+  `cap > 0` (the guard must stay: a cap-0 buffer is never the free path's to
+  release). So the 1-byte buffer was unreachable and never freed.
+- Audit before touching the free condition (the free path has a recorded
+  heap-corruption history, 48a0176e / fe79f1b, but that history is the HEADER
+  going back to the OS heap, not the data buffer). Every producer of a
+  `KryosString` header: `kryos_string_new`, `kryos_string_concat` (rt string.rs),
+  `string_to_ks` (stdlib-native json.rs); every other string constructor in rt and
+  stdlib-native (builtins, fs, executor, exception, tensor, net recv, ...) calls
+  `kryos_string_new`; the other stdlib-native files only declare a read-only
+  mirror struct. Static literals (LLVM `.hdr`, Cranelift data section) carry an
+  immortal negative `ref_count` and return before the dealloc. No producer
+  creates a `cap == 0` header over non-owned data with a positive count, and
+  nothing writes through the data of a string. A blind "free when cap == 0 too"
+  flip would free a static buffer the moment one such producer exists.
+- Fix 1 (representation, not the condition). Invariant, written next to
+  `EMPTY_DATA` in string.rs: `cap > 0` <=> `data` is a heap block of
+  `layout(cap)` the free path owns; `cap == 0` => `data` is never freed. An empty
+  string now points `data` at one shared static NUL byte, so there is nothing to
+  free and the existing guard is exactly right. `string_to_ks` now calls
+  `kryos_string_new` instead of hand-rolling the header. The free condition is
+  UNCHANGED.
+- Root cause 2. LLVM `pop` (codegen.rs, the "kryos_builtin_pop" aggregate arm)
+  loads the popped element BY VALUE out of the array slot. For a releasable tuple
+  (`kryos_mir::ir::tuple_array_elem_releasable`) the slot holds a counted
+  `kryos_calloc` box that was the ARRAY's share; the load copied the leaves into
+  the destination (whose scope-end Drop releases them) and nothing released the
+  box: 16 bytes of payload + 16 of header, about 30 per call. The JIT returns the
+  box itself as the tuple handle, so its Drop releases it (flat).
+- Fix 2. After the load, for a releasable-tuple destination: retain every heap
+  leaf (`emit_tuple_share`, the destination now owns its own reference), then
+  release the array's share the way the array's own element drop does
+  (`kryos_struct_release_shared`; the last owner drops the leaves and
+  `kryos_free`s the box). Sole owner: leaves +1 -1, box freed. Shared box (a
+  `push`-dup'd array still holds it): the other owner keeps its leaves, the
+  destination keeps its own. Struct elements (`[P]`) are not boxed this way and
+  were already flat; only the tuple arm changed.
+- Proved both ways (full `cargo build --release` each time). Pins: five new
+  `tests/mem/agg_ops_leak.kry` modes in `tests/mem_agg_ops_gate.sh`
+  (`empty_trim`, `empty_env_unset`, `empty_concat`, `empty_overwrite`,
+  `bi_pop_tuple`; several empties / pops per iteration so one leaked byte pair
+  clears the 40MB ceiling at 1M iterations). Fix reverted: the legs above FAIL.
+  Restored: every one of the 10 legs 4MB. The gate also gained
+  `KRYOS_MEM_MODES="a b"` to narrow a run.
+- The other direction (nothing shared may be freed):
+  `tests/conformance/conf_empty_string_and_tuple_pop.kry`, registered in
+  `no_double_free.sh` as `empty_string_and_tuple_pop`. It builds empties by every
+  producer (trim, replace, substr, unset env_get, `"" + ""`, to_upper, a split
+  piece), asserts lengths / equality / concat / interpolation / map and array
+  storage / reassignment loops after allocator churn, and pops tuples from a sole
+  box, a `push`-dup'd (shared) box, a tuple with an array leaf, and 50 rounds,
+  asserting every value of the popped tuple, the remainder and the source copy.
+  HONEST: it is GREEN on master too (the leaks never freed early), so like its
+  predecessor it guards the double-free direction of THIS change; the leaks are
+  pinned by the gate modes.
+- RULED OUT: flipping the free condition to `cap >= 0`; allocating `layout(0)`
+  and tracking "owned" in a flag (a header field change breaks the fixed-offset
+  ABI the codegen reads); freeing the box in the MIR (the JIT would double-free:
+  its popped value IS the box).
+- Residual (measured, not fixed). `pop(a)` in STATEMENT position (result
+  discarded, `dest_ty == "void"`) emits the call and drops nothing, so the
+  popped element's leaves / box are never released; same code path, not in this
+  wave's list.
+
 ## Wave: PR #18 verifier round 2 -- the reassignment walk listed three parent forms and fell through `_ => {}` for every other expression; the container-write twin did the same (2026-10-31)
 
 Trust-model wave, same branch (fin/trust), rebased onto master `6f6e177f`
