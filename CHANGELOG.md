@@ -24,6 +24,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `E0100` instead of a segfault. An `any` parameter that really holds a
   `[str]` and is searched with a str needle still needs a type annotation.
 
+### Fixed - compiler crashes on hostile input
+
+- **Three inputs crashed `kryos check` with a native stack overflow (exit 253,
+  no diagnostic); each now reports E0010.** An `elif let` / `else if let`
+  chain of ~50k clauses, the same `elif` chain in expression position (a `let`
+  initializer, a match-arm tail, a call argument), and deeply nested string
+  interpolation (`"{ "{ "{ ..."`, which overflowed the lexer before the parser
+  ever ran). The abandoned parse now yields that one E0010 and nothing else,
+  in a few hundred bytes, under `check`, `run` and `build`.
+- **New limit: an `elif let` chain, or an `elif` / `else if` chain in
+  expression position, may have at most about 2,000 clauses** (the 2048-level
+  AST-depth budget a flat operator chain already pays, less the surrounding
+  nesting); the next clause reports E0010. Such chains are parsed in a loop, so
+  1,500 clauses compile and run. v1.2.0 accepted longer ones (it ran 20,000)
+  until the stack overflowed near 50k. Statement-position plain `if` /
+  `elif` / `else if` chains (no `let`) are unaffected and still unlimited.
+  Nested interpolation deeper than 63 levels is rejected the same way.
+- **One error could print hundreds of megabytes.** A diagnostic rendered its
+  whole source line and padded the caret to the column, so a single error on
+  a multi-megabyte line (minified source) printed 198 MB. A long line is now
+  shown as a 200-byte window around the span, marked `...`.
+- **`kryos check`, `kryos run` and `kryos build` print at most 100
+  diagnostics**, then `... N more diagnostics not shown`. The error and warning
+  counts still cover all of them. This also applies to warnings: a program
+  with more than 100 warnings no longer lists them all.
+
 ## [1.2.0] - 2026-10-31
 
 Correctness and memory-safety release. It fixes a silent miscompile, five

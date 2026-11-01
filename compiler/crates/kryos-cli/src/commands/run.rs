@@ -117,9 +117,12 @@ fn execute_inner(
     let result = kryos_driver::compile_file_with_backend(path, &config, Some(&backend));
     let compile_elapsed = compile_start.elapsed();
 
-    for diag in &result.diagnostics {
+    for diag in result.diagnostics.iter().take(super::MAX_SHOWN_DIAGNOSTICS) {
         let rendered = render_diagnostic(diag, &result.source_map);
         eprint!("{rendered}");
+    }
+    if let Some(note) = super::hidden_diagnostics_note(result.diagnostics.len()) {
+        eprintln!("{note}");
     }
 
     if !result.success {

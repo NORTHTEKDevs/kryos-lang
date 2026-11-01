@@ -1,7 +1,7 @@
 use crate::token::*;
 use kryos_errors::{Diagnostic, Span};
 
-/// Kryos lexer — tokenizes UTF-8 source into a token stream.
+/// Kryos lexer - tokenizes UTF-8 source into a token stream.
 pub struct Lexer<'src> {
     src: &'src str,
     bytes: &'src [u8],
@@ -14,7 +14,22 @@ pub struct Lexer<'src> {
     /// token's `newline_before` -- this single choke point covers plain
     /// whitespace gaps AND newlines swallowed inside a skipped comment.
     last_token_end: usize,
+    /// Live depth of string-interpolation nesting (`"{ "{ .. }" }"`).
+    ///
+    /// `scan_string` recurses into `scan_token` for the interpolated
+    /// expression, which recurses back into `scan_string` on a nested
+    /// literal, and nothing bounded it: a file of nested openers overflowed
+    /// the native stack before the parser's own E0010 nesting guard could see
+    /// a single token (`tests/security/
+    /// resource_dos_lexer_nested_interp_stack_overflow.kry`, `kryos check`
+    /// rc=253 with no output and no diagnostic). The parser's guard cannot
+    /// cover this: the lexer runs first.
+    interp_depth: usize,
 }
+
+/// Maximum live string-interpolation nesting. A legitimate program nests a
+/// handful of levels; the parser's own grammar-recursion cap is 256.
+const MAX_INTERP_DEPTH: usize = 64;
 
 impl<'src> Lexer<'src> {
     pub fn new(src: &'src str, file_id: u32) -> Self {
@@ -26,6 +41,7 @@ impl<'src> Lexer<'src> {
             tokens: Vec::new(),
             diagnostics: Vec::new(),
             last_token_end: 0,
+            interp_depth: 0,
         }
     }
 
@@ -385,6 +401,27 @@ impl<'src> Lexer<'src> {
     }
 
     fn scan_string(&mut self, start: usize) {
+        // Interpolation-nesting guard: see `interp_depth`. Report once and
+        // emit the rest of the literal as a plain Error token, which stops
+        // the recursion and gives the parser something to recover from.
+        if self.interp_depth >= MAX_INTERP_DEPTH {
+            let span = Span::new(self.file_id, start as u32, (start + 1) as u32);
+            self.diagnostics.push(
+                Diagnostic::error(format!(
+                    "string interpolation nests deeper than the maximum of {MAX_INTERP_DEPTH}; \
+                     bind the inner values to locals first"
+                ))
+                .with_code(kryos_errors::codes::E0010)
+                .with_label(span, "interpolation nesting limit reached here"),
+            );
+            // Consume to the end of the source: the literal cannot be scanned
+            // without recursing, and every byte after it belongs to the same
+            // unscannable construct.
+            let end = self.bytes.len();
+            self.pos = end;
+            self.emit(TokenKind::Error, start, end, String::new());
+            return;
+        }
         let mut text = String::new();
         let mut has_interpolation = false;
 
@@ -414,7 +451,7 @@ impl<'src> Lexer<'src> {
                     self.emit_diag(diag);
                 }
                 // A `{` immediately followed by the closing quote (`"{"`)
-                // or by `}` (`"{}"`) cannot be a real interpolation — there
+                // or by `}` (`"{}"`) cannot be a real interpolation - there
                 // is no expression to tokenize. Treat it as a literal brace,
                 // exactly like the self-host lexer does. Previously the
                 // interpolation scanner recursed into scan_string on that
@@ -443,6 +480,10 @@ impl<'src> Lexer<'src> {
                 // scan_token and never seen here, so they don't affect the depth.
                 let mut brace_depth: i32 = 0;
                 let mut interp_lex_error = false;
+                // One unit of interpolation nesting for this expression: a
+                // nested literal inside it re-enters scan_string one level
+                // deeper (see `interp_depth`).
+                self.interp_depth += 1;
                 while !self.at_end() {
                     self.skip_whitespace_and_comments();
                     if self.at_end() {
@@ -482,6 +523,7 @@ impl<'src> Lexer<'src> {
                         break;
                     }
                 }
+                self.interp_depth -= 1;
                 if interp_lex_error {
                     // Give up on this string literal entirely rather than hunting
                     // for a "closing" quote that may not belong to it at all.
@@ -561,7 +603,7 @@ impl<'src> Lexer<'src> {
         if !self.at_end() {
             self.advance(); // closing "
         } else {
-            // Unterminated string literal — emit a precise diagnostic that
+            // Unterminated string literal - emit a precise diagnostic that
             // points at the opening quote, so users don't see misleading
             // "unexpected end of file" from the parser further down.
             let span = Span::new(self.file_id, start as u32, (start + 1) as u32);

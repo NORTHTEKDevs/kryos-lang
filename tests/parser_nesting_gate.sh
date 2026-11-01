@@ -30,6 +30,12 @@
 #      not on an unrelated later statement the overflow-triggering peek
 #      merely happened to be looking at.
 #
+#   4. (2026-10-15/31) An `elif let` / `elif` chain in expression position
+#      is parsed in a loop and charged to the same 2048 AST-depth budget as a
+#      flat operator chain: ~1500 clauses are accepted and run, a chain past
+#      the budget is rejected with E0010, and a 50k-clause bomb yields one
+#      E0010 in a few hundred bytes under check, run AND build.
+#
 # Investigation record: `tools/loop/LEDGER.md` item 22. That item's own
 # claimed thresholds (nested parens 1750 fast / 1780 hangs; nested arrays
 # 1600 fast / 1800 hangs; nested string interpolation 495 fast / 500 hangs)
@@ -39,7 +45,9 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
 export KRYOS_STDLIB_DIR="${KRYOS_STDLIB_DIR:-$ROOT/compiler/stdlib}"
-K="$ROOT/compiler/target/release/kryos.exe"; [ -x "$K" ] || K="$ROOT/compiler/target/release/kryos"
+# Honor KRYOS_BIN like security_gate.sh, so a caller comparing two binaries
+# (candidate vs master) is not silently measuring the same one twice.
+K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos.exe}"; [ -x "$K" ] || K="${KRYOS_BIN:-$ROOT/compiler/target/release/kryos}"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 fail=0
 
@@ -151,6 +159,50 @@ gen() {
               for ((i=0; i<depth; i++)); do printf '{x}'; done
               printf '"\n println(to_string(len(s)))\n}\n'
             } > "$out" ;;
+        # An `elif let` chain. Recursion runs parse_if_rest -> parse_if_let ->
+        # parse_if_let_else -> parse_if_rest, and each body's parse_block
+        # charged AND RELEASED its own depth, so the chain itself accumulated
+        # nothing and overflowed the native stack (rc 253, no diagnostic) at
+        # ~50k clauses. tests/security/attack_parser_elif_let_chain_stack_overflow.kry
+        eliflet)
+            { printf 'fn main() {\n let v: i64 = 0\n if let 1 = v { println("a") }\n'
+              for ((i=0; i<depth; i++)); do printf ' elif let %d = v { println("b") }\n' $((i+2)); done
+              printf ' else { println("z") }\n}\n'
+            } > "$out" ;;
+        # The same chain in EXPRESSION position (a `let` initializer), which
+        # recurses through parse_if_expr / parse_if_expr_after_if.
+        # tests/security/attack_expr_if_elif_chain_stack_overflow.kry
+        elifexpr)
+            { printf 'fn main() {\n let a: bool = false\n let x: i64 = if a { 0 }\n'
+              for ((i=0; i<depth; i++)); do printf ' elif a { %d }\n' "$i"; done
+              printf ' else { -1 }\n println(to_string(x))\n}\n'
+            } > "$out" ;;
+        # The same expression chain as a CALL ARGUMENT (889 KB at 50k). The
+        # abandoned tail used to parse as struct-literal fields, each emitting
+        # its own unsuppressed error: 5.9 MB of diagnostics under `run`.
+        elifcall)
+            { printf 'fn main() {
+ let a: bool = false
+ println(to_string(if a { 0 }
+'
+              for ((i=0; i<depth; i++)); do printf ' elif a { %d }
+' "$i"; done
+              printf ' else { -1 }))
+}
+'
+            } > "$out" ;;
+        # Nested interpolation deep enough to overflow the LEXER, which runs
+        # before the parser's guard can see a token: scan_string recurses into
+        # scan_token on the nested literal
+        # (tests/security/resource_dos_lexer_nested_interp_stack_overflow.kry,
+        # 3 MB, rc 253 with no output).
+        deepinterp)
+            { printf 'fn main() {\n let s: str = "'
+              for ((i=0; i<depth; i++)); do printf '{ "'; done
+              printf 'x'
+              for ((i=0; i<depth; i++)); do printf '" }'; done
+              printf '"\n println(s)\n}\n'
+            } > "$out" ;;
     esac
 }
 
@@ -168,6 +220,162 @@ gen flatchain    10000 "$TMP/flatchain.kry";     check_bounded "long flat operat
 gen stringinterp   550 "$TMP/stringinterp.kry";  check_bounded "nested string interpolation @550"  "$TMP/stringinterp.kry"
 gen wideinterp    8000 "$TMP/wideinterp.kry";    check_bounded "wide string interpolation @8000"   "$TMP/wideinterp.kry"
 gen semicolons    6000 "$TMP/semicolons.kry";    check_bounded "flat semicolon-recovery chain @6000 (LEDGER item 14)" "$TMP/semicolons.kry"
+
+# --- Part 1b: the three unguarded recursions (2026-10-15). Each one
+# stack-overflowed `kryos check` natively (rc 253) with NO diagnostic at the
+# depths below; each must now be bounded AND rejected with E0010, and a
+# legitimate shallow chain of the same shape must still be ACCEPTED.
+echo "-- part 1b: elif-let / elif-expr / deep-interpolation recursion --"
+for shape in eliflet elifexpr deepinterp; do
+    case $shape in
+        eliflet)    deep=20000; shallow=20;  label="elif-let chain" ;;
+        elifexpr)   deep=20000; shallow=20;  label="elif chain in expression position" ;;
+        # The LEXER overflow needs a quarter-million levels, far past where a
+        # generated file is practical in bash and past the parser's own cap,
+        # so this leg runs the committed 3 MB probe (rc 253 with no output
+        # before the lexer gained its own depth counter) and generates only
+        # the shallow control.
+        deepinterp) deep=committed; shallow=8; label="nested interpolation" ;;
+    esac
+    if [ "$deep" = committed ]; then
+        src=tests/security/resource_dos_lexer_nested_interp_stack_overflow.kry
+        cp "$src" "$TMP/$shape.kry"
+    else
+        gen "$shape" "$deep" "$TMP/$shape.kry"
+    fi
+    check_bounded "$label @$deep" "$TMP/$shape.kry"
+    rc_deep=$?
+    out_deep="$TMP/$shape.kry.out"
+    if [ "$rc_deep" -ne 0 ] && grep -q "E0010" "$out_deep"; then
+        echo "  ok   $label @$deep rejected with E0010 (no native overflow)"
+    else
+        echo "  FAIL: $label @$deep was not cleanly rejected with E0010 (rc=$rc_deep)"
+        head -3 "$out_deep" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+    # The output must stay bounded too: one error on a multi-megabyte line
+    # used to render the whole line plus a caret padded to its column.
+    sz=$(wc -c < "$out_deep")
+    if [ "$sz" -le 262144 ]; then
+        echo "  ok   $label @$deep diagnostic output bounded (${sz}B)"
+    else
+        echo "  FAIL: $label @$deep printed ${sz}B of diagnostics"
+        fail=1
+    fi
+    gen "$shape" "$shallow" "$TMP/${shape}_ok.kry"
+    check_bounded "$label @$shallow (legitimate)" "$TMP/${shape}_ok.kry"
+    if [ $? -eq 0 ]; then
+        echo "  ok   $label @$shallow accepted (no false positive)"
+    else
+        echo "  FAIL: $label @$shallow rejected -- the guard over-rejects"
+        head -3 "$TMP/${shape}_ok.kry.out" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+done
+
+# --- Part 1b-2: the chain limit is DOCUMENTED, not accidental. An
+# `elif` / `elif let` chain is parsed in a loop and each clause costs one unit
+# of the same 2048 AST-depth budget a flat operator chain pays, so a legitimate
+# chain well past the old 250-clause recursion cap must be ACCEPTED and RUN
+# correctly, and one past the budget must be rejected with E0010.
+echo "-- part 1b-2: long legitimate chains (limit ~2048 clauses) --"
+for shape in eliflet elifexpr; do
+    gen "$shape" 1500 "$TMP/${shape}_1500.kry"
+    check_bounded "$shape chain @1500 (legitimate)" "$TMP/${shape}_1500.kry"
+    if [ $? -eq 0 ]; then
+        echo "  ok   $shape chain @1500 accepted"
+    else
+        echo "  FAIL: $shape chain @1500 rejected -- over-rejects a valid flat chain"
+        head -3 "$TMP/${shape}_1500.kry.out" | cut -c1-160 | sed 's/^/    /'
+        fail=1
+    fi
+    gen "$shape" 2100 "$TMP/${shape}_2100.kry"
+    check_bounded "$shape chain @2100 (over the budget)" "$TMP/${shape}_2100.kry"
+    if [ $? -ne 0 ] && grep -q "E0010" "$TMP/${shape}_2100.kry.out"; then
+        echo "  ok   $shape chain @2100 rejected with E0010"
+    else
+        echo "  FAIL: $shape chain @2100 was not rejected with E0010"
+        fail=1
+    fi
+done
+# RUN it, not just check it: the observable is the value the chain selects.
+gen elifexpr 1500 "$TMP/elifexpr_run.kry"
+got=$(timeout 120 "$K" run "$TMP/elifexpr_run.kry" 2>&1 | tr -d '')
+if [ "$got" = "-1" ]; then
+    echo "  ok   elif-expr chain @1500 runs and selects the else value (-1)"
+else
+    echo "  FAIL: elif-expr chain @1500 printed '${got:0:80}' (want -1)"
+    fail=1
+fi
+gen eliflet 1500 "$TMP/eliflet_run.kry"
+got=$(timeout 120 "$K" run "$TMP/eliflet_run.kry" 2>&1 | tr -d '')
+if [ "$got" = "z" ]; then
+    echo "  ok   elif-let chain @1500 runs and takes the else arm (z)"
+else
+    echo "  FAIL: elif-let chain @1500 printed '${got:0:80}' (want z)"
+    fail=1
+fi
+# The abandoned chain must yield ONE E0010 and a small output on EVERY path,
+# not only `check`: `run` and `build` printed 5.9 MB for the call-argument bomb.
+gen elifcall 50000 "$TMP/elifcall.kry"
+for mode in check run build; do
+    case $mode in
+        check) cmd=(check) ;;
+        run)   cmd=(run) ;;
+        build) cmd=(build -o "$TMP/elifcall.exe") ;;
+    esac
+    timeout 120 "$K" "${cmd[@]}" "$TMP/elifcall.kry" > "$TMP/elifcall.$mode.out" 2>&1
+    rc=$?
+    sz=$(wc -c < "$TMP/elifcall.$mode.out")
+    if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] && grep -q "E0010" "$TMP/elifcall.$mode.out" && [ "$sz" -le 4096 ]; then
+        echo "  ok   50k-clause call-argument bomb under '$mode': E0010, ${sz}B"
+    else
+        echo "  FAIL: 50k-clause call-argument bomb under '$mode': rc=$rc, ${sz}B (want E0010 in <= 4096B)"
+        fail=1
+    fi
+done
+
+# --- Part 1c: the error path itself must be bounded (2026-10-15). These two
+# need no deep nesting, so they isolate the rendering/printing fix from the
+# recursion guards above. On master the long line renders in full (4 MB for a
+# 2 MB line) and all 500 diagnostics print.
+echo "-- part 1c: diagnostic output is bounded (long line, many errors) --"
+{ printf 'fn main() {\n let x: i64 = "'; head -c 2000000 /dev/zero | tr '\0' 'a'
+  printf '"\n println(to_string(x))\n}\n'; } > "$TMP/longline.kry"
+check_bounded "single 2 MB line with one type error" "$TMP/longline.kry"
+sz=$(wc -c < "$TMP/longline.kry.out")
+if grep -q "E0100" "$TMP/longline.kry.out" && [ "$sz" -le 4096 ]; then
+    echo "  ok   long-line diagnostic is a bounded window (${sz}B for a 2000000B line)"
+else
+    echo "  FAIL: long-line diagnostic printed ${sz}B (want the E0100 error in <= 4096B)"
+    fail=1
+fi
+{ printf 'fn main() {\n'; for ((i=0; i<500; i++)); do printf ' let a%d: i64 = "s"\n' "$i"; done; printf '}\n'; } > "$TMP/manyerr.kry"
+check_bounded "500 distinct type errors" "$TMP/manyerr.kry"
+shown=$(grep -c "E0100" "$TMP/manyerr.kry.out")
+if [ "$shown" -le 100 ] && grep -q "400 more diagnostics not shown" "$TMP/manyerr.kry.out" \
+   && grep -q "500 errors" "$TMP/manyerr.kry.out"; then
+    echo "  ok   500 errors print ${shown} diagnostics, '400 more' footer, count still 500"
+else
+    echo "  FAIL: 500 errors printed ${shown} diagnostics (want <= 100, a '400 more' footer, and '500 errors' in the summary)"
+    fail=1
+fi
+
+# The same cap holds for `run` and `build`, not only `check`.
+for mode in run build; do
+    case $mode in
+        run)   cmd=(run) ;;
+        build) cmd=(build -o "$TMP/manyerr.exe") ;;
+    esac
+    timeout 120 "$K" "${cmd[@]}" "$TMP/manyerr.kry" > "$TMP/manyerr.$mode.out" 2>&1
+    shown=$(grep -c "E0100" "$TMP/manyerr.$mode.out")
+    if [ "$shown" -le 100 ] && grep -q "400 more diagnostics not shown" "$TMP/manyerr.$mode.out"; then
+        echo "  ok   '$mode' prints ${shown} of 500 diagnostics with a '400 more' footer"
+    else
+        echo "  FAIL: '$mode' printed ${shown} diagnostics for 500 errors (want <= 100 and a '400 more' footer)"
+        fail=1
+    fi
+done
 
 # --- Part 2: no false-positive rejection just under the true ceiling.
 echo "-- part 2: flat chain just under the ceiling must be ACCEPTED --"
@@ -207,7 +415,7 @@ fi
 
 echo
 if [ "$fail" -eq 0 ]; then
-    echo "PASS: parser nesting-depth guard is bounded-time and false-positive-free."
+    echo "PASS: parser nesting-depth guard is bounded-time; chains up to the 2048-level budget are accepted."
 else
     echo "FAIL: see above."
 fi
