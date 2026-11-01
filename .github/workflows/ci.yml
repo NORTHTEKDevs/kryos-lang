@@ -631,12 +631,14 @@ jobs:
           path: compiler/fuzz/corpus/
 
   build-and-test-macos:
-    # macOS tier-1 verification. Runs on the public-repo macos-14 runner
+    # macOS tier-1 verification. Runs on the public-repo macos-15 runner
     # (Apple Silicon, free for public repos). Mirrors the Linux Cranelift
     # smoke battery so M-series regressions get caught at PR time. Intel
     # (macos-13) coverage is added in release.yml's matrix, not here, to
     # keep PR wall time predictable.
-    runs-on: macos-14
+    # 2026-10-31: macos-14 moved off -- GitHub brownouts ahead of its 2026-11-02
+    # retirement cancelled the job with 0 steps on every PR.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v6
 
