@@ -1474,6 +1474,81 @@ use std::result::{Result, Ok, to_array}
 fn show(v: [i64]) { println(to_string(v[0])) }
 fn main() { let r: Result<i64, str> = Ok(7)  show(result::to_array(r)) }'
 
+# --- builtin `contains` shape (2026-10-30) ----------------------------------
+# Its params are lenient, so an array / number first argument compiled and then
+# read the handle as a string (segfault). Arrays of int/f64/bool/char/str are
+# supported; every other shape is a clean E0100.
+want_pass contains_array_supported_elems '
+fn main() {
+  let a = [5, 2, 9]
+  let s = ["x", "y"]
+  let f = [1.5, 2.5]
+  if not (contains(a, 2) and contains(s, "y") and contains(f, 2.5) and contains("ab", "b")) { exit(1) }
+}'
+want_reject_e0100 contains_number_first_arg '
+fn main() { let a = 5
+  println("{contains(a, 5)}") }'
+want_reject_e0100 contains_array_of_structs '
+struct P { n: i64 }
+fn main() { let a = [P { n: 1 }]
+  println("{contains(a, P { n: 1 })}") }'
+want_reject_e0100 contains_nested_array '
+fn main() { let a = [[1], [2]]
+  println("{contains(a, [1])}") }'
+want_reject_e0100 contains_array_needle_type '
+fn main() { let a = [1, 2]
+  println("{contains(a, "x")}") }'
+want_reject_e0100 contains_str_with_int_needle '
+fn main() { println("{contains("abc", 1)}") }'
+# A reference-typed first argument used to pass the gate (it peeled the `&`),
+# miss the MIR array/map arms and read the handle as a string: rc=139 / rc=98.
+want_reject_e0100 contains_ref_array_param '
+fn by_ref(a: &[i64], v: i64) -> bool { return contains(a, v) }
+fn main() { let a = [5, 2, 9]
+  println("{by_ref(&a, 2)}") }'
+want_reject_e0100 contains_mut_ref_array_param '
+fn mut_has(a: &mut [i64], v: i64) -> bool { return contains(a, v) }
+fn main() { let mut a = [5, 2, 9]
+  println("{mut_has(&mut a, 2)}") }'
+want_reject_e0100 contains_ref_str_array_local '
+fn main() { let a = ["x", "y"]
+  let r = &a
+  println("{contains(r, "y")}") }'
+want_reject_e0100 contains_ref_str_param '
+fn has(s: &str, n: str) -> bool { return contains(s, n) }
+fn main() { let s = "hello"
+  println("{has(&s, "ell")}") }'
+want_reject_e0100 contains_ref_map_param '
+fn has(m: &map<str, i64>, k: str) -> bool { return contains(m, k) }
+fn main() { let mut m: map<str, i64> = {}
+  m["a"] = 1
+  println("{has(&m, "a")}") }'
+# An `any` parameter and an un-annotated closure parameter carry no usable type
+# at the call, so MIR took the STRING path for an array / map (rc=139 on every
+# leg). A non-str needle cannot belong to a str: clean E0100. A str needle keeps
+# the string reading (an un-annotated closure param is inferred str).
+want_reject_e0100 contains_any_param_int_needle '
+fn has(a: any, v: i64) -> bool { return contains(a, v) }
+fn main() { println("{has([1, 3], 3)}") }'
+want_reject_e0100 contains_untyped_closure_param_int_needle '
+fn main() { let f = |a| contains(a, 3)
+  println("{f([1, 3])}") }'
+want_reject_e0100 contains_untyped_closure_param_array_arg '
+fn main() { let f = |s| contains(s, "x")
+  println("{f(["x"])}") }'
+want_pass contains_untyped_closure_param_str '
+fn main() { let f = |s| contains(s, "x")
+  if not (f("axb") and not f("abc")) { exit(1) } }'
+want_pass contains_any_param_str '
+fn has(a: any, v: str) -> bool { return contains(a, v) }
+fn main() { if not has("axb", "x") { exit(1) } }'
+want_reject_e0100 contains_map_wrong_needle '
+fn main() { let m: map<str, i64> = {"a": 1}
+  println("{contains(m, 1)}") }'
+want_reject_e0100 contains_int_map_str_needle '
+fn main() { let m: map<i64, i64> = {1: 2}
+  println("{contains(m, "a")}") }'
+
 if [ "$fail" -eq 0 ]; then
   echo "type-soundness: all probes correct (unsound rejected, correct accepted)"
 else

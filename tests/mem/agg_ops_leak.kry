@@ -704,6 +704,12 @@ fn main() {
             let mut bpi = [i, 2, 3]
             let bpv = pop(bpi)
             acc = acc + bpv + len(bpi)
+        } elif mode == "arr_contains_str" {
+            // `contains(arr, v)`: a fresh str needle and a fresh split() array
+            // are temps the call only reads; both are released at the call.
+            let cs1 = ["alpha{i % 3}", "beta", "gamma"]
+            if contains(cs1, "gam" + "ma") { acc = acc + 1 }
+            if contains(split("a,b,c,dd", ","), "d" + "d") { acc = acc + 1 }
         } elif mode == "tuple_field" {
             // `let t = s.t` owns a share that was never released.
             let mut sf = Ptf { name: "f{i}", t: ("t{i}", i) }
