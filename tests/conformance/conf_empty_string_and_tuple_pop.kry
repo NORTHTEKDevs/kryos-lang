@@ -1,0 +1,171 @@
+// Conformance (2026-11-01): two runtime-leak fixes, checked for VALUES.
+//
+// (1) Every empty string used to allocate a 1-byte data buffer that
+// kryos_string_free skipped (it frees data only when cap > 0). An empty string
+// now shares one static buffer (cap == 0, never freed). The danger of that
+// change is the other direction: a free, a retain/release pair, a reassignment,
+// a container store or a concat touching a shared static buffer. Every case
+// below creates empties by each producer (trim, replace, substr, env_get of an
+// unset variable, "" + "", to_upper, a split piece) and then checks the bytes
+// and lengths of those AND of non-empty strings around them after allocator
+// churn.
+//
+// (2) pop on an array of tuples (AOT) now releases the array's share of the
+// popped tuple's box. The danger is freeing leaves another owner still holds:
+// the shared-box cases pop from a duplicated array and read the other copy
+// after churn.
+// Run on both backends by run_conformance.sh and, with the free diagnostics, by
+// tests/no_double_free.sh.
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+fn churn(k: i64) -> i64 {
+    let mut junk: [str] = []
+    let mut j = 0
+    while j < k {
+        junk = push(junk, "junk-{j}-padding-padding")
+        j = j + 1
+    }
+    return len(junk)
+}
+
+fn empty_from(i: i64) -> str {
+    return trim("   ")
+}
+
+@capabilities(all)
+fn empties() {
+    let a = trim("  ")
+    let b = replace("xx", "x", "")
+    let c = substr("hello", 2, 2)
+    let d = env_get("KRYOS_CONF_DEFINITELY_UNSET_VAR_9137")
+    let e = "" + ""
+    let f = to_upper("")
+    let g = split("a,,b", ",")
+    let keep = "keep-me-intact"
+    churn(40)
+    expect(len(a) == 0, "trim len")
+    expect(len(b) == 0, "replace len")
+    expect(len(c) == 0, "substr len")
+    expect(len(d) == 0, "env unset len")
+    expect(len(e) == 0, "concat len")
+    expect(len(f) == 0, "to_upper len")
+    expect(len(g) == 3, "split count")
+    expect(len(g[1]) == 0, "split empty piece len")
+    expect(a == "", "trim == literal")
+    expect(a == b, "empty == empty")
+    expect(d == e, "unset env == concat empty")
+    expect(a + "x" == "x", "empty + x")
+    expect("x" + b == "x", "x + empty")
+    expect("[{c}]" == "[]", "interpolated empty")
+    expect(g[0] + g[1] + g[2] == "ab", "split pieces joined")
+    expect(keep == "keep-me-intact", "neighbour intact")
+    expect(len(keep) == 14, "neighbour len")
+}
+
+fn overwrite_loop() {
+    let mut s = trim("  ")
+    let mut i = 0
+    while i < 200 {
+        s = trim("   ")
+        s = s + trim(" ")
+        let t = "v{i}"
+        s = s + t
+        expect(s == t, "empty then append")
+        s = trim("  ")
+        i = i + 1
+    }
+    expect(len(s) == 0, "final empty")
+}
+
+@capabilities(all)
+fn containers() {
+    let mut m: map<str, str> = {}
+    m["e"] = trim("  ")
+    m["f"] = "full"
+    m["g"] = env_get("KRYOS_CONF_DEFINITELY_UNSET_VAR_9137")
+    let mut arr: [str] = []
+    arr = push(arr, trim(" "))
+    arr = push(arr, "mid")
+    arr = push(arr, trim("   "))
+    churn(40)
+    expect(len(m["e"]) == 0, "map empty value")
+    expect(m["f"] == "full", "map neighbour")
+    expect(len(m["g"]) == 0, "map unset env value")
+    expect(len(arr) == 3, "array len")
+    expect(len(arr[0]) == 0 and arr[1] == "mid" and len(arr[2]) == 0, "array empties around mid")
+    let last = pop(arr)
+    expect(len(last) == 0, "popped empty")
+    expect(len(arr) == 2 and arr[1] == "mid", "after pop")
+    let mut k = 0
+    let mut total = 0
+    while k < 100 {
+        let e2 = empty_from(k)
+        total = total + len(e2)
+        k = k + 1
+    }
+    expect(total == 0, "empty from fn")
+}
+
+fn pop_tuple_sole() {
+    let mut a: [(str, i64)] = [("p0", 1), ("q{3 * 7}", 2)]
+    let e = pop(a)
+    churn(60)
+    expect(e.0 == "q21" and e.1 == 2, "sole-owner popped tuple")
+    expect(len(a) == 1 and a[0].0 == "p0" and a[0].1 == 1, "sole-owner remainder")
+    let e2 = pop(a)
+    churn(60)
+    expect(e2.0 == "p0" and e2.1 == 1, "second pop")
+    expect(len(a) == 0, "emptied")
+}
+
+fn pop_tuple_shared() {
+    let b: [(str, i64)] = [("p0", 1), ("q{3 * 7}", 2)]
+    let mut d = b
+    d = push(d, ("w9", 9))
+    let e = pop(d)
+    let g = pop(d)
+    churn(60)
+    expect(e.0 == "w9" and e.1 == 9, "shared pop 1")
+    expect(g.0 == "q21" and g.1 == 2, "shared pop 2")
+    expect(len(d) == 1 and d[0].0 == "p0", "dup remainder")
+    expect(len(b) == 2 and b[1].0 == "q21" and b[1].1 == 2, "source still intact")
+    expect(b[0].0 == "p0", "source head intact")
+}
+
+fn pop_tuple_leaves() {
+    let mut a: [([str], str, i64)] = [(["a", "b"], "s1", 1), (["c{4 + 1}", "d"], "s{2 * 3}", 2)]
+    let t = pop(a)
+    churn(60)
+    expect(len(t.0) == 2 and t.0[0] == "c5" and t.0[1] == "d", "array leaf")
+    expect(t.1 == "s6" and t.2 == 2, "str+int leaf")
+    expect(len(a) == 1 and a[0].0[1] == "b" and a[0].1 == "s1", "remainder")
+}
+
+fn pop_tuple_rounds() {
+    let mut r = 0
+    while r < 50 {
+        let mut a: [(str, i64)] = [("x{r}", r), ("y{r}", r + 1)]
+        let e = pop(a)
+        churn(3)
+        expect(e.0 == "y{r}" and e.1 == r + 1, "round pop")
+        expect(a[0].0 == "x{r}", "round remainder")
+        r = r + 1
+    }
+}
+
+@capabilities(all)
+fn main() {
+    empties()
+    overwrite_loop()
+    containers()
+    pop_tuple_sole()
+    pop_tuple_shared()
+    pop_tuple_leaves()
+    pop_tuple_rounds()
+    println("conf_empty_string_and_tuple_pop: ok")
+}

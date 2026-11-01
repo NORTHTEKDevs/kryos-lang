@@ -6,10 +6,7 @@
 //! KryosString layout: `{ len: i64, cap: i64, data: *mut u8 }`
 //! KryosArray layout: `{ len: i64, cap: i64, elem_size: i64, ref_count: i64, data: *mut u8 }`
 
-use std::alloc::Layout;
-use std::alloc::{alloc, dealloc};
 use std::collections::HashMap;
-use std::ptr;
 use std::sync::{atomic::AtomicI64, Mutex};
 
 // Layout MUST match kryos_rt::string::KryosString exactly. The ref_count
@@ -105,30 +102,9 @@ fn ks_to_string(handle: i64) -> Option<String> {
 }
 
 fn string_to_ks(s: &str) -> i64 {
-    unsafe {
-        let len = s.len() as i64;
-        let cap = len;
-        let layout = Layout::from_size_align(cap as usize + 1, 1).unwrap();
-        let data = alloc(layout);
-        if data.is_null() {
-            return 0;
-        }
-        if len > 0 {
-            ptr::copy_nonoverlapping(s.as_ptr(), data, len as usize);
-        }
-        *data.add(len as usize) = 0;
-
-        let ks = alloc(Layout::new::<KryosString>()) as *mut KryosString;
-        if ks.is_null() {
-            dealloc(data, layout);
-            return 0;
-        }
-        (*ks).len = len;
-        (*ks).cap = cap;
-        (*ks).data = data;
-        (*ks).ref_count = 1;
-        ks as i64
-    }
+    // The runtime's constructor owns the cap/data invariant (an empty string
+    // shares a static buffer and is never freed).
+    unsafe { kryos_rt::string::kryos_string_new(s.as_ptr(), s.len() as i64) as i64 }
 }
 
 fn alloc_node(node: JsonNode) -> i64 {

@@ -6544,6 +6544,47 @@ impl LlvmCodegen {
                                         dest.0
                                     ));
                                 }
+                                // The popped element's counted box (a releasable
+                                // tuple, see kryos_mir::ir::tuple_array_elem_releasable)
+                                // was the array's share. The destination now holds
+                                // the tuple BY VALUE and owns its own reference to
+                                // each heap leaf, so: retain every leaf, then release
+                                // the array's share the way the array's own element
+                                // drop does (the last owner drops the leaves and frees
+                                // the box). Sole owner: net zero on the leaves and the
+                                // box is freed (it leaked ~30 bytes per pop). Shared
+                                // box (a dup'd array still holds it): the other owner
+                                // keeps its leaves, the destination keeps its own.
+                                let dest_mir = func
+                                    .locals
+                                    .iter()
+                                    .find(|l| l.id == dest)
+                                    .map(|l| l.ty.clone());
+                                if let Some(tt @ MirType::Tuple(_)) = dest_mir {
+                                    if kryos_mir::ir::tuple_array_elem_releasable(&tt) {
+                                        let MirType::Tuple(tes) = &tt else { unreachable!() };
+                                        let tes = tes.clone();
+                                        self.emit_tuple_share(&p, &dest_ty, &tes);
+                                        let uid = self.temp_counter;
+                                        self.temp_counter += 1;
+                                        let sh = self.next_temp();
+                                        self.emit_line(&format!(
+                                            "  {sh} = call i64 @kryos_struct_release_shared(ptr {p})"
+                                        ));
+                                        let last = self.next_temp();
+                                        self.emit_line(&format!("  {last} = icmp eq i64 {sh}, 0"));
+                                        let tdrop = format!("pop_tdrop_{uid}");
+                                        let tjoin = format!("pop_tjoin_{uid}");
+                                        self.emit_line(&format!(
+                                            "  br i1 {last}, label %{tdrop}, label %{tjoin}"
+                                        ));
+                                        self.emit_line(&format!("{tdrop}:"));
+                                        self.emit_tuple_drop(&p, &dest_ty, &tes, func);
+                                        self.emit_line(&format!("  call void @kryos_free(ptr {p})"));
+                                        self.emit_line(&format!("  br label %{tjoin}"));
+                                        self.emit_line(&format!("{tjoin}:"));
+                                    }
+                                }
                             } else if dest_ty == "double" || dest_ty == "ptr" {
                                 // Scalar non-i64 element: the slot carries raw
                                 // bits; reinterpret (bitcast / inttoptr).
