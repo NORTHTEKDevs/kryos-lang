@@ -10,6 +10,70 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: nested-enum -- "an enum nested in an enum keeps the move model" was stale; the one real leak under it was the LLVM `push` double ownership (2026-11-01)
+
+Leak (LLVM AOT only), reproduced on master e0827073 (full `cargo build --release`).
+- Claim checked. docs/LAUNCH-READINESS.md said an enum nested directly in an enum
+  "keeps the older move model (can leak)". FALSE since 2026-10-10 (waves "nested
+  enums join the shared-owner model", 2026-10-29 "recursive enums"). Probe
+  `tests/mem/enum_nested_leak.kry`, 27 modes, fresh value per iteration:
+  `Out.V(In.X(..), ..)`, `Option<Result<str,str>>`, `Result<Option<..>>`, a linked
+  list, an expression tree, a 3-deep enum, built / matched / overwritten /
+  passed to fns / copied / stored in array, map, struct field, array literal,
+  `for` loop, captured by closures. At 400k iterations (AOT and JIT) every mode
+  was the 4MB baseline except one.
+- Repro (before), AOT peak RSS: `arr_push_pop` (`a = push(a, mkout(i))` on
+  `[Out]`) 33MB at 400k, 126MB at 1.6M (linear; JIT 4MB). Minimised: `push` of
+  an enum that is NOT a fresh literal leaks, nested or not: `push(a, mkflat(i))`
+  (`Flat.B(str, str)` returned by a call) 49MB at 800k, a local bound from a
+  call 63MB, a literal pushed directly 4MB.
+- Root cause. LLVM `push` boxes the aggregate and, unless the source local is
+  only ever assigned by a literal construction
+  (`local_is_always_fresh_enum_construction`), calls `__kryos_dup_fields_<E>`,
+  which CLONES every str / array payload. Since the ownership waves MIR also
+  emits `kryos_struct_share` (+1 on every heap leaf) before the push for an
+  owned enum. The box got two references (the clone and the share's), the
+  caller's scope-end drop released one: one reference leaked per push. The
+  literal case only looked fine because the guard skipped the clone there.
+- Fix (kryos-codegen-llvm only): skip the clone when `enum_shareable(E)` (the
+  MIR/LLVM shareable walks agree; the share is the box's reference). Only a
+  non-shareable enum still takes the clone. Full rebuild each time.
+- Proved both ways: fix reverted, `tests/mem_enum_nested_gate.sh` FAILS
+  `push_flat_call` 77MB, `push_nested_local` 77MB, `arr_push_pop` 79MB (AOT,
+  1M); restored: all 4MB, whole gate (30 modes x 2 backends) PASS, 4M-iteration
+  rerun of three modes 4MB. Other direction (nothing shared freed early):
+  `tests/conformance/conf_enum_nested_ownership.kry` (registered in
+  `no_double_free.sh` as `enum_nested_ownership`; pushes of a call result /
+  local / reassigned local / container read, then overwrite + allocator churn,
+  asserting every value; map, struct field, `Option<Result>`, list, tree,
+  closure, 200 rounds). HONEST: it is green on master too (the bug leaked, it
+  never freed early), so it guards the double-free direction of this change.
+- SECOND FINDING (memory safety, so ranked above the leak): the new conformance
+  program crashed on Cranelift (`kryos run`, rc=132 illegal instruction) and the
+  runtime printed `kryos_free: double free ... ignored`. Minimal repro:
+  `let o0 = Some(Ok("a"))  let mut oa: [Option<Result<str,str>>] = [o0]  oa[0] = None`.
+  Root cause: the index-assignment lowering retypes a bare `None` / `None()` to
+  the slot's element instance via `mono_base_name(elem) == "Option"`, but
+  `mono_base_name` returns the LONGEST registered prefix and the nested instance
+  `Option___Result___str_str` has `Option___Result` registered too, so it
+  answered `Option___Result`, the retype was skipped, and the old element was
+  released as the generic stub (`retained_by_store=true`, wrong layout): double
+  free of the Result box. A flat `Option<str>` / user enum was never affected.
+  Fix (kryos-mir `lower.rs`, index assignment): also accept the plain
+  `<Generic>___` prefix. Proved both ways: reverted, the conformance program
+  exits 132 and `no_double_free.sh` case `nested_option_none_overwrite` (new)
+  prints the double free; restored, both clean and `drop_if_ne` now carries
+  `Option___Result___str_str`, `retained_by_store=false`.
+  Not probed: the same stub retype in a struct-field set or a `let`/return of a
+  bare `None` into a nested generic (other lowering sites use their own typing).
+- Docs: LAUNCH-READINESS.md no longer claims a nested-enum limitation.
+- RULED OUT: re-modelling enum-in-enum payloads (already owner-counted, nothing
+  to move); a leak in `Option<Result<..>>` itself (flat in every mode,
+  including `push(a, mkopt(i))`).
+- Residual (not touched): `local_is_always_fresh_enum_construction` and the
+  clone path remain for non-shareable enums (those whose walk fails, e.g.
+  with a non-shareable payload); not probed for a leak.
+
 ## Wave: runtime-leaks -- every empty string leaked its data buffer; AOT `pop` on an array of tuples leaked the popped box (2026-11-01)
 
 Leak, two residuals recorded by the "read-only runtime builtins" wave (2026-10-30),

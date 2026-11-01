@@ -6769,7 +6769,16 @@ impl LlvmCodegen {
                                             .find(|l| l.id == *eid)
                                             .map(|l| l.ty.clone())
                                         {
+                                            // A shareable enum is an OWNED value: MIR emits
+                                            // `kryos_struct_share` (+1 on every heap leaf)
+                                            // before this push, and that reference is the
+                                            // box's. Cloning the fields here as well gave the
+                                            // box a second one and leaked the share's, for
+                                            // every non-fresh source (call result, nested
+                                            // enum, reassigned local). Only a non-shareable
+                                            // enum still relies on the clone.
                                             if self.enum_defs.contains_key(&ename)
+                                                && !self.enum_shareable(&ename)
                                                 && !self.local_is_always_fresh_enum_construction(*eid, func)
                                             {
                                                 self.emit_line(&format!(

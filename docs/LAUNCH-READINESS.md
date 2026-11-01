@@ -9,9 +9,10 @@
 > and container/field stores take their own owner. Every "Item 3 ... NOT
 > FIXED" line further down is a dated snapshot, kept as history. Item 6 (`any`
 > has no runtime tag) remains an ABI design note; the stdlib no longer routes
-> values through `any` in `std::fmt`/`std::test`. Remaining known limitation:
-> an enum nested directly inside an enum keeps the older move model (can leak,
-> never double-frees). Evidence: tools/loop/LEDGER.md, top three entries.
+> values through `any` in `std::fmt`/`std::test`. An enum nested directly inside an enum is owner-counted like any
+> struct/enum field (measured flat on 27 shapes, both backends; the old
+> "keeps the move model" note was stale since 2026-10-10). Evidence:
+> tools/loop/LEDGER.md, top entries and the "nested-enum" wave.
 
 > ## 2026-08-29 - v1.0.0 WAS CUT. This document's §1 verdict was NOT met; it was WAIVED.
 >

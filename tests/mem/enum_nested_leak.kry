@@ -1,0 +1,158 @@
+// Peak-RSS probe for tests/mem_enum_nested_gate.sh. An enum nested DIRECTLY
+// inside an enum (Option<Result<..>>, user enum holding user enum, a linked
+// list, an expression tree) must be owner-counted like a struct/enum field:
+// FRESH value every iteration, built, matched, overwritten, passed on, stored
+// in containers and captured by closures. LEAK_MODE picks one shape.
+use std::result::{Result, Ok, Err}
+use std::option::{Option, Some, None}
+enum In { X(str), Y(i64), Z }
+enum Out { W(In), V(In, str), U }
+enum Lst { Nil, Cons(str, Lst) }
+enum Ex { Num(i64), Add(Ex, Ex), Neg(Ex) }
+enum Flat { A(str), B(str, str) }
+enum Deep { D0(Out), D1(Deep), D2(str) }
+struct Holder { o: Out, tag: str }
+
+fn mkflat(i: i64) -> Flat { return Flat.B("fa{i}", "fb") }
+fn mkout(i: i64) -> Out { return Out.V(In.X("vx{i}"), "vt{i}") }
+fn mkw(i: i64) -> Out { return Out.W(In.X("wx{i}")) }
+fn mklst(i: i64) -> Lst { return Lst.Cons("a{i}", Lst.Cons("b{i}", Lst.Cons("c", Lst.Nil))) }
+fn mkex(i: i64) -> Ex { return Ex.Add(Ex.Neg(Ex.Num(i)), Ex.Add(Ex.Num(2), Ex.Num(3))) }
+fn mkdeep(i: i64) -> Deep { return Deep.D1(Deep.D1(Deep.D0(Out.W(In.X("d{i}"))))) }
+fn mkopt(i: i64) -> Option<Result<str, str>> {
+    if i % 2 == 0 { return Some(Ok("o{i}")) }
+    return Some(Err("e{i}"))
+}
+fn mkres(i: i64) -> Result<Option<str>, str> {
+    if i % 2 == 0 { return Ok(Some("r{i}")) }
+    return Ok(None)
+}
+fn len_of(o: Out) -> i64 {
+    return match o {
+        Out.W(i) => match i { In.X(s) => len(s), In.Y(n) => n, In.Z => 0 },
+        Out.V(i, t) => len(t),
+        Out.U => 0,
+    }
+}
+fn lst_len(l: Lst) -> i64 { return match l { Lst.Nil => 0, Lst.Cons(s, r) => len(s) + lst_len(r) } }
+fn eval(e: Ex) -> i64 { return match e { Ex.Num(n) => n, Ex.Neg(x) => 0 - eval(x), Ex.Add(a, b) => eval(a) + eval(b) } }
+fn opt_len(o: Option<Result<str, str>>) -> i64 {
+    return match o { Some(r) => match r { Ok(s) => len(s), Err(e) => len(e) + 1 }, None => 0 }
+}
+fn res_len(r: Result<Option<str>, str>) -> i64 {
+    return match r { Ok(o) => match o { Some(s) => len(s), None => 1 }, Err(e) => 0 }
+}
+fn deep_len(d: Deep) -> i64 {
+    return match d { Deep.D0(o) => len_of(o), Deep.D1(x) => deep_len(x), Deep.D2(s) => len(s) }
+}
+fn put(m: map<str, Out>, k: str, o: Out) { m[k] = o }
+fn mkclo(o: Out) -> fn() -> i64 { return fn() -> i64 { return len_of(o) } }
+
+@capabilities(process)
+fn main() {
+    let iters = parse_int(env_get("LEAK_ITERS"))
+    let mode = env_get("LEAK_MODE")
+    let mut i = 0
+    let mut acc = 0
+    let mut keep: Out = Out.U
+    let mut keepo: Option<Result<str, str>> = None
+    let mut keepl: Lst = Lst.Nil
+    let mut arr: [Out] = [Out.U, Out.U]
+    let mut m: map<str, Out> = {}
+    let mut h = Holder { o: Out.U, tag: "t" }
+    while i < iters {
+        if mode == "idle" {
+            acc = acc + 1
+        } elif mode == "user_build" {
+            let o = mkout(i)
+            acc = acc + 1
+        } elif mode == "user_match" {
+            let o = mkout(i)
+            acc = acc + len_of(o)
+        } elif mode == "user_call_temp" {
+            acc = acc + len_of(mkout(i))
+        } elif mode == "user_overwrite" {
+            keep = mkout(i)
+            acc = acc + len_of(keep)
+        } elif mode == "user_copy" {
+            let o = mkw(i)
+            let p = o
+            keep = p
+            acc = acc + len_of(o)
+        } elif mode == "opt_res_build" {
+            let o = mkopt(i)
+            acc = acc + 1
+        } elif mode == "opt_res_call" {
+            acc = acc + opt_len(mkopt(i))
+        } elif mode == "opt_res_local" {
+            let o = mkopt(i)
+            acc = acc + opt_len(o)
+        } elif mode == "opt_res_overwrite" {
+            keepo = mkopt(i)
+            acc = acc + opt_len(keepo)
+        } elif mode == "res_opt_call" {
+            acc = acc + res_len(mkres(i))
+        } elif mode == "list_call" {
+            acc = acc + lst_len(mklst(i))
+        } elif mode == "list_overwrite" {
+            keepl = mklst(i)
+            acc = acc + lst_len(keepl)
+        } elif mode == "tree_eval" {
+            acc = acc + eval(mkex(i))
+        } elif mode == "deep_call" {
+            acc = acc + deep_len(mkdeep(i))
+        } elif mode == "arr_store" {
+            arr[0] = mkout(i)
+            arr[1] = arr[0]
+            acc = acc + len_of(arr[1])
+        } elif mode == "arr_push_pop" {
+            let mut a: [Out] = []
+            a = push(a, mkout(i))
+            a = push(a, mkw(i))
+            acc = acc + len_of(a[0]) + len(a)
+        } elif mode == "map_store" {
+            put(m, "k", mkout(i))
+            put(m, "j", mkw(i))
+            acc = acc + len_of(m["k"])
+        } elif mode == "map_read_overwrite" {
+            m["k"] = mkout(i)
+            let r = m["k"]
+            m["k"] = mkw(i)
+            acc = acc + len_of(r)
+        } elif mode == "struct_field" {
+            h.o = mkout(i)
+            acc = acc + len_of(h.o)
+        } elif mode == "struct_lit" {
+            let hh = Holder { o: mkout(i), tag: "x" }
+            acc = acc + len_of(hh.o)
+        } elif mode == "closure_capture" {
+            let f = mkclo(mkout(i))
+            acc = acc + f()
+        } elif mode == "closure_local" {
+            let o = mkout(i)
+            let f = fn() -> i64 { return len_of(o) }
+            acc = acc + f()
+        } elif mode == "for_loop" {
+            let a = [mkout(i), mkw(i)]
+            for x in a { acc = acc + len_of(x) }
+        } elif mode == "opt_array" {
+            let a = [mkopt(i), mkopt(i + 1)]
+            acc = acc + opt_len(a[0]) + opt_len(a[1])
+        } elif mode == "push_flat_call" {
+            let mut a: [Flat] = []
+            a = push(a, mkflat(i))
+            acc = acc + len(a)
+        } elif mode == "push_nested_local" {
+            let mut a: [Out] = []
+            let o = mkout(i)
+            a = push(a, o)
+            acc = acc + len_of(a[0])
+        } elif mode == "push_opt_call" {
+            let mut a: [Option<Result<str, str>>] = []
+            a = push(a, mkopt(i))
+            acc = acc + opt_len(a[0])
+        }
+        i = i + 1
+    }
+    println(acc)
+}

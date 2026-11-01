@@ -326,6 +326,14 @@ jobs:
         # 60-676MB per mode; fixed ~4MB. Windows-only -- SKIPs elsewhere.
         run: bash tests/mem_enum_recursive_call_gate.sh
 
+      - name: Nested-enum memory gate
+        # An enum nested directly in an enum (Option<Result<..>>, user enum in
+        # user enum, list, tree) built fresh per iteration, matched,
+        # overwritten, stored in containers, captured by closures. LLVM
+        # `push` of a non-fresh enum cloned the fields on top of the MIR
+        # share (77MB/1M AOT); fixed ~4MB. Windows-only -- SKIPs elsewhere.
+        run: bash tests/mem_enum_nested_gate.sh
+
       - name: Element-read memory gate
         # `let a = p.name` / `xs[i]` / `m[k]` bind a value the read already
         # retained; the binding must release it. 81c61df6 at 1M: ~100MB on
