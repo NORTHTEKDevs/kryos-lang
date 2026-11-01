@@ -1,0 +1,37 @@
+// A closure written into a tracked container keeps the authority of the
+// container's FIRST literal when the write sits inside a map element written inside the `deny!` body that calls it.
+// `build_local_container_lits_block` listed a few statement forms and fell
+// through `_ => {}` for the rest (a `deny!` body, an `unsafe`/`quantum`
+// block, any expression), so the write was never applied, the snapshot stayed
+// `harmless`, and the call inside `deny!(fs:read)` was charged nothing. The
+// walk is now exhaustive over `Expr` and `Stmt`.
+// ACCEPTANCE: rejected (E0507) in default and --strict-capabilities mode.
+// A run that prints the secret means the write was not seen.
+
+struct Runner {
+    run: fn() -> str,
+}
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let mut m: map<str, fn() -> str> = {"k": harmless}
+    let mut a: [fn() -> str] = [harmless]
+    let mut r = Runner { run: harmless }
+    
+    deny!(fs:read) {
+        m["k"] = reader
+        println("OUT: " + m["k"]())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}

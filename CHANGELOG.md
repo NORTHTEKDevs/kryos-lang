@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-Capability-boundary fixes: five ways a program or a shipped
+Capability-boundary fixes: seven ways a program or a shipped
 binary got more authority than it declared are closed, and a REPL bug on Linux.
 
 Upgrade notes:
@@ -44,9 +44,22 @@ Upgrade notes:
   process.
 - **A reassigned function-typed local kept the authority of its first
   binding.** `let mut f = <pure>` then `f = <privileged>` charged the pure set
-  at `f()`, including inside a `deny!` block. This includes a reassignment in
-  the arm of a statement-position `match` (or an `if` expression), or in a
-  lambda whose whole body is one.
+  at `f()`, including inside a `deny!` block. The reassignment was missed
+  whenever it sat inside an expression other than a plain block, a `match` arm
+  or an `if` branch: an `unsafe` or `quantum` block, a `match` or `if` used as
+  a call argument or operand, a loop or `if` condition, a `match` scrutinee or
+  guard, a string interpolation, an index, a range, a collection or struct
+  literal. The scan now covers every statement and expression form, and a new
+  form is a compile error in the checker rather than a silent gap. The same
+  gap hid a closure written into a map element, array element or struct field
+  inside any of those forms (or inside a `deny!` body); it is closed the same
+  way. It also rejects a closure shadowing an outer name inside a `spawn`
+  lambda. One
+  conservative cost: a lambda that reassigns an outer function-typed local
+  (which never changes the outer one, since closures capture by value) is
+  rejected when the outer one is called inside `deny!`. Still open: a local
+  reassigned from the result of calling a local closure or nested `fn` that
+  returns its parameter; the README lists it with the other live shapes.
 - **A zero-grant `kryos repl` session read raw process memory.**
   `ptr_byte_at(str_to_ptr("TOP"), 0)` printed `84` at the prompt while the same
   expression in a file or `kryos eval` was rejected with E0505.

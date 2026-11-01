@@ -10,6 +10,119 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: PR #18 verifier round 2 -- the reassignment walk listed three parent forms and fell through `_ => {}` for every other expression; the container-write twin did the same (2026-10-31)
+
+Trust-model wave, same branch (fin/trust), rebased onto master `6f6e177f`
+(v1.2.0 + #33 + #34). The second adversarial verifier rejected 0005eca6 for one
+blocker (a reassigned fn-typed local hidden in any expression other than a
+block, a `match` arm or an `if` branch) and four docs/ledger mismatches. All
+reproduced; all are fixed or disclosed here.
+
+- Repro 1. `let mut f = harmless`, then the reassignment `f = reader` inside
+  `unsafe { }`, `quantum { }`, an `unsafe` nested in a match arm, a `match` or
+  an if-expression used as a call argument or a binary operand, a `match` in a
+  `while`, `if` or `elif` condition, a block as a `match` scrutinee, a `match`
+  in a string interpolation, an index, a range, a cast, a unary, a pipe, a
+  borrow, an array/map/struct literal, a method argument or receiver, a match
+  guard, a destructuring `let`, a `for` iterable, an assignment's right-hand
+  side; then `f()` inside `deny!(fs:read)`. 26 forms, pinned as
+  `tests/security/attack_reassign_local_<form>.kry`. Before this wave, on the
+  unchanged 0005eca6 binary: all 26 `kryos check` rc=0 in default AND
+  `--strict-capabilities`, and `kryos run` printed `TOPSECRET-CLOSURE-...` for
+  all 26 (JIT); the LLVM AOT binary of `..._unsafe_block` printed it too.
+  Master 540372ec behaves the same.
+- Root cause 1. `build_local_closure_caps_expr` matched `Expr::Block`,
+  `MatchExpr` and `IfExpr` and fell to `_ => {}`; `build_local_closure_caps_block`
+  walked statement bodies but not the expressions inside `if`/`while`/`for`
+  conditions, an assignment's value, or `select` channel and duration
+  expressions. Fix: `build_local_closure_caps_expr` is now an exhaustive
+  match over every `Expr` variant (no wildcard arm; the AST has no walker to
+  reuse, `AstVisitor` has empty hooks) and `build_local_closure_caps_block` an
+  exhaustive match over every `Stmt` variant, plus a pattern walker. A new
+  variant is a compile error in both. A lambda initializer is walked once,
+  after its own name holds the self-recursion placeholder.
+- Repro 2 (found probing the same walk, not in the task list). The sibling
+  `build_local_container_lits_block` listed `Let`, `Assign`, `If`, `For`,
+  `While`, `TryCatch` and a bare block and skipped a `deny!` body, a `select`
+  arm and every expression, so a closure written into a tracked container
+  there left the snapshot at its first literal: `m["k"] = reader` inside
+  `unsafe { }` (and `a = push(a, reader)` in `quantum { }`, `a[0] = reader`
+  or `r.run = reader` inside a `match`/`if` argument, in a `while` condition,
+  or in the `deny!` body that then calls it) was accepted and printed the
+  secret. Plain `m["k"] = reader` and the same inside an `if` branch were
+  already rejected. Same fix, same exhaustive walk (static functions, no
+  `self`). 8 forms: `tests/security/attack_reassign_container_<form>.kry`.
+  Before: all 8 rc=0 in both modes and the secret printed, on the 0005eca6
+  binary and on master.
+- Regression caught by the gate and fixed before commit. The first cut walked
+  a `let f = |n| { .. }` initializer twice, once before the self-recursion
+  placeholder existed; `concurrency_smoke` `closure_lock_reentrant_no_hang`
+  (accepted on master) was rejected `[all]` because `handlers[0]` resolved to
+  `f` before `f` was known and the union kept the unresolved half. Fixed by
+  walking a lambda initializer only after the placeholder; the program is
+  accepted again.
+- Proved both ways (full `cargo build --release`; the "fix reverted" binary is
+  the unchanged 0005eca6 source). `tests/security_gate.sh` with the reverted
+  binary: FAIL, 68 `FAIL:` lines (34 fixtures x default and strict). With the
+  fix: `security-gate: PASS`, 187 ok, 0 FAIL. `check` of the 34 fixtures:
+  reverted rc=0/0 for all, fixed rc=1/1 for all (E0507). Controls
+  `ctl_reassign_pure_in_exprforms.kry` and
+  `ctl_reassign_pure_container_exprforms.kry` (pure-only reassignments and
+  writes in the same forms) stay accepted in both builds.
+- The two shapes the task named as the open class: `f = setter(reader)` and
+  `f = pick(harmless, reader)` are NOT closed. A top-level `fn` with those
+  bodies is rejected; a LOCAL lambda or nested `fn` that returns its
+  parameter is accepted and leaks. New open item 77 below
+  (`attack_reassign_local_via_local_closure_return_{lambda,nested_fn}.kry`,
+  escape_status rows 77a, 77b), routing measured in `ESCAPE-ROUTING.md`.
+- Closed as a side effect: item 58 (a closure bound inside a `spawn fn() { }`
+  lambda under an outer name) is now rejected, because the walk enters the
+  spawned lambda's body. Removed from OPEN.
+- Instrument. `escape_status.sh` decides "leak" by grepping the run output for
+  `leak|TOPSECRET|ESCAPE`, so `attack_reassign_local_match_lambda_body.kry`,
+  whose marker was `LAMBDA-MATCH LEAK: ` + `f()`, counted as an escape on
+  master although it prints `not a secret` (the lambda captures `f` by value,
+  so the reassignment never reaches the outer `f`). The fixture's marker is now
+  `OUT: ` and it is no longer an escape_status row; it stays in
+  `security_gate.sh` as a documented conservative rejection (the flat map
+  unions bindings from a lambda body), which master ACCEPTED: a precision loss
+  on that one shape. Corrected master number on the 45-row list of round 1:
+  25 escaping / 20 rejected, not 26 / 19. Re-checking all rows on master: the
+  only rows with a LEAK verdict and no `TOPSECRET` are the four select-timeout
+  rows, which print `LEAK: wrote 0` after really running the gated builtin.
+- Numbers (copied from output). `escape_status.sh` over the 80 rows now listed
+  (44 old, 28 local-reassignment rows incl. 77a/77b, 8 container forms):
+  branch `STILL ESCAPING: 12    now-rejected: 68`; the v1.2.0 master binary
+  (built from 540372ec) `STILL ESCAPING: 61    now-rejected: 19`. The 12:
+  59, 64-72, 77a, 77b; all 12 print `TOPSECRET` when run. Before this wave the
+  branch was 11 / 34 on 45 rows; item 58 left the list and item 77 joined it.
+- Over-rejection, final build, against master built from the same commit:
+  `stdlib_compile_gate` 66/66 (master 66/66); `ecosystem_check` 259/259 clean
+  (master 259/259); `capability_matrix_gate` attacks rejected 75/75, precision
+  34/75 (master 34/75) and the 41 over-rejected shapes are the IDENTICAL set
+  (diffed); `strict_caps` (91 examples) and `examples` PASS; conformance
+  113/113 (master 113). No legitimate program that passes on master changed
+  verdict in these corpora; the precision differences against master that DO
+  exist are the lambda fixture above and `assault_r1_real_program_plugin_platform.kry`
+  (master rejects it `[all]`, the branch accepts it; that flip is from the
+  previous round's spawn walk, was already present at 0005eca6, and the file
+  holds the four item-72 routes, which `..._nopool.kry` pins).
+- Gates on the final tip: `bash tools/loop/kryos-loop.sh gates 2` tier 1 and
+  tier 2 all PASS (`tier2 GREEN`), `compiler/self-host/test_bootstrap.sh`
+  `PASS: 16 / 16    FAIL: 0 / 16`, `tools/loop/check-docs-truth.sh` PASS,
+  `tools/loop/check-routing-complete.sh` PASS, `cargo test --release -p
+  kryos-capabilities` 54 + 57 passed.
+- Docs. README: escape counts now equal `escape_status.sh` (12 / 68 of 80) in
+  both places that state one, the stale "all 19 ... rejected" sentence is
+  gone, and the twelve live shapes are listed. CHANGELOG [Unreleased]: "five"
+  corrected to "seven" (it lists seven), the reassignment bullet describes the
+  real scope and the open remainder.
+- Residual. (1) The twelve above are live. (2) A lambda that reassigns an outer
+  fn-typed local is rejected although it cannot change the outer one (by-value
+  capture): conservative, pinned, measured to cost no corpus program. (3) The
+  walks are flow-insensitive unions keyed by bare name, as before; they close
+  "the write is invisible", not name-shadowing precision.
+
 ## Wave: PR #18 verifier round 1 -- a statement-position `match` reassigned a fn-typed local invisibly, the REPL skipped the raw-memory gate, `KRYOS_STDLIB_DIR` made user modules trusted (2026-10-31)
 
 Trust-model wave, same branch (fin/trust). An adversarial verifier rejected
@@ -5376,7 +5489,7 @@ capability-escape item and every other OPEN item below remain untouched.
 > this section and the README were BOTH wrong in both directions at once: item
 > 10 was ranked the highest-priority OPEN escape but had actually been fixed,
 > while twelve others were open and the README claimed a single residual. As of
-> 2026-10-15 the true count is **11 escaping, 29 rejected**.
+> 2026-10-31 the true count is **12 escaping, 68 rejected**.
 >
 > **It happened again, and worse (2026-10-15).** The corpus was the 19 named
 > repros, and "0 escaping" was true OF THOSE 19 while eighteen other shapes
@@ -5430,16 +5543,13 @@ capability-escape item and every other OPEN item below remain untouched.
 >   catches it; `security_gate.sh` check 66 pins it.
 
 
-### Items 55-72: the capability-escape wave of 2026-10-15 -- the OPEN eleven
+### Items 55-72, and 77: the capability-escape waves of 2026-10-15 and 2026-10-31 -- the OPEN eleven items (twelve repros)
 
-Seven of the eighteen are closed on this branch; their entries are in the
-wave at the top of this file. These eleven are live: `escape_status.sh`
-counts them and `ESCAPE-ROUTING.md` carries a measured routing row for
-each.
-
-### 58. LIVE CAPABILITY ESCAPE -- a closure bound inside a `spawn fn() { }` lambda under the name of an outer harmless closure defeats deny!(fs:read) -- NOT FIXED
-
-Probe tests/security/attack_spawn_lambda_shadow_closure_deny.kry (new, now committed). Same shadow shape as item 57 but inside the spawned lambda. Master: check rc=0 in all modes; run prints harmless then the secret (executed). The bare `spawn { }` block form is rejected E0110, so the hole is specific to the lambda form. Routing: shape: no Spawn arm in the local-provenance builders (catch-all 2467) so the Identifier arm 1927-1930 returns the outer stale Known(empty); rows: Stmt::Spawn (check.rs:3478-3480) infers a Lambda whose cap frame is popped and never charged outward (check.rs:6317-6319). Closing roots: R4 (charge the spawned row) alone, R5 (Spawn arm) alone, each measured. Hazard: the R5 spawn arm alone unmasks item 72, land rows first.
+Eight of the eighteen (55-72) are closed on this branch (item 58 on
+2026-10-31); their entries are in the waves at the top of this file. The ten
+below (59, 64-72) and item 77 (two repros: 77a, 77b) are live:
+`escape_status.sh` counts them (12) and `ESCAPE-ROUTING.md` carries a
+measured routing row for each.
 
 ### 59. LIVE CAPABILITY ESCAPE -- a for-loop binder shadowing an outer harmless closure name, iterating a mixed pure/privileged closure array, defeats deny!(fs:read) -- NOT FIXED
 
@@ -5481,6 +5591,10 @@ Probe tests/security/attack_actor_explicit_self_swapped_params_deny.kry (new, no
 
 Probe tests/security/assault_r1_real_program_plugin_platform_nopool.kry (new; the shipped assault_r1_real_program_plugin_platform.kry with only the run_worker_pool() call in main removed; copy-ready now committed). Master: check rc=0 in inferred, permissive (strict rc=1 for an unrelated reason); run prints EVIL-SUPPLY-CHAIN-LEAK and the secret on all four routes inside deny!(fs:read, fs:write, net:http, net:tcp, process, ffi) (executed). The shipped file currently shows as rejected only because run_worker_pool needs [all] (spawn precision over-rejection), so no gate flags the four live escapes. Both layers fail: shape 3829 for root=p in_deny_scope=true (4 sites); rows: honest plugin stored first and the compromised second (infer.rs:867-874) plus an open row var {?C26} at the deny boundary (check.rs:3513). Closing roots: R2 slots together with the R3 deferral and raw-charge mechanism (measured rows-only rc=1; slots alone 0, assign or openvar alone 0). Hazard: a spawn precision fix on the shape side flips the shipped file to ACCEPTED; land R2+R3 first.
 
+
+### 77. LIVE CAPABILITY ESCAPE -- a fn-typed local reassigned from the result of calling a LOCAL closure (or nested `fn`) that returns its parameter: `f = setter(reader)`, `f = pick(harmless, reader)` -- NOT FIXED
+
+Probes tests/security/attack_reassign_local_via_local_closure_return_lambda.kry (77a) and tests/security/attack_reassign_local_via_local_closure_return_nested_fn.kry (77b), both new. main holds fs:read; `outer(reader)` does `let mut f = harmless`, `let setter = |r: fn() -> str| { r }` (or a nested `fn pick(a, b) { return b }`), `f = setter(reader)`, then `deny!(fs:read) { f() }`. Master 540372ec and the branch: check rc=0 in default AND strict; run prints the secret (executed, JIT). Found by the second verifier of PR #18 while probing the reassignment walk; the exhaustive walk of 2026-10-31 does not close it because the reassignment IS seen, the VALUE assigned is mis-resolved. Routing (measured, ESCAPE-ROUTING.md): `resolve_closure_caps` FnCall arm, Identifier callee that is a local: `local_caps.get(name)` returns the local closure's own invocation authority as the authority of what it returns. Top-level `fn pick`/`fn ident` with the same body ARE rejected (`DependsOnParam`). Measured: forcing that arm fail-closed rejects both repros (rc=1), so the shape layer alone decides; it was not shipped because it also rejects every call through a local closure and `local_caps` does not keep a lambda's parameters or returned expressions, which a precise fix needs. Acceptance: both rejected in default and strict mode, 259/259 ecosystem and 66/66 stdlib unchanged.
 
 ### 51. CLOSED 2026-10-08 (owned struct/enum field store; see the enum-ownership wave at the top). Original title: LEAK -- item 49 RESIDUAL: struct-field assignment holding an Enum/Struct (`h.v = Val.ListV(..)`) still leaks on container-slot OVERWRITE; only the array-index/map-index shapes were fixed (2026-08-28) -- NOT FIXED; 2nd attempt 2026-08-29 got HALF of it and was REVERTED, mechanism now identified, read the addendum first
 

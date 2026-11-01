@@ -965,16 +965,50 @@ else
     tail -3 "$TMP/hp" | sed 's/^/    /'; fail=1
 fi
 
-# A reassignment inside the arm of a statement-position `match` is a binding
-# like any other. The builder walked if/for/while/select/try/deny and a bare
-# block but not a `match` statement (an Expr, not a Stmt::If), so
-# `match n { 1 => { f = reader } _ => { f = harmless } }` left `f` charged as
-# `harmless` and `f()` inside `deny!(fs:read)` printed the secret.
-for esc in attack_reassign_local_match_stmt_block attack_reassign_local_match_in_deny            attack_reassign_local_match_enum_arm attack_reassign_local_match_literal_subject            attack_reassign_local_match_lambda_body; do
+# A reassignment is a binding wherever it sits. The builder walked if/for/while/
+# select/try/deny and a bare block, then three expression parents (a block, a
+# `match` arm, an if-expression branch) and fell through `_ => {}` for every
+# other expression form, so `unsafe { f = reader }`, a `match` used as a call
+# argument or an operand, a `while` condition, a match scrutinee, a string
+# interpolation (and the rest listed below) left `f` charged as `harmless` and
+# `f()` inside `deny!(fs:read)` printed the secret. The walk is now exhaustive
+# over `Expr` and `Stmt` with no wildcard arm.
+REASSIGN_FORMS="match_stmt_block \
+    match_in_deny \
+    match_enum_arm \
+    match_literal_subject \
+    block_in_for_iterable \
+    block_in_match_scrutinee \
+    block_in_method_receiver \
+    ifexpr_as_call_arg \
+    ifexpr_in_binop \
+    match_as_call_arg \
+    match_in_array_literal \
+    match_in_assign_rhs \
+    match_in_cast \
+    match_in_elif_cond \
+    match_in_if_cond \
+    match_in_index \
+    match_in_interpolation \
+    match_in_let_tuple \
+    match_in_map_literal \
+    match_in_match_guard \
+    match_in_method_arg \
+    match_in_pipe \
+    match_in_range \
+    match_in_ref \
+    match_in_struct_literal \
+    match_in_unary \
+    match_in_while_cond \
+    quantum_block \
+    unsafe_block \
+    unsafe_in_match_arm"
+for form in $REASSIGN_FORMS; do
+    esc="attack_reassign_local_$form"
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
         if "$K" check $mode "tests/security/$esc.kry" >"$TMP/rm" 2>&1; then
-            echo "  FAIL: $esc.kry passed \`check $mode\` -- a match-arm reassignment is invisible"
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a reassignment in this expression form is invisible"
             esc_ok=0; fail=1
         elif ! grep -qE "E0505|E0507" "$TMP/rm"; then
             echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
@@ -983,12 +1017,54 @@ for esc in attack_reassign_local_match_stmt_block attack_reassign_local_match_in
     done
     [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in default and strict mode"
 done
-if "$K" check --strict-capabilities tests/security/ctl_reassign_pure_in_match.kry >"$TMP/rmc" 2>&1; then
-    echo "  ok   a match that reassigns only pure closures is still accepted (no cascade)"
-else
-    echo "  FAIL: the match-arm walk over-rejects a pure-only reassignment:"
-    tail -3 "$TMP/rmc" | sed 's/^/    /'; fail=1
-fi
+# The same is true of a write into a TRACKED CONTAINER (a map element, an array
+# element or push, a struct field): `build_local_container_lits_block` listed a few
+# statement forms and skipped a `deny!` body, `unsafe`/`quantum` blocks and every
+# expression, so the snapshot stayed `harmless`. Same exhaustive walk.
+CONTAINER_FORMS="arr_match_arg \
+    arr_push_quantum \
+    arr_unsafe \
+    map_in_deny_body \
+    map_match_arg \
+    map_unsafe \
+    map_while_cond \
+    struct_field_ifexpr_arg"
+for form in $CONTAINER_FORMS; do
+    esc="attack_reassign_container_$form"
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/rm" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a container write in this form is invisible"
+            esc_ok=0; fail=1
+        elif ! grep -qE "E0505|E0507" "$TMP/rm"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not for the capability reason:"
+            tail -3 "$TMP/rm" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected in default and strict mode"
+done
+# NOT an escape: a lambda captures `f` by value, so calling it never changes the
+# outer `f` (the program prints "not a secret"). It is rejected anyway because
+# the builder's name -> authority map is flat. Pinned so the over-rejection is a
+# known, deliberate cost, not a surprise.
+for mode in "" "--strict-capabilities"; do
+    if "$K" check $mode tests/security/attack_reassign_local_match_lambda_body.kry >"$TMP/rm" 2>&1; then
+        echo "  note: attack_reassign_local_match_lambda_body.kry is now accepted by \`check $mode\` (it was a conservative rejection)"
+    elif grep -qE "E0505|E0507" "$TMP/rm"; then
+        echo "  ok   attack_reassign_local_match_lambda_body.kry rejected by \`check $mode\` (conservative; not an escape)"
+    else
+        echo "  FAIL: attack_reassign_local_match_lambda_body.kry rejected by \`check $mode\`, but not for the capability reason:"
+        tail -3 "$TMP/rm" | sed 's/^/    /'; fail=1
+    fi
+done
+for ctl in ctl_reassign_pure_in_match ctl_reassign_pure_in_exprforms ctl_reassign_pure_container_exprforms; do
+    if "$K" check --strict-capabilities "tests/security/$ctl.kry" >"$TMP/rmc" 2>&1; then
+        echo "  ok   $ctl.kry accepted (no cascade)"
+    else
+        echo "  FAIL: the reassignment walk over-rejects $ctl.kry (pure-only reassignments):"
+        tail -3 "$TMP/rmc" | sed 's/^/    /'; fail=1
+    fi
+done
 
 # KRYOS_STDLIB_DIR chooses where `use std::..` is read from. It must not also
 # choose which code is exempt from the raw-memory gate: pointing it at the

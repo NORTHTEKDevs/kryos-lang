@@ -2370,11 +2370,17 @@ impl CapabilityChecker {
         local_container_lits: &HashMap<String, Expr>,
         locals: &mut HashMap<String, ClosureCapsResult>,
     ) {
+        macro_rules! rec {
+            ($e:expr) => {
+                self.build_local_closure_caps_expr($e, working, fn_return_caps, own_params, local_container_lits, locals)
+            };
+        }
         for stmt in &block.stmts {
             match stmt {
-                Stmt::Let {
-                    name, value: Some(v), ..
-                } => {
+                Stmt::Let { name, value: Some(v), pattern, .. } => {
+                    if let Some(p) = pattern {
+                        self.build_local_closure_caps_pattern(p, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
                     // A nested NAMED function (`fn adder(y) { .. }` declared
                     // inside another function's body) desugars to exactly
                     // this shape -- `let adder = fn(y) { .. }` -- in the
@@ -2399,8 +2405,17 @@ impl CapabilityChecker {
                     // closure defined inside the block is registered in
                     // `locals` before any call to it (inside the same
                     // block) is resolved by the real per-call checker.
-                    self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
-                    if let Expr::Lambda { body, .. } = v {
+                    // A lambda initializer is walked ONCE, below, AFTER its own
+                    // name holds the self-recursion placeholder: walking it here
+                    // first resolves a call back through the name (`let f = |n|
+                    // { .. handlers[0] .. }` with `handlers[0] = f`) before `f`
+                    // is known, and the union keeps that `Unknown` (measured:
+                    // concurrency_smoke closure_lock_reentrant_no_hang, accepted
+                    // on master, rejected by the first cut of the exhaustive walk).
+                    if !matches!(v, Expr::Lambda { .. }) {
+                        self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
+                    if let Expr::Lambda { params, body, .. } = v {
                         // A self-recursive nested named function (`fn nfact(n)
                         // { return n * nfact(n - 1) }`, desugared to `let
                         // nfact = fn(n) { .. }`) calls ITS OWN name from
@@ -2420,6 +2435,11 @@ impl CapabilityChecker {
                         // normally via the real `r` computed below, which
                         // OVERWRITES this placeholder once known.
                         locals.insert(name.clone(), ClosureCapsResult::Known(CapabilitySet::empty()));
+                        for p in params {
+                            if let Some(d) = &p.default {
+                                self.build_local_closure_caps_expr(d, working, fn_return_caps, own_params, local_container_lits, locals);
+                            }
+                        }
                         // A lambda whose whole body is one `match`/`if`
                         // parses with that expression as the body (no
                         // block), so walk it as an expression.
@@ -2487,6 +2507,9 @@ impl CapabilityChecker {
                     value,
                     ..
                 } => {
+                    // The right-hand side can itself hold statements
+                    // (`f = match n { 1 => { g = reader  g } .. }`).
+                    rec!(value);
                     let r = self.resolve_closure_caps(
                         value,
                         working,
@@ -2509,29 +2532,40 @@ impl CapabilityChecker {
                     self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
                 Stmt::If {
+                    condition,
                     then_block,
                     elif_clauses,
                     else_block,
                     ..
                 } => {
+                    rec!(condition);
                     self.build_local_closure_caps_block(then_block, working, fn_return_caps, own_params, local_container_lits, locals);
-                    for (_, b) in elif_clauses {
+                    for (c, b) in elif_clauses {
+                        rec!(c);
                         self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                     if let Some(b) = else_block {
                         self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                 }
-                Stmt::For { body, .. } | Stmt::While { body, .. } => {
+                Stmt::For { pattern, iterable, body, .. } => {
+                    self.build_local_closure_caps_pattern(pattern, working, fn_return_caps, own_params, local_container_lits, locals);
+                    rec!(iterable);
+                    self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals)
+                }
+                Stmt::While { condition, body, .. } => {
+                    rec!(condition);
                     self.build_local_closure_caps_block(body, working, fn_return_caps, own_params, local_container_lits, locals)
                 }
                 // A select arm body, and the timeout body nothing walked at
                 // all, bind names like any other block.
                 Stmt::Select { branches, timeout, .. } => {
                     for branch in branches {
+                        rec!(&branch.channel);
                         self.build_local_closure_caps_block(&branch.body, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                     if let Some(t) = timeout {
+                        rec!(&t.duration_ms);
                         self.build_local_closure_caps_block(&t.body, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
                 }
@@ -2543,44 +2577,78 @@ impl CapabilityChecker {
                     self.build_local_closure_caps_block(try_block, working, fn_return_caps, own_params, local_container_lits, locals);
                     self.build_local_closure_caps_block(catch_block, working, fn_return_caps, own_params, local_container_lits, locals);
                 }
-                // A BARE `{ }` block used purely for local scoping desugars
-                // to `Stmt::Expr { expr: Expr::Block { .. } }` (there is no
-                // dedicated `Stmt::Block` variant) -- previously fell through
-                // the `_ => {}` catch-all below, so a closure `let`-bound
-                // INSIDE a bare block was never added to `locals`, and the
-                // real per-call checker (`check_expr`, which DOES walk into
-                // `Expr::Block` for every other purpose) then resolved a
-                // direct call through that closure as `Unknown` ->
-                // `Capability::All`, forcing the enclosing function to
-                // declare `@capabilities(all)` for a closure that in fact
-                // requires nothing -- a real over-approximation reachable by
-                // the ordinary `{ let f = |..| ..; f(..) }` / block-tail-
-                // value (gotcha #3) idiom, found via combined-category
-                // grammar fuzzing (tests/fuzz/gen_grammar.py). Recurse the
-                // same way an `if`/`for`/`while`/`try` body already does,
-                // consistent with this function's documented "flatten nested
-                // scopes into one map" design.
-                // A statement-position `match` (or `if` expression) is an
-                // `Expr`, not a `Stmt::If`, so its arm bodies were never
-                // walked: `match n { 1 => { f = reader } _ => { f = harmless } }`
-                // reassigned a fn-typed local invisibly and a later `f()`
-                // inside `deny!(fs:read)` was charged the first binding's
-                // (pure) authority. The same walk covers a bare block.
+                // A statement-position `match` (or `if` expression, bare
+                // block, `unsafe`/`quantum` block) is an `Expr`, not a
+                // `Stmt::If`: `match n { 1 => { f = reader } _ => { f =
+                // harmless } }` reassigns a fn-typed local invisibly unless
+                // the expression is walked. EVERY statement that carries an
+                // expression walks it, and the walk is exhaustive (see
+                // `build_local_closure_caps_expr`).
                 Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
-                    self.build_local_closure_caps_expr(expr, working, fn_return_caps, own_params, local_container_lits, locals);
+                    rec!(expr);
                 }
                 Stmt::Return { value: Some(v), .. } => {
-                    self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
+                    rec!(v);
                 }
-                _ => {}
+                // A target that is not a bare name (`a[{ f = reader; 0 }] = x`)
+                // still carries expressions.
+                Stmt::Assign { target, value, .. } => {
+                    rec!(target);
+                    rec!(value);
+                }
+                // Statements that bind or carry nothing. Listed rather than
+                // wildcarded so a new `Stmt` variant fails to compile here
+                // instead of becoming a silent hole.
+                Stmt::Let { value: None, pattern, .. } => {
+                    if let Some(p) = pattern {
+                        self.build_local_closure_caps_pattern(p, working, fn_return_caps, own_params, local_container_lits, locals);
+                    }
+                }
+                Stmt::Return { value: None, .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
             }
         }
     }
 
-    /// Walks the statement-bearing expression forms (a block, a `match`
-    /// arm body, an `if` expression branch) so the bindings made inside
-    /// them reach the flat local map, exactly as the same statements would
-    /// in a plain block. Anything else holds no statements and is skipped.
+    /// A pattern can carry an expression only through `Pattern::Literal`.
+    fn build_local_closure_caps_pattern(
+        &self,
+        pat: &kryos_ast::Pattern,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
+        locals: &mut HashMap<String, ClosureCapsResult>,
+    ) {
+        use kryos_ast::Pattern;
+        match pat {
+            Pattern::Literal { expr, .. } => {
+                self.build_local_closure_caps_expr(expr, working, fn_return_caps, own_params, local_container_lits, locals);
+            }
+            Pattern::Tuple { elements: ps, .. } | Pattern::Enum { fields: ps, .. } | Pattern::Or { patterns: ps, .. } => {
+                for p in ps {
+                    self.build_local_closure_caps_pattern(p, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    self.build_local_closure_caps_pattern(p, working, fn_return_caps, own_params, local_container_lits, locals);
+                }
+            }
+            Pattern::Wildcard { .. } | Pattern::Ident { .. } => {}
+        }
+    }
+
+    /// Structural walk of EVERY expression variant so the bindings made by
+    /// any statement nested anywhere inside an expression reach the flat
+    /// local map, exactly as the same statements would in a plain block.
+    ///
+    /// The match has NO wildcard arm. The earlier version listed three
+    /// "statement-bearing" parents (`Block`, `MatchExpr`, `IfExpr`) and fell
+    /// through `_ => {}` for the rest, so `f = reader` inside `unsafe { }`,
+    /// `quantum { }`, a call argument, a binary operand, a `while`
+    /// condition, a match scrutinee or a string interpolation was invisible
+    /// and `kryos check` passed code that printed the secret. A new `Expr`
+    /// variant is now a compile error here, not a silent hole.
     fn build_local_closure_caps_expr(
         &self,
         expr: &Expr,
@@ -2590,22 +2658,123 @@ impl CapabilityChecker {
         local_container_lits: &HashMap<String, Expr>,
         locals: &mut HashMap<String, ClosureCapsResult>,
     ) {
+        macro_rules! rec {
+            ($e:expr) => {
+                self.build_local_closure_caps_expr($e, working, fn_return_caps, own_params, local_container_lits, locals)
+            };
+        }
+        macro_rules! blk {
+            ($b:expr) => {
+                self.build_local_closure_caps_block($b, working, fn_return_caps, own_params, local_container_lits, locals)
+            };
+        }
+        use kryos_ast::StringPart;
         match expr {
-            Expr::Block { block, .. } => {
-                self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, locals);
-            }
-            Expr::MatchExpr { arms, .. } => {
-                for arm in arms {
-                    self.build_local_closure_caps_expr(&arm.body, working, fn_return_caps, own_params, local_container_lits, locals);
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::Identifier { .. } => {}
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    match part {
+                        StringPart::Literal(_) => {}
+                        StringPart::Expr(e) => rec!(e),
+                    }
                 }
             }
-            Expr::IfExpr { then_branch, else_branch, .. } => {
-                self.build_local_closure_caps_block(then_branch, working, fn_return_caps, own_params, local_container_lits, locals);
+            Expr::FieldAccess { object, .. } => rec!(object),
+            Expr::IndexAccess { object, index, .. } => {
+                rec!(object);
+                rec!(index);
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
+                rec!(left);
+                rec!(right);
+            }
+            Expr::UnaryOp { operand, .. } => rec!(operand),
+            Expr::FnCall { callee, args, .. } => {
+                rec!(callee);
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                rec!(object);
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for e in elements {
+                    rec!(e);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    rec!(k);
+                    rec!(v);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, e) in fields {
+                    rec!(e);
+                }
+            }
+            // A lambda captures by value (probed: `apply(|| { f = reader })`
+            // prints "not a secret"), so a reassignment inside one never
+            // reaches the outer name at run time; its body is still walked
+            // like any nested function's so a closure `let`-bound inside it
+            // is registered before the call that uses it.
+            Expr::Lambda { params, body, .. } => {
+                for p in params {
+                    if let Some(d) = &p.default {
+                        rec!(d);
+                    }
+                }
+                rec!(body);
+            }
+            Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+                rec!(condition);
+                blk!(then_branch);
                 if let Some(b) = else_branch {
-                    self.build_local_closure_caps_block(b, working, fn_return_caps, own_params, local_container_lits, locals);
+                    blk!(b);
                 }
             }
-            _ => {}
+            Expr::MatchExpr { subject, arms, .. } => {
+                rec!(subject);
+                for arm in arms {
+                    self.build_local_closure_caps_pattern(&arm.pattern, working, fn_return_caps, own_params, local_container_lits, locals);
+                    if let Some(g) = &arm.guard {
+                        rec!(g);
+                    }
+                    rec!(&arm.body);
+                }
+            }
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(e) = start {
+                    rec!(e);
+                }
+                if let Some(e) = end {
+                    rec!(e);
+                }
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => rec!(inner),
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } | Expr::UnsafeBlock { body, .. } => blk!(body),
+            Expr::Cast { expr: inner, .. } => rec!(inner),
+            Expr::Block { block, .. } => blk!(block),
+            Expr::Await { value, .. } => rec!(value),
         }
     }
 
@@ -2894,91 +3063,285 @@ impl CapabilityChecker {
         locals: &mut HashMap<String, Expr>,
         fn_return_container_lits: &HashMap<String, Expr>,
     ) {
+        macro_rules! rec {
+            ($e:expr) => {
+                Self::build_local_container_lits_expr($e, locals, fn_return_container_lits)
+            };
+        }
+        macro_rules! blk {
+            ($b:expr) => {
+                Self::build_local_container_lits_block($b, locals, fn_return_container_lits)
+            };
+        }
         for stmt in &block.stmts {
             match stmt {
                 Stmt::Let {
-                    name, value: Some(v), ..
-                } => match v {
-                    Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
-                        locals.insert(name.clone(), v.clone());
+                    name, value: Some(v), pattern, ..
+                } => {
+                    if let Some(p) = pattern {
+                        Self::build_local_container_lits_pattern(p, locals, fn_return_container_lits);
                     }
-                    Expr::Identifier { name: src, .. } => {
-                        if let Some(existing) = locals.get(src).cloned() {
-                            locals.insert(name.clone(), existing);
+                    // Statements nested anywhere inside the initializer (a
+                    // block-tail-value `let x = { .. }`, but equally a `match`
+                    // or `unsafe { }` inside a literal's element) run BEFORE
+                    // the binding exists, so walk them first. This also
+                    // replaces the old `Expr::Block` arm below, which recursed
+                    // only for a block that WAS the initializer.
+                    rec!(v);
+                    match v {
+                        Expr::StructLiteral { .. } | Expr::ArrayLiteral { .. } | Expr::MapLiteral { .. } => {
+                            locals.insert(name.clone(), v.clone());
                         }
-                    }
-                    // `let x = f()` where `f` is a bare, ZERO-ARGUMENT call
-                    // to a function whose return literal is known (see
-                    // `fn_return_container_lits`'s doc) - splice that
-                    // template in as if `x` had been bound to the literal
-                    // directly, so the ordinary literal-tracing machinery
-                    // resolves the REAL capability of what a no-arg factory
-                    // function actually built (closes the container-BY-
-                    // LOCAL-VARIABLE residual PRECISELY, avoiding the blunt
-                    // `all` fallback's cascade onto non-privileged code).
-                    Expr::FnCall { callee, args, .. } if args.is_empty() => {
-                        if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
-                            if let Some(lit) = fn_return_container_lits.get(fname) {
-                                locals.insert(name.clone(), lit.clone());
+                        Expr::Identifier { name: src, .. } => {
+                            if let Some(existing) = locals.get(src).cloned() {
+                                locals.insert(name.clone(), existing);
                             }
                         }
+                        // `let x = f()` where `f` is a bare, ZERO-ARGUMENT call
+                        // to a function whose return literal is known (see
+                        // `fn_return_container_lits`'s doc) - splice that
+                        // template in as if `x` had been bound to the literal
+                        // directly, so the ordinary literal-tracing machinery
+                        // resolves the REAL capability of what a no-arg factory
+                        // function actually built (closes the container-BY-
+                        // LOCAL-VARIABLE residual PRECISELY, avoiding the blunt
+                        // `all` fallback's cascade onto non-privileged code).
+                        Expr::FnCall { callee, args, .. } if args.is_empty() => {
+                            if let Expr::Identifier { name: fname, .. } = callee.as_ref() {
+                                if let Some(lit) = fn_return_container_lits.get(fname) {
+                                    locals.insert(name.clone(), lit.clone());
+                                }
+                            }
+                        }
+                        _ => {}
                     }
-                    // `let x = { .. }` block-tail-value initializer: recurse
-                    // so a container literal built INSIDE the block (by its
-                    // own nested `let`s) is tracked before a later read
-                    // reaching into it (within the same block) is resolved --
-                    // same fix as the bare-block-statement arm below.
-                    Expr::Block { block: inner, .. } => {
-                        Self::build_local_container_lits_block(inner, locals, fn_return_container_lits);
+                }
+                Stmt::Let { value: None, pattern, .. } => {
+                    if let Some(p) = pattern {
+                        Self::build_local_container_lits_pattern(p, locals, fn_return_container_lits);
                     }
-                    _ => {}
-                },
+                }
                 Stmt::Assign { target, op, value, .. } => {
+                    // Writes nested in the target or the right-hand side
+                    // (`a[{ m["k"] = reader; 0 }] = x`, `y = match .. { m["k"]
+                    // = reader .. }`) happen first.
+                    rec!(target);
+                    rec!(value);
                     Self::apply_container_assign(locals, target, *op, value);
                 }
                 Stmt::If {
+                    condition,
                     then_block,
                     elif_clauses,
                     else_block,
                     ..
                 } => {
-                    Self::build_local_container_lits_block(then_block, locals, fn_return_container_lits);
-                    for (_, b) in elif_clauses {
-                        Self::build_local_container_lits_block(b, locals, fn_return_container_lits);
+                    rec!(condition);
+                    blk!(then_block);
+                    for (c, b) in elif_clauses {
+                        rec!(c);
+                        blk!(b);
                     }
                     if let Some(b) = else_block {
-                        Self::build_local_container_lits_block(b, locals, fn_return_container_lits);
+                        blk!(b);
                     }
                 }
-                Stmt::For { body, .. } | Stmt::While { body, .. } => {
-                    Self::build_local_container_lits_block(body, locals, fn_return_container_lits)
+                Stmt::For { pattern, iterable, body, .. } => {
+                    Self::build_local_container_lits_pattern(pattern, locals, fn_return_container_lits);
+                    rec!(iterable);
+                    blk!(body)
+                }
+                Stmt::While { condition, body, .. } => {
+                    rec!(condition);
+                    blk!(body)
                 }
                 Stmt::TryCatch {
                     try_block,
                     catch_block,
                     ..
                 } => {
-                    Self::build_local_container_lits_block(try_block, locals, fn_return_container_lits);
-                    Self::build_local_container_lits_block(catch_block, locals, fn_return_container_lits);
+                    blk!(try_block);
+                    blk!(catch_block);
                 }
-                // Sibling gap to the one fixed in `build_local_closure_caps_block`
-                // above: a bare `{ }` scoping block desugars to `Stmt::Expr {
-                // expr: Expr::Block { .. } }` (no dedicated `Stmt::Block`
-                // variant) and previously fell through `_ => {}` here too, so
-                // a container literal (holding a closure/fn-value element)
-                // built AND read back INSIDE a bare block was invisible to
-                // `resolve_container_path_caps`, falling through to `Unknown`
-                // -> `Capability::All` for a call through a container element
-                // (e.g. `store[0]()` after `store = push(store, reader)`)
-                // exactly like the direct-local-closure case.
-                Stmt::Expr {
-                    expr: Expr::Block { block: inner, .. },
-                    ..
-                } => {
-                    Self::build_local_container_lits_block(inner, locals, fn_return_container_lits);
+                // A `deny!` body and a `select` arm or timeout body are blocks
+                // like any other: a write made there changes what the
+                // container holds. They were skipped by `_ => {}`, so
+                // `deny!(..) { m["k"] = reader }`-shaped writes left the
+                // snapshot stale. A bare `{ }` scoping block, a statement-
+                // position `match`/`if`/`unsafe`/`quantum` and every other
+                // expression statement go through the exhaustive expression
+                // walk.
+                Stmt::DenyBlock { body, .. } => {
+                    blk!(body);
                 }
-                _ => {}
+                Stmt::Select { branches, timeout, .. } => {
+                    for branch in branches {
+                        rec!(&branch.channel);
+                        blk!(&branch.body);
+                    }
+                    if let Some(t) = timeout {
+                        rec!(&t.duration_ms);
+                        blk!(&t.body);
+                    }
+                }
+                Stmt::Expr { expr, .. } | Stmt::Spawn { expr, .. } | Stmt::Throw { expr, .. } => {
+                    rec!(expr);
+                }
+                Stmt::Return { value: Some(v), .. } => {
+                    rec!(v);
+                }
+                // Listed rather than wildcarded so a new `Stmt` variant fails
+                // to compile here instead of becoming a silent hole.
+                Stmt::Return { value: None, .. } | Stmt::Break { .. } | Stmt::Continue { .. } => {}
             }
+        }
+    }
+
+    fn build_local_container_lits_pattern(
+        pat: &kryos_ast::Pattern,
+        locals: &mut HashMap<String, Expr>,
+        fn_return_container_lits: &HashMap<String, Expr>,
+    ) {
+        use kryos_ast::Pattern;
+        match pat {
+            Pattern::Literal { expr, .. } => Self::build_local_container_lits_expr(expr, locals, fn_return_container_lits),
+            Pattern::Tuple { elements: ps, .. } | Pattern::Enum { fields: ps, .. } | Pattern::Or { patterns: ps, .. } => {
+                for p in ps {
+                    Self::build_local_container_lits_pattern(p, locals, fn_return_container_lits);
+                }
+            }
+            Pattern::Struct { fields, .. } => {
+                for (_, p) in fields {
+                    Self::build_local_container_lits_pattern(p, locals, fn_return_container_lits);
+                }
+            }
+            Pattern::Wildcard { .. } | Pattern::Ident { .. } => {}
+        }
+    }
+
+    /// Structural walk of EVERY expression variant, for the same reason and
+    /// with the same no-wildcard guarantee as `build_local_closure_caps_expr`:
+    /// a write to a tracked container (`m["k"] = reader`, `arr = push(arr,
+    /// reader)`, `r.f = reader`) is a binding wherever it sits, and a write
+    /// the walk does not see leaves a stale snapshot that a later
+    /// `m["k"]()` is charged against.
+    fn build_local_container_lits_expr(
+        expr: &Expr,
+        locals: &mut HashMap<String, Expr>,
+        fn_return_container_lits: &HashMap<String, Expr>,
+    ) {
+        macro_rules! rec {
+            ($e:expr) => {
+                Self::build_local_container_lits_expr($e, locals, fn_return_container_lits)
+            };
+        }
+        macro_rules! blk {
+            ($b:expr) => {
+                Self::build_local_container_lits_block($b, locals, fn_return_container_lits)
+            };
+        }
+        use kryos_ast::StringPart;
+        match expr {
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. }
+            | Expr::Identifier { .. } => {}
+            Expr::InterpolatedString { parts, .. } => {
+                for part in parts {
+                    match part {
+                        StringPart::Literal(_) => {}
+                        StringPart::Expr(e) => rec!(e),
+                    }
+                }
+            }
+            Expr::FieldAccess { object, .. } => rec!(object),
+            Expr::IndexAccess { object, index, .. } => {
+                rec!(object);
+                rec!(index);
+            }
+            Expr::BinaryOp { left, right, .. } | Expr::PipeExpr { left, right, .. } => {
+                rec!(left);
+                rec!(right);
+            }
+            Expr::UnaryOp { operand, .. } => rec!(operand),
+            Expr::FnCall { callee, args, .. } => {
+                rec!(callee);
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::MethodCall { object, args, .. } => {
+                rec!(object);
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::StaticMethodCall { args, .. } => {
+                for a in args {
+                    rec!(a);
+                }
+            }
+            Expr::ArrayLiteral { elements, .. } | Expr::TupleLiteral { elements, .. } => {
+                for e in elements {
+                    rec!(e);
+                }
+            }
+            Expr::MapLiteral { entries, .. } => {
+                for (k, v) in entries {
+                    rec!(k);
+                    rec!(v);
+                }
+            }
+            Expr::StructLiteral { fields, .. } => {
+                for (_, e) in fields {
+                    rec!(e);
+                }
+            }
+            Expr::Lambda { params, body, .. } => {
+                for p in params {
+                    if let Some(d) = &p.default {
+                        rec!(d);
+                    }
+                }
+                rec!(body);
+            }
+            Expr::IfExpr { condition, then_branch, else_branch, .. } => {
+                rec!(condition);
+                blk!(then_branch);
+                if let Some(b) = else_branch {
+                    blk!(b);
+                }
+            }
+            Expr::MatchExpr { subject, arms, .. } => {
+                rec!(subject);
+                for arm in arms {
+                    Self::build_local_container_lits_pattern(&arm.pattern, locals, fn_return_container_lits);
+                    if let Some(g) = &arm.guard {
+                        rec!(g);
+                    }
+                    rec!(&arm.body);
+                }
+            }
+            Expr::RangeExpr { start, end, .. } => {
+                if let Some(e) = start {
+                    rec!(e);
+                }
+                if let Some(e) = end {
+                    rec!(e);
+                }
+            }
+            Expr::Borrow { inner, .. }
+            | Expr::Deref { inner, .. }
+            | Expr::SharedExpr { inner, .. }
+            | Expr::MoveExpr { inner, .. }
+            | Expr::WeakExpr { inner, .. } => rec!(inner),
+            Expr::ComptimeBlock { body, .. } | Expr::QuantumBlock { body, .. } | Expr::UnsafeBlock { body, .. } => blk!(body),
+            Expr::Cast { expr: inner, .. } => rec!(inner),
+            Expr::Block { block, .. } => blk!(block),
+            Expr::Await { value, .. } => rec!(value),
         }
     }
 

@@ -5,9 +5,20 @@
 // `Expr`, not a `Stmt::If`, so its arm bodies were never visited: the call
 // `f()` inside `deny!(fs:read)` was charged the pure `harmless`.
 // ACCEPTANCE: rejected (E0507) in default and --strict-capabilities mode.
-// A compile that prints the LEAK marker means the arm was not walked.
+// A compile that prints the secret means the arm was not walked.
 
-// Variant: the match is the whole body of a lambda bound with `let`.
+// NOT AN ESCAPE, and a deliberate over-rejection. The match is the whole body
+// of a lambda bound with `let`, and a lambda captures `f` BY VALUE: calling
+// `t()` never changes the outer `f`, so this program prints "not a secret"
+// on master and on the branch alike (run it with the check skipped to see).
+// The capability builder keeps one flat name -> authority map and does not
+// know a lambda body is a separate scope, so the reassignment inside it is
+// unioned into the outer `f` and `f()` inside `deny!(fs:read)` is rejected.
+// Sound, and the price of a flat map; precision on this shape is lower than
+// master (which accepted it). The marker below carries no word the leak
+// instrument matches, so a program that did print the secret would show
+// TOPSECRET and nothing else would.
+
 fn harmless() -> str {
     return "not a secret"
 }
@@ -24,7 +35,7 @@ fn outer(reader: fn() -> str) {
     }
     t()
     deny!(fs:read) {
-        println("LAMBDA-MATCH LEAK: " + f())
+        println("OUT: " + f())
     }
 }
 @capabilities(fs:read)

@@ -1,0 +1,46 @@
+// A reassigned fn-typed local keeps the authority of its FIRST binding when
+// the reassignment sits inside a `match` in an `elif` condition.
+// `build_local_closure_caps_expr` walked a block, a `match` arm and an
+// if-expression branch and fell through `_ => {}` for every other
+// expression form, so the call `f()` inside `deny!(fs:read)` was charged
+// the pure `harmless`. The walk is now exhaustive over `Expr` and `Stmt`.
+// ACCEPTANCE: rejected (E0507) in default and --strict-capabilities mode.
+// A run that prints the secret marker means the form was not walked.
+
+struct Pair {
+    a: i64,
+    b: i64,
+}
+impl Pair {
+    fn plus(self: Pair, k: i64) -> i64 {
+        return self.a + self.b + k
+    }
+}
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+fn outer(reader: fn() -> str) {
+    let mut f: fn() -> str = harmless
+    let n = 1
+    if n == 99 {
+        println("x")
+    } elif match n { 1 => { f = reader
+ true }
+ _ => { false } } {
+        println("y")
+    }
+    deny!(fs:read) {
+        println("OUT: " + f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    outer(reader)
+}
