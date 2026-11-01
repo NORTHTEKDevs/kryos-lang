@@ -452,6 +452,115 @@ impl TypeChecker {
             .push(Diagnostic::warning(msg).with_label(span, "here"));
     }
 
+    /// Shape gate for the builtin `contains(x, needle)`: `x` is a str (str
+    /// needle), a map (any key), or an array of ints / bool / char / str whose
+    /// needle has the element type. Everything else used to compile and then
+    /// read the handle as a string at runtime.
+    fn check_contains_shape(&mut self, first: &Type, needle: &Type, first_span: Span, needle_span: Span) {
+        let opaque = |t: &Type| matches!(t, Type::Error | Type::Var(_));
+        if opaque(first) {
+            // The first argument's type is unknown HERE: an `any` parameter
+            // (erased to `Type::Error`, no runtime tag) or an un-annotated
+            // closure parameter whose type is only fixed by a LATER call (the
+            // closure's param types are recorded when its body is checked, so
+            // MIR still sees it as unknown). MIR then takes the STRING path, so
+            // a str is the only first argument that works. A str needle keeps
+            // that reading (an un-annotated closure param is inferred to be a
+            // str; a later array argument is then a clean type mismatch). Any
+            // other needle cannot belong to a str, so the first argument is an
+            // array or a map and would segfault: reject it and ask for the type.
+            let needle = self.engine.resolve(needle);
+            if opaque(&needle) {
+                return;
+            }
+            if needle == Type::Str {
+                if matches!(first, Type::Var(_)) {
+                    if let Err(diag) = self.engine.unify(first, &Type::Str, first_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+                return;
+            }
+            // `Type::Error` is also the cascade sentinel after an earlier
+            // error; do not pile a second diagnostic on a broken program.
+            if matches!(first, Type::Error) && self.diagnostics.iter().any(|d| d.is_error()) {
+                return;
+            }
+            self.error_with_code(
+                format!(
+                    "`contains` cannot tell what its first argument is (an `any` or un-annotated closure parameter); annotate it, e.g. `[{needle}]`, so the array or map membership test is chosen"
+                ),
+                first_span,
+                kryos_errors::codes::E0100,
+            );
+            return;
+        }
+        // A reference-typed first argument (`a: &[i64]`, `&mut`, `let r = &a`)
+        // is NOT peeled: the MIR array/map arms match the value type only, so a
+        // peeled reference would pass this gate, miss those arms and fall through
+        // to the string `contains` (array handle read as a KryosString). `len`
+        // rejects the same shape with a clean error; do the same here.
+        if let Type::Reference { .. } = first {
+            self.error_with_code(
+                format!(
+                    "`contains` does not accept a reference; pass the value, not `{first}`"
+                ),
+                first_span,
+                kryos_errors::codes::E0100,
+            );
+            return;
+        }
+        match first {
+            Type::Map { key, .. } => {
+                // A wrong-typed needle (`m: map<str, i64>`, `contains(m, 1)`)
+                // read an int as a KryosString key and segfaulted.
+                let key = self.engine.resolve(key);
+                if !opaque(&key) && !opaque(needle) {
+                    if let Err(diag) = self.engine.unify(&key, needle, needle_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+            }
+            Type::Str => {
+                if !opaque(needle) && *needle != Type::Str {
+                    self.error_with_code(
+                        format!("`contains` on a str needs a str needle; found `{needle}`"),
+                        needle_span,
+                        kryos_errors::codes::E0100,
+                    );
+                }
+            }
+            Type::Array { element, .. } => {
+                let elem = self.engine.resolve(element);
+                if opaque(&elem) {
+                    return;
+                }
+                let supported = elem.is_integer()
+                    || matches!(elem, Type::Bool | Type::Char | Type::Str | Type::F64);
+                if !supported {
+                    self.error_with_code(
+                        format!(
+                            "`contains` on an array supports int, f64, bool, char and str elements; found `[{elem}]`"
+                        ),
+                        first_span,
+                        kryos_errors::codes::E0100,
+                    );
+                } else if !opaque(needle) {
+                    if let Err(diag) = self.engine.unify(&elem, needle, needle_span) {
+                        self.diagnostics.push(diag);
+                    }
+                }
+            }
+            other => {
+                self.error_with_code(
+                    format!("`contains` expects a str, array, or map; found `{other}`"),
+                    first_span,
+                    kryos_errors::codes::E0100,
+                );
+            }
+        }
+    }
+
     /// LEDGER item 40 (+ 40b), the `[any]`-container sibling of item 24.
     ///
     /// `any` resolves to `Type::Error` -- the erasure sentinel (item 6, an
@@ -5254,6 +5363,9 @@ impl TypeChecker {
                                 *span,
                             );
                         } else {
+                            // First argument's type, kept for the builtin
+                            // `contains` shape gate after its needle is typed.
+                            let mut contains_first: Option<Type> = None;
                             for (i, (arg, param_ty)) in
                                 args.iter().zip(params.iter()).enumerate()
                             {
@@ -5387,6 +5499,23 @@ impl TypeChecker {
                                             ),
                                             arg.span(),
                                         );
+                                    }
+                                }
+                                // The builtin `contains` takes its params as
+                                // Type::Error (it is polymorphic over str, map and
+                                // array), so nothing checked the SHAPE: an array or
+                                // a number reached the string `contains` and read
+                                // the handle as a KryosString (segfault on both
+                                // backends). Gate the builtin only -- a user
+                                // function named `contains` has typed params.
+                                if matches!(&callee_name_str, Some(n) if n == "contains")
+                                    && matches!(param_ty, Type::Error)
+                                {
+                                    if i == 0 {
+                                        contains_first = Some(self.engine.resolve(&arg_ty));
+                                    } else if let Some(first) = contains_first.take() {
+                                        let needle = self.engine.resolve(&arg_ty);
+                                        self.check_contains_shape(&first, &needle, args[0].span(), arg.span());
                                     }
                                 }
                             }
