@@ -1,4 +1,4 @@
-//! `kryos check` — type-check without compiling.
+//! `kryos check` - type-check without compiling.
 
 use std::path::Path;
 use std::time::Duration;
@@ -54,14 +54,21 @@ pub fn execute(path: &str, skip_ownership: bool, cap_mode: CapabilityMode) -> Re
     let mut error_count = 0;
     let mut warning_count = 0;
 
-    for diag in &diagnostics {
-        let rendered = render_diagnostic(diag, &source_map);
-        eprint!("{rendered}");
+    // Print at most MAX_SHOWN_DIAGNOSTICS diagnostics (shared with run and
+    // build). The COUNT below still reports all of them.
+    for (i, diag) in diagnostics.iter().enumerate() {
+        if i < super::MAX_SHOWN_DIAGNOSTICS {
+            let rendered = render_diagnostic(diag, &source_map);
+            eprint!("{rendered}");
+        }
         if diag.is_error() {
             error_count += 1;
         } else {
             warning_count += 1;
         }
+    }
+    if let Some(note) = super::hidden_diagnostics_note(diagnostics.len()) {
+        eprintln!("{note}");
     }
 
     if error_count > 0 {

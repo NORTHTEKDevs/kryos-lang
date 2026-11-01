@@ -1540,10 +1540,49 @@ impl Parser {
         self.parse_if_rest(kw.span)
     }
 
+    /// A statement that stands in for an abandoned parse: the unit block.
+    fn empty_stmt(&self, span: Span) -> Stmt {
+        Stmt::Expr {
+            expr: Expr::Block {
+                block: Block {
+                    stmts: Vec::new(),
+                    span,
+                },
+                span,
+            },
+            span,
+        }
+    }
+
     /// Parse the remainder of an `if` after the leading `if`/`elif`/`else if`
     /// keyword has been consumed. Dispatches to the `if let` desugar or a
     /// regular `if/elif/else` chain. `start` is the span of that keyword.
     fn parse_if_rest(&mut self, start: Span) -> Stmt {
+        // Nesting guard. An `elif` / `else if` chain recurses through
+        // parse_if_let_else -> parse_if_rest, and the bodies' parse_block
+        // charge AND RELEASE their own depth, so the chain itself accumulated
+        // nothing: ~50k clauses overflowed the native stack with no
+        // diagnostic (tests/security/attack_parser_elif_let_chain_stack_overflow.kry).
+        // Each clause of a chain now costs one unit of grammar recursion,
+        // like any other nesting, and a separate `if` statement at the same
+        // level still costs nothing (its unit is released at the end).
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
+            }
+            return self.empty_stmt(span);
+        }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let stmt = self.parse_if_rest_inner(start);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        stmt
+    }
+
+    fn parse_if_rest_inner(&mut self, start: Span) -> Stmt {
         if self.check(TokenKind::Let) {
             return self.parse_if_let(start);
         }
@@ -1591,88 +1630,147 @@ impl Parser {
     /// Desugar `if let PAT = EXPR { THEN } [else ...]` into
     ///   match EXPR { PAT => { THEN }, _ => { ELSE } }
     /// `let` has not yet been consumed; `start` is the `if`/`elif` span.
+    ///
+    /// An `elif let` / `else if let` chain is parsed in a LOOP, not by
+    /// recursion: each further clause costs one unit of the shared AST-depth
+    /// budget (`nest_depth`, the same budget a flat operator chain pays), so
+    /// the parser stack stays flat however long the chain is and the finished
+    /// AST is bounded by MAX_NESTING_DEPTH like every other construct. The
+    /// nested match/block shape is built afterwards, innermost first.
     fn parse_if_let(&mut self, start: Span) -> Stmt {
-        self.expect(TokenKind::Let);
-        let pattern = self.parse_pattern();
-        self.expect(TokenKind::Eq);
-        let subject = self.parse_expr_no_struct_lit();
-        let then_block = self.parse_block();
-        let then_span = then_block.span;
-        let else_body = self.parse_if_let_else(start);
-        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-        let span = start.merge(end);
-        let match_expr = Expr::MatchExpr {
-            subject: Box::new(subject),
-            arms: vec![
-                MatchArm {
-                    pattern,
-                    guard: None,
-                    body: Box::new(Expr::Block {
-                        block: then_block,
-                        span: then_span,
-                    }),
-                    span,
-                },
-                MatchArm {
-                    pattern: Pattern::Wildcard { span },
-                    guard: None,
-                    body: else_body,
-                    span,
-                },
-            ],
-            span,
-        };
-        Stmt::Expr {
-            expr: match_expr,
-            span,
+        struct LetClause {
+            start: Span,
+            pattern: Pattern,
+            subject: Expr,
+            then_block: Block,
         }
-    }
+        let mut clauses: Vec<LetClause> = Vec::new();
+        let mut spine = 0usize;
+        let mut cur = start;
+        // Body of the wildcard arm of the LAST clause.
+        let tail: Box<Expr>;
+        loop {
+            self.expect(TokenKind::Let);
+            let pattern = self.parse_pattern();
+            self.expect(TokenKind::Eq);
+            let subject = self.parse_expr_no_struct_lit();
+            let then_block = self.parse_block();
+            clauses.push(LetClause {
+                start: cur,
+                pattern,
+                subject,
+                then_block,
+            });
 
-    /// Parse the else-continuation of an `if let` into the wildcard arm body.
-    /// Supports `else { B }`, `else if .. / elif ..` (nested if), or nothing.
-    fn parse_if_let_else(&mut self, span: Span) -> Box<Expr> {
-        // `elif ...` acts as `else if ...`; parse the rest as a nested if.
-        if self.check(TokenKind::Elif) {
-            let kw = self.advance().span;
-            let nested = self.parse_if_rest(kw);
-            return Box::new(Expr::Block {
-                block: Block {
-                    stmts: vec![nested],
-                    span,
-                },
+            // `elif ...` acts as `else if ...`.
+            let next_kw = if self.check(TokenKind::Elif) {
+                Some(self.advance().span)
+            } else if self.peek_kind() == TokenKind::Else
+                && self.pos + 1 < self.tokens.len()
+                && self.tokens[self.pos + 1].kind == TokenKind::If
+            {
+                self.advance(); // else
+                Some(self.advance().span) // if
+            } else {
+                None
+            };
+            match next_kw {
+                Some(kw) if self.check(TokenKind::Let) => {
+                    if self.nest_depth + 1 >= MAX_NESTING_DEPTH {
+                        self.nesting_overflow();
+                        tail = Box::new(Expr::Block {
+                            block: Block {
+                                stmts: Vec::new(),
+                                span: cur,
+                            },
+                            span: cur,
+                        });
+                        break;
+                    }
+                    self.nest_depth += 1;
+                    spine += 1;
+                    cur = kw;
+                }
+                Some(kw) => {
+                    // A plain `elif cond` / `else if cond` ends the let-chain;
+                    // the plain chain is itself parsed iteratively.
+                    let nested = self.parse_if_rest_inner(kw);
+                    tail = Box::new(Expr::Block {
+                        block: Block {
+                            stmts: vec![nested],
+                            span: cur,
+                        },
+                        span: cur,
+                    });
+                    break;
+                }
+                None => {
+                    tail = if self.eat(TokenKind::Else) {
+                        let b = self.parse_block();
+                        let bs = b.span;
+                        Box::new(Expr::Block { block: b, span: bs })
+                    } else {
+                        // No else: empty block (unit value).
+                        Box::new(Expr::Block {
+                            block: Block {
+                                stmts: Vec::new(),
+                                span: cur,
+                            },
+                            span: cur,
+                        })
+                    };
+                    break;
+                }
+            }
+        }
+        self.nest_depth -= spine;
+
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        let starts: Vec<Span> = clauses.iter().map(|c| c.start).collect();
+        let mut else_body = tail;
+        let mut result: Option<Stmt> = None;
+        for (i, c) in clauses.into_iter().enumerate().rev() {
+            let then_span = c.then_block.span;
+            let span = c.start.merge(end);
+            let match_expr = Expr::MatchExpr {
+                subject: Box::new(c.subject),
+                arms: vec![
+                    MatchArm {
+                        pattern: c.pattern,
+                        guard: None,
+                        body: Box::new(Expr::Block {
+                            block: c.then_block,
+                            span: then_span,
+                        }),
+                        span,
+                    },
+                    MatchArm {
+                        pattern: Pattern::Wildcard { span },
+                        guard: None,
+                        body: else_body,
+                        span,
+                    },
+                ],
                 span,
+            };
+            let stmt = Stmt::Expr {
+                expr: match_expr,
+                span,
+            };
+            if i == 0 {
+                result = Some(stmt);
+                break;
+            }
+            let wrap = starts[i - 1];
+            else_body = Box::new(Expr::Block {
+                block: Block {
+                    stmts: vec![stmt],
+                    span: wrap,
+                },
+                span: wrap,
             });
         }
-        // `else if ...` (two tokens).
-        if self.peek_kind() == TokenKind::Else
-            && self.pos + 1 < self.tokens.len()
-            && self.tokens[self.pos + 1].kind == TokenKind::If
-        {
-            self.advance(); // else
-            let kw = self.advance().span; // if
-            let nested = self.parse_if_rest(kw);
-            return Box::new(Expr::Block {
-                block: Block {
-                    stmts: vec![nested],
-                    span,
-                },
-                span,
-            });
-        }
-        // `else { B }`
-        if self.eat(TokenKind::Else) {
-            let b = self.parse_block();
-            let bs = b.span;
-            return Box::new(Expr::Block { block: b, span: bs });
-        }
-        // No else: empty block (unit value).
-        Box::new(Expr::Block {
-            block: Block {
-                stmts: Vec::new(),
-                span,
-            },
-            span,
-        })
+        result.expect("an if-let chain has at least one clause")
     }
 
     fn parse_for(&mut self) -> Stmt {
@@ -2944,11 +3042,17 @@ impl Parser {
             if !self.check(TokenKind::RBrace) && !self.eat(TokenKind::Comma) {
                 let span = self.peek().span;
                 if self.check(TokenKind::Ident) || self.check(TokenKind::TypeIdent) {
-                    self.diagnostics.push(
-                        Diagnostic::error("expected `,` or `}` in struct literal".to_string())
-                            .with_label(span, "here")
-                            .with_note("did you forget a comma between fields?"),
-                    );
+                    // Like every other syntax error, silent once the nesting
+                    // limit fired: the leftover tokens of an abandoned deep
+                    // chain parse as struct-literal fields and used to emit
+                    // one of these per field (23,880 of them for 50k clauses).
+                    if !self.nesting_poisoned {
+                        self.diagnostics.push(
+                            Diagnostic::error("expected `,` or `}` in struct literal".to_string())
+                                .with_label(span, "here")
+                                .with_note("did you forget a comma between fields?"),
+                        );
+                    }
                 } else {
                     let tok = self.peek().clone();
                     let token_text = if tok.text.is_empty() {
@@ -3107,89 +3211,92 @@ impl Parser {
     }
 
     fn parse_if_expr(&mut self) -> Expr {
-        let kw = self.expect(TokenKind::If);
-        let start = kw.span;
-        let condition = self.parse_expr_no_struct_lit();
-        let then_branch = self.parse_block();
-        let else_branch = if self.peek_kind() == TokenKind::Elif {
-            // `elif` in expression context - desugar to `else { if ... }`
-            self.advance(); // eat `elif`
-            let nested_if = self.parse_if_expr_after_if(start);
-            let span = nested_if.span();
-            Some(Block {
-                stmts: vec![Stmt::Expr {
-                    expr: nested_if,
-                    span,
-                }],
-                span,
-            })
-        } else if self.eat(TokenKind::Else) {
-            if self.peek_kind() == TokenKind::If {
-                // `else if` - parse as a single-statement block containing the nested if.
-                let nested_if = self.parse_if_expr();
-                let span = nested_if.span();
-                Some(Block {
-                    stmts: vec![Stmt::Expr {
-                        expr: nested_if,
-                        span,
-                    }],
-                    span,
-                })
-            } else {
-                Some(self.parse_block())
+        // Nesting guard for the expression-context chain
+        // (`let x = if a { 1 } elif b { 2 } .. else { 0 }`, a match-arm tail,
+        // a call argument). The whole chain costs one unit of grammar
+        // recursion here; every further clause is charged to the AST-depth
+        // budget only, inside the loop (see parse_if_expr_chain).
+        if self.nesting_exhausted() {
+            self.nesting_overflow();
+            let span = self.peek().span;
+            if !self.at_end() {
+                self.advance();
             }
-        } else {
-            None
-        };
-        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-        Expr::IfExpr {
-            condition: Box::new(condition),
-            then_branch,
-            else_branch,
-            span: start.merge(end),
+            return Expr::IntLiteral { value: 0, span };
         }
+        self.nest_depth += 1;
+        self.rec_depth += 1;
+        let kw = self.expect(TokenKind::If);
+        let expr = self.parse_if_expr_chain(kw.span);
+        self.rec_depth -= 1;
+        self.nest_depth -= 1;
+        expr
     }
 
-    /// Parse an if-expression body after the `if` keyword has already been consumed
-    /// (used for `elif` desugaring in expression context).
-    fn parse_if_expr_after_if(&mut self, start: Span) -> Expr {
-        let condition = self.parse_expr_no_struct_lit();
-        let then_branch = self.parse_block();
-        let else_branch = if self.peek_kind() == TokenKind::Elif {
-            self.advance();
-            let nested_if = self.parse_if_expr_after_if(start);
-            let span = nested_if.span();
-            Some(Block {
-                stmts: vec![Stmt::Expr {
-                    expr: nested_if,
-                    span,
-                }],
-                span,
-            })
-        } else if self.eat(TokenKind::Else) {
-            if self.peek_kind() == TokenKind::If {
-                let nested_if = self.parse_if_expr();
-                let span = nested_if.span();
-                Some(Block {
-                    stmts: vec![Stmt::Expr {
-                        expr: nested_if,
-                        span,
-                    }],
-                    span,
-                })
+    /// Parse an `if` / `elif` / `else if` expression chain after the leading
+    /// `if` has been consumed, in a LOOP (no recursion per clause). Each
+    /// further clause costs one unit of `nest_depth`, the budget a flat
+    /// operator chain pays, so the parse stack stays flat and the AST depth is
+    /// bounded by MAX_NESTING_DEPTH. The nested IfExpr shape (each later
+    /// clause inside the previous one's else block) is built afterwards,
+    /// innermost first.
+    fn parse_if_expr_chain(&mut self, start: Span) -> Expr {
+        let mut levels: Vec<(Span, Expr, Block)> = Vec::new();
+        let mut spine = 0usize;
+        let mut cur = start;
+        let mut tail: Option<Block> = None;
+        loop {
+            let condition = self.parse_expr_no_struct_lit();
+            let then_branch = self.parse_block();
+            levels.push((cur, condition, then_branch));
+            if self.peek_kind() == TokenKind::Elif {
+                // `elif` in expression context - desugar to `else { if ... }`
+                self.advance(); // eat `elif`
+            } else if self.eat(TokenKind::Else) {
+                if self.peek_kind() == TokenKind::If {
+                    // `else if` - a single-statement else block holding the
+                    // nested if, which starts at THIS `if`.
+                    cur = self.advance().span;
+                } else {
+                    tail = Some(self.parse_block());
+                    break;
+                }
             } else {
-                Some(self.parse_block())
+                break;
             }
-        } else {
-            None
-        };
-        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
-        Expr::IfExpr {
-            condition: Box::new(condition),
-            then_branch,
-            else_branch,
-            span: start.merge(end),
+            if self.nest_depth + 1 >= MAX_NESTING_DEPTH {
+                self.nesting_overflow();
+                break;
+            }
+            self.nest_depth += 1;
+            spine += 1;
         }
+        self.nest_depth -= spine;
+
+        let end = self.tokens[self.pos.saturating_sub(1).min(self.tokens.len() - 1)].span;
+        let mut inner: Option<Expr> = None;
+        for (st, condition, then_branch) in levels.into_iter().rev() {
+            let else_branch = match inner.take() {
+                Some(nested_if) => {
+                    let span = nested_if.span();
+                    Some(Block {
+                        stmts: vec![Stmt::Expr {
+                            expr: nested_if,
+                            span,
+                        }],
+                        span,
+                    })
+                }
+                None => tail.take(),
+            };
+            inner = Some(Expr::IfExpr {
+                condition: Box::new(condition),
+                then_branch,
+                else_branch,
+                span: st.merge(end),
+            });
+        }
+        inner.expect("an if chain has at least one clause")
     }
 
     fn parse_match_expr(&mut self) -> Expr {
