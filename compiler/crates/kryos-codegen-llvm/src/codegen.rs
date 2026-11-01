@@ -1260,6 +1260,7 @@ impl LlvmCodegen {
         self.emit_line("declare double @kryos_builtin_sqrt(double)");
         self.emit_line("declare double @kryos_builtin_tan(double)");
         self.emit_line("declare void @kryos_canvas_clear_ks(i64)");
+        self.emit_line("declare void @kryos_canvas_fill_rect_ks(i64, i64, i64, i64, i64, i64)");
         self.emit_line("declare ptr @kryos_chan_clone(ptr)");
         self.emit_line("declare void @kryos_chan_close(ptr)");
         self.emit_line("declare void @kryos_chan_close_i64(i64)");
@@ -1405,6 +1406,7 @@ impl LlvmCodegen {
         self.emit_line("declare i64 @kryos_regex_find_end_ks(i64, i64, i64)");
         self.emit_line("declare i64 @kryos_regex_find_ks(i64, i64)");
         self.emit_line("declare i64 @kryos_regex_find_pos_ks(i64, i64, i64)");
+        self.emit_line("declare i64 @kryos_regex_replace_all_ks(i64, i64, i64)");
         // Single-pass native find used by std::re find/find_all (out-params for
         // start+len). Was missing from the LLVM declares, so AOT builds of any
         // regex program failed with "use of undefined value @kryos_regex_find".
@@ -7251,6 +7253,17 @@ impl LlvmCodegen {
                                 "append_file" => "kryos_builtin_file_append",
                                 "file_exists" => "kryos_builtin_file_exists",
                                 "create_dir" => "kryos_builtin_create_dir",
+                                // Mapped on Cranelift but missing here: the call lowered
+                                // to a bare `@file_size` and clang failed with "use of
+                                // undefined value" on every `build --release`. The
+                                // dom / canvas / alert / fetch_text stubs had the same gap.
+                                "file_size" => "kryos_builtin_file_size",
+                                "fetch_text" => "kryos_fetch_text_ks",
+                                "alert" => "kryos_alert_ks",
+                                "dom_set_text" => "kryos_dom_set_text_ks",
+                                "dom_get_value" => "kryos_dom_get_value_ks",
+                                "canvas_clear" => "kryos_canvas_clear_ks",
+                                "canvas_fill_rect" => "kryos_canvas_fill_rect_ks",
                                 "env_get" => "kryos_builtin_env_get",
                                 "args" => "kryos_builtin_args",
                                 "read_line" => "kryos_builtin_read_line",
@@ -7387,6 +7400,15 @@ impl LlvmCodegen {
                                 // Regex
                                 "regex_new" => "kryos_regex_new_ks",
                                 "regex_match" => "kryos_regex_is_match_ks",
+                                // The rest of the surface regex builtins were missing here
+                                // (only `regex_new` / `regex_match` were mapped), so any
+                                // program calling `regex_find` / `regex_drop` / ... failed
+                                // `build --release` with "use of undefined value @regex_*".
+                                "regex_find" => "kryos_regex_find_ks",
+                                "regex_find_pos" => "kryos_regex_find_pos_ks",
+                                "regex_find_end" => "kryos_regex_find_end_ks",
+                                "regex_replace_all" => "kryos_regex_replace_all_ks",
+                                "regex_drop" => "kryos_regex_drop_ks",
                                 // Mutex
                                 "mutex_new" => "kryos_mutex_new",
                                 "mutex_lock" => "kryos_mutex_lock",

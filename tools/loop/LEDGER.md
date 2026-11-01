@@ -10,6 +10,146 @@ green CI) > (leak) > (papercut). A silent wrong answer outranks a crash - a
 crash announces itself. A trust-model hole outranks both: nothing above it in
 the stack can be sound if the boundary leaks.
 
+## Wave: builtin-audit -- 57 read-only runtime builtins were missing from BORROWING_CALL_ARGS (index_of, file_*, crypto, regex, json, ws_*, net / pg / dom ...), and 12 global builtins did not compile on the LLVM backend (2026-11-01)
+
+Leak (every builtin below), plus a loud compile failure on `build --release`.
+Master 2a776f20, full `cargo build --release` each time.
+- Audit method. The source-level builtin table (`kryos-mir/src/lower.rs`
+  builtin list, the Cranelift and LLVM call-site maps, `kryos-types/src/check.rs`
+  signatures) gave the set a program can call as a global. Each builtin with a
+  str / array argument was classified by READING its runtime implementation
+  (`kryos-rt/src/builtins.rs`, `kryos-stdlib-native/src/{bindings,net,tls,
+  unix_socket,postgres,websocket,json}.rs`): every `*_ks` wrapper reads its
+  arguments through `handle_to_str` / `handle_to_bytes` / `ks_to_string` and
+  copies or slices them for the duration of the call; none frees, retains or
+  stores an argument (`grep` for `kryos_string_free` / `retain` / `Box::from_raw`
+  in the native crate finds none on an argument).
+  BORROWERS added: index_of, file_read, read_file, write_file, append_file,
+  file_size, create_dir, buf_write_str, buf_write_to_file, hmac_sha256, sha512,
+  sha1_hex, sha1_base64, hex_to_base64url, base64url_to_hex, ed25519_public /
+  sign / verify, pbkdf2_sha256, regex_new / match / find / find_pos / find_end /
+  replace_all, json_parse / string / get / object / array, http_request,
+  https_get, http2_get / post / request, fetch_text, tcp_connect, tcp_listen,
+  tls_server_config, tls_send, uds_connect / bind / send, pg_connect / exec /
+  query, ws_accept_key, ws_encode_text / binary / ping / pong, ws_unmask,
+  dom_set_text, dom_get_value, alert, canvas_fill_rect, canvas_clear.
+  (`write_file` / `read_file` / `append_file` are separate MIR names for the
+  already-listed `file_write` / `file_read` / `file_append`; only the canonical
+  spelling was on the list for `file_write`.)
+  NOT borrowers, left unlisted ON PURPOSE: `str_to_ptr` / `arr_to_ptr` return the
+  data pointer INTO the argument, so a drop of the argument (a temp at statement
+  end) would dangle the pointer the caller holds; `push`, `send` and the container
+  stores move or share their value; `panic` never returns. No heap argument at
+  all (nothing to audit): abs / min / max / sqrt / pow / floor / ceil / the math
+  and wrapping_* / checked_* / saturating_* families, int / float, chr,
+  char_from, random_bytes, time_*, sleep*, exit, buf_new / len / get / set /
+  patch / free / write_byte / write_i*_le / write_zeros / write_bytes / str,
+  mutex_*, chan ops, tcp_accept / recv / close / try_*, tls_accept / recv /
+  close, uds_accept / recv / close, pg_close, ws_encode_close, ws_read_frame,
+  regex_drop, json_stringify / to_* / length / type / is_null / number / bool /
+  null / get_index, alloc / free_bytes / ptr_*, args, ed25519_generate.
+  `http_get`, `format`, `input`, `readline` are std functions in source (`use
+  std::...` required), not globals, and a user fn borrows str / array args
+  already.
+- Repro (before), peak RSS at 400k iterations, AOT / JIT, idle 4 / 4MB, a FRESH
+  str per iteration, the result read AND the argument read after the call:
+  `hmac_sha256(k, m)` 65 / 66, `index_of(h, n)` 61 / 60, `write_file(p, c)` 73 /
+  73, `append_file` 48 / 48, `file_read` / `read_file` / `file_size` 48 / 48
+  (path built per iteration), `create_dir` 30 / 30, `sha512` 30 / 29,
+  `sha1_hex` / `sha1_base64` 30 / 30, `hex_to_base64url` 29 / 30,
+  `base64url_to_hex` 29 / 30, `ed25519_public` 91 / 91, `ed25519_sign` 115 / 116,
+  `ed25519_verify` 78 / 78, `pbkdf2_sha256` 59 / 59, `regex_new` 30 / 30,
+  `regex_match` 36 / 35, `regex_find` 35 / 35, `regex_find_pos` + `_end` 35 /
+  36, `regex_replace_all` 59 / 60, `json_get` 30 / 29, `buf_write_str` 29 / 30,
+  `ws_encode_*` 29 / 30, `ws_accept_key` 29 / 29. `kryos build --emit-mir`:
+  `_1 = call index_of(_0, "c")` with no `drop(_0)` anywhere in the function.
+  Three probes first read 4-5MB and were WRONG measurements: `"{path}"` (a single
+  interpolated variable) aliases the variable instead of allocating, so a "fresh"
+  path that is just the interpolation of a shared one never leaks; the probes
+  build it as `path + trim(" ")`.
+- Root cause. Same as the 2026-10-30 wave: `consume_call_args` marks the non-copy
+  argument of every unlisted callee CONSUMED, statically and on every path, so
+  the caller's scope-end `Drop` of that local is gone. The list is an allow-list
+  that was only ever extended one name at a time as a leak was noticed.
+- Fix. The names join `BORROWING_CALL_ARGS` with the audit written next to
+  them (`kryos-mir/src/lower.rs`). One list change; it feeds both
+  `consume_call_args` and `drop_unescaped_str_temps`.
+- Proved both ways (full `cargo build --release` each time). Pin: 26 new
+  `bb_*` modes in `tests/mem_agg_ops_gate.sh` / `tests/mem/agg_ops_leak.kry`
+  (18 fast modes at 1M iterations / 40MB ceiling, 8 slow ones - file I/O and
+  ed25519 cost 20-180us per call, `write_file` alone is 3 minutes at 1M - at
+  150k iterations / 20MB ceiling with padded path / content arguments so an
+  unfixed run still lands well over the ceiling). With the `lower.rs` list
+  reverted ALL 52 legs FAIL (AOT / JIT MB): hmac 159 / 158, index_of 144 / 143,
+  regex_repl 144 / 144, pbkdf2 142 / 142, ed_verify 190 / 190, append_file 93 /
+  93, write_file 93 / 93, regex_find 82 / 81, regex_match 82 / 82, regex_pos 82 /
+  81, json_get 67 / 66, buf_write_str 67 / 67, regex_new 67 / 67, sha512 66 / 66,
+  sha1_hex 67 / 66, sha1_b64 66 / 67, hex_b64 66 / 66, b64_hex 67 / 66, ws_key 66 /
+  66, ws_text 66 / 66, ed_sign 47 / 47, file_read 39 / 39, file_size 39 / 39,
+  read_file 39 / 40, ed_pub 38 / 37, create_dir 33 / 33. With the fix every one
+  of the 26 modes is 4-6MB on both backends at 400k AND at 1.6M iterations (a
+  flat line, not a smaller slope). Structural pin that also covers what a probe
+  cannot run (tcp, tls, uds, pg, dom, canvas, http2): `tests/builtin_borrow_mir_gate.sh`
+  emits the MIR of a call with fresh str / array locals for each of 57
+  builtins and requires a `drop(_N)` for every heap argument; 56 of 57 FAIL on
+  master, 57 / 57 PASS with the fix. Wired into `kryos-loop.sh gates` tier 1 and
+  ci.yml.
+- The other direction (the argument IS dropped now, so nothing the call returned
+  or left behind may have been freed with it): `conf_readonly_builtin_args.kry`
+  gained index_of, create_dir / write_file / append_file / read_file / file_read /
+  file_size, sha1_hex / sha1_base64 / sha512 / hmac_sha256 (known vectors),
+  hex <-> base64url, ed25519 generate / public / sign / verify, pbkdf2, regex
+  new / match / find / pos / end / replace_all / drop, json parse / get / string
+  / object / array, buf_write_str + buf_write_to_file, ws_accept_key (the RFC
+  6455 sample) and ws_encode_* cases, each reading every argument after the call
+  and after allocator churn, plus per-round re-checks of index_of / hexb64 /
+  regex / json / ws over 50 rounds. HONEST: like the previous wave's, this file is
+  GREEN on master except for the LLVM mapping gap below (the old behaviour leaked,
+  it never freed early), so it guards the double-free direction of THIS change,
+  not the leak.
+- Residual (4) of the previous wave, answered. A user fn that shadows a listed
+  builtin name and takes a STRUCT / enum argument: constructed as
+  `fn index_of(p: P)`, `fn read_file(p: P, k: i64) -> P { return p }`,
+  `fn json_get(e: E)`, with named locals, `mk(i)` temps, struct / enum literals,
+  a callee that RETURNS its parameter and one that `push`es it into a global
+  array. Not unsound: free diagnostics clean on `run` and the AOT, values intact
+  after allocator churn, 400k / 1.6M flat at 4-5MB for the return shape. What
+  changes is only that a NAMED struct / enum local passed to such a fn is now
+  dropped at scope end exactly as it is for an unlisted user fn (`kryos build
+  --emit-mir` of the same program renamed to `index_ofx` / `read_filex` /
+  `json_getx` has the identical `drop(_5)` / `drop(_21)`); before it was marked
+  consumed and leaked. Struct arguments never reach the list check in
+  `drop_unescaped_str_temps` (the struct branch above it decides first).
+- Found outside the wave:
+  (a) FIXED IN THIS PR (separate commit): 12 global builtins did not compile on
+  the LLVM backend. The Cranelift call-site map had them, the LLVM one did not,
+  so the call lowered to a bare `@file_size` and clang failed with "use of
+  undefined value": `file_size`, `regex_find`, `regex_find_pos`, `regex_find_end`,
+  `regex_replace_all`, `regex_drop`, `fetch_text`, `alert`, `dom_set_text`,
+  `dom_get_value`, `canvas_clear`, `canvas_fill_rect`. `kryos run` accepted every
+  one, `kryos build --release` rejected them. Loud, not silent.
+  `tests/conformance/conf_llvm_builtin_names.kry` fails the AOT build on master.
+  (b) NOT FIXED. Reassigning a `[struct]` variable leaks the old array's
+  elements: `let mut keep: [P] = []` in `main`, loop `{ let r = P { name: "r{i}",
+  n: i }  push(keep, r)  if len(keep) > 50 { keep = [] } }` is 42MB at 400k,
+  157MB at 1.6M (AOT); the same with `[str]` is 8MB flat, and a per-iteration
+  `keep` that goes out of scope is 4MB flat, so it is the reassignment, not push
+  or the array drop. A global `[P]` is identical. `pop(keep)` as a statement
+  (result discarded) of a `[P]` leaks the popped box too (150MB at 1.6M).
+  (c) NOT FIXED. The `json_*` builtins allocate every node in a process-global
+  table with no source-level free (`NodeTable::remove` exists, no builtin calls
+  it): `let n = json_string("v{i}")` in a loop is 35MB at 400k, 136MB at 1.6M. A
+  server that calls `json_parse` per request grows without bound. This is why
+  `json_parse` / `json_string` / `json_object` / `json_array` have no `bb_*`
+  probe (it would measure the table, not the argument); their drop is pinned by
+  the MIR gate and their reads by the conformance case.
+  (d) NOT FIXED. A user fn that shadows ANY builtin name (listed or not, e.g.
+  `read_file`) and takes a struct TEMP argument leaks it:
+  `read_file(P { name: "t{i}", n: i })` 24MB at 400k, 111MB at 1.6M vs 4MB for an
+  unrelated name. `drop_unescaped_str_temps` treats a name in `builtin_fn_names`
+  as the builtin even when the user's fn is what the call resolves to.
+  Pre-existing, unchanged by this wave, pathological.
+
 ## Wave: nested-enum -- "an enum nested in an enum keeps the move model" was stale; the one real leak under it was the LLVM `push` double ownership (2026-11-01)
 
 Leak (LLVM AOT only), reproduced on master e0827073 (full `cargo build --release`).
@@ -721,8 +861,9 @@ Leak, ~80-220 bytes per call. Ordinary tokenizing / join / sort loops.
   on `[str]` is flat on both backends now, the tuple case is AOT only and an
   order of magnitude smaller. Not chased.
   (3) Other read-only builtins outside this cluster were not audited or measured
-  (`index_of`, `file_read`, `read_file`, `char_from`, ...).
-  (4) A user function that shadows one of the seven names and takes a STRUCT
+  (`index_of`, `file_read`, `read_file`, `char_from`, ...). DONE in the 2026-11-01
+  builtin-audit wave above.
+  (4) (Answered by the builtin-audit wave above: not unsound.) A user function that shadows one of the seven names and takes a STRUCT
   argument is now treated as borrowing it, like the existing `len` / `trim` /
   `replace` entries already do; no such function exists in stdlib, self-host or
   tests (stdlib `split` / `join` / `reverse` / `env_get` take str / array

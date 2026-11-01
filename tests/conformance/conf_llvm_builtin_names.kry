@@ -1,0 +1,44 @@
+// Conformance (2026-11-01): global builtins that the Cranelift call-site map
+// knew but the LLVM one did not. The call lowered to a bare `@file_size` /
+// `@regex_find` / `@alert` ... and clang failed with "use of undefined value",
+// so `kryos build --release` (LLVM) rejected any program that used them while
+// `kryos run` (Cranelift) accepted it. run_conformance.sh builds every conf_*
+// on BOTH backends, which is what pins this: before the mapping was added the
+// AOT build of this file failed. The dom / canvas / alert stubs only print a
+// diagnostic to stderr on native.
+fn expect(cond: bool, what: str) {
+    if not cond {
+        println("CONF FAIL: {what}")
+        exit(1)
+    }
+}
+
+@capabilities(all)
+fn main() {
+    // file_size: the byte count of a file just written, and -1 for a missing one
+    let mut d = env_get("TEMP")
+    if len(d) == 0 { d = env_get("TMPDIR") }
+    if len(d) == 0 { d = "/tmp" }
+    let p = d + "/kryos_conf_llvm_names.txt"
+    expect(file_write(p, "12345") == 0, "file_write")
+    expect(file_size(p) == 5, "file_size of a 5 byte file: {file_size(p)}")
+    expect(file_size(p + ".missing") == -1, "file_size of a missing file")
+
+    // regex_find / _pos / _end / replace_all / drop (regex_new + regex_match were mapped)
+    let re = regex_new("[0-9]+")
+    expect(regex_match(re, "ab123cd"), "regex_match")
+    expect(regex_find(re, "ab123cd") == "123", "regex_find: {regex_find(re, "ab123cd")}")
+    expect(regex_find_pos(re, "ab123cd", 0) == 2, "regex_find_pos")
+    expect(regex_find_end(re, "ab123cd", 0) == 5, "regex_find_end")
+    expect(regex_replace_all(re, "a1b22c", "#") == "a#b#c", "regex_replace_all: {regex_replace_all(re, "a1b22c", "#")}")
+    regex_drop(re)
+
+    // browser-facing stubs (native: a line on stderr, an empty value)
+    alert("conf")
+    dom_set_text("id", "text")
+    expect(len(dom_get_value("id")) == 0, "dom_get_value stub is empty")
+    canvas_clear("c")
+    canvas_fill_rect("c", 1, 2, 3, 4, "red")
+    expect(len(fetch_text("http://127.0.0.1:1/")) == 0, "fetch_text of a closed port is empty")
+    println("PASS")
+}
