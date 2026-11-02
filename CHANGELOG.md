@@ -140,7 +140,7 @@ Upgrade notes:
   hands back, what it cannot trace), and a function that returns a closure literal
   carries the same for the closure it returns.
   Pinned: 20 programs that master accepts and runs are rejected (E0507) in both modes,
-  3 regression pins, 19 controls stay accepted; a verdict diff over 1518 programs in
+  3 regression pins, 19 controls stay accepted; a verdict diff over 1523 programs in
   both modes moved only those 20 programs (40 rows, all newly rejected). Costs: a
   recursive nested `fn` that returns its parameter, and a closure that binds its parameter
   to a local before returning it, are charged `all` even when the argument is pure.
