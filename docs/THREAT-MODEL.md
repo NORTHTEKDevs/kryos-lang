@@ -8,7 +8,9 @@ Measured 2026-11-02 on `kryos 1.2.0`, a full-workspace `cargo build --release`
 made in place from commit `a9c4680b` (branch `fin/v1.3-finish`, clean tree).
 Its compiler and stdlib are identical to master `7cab5799` (PR #40, the
 bypass-classes wave): the branch adds only documents, check scripts and tests
-(`git diff 7cab5799 -- compiler` is empty). The first version of this document
+(`git diff 7cab5799 -- compiler` is empty); later commits on the branch revise only
+this document, the scripts and the tests, and a `cargo build --release -j 8` at the
+head was a no-op that left `kryos.exe` unchanged. The first version of this document
 was measured 2026-11-01 at `dbfb989d` (the R2 slot-rows wave head); since then
 PR #38 (R2, merged as `732714ab`), PR #39 (R3, the `deny!` verdict is taken
 after the whole module is checked, merged as `e2fbc46c`) and PR #40 (merged as
@@ -190,8 +192,11 @@ need it, and some of them hand out raw addresses (B9).**
 `alloc`, `free_bytes`, `ptr_read_i64`, `ptr_write_i64`, `ptr_byte_at`,
 `ptr_set_byte`, `str_to_ptr`, `arr_to_ptr` called from any non-stdlib function
 are rejected with `E0505` ("requires `ffi` capability"), in permissive too
-(pinned: claims.tsv G6-raw-memory-undeclared-default, -strict, -permissive;
-accepted with `@capabilities(ffi)`: G6-raw-memory-declared-*). The requirement
+(executed 2026-11-02, all eight, unannotated, in default, strict and permissive).
+The claims file pins two of the eight, `str_to_ptr` and `ptr_byte_at`
+(claims.tsv G6-raw-memory-undeclared-default, -strict, -permissive; accepted with
+`@capabilities(ffi)`: G6-raw-memory-declared-*); the other six are gated by
+`tests/authority_surface_gate.sh`. The requirement
 does not propagate out of the stdlib, so a stdlib user needs no `ffi`. It also
 covers an unannotated helper and a user module reached by `use` (gate:
 `tests/security_gate.sh` sections 1, 1b, 2, 3, `cap_escape_raw_memory*.kry`). Since
@@ -217,11 +222,15 @@ not deterministic: an `AtomicInt` built around `tensor_zeros([2, 3])` was
 accepted and `load()` returned a nonzero header word). `std::chan::ChanWaitGroup.count_cell`
 and the `std::string::StringBuilder` cell have the same shape by reading the
 source (LEDGER, "Zero-authority bypass classes B1-B8"; not run). What the repro
-does not show: it touches only memory the program allocated itself, makes no OS
-call and cannot crash; it is not an exploit of the OS. What it does show is that
-an integer the program chose is dereferenced by a stdlib method with no `ffi`,
-so "you cannot obtain a pointer without declaring `ffi`" is false for the
-stdlib's API surface, and any attacker-chosen address is reachable the same way.
+does not show: it touches only memory the program allocated itself, makes no
+file, process, network or `dlopen` call (it writes to stdout, and the atomic
+methods take a mutex) and cannot crash; it is not an exploit of the OS. What it
+does show is that an integer the program chose is dereferenced by a stdlib method
+with no `ffi`, so "you cannot obtain a pointer without declaring `ffi`" is false
+for the stdlib's API surface. That an attacker-chosen address, not just one the
+program allocated, is dereferenced the same way is read from `sync.kry`
+(`ptr_read_i64(self.cell, 0)` in `load`/`store`; source, not run with a foreign
+address because that could crash).
 The root is that a handle is a plain `i64` with public fields; the LEDGER records
 that closing it needs an opaque handle type or field privacy, and that gating
 `AtomicInt.load()` with `ffi` would over-reject every ordinary use of atomics.
@@ -273,8 +282,10 @@ grants the session only the capabilities passed with `--allow` (carried; gate:
   --strict-capabilities --cache` rc 1 with `E0505`, and `KRYOS_CACHE=1 kryos
   build` rc 1 with `E0505`. Not pinned by the claims file (it needs a cache
   directory and builds an artifact); gate: `tests/bypass_gate.sh` section 8. The
-  cache directory is `KRYOS_CACHE_DIR`, `$XDG_CACHE_HOME/kryos` or
-  `$HOME/.cache/kryos`, shared by every project of the user.
+  cache directory is `$KRYOS_CACHE_DIR/build`, `$XDG_CACHE_HOME/kryos/build` or
+  `$HOME/.cache/kryos/build`, with `%USERPROFILE%\AppData\Local\kryos\build` as the
+  Windows fallback (source: `build_cache.rs::cache_root`); it is shared by every
+  project of the user.
 - **Manifest mode.** Only project-mode `kryos build` (no file argument) reads
   `[capabilities] mode` from `kryos.toml`. With `mode = "permissive"` and an
   unannotated `env_get`: `kryos check` rc 1 and `kryos run` rc 1 with `E0505`, and
@@ -302,9 +313,11 @@ not read it from a manifest the source controls. Whether a dependency's own
 `kryos.toml` can lower the mode: not verified.
 
 **N3. Some authority is ambient and never charged.**
-`println`, `print`, `eprintln`, `exit`, `abort`, `time_now`, `time_millis`,
-`sleep`, `args()` and `read_line()` need no capability (source: `model.rs`;
-pinned: claims.tsv N3-args-time-sleep, N3-read-line). Consequences: any data a
+`println`, `print`, `eprintln`, `exit`, `time_now`, `time_millis`, `sleep`,
+`args()` and `read_line()` need no capability (source: `model.rs`; pinned:
+claims.tsv N3-args-time-sleep, N3-read-line). `abort` is also in the `model.rs`
+table as needing none, but `abort()` is `E0102` (undefined variable) on this
+build, so it is not callable (executed 2026-11-02). Consequences: any data a
 program is allowed to read can leave through stdout or stderr; program arguments
 and standard input are readable by everything; timing and stalling are not
 bounded. `Capability::Time` exists in the enum and is not enforced (`model.rs`,
@@ -644,13 +657,17 @@ or a deliberate scope choice (B5); B9 is an open defect.
 
 ## 5. How this document is kept true
 
-Three scripts keep it true. Each refuses to run on a toolchain that cannot build
-and run a pure program, because a broken toolchain would otherwise make every
-"accepted" check pass and every escape look "fixed". The measured fact (2026-11-02,
-executed): removing `kryos_rt.lib` alone from beside the binary does not trigger
-that canary, because a pure program still links and runs, and a pure program also
-still ran with `kryos_stdlib_native.lib` alone removed; removing both does
-(`LNK2001`, `LNK1120`).
+Three scripts keep it true. Two of them run the binary and each starts with a
+canary: `check-escapes-documented.sh` and `check-threat-model-claims.sh` refuse to
+run on a toolchain that cannot build and run a pure program and reject a direct
+`file_read` inside `deny!(fs:read)`, because a broken toolchain would otherwise
+make every "accepted" check pass and every escape look "fixed".
+`check-threat-model.sh` is a text check (required headings, README link, no
+unqualified headline) and never runs the binary. The measured fact (2026-11-02, executed):
+removing `kryos_rt.lib` alone from beside the binary does not trigger the canary,
+because a pure program still links and runs, and a pure program also still ran
+with `kryos_stdlib_native.lib` alone removed; removing both does (`LNK2001`,
+`LNK1120`).
 
 `bash tools/loop/check-escapes-documented.sh` is the acceptance for the graph
 nodes `stage2-rows` and `escape-root` (`tools/loop/GRAPH.md`). It first runs the
@@ -671,14 +688,18 @@ flags, program, expected exit status `0` or `nz`, an expected substring such as 
 error code, and the guarantee it backs); the programs are under
 `tests/threat_model/` or are existing repo programs. The script prints one `ok` or
 `FAIL` line per claim and exits 1 on any `FAIL` or if fewer than 73 claims are
-present (`MIN_CLAIMS`). It is the `accept` of the graph node `threat-model`, after
+present (`MIN_CLAIMS`), and it runs the same canary as the escape check before the
+first claim. It is the `accept` of the graph node `threat-model`, after
 `tools/loop/check-threat-model.sh`, which checks that this file has the three
 required headings and that the README links it. Non-vacuity, executed 2026-11-02:
-with one expectation flipped in a scratch copy of the manifest (G3-deny-direct-default
+with one expectation flipped in a one-line scratch manifest (G3-deny-direct-default
 changed from `nz` to `0`, run with `--manifest`) the script printed `FAIL
-G3-deny-direct-default` and `claims: 73, failed: 1`, exit 1; with both runtime
-libraries renamed away it stopped at the canary with `LNK2001 ... kryos_actor_wait_all`
-and exit 1 (both libraries were restored immediately).
+G3-deny-direct-default`, `claims: 1, failed: 1` and exited 1; with both runtime
+libraries renamed away it printed `check-threat-model-claims: FAIL -- canary:
+kryos run of a pure program did not exit 0 and print its marker (rc=1)` followed by
+`LNK2001 ... kryos_actor_wait_all` and `LNK1120: 60 unresolved externals`, ran no
+claim, and exited 1 (both libraries were restored immediately and their hashes
+re-checked).
 
 What the checks cannot do: they cannot find an escape nobody has written down. The
 corpus is a fixed list of names inside `escape_status.sh`; a program accepted by
@@ -689,9 +710,9 @@ a committed repro, and no closed escape that `escape_status.sh` measures reopens
 undetected": `escape_status.sh`, through the check, re-measures all 180 closed
 rows on every run, and `tests/security_gate.sh` (part of the `escape-root`
 accept) additionally pins most of them as must-reject. By a literal search of
-`tests/*.sh` for the repro file name, 52 of the 180 closed rows are named in no
-gate script (executed 2026-11-02; this ignores globs and generated lists inside
-`security_gate.sh`, which were not checked), so for those the escape check may be
+`tests/*.sh` for the repro stem (the file name without `.kry`), 52 of the 180
+closed rows are named in no gate script (executed 2026-11-02; this ignores globs
+and generated lists inside `security_gate.sh`, which were not checked), so for those the escape check may be
 the only thing pinning them. It is not "there are no escapes". Not done: a sweep
 that requires every `tests/security/*.kry` accepted by `kryos check` to be
 classified as a control, a corpus row or a bypass row; on 2026-11-02
