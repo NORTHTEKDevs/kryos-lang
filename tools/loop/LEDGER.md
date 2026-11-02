@@ -69,6 +69,11 @@ before the first edit, sha256 `053d2754...`).
   Re-measured on the merge with master `7cab5799` (PR #40, the zero-authority bypass classes): baseline = the build of that master, run in its own tree (the toolchain's stdlib
   directory is fixed at build time, so a copied-aside binary rejects the standard library as user code: 331 spurious `newly accepted` rows before the baseline was run in place),
   1562 programs (63 added by this wave), 3124 verdicts compared, 40 changed: the same 40 rows of the same 20 attack programs, 0 newly accepted, 0 reason-moved, nothing else moved.
+- Gates, master `e2fbc46c` -> this head (merged with master `7cab5799`): `escape_status.sh` 10 escaping / 180 rejected (190 repros) -> 31 / 200 (231): the corpus gained 41 rows, the
+  19 recorded first and the 3 of item 129 (all of them escape on master too; item 128 among the 19 is rejected here) and the 19 rows of this wave's shape programs (s77-01..19, rejected
+  here); `security_gate.sh` PASS 342 ok -> 384 ok, 0 FAIL; `capability_matrix_gate.sh` 75/75 attacks rejected and PRECISION 34/75 before and after; `compiler/self-host/test_bootstrap.sh`
+  16/16 before and after; `kryos-loop.sh gates 2` GREEN before (4936 s) and after (6541 s, tier 1 and tier 2, including the `bypass` gate of PR #40); `cargo test -p kryos-capabilities -p kryos-driver -p kryos-types` all
+  pass (the new test file adds 6 tests); `kryos check compiler/self-host/main.kry` 47.1-48.2 s on master, 47.8-50.0 s here (3 runs each, interleaved, idle machine).
 - Found and closed in this wave (not on the list): item 128 (`make_getter(reader)()`: the chained-call arm answered a call whose head is a top-level function with the flat
   authority of the returned closure); the same shape with a local at the head, and through a local bound to a call result.
 - Recorded first (the owner's rule), measured on master `e2fbc46c` before any code was touched: items 124 (seven repros) and 125 (six repros), root F, and item 126 (three repros), root R4,
