@@ -108,6 +108,31 @@ slot13|attack_slot_loop_carried_store_via_helper
 slot14|attack_slot_register_helper
 slot15|attack_slot_register_method
 slot16|assault_r1_real_program_plugin_platform_stores_first
+slot17|attack_slot_ret_push_param
+slot18|attack_slot_ret_literal_param
+slot19|attack_slot_ret_middleware_chain
+slot20|attack_slot_ret_two_arrays
+slot21|attack_slot_ret_captures_param
+slot22|attack_slot_ret_struct_items
+slot23|attack_slot_ret_option_cell
+slot24|attack_slot_ret_enum_payload
+slot25|attack_slot_ret_generic_container
+slot26|attack_slot_ret_generic_fn
+slot27|attack_slot_ret_static_method
+slot28|attack_slot_ret_trait_method
+slot29|attack_slot_ret_method_returns
+slot30|attack_slot_ret_lambda_of_container
+slot31|attack_slot_two_returns
+slot32|attack_slot_if_arms
+slot33|attack_slot_match_arms
+slot34|attack_slot_lambda_param_single_call
+slot35|attack_slot_lambda_param_two_calls
+slot36|attack_slot_register_after_pure_store
+slot37|attack_slot_call_after_narrow
+slot38|attack_slot_ret_recursion
+slot39|attack_slot_ret_result_cell
+slot40|attack_slot_ret_fluent_builder
+slot41|attack_slot_ret_rebuild_from_param_array
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

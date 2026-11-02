@@ -1,0 +1,37 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// An if/else and a match whose arms are all pure functions, called inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict): every arm is a pure function.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn also_safe() -> str {
+    return "also-safe"
+}
+fn pick_if(c: bool, g: fn() -> str) -> fn() -> str {
+    return if c { safe } else { g }
+}
+fn pick_match(n: i64, g: fn() -> str) -> fn() -> str {
+    return match n {
+        0 => safe,
+        _ => g,
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let ps = [pick_if(false, also_safe), pick_match(1, also_safe)]
+    deny!(fs:read) {
+        for f in ps {
+            println(f())
+        }
+    }
+}

@@ -1,0 +1,29 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// The builder holds a privileged closure but the deny! block denies a capability none of the closures uses.
+// Must stay ACCEPTED by `kryos check` (default and strict): the deny! block denies a capability no closure in the array uses.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn build_with(g: fn() -> str) -> [fn() -> str] {
+    return [safe, g]
+}
+
+@capabilities(fs:read, net:http)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = build_with(r)
+    deny!(net:http) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -2526,6 +2526,10 @@ impl TypeChecker {
                 self.current_function_name = Some(name.clone());
                 self.seed_tail_lambda_expected(body);
                 if let Some(s) = &sig {
+                    // The rows of what the body returns are the UNION of every
+                    // `return` (LEDGER root R2): they are storage, not a fact
+                    // the first `return` fixes.
+                    self.engine.mark_slot_rows(&s.ret, false);
                     self.engine.begin_store_effects(&s.generic_cap_var_ids);
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
@@ -2654,6 +2658,7 @@ impl TypeChecker {
                     self.current_function_name = Some(h.name.clone());
                     let handler_sig = self.env.lookup_method(name, &h.name).cloned();
                     if let Some(hs) = &handler_sig {
+                        self.engine.mark_slot_rows(&hs.ret, false);
                         self.engine.begin_store_effects(&hs.generic_cap_var_ids);
                     }
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
@@ -2966,6 +2971,7 @@ impl TypeChecker {
                             // nothing, and a privileged closure handed to an impl
                             // method (`Invoker::run(reader)`) cost zero -- LEDGER
                             // item 35. Mirrors the Decl::Function pattern exactly.
+                            self.engine.mark_slot_rows(&sig.ret, false);
                             self.engine.begin_store_effects(&sig.generic_cap_var_ids);
                             self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
@@ -6558,6 +6564,24 @@ impl TypeChecker {
                 let prev_ret = self.current_return_type.take();
                 self.current_return_type = Some(ret.clone());
 
+                // LEDGER root R2. The lambda is ONE monomorphic value, so the
+                // rows of its own annotated parameters are storage every call
+                // feeds (the union of everything it is called with), and so is
+                // the row of an annotated return. While its body is checked,
+                // the rows in its parameter types are INPUTS: a flow inside the
+                // body must not narrow them (`unify_rows`, `is_frozen`).
+                for (p, t) in params.iter().zip(param_types.iter()) {
+                    if p.ty.is_some() {
+                        let rt = self.engine.resolve(t);
+                        self.engine.mark_lambda_param_rows(&rt);
+                    }
+                }
+                if ret_ty.is_some() {
+                    let rr = self.engine.resolve(&ret);
+                    self.engine.mark_slot_rows(&rr, false);
+                }
+                let frozen_rows = self.engine.freeze_rows_of(&param_types);
+
                 // Pre-bind a pending self-recursive name (set by `Stmt::Let`
                 // just before this lambda was checked) to this lambda's own
                 // Function type, in the CURRENT (enclosing) scope -- i.e.
@@ -6597,6 +6621,7 @@ impl TypeChecker {
                 let body_ty = self.infer_expr(body);
                 let lambda_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
                 self.env.pop_scope();
+                self.engine.unfreeze_rows(frozen_rows);
 
                 self.current_return_type = prev_ret;
 
@@ -6688,10 +6713,15 @@ impl TypeChecker {
                         (true, false) => else_ty,
                         (false, true) => then_ty,
                         (false, false) => {
-                            if let Err(diag) = self.engine.unify(&then_ty, &else_ty, *span) {
+                            // The value is ONE OF the two arms, so a function
+                            // value's row is the UNION of both (LEDGER root R2):
+                            // typing the whole `if` by its first arm dropped the
+                            // other arm's row.
+                            let joined = self.engine.literal_slot_type(&then_ty);
+                            if let Err(diag) = self.engine.unify(&joined, &else_ty, *span) {
                                 self.diagnostics.push(diag);
                             }
-                            then_ty
+                            joined
                         }
                     }
                 } else {
@@ -6816,7 +6846,9 @@ impl TypeChecker {
                             self.diagnostics.push(diag);
                         }
                     } else {
-                        result_ty = Some(arm_ty);
+                        // The value is ONE OF the arms: a function value's row
+                        // is the union of all of them (LEDGER root R2).
+                        result_ty = Some(self.engine.literal_slot_type(&arm_ty));
                     }
                 }
 

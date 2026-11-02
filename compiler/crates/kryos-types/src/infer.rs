@@ -164,6 +164,16 @@ pub struct InferenceEngine {
     /// `(slot, the declaration's polymorphic vars that slot now holds)`.
     /// Replayed at every call site with that call's fresh copy of the vars.
     store_effects: HashMap<CapVarId, Vec<(CapVarId, CapRow)>>,
+    /// Row vars of the SIGNATURE of a lambda whose body is being checked right
+    /// now (a count, because lambdas nest). A declaration's own signature vars
+    /// are `effect_scope.poly`. See `is_frozen`.
+    frozen_cap_vars: HashMap<CapVarId, u32>,
+    /// The row vars of a lambda's own ANNOTATED parameters. A lambda is one
+    /// monomorphic value, so every call site and every higher-order use of it
+    /// feeds the SAME parameter row: it is a slot that is widened from either
+    /// side of a flow (`unify_rows` rule 2 widens it instead of skipping it
+    /// once it is bound).
+    lambda_param_cap_vars: std::collections::HashSet<CapVarId>,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -194,6 +204,8 @@ impl InferenceEngine {
             global_slot_cap_vars: std::collections::HashSet::new(),
             effect_scope: None,
             store_effects: HashMap::new(),
+            frozen_cap_vars: HashMap::new(),
+            lambda_param_cap_vars: std::collections::HashSet::new(),
         }
     }
 
@@ -868,9 +880,107 @@ impl InferenceEngine {
         }
         if before.is_closed() && !c2.is_unknown() {
             for &v in c2.var_ids() {
-                if !self.cap_substitutions.contains_key(&v) {
+                let open = !self.cap_substitutions.contains_key(&v);
+                if (open || self.lambda_param_cap_vars.contains(&v)) && !self.is_frozen(v) {
                     self.bind_cap_var(v, before.clone());
                 }
+            }
+        }
+    }
+
+    /// True iff `v` is a row var of the SIGNATURE of a function body that is
+    /// being checked right now: the declaration's polymorphic parameter and
+    /// return vars (`effect_scope.poly`), or the row vars in the parameter types
+    /// of a lambda whose body is open (`frozen_cap_vars`).
+    ///
+    /// A signature var is an INPUT of the body: it stands for whatever the
+    /// caller passes. A flow inside the body must not bind it to anything
+    /// narrower than that, or every caller is told the parameter is that
+    /// narrower row and the argument's authority is never charged (LEDGER root
+    /// R2, the returned-container shape: `let mut a = [safe]; a = push(a, g)`
+    /// bound `g`'s var to `safe`'s empty row).
+    fn is_frozen(&self, v: CapVarId) -> bool {
+        self.frozen_cap_vars.contains_key(&v)
+            || self.effect_scope.as_ref().is_some_and(|s| s.poly.contains(&v))
+    }
+
+    /// Every row var that appears anywhere in `ty`: the value's own row, the
+    /// rows of its parameters and result, and the rows of its element,
+    /// payload and generic argument types.
+    pub fn row_vars_in(ty: &Type, out: &mut Vec<CapVarId>) {
+        match ty {
+            Type::Function { params, ret, caps } => {
+                out.extend_from_slice(caps.var_ids());
+                for p in params {
+                    Self::row_vars_in(p, out);
+                }
+                Self::row_vars_in(ret, out);
+            }
+            Type::Array { element, .. } | Type::Set { element } => Self::row_vars_in(element, out),
+            Type::Tuple { elements } => {
+                for e in elements {
+                    Self::row_vars_in(e, out);
+                }
+            }
+            Type::Map { key, value } => {
+                Self::row_vars_in(key, out);
+                Self::row_vars_in(value, out);
+            }
+            Type::Option { inner }
+            | Type::Reference { inner, .. }
+            | Type::Shared { inner }
+            | Type::Weak { inner }
+            | Type::Pointer { inner, .. } => Self::row_vars_in(inner, out),
+            Type::Result { ok, err } => {
+                Self::row_vars_in(ok, out);
+                Self::row_vars_in(err, out);
+            }
+            Type::Struct { generics, .. } | Type::Enum { generics, .. } => {
+                for g in generics {
+                    Self::row_vars_in(g, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Freeze the row vars in `tys` for the duration of a lambda body (see
+    /// `is_frozen`). Returns what was frozen, to hand back to `unfreeze_rows`.
+    pub fn freeze_rows_of(&mut self, tys: &[Type]) -> Vec<CapVarId> {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        for t in tys {
+            let resolved = self.resolve(t);
+            Self::row_vars_in(&resolved, &mut vars);
+        }
+        vars.sort_unstable();
+        vars.dedup();
+        for &v in &vars {
+            *self.frozen_cap_vars.entry(v).or_insert(0) += 1;
+        }
+        vars
+    }
+
+    /// End the freeze opened by `freeze_rows_of`.
+    pub fn unfreeze_rows(&mut self, vars: Vec<CapVarId>) {
+        for v in vars {
+            if let Some(n) = self.frozen_cap_vars.get_mut(&v) {
+                *n -= 1;
+                if *n == 0 {
+                    self.frozen_cap_vars.remove(&v);
+                }
+            }
+        }
+    }
+
+    /// Mark the rows of a lambda's own annotated parameter type as storage.
+    /// A lambda is one monomorphic value: each call site (and each
+    /// higher-order use of it) feeds the SAME parameter row, so the row is the
+    /// union of everything it was ever called with.
+    pub fn mark_lambda_param_rows(&mut self, ty: &Type) {
+        self.mark_slot_rows(ty, false);
+        if let Type::Function { caps, .. } = ty {
+            for &v in caps.var_ids() {
+                self.lambda_param_cap_vars.insert(v);
             }
         }
     }

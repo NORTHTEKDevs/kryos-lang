@@ -1130,6 +1130,46 @@ R2_ESCAPES="attack_for_binder_shadow_closure_deny \
     attack_slot_register_method \
     attack_slot_param_struct_field_store \
     assault_r1_real_program_plugin_platform_stores_first"
+# Revise round of PR 38 (LEDGER root R2): SIGNATURE VARS ARE INPUTS.
+#
+# The independent verifier of the first R2 build found that a callee which builds a
+# container from a pure function and then stores its own closure PARAMETER into it
+# (`let mut a = [safe]; a = push(a, g); return a`, or `return [safe, g]`) was still
+# accepted and printed the secret. The slot WAS widened, but the original
+# unify rule also handed the slot's closed row to the source's unbound vars, so
+# the parameter's own row var was bound to the empty row and every caller was told
+# the parameter is pure. A signature var is an input of the body (it stands for
+# whatever the caller passes): the body may never bind it. The same defect hid in
+# a registration helper declared after a pure store, in a lambda's annotated
+# parameter (bound in the body, and first-call-wins afterwards), and in the
+# functions that return one of several function values (the several `return`s of
+# a function and the arms of an `if` / `match` were typed by the first one).
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_ret_push_param \
+    attack_slot_ret_literal_param \
+    attack_slot_ret_middleware_chain \
+    attack_slot_ret_two_arrays \
+    attack_slot_ret_captures_param \
+    attack_slot_ret_struct_items \
+    attack_slot_ret_option_cell \
+    attack_slot_ret_enum_payload \
+    attack_slot_ret_generic_container \
+    attack_slot_ret_generic_fn \
+    attack_slot_ret_static_method \
+    attack_slot_ret_trait_method \
+    attack_slot_ret_method_returns \
+    attack_slot_ret_lambda_of_container \
+    attack_slot_two_returns \
+    attack_slot_if_arms \
+    attack_slot_match_arms \
+    attack_slot_lambda_param_single_call \
+    attack_slot_lambda_param_two_calls \
+    attack_slot_register_after_pure_store \
+    attack_slot_call_after_narrow \
+    attack_slot_ret_recursion \
+    attack_slot_ret_result_cell \
+    attack_slot_ret_fluent_builder \
+    attack_slot_ret_rebuild_from_param_array"
 for esc in $R2_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1166,6 +1206,13 @@ R2_CONTROLS="ctl_slot_pure_registries_in_deny \
     ctl_slot_map_param_alias_pure \
     ctl_slot_array_param_alias_pure \
     ctl_slot_actor_explicit_self_pure"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_ret_push_param_pure \
+    ctl_slot_ret_other_cap_deny \
+    ctl_slot_two_returns_pure \
+    ctl_slot_if_match_arms_pure \
+    ctl_slot_lambda_param_pure_calls \
+    ctl_slot_register_after_pure_store_pure"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do
