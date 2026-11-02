@@ -1,0 +1,28 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a trait impl method holds a deny! block that does not depend on any parameter row: judged on its own row, accepted.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+trait Runner {
+    fn go(self: Self, n: i64)
+}
+struct R1 {}
+impl Runner for R1 {
+    fn go(self: R1, n: i64) {
+        deny!(fs:read) {
+            println(n + 1)
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let d: dyn Runner = R1 {}
+    d.go(1)
+}

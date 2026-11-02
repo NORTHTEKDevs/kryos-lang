@@ -1,0 +1,33 @@
+// Twin of attack_slot_param_fn_value_struct_field.kry: the helper stores a PURE function, so nothing privileged reaches the deny! block.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+// item 112, the storing helper is held in a fn-typed struct field and called through it.
+struct Ops {
+    store: fn([fn() -> str], fn() -> str),
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let ops = Ops { store: put }
+    let fns = [safe]
+    ops.store(fns, safe)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

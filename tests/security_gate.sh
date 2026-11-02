@@ -1262,6 +1262,122 @@ for ctl in $R2_CONTROLS; do
     done
     [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
 done
+# LEDGER root R3: the deny! verdict is taken when the module is done.
+#
+# `deny!` is judged on the row its body was charged, and that row mentions vars that
+# have no binding yet when the block is checked: the row of a parameter (which only a
+# reference to the declaration binds), a callee declared below, a field or a global
+# that `main` fills after the method reading it was checked, a local array that a loop
+# fills after the block. `concrete_bits()` dropped every one of them, so a block that
+# calls a closure it was handed, or reads a registry filled later, was judged to need
+# no authority. Every program below was accepted in every mode and printed the secret
+# on master 732714ab (executed), except attack_deny_param_factory_guard, _lambda_annotated
+# and _pick_passthrough, which the shape layer already rejects there and which are pinned
+# so the row layer no longer depends on it.
+#
+# The assertion is on the ROW layer ("is denied in this block"): the shape layer is
+# blinded by the outer harmless `f`, which is why these escaped, and a program rejected
+# only by E0507 would hide a row-layer regression. `kryos run` must refuse the program
+# and print nothing.
+R3_ESCAPES="attack_deny_double_indirection_wrapper_local \
+    assault_r1_real_program_plugin_platform_nopool \
+    assault_r1_real_program_plugin_platform \
+    attack_deny_in_callee_before_stores \
+    attack_deny_in_method_before_stores \
+    attack_deny_loop_carried_store_after_block \
+    attack_deny_in_callee_after_main \
+    attack_deny_in_lambda_defined_before_store \
+    attack_deny_global_slot_reader_before_main \
+    attack_deny_show_after_add_before_main \
+    attack_reassign_local_via_local_closure_return_lambda \
+    attack_reassign_local_via_local_closure_return_nested_fn \
+    attack_slot_register_after_main \
+    attack_slot_param_fn_value_hof_param \
+    attack_slot_param_fn_value_struct_field \
+    attack_slot_param_fn_value_map_of_ops \
+    attack_slot_lambda_wrapper_calls_put"
+# The parameter-row family: the privileged closure reaches the block through a row the
+# declaration holding the block never binds, by every route a reference can take.
+R3_ESCAPES="$R3_ESCAPES \
+    attack_deny_param_alias_wrapper \
+    attack_deny_param_hof_wrapper \
+    attack_deny_param_actor_handler \
+    attack_deny_param_impl_method \
+    attack_deny_param_struct_field \
+    attack_deny_param_two_hops \
+    attack_deny_param_recursion \
+    attack_deny_param_method_chain \
+    attack_deny_param_fn_value_ref \
+    attack_deny_param_lambda_annotated \
+    attack_deny_param_hof_compose \
+    attack_deny_param_hof_compose_apply_after_main \
+    attack_deny_param_struct_field_op \
+    attack_deny_param_map_of_ops \
+    attack_deny_param_factory_op \
+    attack_deny_param_lambda_wrapper \
+    attack_deny_param_dyn_dispatch \
+    attack_deny_param_bound_dispatch \
+    attack_deny_param_in_tuple \
+    attack_deny_param_in_option \
+    attack_deny_param_in_struct \
+    attack_deny_param_in_nested_array \
+    attack_deny_param_pick_passthrough \
+    attack_deny_param_factory_guard \
+    attack_deny_late_if_branch_store"
+for esc in $R3_ESCAPES; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/dn" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- the deny! verdict was taken on a row with unbound vars"
+            esc_ok=0; fail=1
+        elif ! grep -q "is denied in this block" "$TMP/dn"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not by the row layer (E0110):"
+            tail -3 "$TMP/dn" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    if timeout 60 "$K" run "tests/security/$esc.kry" >"$TMP/dnrun" 2>&1; then
+        echo "  FAIL: $esc.kry RAN (exit 0) -- the run must be refused at check time"
+        esc_ok=0; fail=1
+    elif grep -qE "TOPSECRET|EVIL-SUPPLY-CHAIN-LEAK" "$TMP/dnrun"; then
+        echo "  FAIL: $esc.kry printed the secret"
+        esc_ok=0; fail=1
+    fi
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected by the row layer in default and strict mode, run refused"
+done
+# The twin of every program above hands the block only pure closures, or denies a
+# capability none of the closures uses, and must stay accepted. The verdict is taken on
+# the final row, so an unbound var that nothing ever binds (an empty registry, a
+# parameter row no reference supplies) must still mean "no authority arrived".
+R3_CONTROLS="ctl_deny_param_wrapper_pure \
+    ctl_deny_param_callee_pure \
+    ctl_deny_param_two_callers_one_pure \
+    ctl_deny_param_other_capability \
+    ctl_deny_param_chain_pure \
+    ctl_deny_param_method_pure \
+    ctl_deny_param_lambda_pure \
+    ctl_deny_late_forward_helper_pure \
+    ctl_deny_late_method_field_pure \
+    ctl_deny_late_global_slot_pure \
+    ctl_deny_late_loop_store_pure \
+    ctl_deny_late_callee_after_main_pure \
+    ctl_deny_late_lambda_before_store_pure \
+    ctl_deny_late_slot_other_capability \
+    ctl_deny_trait_impl_no_param \
+    ctl_slot_param_fn_value_hof_param_pure \
+    ctl_slot_param_fn_value_struct_field_pure \
+    ctl_slot_param_fn_value_map_of_ops_pure \
+    ctl_slot_lambda_wrapper_calls_put_pure \
+    ctl_deny_plugin_platform_pure"
+for ctl in $R3_CONTROLS; do
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$ctl.kry" >"$TMP/dnc" 2>&1; then
+            echo "  FAIL: the deferred deny! verdict over-rejects $ctl.kry under \`check $mode\`:"
+            tail -3 "$TMP/dnc" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
+done
 # The two shipped registry-dispatch programs are the precision witnesses the
 # fail-closed row work is measured against: both hold privileged closures in
 # slots and both must keep compiling.

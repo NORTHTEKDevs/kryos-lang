@@ -1,0 +1,28 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). item 120 (global slot) twin: main pushes only pure closures into the global the earlier function reads.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+let mut REG: [fn() -> str] = []
+
+fn run_all() {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in REG {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    REG = push(REG, safe)
+    REG = push(REG, safe)
+    run_all()
+}

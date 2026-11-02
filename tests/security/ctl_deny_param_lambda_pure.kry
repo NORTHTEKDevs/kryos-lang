@@ -1,0 +1,20 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a lambda holding a deny! block, called with a pure closure (main holds `all`, so the shape layer, which fails closed on a call through a lambda that calls its parameter, accepts it).
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(all)
+fn main() {
+    let run = |g: fn() -> str| {
+        deny!(fs:read) {
+            println("ok: " + g())
+        }
+    }
+    run(safe)
+}

@@ -1,0 +1,32 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). item 115 through a relay and a recursion, handed pure closures.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str], n: i64) {
+    let f = || "harmless"
+    if n > 0 {
+        run_all(fns, n - 1)
+    } else {
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+    }
+}
+
+fn relay(fns: [fn() -> str]) {
+    run_all(fns, 2)
+}
+
+@capabilities(fs:read)
+fn main() {
+    relay([safe, safe])
+}

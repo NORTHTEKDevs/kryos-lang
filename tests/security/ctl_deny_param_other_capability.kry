@@ -1,0 +1,26 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). the closure reads a file but the block denies the network: the denied capability is not used.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(net:http) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe, r]
+    run_all(fns)
+}
