@@ -16,6 +16,7 @@
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use kryos_ast::Decl;
 use kryos_capabilities::{effective_function_capabilities, CapabilityMode};
@@ -58,8 +59,15 @@ fn has_caps(anns: &[kryos_ast::Annotation]) -> bool {
 }
 
 /// (module, fn) of every unannotated top-level stdlib function with a body
-/// whose effective capability set is non-empty, in `Inferred` mode.
-fn undeclared_authority() -> BTreeSet<(String, String)> {
+/// whose effective capability set is non-empty, in `Inferred` mode. Computed
+/// once per process: the tests of this file run on parallel threads, and two
+/// computations would share (and delete) one probe directory.
+fn undeclared_authority() -> &'static BTreeSet<(String, String)> {
+    static RESULT: OnceLock<BTreeSet<(String, String)>> = OnceLock::new();
+    RESULT.get_or_init(compute_undeclared_authority)
+}
+
+fn compute_undeclared_authority() -> BTreeSet<(String, String)> {
     let probe_dir = std::env::temp_dir().join(format!("kryos_stdlib_authority_{}", std::process::id()));
     fs::create_dir_all(&probe_dir).unwrap();
     let mut out = BTreeSet::new();
@@ -135,7 +143,7 @@ fn no_stdlib_function_exercises_authority_without_declaring_it() {
     );
 
     let stale: Vec<String> = known
-        .difference(&found)
+        .difference(found)
         .map(|(m, f)| format!("std::{m}::{f}"))
         .collect();
     assert!(
@@ -150,7 +158,7 @@ fn std_ffi_and_std_wasm_declare_everything_they_expose() {
     // The two modules B3 fixed. Spelled out so the fix cannot be reverted by
     // editing KNOWN_UNDECLARED.
     let found = undeclared_authority();
-    for (m, f) in &found {
+    for (m, f) in found {
         assert!(
             m != "ffi" && m != "wasm",
             "std::{m}::{f} exposes authority without declaring it (bypass B3)"
