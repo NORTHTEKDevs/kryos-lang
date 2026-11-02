@@ -1284,6 +1284,8 @@ version = "1.2.0"
 dependencies = [
  "kryos-ast",
  "kryos-errors",
+ "kryos-lexer",
+ "kryos-parser",
 ]
 
 [[package]]

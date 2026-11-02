@@ -9,7 +9,7 @@
 use kryos_ast::{Annotation, Decl, Expr, Module, Param, Stmt, StructField, TypeExpr};
 use kryos_errors::{Diagnostic, Span};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::model::{
     is_escalation_action, is_known_builtin_name, required_capability_for_builtin,
@@ -153,6 +153,219 @@ enum ClosureCapsResult {
     /// the same stance documented for the raw-memory escape: if the checker
     /// cannot prove what a callback does, require the caller to hold `all`.
     Unknown,
+}
+
+/// The first byte of the placeholder that stands for "the argument passed for
+/// parameter `i` of the closure at nesting depth `level`" while a closure's
+/// return paths are resolved. It cannot start an identifier, so no real name
+/// collides with it.
+const PARAM_TOKEN_PREFIX: char = '\u{1}';
+
+/// How many closures deep a return flow follows "this call returns exactly one
+/// closure literal" (`curry(a)(b)(c)`); deeper literals are not traced.
+const MAX_SUMMARY_DEPTH: usize = 4;
+
+fn param_token(level: usize, i: usize) -> String {
+    format!("{PARAM_TOKEN_PREFIX}{level}:{i}")
+}
+
+fn param_token_index(name: &str) -> Option<(usize, usize)> {
+    let (level, i) = name.strip_prefix(PARAM_TOKEN_PREFIX)?.split_once(':')?;
+    Some((level.parse().ok()?, i.parse().ok()?))
+}
+
+/// What a CALL through a closure hands back, kept apart from what INVOKING that
+/// closure needs (LEDGER item 77).
+///
+/// `local_caps[name]` is the authority of invoking the closure bound to
+/// `name`. A call through the name used to be resolved to that very set, so
+/// after `let setter = |r| { r }` the value of `setter(reader)` was charged
+/// the (empty) invocation authority of `setter` instead of the authority of
+/// `reader`, which `setter` hands back: `f = setter(reader)` made `f` look
+/// pure and `f()` inside `deny!(fs:read)` read the file. A top-level named
+/// function never had the problem, because `fn_return_closure_caps` records
+/// what it RETURNS; a closure bound to a local had no such record.
+///
+/// The return flow is every way a value can leave the body: closures the body
+/// creates or names (their flat authority), the arguments it returns, the
+/// parameters of an enclosing closure or function it captures and returns,
+/// the locals it hands back, and a path the checker cannot trace (fail
+/// closed, like every other `Unknown`).
+#[derive(Debug, Clone, PartialEq)]
+struct RetFlow {
+    /// The flat authority of the closures and function values the body creates
+    /// or names and returns.
+    known: CapabilitySet,
+    /// Indices of the closure's own parameters a return path can hand back.
+    params: BTreeSet<usize>,
+    /// Parameters of an ENCLOSING closure a return path can hand back, as
+    /// (levels up, index). Only a closure the body returns carries these; they
+    /// are replaced by the arguments when the enclosing closure is called.
+    up: BTreeSet<(usize, usize)>,
+    /// Parameters of the ENCLOSING function (captured) a return path can hand
+    /// back; they stay `DependsOnParam` in the result, deferred to that
+    /// function's own call sites exactly like a direct reference to them.
+    outer: BTreeSet<String>,
+    /// Locals of the flat map a return path hands back (`|| { cap }`). They
+    /// are looked up when the CALL is resolved, not when the closure is
+    /// defined: a captured local is shared, so a rebinding made after the
+    /// definition (`cap = reader`) still counts.
+    locals: BTreeSet<String>,
+    /// A return path whose provenance is not traced.
+    unknown: bool,
+}
+
+impl RetFlow {
+    fn pure() -> Self {
+        RetFlow {
+            known: CapabilitySet::empty(),
+            params: BTreeSet::new(),
+            up: BTreeSet::new(),
+            outer: BTreeSet::new(),
+            locals: BTreeSet::new(),
+            unknown: false,
+        }
+    }
+
+    /// Add what one return expression resolved to, inside the closure at
+    /// nesting depth `level` whose parameters are `param_names`: a reference to
+    /// one of them is a `param_token` placeholder (or its plain name when it
+    /// came through a nested closure literal's own capture analysis), a
+    /// reference to a parameter of an enclosing closure is a placeholder of a
+    /// lower level.
+    fn add(&mut self, r: ClosureCapsResult, level: usize, param_names: &[String]) {
+        match r {
+            ClosureCapsResult::Known(c) => self.known = self.known.union(&c),
+            ClosureCapsResult::DependsOnParam(p) => {
+                if let Some((lvl, i)) = param_token_index(&p) {
+                    if lvl == level {
+                        self.params.insert(i);
+                    } else if lvl < level {
+                        self.up.insert((level - lvl, i));
+                    } else {
+                        self.unknown = true;
+                    }
+                } else if let Some(i) = param_names.iter().position(|n| *n == p) {
+                    self.params.insert(i);
+                } else {
+                    self.outer.insert(p);
+                }
+            }
+            ClosureCapsResult::Unknown => self.unknown = true,
+        }
+    }
+
+    /// Add what an argument resolved to in the CALLER's scope (no placeholder of
+    /// this closure can appear in it).
+    fn add_resolved(&mut self, r: ClosureCapsResult) {
+        match r {
+            ClosureCapsResult::Known(c) => self.known = self.known.union(&c),
+            ClosureCapsResult::DependsOnParam(p) => {
+                self.outer.insert(p);
+            }
+            ClosureCapsResult::Unknown => self.unknown = true,
+        }
+    }
+}
+
+/// A closure whose body the checker saw: its return flow and, when the only
+/// thing it returns is a closure literal (`|a| { |b| { b } }`), the summary of
+/// that closure, so applying the result of a call (`mk(a)(b)`,
+/// `let inner = mk(a)` then `inner(b)`) is traced as well. For a top-level
+/// function reached through an alias, the flow is its `fn_return_closure_caps`
+/// entry translated to the same shape.
+#[derive(Debug, Clone, PartialEq)]
+struct LocalRet {
+    flow: RetFlow,
+    applied: Option<Box<LocalRet>>,
+}
+
+/// The combined authority sources of a call, built up from the bindings a
+/// name can hold and the arguments they hand back, then folded into the one
+/// `ClosureCapsResult` the rest of the checker understands.
+struct RetSources {
+    known: CapabilitySet,
+    deps: BTreeSet<String>,
+    unknown: bool,
+}
+
+impl RetSources {
+    fn new() -> Self {
+        RetSources {
+            known: CapabilitySet::empty(),
+            deps: BTreeSet::new(),
+            unknown: false,
+        }
+    }
+
+    fn add(&mut self, r: ClosureCapsResult) {
+        match r {
+            ClosureCapsResult::Known(c) => self.known = self.known.union(&c),
+            ClosureCapsResult::DependsOnParam(p) => {
+                self.deps.insert(p);
+            }
+            ClosureCapsResult::Unknown => self.unknown = true,
+        }
+    }
+
+    /// `ClosureCapsResult` holds one of {a known set, one deferred parameter,
+    /// unknown}; a mix it cannot represent is `Unknown`, never narrowed.
+    fn finish(self) -> ClosureCapsResult {
+        if self.unknown {
+            return ClosureCapsResult::Unknown;
+        }
+        let mut deps = self.deps.into_iter();
+        match (deps.next(), deps.next()) {
+            (None, _) => ClosureCapsResult::Known(self.known),
+            (Some(p), None) if self.known.is_empty() => ClosureCapsResult::DependsOnParam(p),
+            _ => ClosureCapsResult::Unknown,
+        }
+    }
+}
+
+/// The flat closure provenance of one function body: for every local name the
+/// authority of INVOKING what it can hold (`caps`, unioned over every binding)
+/// and, per binding, what a CALL through it returns (`rets`, `None` for a
+/// binding whose definition the checker does not see: a parameter, a call
+/// result, an arbitrary expression). Read access derefs to `caps`.
+#[derive(Debug, Clone, Default)]
+struct LocalCaps {
+    caps: HashMap<String, ClosureCapsResult>,
+    rets: HashMap<String, Vec<Option<LocalRet>>>,
+}
+
+impl std::ops::Deref for LocalCaps {
+    type Target = HashMap<String, ClosureCapsResult>;
+    fn deref(&self) -> &Self::Target {
+        &self.caps
+    }
+}
+
+/// More bindings than this under one name collapse to "not traced".
+const MAX_LOCAL_BINDINGS: usize = 8;
+
+impl LocalCaps {
+    fn clear(&mut self) {
+        self.caps.clear();
+        self.rets.clear();
+    }
+
+    /// Forget a name entirely (a closure parameter shadows whatever the flat
+    /// map holds under the same name).
+    fn forget(&mut self, name: &str) {
+        self.caps.remove(name);
+        self.rets.remove(name);
+    }
+
+    /// Append the return flow of one more binding of `name`.
+    fn push_ret(&mut self, name: &str, bindings: Vec<Option<LocalRet>>) {
+        let slot = self.rets.entry(name.to_string()).or_default();
+        slot.extend(bindings);
+        slot.dedup();
+        if slot.len() > MAX_LOCAL_BINDINGS {
+            *slot = vec![None];
+        }
+    }
 }
 
 /// One step of a field/index access chain rooted at a parameter, used to
@@ -413,6 +626,9 @@ struct CapabilityChecker {
     /// reader = make_secret_reader(path)` back to the authority the returned
     /// closure actually carries.
     fn_return_closure_caps: HashMap<String, ClosureCapsResult>,
+    /// For every top-level function whose only returned value is a closure
+    /// literal, the summary of that literal (see `compute_fn_return_summaries`).
+    fn_return_summaries: HashMap<String, LocalRet>,
     /// For every ZERO-PARAMETER function whose every RETURN-position
     /// expression (see `collect_return_exprs`) agrees on the SAME
     /// struct/array/map LITERAL (directly, or via a `let`-bound local
@@ -442,7 +658,7 @@ struct CapabilityChecker {
     /// checked to the resolved authority of its initializer, when that
     /// initializer is plausibly a function value (a lambda literal, a
     /// function reference, or a call to a closure-returning function).
-    current_local_closure_caps: HashMap<String, ClosureCapsResult>,
+    current_local_closure_caps: LocalCaps,
     /// A best-effort, flat (same precision level as
     /// `current_local_closure_caps`) map from each `let`-bound local in the
     /// function currently being checked to its initializer EXPRESSION, when
@@ -542,9 +758,10 @@ impl CapabilityChecker {
             hot_params: HashMap::new(),
             hot_param_companions: HashMap::new(),
             fn_return_closure_caps: HashMap::new(),
+            fn_return_summaries: HashMap::new(),
             fn_return_container_lits: HashMap::new(),
             current_fn_typed_params: HashSet::new(),
-            current_local_closure_caps: HashMap::new(),
+            current_local_closure_caps: LocalCaps::default(),
             current_local_container_lits: HashMap::new(),
             current_local_container_types: HashMap::new(),
             current_actor_fn_state_fields: HashSet::new(),
@@ -1800,7 +2017,7 @@ impl CapabilityChecker {
         expr: &Expr,
         working: &HashMap<String, CapabilitySet>,
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) -> ClosureCapsResult {
@@ -1997,18 +2214,25 @@ impl CapabilityChecker {
             Expr::FnCall { callee, args, .. } => {
                 match callee.as_ref() {
                     Expr::Identifier { name, .. } => {
-                        // The callee may be a LOCAL bound to a fn-returning
-                        // expression rather than a named function -- a
-                        // curried intermediate step (`let step2 =
-                        // step1(2)`). `local_caps` already holds the fully
-                        // resolved authority for such a local (computed when
-                        // its own `let` was processed); check it BEFORE
-                        // `fn_return_caps` (which is keyed by function name
-                        // and knows nothing about locals), matching the
+                        // The callee may be a LOCAL: a closure bound by a
+                        // `let`, a nested `fn`, an alias of either. Check it
+                        // BEFORE `fn_return_caps` (which is keyed by function
+                        // name and knows nothing about locals), matching the
                         // local-shadows-function convention used elsewhere
                         // in this file.
-                        if let Some(r) = local_caps.get(name) {
-                            return r.clone();
+                        //
+                        // What the CALL returns is the closure's RETURN FLOW,
+                        // not `local_caps[name]`: that entry is the authority
+                        // of INVOKING the closure, and answering with it made
+                        // `f = setter(reader)` (with `let setter = |r| { r }`)
+                        // charge `f` the empty set `setter` needs instead of
+                        // the authority of `reader`, which it hands back
+                        // (LEDGER item 77; the same shape with a top-level
+                        // `fn` resolves through `fn_return_caps` below).
+                        if local_caps.contains_key(name) {
+                            return self.resolve_local_call(
+                                name, args, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                            );
                         }
                         match fn_return_caps.get(name) {
                             Some(ClosureCapsResult::Known(c)) => ClosureCapsResult::Known(c.clone()),
@@ -2030,16 +2254,34 @@ impl CapabilityChecker {
                         }
                     }
                     // A CURRIED/chained call (`f(a)(b)`): the callee of THIS
-                    // call is itself another call. Peel one layer at a time
-                    // by recursing -- sound because `fn_return_closure_caps`
-                    // (via `collect_caps_expr`'s `Lambda` arm, which already
-                    // unions a lambda's FULL nested body into one flat
-                    // requirement regardless of how many closures it is
-                    // nested inside) already over-approximates a curried
-                    // function's return authority at the FIRST resolution
-                    // step, so each further application can safely reuse the
-                    // same resolved value rather than needing its own.
-                    Expr::FnCall { .. } | Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
+                    // call is itself another call, and the value of THIS call
+                    // is what applying the closure `f(a)` returns. That is not
+                    // the authority of INVOKING `f(a)` (the flat union of what
+                    // its body, nested closures included, can run, which is
+                    // what `fn_return_closure_caps` records): a closure that
+                    // returns its argument or something it captured
+                    // (`make_getter(reader)()`, or `mk(a)(b)` with `let mk =
+                    // |x| { |y| y }`) hands back authority that union does
+                    // not contain. When `f(a)` is a closure literal the
+                    // checker saw (a local closure, or a top-level function
+                    // whose only returned value is one) the application is
+                    // resolved through that closure's own return flow, one
+                    // layer at a time; when it is not, the answer is `Unknown`,
+                    // the same as a call through a parameter. (LEDGER items
+                    // 77 and 128.)
+                    Expr::FnCall { .. } => {
+                        match self.summary_of_call_value(
+                            callee, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                        ) {
+                            Some(s) => self
+                                .apply_summary(
+                                    &s, args, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                                )
+                                .0,
+                            None => ClosureCapsResult::Unknown,
+                        }
+                    }
+                    Expr::MethodCall { .. } | Expr::StaticMethodCall { .. } => {
                         self.resolve_closure_caps(callee, working, fn_return_caps, local_caps, local_container_lits, own_params)
                     }
                     // Exhaustive over `Expr` - every OTHER shape a call's
@@ -2204,7 +2446,7 @@ impl CapabilityChecker {
         path: &[PathStep],
         working: &HashMap<String, CapabilitySet>,
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) -> ClosureCapsResult {
@@ -2305,6 +2547,593 @@ impl CapabilityChecker {
         }
     }
 
+    /// The value of a CALL through the local `name` (`setter(reader)` with
+    /// `let setter = |r| { r }`): the union, over every closure the name can
+    /// hold, of its return flow, with each returned parameter replaced by the
+    /// authority of the argument passed for it at THIS call. A binding the
+    /// checker did not see the definition of (a parameter, a call result it
+    /// cannot summarize, an arbitrary expression) is `Unknown`, which every
+    /// caller turns into `all`; so is an omitted argument (a defaulted
+    /// parameter).
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_local_call(
+        &self,
+        name: &str,
+        args: &[Expr],
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> ClosureCapsResult {
+        let Some(bindings) = local_caps.rets.get(name).filter(|b| !b.is_empty()) else {
+            return ClosureCapsResult::Unknown;
+        };
+        let mut src = RetSources::new();
+        for binding in bindings {
+            let Some(lr) = binding else {
+                return ClosureCapsResult::Unknown;
+            };
+            self.flow_into_sources(
+                &lr.flow, args, &mut src, working, fn_return_caps, local_caps, local_container_lits, own_params,
+            );
+        }
+        src.finish()
+    }
+
+    /// What an ARGUMENT carries when a return flow hands it back: a literal is a
+    /// value, never a closure, so it carries nothing; everything else resolves
+    /// as a function value.
+    #[allow(clippy::too_many_arguments)]
+    fn resolve_flow_arg(
+        &self,
+        arg: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> ClosureCapsResult {
+        match arg {
+            Expr::IntLiteral { .. }
+            | Expr::FloatLiteral { .. }
+            | Expr::StringLiteral { .. }
+            | Expr::InterpolatedString { .. }
+            | Expr::CharLiteral { .. }
+            | Expr::BoolLiteral { .. }
+            | Expr::NoneLiteral { .. } => ClosureCapsResult::Known(CapabilitySet::empty()),
+            _ => self.resolve_closure_caps(arg, working, fn_return_caps, local_caps, local_container_lits, own_params),
+        }
+    }
+
+    /// The summary of the closure the expression `e` evaluates to, when the
+    /// checker can see it: a lambda literal, a local bound to exactly one
+    /// summarized closure, or a call that returns one.
+    #[allow(clippy::too_many_arguments)]
+    fn summary_of_expr(
+        &self,
+        e: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> Option<LocalRet> {
+        match e {
+            Expr::Lambda { params, body, .. } => Some(self.lambda_ret_flow(
+                params, body, 0, true, working, fn_return_caps, own_params, local_container_lits, local_caps,
+            )),
+            Expr::Identifier { name, .. } => {
+                let bindings = local_caps.rets.get(name)?;
+                if bindings.len() == 1 {
+                    bindings[0].clone()
+                } else {
+                    None
+                }
+            }
+            Expr::FnCall { .. } => {
+                self.summary_of_call_value(e, working, fn_return_caps, local_caps, local_container_lits, own_params)
+            }
+            _ => None,
+        }
+    }
+
+    /// Fold the return flow of one closure, called with `args`, into `src`.
+    #[allow(clippy::too_many_arguments)]
+    fn flow_into_sources(
+        &self,
+        flow: &RetFlow,
+        args: &[Expr],
+        src: &mut RetSources,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) {
+        src.known = src.known.union(&flow.known);
+        src.deps.extend(flow.outer.iter().cloned());
+        // A placeholder of an enclosing closure that was never replaced (the
+        // summary is applied out of its context): not traced.
+        if flow.unknown || !flow.up.is_empty() {
+            src.unknown = true;
+        }
+        for local in &flow.locals {
+            let ident = Expr::Identifier {
+                name: local.clone(),
+                span: Span::DUMMY,
+            };
+            src.add(self.resolve_closure_caps(
+                &ident, working, fn_return_caps, local_caps, local_container_lits, own_params,
+            ));
+        }
+        for &i in &flow.params {
+            match args.get(i) {
+                Some(arg) => src.add(self.resolve_flow_arg(
+                    arg, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                )),
+                None => src.unknown = true,
+            }
+        }
+    }
+
+    /// Apply a closure summary to the arguments of a call: the value the call
+    /// returns and, when the closure returns exactly one closure literal, the
+    /// summary of that closure with this call's arguments substituted for the
+    /// parameters of the closure that was applied.
+    #[allow(clippy::too_many_arguments)]
+    fn apply_summary(
+        &self,
+        s: &LocalRet,
+        args: &[Expr],
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> (ClosureCapsResult, Option<LocalRet>) {
+        let mut src = RetSources::new();
+        self.flow_into_sources(
+            &s.flow, args, &mut src, working, fn_return_caps, local_caps, local_container_lits, own_params,
+        );
+        let applied = match &s.applied {
+            Some(a) => Some(self.bind_up(
+                a, args, 1, working, fn_return_caps, local_caps, local_container_lits, own_params,
+            )),
+            // The closure returns exactly one of its parameters: the closure a
+            // further application returns is the summary of that argument.
+            None => {
+                let f = &s.flow;
+                if f.params.len() == 1
+                    && f.outer.is_empty()
+                    && f.up.is_empty()
+                    && f.locals.is_empty()
+                    && f.known.is_empty()
+                    && !f.unknown
+                {
+                    f.params.iter().next().and_then(|&i| {
+                        self.summary_of_expr(
+                            args.get(i)?, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                        )
+                    })
+                } else {
+                    None
+                }
+            }
+        };
+        (src.finish(), applied)
+    }
+
+    /// Replace, in the summary `a` of a closure returned `distance` closures
+    /// below the one being applied, every reference to a parameter of the
+    /// applied closure (`up` entries at that distance) by the authority of the
+    /// argument passed for it.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_up(
+        &self,
+        a: &LocalRet,
+        args: &[Expr],
+        distance: usize,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> LocalRet {
+        let mut flow = a.flow.clone();
+        let mut keep = BTreeSet::new();
+        for &(lvl, i) in &a.flow.up {
+            if lvl == distance {
+                match args.get(i) {
+                    Some(arg) => flow.add_resolved(self.resolve_flow_arg(
+                        arg, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    )),
+                    None => flow.unknown = true,
+                }
+            } else {
+                keep.insert((lvl, i));
+            }
+        }
+        flow.up = keep;
+        LocalRet {
+            flow,
+            applied: a.applied.as_ref().map(|b| {
+                Box::new(self.bind_up(
+                    b, args, distance + 1, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                ))
+            }),
+        }
+    }
+
+    /// Replace, in the summary `s` of the closure a top-level function
+    /// returns, every parameter of that function the closure captures and
+    /// returns (`outer` entries naming one of `params`) by the authority of
+    /// the argument passed at this call.
+    #[allow(clippy::too_many_arguments)]
+    fn bind_outer(
+        &self,
+        s: &LocalRet,
+        params: &[Param],
+        args: &[Expr],
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> LocalRet {
+        let mut flow = s.flow.clone();
+        // A closure that returns exactly one captured parameter hands back the
+        // argument itself, so the closure a further application returns is the
+        // summary of that argument.
+        let returned_arg = match (flow.outer.iter().next(), flow.outer.len()) {
+            (Some(n), 1)
+                if flow.params.is_empty()
+                    && flow.up.is_empty()
+                    && flow.locals.is_empty()
+                    && flow.known.is_empty()
+                    && !flow.unknown =>
+            {
+                params.iter().position(|p| p.name == *n)
+            }
+            _ => None,
+        };
+        let names: Vec<String> = flow.outer.iter().cloned().collect();
+        for n in names {
+            if let Some(i) = params.iter().position(|p| p.name == n) {
+                flow.outer.remove(&n);
+                match args.get(i) {
+                    Some(arg) => flow.add_resolved(self.resolve_flow_arg(
+                        arg, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                    )),
+                    None => flow.unknown = true,
+                }
+            }
+        }
+        let applied = match &s.applied {
+            Some(b) => Some(Box::new(self.bind_outer(
+                b, params, args, working, fn_return_caps, local_caps, local_container_lits, own_params,
+            ))),
+            None => returned_arg.and_then(|i| {
+                self.summary_of_expr(
+                    args.get(i)?, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                )
+                .map(Box::new)
+            }),
+        };
+        LocalRet { flow, applied }
+    }
+
+    /// The summary of the closure the call expression `call` returns, when the
+    /// checker can see it: the closure literal a local closure or a top-level
+    /// function returns, with the arguments of the calls on the way
+    /// substituted. `None` when it cannot (the answer of the caller is then
+    /// `Unknown`).
+    #[allow(clippy::too_many_arguments)]
+    fn summary_of_call_value(
+        &self,
+        call: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
+        local_container_lits: &HashMap<String, Expr>,
+        own_params: &HashSet<String>,
+    ) -> Option<LocalRet> {
+        let Expr::FnCall { callee, args, .. } = call else {
+            return None;
+        };
+        match callee.as_ref() {
+            Expr::Identifier { name, .. } => {
+                if local_caps.contains_key(name) {
+                    let bindings = local_caps.rets.get(name)?;
+                    if bindings.len() != 1 {
+                        return None;
+                    }
+                    let s = bindings[0].as_ref()?;
+                    return self
+                        .apply_summary(s, args, working, fn_return_caps, local_caps, local_container_lits, own_params)
+                        .1;
+                }
+                let s = self.fn_return_summaries.get(name)?;
+                let params = self.fn_params.get(name)?;
+                Some(self.bind_outer(
+                    s, params, args, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                ))
+            }
+            Expr::FnCall { .. } => {
+                let inner = self.summary_of_call_value(
+                    callee, working, fn_return_caps, local_caps, local_container_lits, own_params,
+                )?;
+                self.apply_summary(&inner, args, working, fn_return_caps, local_caps, local_container_lits, own_params)
+                    .1
+            }
+            _ => None,
+        }
+    }
+
+    /// Every expression a value can leave `expr` through when `expr` is the
+    /// body of a closure: the expression itself, or, for a block / `if` /
+    /// `match`, its explicit `return`s and the tail value of each branch.
+    fn collect_value_exprs<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>, depth: usize) {
+        if depth > 16 {
+            out.push(expr);
+            return;
+        }
+        let expand_block = |block: &'a kryos_ast::Block, out: &mut Vec<&'a Expr>| {
+            let mut inner: Vec<&'a Expr> = Vec::new();
+            Self::collect_return_exprs(block, &mut inner);
+            for e in inner {
+                Self::collect_value_exprs(e, out, depth + 1);
+            }
+        };
+        match expr {
+            Expr::Block { block, .. } => expand_block(block, out),
+            Expr::IfExpr {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                expand_block(then_branch, out);
+                if let Some(b) = else_branch {
+                    expand_block(b, out);
+                }
+            }
+            Expr::MatchExpr { arms, .. } => {
+                for arm in arms {
+                    Self::collect_value_exprs(&arm.body, out, depth + 1);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+
+    /// The summary of the closure literal `|params| body` at nesting depth
+    /// `level`, resolved in the scope of its definition: each parameter stands
+    /// for the argument of the eventual call (a placeholder of this level),
+    /// every other name resolves through the flat map as it is when the closure
+    /// is defined. `lazy_locals` leaves the locals a return path hands back to
+    /// be looked up when the call is resolved (a closure bound to a local of the
+    /// function that calls it); a top-level function's summary is read in other
+    /// functions' scopes, so it resolves them now.
+    #[allow(clippy::too_many_arguments)]
+    fn lambda_ret_flow(
+        &self,
+        params: &[Param],
+        body: &Expr,
+        level: usize,
+        lazy_locals: bool,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
+        locals: &LocalCaps,
+    ) -> LocalRet {
+        // The closure's own parameters shadow whatever the flat map holds
+        // under the same name. A call THROUGH a parameter hands back
+        // something the checker cannot see, so it is traced as `None`.
+        let mut env = locals.clone();
+        for (i, p) in params.iter().enumerate() {
+            env.forget(&p.name);
+            env.caps
+                .insert(p.name.clone(), ClosureCapsResult::DependsOnParam(param_token(level, i)));
+            env.rets.insert(p.name.clone(), vec![None]);
+        }
+        let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+        let mut value_exprs: Vec<&Expr> = Vec::new();
+        Self::collect_value_exprs(body, &mut value_exprs, 0);
+        let mut flow = RetFlow::pure();
+        for &e in &value_exprs {
+            if let Expr::Identifier { name, .. } = e {
+                let is_placeholder = matches!(
+                    env.caps.get(name),
+                    Some(ClosureCapsResult::DependsOnParam(t)) if param_token_index(t).is_some()
+                );
+                if lazy_locals && !is_placeholder && locals.caps.contains_key(name) {
+                    flow.locals.insert(name.clone());
+                    continue;
+                }
+            }
+            flow.add(
+                self.resolve_closure_caps(e, working, fn_return_caps, &env, local_container_lits, own_params),
+                level,
+                &names,
+            );
+            // A closure literal the body creates and returns calls, when it
+            // is invoked, any parameter of THIS closure (or of an enclosing
+            // one) that its body calls (`|inner| { || inner() }`): that is the
+            // authority of the argument passed for the parameter, which the
+            // literal's own analysis defers and so reports as empty.
+            if let Expr::Lambda {
+                params: inner_params,
+                body: inner_body,
+                ..
+            } = e
+            {
+                let mut calls: Vec<(&str, &[Expr], bool)> = Vec::new();
+                Self::walk_calls_expr(inner_body, &mut calls);
+                for (pname, cap) in &env.caps {
+                    let ClosureCapsResult::DependsOnParam(tok) = cap else {
+                        continue;
+                    };
+                    let Some((lvl, i)) = param_token_index(tok) else {
+                        continue;
+                    };
+                    if lvl > level || inner_params.iter().any(|ip| ip.name == *pname) {
+                        continue;
+                    }
+                    if calls
+                        .iter()
+                        .any(|(cname, _args, is_method)| !is_method && *cname == pname.as_str())
+                    {
+                        if lvl == level {
+                            flow.params.insert(i);
+                        } else {
+                            flow.up.insert((level - lvl, i));
+                        }
+                    }
+                }
+            }
+        }
+        // When the only thing the closure returns is a closure literal (or the
+        // name of a closure bound once), applying the result of a call to it
+        // is traced through that closure's own summary.
+        let applied = if level + 1 < MAX_SUMMARY_DEPTH && value_exprs.len() == 1 {
+            match value_exprs[0] {
+                Expr::Lambda {
+                    params: p2,
+                    body: b2,
+                    ..
+                } => Some(Box::new(self.lambda_ret_flow(
+                    p2, b2, level + 1, lazy_locals, working, fn_return_caps, own_params, local_container_lits, &env,
+                ))),
+                Expr::Identifier { name, .. } if lazy_locals && !names.contains(name) => {
+                    match locals.rets.get(name) {
+                        Some(v) if v.len() == 1 => v[0].clone().map(Box::new),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        LocalRet { flow, applied }
+    }
+
+    /// The return flow of a top-level function reached through a local alias
+    /// (`let g = pick`), read off `fn_return_closure_caps` the same way the
+    /// direct call `pick(..)` reads it. `None` when the function has no
+    /// record (it does not return a function value) or the record names a
+    /// parameter it does not have.
+    fn named_fn_ret(
+        &self,
+        name: &str,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+    ) -> Option<LocalRet> {
+        if !self.defined_fns.contains(name) {
+            return None;
+        }
+        let mut flow = RetFlow::pure();
+        match fn_return_caps.get(name)? {
+            ClosureCapsResult::Known(c) => flow.known = c.clone(),
+            ClosureCapsResult::DependsOnParam(pname) => {
+                let idx = self
+                    .fn_params
+                    .get(name)?
+                    .iter()
+                    .position(|p| &p.name == pname)?;
+                flow.params.insert(idx);
+            }
+            ClosureCapsResult::Unknown => return None,
+        }
+        Some(LocalRet { flow, applied: None })
+    }
+
+    /// What a call through a local bound to `v` will return: the closure's
+    /// own summary for a lambda literal, a copy of the aliased name's
+    /// bindings for an alias, the recorded flow of a top-level function for an
+    /// alias of one, the summary of the closure a call returns, and "not
+    /// traced" for everything else.
+    #[allow(clippy::too_many_arguments)]
+    fn binding_rets_for_value(
+        &self,
+        v: &Expr,
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+        own_params: &HashSet<String>,
+        local_container_lits: &HashMap<String, Expr>,
+        locals: &LocalCaps,
+    ) -> Vec<Option<LocalRet>> {
+        match v {
+            Expr::Lambda { params, body, .. } => vec![Some(self.lambda_ret_flow(
+                params, body, 0, true, working, fn_return_caps, own_params, local_container_lits, locals,
+            ))],
+            Expr::Identifier { name, .. } => {
+                if let Some(bindings) = locals.rets.get(name) {
+                    return bindings.clone();
+                }
+                vec![self.named_fn_ret(name, fn_return_caps)]
+            }
+            Expr::FnCall { .. } => vec![self.summary_of_call_value(
+                v, working, fn_return_caps, locals, local_container_lits, own_params,
+            )],
+            _ => vec![None],
+        }
+    }
+
+    /// For every top-level function whose declared return type is a function
+    /// and whose only returned value is a closure literal, the summary of that
+    /// literal (what a call through the result returns, and the closure that
+    /// returns in turn), so `make_getter(reader)()` and `curry(a)(b)(c)` are
+    /// charged what applying the returned closure gives back. A name shared by
+    /// two declarations gets no summary.
+    fn compute_fn_return_summaries(
+        &self,
+        decls: &[Decl],
+        working: &HashMap<String, CapabilitySet>,
+        fn_return_caps: &HashMap<String, ClosureCapsResult>,
+    ) -> HashMap<String, LocalRet> {
+        let mut fns: Vec<(String, bool, &kryos_ast::Block, &[Param])> = Vec::new();
+        Self::collect_functions(decls, &mut fns);
+        Self::collect_actor_handler_bodies(decls, &mut fns);
+        let mut declared: HashMap<&str, usize> = HashMap::new();
+        for (name, _annotated, _body, _params) in &fns {
+            *declared.entry(name.as_str()).or_insert(0) += 1;
+        }
+        let mut out: HashMap<String, LocalRet> = HashMap::new();
+        for (name, _annotated, body, params) in &fns {
+            if !matches!(self.fn_ret_ty.get(name), Some(TypeExpr::Function { .. })) {
+                continue;
+            }
+            if declared.get(name.as_str()).copied().unwrap_or(0) != 1 {
+                continue;
+            }
+            let mut return_exprs: Vec<&Expr> = Vec::new();
+            Self::collect_return_exprs(body, &mut return_exprs);
+            let [Expr::Lambda {
+                params: lp,
+                body: lb,
+                ..
+            }] = return_exprs.as_slice()
+            else {
+                continue;
+            };
+            // Every parameter counts, not only the fn-typed ones: `fn wrap<T>(x: T)
+            // -> fn() -> T { return || x }` returns whatever `x` is, and `T` may be
+            // a function type at a call (`wrap(wrap(reader))`).
+            let own_params: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+            let local_container_lits = Self::build_local_container_lits(body, &self.fn_return_container_lits);
+            let local_caps =
+                self.build_local_closure_caps(body, working, fn_return_caps, &own_params, &local_container_lits);
+            out.insert(
+                name.clone(),
+                self.lambda_ret_flow(
+                    lp, lb, 0, false, working, fn_return_caps, &own_params, &local_container_lits, &local_caps,
+                ),
+            );
+        }
+        out
+    }
+
     /// Fold an iterator of per-element/per-value `ClosureCapsResult`s into
     /// one combined result via `merge_closure_caps`, treating an EMPTY
     /// iterator (an empty array/map literal) as `Known(empty)` - no element
@@ -2335,8 +3164,8 @@ impl CapabilityChecker {
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
         local_container_lits: &HashMap<String, Expr>,
-    ) -> HashMap<String, ClosureCapsResult> {
-        let mut locals = HashMap::new();
+    ) -> LocalCaps {
+        let mut locals = LocalCaps::default();
         self.build_local_closure_caps_block(block, working, fn_return_caps, own_params, local_container_lits, &mut locals);
         locals
     }
@@ -2350,15 +3179,15 @@ impl CapabilityChecker {
     /// sets and falls to `Unknown` (which this file maps to `all`) for any
     /// pair it cannot represent.
     fn record_local_caps(
-        locals: &mut HashMap<String, ClosureCapsResult>,
+        locals: &mut LocalCaps,
         name: &str,
         r: ClosureCapsResult,
     ) {
-        let merged = match locals.remove(name) {
+        let merged = match locals.caps.remove(name) {
             Some(prev) => Self::merge_closure_caps(prev, r),
             None => r,
         };
-        locals.insert(name.to_string(), merged);
+        locals.caps.insert(name.to_string(), merged);
     }
 
     fn build_local_closure_caps_block(
@@ -2368,7 +3197,7 @@ impl CapabilityChecker {
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
         local_container_lits: &HashMap<String, Expr>,
-        locals: &mut HashMap<String, ClosureCapsResult>,
+        locals: &mut LocalCaps,
     ) {
         macro_rules! rec {
             ($e:expr) => {
@@ -2415,6 +3244,9 @@ impl CapabilityChecker {
                     if !matches!(v, Expr::Lambda { .. }) {
                         self.build_local_closure_caps_expr(v, working, fn_return_caps, own_params, local_container_lits, locals);
                     }
+                    // The bindings `name` held before this `let`; the closure's
+                    // own return flow is added to them below.
+                    let prior_rets = locals.rets.get(name).cloned().unwrap_or_default();
                     if let Expr::Lambda { params, body, .. } = v {
                         // A self-recursive nested named function (`fn nfact(n)
                         // { return n * nfact(n - 1) }`, desugared to `let
@@ -2434,7 +3266,14 @@ impl CapabilityChecker {
                         // the function calls directly is still counted
                         // normally via the real `r` computed below, which
                         // OVERWRITES this placeholder once known.
-                        locals.insert(name.clone(), ClosureCapsResult::Known(CapabilitySet::empty()));
+                        locals.caps.insert(name.clone(), ClosureCapsResult::Known(CapabilitySet::empty()));
+                        // What the recursive call RETURNS is not traced: a
+                        // call to the name from inside its own body is
+                        // `Unknown` (the same answer a named recursive
+                        // function gets from `compute_fn_return_closure_caps`).
+                        let mut during = prior_rets.clone();
+                        during.push(None);
+                        locals.rets.insert(name.clone(), during);
                         for p in params {
                             if let Some(d) = &p.default {
                                 self.build_local_closure_caps_expr(d, working, fn_return_caps, own_params, local_container_lits, locals);
@@ -2479,6 +3318,19 @@ impl CapabilityChecker {
                         _ => self.resolve_closure_caps(v, working, fn_return_caps, &*locals, local_container_lits, own_params),
                     };
                     Self::record_local_caps(locals, name, r);
+                    // What a CALL through `name` returns, for this binding. A
+                    // lambda's flow is computed while its own name still means
+                    // "return not traced" (a recursive call), then the name
+                    // goes back to the bindings it held before plus this one.
+                    let bindings = self.binding_rets_for_value(
+                        v, working, fn_return_caps, own_params, local_container_lits, &*locals,
+                    );
+                    if prior_rets.is_empty() {
+                        locals.rets.remove(name);
+                    } else {
+                        locals.rets.insert(name.clone(), prior_rets);
+                    }
+                    locals.push_ret(name, bindings);
                 }
                 // A plain reassignment of a name this map already holds.
                 //
@@ -2519,6 +3371,10 @@ impl CapabilityChecker {
                         own_params,
                     );
                     Self::record_local_caps(locals, name, r);
+                    let bindings = self.binding_rets_for_value(
+                        value, working, fn_return_caps, own_params, local_container_lits, &*locals,
+                    );
+                    locals.push_ret(name, bindings);
                 }
                 // A `deny!` body is where a laundered closure is USED, so a
                 // binding made inside one has to be visible: `let mut f =
@@ -2617,7 +3473,7 @@ impl CapabilityChecker {
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
         local_container_lits: &HashMap<String, Expr>,
-        locals: &mut HashMap<String, ClosureCapsResult>,
+        locals: &mut LocalCaps,
     ) {
         use kryos_ast::Pattern;
         match pat {
@@ -2656,7 +3512,7 @@ impl CapabilityChecker {
         fn_return_caps: &HashMap<String, ClosureCapsResult>,
         own_params: &HashSet<String>,
         local_container_lits: &HashMap<String, Expr>,
-        locals: &mut HashMap<String, ClosureCapsResult>,
+        locals: &mut LocalCaps,
     ) {
         macro_rules! rec {
             ($e:expr) => {
@@ -3790,7 +4646,7 @@ impl CapabilityChecker {
         is_method_or_static: bool,
         extra: &mut CapabilitySet,
         working: &HashMap<String, CapabilitySet>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) {
@@ -4168,7 +5024,7 @@ impl CapabilityChecker {
         &self,
         callee: &Expr,
         working: &HashMap<String, CapabilitySet>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         own_params: &HashSet<String>,
     ) -> CapabilitySet {
@@ -4283,7 +5139,7 @@ impl CapabilityChecker {
         object: &Expr,
         method: &str,
         working: &HashMap<String, CapabilitySet>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         local_container_types: &HashMap<String, TypeExpr>,
         own_params: &HashSet<String>,
@@ -4723,7 +5579,7 @@ impl CapabilityChecker {
         block: &kryos_ast::Block,
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
@@ -4747,7 +5603,7 @@ impl CapabilityChecker {
         stmt: &Stmt,
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
@@ -4847,7 +5703,7 @@ impl CapabilityChecker {
         expr: &Expr,
         working: &HashMap<String, CapabilitySet>,
         own_params: &HashSet<String>,
-        local_caps: &HashMap<String, ClosureCapsResult>,
+        local_caps: &LocalCaps,
         local_container_lits: &HashMap<String, Expr>,
         local_container_types: &HashMap<String, TypeExpr>,
     ) -> CapabilitySet {
@@ -5159,6 +6015,8 @@ impl CapabilityChecker {
         let baseline = self.compute_inferred_capabilities(&module.declarations);
         self.fn_return_closure_caps =
             self.compute_fn_return_closure_caps(&module.declarations, &baseline);
+        self.fn_return_summaries =
+            self.compute_fn_return_summaries(&module.declarations, &baseline, &self.fn_return_closure_caps);
 
         // Pass 1b (Inferred mode only): compute each UNANNOTATED function's
         // capability set as the fixpoint union of what it and its callees
@@ -5277,7 +6135,7 @@ impl CapabilityChecker {
                         &own_params,
                         &self.current_local_container_lits,
                     ),
-                    None => HashMap::new(),
+                    None => LocalCaps::default(),
                 };
                 self.current_fn_typed_params = own_params;
                 self.check_function(name, annotations, body.as_ref(), *span);

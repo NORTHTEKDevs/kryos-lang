@@ -1389,6 +1389,98 @@ for ctl in $R3_CONTROLS; do
     done
     [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
 done
+# LEDGER item 77, shape layer: the authority of a CALL through a local closure is what the closure
+# RETURNS, not what invoking it needs.
+#
+# `resolve_closure_caps` answered `f = setter(reader)` (with `let setter = |r| { r }`) with
+# `local_caps["setter"]`, the empty authority of invoking `setter`, so `f` looked pure and `f()` inside
+# `deny!(fs:read)` read the file. The row layer rejects the original repros (items 77a, 77b: R3 section
+# above), which hides the shape-layer defect: every program below puts its `deny!` block in a `select`
+# arm, which the row layer does not judge (LEDGER item 126, root R4), so ONLY the shape layer decides.
+# All of the S77_ESCAPES below were accepted by master e2fbc46c in default and strict mode and printed
+# the secret (executed); the S77_PINS are rejected by master too and pin that the return-flow change does
+# not reopen them (a local form of `wrap_once`, an impl method that returns its parameter).
+#
+# The assertion is on the SHAPE layer (E0507): a program rejected only by the row layer (E0110) would
+# hide a shape-layer regression, which is the point of the exercise. `kryos run` must refuse the program
+# and print nothing.
+S77_ESCAPES="attack_shape_local_returns_param \
+    attack_shape_nested_fn_returns_second_param \
+    attack_shape_local_returns_captured \
+    attack_shape_local_returns_captured_rebound \
+    attack_shape_local_returns_one_of_params \
+    attack_shape_local_two_levels \
+    attack_shape_local_two_levels_chain \
+    attack_shape_local_result_invoked_in_place \
+    attack_shape_local_result_let_init \
+    attack_shape_local_result_in_struct_field \
+    attack_shape_local_calls_other_local \
+    attack_shape_nested_fn_recursive \
+    attack_shape_local_block_alias \
+    attack_shape_local_result_as_hot_arg \
+    attack_shape_local_alias_of_local \
+    attack_shape_local_alias_of_named_fn \
+    attack_shape_local_two_bindings \
+    attack_shape_named_getter_through_local \
+    attack_shape_named_chain_applies_returned_closure \
+    attack_shape_closure_in_closure_captured"
+S77_PINS="attack_shape_impl_method_returns_param \
+    attack_shape_local_wrap_captured_param \
+    attack_shape_local_wrap_two_captured_params"
+for esc in $S77_ESCAPES $S77_PINS; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/s77" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a call through a local closure was charged what invoking it needs"
+            esc_ok=0; fail=1
+        elif ! grep -q "E0507" "$TMP/s77"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not by the shape layer (E0507):"
+            tail -3 "$TMP/s77" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    if timeout 60 "$K" run "tests/security/$esc.kry" >"$TMP/s77run" 2>&1; then
+        echo "  FAIL: $esc.kry RAN (exit 0) -- the run must be refused at check time"
+        esc_ok=0; fail=1
+    elif grep -q "TOPSECRET" "$TMP/s77run"; then
+        echo "  FAIL: $esc.kry printed the secret"
+        esc_ok=0; fail=1
+    fi
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected by the shape layer in default and strict mode, run refused"
+done
+# The pure twin of each shape hands the same closure shape only `harmless`: the argument is charged
+# (nothing), so the program must stay accepted. The twins of the two fail-closed shapes (a recursive
+# nested fn, a parameter bound to a block local before it is returned) are not listed: their result is
+# not traced and is charged `all`, which is the measured cost recorded in the LEDGER entry of the
+# item-77 wave.
+S77_CONTROLS="ctl_shape_local_returns_param_pure \
+    ctl_shape_nested_fn_returns_second_param_pure \
+    ctl_shape_local_returns_captured_pure \
+    ctl_shape_local_returns_captured_rebound_pure \
+    ctl_shape_local_returns_one_of_params_pure \
+    ctl_shape_local_result_invoked_in_place_pure \
+    ctl_shape_local_result_let_init_pure \
+    ctl_shape_local_result_in_struct_field_pure \
+    ctl_shape_local_calls_other_local_pure \
+    ctl_shape_local_result_as_hot_arg_pure \
+    ctl_shape_local_alias_of_local_pure \
+    ctl_shape_local_alias_of_named_fn_pure \
+    ctl_shape_local_two_bindings_pure \
+    ctl_shape_local_two_levels_pure \
+    ctl_shape_local_two_levels_chain_pure \
+    ctl_shape_named_getter_through_local_pure \
+    ctl_shape_named_chain_applies_returned_closure_pure \
+    ctl_shape_closure_in_closure_captured_pure \
+    ctl_shape_curried_local_data_result"
+for ctl in $S77_CONTROLS; do
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$ctl.kry" >"$TMP/s77c" 2>&1; then
+            echo "  FAIL: the return flow of a local closure over-rejects $ctl.kry under \`check $mode\`:"
+            tail -3 "$TMP/s77c" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
+done
 # The two shipped registry-dispatch programs are the precision witnesses the
 # fail-closed row work is measured against: both hold privileged closures in
 # slots and both must keep compiling.

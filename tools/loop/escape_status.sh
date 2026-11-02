@@ -218,6 +218,25 @@ r3-31|attack_fwd_slot_lambda_param_over_container_map
 127a|attack_shape_named_closure_forwards_captured_via_helper
 127b|attack_shape_named_closure_two_captured_params
 128|attack_shape_named_chain_applies_returned_closure
+s77-01|attack_shape_local_returns_param
+s77-02|attack_shape_nested_fn_returns_second_param
+s77-03|attack_shape_local_returns_captured
+s77-04|attack_shape_local_returns_captured_rebound
+s77-05|attack_shape_local_returns_one_of_params
+s77-06|attack_shape_local_two_levels
+s77-07|attack_shape_local_two_levels_chain
+s77-08|attack_shape_local_result_invoked_in_place
+s77-09|attack_shape_local_result_let_init
+s77-10|attack_shape_local_result_in_struct_field
+s77-11|attack_shape_local_calls_other_local
+s77-12|attack_shape_nested_fn_recursive
+s77-13|attack_shape_local_block_alias
+s77-14|attack_shape_local_result_as_hot_arg
+s77-15|attack_shape_local_alias_of_local
+s77-16|attack_shape_local_alias_of_named_fn
+s77-17|attack_shape_local_two_bindings
+s77-18|attack_shape_named_getter_through_local
+s77-19|attack_shape_closure_in_closure_captured
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

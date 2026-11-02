@@ -1,9 +1,9 @@
-// LEDGER item 128 (shape layer; found by the item-77 wave while hunting the siblings of item 77, NOT FIXED).
-// A top-level function returns a closure that returns its captured parameter, and the returned closure is applied in the same expression: `f = make_getter(reader)()`.
-// The chained-call arm of `resolve_closure_caps` answers `make_getter(reader)()` with the value of `make_getter(reader)`, i.e. the FLAT authority of the closure `|| c` (the empty set), as if applying a closure returned what the closure needs to run. The same program split through a local (`let g = make_getter(reader)`, `f = g()`) is rejected by the item-77 wave.
+// LEDGER item 77, shape layer (defense in depth).
+// A top-level function returns a closure that returns its captured parameter, and the returned closure is applied in the same expression: `f = make_getter(reader)()` (item 128).
+// Before this wave `resolve_closure_caps` answered a call through a local with the closure's own INVOCATION authority (`local_caps`), not the authority of the value it returns.
 // The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
 // Master e2fbc46c: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
-// WANTED (when closed): rejected with E0507 in default and strict mode, and `kryos run` must not print the secret.
+// Must be REJECTED with E0507 in default and strict mode, and `kryos run` must not print the secret.
 fn harmless() -> str {
     return "not a secret"
 }

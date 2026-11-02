@@ -1,0 +1,31 @@
+// LEDGER item 77, shape layer (defense in depth).
+// One local name is bound to two closures, the second of which returns its parameter: `op = |r| { harmless }` then `op = |r| { r }`.
+// Before this wave `resolve_closure_caps` answered a call through a local with the closure's own INVOCATION authority (`local_caps`), not the authority of the value it returns.
+// The deny! block sits in a `select` arm, which the row layer does not judge (LEDGER item 126, root R4), so the SHAPE layer is the only judge here.
+// Master e2fbc46c: check rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a (executed).
+// Must be REJECTED with E0507 in default and strict mode, and `kryos run` must not print the secret.
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let mut f: fn() -> str = harmless
+    let mut op = |r: fn() -> str| { harmless }
+    op = |r: fn() -> str| { r }
+    f = op(reader)
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f())
+            }
+        }
+    }
+}

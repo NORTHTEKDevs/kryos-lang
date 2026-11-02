@@ -1,0 +1,28 @@
+// Control for LEDGER item 77 (shape layer).
+// A curried local closure whose final result is DATA (`add(2)(3)` style), next to a harmless block. The checker must not turn a data result into a function-valued authority.
+// ACCEPTED in default and strict mode (no over-rejection).
+fn harmless() -> str {
+    return "not a secret"
+}
+@capabilities(fs:read)
+fn make_secret_reader(path: str) -> fn() -> str {
+    return || file_read(path)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reader = make_secret_reader("tests/security/secret_for_closure_launder.txt")
+    let add = |a: i64| { |b: i64| { a + b } }
+    let add2 = add(2)
+    let n = add2(3)
+    let f: fn() -> str = harmless
+    let ch = chan()
+    send(ch, 1)
+    select {
+        v ch => {
+            deny!(fs:read) {
+                println("OUT: " + f() + to_string(n))
+            }
+        }
+    }
+}
