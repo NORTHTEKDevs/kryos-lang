@@ -1,0 +1,36 @@
+// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
+// A callee stores a PRIVILEGED named function it names itself (not a parameter) into the array it was handed.
+// Master dcf72e93: rejected by the shape layer only (E0507); the row layer accepted it.
+// First R2 build (PR head dbfb989d): rejected by the shape layer only (E0507); the row layer accepted it.
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn reader() -> str {
+    return file_read("tests/security/secret_for_closure_launder.txt")
+}
+fn seed(reg: [fn() -> str]) {
+    reg[0] = reader
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let fns = [safe]
+    seed(fns)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

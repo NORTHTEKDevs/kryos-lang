@@ -1179,6 +1179,24 @@ R2_ESCAPES="$R2_ESCAPES \
 R2_ESCAPES="$R2_ESCAPES \
     attack_slot_lambda_param_over_container \
     attack_slot_lambda_param_over_container_map"
+# A callee that stores a closure into a container it was HANDED (LEDGER item 112 and
+# its map variant from the verifier of PR 38). Arrays and maps are shared handles, so
+# the store lands in the CALLER's container; the callee used to bind its own
+# parameter's element row (so its reads through the parameter were charged only what it
+# stored) and the caller's slot never learned. Now the store is recorded and replayed
+# into the slot each call's argument came from.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_param_container_store \
+    attack_slot_param_index_assign \
+    attack_slot_param_push_inplace \
+    attack_slot_param_map_store \
+    attack_slot_param_helper_chain \
+    attack_slot_param_store_pure_then_read \
+    attack_slot_param_store_closed_privileged \
+    attack_slot_param_list_push \
+    attack_slot_param_mut_ref \
+    attack_slot_param_method \
+    attack_slot_param_fn_value"
 for esc in $R2_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1222,6 +1240,9 @@ R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_if_match_arms_pure \
     ctl_slot_lambda_param_pure_calls \
     ctl_slot_register_after_pure_store_pure"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_param_store_pure \
+    ctl_slot_param_store_privileged_other_array"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

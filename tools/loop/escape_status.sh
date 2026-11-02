@@ -135,6 +135,16 @@ slot40|attack_slot_ret_fluent_builder
 slot41|attack_slot_ret_rebuild_from_param_array
 slot42|attack_slot_lambda_param_over_container
 slot43|attack_slot_lambda_param_over_container_map
+slot44|attack_slot_param_index_assign
+slot45|attack_slot_param_push_inplace
+slot46|attack_slot_param_map_store
+slot47|attack_slot_param_helper_chain
+slot48|attack_slot_param_store_pure_then_read
+slot49|attack_slot_param_store_closed_privileged
+slot50|attack_slot_param_list_push
+slot51|attack_slot_param_mut_ref
+slot52|attack_slot_param_method
+slot53|attack_slot_param_fn_value
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

@@ -2130,3 +2130,117 @@ fn a_parameter_position_is_contravariant() {
     // The slot was not widened by the lambda's parameter var.
     assert!(!engine.resolve_cap_row(&CapRow::var(e)).var_ids().contains(&lg));
 }
+
+fn array_of(element: Type) -> Type {
+    Type::Array {
+        element: Box::new(element),
+        size: None,
+    }
+}
+
+#[test]
+fn a_store_into_a_container_the_body_was_handed_reaches_the_callers_slot() {
+    // `fn put(reg: [fn() -> str], g: fn() -> str) { reg[0] = g }` called as
+    // `put(fns, r)`. The body must NOT bind the parameter's storage var `e`
+    // (reads through `reg` would be charged only what was stored), and the
+    // caller's array slot must learn what the call stored.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e, p]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e))), fn_with(CapRow::var(p))]);
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(p)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+    assert!(
+        !engine.resolve_cap_row(&CapRow::var(e)).is_closed(),
+        "the body bound the parameter's storage var to {}",
+        engine.resolve_cap_row(&CapRow::var(e)).display()
+    );
+
+    // A call site. The reference is typed first, so the replay finds the
+    // call's copy of the storage var still unbound.
+    let e_call = engine.fresh_cap_var();
+    let p_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    map.insert(p, p_call);
+    engine.replay_store_effects(own, &map);
+    // The caller's array was built from a pure function.
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    // Arguments: the array, then the closure.
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine
+        .unify(
+            &fn_with(CapRow::var(p_call)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, caller_slot).contains_bits(CapBits::FS_READ),
+        "the call stored a privileged closure into the caller's array and its slot did not learn: {}",
+        engine.resolve_cap_row(&CapRow::var(caller_slot)).display()
+    );
+}
+
+#[test]
+fn a_store_of_named_privileged_bits_into_a_handed_container_is_replayed() {
+    // `fn seed(reg: [fn() -> str]) { reg[0] = reader }`: the stored row is a
+    // closed row the body names, not one of its own parameters.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e)))]);
+    engine
+        .unify(
+            &fn_with(CapRow::var(e)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    let e_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine.replay_store_effects(own, &map);
+    assert!(bits_of(&engine, caller_slot).contains_bits(CapBits::FS_READ));
+}
+
+#[test]
+fn a_read_only_container_parameter_records_no_store() {
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[e]);
+    engine.mark_input_storage(&[array_of(fn_with(CapRow::var(e)))]);
+    // The body only READS the elements into a local slot.
+    let local = engine.fresh_slot_cap_var();
+    engine
+        .unify(&fn_with(CapRow::var(local)), &fn_with(CapRow::var(e)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    let e_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(e, e_call);
+    let caller_slot = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_slot, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e_call)), &fn_with(CapRow::var(caller_slot)), S)
+        .unwrap();
+    engine.replay_store_effects(own, &map);
+    assert_eq!(bits_of(&engine, caller_slot), CapBits::EMPTY);
+}

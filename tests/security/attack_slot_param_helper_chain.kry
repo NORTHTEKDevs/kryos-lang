@@ -1,0 +1,36 @@
+// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
+// Two helpers: the outer one hands its OWN array parameter to the inner one that stores into it. The store must compose through both calls.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn inner_put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+fn outer_put(reg2: [fn() -> str], h: fn() -> str) {
+    inner_put(reg2, h)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    outer_put(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

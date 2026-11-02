@@ -2531,6 +2531,9 @@ impl TypeChecker {
                     // the first `return` fixes.
                     self.engine.mark_slot_rows(&s.ret, false);
                     self.engine.begin_store_effects(&s.generic_cap_var_ids);
+                    // A container the body was handed is the CALLER's storage.
+                    let param_tys: Vec<Type> = s.params.iter().map(|(_, t)| t.clone()).collect();
+                    self.engine.mark_input_storage(&param_tys);
                 }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
@@ -2660,6 +2663,9 @@ impl TypeChecker {
                     if let Some(hs) = &handler_sig {
                         self.engine.mark_slot_rows(&hs.ret, false);
                         self.engine.begin_store_effects(&hs.generic_cap_var_ids);
+                        let param_tys: Vec<Type> =
+                            hs.params.iter().map(|(_, t)| t.clone()).collect();
+                        self.engine.mark_input_storage(&param_tys);
                     }
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
@@ -2973,6 +2979,9 @@ impl TypeChecker {
                             // item 35. Mirrors the Decl::Function pattern exactly.
                             self.engine.mark_slot_rows(&sig.ret, false);
                             self.engine.begin_store_effects(&sig.generic_cap_var_ids);
+                            let param_tys: Vec<Type> =
+                                sig.params.iter().map(|(_, t)| t.clone()).collect();
+                            self.engine.mark_input_storage(&param_tys);
                             self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
                             let method_caps = self

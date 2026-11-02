@@ -1,0 +1,32 @@
+// LEDGER root R2, revise round of PR 38 (found by the independent verifier of PR 38).
+// A callee stores its closure parameter into a map it was handed (m[key] = g). Found by the independent verifier of PR 38 as the map variant of item 112.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn install(m: map<str, fn() -> str>, g: fn() -> str) {
+    m["evil"] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let m = {"a": safe}
+    install(m, r)
+    deny!(fs:read) {
+        let f = m["evil"]
+        println(f())
+    }
+}

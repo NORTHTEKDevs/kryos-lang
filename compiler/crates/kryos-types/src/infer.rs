@@ -180,6 +180,25 @@ pub struct InferenceEngine {
     /// parameter, the opposite way to the function value itself. `unify_rows`
     /// is told which way a flow goes by swapping its arguments.
     contravariant: bool,
+    /// The row vars that stand for the STORAGE of a container the declaration
+    /// being checked was HANDED: the element row of an array / map / set
+    /// parameter, a generic argument of a struct parameter, the target of a
+    /// `&mut` parameter. They are a subset of `slot_cap_vars`.
+    ///
+    /// Such a row is the CALLER's storage: an index assignment, a `push` or a
+    /// field store in the body writes into the caller's container. The body
+    /// must not bind it (that would tell every caller its container holds
+    /// exactly what the body stored, and the body's own reads of the
+    /// container would be charged only that), so the store is recorded in
+    /// `EffectScope::param_stores` and replayed at every call into the slot
+    /// the argument came from. See `record_param_store` / `store_into_input`.
+    input_storage_cap_vars: std::collections::HashSet<CapVarId>,
+    /// Stores a call replayed into a container whose call-site storage var is
+    /// not bound yet (the arguments are unified after the callee's reference is
+    /// typed, and a function value is called later still): `copy var -> rows`.
+    /// Flushed by `bind_cap_var` the moment the copy is bound to the slot the
+    /// argument came from.
+    deferred_input_stores: HashMap<CapVarId, Vec<CapRow>>,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -187,6 +206,9 @@ pub struct InferenceEngine {
 struct EffectScope {
     poly: std::collections::HashSet<CapVarId>,
     touched: Vec<CapVarId>,
+    /// Stores into the storage of a container the body was handed:
+    /// `(the parameter's storage var, the row stored)`.
+    param_stores: Vec<(CapVarId, CapRow)>,
 }
 
 impl Default for InferenceEngine {
@@ -213,6 +235,8 @@ impl InferenceEngine {
             frozen_cap_vars: HashMap::new(),
             lambda_param_cap_vars: std::collections::HashSet::new(),
             contravariant: false,
+            input_storage_cap_vars: std::collections::HashSet::new(),
+            deferred_input_stores: HashMap::new(),
         }
     }
 
@@ -277,6 +301,13 @@ impl InferenceEngine {
         // times over between binds.
         self.cap_resolve_cache.borrow_mut().clear();
         *self.cap_cycle_cache.borrow_mut() = None;
+        if !self.deferred_input_stores.is_empty() {
+            if let Some(rows) = self.deferred_input_stores.remove(&id) {
+                for row in rows {
+                    self.store_into_input(id, row);
+                }
+            }
+        }
     }
 
     /// Resolve a `CapRow`, recursively chasing every var in it through
@@ -580,6 +611,7 @@ impl InferenceEngine {
         self.effect_scope = Some(EffectScope {
             poly: poly.iter().copied().collect(),
             touched: Vec::new(),
+            param_stores: Vec::new(),
         });
     }
 
@@ -592,11 +624,35 @@ impl InferenceEngine {
         let Some(own) = own else {
             return;
         };
-        if scope.poly.is_empty() || scope.touched.is_empty() {
+        if scope.poly.is_empty() || (scope.touched.is_empty() && scope.param_stores.is_empty()) {
             return;
         }
         let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
         let mut found: Vec<(CapVarId, CapRow)> = Vec::new();
+        // What the body wrote into the storage of a container it was handed.
+        // The row stored may be closed bits (a privileged function the body
+        // names), the body's own polymorphic vars (a parameter it stores) or a
+        // global slot (a field it copies in), so all three are kept.
+        for (storage, row) in &scope.param_stores {
+            let flat = self.resolve_cap_row_keeping_slots(row);
+            let bits = flat.concrete_bits();
+            let vars: Vec<CapVarId> = flat
+                .var_ids()
+                .iter()
+                .copied()
+                .filter(|v| {
+                    v != storage
+                        && (scope.poly.contains(v) || self.global_slot_cap_vars.contains(v))
+                })
+                .collect();
+            if bits == crate::ty::CapBits::EMPTY && vars.is_empty() {
+                continue;
+            }
+            let entry = (*storage, CapRow::Resolved { concrete: bits, vars });
+            if !found.contains(&entry) {
+                found.push(entry);
+            }
+        }
         for slot in scope.touched {
             if !seen.insert(slot) {
                 continue;
@@ -648,7 +704,113 @@ impl InferenceEngine {
         };
         for (slot, row) in effects {
             let inst = self.instantiate_row(&row, cap_var_map);
-            self.bind_cap_var(slot, inst);
+            if self.input_storage_cap_vars.contains(&slot) {
+                // The body stored into a container it was handed: widen the
+                // slot THIS call's argument came from (`store_into_input`).
+                if let Some(&target) = cap_var_map.get(&slot) {
+                    if self.cap_substitutions.contains_key(&target) {
+                        self.store_into_input(target, inst);
+                    } else {
+                        self.deferred_input_stores.entry(target).or_default().push(inst);
+                    }
+                }
+            } else {
+                self.bind_cap_var(slot, inst);
+            }
+        }
+    }
+
+    /// Remember that the body being checked wrote `row` into the storage var
+    /// `storage` of a container it was handed.
+    fn record_param_store(&mut self, storage: CapVarId, row: CapRow) {
+        if let Some(scope) = self.effect_scope.as_mut() {
+            let entry = (storage, row);
+            if !scope.param_stores.contains(&entry) {
+                scope.param_stores.push(entry);
+            }
+        }
+    }
+
+    /// Write `row` into the storage the call-site copy `target` of a
+    /// parameter's storage var stands for: every slot reachable from it (the
+    /// caller's array literal slot, a struct field's slot, ...) is widened.
+    ///
+    /// `target` is the call's fresh copy and is bound by unifying the argument
+    /// against the parameter, so this must run AFTER the arguments are unified.
+    /// When no slot is reachable (the argument was a temporary with a closed
+    /// row, or the call reached a function value and the arguments are not
+    /// known yet) there is no storage a later read could see, and nothing is
+    /// bound.
+    ///
+    /// A slot that is itself the storage of a container the ENCLOSING body was
+    /// handed (a helper passing its own parameter on) is recorded as a store of
+    /// that body instead of being bound, so helpers compose.
+    fn store_into_input(&mut self, target: CapVarId, row: CapRow) {
+        let mut slots: Vec<CapVarId> = Vec::new();
+        let mut stack: Vec<CapVarId> = vec![target];
+        let mut seen: std::collections::HashSet<CapVarId> = std::collections::HashSet::new();
+        while let Some(v) = stack.pop() {
+            if !seen.insert(v) {
+                continue;
+            }
+            if self.slot_cap_vars.contains(&v) {
+                slots.push(v);
+            }
+            if let Some(CapRow::Resolved { vars, .. }) = self.cap_substitutions.get(&v) {
+                stack.extend(vars.iter().copied());
+            }
+        }
+        slots.sort_unstable();
+        for s in slots {
+            if self.input_storage_cap_vars.contains(&s) && self.is_frozen(s) {
+                self.record_param_store(s, row.clone());
+            } else {
+                self.bind_cap_var(s, row.clone());
+            }
+        }
+    }
+
+    /// Mark the rows that are the STORAGE of the containers in `param_types`
+    /// (see `input_storage_cap_vars`). The value's own row is not storage: a
+    /// parameter that IS a function carries the authority of the closure the
+    /// caller passed, and the body cannot store into it.
+    pub fn mark_input_storage(&mut self, param_types: &[Type]) {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        for t in param_types {
+            Self::storage_rows_in(t, false, &mut vars);
+        }
+        for v in vars {
+            self.slot_cap_vars.insert(v);
+            self.input_storage_cap_vars.insert(v);
+        }
+    }
+
+    fn storage_rows_in(ty: &Type, in_container: bool, out: &mut Vec<CapVarId>) {
+        match ty {
+            Type::Function { caps, .. } => {
+                if in_container {
+                    out.extend_from_slice(caps.var_ids());
+                }
+            }
+            Type::Array { element, .. } | Type::Set { element } => {
+                Self::storage_rows_in(element, true, out)
+            }
+            Type::Map { key, value } => {
+                Self::storage_rows_in(key, true, out);
+                Self::storage_rows_in(value, true, out);
+            }
+            Type::Struct { generics, .. } => {
+                for g in generics {
+                    Self::storage_rows_in(g, true, out);
+                }
+            }
+            Type::Reference { inner, mutable } | Type::Pointer { inner, mutable } => {
+                Self::storage_rows_in(inner, in_container || *mutable, out)
+            }
+            Type::Shared { inner } | Type::Weak { inner } => {
+                Self::storage_rows_in(inner, in_container, out)
+            }
+            _ => {}
         }
     }
 
@@ -881,6 +1043,12 @@ impl InferenceEngine {
         // the source), and that var must take the element's row.
         let before = self.resolve_cap_row(c1);
         for &v in c1.var_ids() {
+            if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
+                // A store into a container this body was handed (LEDGER root
+                // R2, item 112): never bind the parameter's storage var.
+                self.record_param_store(v, c2.clone());
+                continue;
+            }
             if !self.cap_substitutions.contains_key(&v) || self.slot_cap_vars.contains(&v) {
                 self.bind_cap_var(v, c2.clone());
             }

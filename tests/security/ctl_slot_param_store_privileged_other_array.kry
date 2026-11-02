@@ -1,0 +1,31 @@
+// LEDGER root R2, revise round of PR 38 (control).
+// A helper stores its privileged closure into ONE array; the deny! block reads a DIFFERENT array of pure closures.
+// Must stay ACCEPTED by `kryos check` (default and strict): the privileged closure goes into a different array than the one the deny! block reads.
+use std::iter::{for_each, map}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let sink = [safe]
+    let pure_list = [safe, safe]
+    put(sink, r)
+    deny!(fs:read) {
+        for f in pure_list {
+            println(f())
+        }
+    }
+}
