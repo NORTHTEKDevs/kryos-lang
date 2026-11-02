@@ -375,23 +375,56 @@ returned value, and the rows of a lambda's annotated parameters.
   per-call copy: its stores are written into the slot of each argument the
   parameter is bound to, at the moment it is bound.
 - Not covered:
-  * The `deny!` verdict is taken when its block has been checked. A block whose row
-    depends on a callee's own parameter (a `deny!` inside a function declared before
-    the call that passes it the closure: LEDGER item 115) or on a field filled by
-    stores that come later in the file (items 72 and 116) is judged on the unbound
-    var (root R3).
-  * A body's effects are recorded when it is checked, and declarations are checked
-    in file order, so a call that appears before the declaration replays nothing
-    and reads an unbound return row (LEDGER item 114: a registration helper, a
-    container-storing helper or a container-building function declared below
-    `main`; the same forward-reference class as a function's own row, see
-    `instantiate_row`).
+  * The `deny!` verdict and the forward references: see 2.7. What 2.7 does not reach is a
+    helper's stores followed through a factory result, a generic trait bound or a `dyn`
+    (LEDGER item 123), a container inside a tuple / `Option` / `Result` / enum parameter
+    (item 119) and the body of a trait default method (item 122).
   * A store inside a lambda into a variable the lambda captured by move is a dead
     store at run time, but the slot is shared, so the program is rejected when the
     privileged closure reaches a `deny!` that reads the variable.
   * A monomorphic lambda called with a pure and a privileged closure is judged by
     the union at every call; a struct field's row is shared by every value of the
     struct. Both are precision costs of the design, not bugs.
+
+### 2.7 The `deny!` verdict is taken when the module is checked (LEDGER root R3, 2026-11-02)
+
+`deny!(caps) { body }` is judged on the row the body was charged. At the moment the block
+is checked that row can mention three kinds of var that nothing has bound yet: the
+declaration's OWN parameter rows (a signature var: no body binds one, each reference
+freshens a copy and binds the copy to its argument); a **slot** that a store later than the
+block fills (a struct field or a global that `main` fills after the method reading it was
+checked, a local array that a loop fills after the block); and the own row of a **callee
+declared below** the block. Reading an unbound var as "no authority" (`concrete_bits()` drops
+it) let a privileged closure reach the block in every one of those cases.
+
+- The raw row of each block is filed with the own-row var of the declaration that holds it
+  (`DenyObligation`), and `settle_denies` judges it when `check_module` has walked every body,
+  when nothing can bind any more. The verdict taken at the block is kept: a violation that is
+  already visible is reported where it always was, and the settled verdict adds the others,
+  once each, in source order.
+- Every **reference** to a declaration with polymorphic row vars (a call, a function value, a
+  method call, a static call: the four sites that replay a body's stores) is recorded with its
+  freshening of the callee's vars (`reference_row`). An obligation that still depends on an
+  unbound var is re-instantiated at each reference, the copy (whose vars the arguments have
+  bound) is judged, and a copy that still depends on an unbound var is an obligation of the
+  declaration holding the reference: a relay, a recursion and a method chain compose. The
+  worklist is keyed by (block, owner, resolved row), so it is finite.
+- A reference that **precedes** its declaration finds the callee's own row unbound and used to
+  charge its caller the bare var, which no reference instantiates. It charges a var of its own
+  instead, bound to the callee's row instantiated for that reference once the body is checked,
+  and `complete_references` replays the stores of every reference and binds the copy of each var
+  the declaration bound, to a fixed point, before the verdict. It runs only when the module has
+  a `deny!` block.
+- A method of a **trait impl** is also reached through a generic bound or a `dyn`, which
+  reference the trait's signature, not the impl's, so no reference carries the argument to the
+  method. A block there that still depends on one of its parameter rows is judged on `all`
+  (`dispatch_owners`). A declaration nothing references is not judged on its parameters.
+- The verdict does not depend on the order of the declarations: a privileged closure stored into
+  a slot below the block counts, as it did above it. That is the per-declaration slot cost of 2.6,
+  now order-independent.
+- Not covered: the body of a trait default method is never checked (LEDGER item 122); a store
+  helper reached through a factory result, a generic trait bound or a `dyn` (item 123), or a
+  container inside a tuple / `Option` / `Result` / enum parameter (item 119), is not followed.
 
 ## 3. Subtyping and variance
 

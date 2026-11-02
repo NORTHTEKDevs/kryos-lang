@@ -2298,3 +2298,226 @@ fn a_lambdas_store_into_an_annotated_container_parameter_reaches_every_arguments
         .unwrap();
     assert!(bits_of(&engine, caller_b).contains_bits(CapBits::FS_READ));
 }
+
+// ── The deny! verdict is taken when the module is done (LEDGER root R3) ──
+
+fn span_at(n: u32) -> Span {
+    Span {
+        file_id: 0,
+        start: n,
+        end: n + 1,
+    }
+}
+
+fn fs_read() -> Vec<String> {
+    vec!["fs:read".to_string()]
+}
+
+#[test]
+fn a_deny_block_is_judged_on_the_row_as_it_stands_when_the_module_is_done() {
+    // `deny!(fs:read) { f() }` where the row of `f` is a var nothing has bound when
+    // the block is checked (a callee declared below, a field `main` fills later).
+    let mut engine = InferenceEngine::new();
+    let v = engine.fresh_cap_var();
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(v), span_at(10));
+    // Bound afterwards, as the declaration below is checked.
+    engine.bind_cap_var(v, CapRow::closed(CapBits::FS_READ));
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].span, span_at(10));
+    assert_eq!(violations[0].denied, "fs:read");
+    assert_eq!(violations[0].via, None);
+}
+
+#[test]
+fn a_deny_block_over_a_row_that_stays_clean_is_not_a_violation() {
+    let mut engine = InferenceEngine::new();
+    let v = engine.fresh_cap_var();
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(v), span_at(10));
+    engine.bind_cap_var(v, CapRow::closed(CapBits::NET_HTTP));
+    assert!(engine.settle_denies().is_empty());
+    // And a row nothing ever bound: no closure flowed in, so no authority.
+    let mut engine = InferenceEngine::new();
+    let w = engine.fresh_cap_var();
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(w), span_at(10));
+    assert!(engine.settle_denies().is_empty());
+}
+
+#[test]
+fn a_closed_row_is_not_filed_because_its_verdict_is_final() {
+    let mut engine = InferenceEngine::new();
+    engine.record_deny_obligation(&fs_read(), &CapRow::closed(CapBits::FS_READ), span_at(10));
+    assert_eq!(engine.deny_marks(), (0, 0));
+}
+
+/// A declaration `own` with one polymorphic parameter row `p`, holding a `deny!`
+/// block whose body calls the parameter. Returns `(engine, own, p)`.
+fn declaration_denying_its_parameter() -> (InferenceEngine, u32, u32) {
+    let mut engine = InferenceEngine::new();
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[p]);
+    engine.set_effect_owner(own);
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(p), span_at(20));
+    engine.bind_cap_var(own, CapRow::var(p));
+    engine.end_store_effects(Some(own));
+    (engine, own, p)
+}
+
+#[test]
+fn a_deny_block_over_a_parameter_row_is_judged_at_each_reference_to_the_declaration() {
+    let (mut engine, own, p) = declaration_denying_its_parameter();
+    // The declaration alone is a template: its own parameter var is unbound.
+    // A reference whose copy is bound to a pure function is fine ...
+    let pure_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, pure_call);
+    engine.reference_row(own, &map, span_at(30));
+    engine.bind_cap_var(pure_call, CapRow::closed(CapBits::EMPTY));
+    // ... one bound to a privileged closure is not.
+    let reader_call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, reader_call);
+    engine.reference_row(own, &map, span_at(40));
+    engine.bind_cap_var(reader_call, CapRow::closed(CapBits::FS_READ));
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].span, span_at(20));
+    assert_eq!(violations[0].via, Some(span_at(40)));
+}
+
+#[test]
+fn a_reference_made_before_the_argument_is_known_is_judged_all_the_same() {
+    // The copy is bound AFTER the reference was noted (a call through a function
+    // value, or a callee declared below the caller).
+    let (mut engine, own, p) = declaration_denying_its_parameter();
+    let call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, call);
+    engine.reference_row(own, &map, span_at(30));
+    assert_eq!(engine.deny_marks().1, 1);
+    engine.bind_cap_var(call, CapRow::closed(CapBits::FS_READ));
+    assert_eq!(engine.settle_denies().len(), 1);
+}
+
+#[test]
+fn a_helper_that_hands_its_parameter_on_makes_the_obligation_its_own() {
+    // outer(reader) { inner(reader) } with inner(p) holding the deny! block over p;
+    // main calls outer with a privileged closure.
+    let (mut engine, inner, p) = declaration_denying_its_parameter();
+    let q = engine.fresh_cap_var();
+    let outer = engine.fresh_cap_var();
+    engine.begin_store_effects(&[q]);
+    engine.set_effect_owner(outer);
+    // outer references inner with a copy bound to its own parameter row.
+    let c1 = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, c1);
+    engine.reference_row(inner, &map, span_at(50));
+    engine.bind_cap_var(c1, CapRow::var(q));
+    engine.bind_cap_var(outer, CapRow::var(c1));
+    engine.end_store_effects(Some(outer));
+    // main (no parameters) references outer with a privileged closure.
+    let c2 = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(q, c2);
+    engine.reference_row(outer, &map, span_at(60));
+    engine.bind_cap_var(c2, CapRow::closed(CapBits::FS_READ));
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].span, span_at(20));
+    assert_eq!(violations[0].via, Some(span_at(60)));
+}
+
+#[test]
+fn a_recursion_that_hands_its_parameter_on_converges() {
+    let (mut engine, own, p) = declaration_denying_its_parameter();
+    // The declaration references itself with a copy bound to its own parameter.
+    engine.begin_store_effects(&[p]);
+    engine.set_effect_owner(own);
+    let c = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, c);
+    engine.reference_row(own, &map, span_at(70));
+    engine.bind_cap_var(c, CapRow::var(p));
+    engine.end_store_effects(Some(own));
+    // And main calls it with a privileged closure.
+    let c2 = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, c2);
+    engine.reference_row(own, &map, span_at(80));
+    engine.bind_cap_var(c2, CapRow::closed(CapBits::FS_READ));
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+}
+
+#[test]
+fn a_trait_impl_method_that_still_depends_on_its_parameter_is_judged_on_all() {
+    // A generic bound or a `dyn` reaches the impl through the trait signature,
+    // where nothing binds the parameter rows of the impl: no reference carries
+    // the argument of the caller to it.
+    let (mut engine, own, _p) = declaration_denying_its_parameter();
+    engine.mark_dispatch_owner(own);
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].span, span_at(20));
+    // The same method that does not depend on its parameter is judged on its row.
+    let mut engine = InferenceEngine::new();
+    let own = engine.fresh_cap_var();
+    let p = engine.fresh_cap_var();
+    engine.begin_store_effects(&[p]);
+    engine.set_effect_owner(own);
+    let v = engine.fresh_cap_var();
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(v), span_at(20));
+    engine.end_store_effects(Some(own));
+    engine.mark_dispatch_owner(own);
+    assert!(engine.settle_denies().is_empty());
+}
+
+#[test]
+fn a_denied_capability_the_row_does_not_use_is_not_a_violation() {
+    let (mut engine, own, p) = declaration_denying_its_parameter();
+    let call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, call);
+    engine.reference_row(own, &map, span_at(30));
+    engine.bind_cap_var(call, CapRow::closed(CapBits::NET_HTTP));
+    assert!(engine.settle_denies().is_empty());
+}
+
+#[test]
+fn the_completion_replays_the_stores_of_a_declaration_referenced_before_it_was_checked() {
+    // main() { register(reg, r); deny!(fs:read) { reg[0]() } } with `register`
+    // declared BELOW main: the reference found no stores to replay, and the store
+    // is recorded when the body is checked, afterwards.
+    let mut engine = InferenceEngine::new();
+    let slot = engine.fresh_cap_var();
+    engine.mark_slot_rows(&fn_with(CapRow::var(slot)), true);
+    let p = engine.fresh_cap_var();
+    let own = engine.fresh_cap_var();
+
+    // main, first: a reference to `register` whose copy of `p` is bound to the
+    // privileged closure, and a deny! block reading the slot.
+    let main_own = engine.fresh_cap_var();
+    engine.begin_store_effects(&[]);
+    engine.set_effect_owner(main_own);
+    let call = engine.fresh_cap_var();
+    let mut map = std::collections::HashMap::new();
+    map.insert(p, call);
+    engine.reference_row(own, &map, span_at(30));
+    engine.bind_cap_var(call, CapRow::closed(CapBits::FS_READ));
+    engine.record_deny_obligation(&fs_read(), &CapRow::var(slot), span_at(31));
+    engine.end_store_effects(Some(main_own));
+
+    // register(p), checked afterwards: it stores its parameter into the slot.
+    engine.begin_store_effects(&[p]);
+    engine.set_effect_owner(own);
+    engine
+        .unify(&fn_with(CapRow::var(slot)), &fn_with(CapRow::var(p)), S)
+        .unwrap();
+    engine.end_store_effects(Some(own));
+
+    let violations = engine.settle_denies();
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].span, span_at(31));
+}

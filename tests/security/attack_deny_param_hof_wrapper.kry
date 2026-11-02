@@ -1,0 +1,28 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). item 64 relative (v09): the wrapper forwards to a higher-order function that calls its argument.
+// Master 732714ab: check rc=0 in default and strict mode (the shape layer is blinded by the outer harmless `f`
+// or does not reach the shape), `kryos run` prints the secret. WANTED: rejected with E0110 in both modes.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn apply0(f: fn() -> str) -> str {
+    return f()
+}
+
+fn outer(reader: fn() -> str) {
+    let go = || apply0(reader)
+    deny!(fs:read) {
+        println("LEAK: " + go())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    outer(r)
+}

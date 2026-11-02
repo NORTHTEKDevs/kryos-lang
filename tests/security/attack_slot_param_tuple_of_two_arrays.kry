@@ -1,0 +1,27 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 112 where the handed containers are the two arrays of a tuple parameter (storage_rows_in does not walk Tuple).
+fn put_pair(t: ([fn() -> str], [fn() -> str]), g: fn() -> str) {
+    t.1[0] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let a = [safe]
+    let b = [safe]
+    put_pair((a, b), r)
+    deny!(fs:read) {
+        for f in b {
+            println(f())
+        }
+    }
+}

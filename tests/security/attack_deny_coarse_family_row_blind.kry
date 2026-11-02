@@ -1,0 +1,21 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// not a slot at all: the row layer matches deny!(fs:read) but not the coarse family names. Same with deny!(io) and deny!(all).
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [r]
+    deny!(fs) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -1,0 +1,34 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). the deny! sits in a trait impl method reached through `dyn Trait`: the call references the trait signature, not the impl.
+// Master 732714ab: check rc=0 in default and strict mode (the shape layer is blinded by the outer harmless `f`
+// or does not reach the shape), `kryos run` prints the secret. WANTED: rejected with E0110 in both modes.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+trait Runner {
+    fn go(self: Self, fns: [fn() -> str])
+}
+struct R1 {}
+impl Runner for R1 {
+    fn go(self: R1, fns: [fn() -> str]) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe, r]
+    let d: dyn Runner = R1 {}
+    d.go(fns)
+}

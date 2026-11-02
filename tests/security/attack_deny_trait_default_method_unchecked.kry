@@ -1,0 +1,33 @@
+// LEDGER item 122 (found by the R3 wave, NOT FIXED): the type checker never checks the BODY of a trait default method
+// (`let x: i64 = "not an int"` in one is accepted, measured on master 732714ab), so the row layer never judges a deny! block inside it.
+// An outer harmless `f` blinds the shape layer, as in the rest of the corpus. Master 732714ab: check rc=0 in default and
+// strict mode, `kryos run` prints the secret. WANTED (when closed): rejected with E0110 in both modes.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+trait Runner {
+    fn go(self: Self, fns: [fn() -> str]) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+    }
+}
+struct R1 {}
+impl Runner for R1 {}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe, r]
+    let x = R1 {}
+    x.go(fns)
+}

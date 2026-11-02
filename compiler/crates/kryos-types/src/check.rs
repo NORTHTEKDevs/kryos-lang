@@ -202,6 +202,10 @@ pub struct TypeChecker {
     /// which would duplicate that table's maintenance burden a second
     /// time in this crate.
     builtin_cap_var: crate::ty::CapVarId,
+    /// The (`deny!` statement, capability) pairs already reported, so the
+    /// verdict taken when the module is done (`settle_denies`) does not repeat
+    /// one the block reported when it was checked.
+    denies_reported: std::collections::HashSet<(Span, String)>,
 }
 
 impl Default for TypeChecker {
@@ -247,6 +251,7 @@ impl TypeChecker {
                 .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true")),
             cap_effects_log: Vec::new(),
             builtin_cap_var,
+            denies_reported: std::collections::HashSet::new(),
         }
     }
 
@@ -1418,16 +1423,45 @@ impl TypeChecker {
         // overwrites (rows only widen), and diagnostics from this pass are
         // discarded so the real pass below is the only one that reports.
         let diag_mark = self.diagnostics.len();
+        let deny_marks = self.engine.deny_marks();
         for decl in &module.declarations {
             if matches!(decl, Decl::Actor { .. }) {
                 self.check_decl(decl);
             }
         }
         self.diagnostics.truncate(diag_mark);
+        // The `deny!` blocks and references this pass filed belong to a pass whose
+        // diagnostics are discarded; the real pass below files them again.
+        self.engine.truncate_denies(deny_marks);
+        self.denies_reported.clear();
 
         // Second pass: check function bodies and expressions.
         for decl in &module.declarations {
             self.check_decl(decl);
+        }
+
+        // Every `deny!` block is judged on the row its body was charged, and the
+        // row mentions vars that only a later declaration, a later store or a
+        // reference binds. Now nothing can bind any more: take the verdict
+        // (LEDGER root R3). A violation the block already reported when it was
+        // checked is not reported twice.
+        for v in self.engine.settle_denies() {
+            if !self.denies_reported.insert((v.span, v.denied.clone())) {
+                continue;
+            }
+            let mut diag = Diagnostic::error(format!(
+                "capability `{}` is denied in this block, but the block uses it",
+                v.denied
+            ))
+            .with_label(v.span, "here")
+            .with_code(kryos_errors::codes::E0110);
+            if let Some(via) = v.via {
+                diag = diag.with_label(
+                    via,
+                    "the authority reaches the block through this reference",
+                );
+            }
+            self.diagnostics.push(diag);
         }
     }
 
@@ -2531,6 +2565,7 @@ impl TypeChecker {
                     // the first `return` fixes.
                     self.engine.mark_slot_rows(&s.ret, false);
                     self.engine.begin_store_effects(&s.generic_cap_var_ids);
+                    self.engine.set_effect_owner(s.own_cap_var);
                     // A container the body was handed is the CALLER's storage.
                     let param_tys: Vec<Type> = s.params.iter().map(|(_, t)| t.clone()).collect();
                     self.engine.mark_input_storage(&param_tys);
@@ -2663,6 +2698,7 @@ impl TypeChecker {
                     if let Some(hs) = &handler_sig {
                         self.engine.mark_slot_rows(&hs.ret, false);
                         self.engine.begin_store_effects(&hs.generic_cap_var_ids);
+                        self.engine.set_effect_owner(hs.own_cap_var);
                         let param_tys: Vec<Type> =
                             hs.params.iter().map(|(_, t)| t.clone()).collect();
                         self.engine.mark_input_storage(&param_tys);
@@ -2979,6 +3015,10 @@ impl TypeChecker {
                             // item 35. Mirrors the Decl::Function pattern exactly.
                             self.engine.mark_slot_rows(&sig.ret, false);
                             self.engine.begin_store_effects(&sig.generic_cap_var_ids);
+                            self.engine.set_effect_owner(sig.own_cap_var);
+                            if trait_name.is_some() {
+                                self.engine.mark_dispatch_owner(sig.own_cap_var);
+                            }
                             let param_tys: Vec<Type> =
                                 sig.params.iter().map(|(_, t)| t.clone()).collect();
                             self.engine.mark_input_storage(&param_tys);
@@ -3727,26 +3767,24 @@ impl TypeChecker {
 
                 // Lattice-aware, per `CapBits::contains_bits`' own warning: a
                 // raw bit test would let a declared coarse `io` slip past a
-                // denied `fs:read`. Route both sides through `Capability`.
-                let mut used = kryos_capabilities::model::CapabilitySet::empty();
-                for name in resolved.concrete_bits().names() {
-                    if let Some(c) = kryos_capabilities::model::Capability::from_str(name) {
-                        used.insert(c);
-                    }
+                // denied `fs:read`. `denied_caps_used` routes both sides
+                // through `Capability`.
+                //
+                // This is the verdict on what the row holds RIGHT NOW. A var in
+                // the row that nothing has bound yet is not "no authority": it
+                // is a callee declared below, a field `main` fills later, the
+                // parameter row a caller supplies (LEDGER root R3). The raw row
+                // is filed and judged again once the whole module is checked
+                // (`settle_denies`), where it is also re-instantiated at every
+                // reference to the declaration that holds the block.
+                for d in crate::ty::denied_caps_used(denied, resolved.concrete_bits()) {
+                    self.denies_reported.insert((*span, d.clone()));
+                    self.error(
+                        format!("capability `{d}` is denied in this block, but the block uses it"),
+                        *span,
+                    );
                 }
-                for d in denied {
-                    let Some(dcap) = kryos_capabilities::model::Capability::from_str(d) else {
-                        continue;
-                    };
-                    if used.satisfies_required(&dcap) {
-                        self.error(
-                            format!(
-                                "capability `{d}` is denied in this block, but the block uses it"
-                            ),
-                            *span,
-                        );
-                    }
-                }
+                self.engine.record_deny_obligation(denied, &body_caps, *span);
 
                 // The body's authority still HAPPENED -- propagate it outward so
                 // an enclosing function's own row stays honest.
@@ -4836,12 +4874,9 @@ impl TypeChecker {
                     // SAME freshened var its param type uses, not the
                     // shared template. See `FunctionSig::own_cap_var`'s
                     // doc comment and `docs/capability-effects-spec.md` §4.
-                    self.engine
-                        .replay_store_effects(sig.own_cap_var, &cap_var_map);
-                    let own_row = self
+                    let (_, ref_caps) = self
                         .engine
-                        .resolve_own_cap_row(sig.own_cap_var);
-                    let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                        .reference_row(sig.own_cap_var, &cap_var_map, *span);
                     Type::Function {
                         params,
                         ret: Box::new(ret),
@@ -5980,12 +6015,9 @@ impl TypeChecker {
                         // unified against the parameter. Charging first resolves the
                         // row while it is still open and charges nothing at all.
                         {
-                            self.engine
-                                .replay_store_effects(sig.own_cap_var, &cap_var_map);
-                            let own_row = self
+                            let (own_row, ref_caps) = self
                                 .engine
-                                .resolve_own_cap_row(sig.own_cap_var);
-                            let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                                .reference_row(sig.own_cap_var, &cap_var_map, *span);
                             if std::env::var("KRYOS_ROW_TRACE").is_ok() {
                                 eprintln!(
                                     "[row] dispatch {}::{} own={} inst={} genvars={:?} map={:?}",
@@ -6252,12 +6284,9 @@ impl TypeChecker {
                     // was never accounted for (LEDGER item 35). The failure is
                     // SILENT: the call is checked, it simply costs zero.
                     {
-                        self.engine
-                            .replay_store_effects(sig.own_cap_var, &cap_var_map);
-                        let own_row = self
+                        let (_, ref_caps) = self
                             .engine
-                            .resolve_own_cap_row(sig.own_cap_var);
-                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                            .reference_row(sig.own_cap_var, &cap_var_map, *span);
                         self.accumulate_caps(&ref_caps);
                     }
                     self.engine.resolve(&inst_ret)
@@ -6282,12 +6311,9 @@ impl TypeChecker {
                         }
                     }
                     {
-                        self.engine
-                            .replay_store_effects(sig.own_cap_var, &cap_var_map);
-                        let own_row = self
+                        let (_, ref_caps) = self
                             .engine
-                            .resolve_own_cap_row(sig.own_cap_var);
-                        let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
+                            .reference_row(sig.own_cap_var, &cap_var_map, *span);
                         self.accumulate_caps(&ref_caps);
                     }
                     if args.len() != params.len() {

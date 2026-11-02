@@ -1,0 +1,33 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 112 where the handed container sits inside a Result parameter (storage_rows_in does not walk Result).
+use std::result::{Result, Ok, Err}
+
+fn put_r(o: Result<[fn() -> str], str>, g: fn() -> str) {
+    match o {
+        Ok(arr) => {
+            arr[0] = g
+        },
+        Err(e) => {},
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    put_r(Ok(fns), r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -1,0 +1,28 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a deny!-bearing impl method, handed pure closures.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Host {}
+impl Host {
+    fn run_all(self, fns: [fn() -> str]) {
+        let f = || "harmless"
+        deny!(fs:read) {
+            for f in fns {
+                println(f())
+            }
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let h = Host {}
+    h.run_all([safe, safe])
+}

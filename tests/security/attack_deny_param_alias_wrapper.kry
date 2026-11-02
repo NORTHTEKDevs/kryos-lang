@@ -1,0 +1,25 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). item 64 relative (v05): the fn-typed parameter is aliased by a local, a wrapper lambda calls the alias, the block calls the wrapper.
+// Master 732714ab: check rc=0 in default and strict mode (the shape layer is blinded by the outer harmless `f`
+// or does not reach the shape), `kryos run` prints the secret. WANTED: rejected with E0110 in both modes.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn outer(reader: fn() -> str) {
+    let alias = reader
+    let go = || alias()
+    deny!(fs:read) {
+        println("LEAK: " + go())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    outer(r)
+}

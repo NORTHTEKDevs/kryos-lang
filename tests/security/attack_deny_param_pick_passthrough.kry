@@ -1,0 +1,28 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a function that returns one of its closure arguments is applied to the parameter, and the block calls the result.
+// Master 732714ab already rejects this through the SHAPE layer (E0507); the row layer did not. WANTED: the row layer
+// rejects it too (E0110, "is denied in this block") in both modes, so it no longer depends on the shape layer.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn pick(a: fn() -> str, b: fn() -> str) -> fn() -> str {
+    return b
+}
+
+fn outer(reader: fn() -> str) {
+    let f = pick(safe, reader)
+    deny!(fs:read) {
+        println("LEAK: " + f())
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    outer(r)
+}

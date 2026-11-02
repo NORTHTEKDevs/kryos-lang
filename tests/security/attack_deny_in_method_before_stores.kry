@@ -1,10 +1,11 @@
-// LEDGER item 116 (root R3: the verdict is taken before the stores that fill the registry). NOT FIXED.
+// LEDGER item 116 (root R3: the verdict was taken before the stores that fill the registry). CLOSED 2026-11-02 by the R3 wave.
 // Found by the independent verifier of PR 38. The deny! block sits inside a METHOD declared before
 // `main`, and it iterates `self.items`, a struct field; the privileged closure is pushed into the
 // field by `main`, after the method was checked. The field's row was empty when the block was
 // judged (the same class as item 72's actor-hosted registry, without the actor).
 // Master dcf72e93 AND every R2 build: check rc=0 in default and strict mode, and `kryos run`
-// prints the secret (executed). WANTED: rejected with E0110.
+// prints the secret (executed). NOW: rejected with E0110 in default and strict mode (the verdict is taken
+// when the module is checked, after `main` has pushed the closure into the field).
 use std::iter::{for_each, map}
 
 @capabilities(fs:read)

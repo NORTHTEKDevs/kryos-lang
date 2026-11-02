@@ -1,4 +1,5 @@
-// LEDGER item 114 (found while landing root R2; NOT closed by it).
+// LEDGER item 114 (found while landing root R2; CLOSED 2026-11-02 by the R3 wave: the stores of a reference that
+// precedes its declaration are replayed once the declaration is checked, before the deny! verdict is taken).
 // attack_slot_register_helper.kry with the registration helper declared AFTER
 // the function that calls it. A body's stores into global slots through its
 // parameters are recorded when the body is CHECKED, and declarations are checked

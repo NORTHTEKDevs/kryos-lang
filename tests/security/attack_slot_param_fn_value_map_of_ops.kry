@@ -1,0 +1,28 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+// item 112, the storing helper is looked up in a map of operations.
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let ops: map<str, fn([fn() -> str], fn() -> str)> = {"put": put}
+    let fns = [safe]
+    let op = ops["put"]
+    op(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

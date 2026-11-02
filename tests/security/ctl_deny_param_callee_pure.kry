@@ -1,0 +1,25 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). item 115 twin: the deny!-bearing callee is handed only pure closures.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let fns = [safe, safe]
+    run_all(fns)
+}

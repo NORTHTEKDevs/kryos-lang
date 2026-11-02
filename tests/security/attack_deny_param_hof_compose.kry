@@ -1,0 +1,31 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). the deny!-bearing callee is handed to a higher-order function as a VALUE and applied to the container there.
+// Master 732714ab: check rc=0 in default and strict mode (the shape layer is blinded by the outer harmless `f`
+// or does not reach the shape), `kryos run` prints the secret. WANTED: rejected with E0110 in both modes.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn run_all(fns: [fn() -> str]) {
+    let f = || "harmless"
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
+
+fn apply(op: fn([fn() -> str]), a: [fn() -> str]) {
+    op(a)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let fns = [safe, r]
+    apply(run_all, fns)
+}

@@ -1,0 +1,26 @@
+// LEDGER root R3 (a reference that precedes its declaration): attack_map_param_alias_invoke_deny.kry with `main` moved above every other item,
+// so the helper is declared AFTER the code that calls it. Master 732714ab accepts it and `kryos run` prints the secret
+// (for the two attack_slot_lambda_param_over_container twins: accepted by --strict-capabilities, the default mode rejects them
+// through the shape layer). WANTED: rejected with E0110 in both modes.
+
+@capabilities(fs:read)
+fn main() {
+    let m = { "p": || "x", "s": secret() }
+    deny!(fs:read) {
+        run(m)
+    }
+}
+
+// LEDGER items 69/70 (deny! form of assault4_actor_handler_map_param_*). A container PARAMETER read into a local
+// (`let f = m["s"]`) then invoked: the callee defers the charge to its callers but compute_hot_params
+// Seed B only registers an immediate `param[path]()` chain. Must be REJECTED (E0110 and/or E0507).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+
+fn run(m: map<str, fn() -> str>) {
+    let f = m["s"]
+    println("MIN1: " + f())
+}

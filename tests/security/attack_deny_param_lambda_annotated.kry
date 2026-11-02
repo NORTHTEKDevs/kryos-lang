@@ -1,0 +1,22 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a lambda with an annotated closure parameter holds the deny! block; it is one monomorphic value, its parameter row is bound by the call.
+// Master 732714ab already rejects this through the SHAPE layer (E0507); the row layer did not. WANTED: the row layer
+// rejects it too (E0110, "is denied in this block") in both modes, so it no longer depends on the shape layer.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let run = |g: fn() -> str| {
+        deny!(fs:read) {
+            println("LEAK: " + g())
+        }
+    }
+    run(r)
+}

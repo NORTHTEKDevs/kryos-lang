@@ -95,10 +95,36 @@ Upgrade notes:
   Conservative costs: a struct field's row is shared by every value of the
   struct, and a lambda's annotated parameter row by every call of that lambda,
   so a registry (or a lambda) that mixes a pure and a privileged closure is judged
-  by the union. Still open: a `deny!` that sits in the file before the stores that
-  fill the registry it reads or before the call that hands it the closure
-  (LEDGER items 72, 115, 116), and a helper declared after the function that
-  calls it (item 114); the README lists them with the other live shapes.
+  by the union. The `deny!` verdict itself was still taken too early; see the next
+  entry.
+- **A `deny!` block was judged before the closure that reaches it had been bound.**
+  The type checker read the capability row of the block's body when it checked the
+  block, and a row that was still unbound counted as "no authority". A closure handed
+  to the function that holds the block (`outer(reader)` with a `deny!(fs:read)` over a
+  wrapper of `reader`), a registry filled by a store further down the file (a struct
+  field, a global, a local array that a loop fills after the block), and a helper
+  declared below the code that uses it all printed the secret inside `deny!(fs:read)`
+  in every mode. The verdict is now taken when the whole module has been checked, and
+  again at every reference to the function that holds the block, with that reference's
+  argument (a relay, a recursion, a method chain and a function value included): the
+  plugin platform of LEDGER item 72 is rejected in its shipped declaration order, and
+  `outer(pure)` is still accepted. It also closes a fn-typed local reassigned from the
+  result of a local closure that returns its parameter (item 77), a registration
+  helper declared after the function that calls it (item 114), and four of the seven
+  repros of item 118 (a store helper reached through a function-typed parameter, a
+  struct field, a map of operations or a lambda).
+  Pinned: 48 programs are rejected (E0110) in both modes and `kryos run` refuses them,
+  22 of the 25 new ones accepted by master; 20 controls stay accepted. A verdict diff
+  over 1463 programs in both modes moved only `tests/security`. Costs, all deliberate:
+  the verdict no longer depends on declaration order (a privileged `Plugin { run: .. }`
+  literal below a `deny!` that reads another registry of `Plugin`s counts, as it did
+  above it), and a `deny!` inside a method of a trait impl that depends on one of its
+  parameters is judged on `all`. Still open: the body of a trait default method is never
+  checked (item 122), a store helper followed through a factory result, a generic trait
+  bound or a `dyn` (item 123), a container inside a tuple, `Option`, `Result` or enum
+  parameter (item 119), and `deny!(fs)`, `deny!(io)` and `deny!(all)`, which the type
+  checker does not match against a used `fs:read` (item 121); the README lists them
+  with the other live shapes.
 
 ### Fixed - `kryos repl`
 

@@ -1,0 +1,31 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 112 where the handed container's elements are Option<fn> (storage_rows_in does not walk Option).
+use std::option::{Option, Some, None}
+
+fn reg_opt(a: [Option<fn() -> str>], g: fn() -> str) {
+    a[0] = Some(g)
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [Some(safe)]
+    reg_opt(fns, r)
+    deny!(fs:read) {
+        for o in fns {
+            match o {
+                Some(f) => println(f()),
+                None() => {},
+            }
+        }
+    }
+}

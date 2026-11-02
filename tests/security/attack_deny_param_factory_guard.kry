@@ -1,0 +1,26 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a factory returns a closure that holds the deny! block over its captured parameter.
+// Master 732714ab already rejects this through the SHAPE layer (E0507); the row layer did not. WANTED: the row layer
+// rejects it too (E0110, "is denied in this block") in both modes, so it no longer depends on the shape layer.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn make_guard(f: fn() -> str) -> fn() -> str {
+    return || {
+        deny!(fs:read) {
+            return f()
+        }
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let g = make_guard(r)
+    println("LEAK: " + g())
+}

@@ -443,15 +443,37 @@ costs, both deliberate: a struct field's row is shared by every value of that
 struct in the program, and a lambda's annotated parameter row is shared by every
 call of that lambda, so a registry that mixes a pure and a privileged plugin (or a
 lambda called with both) is judged by the union (a `deny!` of that capability that
-only calls the pure one is rejected). Still open, because the verdict is taken
-when the `deny!` block is checked: stores declared later in the file than the
-`deny!` are not seen (LEDGER items 72 and 116), a `deny!` inside a function
-declared before the call that passes it the privileged closure is judged on the
-callee's unbound parameter (item 115), and a helper declared after the function
-that calls it replays nothing (item 114). Rejected: the
+only calls the pure one is rejected). Rejected: the
 `tests/security/attack_slot_*.kry` programs (E0110). Accepted: the
 `tests/security/ctl_slot_*.kry` controls, including a pure-only registry and a mixed
 registry read inside a `deny!` of a capability none of its closures uses.
+
+**The `deny!` verdict is taken when the whole module has been checked (2026-11-02,
+LEDGER root R3).** A block is judged on the row its body was charged, and that row
+mentions things that are bound later: the row of a parameter of the function that
+holds the block (each caller supplies it), a struct field, a global or a local
+array that is filled by a store further down the file or later in a loop, and a
+helper or callee declared below the code that uses it. The checker used to read the
+bits of the row at the block and drop whatever was still unbound, so a block that
+called a closure it was handed, or read a registry filled afterwards, was judged to
+need nothing. It now files the row, judges it when nothing can bind any more, and
+judges it again at every reference to the function that holds the block with that
+reference's argument: `outer(reader)` is rejected at the `deny!` inside `outer` when
+`reader` reads a file, and `outer(pure)` is not. A helper that hands its parameter
+on (a relay, a recursion, a method chain) passes the obligation on. Three costs,
+all deliberate: the verdict does not depend on the order of the declarations (a
+privileged `Plugin { run: .. }` literal below a `deny!` that reads another registry
+of `Plugin`s now counts, exactly as it did when it sat above); a block inside a
+method of a trait impl that depends on one of its parameters is judged on `all`,
+because a generic bound or a `dyn` reaches the method through the trait; and a
+function nothing references is not judged on its parameters (it cannot run). Still
+open: the body of a trait default method is never checked (LEDGER item 122), and a
+helper that stores a closure into a container it was handed is not followed through
+a factory result, a generic trait bound or a `dyn` (item 123), or when the container
+sits inside a tuple, an `Option`, a `Result` or an enum (item 119); `deny!(fs)`,
+`deny!(io)` and `deny!(all)` are not matched against a used `fs:read` by this layer
+(item 121). Rejected: the `tests/security/attack_deny_*.kry` programs (E0110).
+Accepted: the `tests/security/ctl_deny_*.kry` controls.
 
 See `tests/security/cap_escape_closure_launder_local_struct_field.kry`,
 `..._local_registry_index_field.kry` (the array-of-struct-field flagship

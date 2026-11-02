@@ -1,0 +1,32 @@
+// LEDGER root R3 (the deny! verdict is taken when the module is done). a pure helper declared AFTER main, called inside the deny!: the row of the callee is unbound while main is checked and settles to nothing.
+// Must stay ACCEPTED in the default and the strict mode (no over-rejection).
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    println(r())
+    deny!(fs:read) {
+        println(helper())
+        println(apply(square, 4))
+    }
+}
+
+fn helper() -> str {
+    return "pure helper declared after main"
+}
+
+fn square(n: i64) -> i64 {
+    return n * n
+}
+
+fn apply(f: fn(i64) -> i64, n: i64) -> i64 {
+    return f(n)
+}

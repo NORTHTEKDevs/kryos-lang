@@ -1,0 +1,35 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 112 where the handed container is a NESTED array inside an Option parameter (storage_rows_in does not walk Option).
+use std::option::{Option, Some, None}
+
+fn reg_nested(o: Option<[[fn() -> str]]>, g: fn() -> str) {
+    match o {
+        Some(rows) => {
+            rows[0][0] = g
+        },
+        None() => {},
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let rows = [[safe]]
+    reg_nested(Some(rows), r)
+    deny!(fs:read) {
+        for row in rows {
+            for f in row {
+                println(f())
+            }
+        }
+    }
+}

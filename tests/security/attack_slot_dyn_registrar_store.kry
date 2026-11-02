@@ -1,0 +1,34 @@
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+// item 112 through dyn dispatch: the impl method stores its closure parameter into the container it was handed.
+trait Registrar {
+    fn add(self: Self, reg: [fn() -> str], g: fn() -> str)
+}
+
+struct Impl1 {}
+impl Registrar for Impl1 {
+    fn add(self: Impl1, reg: [fn() -> str], g: fn() -> str) {
+        reg[0] = g
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    let d: dyn Registrar = Impl1 {}
+    d.add(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
