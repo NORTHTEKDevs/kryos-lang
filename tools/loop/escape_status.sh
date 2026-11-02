@@ -168,6 +168,13 @@ for row in $files; do
   echo "$out" | grep -qiE "leak|TOPSECRET|ESCAPE" && leak="LEAK"
   verdict="fixed"
   if [ "$c1" -eq 0 ] && [ "$leak" = "LEAK" ]; then verdict="ESCAPES"; fi
+  # A program the strict mode accepts but the default mode rejects (the default
+  # mode's shape layer catches it, the strict mode relies on the row layer alone)
+  # is an escape too: run it under --strict-capabilities and look for the leak.
+  if [ "$c2" -eq 0 ] && [ "$verdict" != "ESCAPES" ]; then
+    sout=$( cd "$ROOT" && timeout 60 "$K" run --strict-capabilities "$f" 2>&1 )
+    if echo "$sout" | grep -qiE "leak|TOPSECRET|ESCAPE"; then leak="LEAK"; verdict="ESCAPES"; fi
+  fi
   [ "$verdict" = "ESCAPES" ] && esc=$((esc+1)) || fixed=$((fixed+1))
   printf "%-6s %-52s rc=%-7s rc=%-7s %s %s\n" "$item" "$name" "$c1" "$c2" "$leak" "$verdict"
 done

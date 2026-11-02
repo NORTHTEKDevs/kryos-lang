@@ -151,7 +151,11 @@ number is the binary built from `dcf72e93`.
   compiler/self-host/main.kry`: 47.7-49.3s master, 45.7-46.8s here.
 - Gates, master -> round-1 head -> round-2 head: `escape_status.sh` 12 escaping / 68
   rejected (80 repros) -> 6 / 93 (99) -> 7 / 133 (140); the count rose by one because
-  the two R3 escapes the verifier found (115, 116) are counted now and item 112 closed;
+  the two R3 escapes the verifier found (115, 116) are counted now and item 112 closed
+  (the script also runs a program that the strict mode accepts and the default mode
+  rejects under `--strict-capabilities`, so a strict-only escape is counted: the two
+  `attack_slot_lambda_param_over_container*` repros are ESCAPES on master and on the
+  round-1 head, which the old script could not see);
   `security_gate.sh` PASS 187 ok -> 225 -> 274; `kryos-loop.sh gates 2` GREEN throughout;
   bootstrap 16/16 throughout; `capability_matrix_gate.sh` 75/75 + 34/75 throughout;
   `cargo test -p kryos-types` integration tests 45 -> 53 -> 63.

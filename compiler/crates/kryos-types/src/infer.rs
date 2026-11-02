@@ -1057,19 +1057,24 @@ impl InferenceEngine {
 
     /// Capability-row unification for two function types that flow together.
     /// `c1` is the DESTINATION row (the expected / declared / slot side) and
-    /// `c2` the row flowing into it.
+    /// `c2` the row flowing into it; below a function type's parameter list the
+    /// caller swaps them, because a parameter position is contravariant.
     ///
     /// A var on the destination side is bound to `c2` when it is still
     /// unbound (the original behaviour) OR when it is a slot: a slot that is
     /// already bound is WIDENED, because the destination row is the union of
     /// everything stored into it. `bind_cap_var` unions, so rows only grow.
-    /// A bound var that is not a slot (a function's own total, a parameter
-    /// or return var after its binding) is left alone: its binding is the
-    /// declaration's fact, not storage.
+    /// A bound var that is not a slot (a function's own total) is left alone:
+    /// its binding is the declaration's fact, not storage. A var that is the
+    /// storage of a container the body being checked was HANDED is never
+    /// bound: the store is recorded and replayed at the call.
     ///
-    /// When the destination carries no bindable var at all it is a closed
-    /// row, and the original rule applies: the still-unbound vars of the
-    /// source take the destination's row.
+    /// When the destination is fully known (closed), the original rule
+    /// applies: the still-unbound vars of the source take the destination's
+    /// row. It never applies to a SIGNATURE var of the body being checked
+    /// (`is_frozen`): that var stands for whatever the caller passes, and
+    /// binding it narrows the caller's argument away. A lambda's annotated
+    /// parameter row is widened, not skipped, once it is bound.
     fn unify_rows(&mut self, c1: &CapRow, c2: &CapRow) {
         if c1 == c2 || c1.is_unknown() {
             return;
