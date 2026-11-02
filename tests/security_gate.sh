@@ -1276,6 +1276,9 @@ done
 # so the row layer no longer depends on it.
 # The six attack_fwd_* programs are R2 attack programs with `main` moved above everything else:
 # the helper is declared AFTER the code that calls it, and the reference found nothing to replay.
+# Master accepts four of them in every mode; the two attack_fwd_slot_lambda_param_over_container
+# twins are rejected there by the shape layer in the default mode and accepted only under
+# --strict-capabilities.
 #
 # The assertion is on the ROW layer ("is denied in this block"): the shape layer is
 # blinded by the outer harmless `f`, which is why these escaped, and a program rejected

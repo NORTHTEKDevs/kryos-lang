@@ -1,11 +1,12 @@
-// OPEN ESCAPE (listed in tools/loop/escape_status.sh and the README, not
-// rejected). Same root as attack_reassign_local_via_local_closure_return_lambda:
+// CLOSED 2026-11-02 by the R3 wave (it was an OPEN ESCAPE listed in tools/loop/escape_status.sh: the shape
+// layer accepts it, the row layer now rejects it with E0110, see ACCEPTANCE below). Same root as attack_reassign_local_via_local_closure_return_lambda:
 // a nested named `fn` (which desugars to a local lambda) that returns one of
 // its parameters, called as `f = pick(harmless, reader)`. The call is resolved
 // to the nested function's own invocation authority, not to its returned
 // argument. A top-level `fn pick` is rejected; only the nested one is open.
 // Present on master.
-// ACCEPTANCE (when closed): rejected (E0507) in default and strict mode.
+// ACCEPTANCE: rejected in default and strict mode by the ROW layer (E0110, "is denied in this block"): the
+// block in `outer` is judged on `reader`'s row, which `main`'s `outer(reader)` binds to {fs:read}.
 
 fn harmless() -> str {
     return "not a secret"

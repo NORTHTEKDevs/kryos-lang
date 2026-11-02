@@ -32,8 +32,10 @@
 // `go()` is called AGAIN, as a bare identifier, from INSIDE
 // `deny!(fs:read)`.
 //
-// ACCEPTANCE: should be REJECTED (E0507, `all` required) at the `deny!`
-// call site, the same way a direct alias/reassignment would be. If it
+// ACCEPTANCE (2026-11-02, LEDGER item 64 CLOSED by the R3 wave): REJECTED with E0110 by the row layer, in default
+// and strict mode: the `deny!` in `outer` is judged on `reader`'s row, which `main`'s `outer(reader)` binds to
+// {fs:read}. (The shape layer still accepts it; the original expectation was E0507, `all` required, at the `deny!`
+// call site, the same way a direct alias/reassignment would be.) If it
 // compiles clean and the secret prints, `go`'s wrong `Known(empty)`
 // classification is a live escape distinct from the already-found
 // deny-bare-closure-reassign-escape (that one is about STALE

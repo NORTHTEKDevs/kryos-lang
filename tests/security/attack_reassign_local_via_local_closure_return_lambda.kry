@@ -1,5 +1,5 @@
-// OPEN ESCAPE (listed in tools/loop/escape_status.sh and the README, not
-// rejected). A fn-typed local is reassigned from the result of calling a
+// CLOSED 2026-11-02 by the R3 wave (it was an OPEN ESCAPE listed in tools/loop/escape_status.sh: the shape
+// layer accepts it, the row layer now rejects it with E0110, see ACCEPTANCE below). A fn-typed local is reassigned from the result of calling a
 // LOCAL closure that returns its parameter: `f = setter(reader)`.
 // `resolve_closure_caps` resolves a call through a local name to the local's
 // OWN invocation authority (`local_caps`), not to the authority of the value
@@ -7,7 +7,8 @@
 // `deny!(fs:read)` reads the file. A top-level named function with the same
 // shape is resolved through `fn_return_caps` (DependsOnParam) and rejected;
 // only a local lambda or nested `fn` is open. Present on master.
-// ACCEPTANCE (when closed): rejected (E0507) in default and strict mode.
+// ACCEPTANCE: rejected in default and strict mode by the ROW layer (E0110, "is denied in this block"): the
+// block in `outer` is judged on `reader`'s row, which `main`'s `outer(reader)` binds to {fs:read}.
 
 fn harmless() -> str {
     return "not a secret"
