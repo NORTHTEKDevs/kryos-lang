@@ -1,0 +1,41 @@
+// LEDGER root R2 (readers: a helper that reads the slot, called before the store in a loop).
+// A helper iterates a registry through a fn-typed struct field; the privileged plugin is pushed AFTER the helper call, inside the same deny! loop. The second iteration runs it. The call's charge must stay a reference to the field's slot, not a copy of what it held at the call.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+fn run_all(ps: [Plugin]) {
+    for_each(ps, |q: Plugin| {
+        println(q.run())
+    })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let a = Plugin { name: "a", run: safe }
+    let mut ps = [a]
+    deny!(fs:read) {
+        let mut i = 0
+        while i < 2 {
+            run_all(ps)
+            ps = push(ps, Plugin { name: "b", run: r })
+            i = i + 1
+        }
+    }
+}

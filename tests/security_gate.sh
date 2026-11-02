@@ -1087,5 +1087,108 @@ else
     tail -3 "$TMP/sdc" | sed 's/^/    /'; fail=1
 fi
 
+# LEDGER root R2: a closure stored into a SLOT must widen the slot's row.
+#
+# The row layer typed an array / map literal by its FIRST element, bound a struct
+# field's declaration-global row var (and an enum payload's, an annotated
+# binding's, a generic type variable's) to the first closure stored into it, and
+# let every later store meet a resolved row, hit the closed/closed no-op in
+# `unify`, and vanish. `deny!` judges that row, so a privileged closure stored
+# second was never seen. Every program below was accepted in every mode and
+# printed the secret on master dcf72e93 (executed).
+#
+# Items 65 and 68 (a factory that wraps its parameter in a struct field) close with
+# the same root: the factory's body stores its OWN parameter var in the field, and
+# the call now replays that store with the caller's closure.
+#
+# The assertion is on the ROW layer specifically (E0110, "denied in this block"):
+# the shape layer is blind to these forms, which is why they escaped, and a
+# program that is still rejected only by E0507 would hide a row-layer regression.
+# `kryos run` must also refuse to run the program and print nothing.
+R2_ESCAPES="attack_for_binder_shadow_closure_deny \
+    attack_realprogram_registry_list_wrapper \
+    attack_realprogram_registry_foreach \
+    attack_map_param_alias_invoke_deny \
+    attack_array_param_alias_invoke_deny \
+    attack_actor_explicit_self_swapped_params_deny \
+    attack_match_bound_var_field_invoke \
+    attack_index_field_invoke_factory_element_deny \
+    attack_slot_array_push_blinded \
+    attack_slot_array_index_assign_blinded \
+    attack_slot_struct_field_assign_blinded \
+    attack_slot_enum_payload_second_store \
+    attack_slot_nested_array_literal \
+    attack_slot_tuple_array_literal \
+    attack_slot_struct_array_field_literal \
+    attack_slot_two_struct_instances \
+    attack_slot_empty_array_two_pushes \
+    attack_slot_array_from_call_push \
+    attack_slot_option_cell_reassign \
+    attack_slot_tuple_reassign \
+    attack_slot_loop_carried_store_via_helper \
+    attack_slot_register_helper \
+    attack_slot_register_method \
+    attack_slot_param_struct_field_store \
+    assault_r1_real_program_plugin_platform_stores_first"
+for esc in $R2_ESCAPES; do
+    esc_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if "$K" check $mode "tests/security/$esc.kry" >"$TMP/slot" 2>&1; then
+            echo "  FAIL: $esc.kry passed \`check $mode\` -- a closure stored into a slot never widened its row"
+            esc_ok=0; fail=1
+        elif ! grep -q "is denied in this block" "$TMP/slot"; then
+            echo "  FAIL: $esc.kry rejected by \`check $mode\`, but not by the row layer (E0110):"
+            tail -3 "$TMP/slot" | sed 's/^/    /'; esc_ok=0; fail=1
+        fi
+    done
+    if timeout 60 "$K" run "tests/security/$esc.kry" >"$TMP/slotrun" 2>&1; then
+        echo "  FAIL: $esc.kry RAN (exit 0) -- the run must be refused at check time"
+        esc_ok=0; fail=1
+    elif grep -qE "TOPSECRET|EVIL-SUPPLY-CHAIN-LEAK" "$TMP/slotrun"; then
+        echo "  FAIL: $esc.kry printed the secret"
+        esc_ok=0; fail=1
+    fi
+    [ $esc_ok -eq 1 ] && echo "  ok   $esc.kry rejected by the row layer in default and strict mode, run refused"
+done
+# The twin of every program above has only pure closures in the slot, or denies a
+# capability none of the stored closures uses, and must stay accepted. The cost of
+# a per-declaration slot is that a registry mixing a pure and a privileged closure
+# is judged by the union: the controls below are the cases where that union is
+# still harmless. std::iter HOFs take fn params everywhere and must not be charged.
+R2_CONTROLS="ctl_slot_pure_registries_in_deny \
+    ctl_slot_mixed_registry_other_deny \
+    ctl_slot_mixed_registry_outside_deny \
+    ctl_slot_std_iter_pure_in_deny \
+    ctl_slot_registered_pure_list_plugins \
+    ctl_slot_for_binder_shadow_pure \
+    ctl_slot_registry_list_wrapper_pure \
+    ctl_slot_registry_foreach_pure \
+    ctl_slot_map_param_alias_pure \
+    ctl_slot_array_param_alias_pure \
+    ctl_slot_actor_explicit_self_pure"
+for ctl in $R2_CONTROLS; do
+    ctl_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "tests/security/$ctl.kry" >"$TMP/slotc" 2>&1; then
+            echo "  FAIL: slot widening over-rejects $ctl.kry under \`check $mode\`:"
+            tail -3 "$TMP/slotc" | sed 's/^/    /'; ctl_ok=0; fail=1
+        fi
+    done
+    [ $ctl_ok -eq 1 ] && echo "  ok   $ctl.kry accepted in default and strict mode (no over-rejection)"
+done
+# The two shipped registry-dispatch programs are the precision witnesses the
+# fail-closed row work is measured against: both hold privileged closures in
+# slots and both must keep compiling.
+for prog in examples/showcase/repo_auditor.kry ecosystem/kryos-tool-broker; do
+    prog_ok=1
+    for mode in "" "--strict-capabilities"; do
+        if ! "$K" check $mode "$prog" >"$TMP/slotp" 2>&1; then
+            echo "  FAIL: slot widening rejects $prog under \`check $mode\`:"
+            tail -3 "$TMP/slotp" | sed 's/^/    /'; prog_ok=0; fail=1
+        fi
+    done
+    [ $prog_ok -eq 1 ] && echo "  ok   $prog still accepted in default and strict mode"
+done
+
 [ $fail -eq 0 ] && echo "security-gate: PASS" || echo "security-gate: FAIL"
 exit $fail

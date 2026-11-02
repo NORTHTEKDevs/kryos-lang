@@ -1,0 +1,38 @@
+// LEDGER root R2 control. A List<Plugin> and a registration helper that take pure closures only, read inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict). Pinned so the slot
+// widening cannot grow into rejecting a program that never stored a privileged
+// closure into the slot it reads.
+use std::collections::{List}
+use std::iter::{for_each}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn also_safe() -> str {
+    return "also-safe"
+}
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+fn register(reg: [Plugin], name: str, f: fn() -> str) -> [Plugin] {
+    return push(reg, Plugin { name: name, run: f })
+}
+
+@capabilities(fs:read)
+fn main() {
+    let mut reg: [Plugin] = []
+    reg = register(reg, "a", safe)
+    reg = register(reg, "b", also_safe)
+    let mut lst: List<Plugin> = List.new()
+    lst = lst.push(Plugin { name: "x", run: safe })
+    lst = lst.push(Plugin { name: "y", run: also_safe })
+    deny!(fs:read) {
+        for_each(reg, |q: Plugin| {
+            println(q.run())
+        })
+        let p = lst.get(1)
+        println(p.run())
+    }
+}

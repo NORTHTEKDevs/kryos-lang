@@ -1,0 +1,58 @@
+// LEDGER root R2 control. Pure-only registries of every store kind (array literal, map literal, push, index assign, field assign, enum payload, reassigned local) read inside deny!(fs:read).
+// Must stay ACCEPTED by `kryos check` (default and strict). Pinned so the slot
+// widening cannot grow into rejecting a program that never stored a privileged
+// closure into the slot it reads.
+use std::iter::{for_each}
+
+fn safe() -> str {
+    return "safe"
+}
+
+fn also_safe() -> str {
+    return "also-safe"
+}
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+enum Cmd {
+    Run(fn() -> str),
+}
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let fns = [|| "a", || "b"]
+    let m = { "a": safe, "b": also_safe }
+    let mut pushed = []
+    pushed = push(pushed, || "p1")
+    pushed = push(pushed, || "p2")
+    let mut idx = [|| "i1", || "i2"]
+    idx[1] = also_safe
+    let p = Plugin { name: "a", run: safe }
+    p.run = also_safe
+    let cs = [Cmd.Run(safe), Cmd.Run(also_safe)]
+    let mut g = || "g1"
+    g = || "g2"
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+        for k in keys(m) {
+            let h = m[k]
+            println(h())
+        }
+        for f in pushed {
+            println(f())
+        }
+        for f in idx {
+            println(f())
+        }
+        println(p.run())
+        for c in cs {
+            match c {
+                Run(f) => println(f()),
+            }
+        }
+        println(g())
+    }
+}

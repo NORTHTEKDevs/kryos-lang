@@ -1,0 +1,14 @@
+// LEDGER root R2 control for item 69: attack_map_param_alias_invoke_deny with every
+// map value pure. Must stay ACCEPTED (default and strict).
+fn run(m: map<str, fn() -> str>) {
+    let f = m["s"]
+    println("MIN1: " + f())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let m = { "p": || "x", "s": || "y" }
+    deny!(fs:read) {
+        run(m)
+    }
+}

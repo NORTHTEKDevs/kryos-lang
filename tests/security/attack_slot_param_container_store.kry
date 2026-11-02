@@ -1,0 +1,32 @@
+// LEDGER item 112 (found while landing root R2; NOT closed by it).
+// A callee stores a closure it was handed into a CONTAINER it was handed:
+// `reg[0] = g`. Arrays are shared handles, so the store lands in the CALLER's
+// array, but the callee only widened its own parameter's row var; the caller's
+// slot never learns about it. `for f in fns` inside deny!(fs:read) then runs the
+// privileged closure.
+//
+// Master dcf72e93 AND the R2 build: check rc=0 in default and strict mode, and
+// `kryos run` prints TOPSECRET-CLOSURE-... (executed). The fix needs the callee's
+// store effects replayed at each call site and propagated into the slot the
+// argument came from; see tools/loop/LEDGER.md item 112.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn register(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [|| "pure"]
+    register(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

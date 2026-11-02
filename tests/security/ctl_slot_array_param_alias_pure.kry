@@ -1,0 +1,14 @@
+// LEDGER root R2 control for item 70: attack_array_param_alias_invoke_deny with every
+// element pure. Must stay ACCEPTED (default and strict).
+fn run_it(reg: [fn() -> str]) {
+    let f = reg[1]
+    println("M3: " + f())
+}
+
+@capabilities(fs:read)
+fn main() {
+    let reg: [fn() -> str] = [|| "pure", || "pure2"]
+    deny!(fs:read) {
+        run_it(reg)
+    }
+}

@@ -1,0 +1,43 @@
+// LEDGER root R2 (stores: through a registration method).
+// `reg.add(name, handler)` is an impl method that stores its parameter into a struct field; same replay requirement as the free-function helper.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Plugin {
+    name: str,
+    run: fn() -> str,
+}
+struct Registry {
+    items: [Plugin],
+}
+
+impl Registry {
+    fn add(self, name: str, f: fn() -> str) {
+        self.items = push(self.items, Plugin { name: name, run: f })
+    }
+}
+
+@capabilities(fs:read)
+fn main() {
+    let r = secret()
+    let reg = Registry { items: [] }
+    reg.add("a", safe)
+    reg.add("evil", r)
+    deny!(fs:read) {
+        for_each(reg.items, |q: Plugin| {
+            println(q.run())
+        })
+    }
+}

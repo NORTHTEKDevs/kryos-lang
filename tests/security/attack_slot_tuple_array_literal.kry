@@ -1,0 +1,28 @@
+// LEDGER root R2 (stores: tuple elements of an array literal).
+// Each tuple's fn element is a slot of the array's element type; the privileged tuple is second.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let ps = [(1, || "pure"), (2, r)]
+    deny!(fs:read) {
+        for (n, f) in ps {
+            println(f())
+        }
+    }
+}

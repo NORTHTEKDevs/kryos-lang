@@ -1,0 +1,31 @@
+// LEDGER root R2 (stores: array literal inside a struct literal).
+// A struct field of type [fn() -> str] initialised by a mixed array literal.
+// Master dcf72e93 accepts this in every mode (both capability layers miss it) and
+// `kryos run` prints the secret. Must be REJECTED with E0110 ("capability `fs:read`
+// is denied in this block") under inferred and strict, and `kryos run` must not
+// print the secret.
+use std::iter::{for_each}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+fn safe() -> str {
+    return "safe"
+}
+
+struct Reg {
+    fns: [fn() -> str],
+}
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let g = Reg { fns: [|| "pure", r] }
+    deny!(fs:read) {
+        for f in g.fns {
+            println(f())
+        }
+    }
+}

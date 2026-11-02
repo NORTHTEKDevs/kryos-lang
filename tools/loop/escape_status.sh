@@ -89,6 +89,24 @@ files="
 109|attack_reassign_container_map_unsafe
 110|attack_reassign_container_map_while_cond
 111|attack_reassign_container_struct_field_ifexpr_arg
+112|attack_slot_param_container_store
+113|attack_slot_param_struct_field_store
+slot01|attack_slot_array_push_blinded
+slot02|attack_slot_array_index_assign_blinded
+slot03|attack_slot_struct_field_assign_blinded
+slot04|attack_slot_enum_payload_second_store
+slot05|attack_slot_nested_array_literal
+slot06|attack_slot_tuple_array_literal
+slot07|attack_slot_struct_array_field_literal
+slot08|attack_slot_two_struct_instances
+slot09|attack_slot_empty_array_two_pushes
+slot10|attack_slot_array_from_call_push
+slot11|attack_slot_option_cell_reassign
+slot12|attack_slot_tuple_reassign
+slot13|attack_slot_loop_carried_store_via_helper
+slot14|attack_slot_register_helper
+slot15|attack_slot_register_method
+slot16|assault_r1_real_program_plugin_platform_stores_first
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN
