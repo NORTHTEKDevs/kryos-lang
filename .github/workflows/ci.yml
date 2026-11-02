@@ -940,9 +940,13 @@ jobs:
         env:
           KRYOS_BIN: ${{ github.workspace }}/compiler/target/release/kryos.exe
           KRYOS_STDLIB_DIR: ${{ github.workspace }}/compiler/stdlib
+          BYPASS_GATE_SKIP_CARGO: "1"
         # Same reasoning as the security gate above: the checker and the build
         # cache are shared Rust, but the cache section links real binaries and
         # the extern/ffi classes involve the platform's own runtime.
+        # Section 9 (the cargo tests that keep the tables honest) is skipped here:
+        # they are platform-independent Rust and run in the Linux job, and from this
+        # bash step cargo cannot link (Git's /usr/bin/link.exe shadows MSVC's).
         run: bash tests/bypass_gate.sh
 
       - name: REPL capability gate -- Windows
