@@ -195,6 +195,7 @@ cmd_gates() {
     run "minilisp"            bash tests/minilisp_gate.sh
     run "authority_surface"   bash tests/authority_surface_gate.sh
     run "security"            bash tests/security_gate.sh
+    run "bypass"              bash tests/bypass_gate.sh
     run "repl_capability"     bash tests/repl_capability_gate.sh
     run "jit_symbols"         bash tests/jit_symbols_gate.sh
     run "selfhost_regressions" bash compiler/self-host/test_regressions.sh
