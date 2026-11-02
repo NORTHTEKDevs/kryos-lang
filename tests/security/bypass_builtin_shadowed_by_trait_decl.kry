@@ -1,0 +1,17 @@
+// THREAT-MODEL.md section 4.5, row B2 (not an escape_status.sh row).
+// Same defect as bypass_builtin_shadowed_by_method.kry with only a trait
+// method DECLARATION named like the gated builtin (no impl at all).
+//
+// kryos 1.2.0 at dbfb989d: `kryos check` rc=0 in default and
+// --strict-capabilities mode, and `kryos run` prints BYPASS-B2-OK (executed
+// 2026-11-01).
+trait Reader {
+    fn env_get(self, name: str) -> str
+}
+
+fn main() {
+    let p = env_get("PATH")
+    if len(p) > 0 {
+        println("BYPASS-B2-OK")
+    }
+}

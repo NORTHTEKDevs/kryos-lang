@@ -1,0 +1,14 @@
+// THREAT-MODEL.md section 4.5, row B8 (verified by a build, not a `check`).
+// `kryos build --cache` consults the artifact cache BEFORE the capability
+// checker, and the cache key (source hash, target, mode, output type, compiler
+// version) does not include the capability mode. So:
+//   1. `kryos build x.kry`                                   -> rejected, E0505
+//   2. `kryos build --capabilities-mode=permissive --cache x.kry` -> built, cached
+//   3. `kryos build --cache x.kry` (default mode)            -> cache hit, built
+//      (`--strict-capabilities --cache` also hits the same entry)
+// Step 3 is the same source step 1 rejected. check-escapes-documented.sh runs
+// these three steps with KRYOS_CACHE_DIR pointing at a scratch directory.
+// (Executed 2026-11-01: rc 1, 0, 0.)
+fn main() {
+    println("home=" + env_get("PATH"))
+}

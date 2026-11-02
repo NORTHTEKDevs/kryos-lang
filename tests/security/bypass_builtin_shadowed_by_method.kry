@@ -1,0 +1,26 @@
+// THREAT-MODEL.md section 4.5, row B1 (not an escape_status.sh row).
+// A zero-authority, unannotated `main` calls `env_get`, which needs `process`.
+// Defining ANY impl method named `env_get` makes the capability checker
+// (collect_defined_fns recurses into impl and trait methods) treat every bare
+// call to `env_get` as a call to a user function, so the call is never
+// charged. The method is never called; it only shadows the name.
+//
+// kryos 1.2.0 at dbfb989d: `kryos check` rc=0 in default and
+// --strict-capabilities mode, and `kryos run` prints BYPASS-B1-OK (executed
+// 2026-11-01). Without the `impl` block the same `main` is rejected with E0505.
+struct Decoy {
+    x: i64,
+}
+
+impl Decoy {
+    fn env_get(self, name: str) -> str {
+        return name
+    }
+}
+
+fn main() {
+    let p = env_get("PATH")
+    if len(p) > 0 {
+        println("BYPASS-B1-OK")
+    }
+}
