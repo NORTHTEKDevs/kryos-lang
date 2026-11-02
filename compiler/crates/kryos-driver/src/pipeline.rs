@@ -91,26 +91,101 @@ fn cache_target_str(config: &BuildConfig) -> String {
     format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
 }
 
-/// Attempt to short-circuit compilation via the on-disk build cache. Returns
-/// `Some(result)` only when the cache is enabled, the output type is
-/// cacheable, and a matching artifact exists on disk. Any I/O or permission
-/// problem silently returns `None`, falling back to a normal build.
-fn try_cache_hit(
-    source: &str,
+/// A cache entry this compile may restore an artifact from, or add one to once
+/// it has built.
+struct CacheEntry {
+    key: CacheKey,
+    target: String,
+    pipeline: String,
+    /// Set when the artifact was restored from the cache, so the build that
+    /// returns it does not write the same bytes back.
+    restored: std::cell::Cell<bool>,
+}
+
+impl CacheEntry {
+    fn context<'a>(&'a self, config: &BuildConfig) -> CacheContext<'a> {
+        CacheContext {
+            target_triple: &self.target,
+            build_mode: build_mode_str(config.mode),
+            output_type: output_type_str(config.output_type),
+            compiler_version: env!("CARGO_PKG_VERSION"),
+            pipeline: &self.pipeline,
+        }
+    }
+}
+
+/// Everything besides the sources that decides what this build accepts and
+/// emits: the capability mode actually enforced (the strict flag upgrades the
+/// configured one), the backend and its options, the stdlib directory. A hit
+/// for another value of any of these would be an artifact this build did not
+/// ask for. The capability check ALSO runs before the cache is consulted, so
+/// this is defence in depth, not the guard (B8).
+fn pipeline_fingerprint(
+    path: &Path,
     config: &BuildConfig,
-) -> Option<(CacheKey, CompileResult)> {
+    backend: Option<&dyn Backend>,
+) -> String {
+    let cap_mode = if config.strict_capabilities {
+        "strict"
+    } else {
+        match config.capability_mode {
+            CapabilityMode::Permissive => "permissive",
+            CapabilityMode::Inferred => "inferred",
+            CapabilityMode::Strict => "strict",
+        }
+    };
+    format!(
+        "cap={cap_mode}|strict={}|backend={}|lto={}|g={}|skip_own={}|split_async={}|caps={}|stdlib={}|export_user_fns={}",
+        config.strict_capabilities,
+        backend.map(|b| b.name()).unwrap_or("none"),
+        config.lto,
+        config.debug_info,
+        config.skip_ownership,
+        config.split_async_awaits,
+        config.capabilities.join(","),
+        resolve::stdlib_dir_fingerprint(path),
+        std::env::var_os("KRYOS_EXPORT_USER_FNS").is_some(),
+    )
+}
+
+/// The cache entry for this compile, or `None` when the cache is off or the
+/// output is not a cacheable artifact. Call AFTER import resolution: the key
+/// covers the root source and every module file the compile read.
+fn build_cache_entry(
+    source: &str,
+    path: &Path,
+    config: &BuildConfig,
+    backend: Option<&dyn Backend>,
+) -> Option<CacheEntry> {
     if !config.use_cache || !cacheable_output(config.output_type) {
         return None;
     }
     let target = cache_target_str(config);
-    let ctx = CacheContext {
-        target_triple: &target,
-        build_mode: build_mode_str(config.mode),
-        output_type: output_type_str(config.output_type),
-        compiler_version: env!("CARGO_PKG_VERSION"),
+    let pipeline = pipeline_fingerprint(path, config, backend);
+    let inputs = format!("{source}\0{}", resolve::read_sources_fingerprint());
+    let key = {
+        let ctx = CacheContext {
+            target_triple: &target,
+            build_mode: build_mode_str(config.mode),
+            output_type: output_type_str(config.output_type),
+            compiler_version: env!("CARGO_PKG_VERSION"),
+            pipeline: &pipeline,
+        };
+        CacheKey::new(&inputs, &ctx)
     };
-    let key = CacheKey::new(source, &ctx);
-    let bytes = build_cache::lookup(&key)?;
+    Some(CacheEntry {
+        key,
+        target,
+        pipeline,
+        restored: std::cell::Cell::new(false),
+    })
+}
+
+/// Restore a cached artifact to the output path. Only ever called once every
+/// analysis pass has accepted the program (see `compile_module_impl`). Returns
+/// the output path on a hit; any I/O problem is a miss.
+fn try_cache_restore(entry: &CacheEntry, config: &BuildConfig) -> Option<std::path::PathBuf> {
+    let bytes = build_cache::lookup(&entry.key)?;
 
     let out_path = config.derive_output_path();
     if let Some(parent) = out_path.parent() {
@@ -133,32 +208,21 @@ fn try_cache_hit(
         }
     }
 
+    entry.restored.set(true);
     if config.verbose {
         eprintln!(
             "[kryos] cache: hit {} -> {}",
-            key.as_filename(),
+            entry.key.as_filename(),
             out_path.display()
         );
     }
-
-    Some((
-        key,
-        CompileResult {
-            diagnostics: Vec::new(),
-            source_map: SourceMap::default(),
-            success: true,
-            output_path: Some(out_path.to_string_lossy().to_string()),
-            mir: None,
-            object_bytes: None,
-            llvm_ir: None,
-        },
-    ))
+    Some(out_path)
 }
 
-/// Best-effort: if the cache is enabled and the just-built artifact path is
-/// readable, capture its bytes into the cache for future runs.
-fn try_cache_store(source: &str, config: &BuildConfig, result: &CompileResult) {
-    if !config.use_cache || !cacheable_output(config.output_type) || !result.success {
+/// Best-effort: if the just-built artifact path is readable, capture its bytes
+/// into the cache for future runs.
+fn try_cache_store(entry: &CacheEntry, config: &BuildConfig, result: &CompileResult) {
+    if !result.success || entry.restored.get() {
         return;
     }
     let Some(ref out) = result.output_path else {
@@ -167,17 +231,13 @@ fn try_cache_store(source: &str, config: &BuildConfig, result: &CompileResult) {
     let Ok(bytes) = fs::read(out) else {
         return;
     };
-    let target = cache_target_str(config);
-    let ctx = CacheContext {
-        target_triple: &target,
-        build_mode: build_mode_str(config.mode),
-        output_type: output_type_str(config.output_type),
-        compiler_version: env!("CARGO_PKG_VERSION"),
-    };
-    let key = CacheKey::new(source, &ctx);
-    build_cache::store(&key, &bytes, &ctx);
+    build_cache::store(&entry.key, &bytes, &entry.context(config));
     if config.verbose {
-        eprintln!("[kryos] cache: stored {} ({} bytes)", key.as_filename(), bytes.len());
+        eprintln!(
+            "[kryos] cache: stored {} ({} bytes)",
+            entry.key.as_filename(),
+            bytes.len()
+        );
     }
 }
 
@@ -348,22 +408,15 @@ pub fn compile_file_with_backend(
         }
     };
 
-    // 1a. Build-cache fast path. If the user opted in via `use_cache` and an
-    //     identical (source, target, mode, output_type, compiler_version)
-    //     entry is on disk, we restore the artifact directly and skip the
-    //     entire pipeline. Misses fall through silently to a fresh build.
-    if let Some((_key, hit)) = try_cache_hit(&source, config) {
-        return hit;
-    }
-
-    let result = compile_file_impl(&source, path, config, backend);
-
-    // 1b. On a successful build, capture the produced artifact for the next
-    //     time. Errors here are non-fatal — the cache is purely an
-    //     optimization.
-    try_cache_store(&source, config, &result);
-
-    result
+    // The build cache is NOT consulted here. It used to be: a hit returned
+    // the artifact before the lexer ran, so a source built once under
+    // `--capabilities-mode=permissive` was handed to every later default or
+    // strict build of the same text with no check at all (bypass class B8),
+    // and an edited imported module was answered with the stale artifact.
+    // `compile_file_impl` looks the cache up only after every analysis pass,
+    // the capability checker in THIS build's mode included, has accepted the
+    // program.
+    compile_file_impl(&source, path, config, backend)
 }
 
 /// Internal: compile a file with full import resolution support.
@@ -377,6 +430,9 @@ fn compile_file_impl(
     backend: Option<&dyn Backend>,
 ) -> CompileResult {
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    // Record every module file this compile reads, for the build-cache key.
+    resolve::reset_read_sources();
 
     // 2. Source map registration
     let mut source_map = SourceMap::default();
@@ -500,9 +556,25 @@ fn compile_file_impl(
     merged_decls.append(&mut module.declarations);
     module.declarations = merged_decls;
 
+    // The cache entry covers the root source and every module file read above;
+    // it is consulted inside `compile_module_impl`, after the analysis passes,
+    // and filled here once the build has succeeded.
+    let cache_entry = build_cache_entry(source, path, config, backend);
+
     // From here on, the pipeline is the same as compile_source_impl but uses
     // the merged module.
-    compile_module_impl(module, diagnostics, source_map, config, backend)
+    let result = compile_module_impl(
+        module,
+        diagnostics,
+        source_map,
+        config,
+        backend,
+        cache_entry.as_ref(),
+    );
+    if let Some(entry) = &cache_entry {
+        try_cache_store(entry, config, &result);
+    }
+    result
 }
 
 /// Internal: run the analysis + codegen pipeline on an already-parsed module.
@@ -515,6 +587,7 @@ fn compile_module_impl(
     source_map: SourceMap,
     config: &BuildConfig,
     backend: Option<&dyn Backend>,
+    cache: Option<&CacheEntry>,
 ) -> CompileResult {
     // 4b. Expand @derive(...) annotations into concrete decls (e.g. add @copy
     //     for derive(Copy), synthesise inherent Debug methods, etc.) before
@@ -582,6 +655,25 @@ fn compile_module_impl(
             object_bytes: None,
             llvm_ir: None,
         };
+    }
+
+    // 8a. Build-cache fast path. ONLY here: type check, ownership and the
+    //     capability checker (in the mode this build asked for) have all
+    //     accepted the program, so a cached artifact can speed the build up
+    //     but can never change its verdict (B8). A miss falls through to a
+    //     fresh build.
+    if let Some(entry) = cache {
+        if let Some(out_path) = try_cache_restore(entry, config) {
+            return CompileResult {
+                diagnostics,
+                source_map,
+                success: true,
+                output_path: Some(out_path.to_string_lossy().to_string()),
+                mir: None,
+                object_bytes: None,
+                llvm_ir: None,
+            };
+        }
     }
 
     // 9. MIR lowering
@@ -861,7 +953,7 @@ fn compile_source_impl(
 
     // Note: compile_source does not support `use` imports (no file path context).
     // For file-based compilation with import support, use compile_file_with_backend.
-    compile_module_impl(module, diagnostics, source_map, config, backend)
+    compile_module_impl(module, diagnostics, source_map, config, backend, None)
 }
 
 /// Codegen + linking stage, extracted for reuse.

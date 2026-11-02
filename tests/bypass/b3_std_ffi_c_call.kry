@@ -1,0 +1,30 @@
+// BYPASS CLASS B3 -- an arbitrary C-library call through std::ffi.
+//
+// dlopen / dlsym / dlcall1 reach ANY symbol of ANY loadable library. This
+// probe stays benign: it calls the harmless libc function `strlen` on a string
+// it owns and prints the length. On 2026-11-01 master a zero-authority `main`
+// did exactly this (check rc 0 in default and --strict-capabilities; `kryos run`
+// printed BYPASS-B3-CCALL-OK:17 where a C runtime was found).
+//
+// MUST be rejected (E0505 or E0507) in default, strict and permissive.
+use std::ffi::{open, sym, call1, cstr}
+
+fn main() {
+    let mut lib = open("ucrtbase.dll")
+    if lib == 0 {
+        lib = open("msvcrt.dll")
+    }
+    if lib == 0 {
+        lib = open("libc.so.6")
+    }
+    if lib == 0 {
+        lib = open("libc.dylib")
+    }
+    if lib == 0 {
+        println("no C runtime found")
+        return
+    }
+    let strlen_fn = sym(lib, "strlen")
+    let n = call1(strlen_fn, cstr("BYPASS-B3-CCALL"))
+    println("BYPASS-B3-CCALL-OK:" + to_string(n + 2))
+}

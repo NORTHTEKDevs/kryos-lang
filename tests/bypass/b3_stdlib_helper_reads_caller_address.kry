@@ -1,0 +1,20 @@
+// BYPASS CLASS B3 (audit) -- a stdlib-internal helper that reads an address its
+// CALLER supplies.
+//
+// `std::tensor` keeps `arr_data_ptr(header: i64) -> i64 { ptr_read_i64(header, 4) }`
+// for its own glue. A glob import puts every declaration of the module in the
+// program's flat namespace (`_` hides a name only from an explicit import list),
+// so the program can call the helper with any integer: a read of the word at
+// `header + 32`. That is `ptr_read_i64` under another name, and `ptr_read_i64`
+// itself needs `ffi`. (`_bytes_to_hex` in std::crypto is the same shape.)
+// On 2026-11-01 master this passed `kryos check` in default and
+// --strict-capabilities.
+//
+// MUST be rejected with E0505 (`requires ffi`) in default, strict and permissive.
+use std::tensor::*
+
+fn main() {
+    let t = tensor_zeros([2])
+    println(to_string(arr_data_ptr(t)))
+    tensor_free(t)
+}

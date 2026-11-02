@@ -1,0 +1,16 @@
+// BYPASS CLASS B4 -- the table fails CLOSED.
+//
+// A `kryos_*` name that no table, anywhere, classifies. The old default arm
+// answered "no capability required"; the answer is now `ffi`, so a native added
+// to the runtime tomorrow cannot be ambient by omission. (This is the repo's own
+// older probe tests/security/attack_infer_extern_unknown_kryos_name.kry.)
+//
+// MUST be rejected with E0506 (`requires ffi`) in default, strict and permissive.
+extern {
+    fn kryos_this_symbol_does_not_exist_in_any_table(x: i64) -> i64
+}
+
+fn main() {
+    let r = kryos_this_symbol_does_not_exist_in_any_table(42)
+    println("UNKNOWN-KRYOS-EXTERN CALL SUCCEEDED, result=" + to_string(r))
+}

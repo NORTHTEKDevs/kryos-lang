@@ -1,0 +1,13 @@
+// BYPASS CLASS B4 -- kryos_fs_read: whole-file read, ambient.
+//
+// kryos_fs_exists / kryos_fs_delete were in the verb-order table; kryos_fs_read,
+// kryos_fs_write and kryos_fs_rename were not.
+// MUST be rejected with E0506 (`requires fs:read`) in default and strict.
+extern "C" {
+    fn kryos_fs_read(path_ptr: i64, path_len: i64) -> i64
+}
+
+fn main() {
+    let h = kryos_fs_read(0, 0)
+    println("BYPASS-B4-FS-OK " + to_string(h))
+}

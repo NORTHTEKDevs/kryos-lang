@@ -1,0 +1,16 @@
+// BYPASS CLASS B4 -- kryos_file_open in WRITE mode creates and truncates a file.
+//
+// One symbol, two authorities: mode 0 opens for reading (fs:read), mode 1
+// creates/truncates (fs:write), mode 2 appends (fs:write). It was ambient
+// ("NEUTRAL"), which let a zero-capability program destroy a file. The table
+// now says the strictest (fs:write); only a literal read mode narrows it.
+//
+// MUST be rejected with E0506 (`requires fs:write`) in default and strict.
+extern "C" {
+    fn kryos_file_open(path_ptr: i64, path_len: i64, mode: i32) -> i64
+}
+
+fn main() {
+    let fd = kryos_file_open(0, 0, 1)
+    println("BYPASS-B4-OPEN-OK " + to_string(fd))
+}

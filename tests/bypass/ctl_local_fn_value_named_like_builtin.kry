@@ -1,0 +1,14 @@
+// CONTROL for B1b: a fn-typed parameter and a local closure that share a name
+// with a builtin are ordinary code when they are called outside a deny block with
+// pure closures. The shadowing fix must not turn them into `all` requirements.
+// MUST stay accepted (default + strict) and print CTL-LOCAL-OK:5:1003.
+fn apply(max: fn(i64, i64) -> i64) -> i64 {
+    return max(2, 3)
+}
+
+fn main() {
+    let a = apply(|x: i64, y: i64| x + y)
+    let max = |p: i64, q: i64| p + q + 1000
+    let b = max(1, 2)
+    println("CTL-LOCAL-OK:" + to_string(a) + ":" + to_string(b))
+}

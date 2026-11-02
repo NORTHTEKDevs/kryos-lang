@@ -1,0 +1,19 @@
+// CONTROL for B4: natives on the explicit AMBIENT list stay callable with no
+// declaration. These are the ones repo packages and tests hand-declare (the
+// @budget counters, the clock, and the ARC allocator that
+// tests/inferred_soundness.sh pins as ambient). MUST stay accepted (default +
+// strict) and print CTL-B4-AMBIENT-OK.
+extern "C" {
+    fn kryos_budget_active() -> i64
+    fn kryos_time_now_millis() -> i64
+    fn kryos_arc_alloc_i64(n: i64) -> i64
+}
+
+fn main() {
+    let a = kryos_budget_active()
+    let t = kryos_time_now_millis()
+    let b = kryos_arc_alloc_i64(8)
+    if t > 0 && b != 0 {
+        println("CTL-B4-AMBIENT-OK " + to_string(a))
+    }
+}

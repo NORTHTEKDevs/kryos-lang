@@ -1,0 +1,21 @@
+// BYPASS CLASS B3 -- the same wrappers reached by a fully qualified call.
+//
+// `std::ffi::cstr(..)` is sugar for the flat name `cstr`; the capability checker
+// sees the bare name, so the declaration (and the gate on names imported from
+// std::ffi) has to hold for this spelling too. On 2026-11-01 master this passed
+// `kryos check` in default and --strict-capabilities and `kryos run` printed
+// BYPASS-B3-QUALIFIED-OK.
+//
+// MUST be rejected (E0505 or E0507) in default, strict and permissive.
+use std::ffi::{cstr, read_i8}
+
+fn main() {
+    let p = std::ffi::cstr("BYPASS-B3-QUALIFIED-OK")
+    let mut out = ""
+    let mut i = 0
+    while i < 22 {
+        out = out + char_from(std::ffi::read_i8(p + i))
+        i = i + 1
+    }
+    println(out)
+}

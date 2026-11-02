@@ -1,0 +1,24 @@
+// CONTROL for B3/B4: the stdlib is built on raw memory and natives, and a program
+// that declares NO capability must keep using the parts that are safe APIs.
+// The std::ffi gate, the helper-name gate and the fail-closed native table must
+// not reach string building, atomics, tensors, regexes. MUST stay accepted in
+// default, strict and permissive and print CTL-STDLIB-OK.
+use std::string::{string_builder}
+use std::sync::{atomic_int}
+use std::tensor::{tensor_zeros, tensor_numel, tensor_free}
+use std::re::{compile}
+
+fn main() {
+    let sb = string_builder()
+    sb.append("CTL-")
+    sb.append("STDLIB-OK")
+    let a = atomic_int(40)
+    a.increment()
+    let t = tensor_zeros([2, 3])
+    let n = tensor_numel(t)
+    tensor_free(t)
+    let re = compile("a+")
+    if a.load() == 41 and n == 6 and re.is_match("caat") {
+        println(sb.build())
+    }
+}

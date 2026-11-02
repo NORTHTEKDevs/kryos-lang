@@ -1,0 +1,14 @@
+// Helper module for b1_env_get_shadowed_by_imported_impl.kry.
+//
+// An impl in an IMPORTED module reaches the capability checker merged into the
+// program, so the decoy-method defect did not stop at the root file. Nothing
+// here calls anything; the method only has to exist.
+struct Decoy {
+    x: i64,
+}
+
+impl Decoy {
+    fn env_get(self, name: str) -> str {
+        return name
+    }
+}

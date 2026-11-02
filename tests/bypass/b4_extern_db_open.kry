@@ -1,0 +1,14 @@
+// BYPASS CLASS B4 -- kryos_db_* (sqlite) needed no capability when hand-declared.
+//
+// std::db is `@capabilities(db)` throughout; the natives under it were ambient.
+// MUST be rejected with E0506 (`requires db`) in default and --strict-capabilities.
+extern "C" {
+    fn kryos_db_open_memory() -> i64
+    fn kryos_db_close(h: i64) -> i64
+}
+
+fn main() {
+    let h = kryos_db_open_memory()
+    kryos_db_close(h)
+    println("BYPASS-B4-DB-OK")
+}

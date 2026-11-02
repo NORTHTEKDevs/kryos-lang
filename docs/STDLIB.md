@@ -185,7 +185,7 @@ module under [`docs/stdlib/`](stdlib/). Brief index:
 | `std::datetime`        | Calendar dates, formatting, durations.              |
 | `std::term`            | Terminal control (raw mode, color, dimensions).     |
 | `std::db`              | Database client (currently SQLite-flavoured).       |
-| `std::ffi`             | Pointer ops for `extern "C"` interop.               |
+| `std::ffi`             | Pointer ops and `dlopen`/`dlsym`/`dlcall*` for `extern "C"` interop. Every export is `@capabilities(ffi)`: a caller must hold `ffi` in every mode. |
 | `std::sync`            | Mutex helpers, latches, barriers.                   |
 | `std::chan`            | Channel wrappers on top of `chan`/`send`/`recv`.    |
 | `std::stream`          | Reactive streams (pure Kryos).                      |
@@ -322,6 +322,7 @@ Environment variables the compiler reads:
 | ------------------ | ------------------------------------------------------- |
 | `KRYOS_DUMP_IR=1`  | Dump Cranelift IR to stderr during `kryos run`.         |
 | `KRYOS_CACHE_DIR`  | Override the build cache directory.                     |
+| `KRYOS_CACHE=1`    | Same as `kryos build --cache`. The cache is consulted only after the capability check has accepted the program in THIS build's mode, and its key covers the mode and every module file read. |
 | `XDG_CACHE_HOME`   | Fallback cache directory parent.                        |
 | `HOME`             | Fallback for `~/.cache/kryos`.                          |
 | `RUST_BACKTRACE`   | Standard Rust panic backtrace control (compiler bugs).  |

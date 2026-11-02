@@ -84,7 +84,20 @@ impl CapabilityMode {
 /// message names the callee rather than a builtin, and the filter below keeps
 /// only diagnostics that name a raw-memory builtin.
 pub fn check_raw_memory_direct(module: &Module) -> Vec<Diagnostic> {
-    let diags = crate::model::with_raw_memory_gate(|| {
+    // The `std::ffi` exports this module imports are raw memory and C calls
+    // under another spelling (B3): the stdlib is exempt because it is built on
+    // the primitives, but `std::ffi` is the one stdlib module whose exports ARE
+    // the primitives, so a user module calling them is gated like `str_to_ptr`.
+    let mut ffi_names = std_ffi_names_imported_by(module);
+    // Stdlib-internal helpers that read an address the caller passes (reachable
+    // by name once any import pulls them into the flat namespace) are raw
+    // memory in a user module too.
+    ffi_names.extend(
+        crate::model::STD_RAW_MEMORY_HELPERS
+            .iter()
+            .map(|s| s.to_string()),
+    );
+    let diags = crate::model::with_raw_memory_gate_for(ffi_names.clone(), || {
         check_capabilities_mode(module, CapabilityMode::Strict)
     });
     // Report ONLY the raw-memory findings. Every other diagnostic from this
@@ -94,17 +107,102 @@ pub fn check_raw_memory_direct(module: &Module) -> Vec<Diagnostic> {
         .into_iter()
         .filter(|d| {
             d.is_error()
-                && crate::model::RAW_MEMORY_BUILTINS
+                && (crate::model::RAW_MEMORY_BUILTINS
                     .iter()
                     .any(|b| d.message.contains(&format!("`{b}`")))
+                    || ffi_names
+                        .iter()
+                        .any(|n| d.message.contains(&format!("`{n}`")))
+                    // An `extern` call whose native needs `ffi` (the
+                    // `kryos_ffi_*` and `kryos_ptr_*` natives, the allocators,
+                    // and every native nobody classified -- B4) is the same
+                    // authority as the builtins above, reached by the other door.
+                    || is_ffi_extern_diagnostic(d))
         })
         .collect()
+}
+
+/// An E0506 "extern function `kryos_..` requires `ffi` capability" finding. A
+/// non-`kryos_` extern is left to the type checker's E0508 ("arbitrary C FFI is
+/// not implemented"), which is the more useful message and fires for every mode.
+fn is_ffi_extern_diagnostic(d: &Diagnostic) -> bool {
+    d.code.as_deref() == Some("E0506")
+        && d.message.contains("extern function `kryos_")
+        && d.message.contains("requires `ffi` capability")
+}
+
+/// The names `module` imports from `std::ffi` (`use std::ffi::{cstr, read_i8}`),
+/// or all of its exports for a whole-module or glob import. A module alias
+/// (`use std::ffi as f`) has no item list, so it takes the whole-module case.
+fn std_ffi_names_imported_by(module: &Module) -> HashSet<String> {
+    use crate::model::STD_FFI_EXPORTS;
+    let mut out = HashSet::new();
+    for d in &module.declarations {
+        let Decl::Import { path, .. } = d else {
+            continue;
+        };
+        let seg = &path.segments;
+        if seg.len() < 2 || seg[0] != "std" || seg[1] != "ffi" {
+            continue;
+        }
+        if seg.len() == 3 {
+            // `use std::ffi::open`
+            if STD_FFI_EXPORTS.contains(&seg[2].as_str()) {
+                out.insert(seg[2].clone());
+            }
+        } else if path.items.is_empty() {
+            out.extend(STD_FFI_EXPORTS.iter().map(|s| s.to_string()));
+        } else {
+            out.extend(
+                path.items
+                    .iter()
+                    .filter(|i| STD_FFI_EXPORTS.contains(&i.as_str()))
+                    .cloned(),
+            );
+        }
+    }
+    out
 }
 
 pub fn check_capabilities_mode(module: &Module, mode: CapabilityMode) -> Vec<Diagnostic> {
     let mut checker = CapabilityChecker::new(mode);
     checker.check_module(module);
     checker.diagnostics
+}
+
+/// What the checker charges a CALLER for each top-level function of `module`
+/// after a full check in `mode`: `(name, annotated, caps)`, sorted by name. An
+/// annotated function's `caps` is its declared ceiling; an unannotated one's is
+/// the set inferred from its body and callees (`Inferred` mode only; empty in
+/// the other two). For audits and tooling: `tests/stdlib_authority.rs` uses it
+/// to prove that no stdlib function exercises authority without declaring it.
+#[doc(hidden)]
+pub fn effective_function_capabilities(
+    module: &Module,
+    mode: CapabilityMode,
+) -> Vec<(String, bool, CapabilitySet)> {
+    let mut checker = CapabilityChecker::new(mode);
+    checker.check_module(module);
+    let mut out: Vec<(String, bool, CapabilitySet)> = module
+        .declarations
+        .iter()
+        .filter_map(|d| match d {
+            Decl::Function {
+                name, annotations, ..
+            } => Some((
+                name.clone(),
+                CapabilityChecker::has_capabilities_annotation(annotations),
+                checker
+                    .fn_capabilities
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(CapabilitySet::empty),
+            )),
+            _ => None,
+        })
+        .collect();
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
 }
 
 /// Run the capability checking pass over a module.
@@ -285,12 +383,30 @@ struct CapabilityChecker {
     /// local named like one of the 1000+ stdlib functions (`query`, `connect`,
     /// `find`, ...) spuriously inherited its capability.
     current_locals: std::collections::HashSet<String>,
-    /// Every USER-defined (non-extern) function/method name in the module. A
-    /// user function that SHADOWS a gated builtin's name (`fn http_get(x) { x+1 }`)
+    /// Every USER-defined FREE function name in the module (top-level
+    /// `Decl::Function`, imported modules' free functions included once the
+    /// declarations are merged; NOT extern items, NOT impl/trait methods). A
+    /// free function that SHADOWS a gated builtin's name (`fn http_get(x) { x+1 }`)
     /// resolves to the user function, so its calls must NOT be attributed the
     /// builtin's capability -- the checker otherwise gated by name alone and
     /// spuriously required, e.g., `net:http` for a pure user `http_get`.
+    ///
+    /// Methods are deliberately NOT in this set. A bare call `f(..)` resolves
+    /// to a free function, a builtin, a local, an actor/variant constructor or
+    /// an extern -- never to a method: MIR lowers a method to `Type__name`
+    /// (LEDGER bypass class B1/B2), and the type checker rejects a bare call to
+    /// a sibling method (`undefined variable`). Recording method names here let
+    /// `impl X { fn env_get(..) }`, or a bodiless `trait T { fn env_get(..) }`,
+    /// silence the builtin's charge on every bare `env_get(..)` while codegen
+    /// still ran the builtin.
     defined_fns: std::collections::HashSet<String>,
+    /// Every STRUCT and ENUM type name declared in the module. `Type::name(..)`
+    /// on one of these is a call to that type's own static method (MIR lowers
+    /// it to `Type__name`, never to a builtin), so a static method that happens
+    /// to be named like a gated builtin (`Db::exec(..)`) must not be charged the
+    /// builtin's capability. Any other `Name::f(..)` (a module alias, an unknown
+    /// type) lowers to the bare name `f`, builtin included, and is charged.
+    declared_type_names: std::collections::HashSet<String>,
     /// Every ACTOR type name declared in the module. Actors are constructed
     /// with `Name()` call syntax (see CLAUDE.md) -- a `Expr::FnCall` whose
     /// callee is the actor's bare name, NOT a reference to a first-class
@@ -531,6 +647,7 @@ impl CapabilityChecker {
             extern_fns: std::collections::HashSet::new(),
             current_locals: std::collections::HashSet::new(),
             defined_fns: std::collections::HashSet::new(),
+            declared_type_names: std::collections::HashSet::new(),
             actor_names: std::collections::HashSet::new(),
             enum_variant_names: std::collections::HashSet::new(),
             fn_params: HashMap::new(),
@@ -574,6 +691,31 @@ impl CapabilityChecker {
         }
     }
 
+    /// [`Self::required_capability_for_extern`], narrowed by the call's
+    /// ARGUMENTS where one native symbol carries two authorities.
+    ///
+    /// `kryos_file_open(path_ptr, path_len, mode)` opens a file for reading
+    /// (`mode` 0), for writing with create + truncate (1) or for appending
+    /// (2). The native table can only name one capability per symbol, so it
+    /// names the strictest (`fs:write`); a call whose `mode` is the literal `0`
+    /// is a read-only open and needs only `fs:read`. Anything else, including
+    /// a `mode` the checker cannot see (a parameter, an expression), keeps
+    /// `fs:write`. `args` is `None` where no call is in view (an extern used as
+    /// a value), which also keeps the strict answer.
+    fn required_capability_for_extern_call(
+        &self,
+        name: &str,
+        args: Option<&[Expr]>,
+    ) -> Option<Capability> {
+        let cap = self.required_capability_for_extern(name)?;
+        if name == "kryos_file_open" && cap == Capability::FsWrite {
+            if let Some([_, _, Expr::IntLiteral { value: 0, .. }, ..]) = args {
+                return Some(Capability::FsRead);
+            }
+        }
+        Some(cap)
+    }
+
     /// Collect every extern-declared function name (recursing into nested
     /// declaration containers) so call sites can be gated.
     fn collect_extern_fns(&mut self, decls: &[Decl]) {
@@ -594,22 +736,26 @@ impl CapabilityChecker {
         }
     }
 
-    /// Record every USER-defined (non-extern) function/method name so a call to
+    /// Record every USER-defined (non-extern) FREE function name so a call to
     /// a user function that shadows a gated builtin's name is not force-gated by
-    /// the builtin table (see `defined_fns`).
+    /// the builtin table (see `defined_fns`). Does NOT recurse into `impl` or
+    /// `trait` bodies: a method never answers a bare call (B1/B2), so its name
+    /// must not suppress the builtin of the same name. Actors and enum variants
+    /// are top-level declarations, so nothing was lost by not recursing.
     fn collect_defined_fns(&mut self, decls: &[Decl]) {
         for d in decls {
             match d {
                 Decl::Function { name, .. } => {
                     self.defined_fns.insert(name.clone());
                 }
-                Decl::Impl { methods, .. } | Decl::Trait { methods, .. } => {
-                    self.collect_defined_fns(methods);
-                }
                 Decl::Actor { name, .. } => {
                     self.actor_names.insert(name.clone());
                 }
-                Decl::Enum { variants, .. } => {
+                Decl::Struct { name, .. } => {
+                    self.declared_type_names.insert(name.clone());
+                }
+                Decl::Enum { name, variants, .. } => {
+                    self.declared_type_names.insert(name.clone());
                     for v in variants {
                         self.enum_variant_names.insert(v.name.clone());
                     }
@@ -4899,7 +5045,9 @@ impl CapabilityChecker {
                     // Extern calls contribute their FFI capability to inference
                     // so helpers calling raw externs propagate the requirement
                     // to the boundary (same rule as enforce_callee_name).
-                    if let Some(cap) = self.required_capability_for_extern(&segments[0]) {
+                    if let Some(cap) =
+                        self.required_capability_for_extern_call(&segments[0], Some(args))
+                    {
                         acc.insert(cap);
                     }
                     if let Some(caps) = working.get(&segments[0]) {
@@ -4940,7 +5088,30 @@ impl CapabilityChecker {
                 // an ordinary `obj.field(...)` chain is parsed as
                 // `MethodCall`, not a multi-segment `FieldAccess` callee (see
                 // `resolve_method_field_invoke_caps` for that shape).
+                // A LOCAL fn value (an fn-bearing parameter, or a `let` bound
+                // to a closure whose authority is known) shadows every global
+                // of the same name in call position -- codegen runs the local
+                // (verified: a parameter named like a free fn or like `max`
+                // is what `p()` calls). A bare name that is also a free fn /
+                // actor / variant / builtin / extern name therefore must NOT
+                // count as "named": the name sets below would otherwise skip
+                // the fail-closed resolution of a closure the caller was
+                // handed (B1b -- any same-named global, including a
+                // method-only decoy before the B1 fix, turned
+                // `deny!(fs:read) { reader() }` from E0507 into accepted).
+                // `Unknown` entries are NOT counted: `local_caps` has one for
+                // every `let x = f(..)`, and this walk is order-independent,
+                // so `let max = max(a, b)` would read as a local call and
+                // demand `all`. The enforcement walk (`check_callee_
+                // capabilities`) is flow-sensitive and has no such gap.
+                let callee_is_local = segments.len() == 1
+                    && (own_params.contains(&segments[0])
+                        || matches!(
+                            local_caps.get(&segments[0]),
+                            Some(ClosureCapsResult::Known(_) | ClosureCapsResult::DependsOnParam(_))
+                        ));
                 let callee_is_named = segments.len() == 1
+                    && !callee_is_local
                     && (self.defined_fns.contains(&segments[0])
                         || self.actor_names.contains(&segments[0])
                         || self.enum_variant_names.contains(&segments[0])
@@ -5754,7 +5925,7 @@ impl CapabilityChecker {
                 // 18). No-op outside an actor handler body (the tracked set
                 // is empty there).
                 extra = extra.union(&self.resolve_actor_self_field_invoke_caps(object, method));
-                self.enforce_callee_name(method, *span, false, &extra);
+                self.enforce_callee_name(method, *span, false, &extra, args);
 
                 self.check_expr(object);
                 for arg in args {
@@ -5762,7 +5933,11 @@ impl CapabilityChecker {
                 }
             }
             Expr::StaticMethodCall {
-                method, args, span, ..
+                type_name,
+                method,
+                args,
+                span,
+                ..
             } => {
                 // Same call-site propagation for `Type::method()` static
                 // dispatch. The parser turns ANY `Ident::name(args)` into a
@@ -5772,9 +5947,14 @@ impl CapabilityChecker {
                 // If `method` is a gated builtin name, gate it (backlog #38):
                 // pass is_builtin_name so the E0505 builtin gate fires, just
                 // as it does for the ordinary `file_write(..)` call shape.
-                let is_gated_builtin = required_capability_for_builtin(method).is_some();
+                // A DECLARED struct/enum receiver is the exception (B1): MIR
+                // lowers `Db::exec(..)` to `Db__exec`, the type's own static
+                // method, so it is gated by that method's caps and not by the
+                // builtin of the same name.
+                let is_gated_builtin = required_capability_for_builtin(method).is_some()
+                    && !self.declared_type_names.contains(type_name);
                 let extra = self.compute_hot_extra_caps(method, args, true);
-                self.enforce_callee_name(method, *span, is_gated_builtin, &extra);
+                self.enforce_callee_name(method, *span, is_gated_builtin, &extra, args);
                 for arg in args {
                     self.check_expr(arg);
                 }
@@ -5827,6 +6007,12 @@ impl CapabilityChecker {
                 // exactly the call the outer machinery already accounts for.
                 let saved = self.current_fn_typed_params.clone();
                 let saved_transparent = self.transparent_lambda_params.clone();
+                // The lambda's parameters are also LOCALS of its body: they
+                // shadow any global of the same name in call position, so a
+                // `|max| max()` must not count as a call to the builtin (B1b).
+                let saved_locals = self.current_locals.clone();
+                self.current_locals
+                    .extend(params.iter().map(|p| p.name.clone()));
                 self.current_fn_typed_params
                     .extend(params.iter().map(|p| p.name.clone()));
                 self.transparent_lambda_params
@@ -5834,6 +6020,7 @@ impl CapabilityChecker {
                 self.check_expr(body);
                 self.current_fn_typed_params = saved;
                 self.transparent_lambda_params = saved_transparent;
+                self.current_locals = saved_locals;
             }
             Expr::IfExpr {
                 condition,
@@ -5983,12 +6170,17 @@ impl CapabilityChecker {
             // hot (invoked) fn-typed parameter position - see
             // `compute_hot_extra_caps`.
             let extra = self.compute_hot_extra_caps(&segments[0], args, false);
-            self.enforce_callee_name(&segments[0], call_span, true, &extra);
-            callee_is_named = self.defined_fns.contains(&segments[0])
-                || self.actor_names.contains(&segments[0])
-                || self.enum_variant_names.contains(&segments[0])
-                || is_known_builtin_name(&segments[0])
-                || self.extern_fns.contains(&segments[0]);
+            self.enforce_callee_name(&segments[0], call_span, true, &extra, args);
+            // A local (fn-typed parameter, `let`, `for`, `match`, `catch`
+            // binding) shadows every global of the same name in call
+            // position, so it is never "named" (B1b; see the same rule in
+            // `collect_caps_expr`).
+            callee_is_named = !self.current_locals.contains(&segments[0])
+                && (self.defined_fns.contains(&segments[0])
+                    || self.actor_names.contains(&segments[0])
+                    || self.enum_variant_names.contains(&segments[0])
+                    || is_known_builtin_name(&segments[0])
+                    || self.extern_fns.contains(&segments[0]));
         }
 
         // FAIL-CLOSED DEFAULT: everything above only enforces a call whose
@@ -6083,6 +6275,7 @@ impl CapabilityChecker {
         call_span: Span,
         is_builtin_name: bool,
         extra: &CapabilitySet,
+        call_args: &[Expr],
     ) {
         if !(self.strict_mode() || self.has_annotated_scope()) {
             return;
@@ -6113,7 +6306,9 @@ impl CapabilityChecker {
         // Calls to extern-declared functions are the raw FFI surface - gate
         // them like the builtin they wrap (`kryos_*`) or on `ffi` (anything
         // else). Declaring an extern is free; CALLING it demands authority.
-        if let Some(required_cap) = self.required_capability_for_extern(name) {
+        if let Some(required_cap) =
+            self.required_capability_for_extern_call(name, Some(call_args))
+        {
             if let Some(caps) = self.current_caps() {
                 if !caps.satisfies_required(&required_cap) {
                     self.diagnostics.push(

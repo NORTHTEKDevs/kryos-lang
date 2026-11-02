@@ -1,0 +1,6 @@
+// Root file for the B8 staleness check (copied to prog.kry by the gate).
+use m::{answer}
+
+fn main() {
+    println(answer())
+}

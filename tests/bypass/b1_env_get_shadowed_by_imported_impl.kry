@@ -1,0 +1,16 @@
+// BYPASS CLASS B1 -- the decoy method comes from an IMPORTED module.
+//
+// `use b1_decoy_methods_lib::{Decoy}` merges the module's `impl Decoy`
+// (with its method named `env_get`) into the program the capability checker
+// walks. On 2026-11-01 master this main was accepted in default and
+// --strict-capabilities and `kryos run` printed BYPASS-B1-IMPORTED-OK.
+//
+// MUST be rejected with E0505 (`env_get` requires `process`).
+use b1_decoy_methods_lib::{Decoy}
+
+fn main() {
+    let p = env_get("PATH")
+    if len(p) > 0 {
+        println("BYPASS-B1-IMPORTED-OK")
+    }
+}

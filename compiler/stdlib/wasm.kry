@@ -218,9 +218,15 @@ fn regex_replace(pattern_packed: i64, subject_packed: i64, replacement_packed: i
 
 // ---- HTTP wrappers ----------------------------------------------------
 //
+// Every wrapper that reaches the host's fetch (`http_fetch`, its GET/POST
+// helpers, `fetch_text`) is declared `@capabilities(net:http)`: it is outbound
+// network authority under another spelling, and an undeclared one is invisible
+// to a caller in permissive mode and breaks `--strict-capabilities`.
+//
 // Raw form: caller supplies packed handles for method, URL, and body.
 // Convenience forms below cover the common GET/POST cases.
 
+@capabilities(net:http)
 fn http_fetch(method_packed: i64, url_packed: i64, body_packed: i64) -> i64 {
     return kryos_http_fetch(
         pack_offset(method_packed), pack_length(method_packed),
@@ -229,6 +235,7 @@ fn http_fetch(method_packed: i64, url_packed: i64, body_packed: i64) -> i64 {
     )
 }
 
+@capabilities(net:http)
 fn http_fetch_get(url_packed: i64) -> i64 {
     // Empty method / body packed-i64s mean "use the conventional GET"
     // and "no body" respectively. The host runner is responsible for
@@ -236,6 +243,7 @@ fn http_fetch_get(url_packed: i64) -> i64 {
     return http_fetch(pack(0, 0), url_packed, pack(0, 0))
 }
 
+@capabilities(net:http)
 fn http_fetch_post(url_packed: i64, body_packed: i64) -> i64 {
     // Note: the host runner is expected to interpret an empty method
     // packing as GET; this helper does NOT pre-pack the literal string
@@ -274,6 +282,7 @@ fn canvas_clear(id_packed: i64) {
     kryos_canvas_clear(pack_offset(id_packed), pack_length(id_packed))
 }
 
+@capabilities(net:http)
 fn fetch_text(url_packed: i64) -> i64 {
     return kryos_fetch_text(pack_offset(url_packed), pack_length(url_packed))
 }

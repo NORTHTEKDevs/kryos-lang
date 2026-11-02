@@ -1,0 +1,17 @@
+// CONTROL for B1/B2: `Type::name(..)` on a DECLARED struct is that type's own
+// static method (MIR lowers it to `Type__name`), not the builtin of the same
+// name. Charging `process` for `Db::exec` would be an over-rejection of ordinary
+// code. MUST stay accepted (default + strict) and print "ran: CTL-STATIC-OK".
+struct Db {
+    x: i64,
+}
+
+impl Db {
+    fn exec(sql: str) -> str {
+        return "ran: " + sql
+    }
+}
+
+fn main() {
+    println(Db::exec("CTL-STATIC-OK"))
+}

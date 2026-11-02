@@ -140,7 +140,10 @@ impl File {
 // Open a file for reading.
 @capabilities(fs:read)
 fn open(path: str) -> File {
-    let fd = kryos_file_open(str_to_ptr(path), len(path), MODE_READ)
+    // The mode argument is the LITERAL 0 (== MODE_READ), not the constant: the
+    // capability checker narrows `kryos_file_open` from fs:write to fs:read only
+    // for a literal read mode (mode 1 truncates, so the native needs fs:write).
+    let fd = kryos_file_open(str_to_ptr(path), len(path), 0)
     if fd < 0 {
         throw "io error: could not open file for reading: " + path
     }

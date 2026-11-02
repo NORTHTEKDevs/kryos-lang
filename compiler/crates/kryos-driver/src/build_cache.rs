@@ -23,10 +23,22 @@
 //! # Key construction
 //!
 //! The cache key is `format!("{src_hash:016x}-{ctx_hash:016x}")` where:
-//! - `src_hash` is the 64-bit DefaultHasher hash of the entire source string
-//!   (including length, so a trimmed prefix can't collide with the original).
+//! - `src_hash` is the 64-bit DefaultHasher hash of the build's INPUTS (including
+//!   length, so a trimmed prefix can't collide with the original). The driver
+//!   passes the root source text followed by the path and content hash of every
+//!   module file the compile read (imported user modules and the stdlib files
+//!   alike), so editing an imported module is a different key.
 //! - `ctx_hash` is the same hash applied to the concatenation of
-//!   `target_triple`, `build_mode`, `output_type`, and `compiler_version`.
+//!   `target_triple`, `build_mode`, `output_type`, `compiler_version`, and
+//!   `pipeline` (the capability mode, the strict flag, the backend and its
+//!   options, the stdlib directory).
+//!
+//! The cache is only ever consulted AFTER the capability checker (and every
+//! other analysis pass) accepted the program in the mode the current build
+//! asked for (LEDGER bypass class B8): a hit can speed a build up, never change
+//! its verdict. Keying on the capability mode is defence in depth on top of
+//! that, so an artifact built under `--capabilities-mode=permissive` is a
+//! different entry from the same source built in the default mode.
 //!
 //! Collisions are extremely unlikely (2^64 space, ~10^-12 per pair-up for the
 //! domains we care about) and even if one occurred the worst case is reading
@@ -46,7 +58,10 @@ use std::fs;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
-const SCHEMA_VERSION: u32 = 1;
+// Bumped to 2 with the B8 fix: every entry written before it (keyed on the source
+// text alone, and so possibly built under a laxer capability mode than the build
+// that would otherwise be handed it) becomes unreachable.
+const SCHEMA_VERSION: u32 = 2;
 
 /// Build-time inputs that together identify a unique cache entry.
 #[derive(Debug, Clone)]
@@ -59,6 +74,10 @@ impl CacheKey {
     /// Build a cache key from the raw source text and the context strings
     /// that influence codegen. Pass in deterministic values for the context
     /// (target triple, normalised build mode, etc) — see `CacheContext`.
+    ///
+    /// `source` is the text that identifies the build's inputs: for a file build
+    /// the driver passes the root source plus every module file the compile read
+    /// (path and content hash), not the root source alone.
     pub fn new(source: &str, ctx: &CacheContext) -> Self {
         Self {
             src_hash: hash_str(source),
@@ -80,13 +99,21 @@ pub struct CacheContext<'a> {
     pub build_mode: &'a str,
     pub output_type: &'a str,
     pub compiler_version: &'a str,
+    /// The rest of what decides what the pipeline accepts and emits, as one
+    /// fingerprint built by the driver: the capability mode, the strict flag,
+    /// the backend and its options, the stdlib directory.
+    pub pipeline: &'a str,
 }
 
 impl<'a> CacheContext<'a> {
     fn fingerprint(&self) -> String {
         format!(
-            "v{SCHEMA_VERSION}|{}|{}|{}|{}",
-            self.target_triple, self.build_mode, self.output_type, self.compiler_version
+            "v{SCHEMA_VERSION}|{}|{}|{}|{}|{}",
+            self.target_triple,
+            self.build_mode,
+            self.output_type,
+            self.compiler_version,
+            self.pipeline
         )
     }
 }
@@ -189,6 +216,7 @@ mod tests {
             build_mode: "release",
             output_type: "binary",
             compiler_version: "2.2.0",
+            pipeline: "cap=inferred|strict=false|backend=llvm",
         }
     }
 
@@ -234,6 +262,27 @@ mod tests {
         let k1 = CacheKey::new("x", &c1);
         let k2 = CacheKey::new("x", &c2);
         assert_ne!(k1.as_filename(), k2.as_filename());
+    }
+
+    #[test]
+    fn pipeline_change_changes_key() {
+        // B8: the same source built under another capability mode (or another
+        // backend, or another stdlib) must not share an entry.
+        let base = CacheKey::new("fn main() {}", &ctx()).as_filename();
+        for other in [
+            "cap=permissive|strict=false|backend=llvm",
+            "cap=strict|strict=true|backend=llvm",
+            "cap=inferred|strict=false|backend=cranelift",
+            "cap=inferred|strict=false|backend=llvm|stdlib=/elsewhere",
+        ] {
+            let mut c = ctx();
+            c.pipeline = other;
+            assert_ne!(
+                CacheKey::new("fn main() {}", &c).as_filename(),
+                base,
+                "pipeline `{other}` must change the key"
+            );
+        }
     }
 
     #[test]

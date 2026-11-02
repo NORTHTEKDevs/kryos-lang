@@ -1,0 +1,15 @@
+// CONTROL for B3: declaring `ffi` is what std::ffi demands, and it is enough.
+// MUST stay accepted in default, strict and permissive and print CTL-FFI-OK.
+use std::ffi::{cstr, read_i8}
+
+@capabilities(ffi)
+fn main() {
+    let p = cstr("CTL-FFI-OK")
+    let mut out = ""
+    let mut i = 0
+    while i < 10 {
+        out = out + char_from(read_i8(p + i))
+        i = i + 1
+    }
+    println(out)
+}
