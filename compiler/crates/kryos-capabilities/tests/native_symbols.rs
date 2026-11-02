@@ -296,6 +296,11 @@ fn spot_checks_of_the_classes_the_repros_use() {
         ("ptr_byte_at", Some(Ffi)),
         ("alloc_bytes", Some(Ffi)),
         ("str_to_ptr", Some(Ffi)),
+        // the ARC natives that act on a caller-supplied address need ffi ...
+        ("arc_retain", Some(Ffi)),
+        ("arc_release", Some(Ffi)),
+        ("arc_ref_count", Some(Ffi)),
+        ("arc_set_drop", Some(Ffi)),
         ("db_open", Some(Db)),
         ("db_exec", Some(Db)),
         ("tls_connect", Some(NetTcp)),
@@ -312,6 +317,9 @@ fn spot_checks_of_the_classes_the_repros_use() {
         ("http_fetch", Some(NetHttp)),
         ("path_absolute", Some(FsRead)),
         ("budget_active", None),
+        // ... while the ARC allocators stay ambient (tests/inferred_soundness.sh native_extern_pure_alloc)
+        ("arc_alloc", None),
+        ("arc_alloc_i64", None),
         ("array_new", None),
         ("string_new", None),
         ("regex_new", None),

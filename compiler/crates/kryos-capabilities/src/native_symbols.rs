@@ -23,13 +23,15 @@
 //! instead of silently being ambient.
 //!
 //! What "ambient" does NOT mean: the container, string and ARC natives take
-//! handles (pointers). Every way to obtain a raw pointer from user code is
-//! gated (`ffi`: `alloc`, `str_to_ptr`, `arr_to_ptr`, the `kryos_ffi_*`,
-//! `kryos_ptr_*` and allocator natives, the `std::ffi` wrappers), and there is
-//! no cast from a handle to an integer, so an ambient handle native cannot be
-//! pointed at memory the program was not handed. That argument fails where a
-//! stdlib struct publishes a raw address in a public field (LEDGER bypass
-//! class B9); this table does not claim otherwise.
+//! handles (pointers). The raw-memory entry points are gated (`ffi`: `alloc`,
+//! `str_to_ptr`, `arr_to_ptr`, the `kryos_ffi_*`, `kryos_ptr_*` and raw
+//! allocator natives, the ARC natives that act on a caller-supplied address,
+//! the `std::ffi` wrappers). The ARC allocators stay ambient because the repo
+//! pins them so (tests/inferred_soundness.sh, `native_extern_pure_alloc`). The
+//! ambient handle natives rest on the assumption that a handle cannot be
+//! forged from an integer. That assumption fails where a stdlib struct
+//! publishes a raw address in a public field (LEDGER bypass class B9); this
+//! table does not claim otherwise.
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -58,9 +60,8 @@ pub const CAPABILITY_NATIVES: &[(&str, Capability)] = &[
     ("free_bytes", Capability::Ffi),
     ("realloc", Capability::Ffi),
     ("str_to_ptr", Capability::Ffi),
-    // ffi: raw ARC / struct refcount on a raw pointer
-    ("arc_alloc", Capability::Ffi),
-    ("arc_alloc_i64", Capability::Ffi),
+    // ffi: ARC / struct refcount and drop-hook natives that act on a caller-supplied address
+    // (the ARC ALLOCATORS arc_alloc / arc_alloc_i64 are ambient, see AMBIENT_NATIVES)
     ("arc_ref_count", Capability::Ffi),
     ("arc_release", Capability::Ffi),
     ("arc_release_i64", Capability::Ffi),
@@ -328,6 +329,10 @@ pub const AMBIENT_NATIVES: &[&str] = &[
     "string_free", "string_hash", "string_len", "string_new", "string_release_if_ne",
     "string_replace", "string_retain", "string_retain_opt", "string_slice", "string_starts_with",
     "string_to_lower", "string_to_upper", "string_trim", "u64_to_string",
+    // ARC allocators: hand out a fresh compiler-managed refcounted block, the same kind every
+    // str / array / struct creation allocates. Pinned ambient by tests/inferred_soundness.sh
+    // (native_extern_pure_alloc); the natives that act on a caller-supplied address stay ffi.
+    "arc_alloc", "arc_alloc_i64",
     // closures, dyn and struct plumbing, globals (compiler ABI)
     "box_or_zero", "dyn_drop", "field_set", "fn_release_if_ne", "fn_retain", "global_get",
     "global_has", "global_set",
