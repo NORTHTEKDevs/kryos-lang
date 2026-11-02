@@ -278,6 +278,24 @@ impl TypeChecker {
         }
     }
 
+    /// The type an UNANNOTATED `let` binds its name to (LEDGER root R2).
+    ///
+    /// A call returns its function rows as closed copies, and a function
+    /// value or a lambda is typed by its own closed row, so a name bound to
+    /// either would have no row a later store could widen: `let mut f = safe`
+    /// then `f = reader` met two closed rows. A function VALUE bound to a name
+    /// is its own storage location (fresh row bound to what it holds now).
+    /// A container keeps the slots it already has (a second name for the same
+    /// array is the same storage) and only its closed rows become slots.
+    fn generalize_binding_type(&mut self, inferred: Type) -> Type {
+        let resolved = self.engine.resolve(&inferred);
+        if !InferenceEngine::type_has_fn(&resolved) {
+            return inferred;
+        }
+        let own_location = matches!(resolved, Type::Function { .. });
+        self.engine.generalize_rows(&resolved, !own_location)
+    }
+
     fn accumulate_caps(&mut self, row: &crate::ty::CapRow) {
         if let Some(top) = self.cap_accum_stack.last_mut() {
             *top = top.union(row);
@@ -1604,6 +1622,12 @@ impl TypeChecker {
                     .iter()
                     .map(|f| (f.name.clone(), self.resolve_type_expr(&f.ty)))
                     .collect();
+                // A struct field is storage shared by every value of the struct
+                // (the declaration owns ONE row var per fn-typed field), so a
+                // closure stored into it must widen that row (LEDGER root R2).
+                for (_, t) in &field_types {
+                    self.engine.mark_slot_rows(t, true);
+                }
                 if !generics.is_empty() {
                     self.env.pop_scope();
                 }
@@ -1659,6 +1683,12 @@ impl TypeChecker {
                         (v.name.clone(), tys)
                     })
                     .collect();
+                // An enum payload is storage like a struct field (R2).
+                for (_, tys) in &variant_types {
+                    for t in tys {
+                        self.engine.mark_slot_rows(t, true);
+                    }
+                }
                 if !generics.is_empty() {
                     self.env.pop_scope();
                 }
@@ -2105,6 +2135,7 @@ impl TypeChecker {
                 // pass in check_module; no per-const check needed here.)
                 let resolved_ty = if let Some(t) = ty {
                     let decl_ty = self.resolve_type_expr(t);
+                    self.engine.mark_slot_rows(&decl_ty, true);
                     // Check the value against the annotation (mirrors the
                     // local Stmt::Let path). Previously skipped entirely, so
                     // `let X: str = 42` passed the checker and produced a
@@ -2494,6 +2525,9 @@ impl TypeChecker {
 
                 self.current_function_name = Some(name.clone());
                 self.seed_tail_lambda_expected(body);
+                if let Some(s) = &sig {
+                    self.engine.begin_store_effects(&s.generic_cap_var_ids);
+                }
                 self.cap_accum_stack.push(crate::ty::CapRow::empty());
                 self.check_block(body);
                 let fn_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
@@ -2504,6 +2538,8 @@ impl TypeChecker {
                     self.engine.bind_cap_var(own_var, fn_caps.clone());
                     self.log_fn_effect(name.clone(), *span, crate::ty::CapRow::var(own_var));
                 }
+                self.engine
+                    .end_store_effects(sig.as_ref().map(|s| s.own_cap_var));
                 self.current_function_name = None;
 
                 // Check for missing return in non-void functions.
@@ -2616,6 +2652,10 @@ impl TypeChecker {
                     );
                     let prev_fn = self.current_function_name.take();
                     self.current_function_name = Some(h.name.clone());
+                    let handler_sig = self.env.lookup_method(name, &h.name).cloned();
+                    if let Some(hs) = &handler_sig {
+                        self.engine.begin_store_effects(&hs.generic_cap_var_ids);
+                    }
                     self.cap_accum_stack.push(crate::ty::CapRow::empty());
                     self.check_block(&h.body);
                     let handler_caps = self.cap_accum_stack.pop().unwrap_or_else(crate::ty::CapRow::empty);
@@ -2635,6 +2675,8 @@ impl TypeChecker {
                             crate::ty::CapRow::var(own_var),
                         );
                     }
+                    self.engine
+                        .end_store_effects(handler_sig.as_ref().map(|hs| hs.own_cap_var));
                     self.current_function_name = prev_fn;
                     self.current_return_type = prev_ret;
                     self.env.pop_scope();
@@ -2924,6 +2966,7 @@ impl TypeChecker {
                             // nothing, and a privileged closure handed to an impl
                             // method (`Invoker::run(reader)`) cost zero -- LEDGER
                             // item 35. Mirrors the Decl::Function pattern exactly.
+                            self.engine.begin_store_effects(&sig.generic_cap_var_ids);
                             self.cap_accum_stack.push(crate::ty::CapRow::empty());
                             self.check_block(body);
                             let method_caps = self
@@ -2931,6 +2974,7 @@ impl TypeChecker {
                                 .pop()
                                 .unwrap_or_else(crate::ty::CapRow::empty);
                             self.engine.bind_cap_var(sig.own_cap_var, method_caps);
+                            self.engine.end_store_effects(Some(sig.own_cap_var));
                             self.current_function_name = prev_fn;
                             self.current_return_type = prev_ret;
                         } else {
@@ -3136,6 +3180,11 @@ impl TypeChecker {
                         self.resolve_type_expr(t)
                     }
                 });
+                // An annotated binding is storage: every later store into it
+                // widens the annotation's row (LEDGER root R2).
+                if let Some(d) = &declared_ty {
+                    self.engine.mark_slot_rows(d, false);
+                }
                 // A plain `let name = |...| { ... }` binding (no destructuring
                 // pattern) may recurse through its own name -- this is exactly
                 // what a nested/local `fn name(...) { ... }` desugars to in the
@@ -3225,7 +3274,7 @@ impl TypeChecker {
                         decl
                     }
                     (Some(decl), None) => decl,
-                    (None, Some(inferred)) => inferred,
+                    (None, Some(inferred)) => self.generalize_binding_type(inferred),
                     (None, None) => {
                         // No type info at all - create a fresh variable.
                         self.engine.fresh_var()
@@ -4772,9 +4821,11 @@ impl TypeChecker {
                     // SAME freshened var its param type uses, not the
                     // shared template. See `FunctionSig::own_cap_var`'s
                     // doc comment and `docs/capability-effects-spec.md` §4.
+                    self.engine
+                        .replay_store_effects(sig.own_cap_var, &cap_var_map);
                     let own_row = self
                         .engine
-                        .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                        .resolve_own_cap_row(sig.own_cap_var);
                     let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
                     Type::Function {
                         params,
@@ -5914,9 +5965,11 @@ impl TypeChecker {
                         // unified against the parameter. Charging first resolves the
                         // row while it is still open and charges nothing at all.
                         {
+                            self.engine
+                                .replay_store_effects(sig.own_cap_var, &cap_var_map);
                             let own_row = self
                                 .engine
-                                .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                                .resolve_own_cap_row(sig.own_cap_var);
                             let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
                             if std::env::var("KRYOS_ROW_TRACE").is_ok() {
                                 eprintln!(
@@ -6184,9 +6237,11 @@ impl TypeChecker {
                     // was never accounted for (LEDGER item 35). The failure is
                     // SILENT: the call is checked, it simply costs zero.
                     {
+                        self.engine
+                            .replay_store_effects(sig.own_cap_var, &cap_var_map);
                         let own_row = self
                             .engine
-                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                            .resolve_own_cap_row(sig.own_cap_var);
                         let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
                         self.accumulate_caps(&ref_caps);
                     }
@@ -6212,9 +6267,11 @@ impl TypeChecker {
                         }
                     }
                     {
+                        self.engine
+                            .replay_store_effects(sig.own_cap_var, &cap_var_map);
                         let own_row = self
                             .engine
-                            .resolve_cap_row(&crate::ty::CapRow::var(sig.own_cap_var));
+                            .resolve_own_cap_row(sig.own_cap_var);
                         let ref_caps = self.engine.instantiate_row(&own_row, &cap_var_map);
                         self.accumulate_caps(&ref_caps);
                     }
@@ -6273,6 +6330,16 @@ impl TypeChecker {
                     // infer each element (so ITS OWN errors, if any, still
                     // surface), just skip the cross-element unify.
                     let skip_unify = self.suppress_array_elem_unify.contains(span);
+                    // The literal's element type is a SLOT: it was typed by
+                    // the first element alone, so `[pure, reader]` carried
+                    // the pure row and the privileged element's row was
+                    // dropped (LEDGER root R2). Every element unifies into
+                    // the slot and widens it.
+                    let first_ty = if skip_unify {
+                        first_ty
+                    } else {
+                        self.engine.literal_slot_type(&first_ty)
+                    };
                     for elem in &elements[1..] {
                         let elem_ty = self.infer_expr(elem);
                         if !skip_unify {
@@ -6300,6 +6367,9 @@ impl TypeChecker {
                     let (first_key, first_val) = &entries[0];
                     let key_ty = self.infer_expr(first_key);
                     let val_ty = self.infer_expr(first_val);
+                    // The value type is a slot, exactly like an array
+                    // literal's element type (LEDGER root R2).
+                    let val_ty = self.engine.literal_slot_type(&val_ty);
                     for (k, v) in &entries[1..] {
                         let kt = self.infer_expr(k);
                         let vt = self.infer_expr(v);
