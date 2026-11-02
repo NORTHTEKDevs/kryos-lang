@@ -206,6 +206,22 @@ pub struct InferenceEngine {
     /// var is bound to (`bind_cap_var`), the moment it is bound to it.
     lambda_input_cap_vars: std::collections::HashSet<CapVarId>,
     lambda_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+    /// Every `deny!` block of the module with a row that can still change
+    /// after the block was checked. Settled by `settle_denies`.
+    deny_obligations: Vec<DenyObligation>,
+    /// Every reference to a declaration that has polymorphic row vars.
+    instantiations: Vec<Instantiation>,
+    /// The polymorphic row vars of each declaration body that holds a `deny!`
+    /// obligation or a reference, keyed by its own-row var.
+    owner_poly: HashMap<CapVarId, Vec<CapVarId>>,
+    /// The own-row vars of the methods of a TRAIT impl. They are reached through
+    /// a generic bound or a `dyn` vtable too, and that dispatch references the
+    /// trait's signature, not the impl's, so no `Instantiation` carries the
+    /// caller's argument to them.
+    dispatch_owners: std::collections::HashSet<CapVarId>,
+    /// Bumped every time `bind_cap_var` changes the substitution: `settle_denies`
+    /// runs the completion of the references to a fixed point with it.
+    cap_epoch: u64,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -216,6 +232,69 @@ struct EffectScope {
     /// Stores into the storage of a container the body was handed:
     /// `(the parameter's storage var, the row stored)`.
     param_stores: Vec<(CapVarId, CapRow)>,
+    /// The own-row var of the declaration whose body this is (`None` for a
+    /// body that has no signature). The key `deny!` obligations and references
+    /// are filed under. See `DenyObligation`.
+    owner: Option<CapVarId>,
+}
+
+/// A `deny!` block whose verdict is taken when the WHOLE MODULE has been checked
+/// (LEDGER root R3), not when the block is.
+///
+/// The block is judged on the row its body was charged. That row mentions vars
+/// that have no binding yet at the moment the block is checked, and the binding
+/// arrives later in the file: a callee declared below (its own row), a struct
+/// field or a global that `main` fills after the method that reads it was
+/// checked, a local array the loop fills after the block in the loop body.
+/// Reading an unbound var as "no authority" let a privileged closure reach the
+/// block (items 64, 72, 115, 116 and the deny-timing family). The raw row is
+/// kept here and resolved once nothing can bind any more.
+///
+/// A var that is the OWN signature var of the declaration holding the block
+/// (the row of a parameter the caller supplies) is never bound inside the
+/// declaration: each reference to the declaration freshens a copy and binds the
+/// copy to its argument. The obligation is therefore also re-instantiated at
+/// every reference (`Instantiation`), and a helper that hands its own parameter
+/// on makes the instantiated obligation an obligation of the helper.
+#[derive(Debug, Clone)]
+pub struct DenyObligation {
+    /// The capability names the block denies, as written (`fs:read`).
+    pub denied: Vec<String>,
+    /// The row the block's body was charged: raw, so every var in it resolves
+    /// through the substitution as it stands when the verdict is taken.
+    pub row: CapRow,
+    /// The `deny!` statement.
+    pub span: Span,
+    /// The own-row var of the declaration whose body holds the block.
+    pub owner: Option<CapVarId>,
+    /// For a copy made at a reference to the owner: that reference.
+    pub via: Option<Span>,
+}
+
+/// One reference to a declaration (a call, a function value, a method call):
+/// the callee's own-row var and this reference's freshening of the callee's
+/// polymorphic row vars. See `DenyObligation`.
+#[derive(Debug, Clone)]
+struct Instantiation {
+    /// The own-row var of the declaration whose body holds the reference.
+    owner: Option<CapVarId>,
+    callee: CapVarId,
+    map: Vec<(CapVarId, CapVarId)>,
+    span: Span,
+    /// For a reference typed BEFORE the callee's body was checked: the var the
+    /// reference charged its caller instead of the callee's own, still unbound,
+    /// row var. `complete_references` binds it to the callee's row, instantiated.
+    own_copy: Option<CapVarId>,
+}
+
+/// A capability a `deny!` block denies and the block's authority includes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenyViolation {
+    pub span: Span,
+    pub denied: String,
+    /// The reference through which the authority reached the block, when the
+    /// verdict was taken on a copy of the obligation made at a reference.
+    pub via: Option<Span>,
 }
 
 impl Default for InferenceEngine {
@@ -246,6 +325,11 @@ impl InferenceEngine {
             deferred_input_stores: HashMap::new(),
             lambda_input_cap_vars: std::collections::HashSet::new(),
             lambda_input_stores: HashMap::new(),
+            deny_obligations: Vec::new(),
+            instantiations: Vec::new(),
+            owner_poly: HashMap::new(),
+            dispatch_owners: std::collections::HashSet::new(),
+            cap_epoch: 0,
         }
     }
 
@@ -302,6 +386,7 @@ impl InferenceEngine {
             None => row,
         };
         self.cap_substitutions.insert(id, merged);
+        self.cap_epoch += 1;
         // The memo is a pure function of `cap_substitutions`; this is the
         // ONLY site that mutates that map, so clearing here is the whole of
         // cache invalidation. Binds are rare relative to resolutions (a bind
@@ -628,7 +713,27 @@ impl InferenceEngine {
             poly: poly.iter().copied().collect(),
             touched: Vec::new(),
             param_stores: Vec::new(),
+            owner: None,
         });
+    }
+
+    /// Name the declaration whose body `begin_store_effects` just opened (its
+    /// own-row var), so the `deny!` blocks and references inside it are filed
+    /// under it. See `DenyObligation`.
+    pub fn set_effect_owner(&mut self, own: CapVarId) {
+        if let Some(scope) = self.effect_scope.as_mut() {
+            scope.owner = Some(own);
+            let mut poly: Vec<CapVarId> = scope.poly.iter().copied().collect();
+            poly.sort_unstable();
+            self.owner_poly.insert(own, poly);
+        }
+    }
+
+    /// Mark the declaration `own` as a method of a trait impl: it can be reached
+    /// through the trait's signature (a generic bound, a `dyn`), where no
+    /// reference to it exists to bind its parameter rows. See `dispatch_owners`.
+    pub fn mark_dispatch_owner(&mut self, own: CapVarId) {
+        self.dispatch_owners.insert(own);
     }
 
     /// Finish the scope opened by `begin_store_effects` and file what the body
@@ -734,6 +839,212 @@ impl InferenceEngine {
                 self.bind_cap_var(slot, inst);
             }
         }
+    }
+
+    /// A reference to a declaration (a call, a function value, a method call):
+    /// replay the stores its body made into global slots and into the containers
+    /// it was handed, remember the reference for the `deny!` verdict
+    /// (`DenyObligation`), and return `(the declaration's row as far as it is
+    /// known, the row this reference charges its caller)`.
+    ///
+    /// `own` is the declaration's own-row var and `cap_var_map` this reference's
+    /// freshening of its polymorphic row vars. A reference that precedes the
+    /// declaration (a call in `main` to a helper declared below it) finds `own`
+    /// unbound, and the bare var it would charge is not one any reference
+    /// instantiates, so the callee's parameter rows never reached the caller. Such
+    /// a reference charges a var of its own instead, bound to the callee's row
+    /// once the body is checked and instantiated for this reference
+    /// (`complete_references`); until then it resolves to the callee's row as it
+    /// always did.
+    pub fn reference_row(
+        &mut self,
+        own: CapVarId,
+        cap_var_map: &HashMap<CapVarId, CapVarId>,
+        span: Span,
+    ) -> (CapRow, CapRow) {
+        self.replay_store_effects(own, cap_var_map);
+        let own_row = self.resolve_own_cap_row(own);
+        let mut ref_caps = self.instantiate_row(&own_row, cap_var_map);
+        let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
+        let mut own_copy = None;
+        // A reference inside the declaration's own body (a recursion) keeps the
+        // bare var: `own := row | copy` and `copy := own` would be a cycle, and a
+        // recursion hands its own parameter on, which needs no instantiation.
+        if !cap_var_map.is_empty() && !self.cap_substitutions.contains_key(&own) && owner != Some(own) {
+            let copy = self.fresh_cap_var();
+            self.bind_cap_var(copy, CapRow::var(own));
+            ref_caps = CapRow::var(copy);
+            own_copy = Some(copy);
+        }
+        if !cap_var_map.is_empty() {
+            let mut map: Vec<(CapVarId, CapVarId)> =
+                cap_var_map.iter().map(|(k, v)| (*k, *v)).collect();
+            map.sort_unstable();
+            self.instantiations.push(Instantiation {
+                owner,
+                callee: own,
+                map,
+                span,
+                own_copy,
+            });
+        }
+        (own_row, ref_caps)
+    }
+
+    /// File a `deny!` block whose row can still change after the block was
+    /// checked. `row` is the block body's RAW row. See `DenyObligation`.
+    pub fn record_deny_obligation(&mut self, denied: &[String], row: &CapRow, span: Span) {
+        if row.is_closed() {
+            // Nothing in it can bind later: the immediate verdict was final.
+            return;
+        }
+        let owner = self.effect_scope.as_ref().and_then(|s| s.owner);
+        self.deny_obligations.push(DenyObligation {
+            denied: denied.to_vec(),
+            row: row.clone(),
+            span,
+            owner,
+            via: None,
+        });
+    }
+
+    /// How many obligations and references are filed right now, to discard
+    /// what a pass whose diagnostics are thrown away (the actor pre-pass)
+    /// recorded.
+    pub fn deny_marks(&self) -> (usize, usize) {
+        (self.deny_obligations.len(), self.instantiations.len())
+    }
+
+    pub fn truncate_denies(&mut self, marks: (usize, usize)) {
+        self.deny_obligations.truncate(marks.0);
+        self.instantiations.truncate(marks.1);
+    }
+
+    /// Finish the references that were typed before the declaration they
+    /// reference (a call in `main` to a helper declared below it). Such a
+    /// reference found nothing to replay and read the declaration's rows while
+    /// they were still unbound, so the stores the helper makes and the rows it
+    /// returns never reached the caller's copy of its vars. Now that every body is
+    /// checked, replay the stores and bind the copy of each var the declaration
+    /// bound. Both are idempotent for a reference that followed the declaration
+    /// (a row only ever widens), and a binding can enable another reference's, so
+    /// the pass runs to a fixed point. It runs only when the module has a `deny!`
+    /// block: nothing else reads the result.
+    fn complete_references(&mut self, refs: &[Instantiation]) {
+        for _ in 0..16 {
+            let before = self.cap_epoch;
+            for r in refs {
+                let map: HashMap<CapVarId, CapVarId> = r.map.iter().copied().collect();
+                self.replay_store_effects(r.callee, &map);
+                for &(var, copy) in &r.map {
+                    if self.cap_substitutions.contains_key(&var) {
+                        let row = self.instantiate_row(&CapRow::var(var), &map);
+                        self.bind_cap_var(copy, row);
+                    }
+                }
+                if let Some(copy) = r.own_copy {
+                    if self.cap_substitutions.contains_key(&r.callee) {
+                        let row = self.instantiate_row(&CapRow::var(r.callee), &map);
+                        self.bind_cap_var(copy, row);
+                    }
+                }
+            }
+            if self.cap_epoch == before {
+                break;
+            }
+        }
+    }
+
+    /// Take the verdict of every `deny!` block of the module, now that the whole
+    /// module has been checked and nothing can bind any more. LEDGER root R3.
+    ///
+    /// Each obligation is resolved to the bits it holds today and judged. An
+    /// obligation that still depends on an unbound var is also re-instantiated at
+    /// every reference to the declaration that holds it (the vars left are, by
+    /// construction, that declaration's own polymorphic parameter rows, which
+    /// only a reference binds), and the copy is judged and, when it too still
+    /// depends on unbound vars, passed on to the declaration holding the
+    /// reference. A (span, owner, row) triple is processed once, so a recursion
+    /// that hands its own parameter on converges.
+    pub fn settle_denies(&mut self) -> Vec<DenyViolation> {
+        let mut out: Vec<DenyViolation> = Vec::new();
+        let base = std::mem::take(&mut self.deny_obligations);
+        let refs_all = std::mem::take(&mut self.instantiations);
+        if base.is_empty() {
+            return out;
+        }
+        self.complete_references(&refs_all);
+        let mut refs: HashMap<CapVarId, Vec<usize>> = HashMap::new();
+        for (i, r) in refs_all.iter().enumerate() {
+            refs.entry(r.callee).or_default().push(i);
+        }
+        let mut seen: std::collections::HashSet<(Span, Option<CapVarId>, CapRow)> =
+            std::collections::HashSet::new();
+        let mut reported: std::collections::HashSet<(Span, String)> =
+            std::collections::HashSet::new();
+        let mut work: Vec<DenyObligation> = base;
+        while let Some(ob) = work.pop() {
+            let resolved = self.resolve_cap_row(&ob.row);
+            if !seen.insert((ob.span, ob.owner, resolved.clone())) {
+                continue;
+            }
+            let mut bits = resolved.concrete_bits();
+            // A method of a trait impl is reached through the trait's signature
+            // too, and nothing binds its parameter rows there: a block that
+            // still depends on one of them is judged on whatever a caller might
+            // pass, which is `all`.
+            if let Some(owner) = ob.owner {
+                if self.dispatch_owners.contains(&owner) {
+                    if let Some(poly) = self.owner_poly.get(&owner) {
+                        let open_param = resolved.var_ids().iter().any(|v| {
+                            !self.cap_substitutions.contains_key(v) && poly.contains(v)
+                        });
+                        if open_param {
+                            bits = crate::ty::CapBits::ALL;
+                        }
+                    }
+                }
+            }
+            for name in crate::ty::denied_caps_used(&ob.denied, bits) {
+                if reported.insert((ob.span, name.clone())) {
+                    out.push(DenyViolation {
+                        span: ob.span,
+                        denied: name,
+                        via: ob.via,
+                    });
+                }
+            }
+            let Some(owner) = ob.owner else {
+                continue;
+            };
+            let unbound = resolved
+                .var_ids()
+                .iter()
+                .any(|v| !self.cap_substitutions.contains_key(v));
+            if !unbound {
+                continue;
+            }
+            let Some(idxs) = refs.get(&owner) else {
+                continue;
+            };
+            for &i in idxs {
+                let r = &refs_all[i];
+                let map: HashMap<CapVarId, CapVarId> = r.map.iter().copied().collect();
+                let row = self.instantiate_row(&ob.row, &map);
+                work.push(DenyObligation {
+                    denied: ob.denied.clone(),
+                    row,
+                    span: ob.span,
+                    owner: r.owner,
+                    via: Some(r.span),
+                });
+            }
+        }
+        // Source order, whatever order the worklist happened to reach them in.
+        out.sort_by(|a, b| {
+            (a.span.file_id, a.span.start, &a.denied).cmp(&(b.span.file_id, b.span.start, &b.denied))
+        });
+        out
     }
 
     /// Remember that the body being checked wrote `row` into the storage var

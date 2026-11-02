@@ -112,6 +112,33 @@ impl CapBits {
     }
 }
 
+/// The capabilities of `denied` (names as written in a `deny!`) that the
+/// authority `used` includes, by the lattice: a coarse family in `used` covers
+/// each of its sub-capabilities, `all` covers everything. `Unknown` was erased to
+/// `all` before it got here (`CapRow::concrete_bits`).
+///
+/// This is the ONE place a `deny!` verdict is decided, shared by the check taken
+/// when the block is checked and the verdict taken when the module is done.
+pub fn denied_caps_used(denied: &[String], used: CapBits) -> Vec<String> {
+    use kryos_capabilities::model::{Capability, CapabilitySet};
+    let mut have = CapabilitySet::empty();
+    for name in used.names() {
+        if let Some(c) = Capability::from_str(name) {
+            have.insert(c);
+        }
+    }
+    let mut out = Vec::new();
+    for d in denied {
+        let Some(dcap) = Capability::from_str(d) else {
+            continue;
+        };
+        if have.satisfies_required(&dcap) {
+            out.push(d.clone());
+        }
+    }
+    out
+}
+
 /// Capability-row variable id — same numbering scheme as ordinary type
 /// variable ids (`Type::Var(u32)`), but tracked in a PARALLEL substitution
 /// map (`InferenceEngine::cap_substitutions`) since a capability row is not
