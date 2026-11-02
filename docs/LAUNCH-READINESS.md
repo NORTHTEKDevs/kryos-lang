@@ -1,6 +1,12 @@
 # Kryos Launch Readiness - Re-Adjudication (2026-08-16, dogfooding closeout addendum; 2026-08-17 universal-claim addendum; **2026-08-29 1.0.0 cut addendum, read first**)
 
 
+> ## 2026-11-02 - the capability-escape count below is a dated snapshot and is no longer true
+>
+> "Zero known capability escapes" (the 2026-08-29 addendum and section 1 below) was measured against the corpus of that day. The same measurement, re-run on a wider corpus
+> on 2026-11-02, reports **31 known, reproducible capability escapes** still live and 200 rejected (231 repros): `bash tools/loop/escape_status.sh`, the list in
+> [tools/loop/LEDGER.md](../tools/loop/LEDGER.md) and the status block at the top of [10-capabilities.md](10-capabilities.md). A count of zero is a floor, not a soundness proof.
+
 > ## 2026-10-08 - ownership update (branch `fix/item3-call-boundary`)
 >
 > Items **3** (struct-argument leak) and **51** (struct enum-field overwrite
