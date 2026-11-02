@@ -11,8 +11,9 @@
 // from an address derived by integer arithmetic (not by copying the struct).
 // forged.load() reads victim's cell and forged.store() overwrites it.
 // What it does not show: nothing outside the program's own memory is touched,
-// the address is one the program was handed by its own allocation, and no OS
-// call is made. It is not an exploit of the OS; it shows that an integer chosen
+// the address is one the program was handed by its own allocation, and no
+// file, process, network or dlopen call is made (it prints to stdout, and
+// AtomicInt load/store take a mutex). It is not an exploit of the OS; it shows that an integer chosen
 // by the program is dereferenced by a stdlib method. The same API accepts any
 // other integer (std::chan::ChanWaitGroup.count_cell and std::tensor handles are
 // the same shape), and which address is valid is the attacker's problem, not the

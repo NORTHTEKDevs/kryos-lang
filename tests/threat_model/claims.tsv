@@ -51,7 +51,7 @@ N3-read-line	check	tests/threat_model/n3_ambient_read_line.kry	0	-	N3: read_line
 N3-file-exists-gated	check	tests/threat_model/n3_file_exists_needs_fs_read.kry	nz	E0505	N3: file_exists is not ambient
 N3-latent-intrinsics-default	check	tests/threat_model/n3_latent_memory_intrinsics.kry	0	-	N3/4.4: str_data_ptr/mem_read_byte/mem_write_byte are accepted with no capability
 N3-latent-intrinsics-strict	check --strict-capabilities	tests/threat_model/n3_latent_memory_intrinsics.kry	0	-	N3/4.4: the same in strict mode
-N3-latent-intrinsics-run	run	tests/threat_model/n3_latent_memory_intrinsics.kry	nz	-	N3/4.4: they do not link on the Rust toolchain, so run fails (latent)
+N3-latent-intrinsics-run	run	tests/threat_model/n3_latent_memory_intrinsics.kry	nz	str_data_ptr	N3/4.4: they do not link on the Rust toolchain, so run fails (latent)
 N9-env-get-default	check	tests/threat_model/n9_env_get_unannotated.kry	nz	E0505	N9: env_get needs process
 N9-env-get-strict	check --strict-capabilities	tests/threat_model/n9_env_get_unannotated.kry	nz	E0505	N9: env_get needs process (strict)
 S1-audit-inferred	audit	tests/threat_model/n9_env_get_unannotated.kry	nz	[E0505]	S1: kryos audit runs the inferred-mode checker and prints its violations

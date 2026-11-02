@@ -66,6 +66,49 @@ if [ ! -f "$K" ] || [ ! -x "$K" ]; then
 fi
 echo "  ok   binary: $K"
 
+# ------------------------------------------------------------------- canary
+# Same two probes as check-escapes-documented.sh. Without them a kryos.exe that
+# cannot link (no kryos_rt.lib / kryos_stdlib_native.lib beside it) would still
+# let every `check` claim pass or fail on its own, and the `run` claims whose
+# expectation is just "nonzero" would pass for the wrong reason.
+cat > "$TMP/canary_pure.kry" <<'KRY'
+fn main() {
+    println("KRYOS-CANARY-OK-7731")
+}
+KRY
+cat > "$TMP/canary_deny.kry" <<'KRY'
+@capabilities(fs:read)
+fn main() {
+    deny!(fs:read) {
+        let s = file_read("canary.txt")
+        println(s)
+    }
+}
+KRY
+out="$(timeout 180 "$K" run "$TMP/canary_pure.kry" 2>&1)"; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s
+' "$out" | tr -d '' | grep -qx "KRYOS-CANARY-OK-7731"; then
+  echo "  ok   canary: a pure program builds, runs and prints its marker"
+else
+  echo "check-threat-model-claims: FAIL -- canary: \`kryos run\` of a pure program did not exit 0 and print its marker (rc=$rc)."
+  echo "  The toolchain cannot build and run programs (are kryos_rt.lib and kryos_stdlib_native.lib beside the binary?),"
+  echo "  so the claims would be checked against a toolchain that cannot back them."
+  printf '%s
+' "$out" | tail -5 | sed 's/^/    /'
+  exit 1
+fi
+out="$(timeout 120 "$K" check "$TMP/canary_deny.kry" 2>&1)"; rc=$?
+if [ "$rc" -ne 0 ] && printf '%s
+' "$out" | grep -qE "E0110|E0505|E0507"; then
+  echo "  ok   canary: file_read inside deny!(fs:read) is rejected by \`kryos check\`"
+else
+  echo "check-threat-model-claims: FAIL -- canary: \`kryos check\` did not reject file_read inside deny!(fs:read) (rc=$rc)."
+  echo "  The capability checker is not rejecting a direct call, so the claims would be vacuous."
+  printf '%s
+' "$out" | tail -5 | sed 's/^/    /'
+  exit 1
+fi
+
 strip_ansi() { sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r'; }
 # A checkout with core.autocrlf gives the manifest CRLF line ends; drop the CRs.
 tr -d '\r' < "$MANIFEST" > "$TMP/manifest.tsv"
