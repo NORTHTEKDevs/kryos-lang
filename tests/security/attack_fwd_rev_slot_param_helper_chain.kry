@@ -1,0 +1,42 @@
+// LEDGER item 124 (root F, forward references; found by the independent verifier of the R3 wave, recorded first by the item-77 wave, NOT FIXED).
+// A function declared ABOVE the callee it hands its parameter on to (or `main` declared above its helpers) leaves the deny! verdict without the argument's row:
+// the copy var the first function hands on is never mapped by `main`'s later instantiation. The same program with the declarations in the other order is rejected.
+// Shape: tests/security/attack_slot_param_helper_chain.kry with its two helpers in the reverse order (the caller above its callee). The original is rejected.
+// master e2fbc46c, measured before any checker edit of the wave that recorded this: `kryos check` rc=0 in default and strict mode, `kryos run` prints TOPSECRET-CLOSURE-9f8e7d6c5b4a in both modes (executed).
+// WANTED (when closed): rejected with E0110 in both modes, and `kryos run` must not print the secret.
+// LEDGER root R2, revise round of PR 38 (found by the author while closing the verifier's finding).
+// Two helpers: the outer one hands its OWN array parameter to the inner one that stores into it. The store must compose through both calls.
+// Master dcf72e93: accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// First R2 build (PR head dbfb989d): accepted in every mode (check rc=0, default and strict) and `kryos run` prints the secret (executed).
+// Must be REJECTED with E0110 ("capability `fs:read` is denied in this block") under inferred and strict,
+// and `kryos run` must not print the secret.
+use std::iter::{for_each, map}
+
+fn outer_put(reg2: [fn() -> str], h: fn() -> str) {
+    inner_put(reg2, h)
+}
+
+fn inner_put(reg: [fn() -> str], g: fn() -> str) {
+    reg[0] = g
+}
+fn safe() -> str {
+    return "safe"
+}
+
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [safe]
+    outer_put(fns, r)
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}
