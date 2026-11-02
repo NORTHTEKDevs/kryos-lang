@@ -91,6 +91,7 @@ files="
 111|attack_reassign_container_struct_field_ifexpr_arg
 112|attack_slot_param_container_store
 113|attack_slot_param_struct_field_store
+114|attack_slot_register_after_main
 slot01|attack_slot_array_push_blinded
 slot02|attack_slot_array_index_assign_blinded
 slot03|attack_slot_struct_field_assign_blinded
