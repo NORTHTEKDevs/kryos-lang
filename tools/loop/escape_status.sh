@@ -145,6 +145,8 @@ slot50|attack_slot_param_list_push
 slot51|attack_slot_param_mut_ref
 slot52|attack_slot_param_method
 slot53|attack_slot_param_fn_value
+slot54|attack_slot_lambda_container_param_store
+slot55|attack_slot_lambda_container_param_push
 "
 
 printf "%-6s %-52s %-10s %-10s %s\n" ITEM FILE CHECK STRICT RUN

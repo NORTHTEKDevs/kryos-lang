@@ -1197,6 +1197,13 @@ R2_ESCAPES="$R2_ESCAPES \
     attack_slot_param_mut_ref \
     attack_slot_param_method \
     attack_slot_param_fn_value"
+# The lambda form of item 112: a LAMBDA with an annotated array parameter that stores
+# its closure parameter into it. A lambda is one monomorphic value, so there is no
+# per-call copy of the parameter row to replay; the stores are written into the slot
+# of each argument the parameter is bound to.
+R2_ESCAPES="$R2_ESCAPES \
+    attack_slot_lambda_container_param_store \
+    attack_slot_lambda_container_param_push"
 for esc in $R2_ESCAPES; do
     esc_ok=1
     for mode in "" "--strict-capabilities"; do
@@ -1243,6 +1250,8 @@ R2_CONTROLS="$R2_CONTROLS \
 R2_CONTROLS="$R2_CONTROLS \
     ctl_slot_param_store_pure \
     ctl_slot_param_store_privileged_other_array"
+R2_CONTROLS="$R2_CONTROLS \
+    ctl_slot_lambda_container_param_store_pure"
 for ctl in $R2_CONTROLS; do
     ctl_ok=1
     for mode in "" "--strict-capabilities"; do

@@ -2244,3 +2244,57 @@ fn a_read_only_container_parameter_records_no_store() {
     engine.replay_store_effects(own, &map);
     assert_eq!(bits_of(&engine, caller_slot), CapBits::EMPTY);
 }
+
+#[test]
+fn a_lambdas_store_into_an_annotated_container_parameter_reaches_every_arguments_slot() {
+    // `let put = |reg: [fn() -> str], g: fn() -> str| { reg[0] = g }`. A lambda is one
+    // monomorphic value: there is no per-call copy of the parameter's element row to
+    // replay, so the store is written into the slot of each argument the row is bound
+    // to, the moment it is bound to it.
+    let mut engine = InferenceEngine::new();
+    let e = engine.fresh_cap_var();
+    let lg = engine.fresh_cap_var();
+    let reg_ty = array_of(fn_with(CapRow::var(e)));
+    let g_ty = fn_with(CapRow::var(lg));
+    engine.mark_lambda_param_rows(&reg_ty);
+    engine.mark_lambda_input_storage(&reg_ty);
+    engine.mark_lambda_param_rows(&g_ty);
+    engine.mark_lambda_input_storage(&g_ty);
+    let frozen = engine.freeze_rows_of(&[reg_ty.clone(), g_ty.clone()]);
+    // The body: reg[0] = g.
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(lg)), S)
+        .unwrap();
+    engine.unfreeze_rows(frozen);
+    assert!(
+        !engine.resolve_cap_row(&CapRow::var(e)).is_closed(),
+        "the body bound the parameter's element row"
+    );
+
+    // First call: an array built from a pure function, and a privileged closure.
+    let caller_a = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_a, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(caller_a)), S)
+        .unwrap();
+    engine
+        .unify(
+            &fn_with(CapRow::var(lg)),
+            &fn_with(CapRow::closed(CapBits::FS_READ)),
+            S,
+        )
+        .unwrap();
+    assert!(
+        bits_of(&engine, caller_a).contains_bits(CapBits::FS_READ),
+        "the lambda stored a privileged closure into the caller's array: {}",
+        engine.resolve_cap_row(&CapRow::var(caller_a)).display()
+    );
+
+    // A second call with another array: its slot learns as well.
+    let caller_b = engine.fresh_slot_cap_var();
+    engine.bind_cap_var(caller_b, CapRow::closed(CapBits::EMPTY));
+    engine
+        .unify(&fn_with(CapRow::var(e)), &fn_with(CapRow::var(caller_b)), S)
+        .unwrap();
+    assert!(bits_of(&engine, caller_b).contains_bits(CapBits::FS_READ));
+}

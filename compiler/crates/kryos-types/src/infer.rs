@@ -199,6 +199,13 @@ pub struct InferenceEngine {
     /// Flushed by `bind_cap_var` the moment the copy is bound to the slot the
     /// argument came from.
     deferred_input_stores: HashMap<CapVarId, Vec<CapRow>>,
+    /// The input-storage vars (`input_storage_cap_vars`) that belong to a LAMBDA's
+    /// annotated container parameters, and what the lambda body stored into them.
+    /// A lambda is one monomorphic value, so there is no per-call copy of the var
+    /// and no replay: the stores are re-applied to the slot of every argument the
+    /// var is bound to (`bind_cap_var`), the moment it is bound to it.
+    lambda_input_cap_vars: std::collections::HashSet<CapVarId>,
+    lambda_input_stores: HashMap<CapVarId, Vec<CapRow>>,
 }
 
 /// See `InferenceEngine::effect_scope`.
@@ -237,6 +244,8 @@ impl InferenceEngine {
             contravariant: false,
             input_storage_cap_vars: std::collections::HashSet::new(),
             deferred_input_stores: HashMap::new(),
+            lambda_input_cap_vars: std::collections::HashSet::new(),
+            lambda_input_stores: HashMap::new(),
         }
     }
 
@@ -303,6 +312,13 @@ impl InferenceEngine {
         *self.cap_cycle_cache.borrow_mut() = None;
         if !self.deferred_input_stores.is_empty() {
             if let Some(rows) = self.deferred_input_stores.remove(&id) {
+                for row in rows {
+                    self.store_into_input(id, row);
+                }
+            }
+        }
+        if !self.lambda_input_stores.is_empty() {
+            if let Some(rows) = self.lambda_input_stores.get(&id).cloned() {
                 for row in rows {
                     self.store_into_input(id, row);
                 }
@@ -731,6 +747,29 @@ impl InferenceEngine {
         }
     }
 
+    /// Remember that a lambda body wrote `row` into the storage var `storage` of
+    /// one of its annotated container parameters, and write it into whatever
+    /// slot that var is already bound to (see `lambda_input_stores`).
+    fn record_lambda_store(&mut self, storage: CapVarId, row: CapRow) {
+        let rows = self.lambda_input_stores.entry(storage).or_default();
+        if !rows.contains(&row) {
+            rows.push(row.clone());
+        }
+        self.store_into_input(storage, row);
+    }
+
+    /// Like `mark_input_storage`, for the annotated container parameters of a
+    /// lambda (one monomorphic value: see `lambda_input_cap_vars`).
+    pub fn mark_lambda_input_storage(&mut self, param_ty: &Type) {
+        let mut vars: Vec<CapVarId> = Vec::new();
+        Self::storage_rows_in(param_ty, false, &mut vars);
+        for v in vars {
+            self.slot_cap_vars.insert(v);
+            self.input_storage_cap_vars.insert(v);
+            self.lambda_input_cap_vars.insert(v);
+        }
+    }
+
     /// Write `row` into the storage the call-site copy `target` of a
     /// parameter's storage var stands for: every slot reachable from it (the
     /// caller's array literal slot, a struct field's slot, ...) is widened.
@@ -753,7 +792,7 @@ impl InferenceEngine {
             if !seen.insert(v) {
                 continue;
             }
-            if self.slot_cap_vars.contains(&v) {
+            if v != target && self.slot_cap_vars.contains(&v) {
                 slots.push(v);
             }
             if let Some(CapRow::Resolved { vars, .. }) = self.cap_substitutions.get(&v) {
@@ -1046,7 +1085,11 @@ impl InferenceEngine {
             if self.input_storage_cap_vars.contains(&v) && self.is_frozen(v) {
                 // A store into a container this body was handed (LEDGER root
                 // R2, item 112): never bind the parameter's storage var.
-                self.record_param_store(v, c2.clone());
+                if self.lambda_input_cap_vars.contains(&v) {
+                    self.record_lambda_store(v, c2.clone());
+                } else {
+                    self.record_param_store(v, c2.clone());
+                }
                 continue;
             }
             if !self.cap_substitutions.contains_key(&v) || self.slot_cap_vars.contains(&v) {

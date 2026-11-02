@@ -6583,6 +6583,7 @@ impl TypeChecker {
                     if p.ty.is_some() {
                         let rt = self.engine.resolve(t);
                         self.engine.mark_lambda_param_rows(&rt);
+                        self.engine.mark_lambda_input_storage(&rt);
                     }
                 }
                 if ret_ty.is_some() {
