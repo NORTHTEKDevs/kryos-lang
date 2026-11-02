@@ -21,7 +21,11 @@ if [ -f "$TM" ]; then echo "  ok   $TM exists"; else
 
 if [ -f "$TM" ]; then
     for section in "What capabilities DO guarantee" "What capabilities do NOT guarantee" "Known limitations"; do
-        if grep -qiF "$section" "$TM"; then echo "  ok   section: $section"
+        # `grep -qi -e`, not `-qiF`: GNU grep 3.0 (Git for Windows) aborts with
+        # SIGABRT (rc 134) on `-iF` when LANG is unset, which printed three
+        # spurious "missing section" failures. The headings have no regex
+        # metacharacters, so the two are equivalent here.
+        if grep -qi -e "$section" "$TM"; then echo "  ok   section: $section"
         else echo "  FAIL: $TM is missing the section: $section"; fail=1; fi
     done
 fi
