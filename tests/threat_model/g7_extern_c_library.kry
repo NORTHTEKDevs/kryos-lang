@@ -1,0 +1,10 @@
+// THREAT-MODEL.md G7: an extern block naming a C library function is rejected:
+// E0506 (requires ffi) in the default and strict modes, E0508 (not a kryos_*
+// runtime symbol) in every mode.
+extern "C" {
+    fn getpid() -> i32
+}
+
+fn main() {
+    println(to_string(getpid()))
+}

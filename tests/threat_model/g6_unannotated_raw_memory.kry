@@ -1,0 +1,6 @@
+// THREAT-MODEL.md G6: the raw-memory builtins need ffi at the call site in user
+// code, in every mode including permissive (E0505, "requires `ffi`").
+fn main() {
+    let p = str_to_ptr("abc")
+    println(to_string(ptr_byte_at(p, 0)))
+}

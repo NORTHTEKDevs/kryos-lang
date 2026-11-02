@@ -1,0 +1,6 @@
+// THREAT-MODEL.md G8: comptime { } grants no authority. Rejected (E0505) in the
+// default mode, accepted in permissive.
+fn main() {
+    let x = comptime { file_read("x.txt") }
+    println(x)
+}

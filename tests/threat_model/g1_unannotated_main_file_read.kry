@@ -1,0 +1,6 @@
+// THREAT-MODEL.md G1, G9: an unannotated main calling a gated builtin.
+// Rejected (E0505) by check, run, build and the wasm build, in the default and
+// strict modes; accepted in permissive mode (N2).
+fn main() {
+    file_read("x.txt")
+}

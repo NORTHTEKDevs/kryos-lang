@@ -1,0 +1,11 @@
+// THREAT-MODEL.md G7: an extern block naming a classified kryos_* native is
+// charged what the native does. kryos_env_get reads the environment, so it needs
+// `process` (E0506) in the default and strict modes.
+extern {
+    fn kryos_env_get(key: i64) -> i64
+}
+
+fn main() {
+    let r = kryos_env_get(0)
+    println(to_string(r))
+}

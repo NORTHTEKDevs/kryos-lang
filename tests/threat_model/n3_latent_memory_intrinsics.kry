@@ -1,0 +1,9 @@
+// THREAT-MODEL.md N3 and 4.4: self-host intrinsics that read and write memory by
+// address are accepted by check with no capability. On the Rust toolchain they
+// do not link, so `kryos run` fails (latent; nothing runs).
+fn main() {
+    let p = str_data_ptr("abc")
+    let b = mem_read_byte(p)
+    mem_write_byte(p, 66)
+    println(to_string(b))
+}

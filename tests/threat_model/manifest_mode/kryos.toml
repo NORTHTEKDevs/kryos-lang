@@ -1,0 +1,6 @@
+[package]
+name = "manifest-mode-claim"
+version = "0.1.0"
+
+[capabilities]
+mode = "permissive"

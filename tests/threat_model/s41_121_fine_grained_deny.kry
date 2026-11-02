@@ -1,0 +1,20 @@
+// THREAT-MODEL.md 4.1, item 121 workaround: the program of
+// tests/security/attack_deny_coarse_family_row_blind.kry with deny!(fs:read)
+// instead of deny!(fs). The precise capability is rejected (E0110); the coarse
+// family name is the accepted escape.
+@capabilities(fs:read)
+fn secret() -> fn() -> str {
+    return || file_read("tests/security/secret_for_closure_launder.txt")
+}
+
+@capabilities(fs:read)
+fn main() {
+    let f = || "harmless"
+    let r = secret()
+    let fns = [r]
+    deny!(fs:read) {
+        for f in fns {
+            println(f())
+        }
+    }
+}

@@ -1,0 +1,7 @@
+// THREAT-MODEL.md G8: unsafe { } grants no authority. Rejected (E0505) in the
+// default mode, accepted in permissive.
+fn main() {
+    unsafe {
+        file_read("x.txt")
+    }
+}

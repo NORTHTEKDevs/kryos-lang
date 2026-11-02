@@ -1,0 +1,6 @@
+// THREAT-MODEL.md G9, manifest mode: [capabilities] mode = "permissive" in the
+// root kryos.toml. Only project-mode `kryos build` reads it. check and run
+// reject this unannotated env_get (E0505); build accepts it.
+fn main() {
+    println("home=" + env_get("PATH"))
+}

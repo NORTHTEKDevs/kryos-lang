@@ -1,0 +1,7 @@
+// THREAT-MODEL.md G10: the same program with @capabilities(fs:read) is accepted.
+use std::fs::{exists}
+
+@capabilities(fs:read)
+fn main() {
+    println(to_string(exists("x.txt")))
+}
